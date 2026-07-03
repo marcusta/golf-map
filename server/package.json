@@ -1,0 +1,26 @@
+{
+    "name": "server",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev:server": "DB_PATH=../data/app.sqlite SESSION_DB_PATH=../data/sessions.sqlite OBS_DB_PATH=../data/obs.sqlite bun --watch main.ts",
+        "check:server": "tsc -p tsconfig.server.json --noEmit",
+        "check:test": "tsc -p tsconfig.test.json --noEmit",
+        "generate": "BASICS_API_IN_DIR=api BASICS_API_OUT_DIR=../shared/api bun ../../mackans-client-fw/core/generate-api.ts",
+        "test": "bun test",
+        "test:server": "bun test .",
+        "create-user": "DB_PATH=../data/app.sqlite bun db/create-user.ts",
+        "import": "DB_PATH=../data/app.sqlite bun db/import.ts"
+    },
+    "dependencies": {
+        "@basics/core": "file:../../mackans-client-fw/core",
+        "@sinclair/typebox": "^0.34",
+        "hono": "^4",
+        "kysely": "^0.27",
+        "kysely-bun-sqlite": "^0.3"
+    },
+    "devDependencies": {
+        "@types/bun": "^1",
+        "typescript": "^5.9.3"
+    }
+}
