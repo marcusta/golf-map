@@ -142,6 +142,36 @@ export class MapService {
         }, 250);
         this.disposers.push(() => clearInterval(watchdog));
 
+        // Middle-button drag always pans, regardless of the active tool.
+        // MapLibre's dragPan only responds to the left button, and tools
+        // claim left-click/drag for their own gestures (drawing, marquee,
+        // marker drags) — the middle button is the one input no tool uses,
+        // so it stays a reliable escape hatch for navigation mid-gesture.
+        const canvas = map.getCanvas();
+        let panLast: { x: number; y: number } | null = null;
+        const onMidDown = (e: MouseEvent) => {
+            if (e.button !== 1) return;
+            e.preventDefault(); // suppress browser autoscroll
+            panLast = { x: e.clientX, y: e.clientY };
+        };
+        const onMidMove = (e: MouseEvent) => {
+            if (!panLast) return;
+            map.panBy([panLast.x - e.clientX, panLast.y - e.clientY], { duration: 0 });
+            panLast = { x: e.clientX, y: e.clientY };
+        };
+        const onMidUp = (e: MouseEvent) => {
+            if (e.button === 1) panLast = null;
+        };
+        canvas.addEventListener('mousedown', onMidDown);
+        // Window-level move/up so the pan survives leaving the canvas mid-drag.
+        window.addEventListener('mousemove', onMidMove);
+        window.addEventListener('mouseup', onMidUp);
+        this.disposers.push(() => {
+            canvas.removeEventListener('mousedown', onMidDown);
+            window.removeEventListener('mousemove', onMidMove);
+            window.removeEventListener('mouseup', onMidUp);
+        });
+
         this.map.set(map);
         // QA hook (same as the Phase 2 demo): expose the instance for
         // scripted/visual verification tooling. Not part of the public API.
