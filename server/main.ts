@@ -17,6 +17,7 @@ import { createClubsApi } from './api/clubs.api';
 import { createGamePlansApi } from './api/game-plans.api';
 import { createRoundsApi } from './api/rounds.api';
 import { createAssetsApi } from './api/assets.api';
+import { createAnalysisApi } from './api/analysis.api';
 import { createTileRoutes } from './services/tiles';
 
 const { app, db, bootstrapAuth } = await createApp<Database>(path.join(import.meta.dir, 'db/migrations'));
@@ -36,6 +37,7 @@ const {
     gamePlansService,
     roundsService,
     assetsService,
+    analysisService,
 } = services;
 
 await bootstrapAuth({
@@ -55,6 +57,7 @@ mount(app, '/api', createClubsApi(clubsService));
 mount(app, '/api', createGamePlansApi(gamePlansService));
 mount(app, '/api', createRoundsApi(roundsService));
 mount(app, '/api', createAssetsApi(assetsService));
+mount(app, '/api', createAnalysisApi(analysisService, courseFeaturesService));
 
 // Tile routes are deliberately unauthenticated (map clients fetch tiles
 // directly without session cookies) — mounted at the root, not under /api.

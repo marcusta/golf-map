@@ -13,6 +13,7 @@ import { ClubsService } from './clubs.service';
 import { GamePlansService } from './game-plans.service';
 import { RoundsService } from './rounds.service';
 import { AssetsService } from './assets.service';
+import { AnalysisService } from './analysis.service';
 
 export interface ServicesConfig {
     /** Root directory for course assets/tiles on disk. Defaults to DATA_DIR env var, then './data'. */
@@ -35,6 +36,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const gamePlansService = new GamePlansService(db);
     const roundsService = new RoundsService(db);
     const assetsService = new AssetsService(db, dataDir);
+    const analysisService = new AnalysisService(db, dataDir);
 
     return {
         db,
@@ -51,5 +53,6 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         gamePlansService,
         roundsService,
         assetsService,
+        analysisService,
     };
 }

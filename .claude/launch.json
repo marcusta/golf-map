@@ -14,6 +14,30 @@
             "runtimeArgs": ["run", "demo"],
             "cwd": "web",
             "port": 5180
+        },
+        {
+            "name": "web",
+            "runtimeExecutable": "bun",
+            "runtimeArgs": ["run", "dev"],
+            "cwd": "web",
+            "port": 5173,
+            "autoPort": true
+        },
+        {
+            "name": "web-c4",
+            "runtimeExecutable": "bun",
+            "runtimeArgs": ["run", "dev"],
+            "cwd": "web",
+            "port": 5273,
+            "autoPort": true
+        },
+        {
+            "name": "web-c3",
+            "runtimeExecutable": "bun",
+            "runtimeArgs": ["run", "dev"],
+            "cwd": "web",
+            "port": 5373,
+            "autoPort": true
         }
     ]
 }

@@ -32,8 +32,8 @@ export interface CourseFeaturesApi {
     listByCourse(input: { courseId: string }): Promise<CourseFeature[]>;
     listByHole(input: { holeId: string }): Promise<CourseFeature[]>;
     geojsonByCourse(input: { courseId: string }): Promise<CourseFeatureFeatureCollection>;
-    create(input: { holeId?: null | string; courseId: string; type: string; geometry: { crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; x: number; y: number }[] }[] } }): Promise<CourseFeature>;
-    update(input: { holeId?: null | string; type?: string; geometry?: { crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; x: number; y: number }[] }[] }; id: string; version: number }): Promise<CourseFeature>;
+    create(input: { holeId?: null | string; courseId: string; geometry: { crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; x: number; y: number }[] }[] }; type: string }): Promise<CourseFeature>;
+    update(input: { geometry?: { crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; x: number; y: number }[] }[] }; holeId?: null | string; type?: string; id: string; version: number }): Promise<CourseFeature>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
 }
 

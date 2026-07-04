@@ -36,7 +36,7 @@ export interface PlanShot {
 export interface GamePlansApi {
     getByCourse(input: { userId?: string; courseId: string }): Promise<null | GamePlan>;
     upsert(input: { userId?: string; version?: number; windSpeedMps?: null | number; windDirectionDeg?: null | number; courseId: string }): Promise<GamePlan>;
-    remove(input: { userId?: string; version: number; courseId: string }): Promise<{ ok: boolean }>;
+    remove(input: { userId?: string; courseId: string; version: number }): Promise<{ ok: boolean }>;
     setHole(input: { version?: number; teeId?: null | string; preferredClubId?: null | string; plannedDirectionDeg?: null | number; planId: string; holeNumber: number }): Promise<GamePlanHole>;
     addShot(input: { elevation?: null | number; clubId?: null | string; lat: number; lon: number; gamePlanHoleId: string }): Promise<PlanShot>;
     updateShot(input: { lat?: number; lon?: number; elevation?: null | number; clubId?: null | string; id: string; version: number }): Promise<PlanShot>;
