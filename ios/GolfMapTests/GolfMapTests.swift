@@ -3,8 +3,14 @@ import XCTest
 
 final class GolfMapTests: XCTestCase {
     @MainActor
-    func testAppEnvironmentInitializes() {
-        XCTAssertNotNil(AppEnvironment())
+    func testAppEnvironmentInitializes() throws {
+        let env = AppEnvironment(
+            serverOrigin: URL(string: "http://localhost:3000")!,
+            database: try AppDatabase.inMemory(),
+            bundlePaths: BundlePaths(rootDirectory: FileManager.default.temporaryDirectory
+                .appending(path: "smoke-\(UUID().uuidString)"))
+        )
+        XCTAssertNotNil(env)
     }
 
     func testLinkedPackages() {

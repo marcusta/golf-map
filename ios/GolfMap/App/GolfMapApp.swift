@@ -2,17 +2,12 @@ import SwiftUI
 
 @main
 struct GolfMapApp: App {
-    @State private var appEnvironment = AppEnvironment()
+    @State private var appEnvironment = AppEnvironment.live()
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                Text("GolfMap")
-                    .font(.largeTitle)
-                    .foregroundStyle(.secondary)
-                    .navigationTitle("GolfMap")
-            }
-            .environment(appEnvironment)
+            RootView()
+                .environment(appEnvironment)
         }
     }
 }
