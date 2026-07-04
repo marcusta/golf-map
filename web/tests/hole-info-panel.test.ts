@@ -1,5 +1,6 @@
 import { test, expect, describe, afterEach } from 'bun:test';
 import { ApiError } from '@basics/core/client/api-error';
+import { effect } from '@basics/core/client/core';
 import { _reset } from '@basics/core/client/error-report';
 import { playingLength, pathMeters } from '../src/course-detail/hole-length';
 import { wgs84ToSweref99tm } from '../src/geo/transform';
@@ -198,6 +199,21 @@ describe('CourseDetailService.updateHole', () => {
 
         await svc.updateHole('h1', { strokeIndex: null });
         expect(svc.holes.get()[0].strokeIndex).toBeNull();
+    });
+
+    test('updateHole fires the per-hole signal that sidebar rows bind to', async () => {
+        const { api, coursesApi } = fakeHolesApi([hole()]);
+        const svc = new CourseDetailService(coursesApi, api);
+        await svc.load('c1');
+
+        // Same binding as the course-detail sidebar row: $each reuses the DOM
+        // node for an existing key, so the row only updates if this fires.
+        const seen: number[] = [];
+        const dispose = effect(() => { seen.push(svc.holeStore.item('h1').get().par); });
+
+        await svc.updateHole('h1', { par: 5 });
+        expect(seen).toEqual([4, 5]);
+        dispose();
     });
 
     test('version conflict refetches the hole so the next edit self-heals', async () => {

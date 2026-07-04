@@ -1,4 +1,5 @@
 import { Signal, Computed, batch } from '@basics/core/client/core';
+import { EntityStore } from '@basics/core/client/entity-store';
 import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
 import type { Course, CoursesApi } from '../../../shared/api/courses.gen';
@@ -6,7 +7,9 @@ import type { Hole, HolesApi } from '../../../shared/api/holes.gen';
 
 export class CourseDetailService {
     readonly course = new Signal<Course | null>(null);
-    readonly holes = new Signal<Hole[]>([]);
+    /** Per-hole signals so $each rows re-render on single-hole edits. */
+    readonly holeStore = new EntityStore<Hole>();
+    readonly holes = this.holeStore.items;
     readonly loading = new Signal(false);
     readonly error = new Signal<RequestError | null>(null);
     /** True while a publish request is in flight. */
@@ -60,12 +63,12 @@ export class CourseDetailService {
         const updated = await request(this.loading, this.error, () =>
             this.holesApi.update({ id, version: current.version, ...patch }));
         if (updated) {
-            this.holes.set(this.holes.peek().map(h => h.id === id ? updated : h));
+            this.holeStore.patch(updated);
             return updated;
         }
         // Conflict/failure — refetch just this hole so its version self-heals.
         const fresh = await request(this.loading, this.error, () => this.holesApi.get({ id }));
-        if (fresh) this.holes.set(this.holes.peek().map(h => h.id === id ? fresh : h));
+        if (fresh) this.holeStore.patch(fresh);
         return undefined;
     }
 
@@ -82,7 +85,7 @@ export class CourseDetailService {
         if (data) {
             batch(() => {
                 this.course.set(data.course);
-                this.holes.set([...data.holes].sort((a, b) => a.number - b.number));
+                this.holeStore.set([...data.holes].sort((a, b) => a.number - b.number));
             });
             this.loadedCourseId = courseId;
         }

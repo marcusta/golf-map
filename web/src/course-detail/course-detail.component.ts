@@ -273,17 +273,20 @@ export class CourseDetailComponent extends Component {
         // the map's right edge (the map stays visible for the preview).
         this.spawn(SvgImportPanelComponent, this.ref(frag, 'editorCanvas'));
 
-        this.$each(this.ref(frag, 'holeList'), this.svc.holes, (hole, _i, track) => this.wireEl(holeTpl, {
-            row: {
-                onclick: () => this.router.navigate(`/course/${hole.courseId}`, {
-                    query: { hole: String(hole.number) },
-                }),
-                className: () => this.selectedHole.get() === String(hole.number)
-                    ? 'hole-row active' : 'hole-row',
-            },
-            number: () => `Hole ${hole.number}`,
-            par: () => `Par ${hole.par}`,
-        }, track), hole => hole.id);
+        this.$each(this.ref(frag, 'holeList'), this.svc.holes, (hole, _i, track) => {
+            const live = this.svc.holeStore.item(hole.id);
+            return this.wireEl(holeTpl, {
+                row: {
+                    onclick: () => this.router.navigate(`/course/${hole.courseId}`, {
+                        query: { hole: String(hole.number) },
+                    }),
+                    className: () => this.selectedHole.get() === String(hole.number)
+                        ? 'hole-row active' : 'hole-row',
+                },
+                number: () => `Hole ${live.get().number}`,
+                par: () => `Par ${live.get().par}`,
+            }, track);
+        }, hole => hole.id);
 
         return frag;
     }
