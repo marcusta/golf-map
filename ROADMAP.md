@@ -94,6 +94,7 @@ golf-map/
   2. Extend `generate-api.ts` with a Swift emitter directly (the TS-compiler type serialization already exists; Swift templating is the new work).
   3. Fallback: hand-written thin Swift client validated against shared JSON fixtures — viable because the iOS surface is small.
 - Decision point: end of Phase 1, when the API surface iOS needs is concrete. Option 1 is the working assumption.
+- **DECIDED (2026-07-05, Phase 4):** option 3 — hand-written thin Swift client. Option 1 was prototyped end-to-end (descriptor import → OpenAPI 3.1 emission → swift-openapi-generator → compiled Swift): it works, but **no descriptor has a response schema** (the TS codegen infers response types from service `fn` return types via the TS compiler, not from TypeBox), so typed Swift responses would require hand-authoring response schemas for every iOS endpoint anyway — the same modeling work as writing Swift structs, plus a production emitter (~700–900 lines) and a second source of truth that drifts unless `mount()` validates it. Generated ergonomics were also poor (`Type.Number` → Swift `Double` for ints, GeoJSON as untyped containers, ~350 lines of Swift per endpoint). Hand-written client: ~500 lines, zero dependencies, JSON-fixture decode tests against snapshots of real server responses catch drift at the wire level. Revisit if the surface grows past ~40 endpoints or a second non-TS client appears.
 
 ### 2.3 Data model (canonical schema)
 
@@ -239,8 +240,14 @@ Keep golf-map-2's Gaussian blur + Taubin smoothing as an optional DEM pre-step f
 **Decided (2026-07-04)**
 - Web app framework: **@basics/core client** (React rejected — consistency + signals suit the editor; golf-map-2's R3F 3D view will be rewritten in plain Three.js in Phase 6).
 
+**Decided (2026-07-05, Phase 4 kickoff)**
+- iOS Swift client: **hand-written thin client** (see 2.2b — OpenAPI emission prototyped and rejected).
+- iOS persistence: **GRDB** for furniture + bundle metadata (plain SQLite mirrors the server model, ready for Phase 7 shot logging). Tiles and features.geojson stored as **plain files** in the per-course bundle directory — MapLibre `file://` tile URL templates read them directly.
+- iOS device auth: **cookie session as-is** + credentials in Keychain + automatic re-login on 401. No server/framework changes; on-course play is fully offline, auth only matters during sync. Long-lived device token deferred to Phase 7 (first phase that pushes data).
+- iOS map: **MapLibre Native iOS** (SPM `maplibre-gl-native-distribution` 6.27.x) with a thin `UIViewRepresentable`; per-course raster sources use `file://` tile templates into the app-managed bundle store (no MLNOfflineStorage packs/ambient cache — opaque store, wrong keying). Course features rendered as runtime style layers from one `MLNShapeSource` with data-driven per-type colors; dynamic elements (distance lines, GPS) in separate shape sources. Known traps: never create `MLNMapView` with a zero frame (Metal crash); pause rendering when backgrounded.
+- iOS project generation: **XcodeGen** (`ios/project.yml` committed, generated `.xcodeproj` gitignored).
+
 **Open (decide when reached)**
-- iOS persistence: SwiftData vs GRDB (decide at Phase 4; GRDB likely — plain SQLite mirrors server model).
 - Tile pre-generation only vs on-demand (titiler-style) — start pre-generated static, revisit if courses multiply.
 - Non-Swedish courses: DEM/ortho sources per country (Phase 2 keeps pipeline input generic GeoTIFF, so this is acquisition, not architecture).
 - Multi-user/sharing — schema allows users; auth stays device-key until needed.
