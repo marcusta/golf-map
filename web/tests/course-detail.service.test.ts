@@ -30,6 +30,7 @@ function hole(id: string, courseId: string, number: number, par = 4): Hole {
         courseId,
         number,
         par,
+        strokeIndex: null,
         notes: null,
         savedRegionJson: null,
         version: 1,

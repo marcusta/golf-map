@@ -14,6 +14,7 @@ const AnchorPointSchema = Type.Object({
     y: Type.Number(),
     hIn: Type.Optional(PointSchema),
     hOut: Type.Optional(PointSchema),
+    corner: Type.Optional(Type.Boolean()),
 });
 
 const PathRingSchema = Type.Object({
@@ -22,6 +23,7 @@ const PathRingSchema = Type.Object({
 
 const FeatureGeometrySchema = Type.Object({
     crs: Type.String(),
+    curveType: Type.Optional(Type.Union([Type.Literal('bezier'), Type.Literal('bspline')])),
     rings: Type.Array(PathRingSchema),
 });
 

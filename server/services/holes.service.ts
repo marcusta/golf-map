@@ -12,6 +12,7 @@ export interface Hole {
     courseId: string;
     number: number;
     par: number;
+    strokeIndex: number | null;
     notes: string | null;
     savedRegionJson: string | null;
     version: number;
@@ -29,6 +30,7 @@ function toHole(row: HoleRow): Hole {
         courseId: row.course_id,
         number: row.number,
         par: row.par,
+        strokeIndex: row.stroke_index,
         notes: row.notes,
         savedRegionJson: row.saved_region_json,
         version: row.version,
@@ -112,6 +114,7 @@ export class HolesService {
 
     async update(id: string, version: number, patch: {
         par?: number;
+        strokeIndex?: number | null;
         notes?: string;
         savedRegionJson?: string;
     }): Promise<Hole> {
@@ -121,6 +124,7 @@ export class HolesService {
 
         const dbInput: Record<string, unknown> = {};
         if (patch.par !== undefined) dbInput.par = patch.par;
+        if (patch.strokeIndex !== undefined) dbInput.stroke_index = patch.strokeIndex;
         if (patch.notes !== undefined) dbInput.notes = patch.notes;
         if (patch.savedRegionJson !== undefined) dbInput.saved_region_json = patch.savedRegionJson;
 

@@ -84,6 +84,9 @@ function assertValidGeometry(geometry: FeatureGeometry): void {
     if (typeof geometry.crs !== 'string' || geometry.crs.length === 0) {
         throw new InvalidFeatureError('Geometry must specify a crs');
     }
+    if (geometry.curveType !== undefined && geometry.curveType !== 'bezier' && geometry.curveType !== 'bspline') {
+        throw new InvalidFeatureError(`Invalid curveType: ${String(geometry.curveType)}`);
+    }
     if (!Array.isArray(geometry.rings) || geometry.rings.length === 0) {
         throw new InvalidFeatureError('Geometry must have at least one ring');
     }

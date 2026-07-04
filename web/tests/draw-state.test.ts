@@ -9,8 +9,24 @@ import {
     hasHandles,
     deleteAnchor,
     insertAnchor,
+    insertControlPoint,
+    toggleVertexCorner,
+    isCornerVertex,
+    bakeBsplineToBezier,
+    translateGeometry,
+    deleteVertices,
+    insertBetweenVertices,
+    rdpSimplify,
+    simplifyGeometry,
+    offsetGeometry,
+    canOffsetGeometry,
+    featuresInRect,
+    verticesInRect,
+    rectFromCorners,
+    vertexKey,
+    parseVertexKey,
 } from '../src/draw/draw-state';
-import type { FeatureGeometry } from '../src/geo/bezier';
+import { flattenRing, type FeatureGeometry } from '../src/geo/bezier';
 
 // ── DrawState machine ─────────────────────────────────────────────────────
 
@@ -183,6 +199,120 @@ describe('deleteAnchor', () => {
     });
 });
 
+// ── B-spline additions ────────────────────────────────────────────────────
+
+function splineSquare(): FeatureGeometry {
+    return {
+        crs: 'EPSG:3006',
+        curveType: 'bspline',
+        rings: [{
+            points: [
+                { x: 0, y: 0 },
+                { x: 10, y: 0, corner: true },
+                { x: 10, y: 10 },
+                { x: 0, y: 10 },
+            ],
+        }],
+    };
+}
+
+describe('DrawState corner points', () => {
+    test('addPoint with corner=true marks the control point', () => {
+        const state = new DrawState();
+        state.arm();
+        state.addPoint({ x: 0, y: 0 });
+        state.addPoint({ x: 10, y: 0 }, true); // Shift+click
+        state.addPoint({ x: 10, y: 10 }, false);
+        expect(state.draft.get()).toEqual([
+            { x: 0, y: 0 },
+            { x: 10, y: 0, corner: true },
+            { x: 10, y: 10 },
+        ]);
+        const ring = state.closeDraft()!;
+        expect(ring.points[1].corner).toBe(true);
+        expect(ring.points[0].corner).toBeUndefined();
+    });
+});
+
+describe('toggleVertexCorner / isCornerVertex', () => {
+    test('bspline: flips the corner flag both ways; input untouched', () => {
+        const geometry = splineSquare();
+        expect(isCornerVertex(geometry, 0, 0)).toBe(false);
+        expect(isCornerVertex(geometry, 0, 1)).toBe(true);
+
+        const on = toggleVertexCorner(geometry, 0, 0);
+        expect(on.rings[0].points[0].corner).toBe(true);
+        expect(on.curveType).toBe('bspline'); // clone preserves curveType
+        expect(isCornerVertex(on, 0, 0)).toBe(true);
+
+        const off = toggleVertexCorner(geometry, 0, 1);
+        expect(off.rings[0].points[1].corner).toBeUndefined();
+
+        expect(geometry.rings[0].points[0].corner).toBeUndefined(); // pure
+    });
+
+    test('bezier: corner drops handles; smooth computes Catmull-Rom handles', () => {
+        const geometry: FeatureGeometry = {
+            crs: 'EPSG:3006',
+            rings: [{
+                points: [
+                    { x: 0, y: 0, hIn: { x: -3, y: 0 }, hOut: { x: 3, y: 0 } },
+                    { x: 10, y: 0 },
+                    { x: 10, y: 10 },
+                    { x: 0, y: 10 },
+                ],
+            }],
+        };
+        // Curved vertex → corner: handles dropped.
+        const cornered = toggleVertexCorner(geometry, 0, 0);
+        expect(cornered.rings[0].points[0].hIn).toBeUndefined();
+        expect(cornered.rings[0].points[0].hOut).toBeUndefined();
+        expect(isCornerVertex(cornered, 0, 0)).toBe(true);
+
+        // Straight vertex → smooth: ±(P[i+1] − P[i−1])/6 around the anchor.
+        // Vertex 1 at (10,0): prev (0,0), next (10,10) → d = (10/6, 10/6).
+        const smoothed = toggleVertexCorner(geometry, 0, 1);
+        const p = smoothed.rings[0].points[1];
+        expect(p.hOut).toEqual({ x: 10 + 10 / 6, y: 10 / 6 });
+        expect(p.hIn).toEqual({ x: 10 - 10 / 6, y: -10 / 6 });
+        expect(isCornerVertex(smoothed, 0, 1)).toBe(false);
+    });
+});
+
+describe('insertControlPoint', () => {
+    test('splices a smooth control after the given index', () => {
+        const geometry = splineSquare();
+        const next = insertControlPoint(geometry, 0, 1, { x: 12, y: 5 });
+        expect(next.rings[0].points).toHaveLength(5);
+        expect(next.rings[0].points[2]).toEqual({ x: 12, y: 5 });
+        expect(next.rings[0].points[1].corner).toBe(true); // neighbors kept
+        expect(next.curveType).toBe('bspline');
+        expect(geometry.rings[0].points).toHaveLength(4); // pure
+    });
+});
+
+describe('bakeBsplineToBezier', () => {
+    test('bakes to curveType bezier with identical flattened outline', () => {
+        const geometry = splineSquare();
+        const baked = bakeBsplineToBezier(geometry);
+        expect(baked.curveType).toBe('bezier');
+        // 4 controls, one corner → 6 expanded controls → 6 bezier anchors.
+        expect(baked.rings[0].points).toHaveLength(6);
+        expect(baked.rings[0].points.every(p => !p.corner)).toBe(true);
+
+        const before = flattenRing(geometry.rings[0], 0.1, 'bspline');
+        const after = flattenRing(baked.rings[0], 0.1, baked.curveType);
+        // The bake IS the conversion the flattener uses — outputs match
+        // exactly point-for-point.
+        expect(after).toEqual(before);
+    });
+
+    test('bezier input is returned unchanged', () => {
+        const geometry = square();
+        expect(bakeBsplineToBezier(geometry)).toBe(geometry);
+    });
+});
+
 describe('insertAnchor', () => {
     test('inserts a plain on-line anchor on a straight segment', () => {
         const next = insertAnchor(square(), 0, 1, 0.5);
@@ -199,5 +329,296 @@ describe('insertAnchor', () => {
         expect(next.rings[0].points).toHaveLength(4);
         expect(next.rings[1].points).toHaveLength(5);
         expect(next.rings[1].points[1]).toEqual({ x: 3, y: 2 });
+    });
+});
+
+// ── Round-2 editing operations ────────────────────────────────────────────
+
+describe('mid-draw point undo/redo (ephemeral stack)', () => {
+    test('undoPoint removes the last placed point; redoPoint restores it', () => {
+        const state = new DrawState();
+        state.arm();
+        state.addPoint({ x: 0, y: 0 });
+        state.addPoint({ x: 10, y: 0 });
+        state.addPoint({ x: 10, y: 10 });
+
+        expect(state.undoPoint()).toBe('point');
+        expect(state.draft.get()).toHaveLength(2);
+        expect(state.redoPoint()).toBe(true);
+        expect(state.draft.get()).toHaveLength(3);
+        expect(state.draft.get()[2]).toEqual({ x: 10, y: 10 });
+    });
+
+    test('undoing the first point cancels the draw', () => {
+        const state = new DrawState();
+        state.arm();
+        state.addPoint({ x: 0, y: 0 });
+        expect(state.undoPoint()).toBe('cancelled');
+        expect(state.mode.get()).toBe('select');
+    });
+
+    test('placing a new point clears the redo stack; select mode is a no-op', () => {
+        const state = new DrawState();
+        expect(state.undoPoint()).toBeNull();
+        expect(state.redoPoint()).toBe(false);
+        state.arm();
+        state.addPoint({ x: 0, y: 0 });
+        state.addPoint({ x: 10, y: 0 });
+        state.undoPoint();
+        state.addPoint({ x: 5, y: 5 }); // forks — redo gone
+        expect(state.redoPoint()).toBe(false);
+    });
+});
+
+describe('translateGeometry', () => {
+    test('moves all anchors and handles by the delta (duplicate offset math)', () => {
+        const next = translateGeometry(square(true), 10, 10);
+        expect(next.rings[0].points[0].x).toBe(10);
+        expect(next.rings[0].points[0].y).toBe(10);
+        expect(next.rings[0].points[0].hIn).toEqual({ x: 7, y: 10 });
+        expect(next.rings[0].points[0].hOut).toEqual({ x: 13, y: 10 });
+        expect(next.rings[0].points[2]).toEqual({ x: 20, y: 20 });
+    });
+
+    test('input is not mutated', () => {
+        const geometry = square();
+        translateGeometry(geometry, 5, 5);
+        expect(geometry.rings[0].points[0]).toEqual({ x: 0, y: 0 });
+    });
+});
+
+describe('deleteVertices', () => {
+    test('removes the keyed vertices', () => {
+        const geometry = square();
+        geometry.rings[0].points.push({ x: -5, y: 5 });
+        const next = deleteVertices(geometry, new Set(['0:1', '0:3']));
+        expect(next!.rings[0].points).toEqual([
+            { x: 0, y: 0 },
+            { x: 10, y: 10 },
+            { x: -5, y: 5 },
+        ]);
+    });
+
+    test('all-or-nothing guard: any ring below 3 points rejects the whole delete', () => {
+        expect(deleteVertices(square(), new Set(['0:0', '0:1']))).toBeNull();
+        // Multi-ring: ring 1 would fall below 3 → whole op rejected.
+        const geometry = square();
+        geometry.rings.push({ points: [{ x: 2, y: 2 }, { x: 4, y: 2 }, { x: 3, y: 4 }] });
+        expect(deleteVertices(geometry, new Set(['0:0', '1:0']))).toBeNull();
+        // Deleting only from the big ring is fine.
+        expect(deleteVertices(geometry, new Set(['0:0']))!.rings[0].points).toHaveLength(3);
+    });
+});
+
+describe('insertBetweenVertices', () => {
+    test('redistributes in-between vertices evenly along the chord', () => {
+        const geometry: FeatureGeometry = {
+            crs: 'EPSG:3006',
+            rings: [{
+                points: [
+                    { x: 0, y: 0 },
+                    { x: 3, y: 4 },   // off-chord — will be redistributed
+                    { x: 6, y: -2 },  // off-chord — will be redistributed
+                    { x: 9, y: 0 },
+                    { x: 5, y: 10 },
+                ],
+            }],
+        };
+        const result = insertBetweenVertices(geometry, 0, 0, 3)!;
+        const points = result.geometry.rings[0].points;
+        expect(points).toHaveLength(6);
+        // 3 evenly spaced points along the straight chord (0,0) → (9,0).
+        expect(points[1]).toEqual({ x: 2.25, y: 0 });
+        expect(points[2]).toEqual({ x: 4.5, y: 0 });
+        expect(points[3]).toEqual({ x: 6.75, y: 0 });
+        expect(points[4]).toEqual({ x: 9, y: 0 });
+        // Selection follows: second endpoint shifted by the insertion.
+        expect(result.selection).toEqual(['0:0', '0:4']);
+    });
+
+    test('adjacent vertices get a plain midpoint', () => {
+        const result = insertBetweenVertices(square(), 0, 1, 2)!;
+        const points = result.geometry.rings[0].points;
+        expect(points).toHaveLength(5);
+        expect(points[2]).toEqual({ x: 10, y: 5 });
+        expect(result.selection).toEqual(['0:1', '0:3']);
+    });
+
+    test('wrap-around (first + last selected) appends the closing midpoint', () => {
+        const result = insertBetweenVertices(square(), 0, 0, 3)!;
+        const points = result.geometry.rings[0].points;
+        expect(points).toHaveLength(5);
+        expect(points[4]).toEqual({ x: 0, y: 5 });
+        expect(result.selection).toEqual(['0:0', '0:3']);
+    });
+});
+
+describe('rdpSimplify', () => {
+    test('drops near-collinear points within epsilon', () => {
+        const line = [
+            { x: 0, y: 0 },
+            { x: 2, y: 0.1 },
+            { x: 4, y: -0.2 },
+            { x: 6, y: 0.05 },
+            { x: 10, y: 0 },
+        ];
+        expect(rdpSimplify(line, 0.5)).toEqual([{ x: 0, y: 0 }, { x: 10, y: 0 }]);
+    });
+
+    test('keeps significant detours', () => {
+        const line = [
+            { x: 0, y: 0 },
+            { x: 5, y: 4 }, // 4 m off the base line — kept
+            { x: 10, y: 0 },
+        ];
+        expect(rdpSimplify(line, 0.5)).toEqual(line);
+        expect(rdpSimplify(line, 5)).toEqual([{ x: 0, y: 0 }, { x: 10, y: 0 }]);
+    });
+
+    test('surviving anchor points keep their handles', () => {
+        const line = [
+            { x: 0, y: 0, hOut: { x: 1, y: 1 } },
+            { x: 5, y: 0.01 },
+            { x: 10, y: 0, hIn: { x: 9, y: 1 } },
+        ];
+        const out = rdpSimplify(line, 0.5);
+        expect(out).toHaveLength(2);
+        expect(out[0].hOut).toEqual({ x: 1, y: 1 });
+        expect(out[1].hIn).toEqual({ x: 9, y: 1 });
+    });
+});
+
+describe('simplifyGeometry', () => {
+    test('reduces a dense noisy ring; never below 3 points', () => {
+        // A 40-point circle-ish ring with tiny jitter.
+        const points = Array.from({ length: 40 }, (_, i) => {
+            const a = (i / 40) * 2 * Math.PI;
+            const r = 20 + (i % 2 === 0 ? 0.05 : -0.05);
+            return { x: r * Math.cos(a), y: r * Math.sin(a) };
+        });
+        const geometry: FeatureGeometry = { crs: 'EPSG:3006', rings: [{ points }] };
+
+        const simplified = simplifyGeometry(geometry, 0.5);
+        const n = simplified.rings[0].points.length;
+        expect(n).toBeLessThan(40);
+        expect(n).toBeGreaterThanOrEqual(3);
+
+        // Tiny epsilon keeps everything.
+        expect(simplifyGeometry(geometry, 0.001).rings[0].points.length).toBe(40);
+    });
+
+    test('a minimal 3-point ring is untouched', () => {
+        const tri: FeatureGeometry = {
+            crs: 'EPSG:3006',
+            rings: [{ points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 5, y: 0.01 }] }],
+        };
+        expect(simplifyGeometry(tri, 5).rings[0].points).toHaveLength(3);
+    });
+});
+
+describe('offsetGeometry (expand / contract)', () => {
+    test('square expands to a bigger square (winding-aware, both orders)', () => {
+        for (const reverse of [false, true]) {
+            const geometry = square();
+            if (reverse) geometry.rings[0].points.reverse();
+            const next = offsetGeometry(geometry, 1)!;
+            const xs = next.rings[0].points.map(p => p.x);
+            const ys = next.rings[0].points.map(p => p.y);
+            // Corner normals are diagonal with miter √2 → exactly ±1 in x/y.
+            expect(Math.min(...xs)).toBeCloseTo(-1, 6);
+            expect(Math.max(...xs)).toBeCloseTo(11, 6);
+            expect(Math.min(...ys)).toBeCloseTo(-1, 6);
+            expect(Math.max(...ys)).toBeCloseTo(11, 6);
+        }
+    });
+
+    test('contract shrinks the square', () => {
+        const next = offsetGeometry(square(), -2)!;
+        const xs = next.rings[0].points.map(p => p.x);
+        expect(Math.min(...xs)).toBeCloseTo(2, 6);
+        expect(Math.max(...xs)).toBeCloseTo(8, 6);
+    });
+
+    test('miter clamp: a sharp spike moves at most 4× the distance', () => {
+        const spike: FeatureGeometry = {
+            crs: 'EPSG:3006',
+            rings: [{
+                points: [
+                    { x: 0, y: 0 },
+                    { x: 20, y: 0 },
+                    { x: 10, y: 30 }, // sharp-ish apex
+                    { x: 10.5, y: 31 }, // very sharp pair
+                ],
+            }],
+        };
+        const next = offsetGeometry(spike, 1)!;
+        spike.rings[0].points.forEach((p, i) => {
+            const q = next.rings[0].points[i];
+            const moved = Math.hypot(q.x - p.x, q.y - p.y);
+            expect(moved).toBeLessThanOrEqual(4 + 1e-9);
+        });
+    });
+
+    test('collapse guard: contraction ≥ half the min dimension is rejected', () => {
+        expect(offsetGeometry(square(), -5)).toBeNull();   // 10 m square, 2·5 = 10 — rejected
+        expect(offsetGeometry(square(), -4.9)).not.toBeNull();
+        expect(canOffsetGeometry(square(), -5)).toBe(false);
+        expect(canOffsetGeometry(square(), 100)).toBe(true); // expansion never guarded
+    });
+
+    test('hole rings offset the OPPOSITE direction', () => {
+        const geometry = square();
+        geometry.rings[0].points = geometry.rings[0].points.map(p => ({ x: p.x * 3, y: p.y * 3 })); // 30 m outer
+        geometry.rings.push({
+            points: [
+                { x: 10, y: 10 },
+                { x: 20, y: 10 },
+                { x: 20, y: 20 },
+                { x: 10, y: 20 },
+            ],
+        });
+        const next = offsetGeometry(geometry, 1)!;
+        // Outer grows...
+        expect(Math.min(...next.rings[0].points.map(p => p.x))).toBeCloseTo(-1, 6);
+        // ...the hole SHRINKS (material grows into the cutout).
+        expect(Math.min(...next.rings[1].points.map(p => p.x))).toBeCloseTo(11, 6);
+        expect(Math.max(...next.rings[1].points.map(p => p.x))).toBeCloseTo(19, 6);
+    });
+});
+
+describe('marquee hit math', () => {
+    const items = [
+        { id: 'a', geometry: square() },                                  // 0..10
+        { id: 'b', geometry: translateGeometry(square(), 20, 0) },        // 20..30
+        { id: 'c', geometry: translateGeometry(square(), 8, 8) },         // 8..18 (straddles)
+    ];
+
+    test('contain: only features fully inside the rect', () => {
+        const rect = rectFromCorners({ x: -1, y: -1 }, { x: 15, y: 15 });
+        expect(featuresInRect(items, rect, 'contain')).toEqual(['a']);
+    });
+
+    test('intersect (Alt): any bbox overlap counts', () => {
+        const rect = rectFromCorners({ x: -1, y: -1 }, { x: 15, y: 15 });
+        expect(featuresInRect(items, rect, 'intersect')).toEqual(['a', 'c']);
+    });
+
+    test('rectFromCorners normalizes any drag direction', () => {
+        expect(rectFromCorners({ x: 15, y: 15 }, { x: -1, y: -1 }))
+            .toEqual({ minX: -1, minY: -1, maxX: 15, maxY: 15 });
+    });
+
+    test('verticesInRect returns vertex keys of points inside (all rings)', () => {
+        const geometry = square();
+        geometry.rings.push({ points: [{ x: 2, y: 2 }, { x: 40, y: 2 }, { x: 3, y: 4 }] });
+        const rect = rectFromCorners({ x: -1, y: -1 }, { x: 5, y: 5 });
+        expect(verticesInRect(geometry, rect)).toEqual(['0:0', '1:0', '1:2']);
+    });
+});
+
+describe('vertexKey / parseVertexKey', () => {
+    test('round-trips', () => {
+        expect(vertexKey(2, 17)).toBe('2:17');
+        expect(parseVertexKey('2:17')).toEqual({ ringIdx: 2, idx: 17 });
     });
 });

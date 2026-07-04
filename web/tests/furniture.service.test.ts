@@ -1,7 +1,9 @@
 import { test, expect, describe, afterEach } from 'bun:test';
 import { ApiError } from '@basics/core/client/api-error';
 import { _reset } from '@basics/core/client/error-report';
-import { FurnitureService, type ElevationSampler } from '../src/furniture/furniture.service';
+import { FurnitureService, defaultTeeName, greenPointFields, type ElevationSampler } from '../src/furniture/furniture.service';
+import { buildFurnitureGeojson } from '../src/furniture/furniture-overlay';
+import type { Feature } from 'geojson';
 import type { Tee, TeesApi } from '../../shared/api/tees.gen';
 import type { Green, GreensApi } from '../../shared/api/greens.gen';
 import type { Pin, PinsApi } from '../../shared/api/pins.gen';
@@ -62,9 +64,11 @@ function fakeTees(initial: Tee[] = []) {
 
 function fakeGreens(initial: Green[] = []) {
     const rows = new Map(initial.map(g => [g.holeId, structuredClone(g)]));
+    const calls = { create: 0, update: 0 };
     const api: GreensApi = {
         async getByHole({ holeId }) { return rows.get(holeId) ? structuredClone(rows.get(holeId)!) : null; },
         async create(input) {
+            calls.create++;
             const row: Green = {
                 id: `g-${input.holeId}`, holeId: input.holeId, boundaryJson: null,
                 centerLat: input.centerLat, centerLon: input.centerLon,
@@ -75,9 +79,22 @@ function fakeGreens(initial: Green[] = []) {
             rows.set(row.holeId, row);
             return structuredClone(row);
         },
-        async update() { throw new Error('not under test'); },
+        async update(input) {
+            calls.update++;
+            const row = [...rows.values()].find(g => g.id === input.id);
+            if (!row || row.version !== input.version) throw new ApiError(409, 'conflict');
+            if (input.centerLat !== undefined) row.centerLat = input.centerLat;
+            if (input.centerLon !== undefined) row.centerLon = input.centerLon;
+            if (input.frontLat !== undefined) row.frontLat = input.frontLat;
+            if (input.frontLon !== undefined) row.frontLon = input.frontLon;
+            if (input.backLat !== undefined) row.backLat = input.backLat;
+            if (input.backLon !== undefined) row.backLon = input.backLon;
+            if (input.elevation !== undefined) row.elevation = input.elevation;
+            row.version++;
+            return structuredClone(row);
+        },
     };
-    return { api, rows };
+    return { api, rows, calls };
 }
 
 function fakePins(initial: Pin[] = []) {
@@ -391,5 +408,394 @@ describe('placement state machine', () => {
         svc.arm('tee');
         svc.disarm();
         expect(svc.placing.get()).toBeNull();
+    });
+
+    test('arm and select clear any transient notice', () => {
+        const { svc } = makeService();
+        svc.notice.set('boom');
+        svc.arm('tee');
+        expect(svc.notice.get()).toBeNull();
+
+        svc.notice.set('boom again');
+        svc.select({ kind: 'aim', id: 'a1' });
+        expect(svc.notice.get()).toBeNull();
+    });
+});
+
+describe('duplicate tee-name handling', () => {
+    function teeRow(id: string, holeId: string, name: string, color: string): Tee {
+        return { id, holeId, name, color, lat: LAT, lon: LON, elevation: null, sortOrder: 0, version: 1 };
+    }
+
+    test('teeNameTaken matches case-insensitively per hole', async () => {
+        const t = fakeTees([teeRow('t1', 'h1', 'Blue', 'blue')]);
+        const { svc } = makeService({ tees: t });
+        await svc.load('c1', ['h1']);
+        expect(svc.teeNameTaken('h1', 'Blue')).toBe(true);
+        expect(svc.teeNameTaken('h1', ' blue ')).toBe(true); // trimmed + lowercased
+        expect(svc.teeNameTaken('h1', 'Red')).toBe(false);
+        expect(svc.teeNameTaken('h2', 'Blue')).toBe(false); // different hole
+    });
+
+    test('advancePendingTee skips taken presets to the next free colour', async () => {
+        // Black, White, Yellow already placed on the hole; pending is white.
+        const t = fakeTees([
+            teeRow('t1', 'h1', 'Black', 'black'),
+            teeRow('t2', 'h1', 'White', 'white'),
+            teeRow('t3', 'h1', 'Yellow', 'yellow'),
+        ]);
+        const { svc } = makeService({ tees: t });
+        await svc.load('c1', ['h1']);
+        svc.pendingTeeColor.set('white');
+
+        const advanced = svc.advancePendingTee('h1');
+        expect(advanced).toBe(true);
+        // Next free preset after white/yellow is blue.
+        expect(svc.pendingTeeColor.get()).toBe('blue');
+        expect(svc.pendingTeeName.get()).toBe(''); // cleared → falls back to default name
+    });
+
+    test('advancePendingTee returns false when every preset is used', async () => {
+        const t = fakeTees([
+            teeRow('t1', 'h1', 'Black', 'black'),
+            teeRow('t2', 'h1', 'White', 'white'),
+            teeRow('t3', 'h1', 'Yellow', 'yellow'),
+            teeRow('t4', 'h1', 'Blue', 'blue'),
+            teeRow('t5', 'h1', 'Red', 'red'),
+        ]);
+        const { svc } = makeService({ tees: t });
+        await svc.load('c1', ['h1']);
+        expect(svc.advancePendingTee('h1')).toBe(false);
+    });
+
+    test('defaultTeeName capitalizes the colour', () => {
+        expect(defaultTeeName('blue')).toBe('Blue');
+        expect(defaultTeeName('red')).toBe('Red');
+    });
+});
+
+describe('green points: move / place / create-row', () => {
+    test('greenPointFields maps each point to its lat/lon pair', () => {
+        expect(greenPointFields('center', 1, 2)).toEqual({ centerLat: 1, centerLon: 2 });
+        expect(greenPointFields('front', 1, 2)).toEqual({ frontLat: 1, frontLon: 2 });
+        expect(greenPointFields('back', 1, 2)).toEqual({ backLat: 1, backLon: 2 });
+    });
+
+    test('setGreenPoint(front) on an existing row updates the front pair, re-samples elevation, bumps version', async () => {
+        const green = greenRow('h1'); // has front/back set, version 1
+        const g = fakeGreens([green]);
+        const elevation = fakeElevation(81.4);
+        const { svc } = makeService({ greens: g, elevation });
+        await svc.load('c1', ['h1']);
+
+        const nLat = LAT - 0.0005, nLon = LON + 0.0003;
+        const result = await svc.setGreenPoint('h1', 'front', nLat, nLon);
+        expect(result?.frontLat).toBeCloseTo(nLat, 9);
+        expect(result?.frontLon).toBeCloseTo(nLon, 9);
+        expect(result?.centerLat).toBe(green.centerLat); // untouched
+        expect(result?.elevation).toBe(81.4);
+        expect(result?.version).toBe(2);
+        // Persisted + reflected in the store; selection points at the moved point.
+        expect(g.rows.get('h1')!.frontLat).toBeCloseTo(nLat, 9);
+        expect(g.calls.update).toBe(1);
+        expect(svc.selection.get()).toEqual({ kind: 'green', holeId: 'h1', point: 'front' });
+        expect(elevation.queries.at(-1)).toEqual({ lng: nLon, lat: nLat });
+    });
+
+    test('setGreenPoint(center) moves only the center pair', async () => {
+        const green = greenRow('h1');
+        const g = fakeGreens([green]);
+        const { svc } = makeService({ greens: g });
+        await svc.load('c1', ['h1']);
+
+        const result = await svc.setGreenPoint('h1', 'center', LAT + 0.001, LON);
+        expect(result?.centerLat).toBeCloseTo(LAT + 0.001, 9);
+        expect(result?.frontLat).toBe(green.frontLat); // untouched
+    });
+
+    test('setGreenPoint on a green-less hole with CENTER creates the row', async () => {
+        const g = fakeGreens([]); // no rows
+        const elevation = fakeElevation(50);
+        const { svc } = makeService({ greens: g, elevation });
+        await svc.load('c1', ['h1']);
+        expect(svc.greenForHole('h1')).toBeNull();
+
+        const created = await svc.setGreenPoint('h1', 'center', LAT, LON);
+        expect(created).toBeDefined();
+        expect(g.calls.create).toBe(1);
+        expect(created?.centerLat).toBe(LAT);
+        expect(created?.elevation).toBe(50);
+        expect(svc.greenForHole('h1')?.id).toBe(created!.id);
+        expect(svc.greens.get()).toHaveLength(1);
+        expect(svc.selection.get()).toEqual({ kind: 'green', holeId: 'h1', point: 'center' });
+    });
+
+    test('setGreenPoint FRONT on a green-less hole is rejected (center required first) with a notice', async () => {
+        const g = fakeGreens([]);
+        const { svc } = makeService({ greens: g });
+        await svc.load('c1', ['h1']);
+
+        const result = await svc.setGreenPoint('h1', 'front', LAT, LON);
+        expect(result).toBeUndefined();
+        expect(g.calls.create).toBe(0);
+        expect(svc.greenForHole('h1')).toBeNull();
+        expect(svc.notice.get()).toMatch(/Center first/i);
+    });
+
+    test('version conflict on update re-syncs the greens store', async () => {
+        const green = greenRow('h1');
+        const g = fakeGreens([green]);
+        const { svc } = makeService({ greens: g });
+        svc.setHoleIds(['h1']);
+        await svc.load('c1', ['h1']);
+        g.rows.get('h1')!.version = 9; // competing writer
+
+        const result = await svc.setGreenPoint('h1', 'back', LAT + 0.002, LON);
+        expect(result).toBeUndefined();
+        expect(svc.saveError.get()?.code).toBe('conflict');
+        await Bun.sleep(0);
+        expect(svc.greens.get()[0].version).toBe(9);
+    });
+
+    test('greenPointStatus reports which points exist', async () => {
+        const green: Green = { ...greenRow('h1'), frontLat: LAT, frontLon: LON, backLat: null, backLon: null };
+        const g = fakeGreens([green]);
+        const { svc } = makeService({ greens: g });
+        await svc.load('c1', ['h1']);
+        expect(svc.greenPointStatus('h1')).toEqual({ center: true, front: true, back: false });
+        expect(svc.greenPointStatus('nope')).toBeNull();
+    });
+
+    test('selectedGreen resolves the row + point for a green selection', async () => {
+        const green = greenRow('h1');
+        const g = fakeGreens([green]);
+        const { svc } = makeService({ greens: g });
+        await svc.load('c1', ['h1']);
+        svc.select({ kind: 'green', holeId: 'h1', point: 'back' });
+        const sel = svc.selectedGreen.get();
+        expect(sel?.point).toBe('back');
+        expect(sel?.green.id).toBe(green.id);
+    });
+});
+
+// ── Overlay rebuild (Issue 1: stale overlay after a move commit) ─────────────
+//
+// The always-on overlay is (re)built by an effect in FurnitureToolService that
+// derives an OverlayInput from the service's stores and feeds it to
+// buildFurnitureGeojson. We can't mount MapLibre here, but we can assert the
+// derivation the effect performs — reading the SAME store signals it reads —
+// yields updated coordinates immediately after a move commit. If moveTee left
+// the store stale (the bug), the rebuilt geojson would still show old coords.
+
+/** Mirror the tool's overlay-input derivation from the live service stores. */
+function overlayInputFrom(svc: FurnitureService, holeIds: string[]) {
+    const lineOriginByHole = new Map<string, string>();
+    for (const holeId of holeIds) {
+        const origin = svc.lineOriginTee(holeId);
+        if (origin) lineOriginByHole.set(holeId, origin.id);
+    }
+    return {
+        tees: svc.tees.items.get(),
+        pins: svc.pins.items.get(),
+        greens: svc.greens.get(),
+        aims: svc.aims.items.get(),
+        holeIds,
+        selection: svc.selection.get(),
+        lineOriginByHole,
+    };
+}
+
+function teePoint(fc: { features: Feature[] }, id: string): [number, number] | null {
+    const f = fc.features.find(x => x.properties?.role === 'tee' && x.properties?.id === id);
+    return f ? (f.geometry as unknown as { coordinates: [number, number] }).coordinates : null;
+}
+
+function aimLineStart(fc: { features: Feature[] }): [number, number] | null {
+    const f = fc.features.find(x => x.properties?.role === 'aim-line');
+    if (!f) return null;
+    return (f.geometry as unknown as { coordinates: [number, number][] }).coordinates[0] ?? null;
+}
+
+describe('aim polyline on holes without aim points (par 3s)', () => {
+    test('draws the direct tee → green-center line when a hole has zero aims', async () => {
+        const green = greenRow('h1');
+        const t = fakeTees([{ id: 't1', holeId: 'h1', name: 'Yellow', color: 'yellow', lat: LAT, lon: LON, elevation: 55, sortOrder: 0, version: 1 }]);
+        const { svc } = makeService({ tees: t, greens: fakeGreens([green]) });
+        await svc.load('c1', ['h1']);
+
+        const fc = buildFurnitureGeojson(overlayInputFrom(svc, ['h1']));
+        const line = fc.features.find(x => x.properties?.role === 'aim-line');
+        expect(line).toBeDefined();
+        const coords = (line!.geometry as unknown as { coordinates: [number, number][] }).coordinates;
+        expect(coords).toHaveLength(2);
+        expect(coords[0]).toEqual([LON, LAT]);
+        expect(coords[1]).toEqual([green.centerLon, green.centerLat]);
+    });
+
+    test('no line when the hole has only a tee (no green, no aims)', async () => {
+        const t = fakeTees([{ id: 't1', holeId: 'h1', name: 'Yellow', color: 'yellow', lat: LAT, lon: LON, elevation: 55, sortOrder: 0, version: 1 }]);
+        const { svc } = makeService({ tees: t });
+        await svc.load('c1', ['h1']);
+        const fc = buildFurnitureGeojson(overlayInputFrom(svc, ['h1']));
+        expect(fc.features.find(x => x.properties?.role === 'aim-line')).toBeUndefined();
+    });
+});
+
+describe('overlay rebuild reflects data changes (Issue 1)', () => {
+    test('rebuilt geojson shows the moved tee coords immediately after moveTee', async () => {
+        const t = fakeTees([{ id: 't1', holeId: 'h1', name: 'Yellow', color: 'yellow', lat: LAT, lon: LON, elevation: 55, sortOrder: 0, version: 1 }]);
+        const { svc } = makeService({ tees: t });
+        await svc.load('c1', ['h1']);
+
+        const before = buildFurnitureGeojson(overlayInputFrom(svc, ['h1']));
+        expect(teePoint(before, 't1')).toEqual([LON, LAT]);
+
+        const nLat = LAT + 0.001, nLon = LON - 0.001;
+        await svc.moveTee('t1', nLat, nLon);
+
+        const after = buildFurnitureGeojson(overlayInputFrom(svc, ['h1']));
+        const pt = teePoint(after, 't1')!;
+        expect(pt[0]).toBeCloseTo(nLon, 9);
+        expect(pt[1]).toBeCloseTo(nLat, 9);
+    });
+
+    test('the aim polyline start follows the moved origin tee after commit', async () => {
+        const t = fakeTees([{ id: 't1', holeId: 'h1', name: 'Yellow', color: 'yellow', lat: LAT, lon: LON, elevation: 55, sortOrder: 0, version: 1 }]);
+        const a = fakeAims([
+            { id: 'a1', holeId: 'h1', lat: LAT + 0.002, lon: LON, elevation: 60, label: 'A1', sortOrder: 0, version: 1 },
+        ]);
+        const g = fakeGreens([greenRow('h1')]);
+        const { svc } = makeService({ tees: t, aims: a, greens: g });
+        await svc.load('c1', ['h1']);
+
+        expect(aimLineStart(buildFurnitureGeojson(overlayInputFrom(svc, ['h1'])))).toEqual([LON, LAT]);
+
+        const nLat = LAT - 0.0007, nLon = LON + 0.0009;
+        await svc.moveTee('t1', nLat, nLon);
+
+        const start = aimLineStart(buildFurnitureGeojson(overlayInputFrom(svc, ['h1'])))!;
+        expect(start[0]).toBeCloseTo(nLon, 9);
+        expect(start[1]).toBeCloseTo(nLat, 9);
+    });
+
+    test('rebuilt geojson drops a deleted aim and shows a moved green center', async () => {
+        const a = fakeAims([
+            { id: 'a1', holeId: 'h1', lat: LAT, lon: LON, elevation: 60, label: 'A1', sortOrder: 0, version: 1 },
+            { id: 'a2', holeId: 'h1', lat: LAT + 0.001, lon: LON, elevation: 61, label: 'A2', sortOrder: 1, version: 1 },
+        ]);
+        const g = fakeGreens([greenRow('h1')]);
+        const { svc } = makeService({ aims: a, greens: g });
+        await svc.load('c1', ['h1']);
+
+        await svc.removeAim('a1');
+        const after = buildFurnitureGeojson(overlayInputFrom(svc, ['h1']));
+        const aimIds = after.features.filter(f => f.properties?.role === 'aim').map(f => f.properties?.id);
+        expect(aimIds).toEqual(['a2']);
+
+        const nLat = LAT + 0.003, nLon = LON + 0.003;
+        await svc.setGreenPoint('h1', 'center', nLat, nLon);
+        const after2 = buildFurnitureGeojson(overlayInputFrom(svc, ['h1']));
+        const center = after2.features.find(f => f.properties?.role === 'green-center');
+        const c = (center!.geometry as unknown as { coordinates: [number, number] }).coordinates;
+        expect(c[0]).toBeCloseTo(nLon, 9);
+        expect(c[1]).toBeCloseTo(nLat, 9);
+    });
+});
+
+// ── Line-origin tee (Issue 2: course-level sticky active teebox) ─────────────
+
+describe('active teebox / line-origin resolution', () => {
+    function teeRow(id: string, holeId: string, name: string, color: string | null, sortOrder: number, lat = LAT, lon = LON): Tee {
+        return { id, holeId, name, color, lat, lon, elevation: null, sortOrder, version: 1 };
+    }
+
+    test('defaults to the hole\'s first tee by sortOrder when no active name is set', async () => {
+        const t = fakeTees([
+            teeRow('t2', 'h1', 'Red', 'red', 1),
+            teeRow('t1', 'h1', 'default', null, 0),
+        ]);
+        const { svc } = makeService({ tees: t });
+        await svc.load('c1', ['h1']);
+        expect(svc.activeTeeName.get()).toBeNull();
+        expect(svc.lineOriginTee('h1')?.id).toBe('t1'); // sortOrder 0
+    });
+
+    test('resolves the active name (case-insensitive) to the matching tee', async () => {
+        const t = fakeTees([
+            teeRow('t1', 'h1', 'default', null, 0),
+            teeRow('t2', 'h1', 'Red', 'red', 1),
+        ]);
+        const { svc } = makeService({ tees: t });
+        await svc.load('c1', ['h1']);
+        svc.setActiveTeeName('red');
+        expect(svc.lineOriginTee('h1')?.id).toBe('t2');
+    });
+
+    test('is sticky across holes by name, falling back per hole when absent', async () => {
+        // h1 has Yellow + default; h2 has only default (no Yellow).
+        const t = fakeTees([
+            teeRow('t1', 'h1', 'default', null, 0),
+            teeRow('t2', 'h1', 'Yellow', 'yellow', 1),
+            teeRow('t3', 'h2', 'default', null, 0),
+        ]);
+        const { svc } = makeService({ tees: t });
+        await svc.load('c1', ['h1', 'h2']);
+        svc.setActiveTeeName('Yellow');
+        expect(svc.lineOriginTee('h1')?.id).toBe('t2'); // Yellow present
+        expect(svc.lineOriginTee('h2')?.id).toBe('t3'); // falls back to first
+    });
+
+    test('null when the hole has no tees', async () => {
+        const { svc } = makeService();
+        await svc.load('c1', ['h1']);
+        expect(svc.lineOriginTee('h1')).toBeNull();
+    });
+
+    test('deleting the active tee clears the stale name when none survives course-wide', async () => {
+        const t = fakeTees([
+            teeRow('t1', 'h1', 'default', null, 0),
+            teeRow('t2', 'h1', 'Red', 'red', 1),
+        ]);
+        const { svc } = makeService({ tees: t });
+        svc.setHoleIds(['h1']);
+        await svc.load('c1', ['h1']);
+        svc.setActiveTeeName('Red');
+
+        await svc.removeTee('t2');
+        expect(svc.activeTeeName.get()).toBeNull(); // stale entry cleared
+        expect(svc.lineOriginTee('h1')?.id).toBe('t1'); // back to default
+    });
+
+    test('deleting one Red tee keeps the active name while another Red survives', async () => {
+        const t = fakeTees([
+            teeRow('t1', 'h1', 'Red', 'red', 0),
+            teeRow('t2', 'h2', 'Red', 'red', 0),
+        ]);
+        const { svc } = makeService({ tees: t });
+        svc.setHoleIds(['h1', 'h2']);
+        await svc.load('c1', ['h1', 'h2']);
+        svc.setActiveTeeName('Red');
+
+        await svc.removeTee('t1');
+        expect(svc.activeTeeName.get()).toBe('Red'); // h2's Red still exists
+        expect(svc.lineOriginTee('h2')?.id).toBe('t2');
+    });
+
+    test('changing the active name re-anchors the rebuilt aim polyline immediately', async () => {
+        const t = fakeTees([
+            teeRow('t1', 'h1', 'default', null, 0, LAT, LON),
+            teeRow('t2', 'h1', 'Red', 'red', 1, LAT + 0.0005, LON + 0.0005),
+        ]);
+        const a = fakeAims([{ id: 'a1', holeId: 'h1', lat: LAT + 0.002, lon: LON, elevation: 60, label: 'A1', sortOrder: 0, version: 1 }]);
+        const { svc } = makeService({ tees: t, aims: a });
+        await svc.load('c1', ['h1']);
+
+        // Default origin = first tee (t1).
+        expect(aimLineStart(buildFurnitureGeojson(overlayInputFrom(svc, ['h1'])))).toEqual([LON, LAT]);
+
+        svc.setActiveTeeName('Red');
+        const start = aimLineStart(buildFurnitureGeojson(overlayInputFrom(svc, ['h1'])))!;
+        expect(start[0]).toBeCloseTo(LON + 0.0005, 9);
+        expect(start[1]).toBeCloseTo(LAT + 0.0005, 9);
     });
 });

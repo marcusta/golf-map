@@ -4,10 +4,11 @@ import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
 import type { CourseFeature, CourseFeaturesApi } from '../../../shared/api/course-features.gen';
 import type { FeatureCollection, Feature, Polygon } from 'geojson';
+import type { FilterSpecification } from 'maplibre-gl';
 import { flattenRing, type FeatureGeometry } from '../geo/bezier';
 import { sweref99tmToWgs84 } from '../geo/transform';
 import type { MapService } from '../map/map.service';
-import { typeColorExpression, SELECTION_COLOR } from './feature-palette';
+import { typeColorExpression, typeSortKeyExpression, SELECTION_COLOR } from './feature-palette';
 
 /** Flattening tolerance in meters — matches the server's GeoJSON derivation. */
 export const FLATTEN_TOLERANCE_M = 0.25;
@@ -25,7 +26,7 @@ export function geometryToWgs84Rings(geometry: FeatureGeometry): number[][][] {
     const cached = wgs84RingsCache.get(geometry);
     if (cached) return cached;
     const rings = geometry.rings.map(ring => {
-        const flat = flattenRing(ring, FLATTEN_TOLERANCE_M);
+        const flat = flattenRing(ring, FLATTEN_TOLERANCE_M, geometry.curveType);
         const coords = flat.map(([x, y]) => {
             const { lat, lon } = sweref99tmToWgs84(x, y);
             return [lon, lat];
@@ -55,8 +56,16 @@ export function geometryToWgs84Rings(geometry: FeatureGeometry): number[][][] {
  */
 export class FeaturesService {
     readonly store = new EntityStore<CourseFeature>();
-    /** Selected feature id (draw tool selection), or null. */
-    readonly selectedId = new Signal<string | null>(null);
+    /**
+     * Selected feature ids (draw tool selection). Multi-select is a set;
+     * the single-select common case is a one-element set (see `selected`).
+     */
+    readonly selectedIds = new Signal<ReadonlySet<string>>(new Set());
+    /**
+     * Feature TYPES hidden from the overlay + hit tests (panel eye
+     * toggles). Purely client-side view state — never persisted.
+     */
+    readonly hiddenTypes = new Signal<ReadonlySet<string>>(new Set());
     readonly loading = new Signal(false);
     readonly error = new Signal<RequestError | null>(null);
     /** True while a create/update/remove is in flight (autosave indicator). */
@@ -65,34 +74,56 @@ export class FeaturesService {
 
     private loadedCourseId: string | null = null;
 
-    /** The currently selected feature, or null. */
+    /**
+     * The selected feature when EXACTLY ONE is selected, else null.
+     * Single-feature affordances (vertex editing, panel detail) key off
+     * this; multi-select consumers use `selectedFeatures`.
+     */
     readonly selected = new Computed<CourseFeature | null>(() => {
-        const id = this.selectedId.get();
-        if (!id) return null;
+        const ids = this.selectedIds.get();
+        if (ids.size !== 1) return null;
+        const [id] = ids;
         return this.store.items.get().find(f => f.id === id) ?? null;
     });
 
+    /** All currently selected features (store order). */
+    readonly selectedFeatures = new Computed<CourseFeature[]>(() => {
+        const ids = this.selectedIds.get();
+        if (ids.size === 0) return [];
+        return this.store.items.get().filter(f => ids.has(f.id));
+    });
+
     /**
-     * All features as a WGS84 FeatureCollection with rendering properties
-     * (`type`, `holeId`, `selected`). Recomputes on store changes and
-     * selection changes; unchanged geometries hit the flatten cache.
+     * All VISIBLE features as a WGS84 FeatureCollection with rendering
+     * properties (`type`, `holeId`). Recomputes on store and visibility
+     * changes; unchanged geometries hit the flatten cache. Hidden types
+     * are filtered HERE (rather than via per-layer filters) so one
+     * computed drives fill, outline and selection layers consistently.
+     *
+     * Deliberately NOT selection-dependent: this collection is ~20 MB of
+     * flattened rings for a full course and every change re-sends it to
+     * the MapLibre worker for a full re-tile (~250 ms) — selection
+     * highlighting is a per-layer FILTER (see attachOverlay) and per-frame
+     * drag feedback is a ghost overlay (see DrawToolService) so neither
+     * touches this collection.
      */
     readonly geojson = new Computed<FeatureCollection>(() => {
-        const selectedId = this.selectedId.get();
-        const features: Feature[] = this.store.items.get().map(f => ({
-            type: 'Feature',
-            id: f.id,
-            properties: {
+        const hidden = this.hiddenTypes.get();
+        const features: Feature[] = this.store.items.get()
+            .filter(f => !hidden.has(f.type))
+            .map(f => ({
+                type: 'Feature',
                 id: f.id,
-                type: f.type,
-                holeId: f.holeId,
-                selected: f.id === selectedId,
-            },
-            geometry: {
-                type: 'Polygon',
-                coordinates: geometryToWgs84Rings(f.geometry),
-            } satisfies Polygon,
-        }));
+                properties: {
+                    id: f.id,
+                    type: f.type,
+                    holeId: f.holeId,
+                },
+                geometry: {
+                    type: 'Polygon',
+                    coordinates: geometryToWgs84Rings(f.geometry),
+                } satisfies Polygon,
+            }));
         return { type: 'FeatureCollection', features };
     });
 
@@ -101,7 +132,7 @@ export class FeaturesService {
     /** Load all features for a course. Cached per courseId. */
     async load(courseId: string): Promise<void> {
         if (this.loadedCourseId === courseId) return;
-        this.selectedId.set(null);
+        this.selectedIds.set(new Set());
         const items = await request(this.loading, this.error, () =>
             this.featuresApi.listByCourse({ courseId }));
         if (!items) return; // failed — error signal set, cache untouched
@@ -117,8 +148,42 @@ export class FeaturesService {
         await this.load(courseId);
     }
 
+    /** Replace the selection with a single feature (or clear with null). */
     select(id: string | null): void {
-        this.selectedId.set(id);
+        this.selectedIds.set(id ? new Set([id]) : new Set());
+    }
+
+    /** Replace the whole selection (marquee result, duplicate clones). */
+    setSelection(ids: Iterable<string>): void {
+        this.selectedIds.set(new Set(ids));
+    }
+
+    /** Toggle one feature's selection membership (Cmd/Ctrl+click). */
+    toggleSelected(id: string): void {
+        const next = new Set(this.selectedIds.peek());
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        this.selectedIds.set(next);
+    }
+
+    /**
+     * Toggle a feature TYPE's visibility (panel eye icons). Hiding a type
+     * also drops its features from the selection — invisible features
+     * must not remain silently editable.
+     */
+    toggleTypeVisibility(type: string): void {
+        const next = new Set(this.hiddenTypes.peek());
+        if (next.has(type)) {
+            next.delete(type);
+        } else {
+            next.add(type);
+            const keep = new Set([...this.selectedIds.peek()].filter(id => {
+                const f = this.store.items.peek().find(item => item.id === id);
+                return f !== undefined && f.type !== type;
+            }));
+            if (keep.size !== this.selectedIds.peek().size) this.selectedIds.set(keep);
+        }
+        this.hiddenTypes.set(next);
     }
 
     /** Create a feature (autosave on ring close). Selects it on success. */
@@ -133,7 +198,7 @@ export class FeaturesService {
             this.featuresApi.create({ courseId, ...input }));
         if (created) {
             this.store.add(created);
-            this.selectedId.set(created.id);
+            this.selectedIds.set(new Set([created.id]));
         }
         return created;
     }
@@ -175,7 +240,11 @@ export class FeaturesService {
             return false;
         }
         this.store.remove(id);
-        if (this.selectedId.peek() === id) this.selectedId.set(null);
+        if (this.selectedIds.peek().has(id)) {
+            const next = new Set(this.selectedIds.peek());
+            next.delete(id);
+            this.selectedIds.set(next);
+        }
         return true;
     }
 
@@ -184,10 +253,19 @@ export class FeaturesService {
      * + selection-highlight layers when the map is ready, keeps the data in
      * sync with `geojson`, and re-adds after map re-creation (`ready`
      * false → true). Returns a disposer (give it to a component `track`).
+     *
+     * Selection is a features-selected layer FILTER (cheap layer re-layout,
+     * ~40 ms) rather than a `selected` geojson property (full ~20 MB source
+     * re-send, ~250 ms) — see the `geojson` doc comment.
      */
     attachOverlay(map: MapService): () => void {
         let added = false;
-        const disposeEffect = effect(() => {
+        this.overlayMap = map;
+        // Per-feature "dragging" state hides originals while the draw
+        // tool renders their ghost (paint-only — no source/layout work).
+        const draggingHide = (visible: number): unknown =>
+            ['case', ['boolean', ['feature-state', 'dragging'], false], 0, visible];
+        const disposeData = effect(() => {
             const ready = map.ready.get();
             const data = this.geojson.get();
             if (!ready) {
@@ -199,26 +277,33 @@ export class FeaturesService {
                     {
                         id: 'features-fill',
                         type: 'fill',
+                        // Fixed golf z-order (see TYPE_Z_ORDER): sort keys
+                        // make small features (bunker/water/path) render on
+                        // top of broad ground types within this one layer.
+                        layout: { 'fill-sort-key': typeSortKeyExpression() as never },
                         paint: {
                             'fill-color': typeColorExpression('fill') as never,
-                            'fill-opacity': 0.4,
+                            'fill-opacity': draggingHide(0.4) as never,
                         },
                     },
                     {
                         id: 'features-outline',
                         type: 'line',
+                        layout: { 'line-sort-key': typeSortKeyExpression() as never },
                         paint: {
                             'line-color': typeColorExpression('outline') as never,
                             'line-width': 1.5,
+                            'line-opacity': draggingHide(1) as never,
                         },
                     },
                     {
                         id: 'features-selected',
                         type: 'line',
-                        filter: ['==', ['get', 'selected'], true],
+                        filter: selectionFilter(this.selectedIds.peek()),
                         paint: {
                             'line-color': SELECTION_COLOR,
                             'line-width': 2.5,
+                            'line-opacity': draggingHide(1) as never,
                         },
                     },
                 ]);
@@ -227,9 +312,40 @@ export class FeaturesService {
                 map.updateOverlayData(FEATURES_OVERLAY_ID, data);
             }
         });
+        const disposeSelection = effect(() => {
+            const ids = this.selectedIds.get();
+            if (!map.ready.get() || !added) return;
+            map.map.get()?.setFilter('features-selected', selectionFilter(ids));
+        });
         return () => {
-            disposeEffect();
+            disposeData();
+            disposeSelection();
+            this.overlayMap = null;
             if (added) map.removeOverlayLayer(FEATURES_OVERLAY_ID);
         };
     }
+
+    /** Map the overlay is currently attached to (drag feature-state target). */
+    private overlayMap: MapService | null = null;
+
+    /**
+     * Hide/unhide features in the persistent overlay while the draw tool
+     * drags their ghost. Feature-state only touches paint — per-call cost
+     * is O(ids), no source re-send or layer re-layout. No-op when the
+     * overlay is not attached/ready (nothing to hide then anyway).
+     */
+    setDragging(ids: Iterable<string>, dragging: boolean): void {
+        const svc = this.overlayMap;
+        const map = svc?.ready.peek() ? svc.map.peek() : null;
+        if (!map || !map.getSource(FEATURES_OVERLAY_ID)) return;
+        for (const id of ids) {
+            if (dragging) map.setFeatureState({ source: FEATURES_OVERLAY_ID, id }, { dragging: true });
+            else map.removeFeatureState({ source: FEATURES_OVERLAY_ID, id }, 'dragging');
+        }
+    }
+}
+
+/** features-selected layer filter for a selection set. */
+function selectionFilter(ids: ReadonlySet<string>): FilterSpecification {
+    return ['in', ['get', 'id'], ['literal', [...ids]]] as unknown as FilterSpecification;
 }

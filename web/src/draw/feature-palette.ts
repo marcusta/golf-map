@@ -46,6 +46,56 @@ export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
 export const SELECTION_COLOR = '#ffd43b';
 
 /**
+ * Fixed golf z-ordering of feature fills, bottom → top: broad ground types
+ * first, small features (bunkers, water, paths) on top so overlaps render
+ * sensibly. Implemented as MapLibre `fill-sort-key`/`line-sort-key` on the
+ * features overlay (higher key renders later = on top) — one layer pair,
+ * no per-type layer explosion. Per-feature z-order is out of scope (no
+ * sort_order column).
+ */
+export const TYPE_Z_ORDER: readonly FeatureType[] = [
+    'outside',
+    'deep_rough',
+    'rough',
+    'semi_rough',
+    'fairway',
+    'tee',
+    'green',
+    'bunker',
+    'water',
+    'water_creek',
+    'path',
+];
+
+/** MapLibre expression: feature `type` property → z-order sort key. */
+export function typeSortKeyExpression(): unknown[] {
+    const expr: unknown[] = ['match', ['get', 'type']];
+    TYPE_Z_ORDER.forEach((type, i) => expr.push(type, i));
+    expr.push(-1); // unknown types render below everything
+    return expr;
+}
+
+/**
+ * Auto-surround pairings (ported from the golf-map-2 prototype editor,
+ * types.ts): source feature type → the type that should surround it and
+ * how far the surround extends beyond the source outline. null = no
+ * surround makes golf sense for that type.
+ */
+export const SURROUND_PAIRINGS: Record<FeatureType, { targetType: FeatureType; expandAmount: number } | null> = {
+    tee: { targetType: 'semi_rough', expandAmount: 0.5 },
+    fairway: { targetType: 'semi_rough', expandAmount: 1 },
+    green: { targetType: 'fairway', expandAmount: 0.5 },
+    semi_rough: { targetType: 'rough', expandAmount: 5 },
+    rough: { targetType: 'deep_rough', expandAmount: 8 },
+    bunker: null, // no surround for bunkers
+    water: null, // no surround for water
+    water_creek: null, // no surround for creeks
+    deep_rough: null, // already the outermost grass type
+    path: null, // no surround for paths
+    outside: null, // no surround for outside
+};
+
+/**
  * MapLibre `match` expression on the feature's `type` property → color.
  * `key` picks fill or outline colors; unknown types fall back to gray.
  */

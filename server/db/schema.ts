@@ -50,6 +50,7 @@ export interface HolesTable {
     course_id: string;
     number: number;
     par: number;
+    stroke_index: number | null; // handicap/SI 1–18 (nullable — blank allowed)
     notes: string | null;
     saved_region_json: string | null; // v1 per-hole map region (nullable)
     version: number;

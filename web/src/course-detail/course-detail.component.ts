@@ -5,6 +5,7 @@ import { CourseDetailService } from './course-detail.service';
 import { EditorCanvasComponent } from '../map/editor-canvas.component';
 import { SvgImportPanelComponent } from '../import/svg-import-panel.component';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
+import { HoleInfoPanelComponent } from './hole-info-panel.component';
 
 const tpl = template(`
     <div class="course-detail" bind="root">
@@ -28,6 +29,7 @@ const tpl = template(`
             <aside class="course-detail__sidebar">
                 <h3 class="sidebar-title">Holes</h3>
                 <nav bind="holeList" class="hole-list"></nav>
+                <div bind="holeInfo"></div>
             </aside>
             <section class="course-detail__main">
                 <div id="editor-canvas" bind="editorCanvas" class="editor-canvas"></div>
@@ -260,6 +262,10 @@ export class CourseDetailComponent extends Component {
             const { courseId } = this.params.get();
             if (courseId) void this.svc.load(courseId);
         }));
+
+        // Hole info panel — lives in the sidebar below the hole list; shows
+        // itself whenever a hole is selected (?hole=).
+        this.spawn(HoleInfoPanelComponent, this.ref(frag, 'holeInfo'));
 
         this.spawn(EditorCanvasComponent, this.ref(frag, 'editorCanvas'));
         // SVG import wizard — hidden until the header button opens it;

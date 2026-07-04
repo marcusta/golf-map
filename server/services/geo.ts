@@ -14,21 +14,95 @@ export const AnchorPointSchema = Type.Object({
     y: Type.Number(),
     hIn: Type.Optional(PointSchema),
     hOut: Type.Optional(PointSchema),
+    /**
+     * B-spline corner flag (meaningful when the geometry's curveType is
+     * 'bspline'): the control point is triplicated during expansion, which
+     * forces the curve through it as a sharp corner. Ignored for bezier.
+     */
+    corner: Type.Optional(Type.Boolean()),
 });
 
 export const PathRingSchema = Type.Object({
     points: Type.Array(AnchorPointSchema),
 });
 
+/** Curve interpretation of a geometry's rings. Absent = 'bezier' (legacy). */
+export const CurveTypeSchema = Type.Union([Type.Literal('bezier'), Type.Literal('bspline')]);
+
 export const FeatureGeometrySchema = Type.Object({
     crs: Type.String(),
+    /**
+     * 'bezier' (default when absent): ring points are anchors ON the curve
+     * with optional cubic handles. 'bspline': ring points are CONTROL
+     * points of a closed uniform cubic B-spline — they pull the curve but
+     * don't lie on it (except corner points).
+     */
+    curveType: Type.Optional(CurveTypeSchema),
     rings: Type.Array(PathRingSchema),
 });
 
 export type Point = Static<typeof PointSchema>;
 export type AnchorPoint = Static<typeof AnchorPointSchema>;
 export type PathRing = Static<typeof PathRingSchema>;
+export type CurveType = Static<typeof CurveTypeSchema>;
 export type FeatureGeometry = Static<typeof FeatureGeometrySchema>;
+
+// ============================================================================
+// B-spline → bezier conversion
+//
+// A 'bspline' ring is a CLOSED uniform cubic B-spline over the ring's
+// points (control points). Each window of 4 consecutive controls p0..p3
+// yields one cubic bezier segment:
+//
+//   start = (p0 + 4·p1 + p2) / 6      cp1 = (2·p1 + p2) / 3
+//   end   = (p1 + 4·p2 + p3) / 6      cp2 = (p1 + 2·p2) / 3
+//
+// The loop closes by wrapping the control window modulo n, producing
+// exactly n segments for n (expanded) controls. A point marked `corner` is
+// triplicated in the control array (knot multiplicity 3), which forces the
+// curve through it with a tangent discontinuity — a sharp corner.
+// ============================================================================
+
+/** Expand control points: corner points are triplicated (multiplicity 3). */
+export function expandBsplineControls(points: AnchorPoint[]): Point[] {
+    const out: Point[] = [];
+    for (const p of points) {
+        out.push({ x: p.x, y: p.y });
+        if (p.corner) out.push({ x: p.x, y: p.y }, { x: p.x, y: p.y });
+    }
+    return out;
+}
+
+/**
+ * Convert a closed b-spline control ring into the exactly equivalent
+ * bezier PathRing (n anchors with hIn/hOut, one per expanded control).
+ * The result flattens/renders with the existing bezier machinery.
+ */
+export function bsplineRingToBezier(ring: PathRing): PathRing {
+    const ctrl = expandBsplineControls(ring.points);
+    const n = ctrl.length;
+    if (n < 3) return { points: ctrl.map(p => ({ x: p.x, y: p.y })) };
+
+    const anchors: AnchorPoint[] = [];
+    for (let i = 0; i < n; i++) {
+        const p0 = ctrl[i];
+        const p1 = ctrl[(i + 1) % n];
+        const p2 = ctrl[(i + 2) % n];
+        anchors.push({
+            x: (p0.x + 4 * p1.x + p2.x) / 6,
+            y: (p0.y + 4 * p1.y + p2.y) / 6,
+            hOut: { x: (2 * p1.x + p2.x) / 3, y: (2 * p1.y + p2.y) / 3 },
+        });
+    }
+    // Segment i ends at anchor (i+1): its second control point is that
+    // anchor's incoming handle.
+    for (let i = 0; i < n; i++) {
+        const p1 = ctrl[(i + 1) % n];
+        const p2 = ctrl[(i + 2) % n];
+        anchors[(i + 1) % n].hIn = { x: (p1.x + 2 * p2.x) / 3, y: (p1.y + 2 * p2.y) / 3 };
+    }
+    return { points: anchors };
+}
 
 // ============================================================================
 // Bezier flattening
@@ -46,8 +120,17 @@ export type FeatureGeometry = Static<typeof FeatureGeometrySchema>;
  * length divided by the tolerance (a cheap, standard adaptive heuristic —
  * the control polygon length is always >= the curve's true length, so this
  * slightly over-subdivides rather than under-subdivides).
+ *
+ * When `curveType` is 'bspline' the ring's points are B-spline CONTROL
+ * points: the ring is first converted to its exact bezier equivalent
+ * (corner triplication + closed wrap), then flattened identically.
  */
-export function flattenRing(ring: PathRing, toleranceMeters: number): Array<[number, number]> {
+export function flattenRing(
+    ring: PathRing,
+    toleranceMeters: number,
+    curveType?: CurveType,
+): Array<[number, number]> {
+    if (curveType === 'bspline') ring = bsplineRingToBezier(ring);
     const pts = ring.points;
     if (pts.length === 0) return [];
     if (pts.length === 1) return [[pts[0].x, pts[0].y]];
@@ -297,7 +380,7 @@ export function toGeoJson(
     toleranceMeters = 0.25,
 ): GeoJsonPolygon {
     const coordinates: number[][][] = geometry.rings.map((ring, idx) => {
-        const flattened = flattenRing(ring, toleranceMeters);
+        const flattened = flattenRing(ring, toleranceMeters, geometry.curveType);
         const wound = ensureWinding(flattened, idx === 0);
         const closed = closeRing(wound);
         return closed.map(([x, y]) => {

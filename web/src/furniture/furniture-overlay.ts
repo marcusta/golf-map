@@ -5,7 +5,7 @@ import type { Tee } from '../../../shared/api/tees.gen';
 import type { Green } from '../../../shared/api/greens.gen';
 import type { Pin } from '../../../shared/api/pins.gen';
 import type { AimPoint } from '../../../shared/api/aim-points.gen';
-import { FURNITURE_TOOL_ID } from './furniture.service';
+import { FURNITURE_TOOL_ID, type Selection } from './furniture.service';
 
 /** Overlay/source id for the persistent furniture rendering. */
 export const FURNITURE_OVERLAY_ID = FURNITURE_TOOL_ID;
@@ -39,7 +39,14 @@ export interface OverlayInput {
     /** aim points grouped/ordered per hole, for the ordered polyline + numbering. */
     holeIds: string[];
     /** Selected item, for emphasis. */
-    selection: { kind: 'tee' | 'pin' | 'aim'; id: string } | null;
+    selection: Selection;
+    /**
+     * Per-hole tee id the aim polyline anchors on (holeId → teeId). Lets the
+     * caller pick a "line from" tee other than the first by sortOrder. When a
+     * hole is absent or its id doesn't resolve to one of the hole's tees, the
+     * builder falls back to the first tee by sortOrder.
+     */
+    lineOriginByHole?: Map<string, string>;
 }
 
 /**
@@ -52,20 +59,28 @@ export interface OverlayInput {
 export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
     const features: Feature[] = [];
     const sel = input.selection;
-    const isSel = (kind: string, id: string) => !!sel && sel.kind === kind && sel.id === id;
+    const isSel = (kind: string, id: string) =>
+        !!sel && sel.kind === kind && 'id' in sel && sel.id === id;
+    const isSelGreen = (holeId: string, point: 'center' | 'front' | 'back') =>
+        !!sel && sel.kind === 'green' && sel.holeId === holeId && sel.point === point;
 
     // Per-hole ordered aim polyline: tee (first, by sortOrder) → aims → green center.
     for (const holeId of input.holeIds) {
         const holeAims = input.aims
             .filter(a => a.holeId === holeId)
             .sort((a, b) => a.sortOrder - b.sortOrder);
-        if (holeAims.length === 0) continue;
+        // No early-out on zero aims: par 3s draw the direct tee → green line
+        // (the line.length >= 2 guard below handles genuinely empty holes).
         const green = input.greens.find(g => g.holeId === holeId) ?? null;
         const holeTees = input.tees
             .filter(t => t.holeId === holeId)
             .sort((a, b) => a.sortOrder - b.sortOrder);
+        // Anchor on the caller-chosen "line from" tee when it resolves to one
+        // of this hole's tees; else fall back to the first by sortOrder.
+        const originId = input.lineOriginByHole?.get(holeId);
+        const originTee = (originId && holeTees.find(t => t.id === originId)) || holeTees[0];
         const line: Position[] = [];
-        if (holeTees[0]) line.push([holeTees[0].lon, holeTees[0].lat]);
+        if (originTee) line.push([originTee.lon, originTee.lat]);
         for (const a of holeAims) line.push([a.lon, a.lat]);
         if (green) line.push([green.centerLon, green.centerLat]);
         if (line.length >= 2) {
@@ -77,14 +92,15 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
         }
     }
 
-    // Greens: center / front / back dots.
+    // Greens: center / front / back dots (selectable; a selection ring layer
+    // keys on the `selected` flag).
     for (const g of input.greens) {
-        features.push(point([g.centerLon, g.centerLat], { role: 'green-center' }));
+        features.push(point([g.centerLon, g.centerLat], { role: 'green-center', selected: isSelGreen(g.holeId, 'center') }));
         if (g.frontLat !== null && g.frontLon !== null) {
-            features.push(point([g.frontLon, g.frontLat], { role: 'green-front' }));
+            features.push(point([g.frontLon, g.frontLat], { role: 'green-front', selected: isSelGreen(g.holeId, 'front') }));
         }
         if (g.backLat !== null && g.backLon !== null) {
-            features.push(point([g.backLon, g.backLat], { role: 'green-back' }));
+            features.push(point([g.backLon, g.backLat], { role: 'green-back', selected: isSelGreen(g.holeId, 'back') }));
         }
     }
 
@@ -149,6 +165,16 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             type: 'line',
             filter: role('aim-line'),
             paint: { 'line-color': '#3a7bd5', 'line-width': 1.5, 'line-opacity': 0.8, 'line-dasharray': [2, 1.5] },
+        },
+        // Green point selection ring (under the dots; same halo as tee/pin/aim).
+        {
+            id: `${FURNITURE_OVERLAY_ID}-green-sel`,
+            type: 'circle',
+            filter: ['all',
+                ['in', ['get', 'role'], ['literal', ['green-center', 'green-front', 'green-back']]],
+                ['==', ['get', 'selected'], true],
+            ] as FilterSpecification,
+            paint: { 'circle-radius': 10, 'circle-color': 'transparent', 'circle-stroke-color': SELECTION_COLOR, 'circle-stroke-width': 2.5 },
         },
         // Green reference dots.
         {

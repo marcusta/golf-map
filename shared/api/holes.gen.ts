@@ -6,6 +6,7 @@ export interface Hole {
     courseId: string;
     number: number;
     par: number;
+    strokeIndex: null | number;
     notes: null | string;
     savedRegionJson: null | string;
     version: number;
@@ -17,7 +18,7 @@ export interface HolesApi {
     listByCourse(input: { courseId: string }): Promise<Hole[]>;
     get(input: { id: string }): Promise<Hole>;
     create(input: { notes?: string; savedRegionJson?: string; number: number; courseId: string; par: number }): Promise<Hole>;
-    update(input: { notes?: string; par?: number; savedRegionJson?: string; id: string; version: number }): Promise<Hole>;
+    update(input: { notes?: string; par?: number; savedRegionJson?: string; strokeIndex?: null | number; id: string; version: number }): Promise<Hole>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
 }
 

@@ -12,6 +12,13 @@
 // match the server-materialized GeoJSON exactly. The rest is editor math:
 // hit-testing, bboxes, nearest-point queries for vertex insertion, and a
 // de Casteljau split that inserts an anchor WITHOUT changing the curve.
+//
+// B-spline geometries (curveType: 'bspline') route through geo/bspline.ts:
+// flattenRing / pointInGeometry / ringBbox / outerRingArea convert the
+// control ring to its exact bezier equivalent first, so hit-testing,
+// selection and analysis work identically on spline features.
+
+import { bsplineRingToBezier } from './bspline';
 
 export interface Point {
     x: number;
@@ -23,14 +30,29 @@ export interface AnchorPoint {
     y: number;
     hIn?: Point;
     hOut?: Point;
+    /**
+     * B-spline corner flag (meaningful when the geometry's curveType is
+     * 'bspline'): the control point is triplicated during expansion,
+     * forcing the curve through it as a sharp corner. Ignored for bezier.
+     */
+    corner?: boolean;
 }
 
 export interface PathRing {
     points: AnchorPoint[];
 }
 
+/** Curve interpretation of a geometry's rings. Absent = 'bezier' (legacy). */
+export type CurveType = 'bezier' | 'bspline';
+
 export interface FeatureGeometry {
     crs: string;
+    /**
+     * 'bezier' (default when absent): ring points are anchors ON the curve
+     * with optional cubic handles. 'bspline': ring points are CONTROL
+     * points of a closed uniform cubic B-spline (see geo/bspline.ts).
+     */
+    curveType?: CurveType;
     rings: PathRing[];
 }
 
@@ -68,8 +90,18 @@ export function segmentControls(ring: PathRing, i: number): [Point, Point, Point
  * is NOT explicitly closed. Straight segments (no handles on either end)
  * contribute only their start anchor; curved segments are subdivided into
  * ceil(controlPolygonLength / tolerance) pieces (clamped to [1, 256]).
+ *
+ * When `curveType` is 'bspline' the ring's points are B-spline CONTROL
+ * points: the ring is first converted to its exact bezier equivalent
+ * (corner triplication + closed wrap), then flattened identically —
+ * matching the server's flattenRing.
  */
-export function flattenRing(ring: PathRing, toleranceMeters: number): Array<[number, number]> {
+export function flattenRing(
+    ring: PathRing,
+    toleranceMeters: number,
+    curveType?: CurveType,
+): Array<[number, number]> {
+    if (curveType === 'bspline') ring = bsplineRingToBezier(ring);
     const pts = ring.points;
     if (pts.length === 0) return [];
     if (pts.length === 1) return [[pts[0].x, pts[0].y]];
@@ -158,8 +190,8 @@ export interface Bbox {
 }
 
 /** Bbox of a ring's flattened outline (tolerance 0.25 m). Null for empty rings. */
-export function ringBbox(ring: PathRing, toleranceMeters = 0.25): Bbox | null {
-    const flat = flattenRing(ring, toleranceMeters);
+export function ringBbox(ring: PathRing, toleranceMeters = 0.25, curveType?: CurveType): Bbox | null {
+    const flat = flattenRing(ring, toleranceMeters, curveType);
     if (flat.length === 0) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const [x, y] of flat) {
@@ -284,10 +316,10 @@ export function splitSegment(ring: PathRing, segIdx: number, t: number): PathRin
  */
 export function pointInGeometry(p: Point, geometry: FeatureGeometry, toleranceMeters = 0.25): boolean {
     if (geometry.rings.length === 0) return false;
-    const outer = flattenRing(geometry.rings[0], toleranceMeters);
+    const outer = flattenRing(geometry.rings[0], toleranceMeters, geometry.curveType);
     if (outer.length < 3 || !pointInRing(p, outer)) return false;
     for (let i = 1; i < geometry.rings.length; i++) {
-        const hole = flattenRing(geometry.rings[i], toleranceMeters);
+        const hole = flattenRing(geometry.rings[i], toleranceMeters, geometry.curveType);
         if (hole.length >= 3 && pointInRing(p, hole)) return false;
     }
     return true;
@@ -296,5 +328,5 @@ export function pointInGeometry(p: Point, geometry: FeatureGeometry, toleranceMe
 /** |Area| of a geometry's outer ring — used to pick the topmost (smallest) hit. */
 export function outerRingArea(geometry: FeatureGeometry, toleranceMeters = 0.25): number {
     if (geometry.rings.length === 0) return 0;
-    return Math.abs(signedArea(flattenRing(geometry.rings[0], toleranceMeters)));
+    return Math.abs(signedArea(flattenRing(geometry.rings[0], toleranceMeters, geometry.curveType)));
 }

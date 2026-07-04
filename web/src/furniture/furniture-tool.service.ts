@@ -7,17 +7,39 @@ import type { Hole } from '../../../shared/api/holes.gen';
 import type { Tee } from '../../../shared/api/tees.gen';
 import type { Pin } from '../../../shared/api/pins.gen';
 import type { AimPoint } from '../../../shared/api/aim-points.gen';
-import { FurnitureService, FURNITURE_TOOL_ID } from './furniture.service';
+import { FurnitureService, FURNITURE_TOOL_ID, defaultTeeName, greenPointFields, type GreenPoint, type Selection } from './furniture.service';
 import { FURNITURE_OVERLAY_ID, buildFurnitureGeojson, furnitureLayers } from './furniture-overlay';
 
-const MARKER_HIT_PX = 12;
-const DRAG_MOVE_THRESHOLD_PX = 3;
+/** Screen-px radius for click-to-select and mousedown-to-drag hit testing. */
+const MARKER_HIT_PX = 14;
+/**
+ * Screen-px radius around an existing SAME-kind marker within which an armed
+ * placement click is reinterpreted as a select (prevents accidental dupes).
+ */
+const PLACEMENT_PROXIMITY_PX = 16;
+const DRAG_MOVE_THRESHOLD_PX = 2;
+
+/**
+ * A hit-tested marker. Tees/pins/aims are `{ kind, id }`; green points are
+ * `{ kind: 'green', holeId, point }` since all three share one row per hole.
+ */
+type MarkerHit =
+    | { kind: 'tee'; id: string }
+    | { kind: 'pin'; id: string }
+    | { kind: 'aim'; id: string }
+    | { kind: 'green'; holeId: string; point: GreenPoint };
 
 interface DragTarget {
-    kind: 'tee' | 'pin' | 'aim';
-    id: string;
+    hit: MarkerHit;
     startScreen: { x: number; y: number };
     moved: boolean;
+}
+
+/** A hit as a Selection (they share shape). */
+function hitToSelection(hit: MarkerHit): Selection {
+    return hit.kind === 'green'
+        ? { kind: 'green', holeId: hit.holeId, point: hit.point }
+        : { kind: hit.kind, id: hit.id };
 }
 
 /**
@@ -58,8 +80,27 @@ export class FurnitureToolService {
         if (kind === 'pin' && !this.svc.greenForHole(hole.id)) {
             return `Hole ${hole.number} has no green yet — draw/import one before placing pins.`;
         }
-        const label = kind === 'tee' ? 'tee' : kind === 'pin' ? 'pin' : 'aim point';
-        return `Click the map to place a ${label} on hole ${hole.number}.`;
+        if (kind === 'tee') {
+            const color = this.svc.pendingTeeColor.get();
+            const name = this.svc.pendingTeeName.get().trim() || defaultTeeName(color);
+            return `Placing: Tee (${name}) on hole ${hole.number} — click map to place, `
+                + `Shift-click to place multiple, Esc to cancel.`;
+        }
+        if (kind === 'green') {
+            const gp = this.svc.pendingGreenPoint.get();
+            const gpLabel = gp === 'center' ? 'Center' : gp === 'front' ? 'Front' : 'Back';
+            const hasGreen = !!this.svc.greenForHole(hole.id);
+            if (!hasGreen && gp !== 'center') {
+                return `Hole ${hole.number} has no green yet — place the green Center first `
+                    + `(then Front/Back).`;
+            }
+            const verb = hasGreen ? 'set' : 'create';
+            return `Placing green ${gpLabel} on hole ${hole.number} — click to ${verb} `
+                + `${gpLabel} position, Esc to cancel.`;
+        }
+        const label = kind === 'pin' ? 'Pin' : 'Aim point';
+        return `Placing: ${label} on hole ${hole.number} — click map to place, `
+            + `Shift-click to place multiple, Esc to cancel.`;
     });
 
     // ── EditorTool lifecycle ────────────────────────────────────────────────
@@ -114,6 +155,7 @@ export class FurnitureToolService {
     onEscape(): boolean {
         if (this.svc.placing.peek() !== null) {
             this.svc.disarm();
+            this.svc.notice.set(null);
             return true;
         }
         if (this.svc.selection.peek()) {
@@ -128,13 +170,23 @@ export class FurnitureToolService {
     private attachOverlay(ctx: ToolContext): () => void {
         const disposeEffect = effect(() => {
             const ready = ctx.map.ready.get();
+            const holeIds = this.courseDetail.holes.get().map(h => h.id);
+            // Resolve each hole's aim-line origin tee reactively. Reads
+            // activeTeeName (+ per-hole tees) so a "line from" change or any
+            // tee move/place/delete re-runs this effect and re-anchors the line.
+            const lineOriginByHole = new Map<string, string>();
+            for (const holeId of holeIds) {
+                const origin = this.svc.lineOriginTee(holeId);
+                if (origin) lineOriginByHole.set(holeId, origin.id);
+            }
             const data = buildFurnitureGeojson({
                 tees: this.svc.tees.items.get(),
                 pins: this.svc.pins.items.get(),
                 greens: this.svc.greens.get(),
                 aims: this.svc.aims.items.get(),
-                holeIds: this.courseDetail.holes.get().map(h => h.id),
+                holeIds,
                 selection: this.svc.selection.get(),
+                lineOriginByHole,
             });
             if (!ready) {
                 this.overlayAdded = false; // overlay died with the map
@@ -168,13 +220,24 @@ export class FurnitureToolService {
 
         const kind = this.svc.placing.peek();
         if (kind !== null) {
-            void this.place(kind, e.lngLat);
+            // Proximity guard: an armed click landing on an existing marker of
+            // the SAME kind selects it instead of stacking a duplicate. For
+            // greens, the same-kind guard is narrowed to the SAME point (C/F/B)
+            // so e.g. arming Back near an existing Back selects it.
+            const near = this.hitMarker(e.point, PLACEMENT_PROXIMITY_PX);
+            if (near && near.kind === kind &&
+                (kind !== 'green' || (near.kind === 'green' && near.point === this.svc.pendingGreenPoint.peek()))) {
+                this.svc.select(hitToSelection(near));
+                return;
+            }
+            const keepArmed = e.originalEvent.shiftKey;
+            void this.place(kind, e.lngLat, keepArmed);
             return;
         }
 
         // Select mode: pick the nearest marker within tolerance.
         const hit = this.hitMarker(e.point);
-        this.svc.select(hit);
+        this.svc.select(hit ? hitToSelection(hit) : null);
     }
 
     private onMouseMove(e: MapPointerEvent): void {
@@ -184,7 +247,7 @@ export class FurnitureToolService {
         if (!drag.moved && this.pxDist(drag.startScreen, e.point) < DRAG_MOVE_THRESHOLD_PX) return;
         drag.moved = true;
         // Local patch for instant feedback; persistence happens on mouseup.
-        this.patchLocal(drag.kind, drag.id, e.lngLat.lat, e.lngLat.lng);
+        this.patchLocal(drag.hit, e.lngLat.lat, e.lngLat.lng);
     }
 
     private bindRawHandlers(map: MaplibreMap, ctx: ToolContext): void {
@@ -207,10 +270,9 @@ export class FurnitureToolService {
         if (!hit) return;
         e.preventDefault(); // stops the map's drag-pan for this gesture
         map.dragPan.disable();
-        this.svc.select(hit);
+        this.svc.select(hitToSelection(hit));
         this.drag = {
-            kind: hit.kind,
-            id: hit.id,
+            hit,
             startScreen: { x: e.point.x, y: e.point.y },
             moved: false,
         };
@@ -226,11 +288,13 @@ export class FurnitureToolService {
         setTimeout(() => { this.suppressClick = false; }, 0);
 
         if (!drag.moved) return;
-        const pos = this.currentPos(drag.kind, drag.id);
+        const pos = this.currentPos(drag.hit);
         if (!pos) return;
-        if (drag.kind === 'tee') void this.svc.moveTee(drag.id, pos.lat, pos.lon);
-        else if (drag.kind === 'pin') void this.svc.movePin(drag.id, pos.lat, pos.lon);
-        else void this.svc.moveAim(drag.id, pos.lat, pos.lon);
+        const hit = drag.hit;
+        if (hit.kind === 'tee') void this.svc.moveTee(hit.id, pos.lat, pos.lon);
+        else if (hit.kind === 'pin') void this.svc.movePin(hit.id, pos.lat, pos.lon);
+        else if (hit.kind === 'aim') void this.svc.moveAim(hit.id, pos.lat, pos.lon);
+        else void this.svc.setGreenPoint(hit.holeId, hit.point, pos.lat, pos.lon);
     }
 
     private onKeyDown(e: KeyboardEvent): void {
@@ -252,14 +316,46 @@ export class FurnitureToolService {
 
     // ── Actions ──────────────────────────────────────────────────────────────
 
-    /** Place the armed item at a WGS84 position on the selected hole. */
-    private async place(kind: 'tee' | 'pin' | 'aim', lngLat: { lng: number; lat: number }): Promise<void> {
+    /**
+     * Place the armed item at a WGS84 position on the selected hole.
+     *
+     * One-shot by default: after a successful placement we DISARM (back to
+     * select/move). Hold Shift (`keepArmed`) to stay armed for rapid
+     * multi-placement.
+     */
+    private async place(
+        kind: 'tee' | 'pin' | 'aim' | 'green',
+        lngLat: { lng: number; lat: number },
+        keepArmed: boolean,
+    ): Promise<void> {
         const hole = this.selectedHole.peek();
         if (!hole) return; // panel shows the hint
-        if (kind === 'tee') {
-            await this.svc.createTee({
+
+        let created: unknown;
+        if (kind === 'green') {
+            const gp = this.svc.pendingGreenPoint.peek();
+            // Placing an existing point = moving it (correct semantics). Creates
+            // the row on first Center placement; F/B on a green-less hole is
+            // rejected inside setGreenPoint with a notice.
+            created = await this.svc.setGreenPoint(hole.id, gp, lngLat.lat, lngLat.lng);
+        } else if (kind === 'tee') {
+            const name = this.svc.pendingTeeName.peek().trim()
+                || defaultTeeName(this.svc.pendingTeeColor.peek());
+            // Client-side duplicate guard: the server enforces UNIQUE(hole, name)
+            // and would only surface a raw 500. Catch it here, tell the user, and
+            // auto-advance the pending preset to the next free colour.
+            if (this.svc.teeNameTaken(hole.id, name)) {
+                this.svc.notice.set(
+                    `A '${name}' tee already exists on hole ${hole.number}.`
+                    + (this.svc.advancePendingTee(hole.id)
+                        ? ` Switched to '${this.svc.pendingTeeName.peek() || defaultTeeName(this.svc.pendingTeeColor.peek())}'.`
+                        : ' All tee colours are used on this hole.'),
+                );
+                return; // stay armed so the next click places the advanced preset
+            }
+            created = await this.svc.createTee({
                 holeId: hole.id,
-                name: this.svc.pendingTeeName.peek() || defaultTeeName(this.svc.pendingTeeColor.peek()),
+                name,
                 color: this.svc.pendingTeeColor.peek(),
                 lat: lngLat.lat,
                 lon: lngLat.lng,
@@ -267,23 +363,31 @@ export class FurnitureToolService {
         } else if (kind === 'pin') {
             const green = this.svc.greenForHole(hole.id);
             if (!green) return; // hint covers this
-            await this.svc.createPin({
+            created = await this.svc.createPin({
                 greenId: green.id,
-                name: this.svc.pendingPinName.peek() || 'Pin',
+                name: this.svc.pendingPinName.peek().trim() || 'Pin',
                 difficulty: this.svc.pendingPinDifficulty.peek(),
                 lat: lngLat.lat,
                 lon: lngLat.lng,
             });
         } else {
             const n = this.svc.aimsForHole(hole.id).length + 1;
-            await this.svc.createAim({ holeId: hole.id, lat: lngLat.lat, lon: lngLat.lng, label: `A${n}` });
+            created = await this.svc.createAim({ holeId: hole.id, lat: lngLat.lat, lon: lngLat.lng, label: `A${n}` });
         }
+
+        // One-shot: disarm on success unless Shift is held (rapid multi-place).
+        if (created && !keepArmed) this.svc.disarm();
     }
 
     /** Delete the selected item after confirmation (Delete key or panel button). */
     async deleteSelected(): Promise<void> {
         const sel = this.svc.selection.peek();
         if (!sel) return;
+        if (sel.kind === 'green') {
+            // Green points are structural (part of the hole's green row) — no delete.
+            this.svc.notice.set('Green points can\'t be deleted (they\'re part of the hole\'s green). Move it instead.');
+            return;
+        }
         const label = sel.kind === 'tee' ? 'tee' : sel.kind === 'pin' ? 'pin' : 'aim point';
         if (!window.confirm(`Delete this ${label}?`)) return;
         if (sel.kind === 'tee') await this.svc.removeTee(sel.id);
@@ -293,25 +397,38 @@ export class FurnitureToolService {
 
     // ── Hit testing ───────────────────────────────────────────────────────────
 
-    /** Nearest tee/pin/aim marker within MARKER_HIT_PX of the screen point. */
-    private hitMarker(screen: { x: number; y: number }): { kind: 'tee' | 'pin' | 'aim'; id: string } | null {
+    /** Nearest tee/pin/aim/green marker within `radiusPx` of the screen point. */
+    private hitMarker(
+        screen: { x: number; y: number },
+        radiusPx: number = MARKER_HIT_PX,
+    ): MarkerHit | null {
         const map = this.ctx?.map.map.peek();
         if (!map) return null;
-        let best: { kind: 'tee' | 'pin' | 'aim'; id: string } | null = null;
-        let bestDist = MARKER_HIT_PX;
-        const consider = (kind: 'tee' | 'pin' | 'aim', id: string, lat: number, lon: number) => {
+        let best: MarkerHit | null = null;
+        let bestDist = radiusPx;
+        const consider = (hit: MarkerHit, lat: number, lon: number) => {
             const p = map.project([lon, lat]);
             const d = Math.hypot(p.x - screen.x, p.y - screen.y);
-            if (d < bestDist) { bestDist = d; best = { kind, id }; }
+            if (d < bestDist) { bestDist = d; best = hit; }
         };
-        for (const t of this.svc.tees.items.peek()) consider('tee', t.id, t.lat, t.lon);
-        for (const p of this.svc.pins.items.peek()) consider('pin', p.id, p.lat, p.lon);
-        for (const a of this.svc.aims.items.peek()) consider('aim', a.id, a.lat, a.lon);
+        for (const t of this.svc.tees.items.peek()) consider({ kind: 'tee', id: t.id }, t.lat, t.lon);
+        for (const p of this.svc.pins.items.peek()) consider({ kind: 'pin', id: p.id }, p.lat, p.lon);
+        for (const a of this.svc.aims.items.peek()) consider({ kind: 'aim', id: a.id }, a.lat, a.lon);
+        for (const g of this.svc.greens.peek()) {
+            for (const point of ['center', 'front', 'back'] as const) {
+                const pos = this.svc.greenPointPos(g, point);
+                if (pos) consider({ kind: 'green', holeId: g.holeId, point }, pos.lat, pos.lon);
+            }
+        }
         return best;
     }
 
-    private currentPos(kind: 'tee' | 'pin' | 'aim', id: string): { lat: number; lon: number } | null {
-        const row = this.rowOf(kind, id);
+    private currentPos(hit: MarkerHit): { lat: number; lon: number } | null {
+        if (hit.kind === 'green') {
+            const g = this.svc.greenForHole(hit.holeId);
+            return g ? this.svc.greenPointPos(g, hit.point) : null;
+        }
+        const row = this.rowOf(hit.kind, hit.id);
         return row ? { lat: row.lat, lon: row.lon } : null;
     }
 
@@ -321,16 +438,22 @@ export class FurnitureToolService {
         return this.svc.aims.items.peek().find(a => a.id === id);
     }
 
-    private patchLocal(kind: 'tee' | 'pin' | 'aim', id: string, lat: number, lon: number): void {
-        if (kind === 'tee') {
-            const r = this.svc.tees.items.peek().find(t => t.id === id);
+    private patchLocal(hit: MarkerHit, lat: number, lon: number): void {
+        if (hit.kind === 'tee') {
+            const r = this.svc.tees.items.peek().find(t => t.id === hit.id);
             if (r) this.svc.tees.patch({ ...r, lat, lon });
-        } else if (kind === 'pin') {
-            const r = this.svc.pins.items.peek().find(p => p.id === id);
+        } else if (hit.kind === 'pin') {
+            const r = this.svc.pins.items.peek().find(p => p.id === hit.id);
             if (r) this.svc.pins.patch({ ...r, lat, lon });
-        } else {
-            const r = this.svc.aims.items.peek().find(a => a.id === id);
+        } else if (hit.kind === 'aim') {
+            const r = this.svc.aims.items.peek().find(a => a.id === hit.id);
             if (r) this.svc.aims.patch({ ...r, lat, lon });
+        } else {
+            const g = this.svc.greenForHole(hit.holeId);
+            if (g) {
+                const fields = greenPointFields(hit.point, lat, lon);
+                this.svc.greens.set(this.svc.greens.peek().map(x => x.holeId === g.holeId ? { ...x, ...fields } : x));
+            }
         }
     }
 
@@ -347,8 +470,4 @@ export class FurnitureToolService {
     private holeIds(): string[] {
         return this.courseDetail.holes.peek().map(h => h.id);
     }
-}
-
-function defaultTeeName(color: string): string {
-    return color.charAt(0).toUpperCase() + color.slice(1);
 }

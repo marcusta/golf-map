@@ -1,8 +1,9 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, primaryBtn, field } from '../css';
-import { FurnitureService, TEE_COLORS, PIN_DIFFICULTIES, type PlacementKind } from './furniture.service';
+import { FurnitureService, TEE_COLORS, PIN_DIFFICULTIES, type PlacementKind, type GreenPoint } from './furniture.service';
 import { FurnitureToolService } from './furniture-tool.service';
+import { CourseDetailService } from '../course-detail/course-detail.service';
 import { teeFill } from './furniture-overlay';
 
 const tpl = template(`
@@ -13,6 +14,12 @@ const tpl = template(`
                 <button bind="placeTee" type="button" class="place-btn">⛳ Tee</button>
                 <button bind="placePin" type="button" class="place-btn">📍 Pin</button>
                 <button bind="placeAim" type="button" class="place-btn">◆ Aim</button>
+                <button bind="placeGreen" type="button" class="place-btn">⊙ Green</button>
+            </div>
+            <div bind="greenPointRow" class="green-point-row">
+                <button bind="gpCenter" type="button" class="gp-btn">C</button>
+                <button bind="gpFront" type="button" class="gp-btn">F</button>
+                <button bind="gpBack" type="button" class="gp-btn">B</button>
             </div>
             <div bind="hint" class="place-hint"></div>
         </div>
@@ -53,8 +60,9 @@ const tpl = template(`
 
         <div bind="status" class="furn-panel__status"></div>
         <div class="furn-panel__hints">
-            <div>Pick a hole, arm a placement, then click the map.</div>
-            <div>Click a marker to select · drag to move · <b>Del</b> delete · <b>Esc</b> cancel</div>
+            <div>Pick a hole, arm a placement, then click the map to place one.</div>
+            <div><b>Shift-click</b> to place several in a row · <b>Esc</b> cancels placing.</div>
+            <div>Click a marker to select · drag to move · <b>Del</b> deletes selection.</div>
         </div>
     </div>
 `);
@@ -94,8 +102,25 @@ export class FurniturePanelComponent extends Component {
 
             & .place-grid {
                 display: grid;
-                grid-template-columns: 1fr 1fr 1fr;
+                grid-template-columns: 1fr 1fr 1fr 1fr;
                 gap: 2px;
+            }
+
+            & .green-point-row {
+                display: none;
+                gap: 2px;
+                &.show { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+            }
+            & .gp-btn {
+                padding: ${s('xs')} 2px;
+                font-size: 0.72rem;
+                font-weight: 600;
+                ${btn(t('radius-sm'))}
+                &.active {
+                    border-color: ${t('primary')};
+                    color: ${t('primary-text')};
+                    background: ${t('primary')};
+                }
             }
 
             & .place-btn {
@@ -151,6 +176,7 @@ export class FurniturePanelComponent extends Component {
                 ${btn(t('radius-sm'))}
                 color: ${t('error')};
                 border-color: ${t('error')};
+                &.hide { display: none; }
             }
 
             & .summary { display: none; &.show { display: flex; } }
@@ -177,6 +203,7 @@ export class FurniturePanelComponent extends Component {
 
     private svc = this.inject(FurnitureService);
     private tool = this.inject(FurnitureToolService);
+    private courseDetail = this.inject(CourseDetailService);
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -192,9 +219,30 @@ export class FurniturePanelComponent extends Component {
                 onclick: () => this.svc.arm('aim'),
                 className: () => this.placeClass('aim'),
             },
+            placeGreen: {
+                onclick: () => this.svc.arm('green'),
+                className: () => this.placeClass('green'),
+            },
+            greenPointRow: {
+                className: () => this.svc.placing.get() === 'green' ? 'green-point-row show' : 'green-point-row',
+            },
+            gpCenter: {
+                onclick: () => this.svc.pendingGreenPoint.set('center'),
+                className: () => this.gpClass('center'),
+            },
+            gpFront: {
+                onclick: () => this.svc.pendingGreenPoint.set('front'),
+                className: () => this.gpClass('front'),
+            },
+            gpBack: {
+                onclick: () => this.svc.pendingGreenPoint.set('back'),
+                className: () => this.gpClass('back'),
+            },
             hint: {
-                textContent: () => this.tool.placementHint.get() ?? '',
+                textContent: () => this.svc.notice.get() ?? this.tool.placementHint.get() ?? '',
                 className: () => {
+                    const notice = this.svc.notice.get();
+                    if (notice) return 'place-hint show warn';
                     const hint = this.tool.placementHint.get();
                     if (!hint) return 'place-hint';
                     const warn = /first|no green/.test(hint);
@@ -217,7 +265,11 @@ export class FurniturePanelComponent extends Component {
                 },
                 textContent: () => this.svc.selectedPin.get()?.active ? 'Active pin ✓' : 'Set active pin',
             },
-            deleteBtn: { onclick: () => void this.tool.deleteSelected() },
+            deleteBtn: {
+                onclick: () => void this.tool.deleteSelected(),
+                // Green points are structural — no delete for them.
+                className: () => this.svc.selection.get()?.kind === 'green' ? 'delete-btn hide' : 'delete-btn',
+            },
             summary: { className: () => this.tool.selectedHole.get() ? 'furn-panel__section summary show' : 'furn-panel__section summary' },
             summaryBody: { textContent: () => '' }, // filled via effect
             status: {
@@ -274,6 +326,10 @@ export class FurniturePanelComponent extends Component {
         return this.svc.placing.get() === kind ? 'place-btn active' : 'place-btn';
     }
 
+    private gpClass(point: GreenPoint): string {
+        return this.svc.pendingGreenPoint.get() === point ? 'gp-btn active' : 'gp-btn';
+    }
+
     private reorderVisible(): boolean {
         return !!(this.svc.selectedTee.get() || this.svc.selectedAim.get());
     }
@@ -308,6 +364,16 @@ export class FurniturePanelComponent extends Component {
             const idx = this.svc.aimsForHole(aim.holeId).findIndex(a => a.id === aim.id);
             return card('Aim point', aim.label ?? `#${idx + 1}`, aim.holeId, aim.lat, aim.lon, aim.elevation, `order ${idx + 1}`);
         }
+        const green = this.svc.selectedGreen.get();
+        if (green) {
+            const { green: g, point } = green;
+            const pos = this.svc.greenPointPos(g, point);
+            const label = point === 'center' ? 'center' : point === 'front' ? 'front' : 'back';
+            const holeNo = this.courseDetail.holes.get().find(h => h.id === g.holeId)?.number;
+            const name = holeNo !== undefined ? `${label} — hole ${holeNo}` : label;
+            if (!pos) return card('Green', name, g.holeId, g.centerLat, g.centerLon, g.elevation, `point ${label}`);
+            return card('Green', name, g.holeId, pos.lat, pos.lon, g.elevation, `point ${label} · structural (no delete)`);
+        }
         return '';
     }
 
@@ -318,13 +384,16 @@ export class FurniturePanelComponent extends Component {
         const pins = this.svc.pinsForHole(hole.id);
         const aims = this.svc.aimsForHole(hole.id);
         const activePin = pins.find(p => p.active);
-        const green = this.svc.greenForHole(hole.id);
+        const gp = this.svc.greenPointStatus(hole.id);
+        const greenLine = gp
+            ? `green: C${mark(gp.center)} F${mark(gp.front)} B${mark(gp.back)}`
+            : 'green: none';
         return [
             `<b>Hole ${hole.number}</b> (par ${hole.par})`,
             `${tees.length} tee${plural(tees.length)}`,
             `${pins.length} pin${plural(pins.length)}${activePin ? ` · active: <b>${escapeHtml(activePin.name)}</b>` : ''}`,
             `${aims.length} aim point${plural(aims.length)}`,
-            green ? 'green: yes' : 'green: none',
+            greenLine,
         ].join('<br>');
     }
 
@@ -372,6 +441,11 @@ function reorderIds(ids: string[], id: string, delta: number): string[] | null {
 
 function plural(n: number): string {
     return n === 1 ? '' : 's';
+}
+
+/** ✓ when a green point is present, – when absent. */
+function mark(present: boolean): string {
+    return present ? '✓' : '–';
 }
 
 function escapeHtml(s: string): string {

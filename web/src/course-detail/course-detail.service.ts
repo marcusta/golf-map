@@ -45,6 +45,30 @@ export class CourseDetailService {
         return updated;
     }
 
+    /**
+     * Update a hole (par / stroke index) with optimistic locking. Patches the
+     * `holes` signal in place with the server row on success (new version). On
+     * a version conflict the hole is refetched so the next edit self-heals, and
+     * `error` is set. Returns the updated hole or undefined on failure.
+     *
+     * A blank stroke index is expressed as `strokeIndex: null` (clears it);
+     * omitting the field leaves it untouched.
+     */
+    async updateHole(id: string, patch: { par?: number; strokeIndex?: number | null }): Promise<Hole | undefined> {
+        const current = this.holes.peek().find(h => h.id === id);
+        if (!current) return undefined;
+        const updated = await request(this.loading, this.error, () =>
+            this.holesApi.update({ id, version: current.version, ...patch }));
+        if (updated) {
+            this.holes.set(this.holes.peek().map(h => h.id === id ? updated : h));
+            return updated;
+        }
+        // Conflict/failure — refetch just this hole so its version self-heals.
+        const fresh = await request(this.loading, this.error, () => this.holesApi.get({ id }));
+        if (fresh) this.holes.set(this.holes.peek().map(h => h.id === id ? fresh : h));
+        return undefined;
+    }
+
     /** Load course + holes. Cached per courseId — only refetches when the id changes. */
     async load(courseId: string): Promise<void> {
         if (this.loadedCourseId === courseId) return;

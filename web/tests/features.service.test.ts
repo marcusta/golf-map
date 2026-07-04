@@ -116,7 +116,7 @@ describe('create', () => {
         expect(created?.id).toBeDefined();
         expect(created?.version).toBe(1);
         expect(svc.store.items.get()).toHaveLength(1);
-        expect(svc.selectedId.get()).toBe(created!.id);
+        expect([...svc.selectedIds.get()]).toEqual([created!.id]);
         expect(svc.saving.get()).toBe(false);
         expect(svc.saveError.get()).toBeNull();
         expect(rows.size).toBe(1); // persisted server-side
@@ -204,7 +204,7 @@ describe('removeFeature', () => {
         const ok = await svc.removeFeature('a');
         expect(ok).toBe(true);
         expect(svc.store.items.get()).toHaveLength(0);
-        expect(svc.selectedId.get()).toBeNull();
+        expect(svc.selectedIds.get().size).toBe(0);
         expect(rows.size).toBe(0);
     });
 
@@ -222,6 +222,63 @@ describe('removeFeature', () => {
     });
 });
 
+describe('multi-select', () => {
+    test('select replaces, toggleSelected adds/removes, setSelection replaces wholesale', async () => {
+        const { api } = fakeApi([feature('a'), feature('b'), feature('c')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        svc.select('a');
+        expect([...svc.selectedIds.get()]).toEqual(['a']);
+
+        svc.toggleSelected('b');
+        expect([...svc.selectedIds.get()].sort()).toEqual(['a', 'b']);
+        svc.toggleSelected('a');
+        expect([...svc.selectedIds.get()]).toEqual(['b']);
+
+        svc.setSelection(['a', 'c']);
+        expect([...svc.selectedIds.get()].sort()).toEqual(['a', 'c']);
+
+        svc.select(null);
+        expect(svc.selectedIds.get().size).toBe(0);
+    });
+
+    test('`selected` is the feature only when EXACTLY one is selected', async () => {
+        const { api } = fakeApi([feature('a'), feature('b')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        svc.select('a');
+        expect(svc.selected.get()?.id).toBe('a');
+        expect(svc.selectedFeatures.get().map(f => f.id)).toEqual(['a']);
+
+        svc.toggleSelected('b');
+        expect(svc.selected.get()).toBeNull(); // multi → no single target
+        expect(svc.selectedFeatures.get().map(f => f.id).sort()).toEqual(['a', 'b']);
+    });
+
+    test('removeFeature drops only the removed id from a multi-selection', async () => {
+        const { api } = fakeApi([feature('a'), feature('b')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.setSelection(['a', 'b']);
+
+        await svc.removeFeature('a');
+        expect([...svc.selectedIds.get()]).toEqual(['b']);
+    });
+
+    test('hiding a type deselects features of that type', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.setSelection(['a', 'b']);
+
+        svc.toggleTypeVisibility('bunker');
+        expect([...svc.selectedIds.get()]).toEqual(['b']);
+        expect(svc.hiddenTypes.get().has('bunker')).toBe(true);
+    });
+});
+
 describe('geojson derivation', () => {
     test('flattens EPSG:3006 rings to closed WGS84 polygons near the course', async () => {
         const { api } = fakeApi([feature('a')]);
@@ -234,7 +291,6 @@ describe('geojson derivation', () => {
 
         const gj = fc.features[0];
         expect(gj.properties!.type).toBe('bunker');
-        expect(gj.properties!.selected).toBe(false);
 
         const ring = (gj.geometry as GeoJSON.Polygon).coordinates[0];
         expect(ring[0]).toEqual(ring[ring.length - 1]); // closed
@@ -246,15 +302,19 @@ describe('geojson derivation', () => {
         }
     });
 
-    test('selection flag follows selectedId', async () => {
+    test('selection does NOT rebuild the geojson (highlight is a layer filter)', async () => {
+        // The FeatureCollection is ~20 MB for a full course and every
+        // rebuild re-sends it to the MapLibre worker (~250 ms). Selection
+        // must therefore never invalidate it — the features-selected layer
+        // filter (attachOverlay) carries the highlight instead.
         const { api } = fakeApi([feature('a'), feature('b')]);
         const svc = new FeaturesService(api);
         await svc.load('c1');
 
+        const before = svc.geojson.get();
         svc.select('b');
-        const fc = svc.geojson.get();
-        expect(fc.features.find(f => f.id === 'a')!.properties!.selected).toBe(false);
-        expect(fc.features.find(f => f.id === 'b')!.properties!.selected).toBe(true);
+        expect(svc.geojson.get()).toBe(before); // identical object — no recompute
+        expect(before.features[0].properties).not.toHaveProperty('selected');
     });
 
     test('geometryToWgs84Rings agrees with the raw transform and subdivides curves', () => {
@@ -266,6 +326,46 @@ describe('geojson derivation', () => {
         curved.rings[0].points[1].hIn = { x: base.x + 10, y: base.y - 30 };
         const rings = geometryToWgs84Rings(curved);
         expect(rings[0].length).toBeGreaterThan(5);
+    });
+
+    test('hidden types are filtered from the geojson (visibility toggles)', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'rough'), feature('c', 'rough')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        svc.toggleTypeVisibility('rough');
+        expect(svc.geojson.get().features.map(f => f.id)).toEqual(['a']);
+
+        svc.toggleTypeVisibility('rough'); // back on
+        expect(svc.geojson.get().features).toHaveLength(3);
+    });
+
+    test('patchLocal rebuilds the geojson with the moved coordinates', async () => {
+        const { api } = fakeApi([feature('a'), feature('b')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        const before = svc.geojson.get();
+        const ringOfB = (fc: GeoJSON.FeatureCollection) =>
+            (fc.features.find(f => f.id === 'b')!.geometry as GeoJSON.Polygon).coordinates[0];
+        const beforeRingA = (before.features.find(f => f.id === 'a')!.geometry as GeoJSON.Polygon).coordinates[0];
+
+        svc.patchLocal('b', squareGeometry(10, base.x + 20, base.y));
+        const after = svc.geojson.get();
+
+        expect(after).not.toBe(before); // store change → recompute
+        expect(ringOfB(after)).not.toEqual(ringOfB(before)); // b moved east
+        expect(ringOfB(after)[0][0]).toBeGreaterThan(ringOfB(before)[0][0]);
+        // Untouched feature hits the identity flatten cache — same array.
+        expect((after.features.find(f => f.id === 'a')!.geometry as GeoJSON.Polygon).coordinates[0]).toBe(beforeRingA);
+    });
+
+    test('setDragging is a safe no-op without an attached overlay', async () => {
+        const { api } = fakeApi([feature('a')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        expect(() => svc.setDragging(['a'], true)).not.toThrow();
+        expect(() => svc.setDragging(['a'], false)).not.toThrow();
     });
 
     test('flatten cache: same geometry object → same rings array identity', () => {

@@ -80,6 +80,33 @@ test('update changes par and bumps version', async () => {
     expect(updated.version).toBe(2);
 });
 
+test('stroke_index defaults to null and round-trips through update', async () => {
+    const { db } = await createTestDb(seedUsers, seedCourse);
+    const svc = new HolesService(db);
+
+    // Nullable, no seed value → starts null.
+    const before = await svc.get(TEST_HOLE_1_ID);
+    expect(before.strokeIndex).toBeNull();
+
+    // Set it.
+    const set = await svc.update(TEST_HOLE_1_ID, before.version, { strokeIndex: 7 });
+    expect(set.strokeIndex).toBe(7);
+    expect(set.version).toBe(before.version + 1);
+
+    // Persisted on re-read.
+    expect((await svc.get(TEST_HOLE_1_ID)).strokeIndex).toBe(7);
+
+    // Explicit null clears it.
+    const cleared = await svc.update(TEST_HOLE_1_ID, set.version, { strokeIndex: null });
+    expect(cleared.strokeIndex).toBeNull();
+
+    // Omitting strokeIndex leaves it untouched.
+    const withSi = await svc.update(TEST_HOLE_1_ID, cleared.version, { strokeIndex: 12 });
+    const parOnly = await svc.update(TEST_HOLE_1_ID, withSi.version, { par: 5 });
+    expect(parOnly.par).toBe(5);
+    expect(parOnly.strokeIndex).toBe(12);
+});
+
 test('update changes savedRegionJson', async () => {
     const { db } = await createTestDb(seedUsers, seedCourse);
     const svc = new HolesService(db);
