@@ -192,6 +192,9 @@ Keep golf-map-2's Gaussian blur + Taubin smoothing as an optional DEM pre-step f
 - Exit criteria: MapLibre demo page shows ortho + terrain tiles for one real course.
 
 ### Phase 3 — Web app: course builder MVP
+- Measurement tools in the editor canvas: point-to-point / multi-segment distance with **height difference and plays-like** (heights decoded from Terrain-RGB tiles client-side), per-segment readouts.
+- **Green height & slope maps**: per-green analysis overlay — sample the DEM over the green polygon, compute gradient → slope magnitude (%) and aspect (fall direction), render as heat map + fall-line arrows (port concepts from golf-map-2's green analysis / slope vertex coloring).
+- **Green surrounds analysis**: same height/slope overlay extended to a configurable buffer around the green (10–30 m) for aim-point strategy ("flat right side, hollow left side"). Green boundary must remain unmistakable: bold outline, full-strength overlay inside vs desaturated/hatched outside. Include a height-relative-to-green ramp (and/or curvature shading) so hollows/run-off bowls ("gropar") read as shapes, not just steep edges.
 - App shell, auth, course list; MapLibre editor canvas with ortho tiles.
 - Feature drawing: polygon/Bezier tools for all feature types; snapping; per-hole assignment.
 - Tees (all sets), pins (multiple, named), aim points with ordering; elevation auto-sampled.
@@ -233,8 +236,10 @@ Keep golf-map-2's Gaussian blur + Taubin smoothing as an optional DEM pre-step f
 - Bezier/B-spline native feature geometry (from golf-map-2), flattened GeoJSON for consumption.
 - Rounds/shots schema included from Phase 0 even though UI lands in Phase 7.
 
+**Decided (2026-07-04)**
+- Web app framework: **@basics/core client** (React rejected — consistency + signals suit the editor; golf-map-2's R3F 3D view will be rewritten in plain Three.js in Phase 6).
+
 **Open (decide when reached)**
-- **Web app framework: React vs @basics/core client** — under debate; lean @basics/core (see 2.6). Decide before Phase 3.
 - iOS persistence: SwiftData vs GRDB (decide at Phase 4; GRDB likely — plain SQLite mirrors server model).
 - Tile pre-generation only vs on-demand (titiler-style) — start pre-generated static, revisit if courses multiply.
 - Non-Swedish courses: DEM/ortho sources per country (Phase 2 keeps pipeline input generic GeoTIFF, so this is acquisition, not architecture).
