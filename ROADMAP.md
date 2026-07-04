@@ -127,7 +127,10 @@ Use `proj4js` (web/server) and a small Swift proj wrapper or precomputed transfo
 
 ### 2.5 Tile & terrain pipeline (`pipeline/`)
 
-Input per course: orthophoto GeoTIFF (Lantmäteriet, reuse `py-filer` QGIS scripts) and LiDAR DEM GeoTIFF.
+Input per course: orthophoto GeoTIFF (Lantmäteriet, reuse `py-filer` QGIS scripts) and LiDAR DEM GeoTIFF. Lantmäteriet now exposes STAC APIs — prefer STAC search+download over manual QGIS export:
+- Elevation/lidar: `https://api.lantmateriet.se/stac-hojd/v1` (collection `dtm-cog` = Markhöjdmodell as COG, RH2000)
+- Orthophotos: `https://api.lantmateriet.se/stac-bild/v1`
+- Search is anonymous; asset downloads from `dl1.lantmateriet.se` need HTTP Basic auth (free account) — pipeline reads `LANTMATERIET_USER`/`LANTMATERIET_PASS`.
 
 1. Normalize to COG in EPSG:3857-compatible form (`gdalwarp` + `gdal_translate -of COG`).
 2. **Ortho tiles**: `gdal2tiles.py --xyz` → JPEG/WebP pyramid, zoom ~14–20 clipped to course bbox.

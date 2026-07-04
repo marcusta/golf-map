@@ -1,0 +1,337 @@
+<!--
+  Phase 2 exit-criteria demo — golf-map ROADMAP.md
+
+  "MapLibre demo page shows ortho + terrain tiles for one real course."
+
+  Throwaway, self-contained, CDN-only. The real web app is built in Phase 3
+  (see ROADMAP.md 2.6 / Phase 3) — this file is not the place for real app
+  features (course editing, strategy planning, etc.). It has, however, been
+  extended with terrain QA/inspection tooling (Grid graticule toggle,
+  wireframe check) at explicit user request, so the mesh/tile quality can be
+  verified visually (e.g. bunker indentations) before Phase 3 work begins.
+
+  ── Config: switch course here ────────────────────────────────────────────
+    COURSE_ID    — Landeryd Masters (has ortho z14-20 jpg + terrain z12-17
+                   Terrain-RGB png tiles generated). The Landeryd Classic id
+                   (7CE5653E-5900-446A-8324-E527B95CB10F) symlinks to the
+                   same tile bytes and works identically.
+    TILE_BASE    — left empty so tile requests are same-origin, relative to
+                   wherever this page is served from. `web/demo/serve.ts`
+                   proxies /tiles/* to http://localhost:3000 (the API server)
+                   so the browser never makes a cross-origin request for
+                   tile bytes — see serve.ts for why (CORP header, not CORS).
+                   Point this at an absolute origin instead if you serve
+                   index.html some other way (e.g. `python3 -m http.server`)
+                   and hit the API server's CORS-exposed tiles directly.
+  ─────────────────────────────────────────────────────────────────────────
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>golf-map — Phase 2 demo (Landeryd)</title>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0b0e11; }
+  #map { position: absolute; inset: 0; }
+
+  #info {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 1;
+    max-width: 280px;
+    background: rgba(15, 18, 22, 0.82);
+    color: #e8ecef;
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 10px 12px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+  }
+  #info h1 {
+    font-size: 14px;
+    margin: 0 0 4px;
+    font-weight: 600;
+  }
+  #info .note {
+    opacity: 0.65;
+    font-size: 11px;
+    margin: 2px 0 8px;
+  }
+  #info .elev {
+    font-variant-numeric: tabular-nums;
+    margin-top: 6px;
+    border-top: 1px solid rgba(255,255,255,0.12);
+    padding-top: 6px;
+  }
+  #info .elev b { color: #7fd0ff; }
+
+  #controls {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #controls button {
+    font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: rgba(15, 18, 22, 0.82);
+    color: #e8ecef;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 6px;
+    padding: 8px 10px;
+    cursor: pointer;
+    text-align: left;
+    min-width: 150px;
+  }
+  #controls button:hover { background: rgba(30, 36, 44, 0.9); }
+  #controls button.active { border-color: #7fd0ff; color: #7fd0ff; }
+
+  .maplibregl-ctrl-attrib { font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="info">
+  <h1>Landeryd Masters</h1>
+  <div class="note">Phase 2 demo — ortho + terrain tiles, MapLibre GL JS</div>
+  <div>Ortho z14&ndash;20 &middot; Terrain-RGB z12&ndash;17</div>
+  <div class="elev">Elevation at cursor: <b id="elev-readout">&mdash;</b></div>
+</div>
+
+<div id="controls">
+  <button id="toggle-terrain" class="active">Terrain: ON (exaggeration 1.5x)</button>
+  <button id="toggle-hillshade">Hillshade: OFF</button>
+  <button id="toggle-grid">Grid: OFF</button>
+</div>
+
+<script>
+(function () {
+  // ---- Config -------------------------------------------------------
+  const COURSE_ID = '26D37361-D79C-41AA-AA49-92F2C2277222'; // Landeryd Masters
+  const TILE_BASE = ''; // same-origin; serve.ts proxies /tiles/* to :3000
+
+  const BOUNDS = [15.6954, 58.3431, 15.7489, 58.3712]; // WGS84 [west, south, east, north] — manifest bounds (authoritative Lantmäteriet rebuild, buffered coverage)
+  const CENTER = [15.7222, 58.3571];
+  const ATTRIBUTION = '&copy; Lantm&auml;teriet, CC BY 4.0';
+
+  // Tile URLs carry a version param: the server sends immutable year-long
+  // cache headers, so bump TILE_VERSION after any re-tile or browsers keep
+  // rendering stale tiles (the real app will derive this from the manifest's
+  // generatedAt / course revision).
+  const TILE_VERSION = '2026-07-04T1';
+  const ORTHO_URL = `${TILE_BASE}/tiles/${COURSE_ID}/ortho/{z}/{x}/{y}.jpg?v=${TILE_VERSION}`;
+  const TERRAIN_URL = `${TILE_BASE}/tiles/${COURSE_ID}/terrain/{z}/{x}/{y}.png?v=${TILE_VERSION}`;
+
+  const TERRAIN_EXAGGERATION = 1.5;
+
+  // ---- QA/inspection: Grid graticule ---------------------------------
+  // Fixed ~10 m ground spacing line grid over the course bbox, used to
+  // visually check terrain mesh quality (e.g. whether bunker/pond
+  // depressions actually show up once draped over 3D terrain). At this
+  // course's bbox (~2.6km x 2.3km) that's only ~460 line features total —
+  // negligible for a GeoJSON source/line layer at any zoom, so a fixed
+  // spacing (no LOD-based densification) is enough; no need for a separate
+  // "dense" variant.
+  const GRID_SPACING_M = 10;
+  const COURSE_LAT_FOR_GRID = (BOUNDS[1] + BOUNDS[3]) / 2; // course-local, not global — degrees/metre varies with latitude
+
+  // Builds a WGS84 line graticule (GeoJSON FeatureCollection of LineStrings)
+  // spanning `bounds` ([west, south, east, north]) with lines spaced
+  // `spacingM` metres apart in both directions. Longitude spacing is
+  // latitude-corrected (metres-per-degree-longitude shrinks by cos(lat));
+  // latitude spacing uses a near-constant metres-per-degree-latitude.
+  function buildGridGeoJSON(bounds, spacingM) {
+    const [west, south, east, north] = bounds;
+    const metresPerDegLat = 110574;
+    const metresPerDegLon = 111320 * Math.cos((COURSE_LAT_FOR_GRID * Math.PI) / 180);
+    const lonStep = spacingM / metresPerDegLon;
+    const latStep = spacingM / metresPerDegLat;
+
+    const features = [];
+
+    // Vertical lines (constant longitude, spanning south..north).
+    for (let lon = west; lon <= east; lon += lonStep) {
+      features.push({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: [[lon, south], [lon, north]] },
+      });
+    }
+
+    // Horizontal lines (constant latitude, spanning west..east).
+    for (let lat = south; lat <= north; lat += latStep) {
+      features.push({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: [[west, lat], [east, lat]] },
+      });
+    }
+
+    return { type: 'FeatureCollection', features };
+  }
+
+  const map = new maplibregl.Map({
+    container: 'map',
+    // Empty/dark background style — no external basemap, the ortho IS the map.
+    style: {
+      version: 8,
+      sources: {
+        ortho: {
+          type: 'raster',
+          tiles: [ORTHO_URL],
+          tileSize: 256,
+          minzoom: 14,
+          maxzoom: 20,
+          bounds: BOUNDS,
+          attribution: ATTRIBUTION,
+        },
+        terrain: {
+          type: 'raster-dem',
+          tiles: [TERRAIN_URL],
+          tileSize: 256,
+          minzoom: 12,
+          maxzoom: 17,
+          bounds: BOUNDS,
+          encoding: 'mapbox',
+        },
+        grid: {
+          type: 'geojson',
+          data: buildGridGeoJSON(BOUNDS, GRID_SPACING_M),
+        },
+      },
+      layers: [
+        {
+          id: 'bg',
+          type: 'background',
+          paint: { 'background-color': '#0b0e11' },
+        },
+        {
+          id: 'ortho-layer',
+          type: 'raster',
+          source: 'ortho',
+        },
+        {
+          id: 'hillshade-layer',
+          type: 'hillshade',
+          source: 'terrain',
+          layout: { visibility: 'none' },
+          paint: {
+            'hillshade-exaggeration': 0.6,
+          },
+        },
+        {
+          // QA/inspection aid: a fixed-spacing line graticule draped over
+          // the course. MapLibre line layers are draped onto 3D terrain by
+          // default (no special config needed), so with terrain ON these
+          // lines visibly deform into bunkers/depressions — a cheap stand-in
+          // for a real wireframe debug mode (MapLibre GL JS 4.7.1 has none;
+          // see the Grid toggle handler below for the runtime check).
+          id: 'grid-layer',
+          type: 'line',
+          source: 'grid',
+          layout: { visibility: 'none' },
+          paint: {
+            'line-color': '#ffffff',
+            'line-width': 1,
+            'line-opacity': 0.35,
+          },
+        },
+      ],
+      terrain: {
+        source: 'terrain',
+        exaggeration: TERRAIN_EXAGGERATION,
+      },
+    },
+    center: CENTER,
+    zoom: 15.5,
+    pitch: 45,
+    maxZoom: 22,
+    minZoom: 12,
+    attributionControl: false,
+  });
+
+  // QA hook: expose the map instance for scripted/visual verification tooling.
+  window.__map = map;
+
+  map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+  map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+
+  map.on('load', () => {
+    // Terrain is declared in the style JSON `terrain` block already, but
+    // setTerrain is called explicitly too so the ON/OFF toggle below has
+    // a matching API to call symmetrically.
+    map.setTerrain({ source: 'terrain', exaggeration: TERRAIN_EXAGGERATION });
+  });
+
+  map.on('error', (e) => {
+    // Surface tile/network errors to the console for the verification step;
+    // MapLibre swallows individual tile 404s into 'error' events.
+    console.error('[maplibre error]', e && e.error ? e.error.message || e.error : e);
+  });
+
+  // ---- QA: native terrain wireframe check ------------------------------
+  // MapLibre GL JS added an experimental `map.showTerrainWireframe` debug
+  // flag in some releases; the pinned 4.7.1 here does not have it (checked
+  // via the Map prototype at runtime). Log the result instead of silently
+  // assuming — if a future MapLibre bump adds it, this becomes visible in
+  // the console rather than requiring someone to know to look.
+  const hasNativeWireframe = 'showTerrainWireframe' in map;
+  console.log(
+    hasNativeWireframe
+      ? '[qa] MapLibre showTerrainWireframe is available — consider wiring a native toggle.'
+      : '[qa] MapLibre ' + maplibregl.getVersion() + ' has no showTerrainWireframe flag; using the Grid graticule toggle instead.'
+  );
+
+  // ---- Terrain toggle -------------------------------------------------
+  let terrainOn = true;
+  const terrainBtn = document.getElementById('toggle-terrain');
+  terrainBtn.addEventListener('click', () => {
+    terrainOn = !terrainOn;
+    map.setTerrain(terrainOn ? { source: 'terrain', exaggeration: TERRAIN_EXAGGERATION } : null);
+    terrainBtn.textContent = terrainOn
+      ? `Terrain: ON (exaggeration ${TERRAIN_EXAGGERATION}x)`
+      : 'Terrain: OFF';
+    terrainBtn.classList.toggle('active', terrainOn);
+  });
+
+  // ---- Hillshade toggle -------------------------------------------------
+  let hillshadeOn = false;
+  const hillshadeBtn = document.getElementById('toggle-hillshade');
+  hillshadeBtn.addEventListener('click', () => {
+    hillshadeOn = !hillshadeOn;
+    map.setLayoutProperty('hillshade-layer', 'visibility', hillshadeOn ? 'visible' : 'none');
+    hillshadeBtn.textContent = hillshadeOn ? 'Hillshade: ON' : 'Hillshade: OFF';
+    hillshadeBtn.classList.toggle('active', hillshadeOn);
+  });
+
+  // ---- Grid toggle (QA/inspection) -------------------------------------
+  // Thin white graticule line layer draped over the terrain (source is
+  // plain GeoJSON, generated once above from BOUNDS/GRID_SPACING_M). With
+  // terrain ON, these lines visibly sag into bunker/pond depressions and
+  // ridge over mounds, giving a cheap wireframe-like read on mesh quality
+  // without a native MapLibre wireframe mode (see the console check above).
+  let gridOn = false;
+  const gridBtn = document.getElementById('toggle-grid');
+  gridBtn.addEventListener('click', () => {
+    gridOn = !gridOn;
+    map.setLayoutProperty('grid-layer', 'visibility', gridOn ? 'visible' : 'none');
+    gridBtn.textContent = gridOn ? 'Grid: ON' : 'Grid: OFF';
+    gridBtn.classList.toggle('active', gridOn);
+  });
+
+  // ---- Mouse-position elevation readout -------------------------------
+  const elevReadout = document.getElementById('elev-readout');
+  map.on('mousemove', (e) => {
+    const elevation = map.queryTerrainElevation(e.lngLat);
+    elevReadout.textContent = elevation == null ? 'n/a' : `${elevation.toFixed(1)} m`;
+  });
+})();
+</script>
+</body>
+</html>

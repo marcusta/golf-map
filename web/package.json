@@ -1,5 +1,8 @@
 {
     "name": "web",
     "private": true,
-    "type": "module"
+    "type": "module",
+    "scripts": {
+        "demo": "bun run demo/serve.ts"
+    }
 }

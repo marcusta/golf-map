@@ -3,3 +3,11 @@ data/*.sqlite*
 dist
 .DS_Store
 uploads
+
+# Python tile pipeline (pipeline/)
+pipeline/.venv
+pipeline/**/__pycache__
+pipeline/**/*.egg-info
+.pytest_cache
+.env
+data/

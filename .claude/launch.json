@@ -1,0 +1,19 @@
+{
+    "version": "0.0.1",
+    "configurations": [
+        {
+            "name": "server",
+            "runtimeExecutable": "bun",
+            "runtimeArgs": ["run", "dev:server"],
+            "cwd": "server",
+            "port": 3000
+        },
+        {
+            "name": "demo",
+            "runtimeExecutable": "bun",
+            "runtimeArgs": ["run", "demo"],
+            "cwd": "web",
+            "port": 5180
+        }
+    ]
+}

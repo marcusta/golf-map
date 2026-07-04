@@ -86,3 +86,33 @@ bun run check:server
 bun run check:test
 bun test
 ```
+
+## Phase 2 demo
+
+Exit criteria (see [ROADMAP.md](./ROADMAP.md) Phase 2): *"MapLibre demo page shows ortho + terrain
+tiles for one real course."* `web/demo/` is a throwaway, self-contained static page — CDN MapLibre
+GL JS only, no build step, no dependencies — showing the Landeryd Masters orthophoto and
+Terrain-RGB terrain tiles served by `server/`. It is not the Phase 3 web app.
+
+Run the server and the demo in two terminals:
+
+```bash
+cd server && bun run dev:server   # API + tiles on :3000
+cd web && bun run demo            # demo page on :5180
+```
+
+Open http://localhost:5180. You should see: real orthophoto imagery of the Landeryd golf course
+(fairways, greens, bunkers, treelines) rendered in 3D with terrain displacement and pitch/bearing
+camera controls, a "Terrain" toggle that flattens/restores the 3D relief, a "Hillshade" toggle that
+overlays terrain shading, a mouse-position elevation readout (via `queryTerrainElevation`), and the
+"© Lantmäteriet, CC BY 4.0" attribution in the bottom-right corner.
+
+`web/demo/serve.ts` (plain `Bun.serve`, no dependencies) serves the static page and proxies
+`/tiles/*` requests to the API server on :3000. This proxy exists because MapLibre loads raster and
+raster-dem tiles as WebGL textures, which requires the browser's Cross-Origin-Resource-Policy (CORP)
+check to pass — not just CORS. `@basics/core`'s `createApp()` applies Hono's `secureHeaders()`
+globally, which sets `Cross-Origin-Resource-Policy: same-origin` on every response (tiles included)
+*after* route handlers run, so it can't be overridden per-route from `server/services/tiles.ts`.
+Serving the demo and proxying tiles through the same origin (:5180) sidesteps this without touching
+shared framework code. (Tile CORS itself, `Access-Control-Allow-Origin`, is already permissive by
+default via `CORS_ORIGIN=*` — only CORP was the blocker.)

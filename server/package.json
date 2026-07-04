@@ -3,7 +3,7 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "dev:server": "DB_PATH=../data/app.sqlite SESSION_DB_PATH=../data/sessions.sqlite OBS_DB_PATH=../data/obs.sqlite bun --watch main.ts",
+        "dev:server": "CROSS_ORIGIN_RESOURCE_POLICY=same-site DATA_DIR=../data DB_PATH=../data/app.sqlite SESSION_DB_PATH=../data/sessions.sqlite OBS_DB_PATH=../data/obs.sqlite bun --watch main.ts",
         "check:server": "tsc -p tsconfig.server.json --noEmit",
         "check:test": "tsc -p tsconfig.test.json --noEmit",
         "generate": "BASICS_API_IN_DIR=api BASICS_API_OUT_DIR=../shared/api bun ../../mackans-client-fw/core/generate-api.ts",
