@@ -207,6 +207,7 @@ Keep golf-map-2's Gaussian blur + Taubin smoothing as an optional DEM pre-step f
 - Live GPS distances (front/center/back/pin/hazards/aim points), plays-like from terrain tiles.
 - Swift OpenAPI client; revision-based sync.
 - Exit criteria: play a full round at the home course, airplane mode, everything works.
+- **STATUS (2026-07-05): built and simulator-verified.** All batches landed (scaffold → API/Geo/Store → Map/Screens/sync → on-course screen); 174 tests green. Live-verified on simulator: real 405 MB Landeryd bundle download, offline relaunch fully functional (unreachable-server launch renders map + GPS distances from local bundle), distances match independent computation to the meter across GPS moves and holes. **Remaining for exit criterion: a real round on a physical device** (needs Xcode device provisioning + walking the course). Data gaps found (course data, not app): all `strokeIndex` NULL, only one pin exists (inactive), aim-point labels empty, non-default tees on few holes — fill in the web builder before/while playing the verification round.
 
 ### Phase 5 — Strategy planning (web + phone)
 - Port v1 club/wind/dispersion math into `shared/` (one implementation, tested).
