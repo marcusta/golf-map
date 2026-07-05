@@ -10,8 +10,11 @@ import SwiftUI
 /// temp file, and loaded via `MLNMapView.styleURL`; overlay updates reassign
 /// shapes on existing sources (cheap, no style reload).
 ///
-/// Default gestures (pan/zoom/rotate) stay enabled; a `camera` command fits
-/// hole bounds with rotate-to-bearing when the SwiftUI layer sets one.
+/// Freeform gestures (pan/zoom/rotate) are explicitly enabled; a `camera`
+/// command fits hole bounds with rotate-to-bearing only when it changes (token
+/// bump), so it never fights the user's manual pan/zoom. An optional long-press
+/// gesture (browse-mode "move tee") unprojects to a coordinate via
+/// `onLongPress`, gated by `longPressEnabled`.
 ///
 /// ```swift
 /// CourseMapView(
@@ -29,19 +32,30 @@ public struct CourseMapView: UIViewRepresentable {
     /// Called on the main actor once the style finished loading (and again
     /// after any style rebuild caused by a configuration/features change).
     public var onMapReady: (() -> Void)?
+    /// When true, a long-press on the map unprojects to a coordinate and calls
+    /// `onLongPress`. Used for the browse-mode "move tee" gesture; false
+    /// disables the recognizer so it never fires in GPS mode.
+    public var longPressEnabled: Bool
+    /// Called (main actor) with the unprojected WGS84 point of a long-press,
+    /// only while `longPressEnabled` is true.
+    public var onLongPress: ((LatLon) -> Void)?
 
     public init(
         configuration: CourseMapConfiguration,
         featuresGeoJSON: Data,
         overlays: MapOverlayState = .empty,
         camera: MapCameraCommand? = nil,
-        onMapReady: (() -> Void)? = nil
+        onMapReady: (() -> Void)? = nil,
+        longPressEnabled: Bool = false,
+        onLongPress: ((LatLon) -> Void)? = nil
     ) {
         self.configuration = configuration
         self.featuresGeoJSON = featuresGeoJSON
         self.overlays = overlays
         self.camera = camera
         self.onMapReady = onMapReady
+        self.longPressEnabled = longPressEnabled
+        self.onLongPress = onLongPress
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -49,7 +63,12 @@ public struct CourseMapView: UIViewRepresentable {
     }
 
     public func makeUIView(context: Context) -> MLNMapView {
-        let coordinator = context.coordinator
+        buildMapView(coordinator: context.coordinator)
+    }
+
+    /// The `makeUIView` core, factored out so tests can drive it with a
+    /// hand-made coordinator (SwiftUI's `Context` has no public initializer).
+    func buildMapView(coordinator: Coordinator) -> MLNMapView {
         let styleURL = coordinator.writeStyleFile(
             configuration: configuration,
             featuresGeoJSON: featuresGeoJSON
@@ -65,6 +84,25 @@ public struct CourseMapView: UIViewRepresentable {
         mapView.logoView.isHidden = true
         // GPS dot is fed via MapOverlayState, never MapLibre's own tracking.
         mapView.showsUserLocation = false
+        // Explicitly (re-)enable freeform gestures. MapLibre defaults these on,
+        // but we set them defensively to rule out a 6.27 default regression —
+        // the camera is applied only on an explicit token bump (see
+        // updateUIView), so it never fights the user's pan/zoom.
+        mapView.isZoomEnabled = true
+        mapView.isScrollEnabled = true
+        mapView.isRotateEnabled = true
+        mapView.isPitchEnabled = false // top-down course view; pitch adds nothing
+
+        // Long-press → move active tee (browse mode). Recognizer stays attached
+        // but is enabled/disabled per `longPressEnabled` in updateUIView.
+        let longPress = UILongPressGestureRecognizer(
+            target: coordinator,
+            action: #selector(Coordinator.handleLongPress(_:))
+        )
+        longPress.isEnabled = longPressEnabled
+        mapView.addGestureRecognizer(longPress)
+        coordinator.longPressRecognizer = longPress
+        coordinator.onLongPress = onLongPress
 
         coordinator.desiredOverlays = overlays
         coordinator.pendingCamera = camera
@@ -74,8 +112,15 @@ public struct CourseMapView: UIViewRepresentable {
     }
 
     public func updateUIView(_ mapView: MLNMapView, context: Context) {
-        let coordinator = context.coordinator
+        applyUpdate(to: mapView, coordinator: context.coordinator)
+    }
+
+    /// The `updateUIView` core, factored out for the same testability reason as
+    /// `buildMapView`.
+    func applyUpdate(to mapView: MLNMapView, coordinator: Coordinator) {
         coordinator.onMapReady = onMapReady
+        coordinator.onLongPress = onLongPress
+        coordinator.longPressRecognizer?.isEnabled = longPressEnabled
 
         if coordinator.appliedConfiguration != configuration
             || coordinator.appliedFeaturesGeoJSON != featuresGeoJSON {
@@ -120,7 +165,21 @@ public struct CourseMapView: UIViewRepresentable {
         var pendingCamera: MapCameraCommand?
         var isStyleLoaded = false
         var onMapReady: (() -> Void)?
+        var onLongPress: ((LatLon) -> Void)?
+        weak var longPressRecognizer: UILongPressGestureRecognizer?
         private var styleFileURL: URL?
+
+        /// Unprojects the long-press point to a WGS84 coordinate and forwards
+        /// it once, on gesture begin (a single place, not per drag frame — the
+        /// simpler long-press-to-place interaction; see CourseMapView docs).
+        @objc func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+            guard gesture.state == .began,
+                  let mapView = gesture.view as? MLNMapView,
+                  let onLongPress else { return }
+            let point = gesture.location(in: mapView)
+            let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+            onLongPress(LatLon(lat: coordinate.latitude, lon: coordinate.longitude))
+        }
 
         /// Serializes the generated style to a fresh temp file (a new URL each
         /// time, so re-setting `MLNMapView.styleURL` always reloads). Returns

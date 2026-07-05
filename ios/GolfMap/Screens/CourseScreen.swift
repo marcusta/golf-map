@@ -89,6 +89,23 @@ struct CourseScreen: View {
             if let holeNumber = UserDefaults.standard.string(forKey: "openHole").flatMap(Int.init) {
                 newModel.goToHole(number: holeNumber)
             }
+            // `-browseMode 1` starts in browse mode (GPS off), `-browseMode 0`
+            // forces GPS on (overrides the persisted per-course setting so a
+            // live-verify run is deterministic); `-moveTee <lat>,<lon>` moves
+            // the current hole's active tee to that point so the moved-tee
+            // route can be screenshotted without a live gesture.
+            switch UserDefaults.standard.string(forKey: "browseMode") {
+            case "1": newModel.setGPSEnabled(false)
+            case "0": newModel.setGPSEnabled(true)
+            default: break
+            }
+            if let raw = UserDefaults.standard.string(forKey: "moveTee") {
+                let parts = raw.split(separator: ",")
+                if parts.count == 2, let lat = Double(parts[0]), let lon = Double(parts[1]) {
+                    newModel.setGPSEnabled(false)
+                    newModel.moveActiveTee(to: LatLon(lat: lat, lon: lon))
+                }
+            }
             #endif
 
             mapInputs = MapInputs(
@@ -120,7 +137,9 @@ private struct OnCourseContentView: View {
                 configuration: configuration,
                 featuresGeoJSON: featuresGeoJSON,
                 overlays: model.overlays,
-                camera: model.cameraCommand
+                camera: model.cameraCommand,
+                longPressEnabled: model.isBrowseMode,
+                onLongPress: { model.moveActiveTee(to: $0) }
             )
             .ignoresSafeArea()
 
@@ -223,10 +242,15 @@ private struct DistanceCardView: View {
     var body: some View {
         VStack(spacing: 10) {
             frontCenterBack
+            if let routed = model.routedAimDistance {
+                toAimRow(routed)
+            }
             if let distances = model.distances, distances.pin != nil {
                 pinRow(distances)
             }
-            if let distances = model.distances, !distances.aims.isEmpty {
+            if model.isBrowseMode, !model.routeLegs.isEmpty {
+                routeRow
+            } else if let distances = model.distances, !distances.aims.isEmpty {
                 aimRow(distances.aims)
             }
             bottomRow
@@ -321,11 +345,65 @@ private struct DistanceCardView: View {
         }
     }
 
+    // GPS mode, user past the aim-routing threshold: emphasize distance to the
+    // aim the line now points at.
+    private func toAimRow(_ aim: AimDistance) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.up.forward")
+                .font(.caption)
+                .foregroundStyle(Self.pinColor)
+            Text("TO \(aim.label.uppercased())")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("\(aim.meters) m")
+                .font(.callout.weight(.bold))
+                .monospacedDigit()
+        }
+    }
+
+    // Browse mode: per-leg route distances (tee→aim1, …, →green) + total.
+    private var routeRow: some View {
+        let legs = model.routeLegs
+        return VStack(spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(legs.enumerated()), id: \.offset) { index, meters in
+                        HStack(spacing: 4) {
+                            Text(legLabel(index: index, count: legs.count))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("\(meters)")
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(.white.opacity(0.08), in: Capsule())
+                    }
+                }
+            }
+            if let length = model.playingLength, let total = length.meters {
+                Text("Route \(length.approximate ? "~" : "")\(total) m")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    // Leg labels: first from the tee, last into the green, aims in between.
+    private func legLabel(index: Int, count: Int) -> String {
+        let from = index == 0 ? "Tee" : "A\(index)"
+        let to = index == count - 1 ? "Green" : "A\(index + 1)"
+        return "\(from)→\(to)"
+    }
+
     private var bottomRow: some View {
         HStack {
             teeMenu
             Spacer()
-            locationStatus
+            locationToggle
         }
     }
 
@@ -339,10 +417,25 @@ private struct DistanceCardView: View {
                     Text(name).tag(name)
                 }
             }
+            if model.currentTeeHasOverride {
+                Divider()
+                Button(role: .destructive) {
+                    model.resetActiveTee()
+                } label: {
+                    Label("Reset moved tee", systemImage: "arrow.uturn.backward")
+                }
+            }
+            if model.isBrowseMode {
+                Text("Long-press the map to move this tee")
+            }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "flag.circle")
+                Image(systemName: model.currentTeeHasOverride ? "flag.circle.fill" : "flag.circle")
                 Text(model.resolvedTeeName ?? "Tee")
+                if model.currentTeeHasOverride {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.caption2)
+                }
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2)
             }
@@ -354,14 +447,36 @@ private struct DistanceCardView: View {
         .buttonStyle(.plain)
     }
 
-    private var locationStatus: some View {
-        HStack(spacing: 5) {
-            Image(systemName: model.isUsingGPS ? "location.fill" : "location.slash")
-                .font(.caption)
-            Text(model.isUsingGPS ? "GPS" : (model.isLocationDenied ? "No location · from tee" : "From tee"))
-                .font(.caption)
+    // Tappable pill: toggles GPS ↔ Browse. In browse mode the live fix is
+    // ignored and the map shows the full hole route.
+    private var locationToggle: some View {
+        Button {
+            model.toggleGPS()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: locationIcon)
+                    .font(.caption)
+                Text(locationLabel)
+                    .font(.caption)
+            }
+            .foregroundStyle(model.isUsingGPS ? Color.green : Color.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.white.opacity(0.08), in: Capsule())
         }
-        .foregroundStyle(model.isUsingGPS ? Color.green : Color.secondary)
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.isBrowseMode ? "Browse mode, tap for GPS" : "GPS mode, tap to browse")
+    }
+
+    private var locationIcon: String {
+        if model.isBrowseMode { return "hand.draw" }
+        return model.isUsingGPS ? "location.fill" : "location.slash"
+    }
+
+    private var locationLabel: String {
+        if model.isBrowseMode { return "Browse" }
+        if model.isUsingGPS { return "GPS" }
+        return model.isLocationDenied ? "No location · from tee" : "From tee"
     }
 
     private static func format(_ value: Int?) -> String {

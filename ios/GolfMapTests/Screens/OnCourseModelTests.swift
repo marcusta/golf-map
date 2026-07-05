@@ -277,4 +277,174 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertEqual(model.holeBearing, expected, accuracy: 1e-9)
         XCTAssertEqual(model.cameraCommand?.bearing ?? -1, expected, accuracy: 1e-9)
     }
+
+    // MARK: - Feature 1: camera stability across GPS fixes
+
+    func testCameraCommandStaysEqualAcrossGPSFixes() {
+        let model = makeModel()
+        let initial = try! XCTUnwrap(model.cameraCommand)
+        // Successive fixes within the same hole must not re-issue the camera
+        // (holeBounds/bearing are GPS-independent), so it never fights gestures.
+        model.updateUserLocation(LatLon(lat: 58.3631, lon: 15.7085))
+        XCTAssertEqual(model.cameraCommand, initial)
+        model.updateUserLocation(LatLon(lat: 58.3632, lon: 15.7086))
+        XCTAssertEqual(model.cameraCommand, initial)
+        model.updateUserLocation(nil)
+        XCTAssertEqual(model.cameraCommand, initial)
+        // Only an explicit recenter (token bump) changes it.
+        model.recenter()
+        XCTAssertNotEqual(model.cameraCommand, initial)
+    }
+
+    // MARK: - Feature 2: GPS toggle + browse mode
+
+    func testGPSToggleIgnoresFixAndPersists() {
+        let model = makeModel()
+        let fix = LatLon(lat: 58.3630, lon: 15.7085)
+        model.updateUserLocation(fix)
+        XCTAssertTrue(model.isUsingGPS)
+
+        model.setGPSEnabled(false)
+        XCTAssertTrue(model.isBrowseMode)
+        XCTAssertFalse(model.isUsingGPS)
+        // Origin ignores the fix, falls to the active tee.
+        XCTAssertEqual(model.origin, LatLon(lat: 58.3600, lon: 15.7100))
+        XCTAssertNil(model.overlays.userLocation, "no user dot in browse mode")
+
+        // Persisted per course.
+        let reloaded = makeModel()
+        XCTAssertTrue(reloaded.isBrowseMode)
+    }
+
+    func testBrowseModeRouteIsTeeAimsGreenInOrder() {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        let route = model.holeRoute
+        XCTAssertEqual(route, [
+            LatLon(lat: 58.3600, lon: 15.7100), // tee
+            LatLon(lat: 58.3615, lon: 15.7092), // aim 1 (sortOrder 0)
+            LatLon(lat: 58.3625, lon: 15.7088), // aim 2 (sortOrder 1)
+            LatLon(lat: 58.3640, lon: 15.7080), // green center
+        ])
+        XCTAssertEqual(model.overlays.distanceLine, route, "browse line follows the full route")
+        // Legs: three segments for four vertices.
+        XCTAssertEqual(model.routeLegs.count, 3)
+    }
+
+    func testBrowseModeRouteForNoAimHoleIsTeeToGreen() {
+        let model = makeModel()
+        model.goToHole(number: 2) // center-only green, no aims
+        model.setGPSEnabled(false)
+        XCTAssertEqual(model.holeRoute, [
+            LatLon(lat: 58.3660, lon: 15.7060), // tee
+            LatLon(lat: 58.3670, lon: 15.7050), // green center
+        ])
+        XCTAssertEqual(model.routeLegs.count, 1)
+    }
+
+    // MARK: - Feature 3: aim routing
+
+    func testAimRoutingPicksNextAimWhenFarFromGreen() {
+        let model = makeModel()
+        // Place the user just behind the tee, well past 230 m from the green.
+        let farUser = LatLon(lat: 58.3595, lon: 15.7100)
+        model.updateUserLocation(farUser)
+        let green = LatLon(lat: 58.3640, lon: 15.7080)
+        XCTAssertGreaterThan(Distance.planarMeters(farUser, green), 230)
+
+        let aim = try! XCTUnwrap(model.nextAimAhead)
+        // First aim ahead in tee→green order is "Aim 1" (closer to green than user).
+        XCTAssertEqual(aim.label, "Aim 1")
+        // Primary line goes user → that aim, not user → green.
+        XCTAssertEqual(model.overlays.distanceLine, [farUser, aim.position])
+        XCTAssertEqual(model.routedAimDistance?.label, "Aim 1")
+    }
+
+    func testAimRoutingFallsToGreenWhenClose() {
+        let model = makeModel()
+        // User right at the green front: < 230 m to center.
+        let nearUser = LatLon(lat: 58.3638, lon: 15.7080)
+        model.updateUserLocation(nearUser)
+        let green = LatLon(lat: 58.3640, lon: 15.7080)
+        XCTAssertLessThan(Distance.planarMeters(nearUser, green), 230)
+        XCTAssertNil(model.nextAimAhead)
+        XCTAssertEqual(model.overlays.distanceLine, [nearUser, green])
+        XCTAssertNil(model.routedAimDistance)
+    }
+
+    func testAimRoutingThresholdIsConfigurableAndPersists() {
+        let model = makeModel()
+        let user = LatLon(lat: 58.3595, lon: 15.7100)
+        model.updateUserLocation(user)
+        XCTAssertNotNil(model.nextAimAhead, "default 230 → routes to aim")
+        // Raise the threshold above the user→green distance → back to green.
+        let big = Distance.planarMeters(user, LatLon(lat: 58.3640, lon: 15.7080)) + 100
+        model.setAimRoutingThresholdMeters(big)
+        XCTAssertNil(model.nextAimAhead)
+
+        let reloaded = makeModel()
+        XCTAssertEqual(reloaded.aimRoutingThresholdMeters, big, accuracy: 1e-6)
+    }
+
+    func testAimRoutingDisabledInBrowseMode() {
+        let model = makeModel()
+        model.updateUserLocation(LatLon(lat: 58.3595, lon: 15.7100))
+        model.setGPSEnabled(false)
+        XCTAssertNil(model.nextAimAhead, "no aim routing without a live GPS origin")
+    }
+
+    // MARK: - Feature 4: tee override honored across ALL reads
+
+    func testTeeOverrideHonoredAcrossReadsAndPersistsAndResets() {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        let moved = LatLon(lat: 58.3585, lon: 15.7110)
+        model.moveActiveTee(to: moved)
+        XCTAssertTrue(model.currentTeeHasOverride)
+
+        // origin / route
+        XCTAssertEqual(model.origin, moved)
+        XCTAssertEqual(model.holeRoute.first, moved)
+        // bounds — south/east edge now driven by the moved tee.
+        let bounds = try! XCTUnwrap(model.holeBounds)
+        XCTAssertEqual(bounds.south, moved.lat, accuracy: 1e-9)
+        XCTAssertEqual(bounds.east, moved.lon, accuracy: 1e-9)
+        // bearing — recomputed from the moved tee.
+        let expectedBearing = Distance.bearingDegrees(moved, LatLon(lat: 58.3640, lon: 15.7080))
+        XCTAssertEqual(model.holeBearing, expectedBearing, accuracy: 1e-9)
+        // playing length — from the moved tee.
+        let expectedLength = HoleLength.playingLength(
+            tee: moved,
+            aims: [LatLon(lat: 58.3615, lon: 15.7092), LatLon(lat: 58.3625, lon: 15.7088)],
+            greenCenter: LatLon(lat: 58.3640, lon: 15.7080)
+        )
+        XCTAssertEqual(model.playingLength, expectedLength)
+        // distances — center measured from the moved tee.
+        let expectedCenter = Int(Distance.planarMeters(moved, LatLon(lat: 58.3640, lon: 15.7080)).rounded())
+        XCTAssertEqual(model.distances?.center, expectedCenter)
+
+        // persistence
+        let reloaded = makeModel()
+        XCTAssertTrue(reloaded.currentTeeHasOverride)
+        XCTAssertEqual(reloaded.holeRoute.first, moved)
+
+        // reset
+        reloaded.resetActiveTee()
+        XCTAssertFalse(reloaded.currentTeeHasOverride)
+        XCTAssertEqual(reloaded.holeRoute.first, LatLon(lat: 58.3600, lon: 15.7100))
+        let afterReset = makeModel()
+        XCTAssertFalse(afterReset.currentTeeHasOverride, "reset persists")
+    }
+
+    func testTeeOverrideIsPerTeeName() {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        let moved = LatLon(lat: 58.3585, lon: 15.7110)
+        model.moveActiveTee(to: moved) // default tee
+        XCTAssertTrue(model.currentTeeHasOverride)
+        // Switching to Blue tee → no override there.
+        model.selectTee(named: "Blue")
+        XCTAssertFalse(model.currentTeeHasOverride)
+        XCTAssertEqual(model.origin, LatLon(lat: 58.3590, lon: 15.7100), "Blue's stored position")
+    }
 }
