@@ -651,7 +651,10 @@ private struct OnCourseContentView: View {
         measure.clear()
         withAnimation(.easeInOut(duration: 0.28)) {
             immersive = false
-            model.enterTool(.adjust)
+            // Keep the user's current zoom/pan — entering Adjust must not yank
+            // the view out to hole framing (the "zooms out when I tap Adjust"
+            // report). Handles are reachable by pan / the +/- buttons.
+            model.enterTool(.adjust, refitCamera: false)
         }
     }
 

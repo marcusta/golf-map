@@ -217,10 +217,21 @@ final class OnCourseModel {
     private(set) var toolMode: MapToolMode = .none
     /// Camera target while a tool is active; nil keeps the hole framing.
     private var toolFocusBounds: MapCoordinateBounds?
+    /// Whether entering the current tool re-framed the camera. When false
+    /// (Adjust mode), the user's current zoom/pan is preserved on entry AND on
+    /// exit — so tapping the tool button never yanks the view.
+    private var toolDidRefitCamera = false
 
     /// Enter a tool, optionally re-aiming the camera at `focusBounds`
-    /// (tight-fit, hole bearing kept so the view doesn't spin).
-    func enterTool(_ mode: MapToolMode, focusBounds: MapCoordinateBounds? = nil) {
+    /// (tight-fit, hole bearing kept so the view doesn't spin). Pass
+    /// `refitCamera: false` (Adjust mode) to leave the camera exactly where the
+    /// user has it — no token bump, so `cameraCommand` is unchanged and never
+    /// re-applied.
+    func enterTool(
+        _ mode: MapToolMode,
+        focusBounds: MapCoordinateBounds? = nil,
+        refitCamera: Bool = true
+    ) {
         guard mode != .none else {
             exitTool()
             return
@@ -228,17 +239,20 @@ final class OnCourseModel {
         toolMode = mode
         toolFocusBounds = focusBounds
         draggingHandleID = nil
-        cameraToken += 1
+        toolDidRefitCamera = refitCamera
+        if refitCamera { cameraToken += 1 }
     }
 
-    /// Leave the active tool and restore the normal hole framing. An
-    /// in-flight Adjust drag is abandoned uncommitted.
+    /// Leave the active tool. Restores the normal hole framing only if entering
+    /// the tool had re-framed the camera; a no-refit tool (Adjust) leaves the
+    /// view untouched. An in-flight Adjust drag is abandoned uncommitted.
     func exitTool() {
         guard toolMode != .none else { return }
         toolMode = .none
         toolFocusBounds = nil
         draggingHandleID = nil
-        cameraToken += 1
+        if toolDidRefitCamera { cameraToken += 1 }
+        toolDidRefitCamera = false
     }
 
     // MARK: - Tee selection

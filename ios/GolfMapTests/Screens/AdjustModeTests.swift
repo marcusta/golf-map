@@ -281,6 +281,27 @@ final class AdjustModeTests: XCTestCase {
 
     // MARK: - Tool-mode transitions
 
+    /// Entering Adjust with `refitCamera: false` (the screen's actual call)
+    /// preserves the user's current zoom/pan — no camera-token bump, so
+    /// `cameraCommand` is unchanged and never re-applied — and exiting doesn't
+    /// snap back either. This is the fix for "tapping Adjust zooms me out".
+    func testAdjustNoRefitPreservesCameraOnEnterAndExit() {
+        let model = makeModel()
+        let before = model.cameraCommand
+
+        model.enterTool(.adjust, refitCamera: false)
+        XCTAssertEqual(model.toolMode, .adjust)
+        XCTAssertEqual(model.cameraCommand, before, "entering adjust must not move the camera")
+
+        model.exitTool()
+        XCTAssertEqual(model.cameraCommand, before, "exiting adjust must not move the camera")
+
+        // Green view still re-frames (token bumps → command changes).
+        let greenBounds = MapCoordinateBounds(west: 15.7075, south: 58.3637, east: 15.7085, north: 58.3643)
+        model.enterTool(.greenView, focusBounds: greenBounds)
+        XCTAssertNotEqual(model.cameraCommand, before, "green view still zooms to the green")
+    }
+
     func testAdjustEntersAndExitsMutuallyExclusiveWithOtherTools() throws {
         let model = makeModel()
         let greenBounds = MapCoordinateBounds(west: 15.7075, south: 58.3637, east: 15.7085, north: 58.3643)
