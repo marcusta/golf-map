@@ -24,6 +24,14 @@ public enum MapStyleIDs {
     public static let userLocationSource = "overlay-user-location"
     public static let userLocationHaloLayer = "overlay-user-location-halo"
     public static let userLocationDotLayer = "overlay-user-location-dot"
+
+    // Measure tool path (dedicated sources — the distance-line source is
+    // rewritten every GPS fix and must never fight the measure overlay).
+    public static let measureLineSource = "overlay-measure-line"
+    public static let measureLineCasingLayer = "overlay-measure-line-casing"
+    public static let measureLineLayer = "overlay-measure-line"
+    public static let measurePointsSource = "overlay-measure-points"
+    public static let measurePointsLayer = "overlay-measure-points"
 }
 
 public enum MapStyleError: Error, Equatable {
@@ -69,6 +77,22 @@ public enum MapStyleBuilder {
     // MLNMapView's own user-location tracking).
     static let userDotColor = "#3a7bd5"
     static let userHaloColor = "#ffffff"
+
+    // Measure overlay: web measure-tool palette (measure-tool.service.ts) —
+    // amber path, point A green, last point red, mid points amber. No text
+    // labels on the map: the offline style has no glyph PBFs (symbol
+    // text-field needs a `glyphs` source), so point identity is encoded in
+    // color/order and the readout card's A→B segment strip.
+    static let measureLineColor = "#fbbf24"
+    static let measureLineWidth = 3.0
+    static let measureLineCasingColor = "#14281c"
+    static let measureLineCasingWidth = 5.5
+    static let measurePointColors: [(kind: String, hex: String)] = [
+        ("first", "#22c55e"),
+        ("last", "#ef4444"),
+        ("mid", "#fbbf24"),
+    ]
+    static let measurePointStrokeColor = "#ffffff"
 
     /// file:// XYZ template for the bundle's ortho tiles, with literal
     /// {z}/{x}/{y} placeholders (string concatenation — URL APIs would
@@ -117,7 +141,16 @@ public enum MapStyleBuilder {
             MapStyleIDs.distanceLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.targetsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.userLocationSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.measureLineSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.measurePointsSource: ["type": "geojson", "data": emptyCollection],
         ]
+
+        var measurePointColorExpr: [Any] = ["match", ["get", "kind"]]
+        for (kind, hex) in measurePointColors {
+            measurePointColorExpr.append(kind)
+            measurePointColorExpr.append(hex)
+        }
+        measurePointColorExpr.append(measureLineColor)
 
         var targetColorExpr: [Any] = ["match", ["get", "kind"]]
         for (kind, hex) in targetColors {
@@ -188,6 +221,38 @@ public enum MapStyleBuilder {
                     "circle-radius": targetRadiusExpr,
                     "circle-stroke-color": targetStrokeColor,
                     "circle-stroke-width": 1.5,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.measureLineCasingLayer,
+                "type": "line",
+                "source": MapStyleIDs.measureLineSource,
+                "layout": ["line-cap": "round", "line-join": "round"],
+                "paint": [
+                    "line-color": measureLineCasingColor,
+                    "line-width": measureLineCasingWidth,
+                    "line-opacity": 0.85,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.measureLineLayer,
+                "type": "line",
+                "source": MapStyleIDs.measureLineSource,
+                "layout": ["line-cap": "round", "line-join": "round"],
+                "paint": [
+                    "line-color": measureLineColor,
+                    "line-width": measureLineWidth,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.measurePointsLayer,
+                "type": "circle",
+                "source": MapStyleIDs.measurePointsSource,
+                "paint": [
+                    "circle-color": measurePointColorExpr,
+                    "circle-radius": 7.0,
+                    "circle-stroke-color": measurePointStrokeColor,
+                    "circle-stroke-width": 2.0,
                 ],
             ],
             [

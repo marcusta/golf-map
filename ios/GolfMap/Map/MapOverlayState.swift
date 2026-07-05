@@ -31,6 +31,27 @@ public struct UserLocationMarker: Equatable, Sendable {
     }
 }
 
+/// The measure tool's rendered path: an amber polyline through every placed
+/// point plus labelled point circles (first green, last red, mids amber —
+/// mirrors the web measure overlay styling). Deliberately its OWN overlay
+/// with its own sources: the GPS distance-line source is rewritten on every
+/// GPS fix and must never fight the measure path.
+public struct MeasureOverlay: Equatable, Sendable {
+    /// Placed measure points in tap order. Empty hides the overlay.
+    public var points: [LatLon]
+
+    public init(points: [LatLon] = []) {
+        self.points = points
+    }
+
+    public static let empty = MeasureOverlay()
+
+    /// Point labels A, B, C, … (wraps past Z, which never happens for a path).
+    public static func pointLabel(_ index: Int) -> String {
+        String(UnicodeScalar(UInt8(65 + index % 26)))
+    }
+}
+
 /// Everything dynamic drawn on top of the course map. Value type — the
 /// SwiftUI layer builds a new state and passes it to `CourseMapView`; updates
 /// are cheap (shape reassignment on existing sources, no style reload).
@@ -42,15 +63,19 @@ public struct MapOverlayState: Equatable, Sendable {
     public var targets: [TargetMarker]
     /// Custom GPS dot; nil hides it.
     public var userLocation: UserLocationMarker?
+    /// Measure-tool path (amber line + point circles); `.empty` hides it.
+    public var measure: MeasureOverlay
 
     public init(
         distanceLine: [LatLon] = [],
         targets: [TargetMarker] = [],
-        userLocation: UserLocationMarker? = nil
+        userLocation: UserLocationMarker? = nil,
+        measure: MeasureOverlay = .empty
     ) {
         self.distanceLine = distanceLine
         self.targets = targets
         self.userLocation = userLocation
+        self.measure = measure
     }
 
     public static let empty = MapOverlayState()
@@ -89,6 +114,30 @@ enum MapOverlayShapes {
         feature.coordinate = marker.position.clCoordinate
         return feature
     }
+
+    /// The measure path polyline (hidden below two points, like the distance
+    /// line).
+    static func measureLineShape(_ overlay: MeasureOverlay) -> MLNShape {
+        distanceLineShape(overlay.points)
+    }
+
+    /// Measure point circles, tagged `kind` first/last/mid (drives the web
+    /// palette: A green, last red, mids amber) and `label` A, B, C, … A single
+    /// placed point is `first`.
+    static func measurePointsShape(_ overlay: MeasureOverlay) -> MLNShape {
+        let points = overlay.points
+        let features = points.enumerated().map { index, position -> MLNPointFeature in
+            let feature = MLNPointFeature()
+            feature.coordinate = position.clCoordinate
+            let kind = index == 0 ? "first" : (index == points.count - 1 ? "last" : "mid")
+            feature.attributes = [
+                "kind": kind,
+                "label": MeasureOverlay.pointLabel(index),
+            ]
+            return feature
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
 }
 
 /// Pushes a `MapOverlayState` into the style's overlay shape sources.
@@ -110,6 +159,16 @@ enum MapOverlayRenderer {
         setShape(
             MapOverlayShapes.userLocationShape(state.userLocation),
             sourceID: MapStyleIDs.userLocationSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.measureLineShape(state.measure),
+            sourceID: MapStyleIDs.measureLineSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.measurePointsShape(state.measure),
+            sourceID: MapStyleIDs.measurePointsSource,
             in: style
         )
     }

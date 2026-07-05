@@ -187,13 +187,19 @@ final class OnCourseModel {
     // MARK: - Map tools (transient modes over the normal hole view)
 
     /// A transient map tool over the normal hole view. Exactly one tool can be
-    /// active at a time; a tool may take over the camera via `focusBounds`
-    /// (e.g. Green view zooms to the green). Hole navigation dismisses the
-    /// active tool. Follow-up tools (measure, elevation profile) plug in as
-    /// new cases and reuse `enterTool`/`exitTool` + `toolFocusBounds`.
+    /// active at a time (entering one exits the other — `toolMode` is a single
+    /// value); a tool may take over the camera via `focusBounds` (e.g. Green
+    /// view zooms to the green). Hole navigation dismisses the active tool.
+    ///
+    /// `.measure` re-purposes the map tap: instead of toggling immersive
+    /// chrome, a tap PLACES a measure point (see `MeasureModel`); browse
+    /// long-press is disabled while any tool is active. The elevation profile
+    /// is deliberately NOT a tool — it's a non-modal sheet openable over any
+    /// mode.
     enum MapToolMode: Equatable, Sendable {
         case none
         case greenView
+        case measure
     }
 
     private(set) var toolMode: MapToolMode = .none

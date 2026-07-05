@@ -118,6 +118,42 @@ final class MapToolModeTests: XCTestCase {
         XCTAssertNotEqual(after.token, before.token)
     }
 
+    // MARK: - Measure tool mode
+
+    func testMeasureToolKeepsHoleFramingWithFreshToken() throws {
+        let model = makeModel()
+        let before = try XCTUnwrap(model.cameraCommand)
+
+        model.enterTool(.measure) // no focus bounds — camera stays on the hole
+        XCTAssertEqual(model.toolMode, .measure)
+        let during = try XCTUnwrap(model.cameraCommand)
+        XCTAssertEqual(during.target, .bounds(try XCTUnwrap(model.holeBounds)))
+        XCTAssertEqual(during.padding, 70, "measure keeps the normal hole fit")
+        XCTAssertNotEqual(during.token, before.token)
+
+        model.exitTool()
+        XCTAssertEqual(model.toolMode, .none)
+    }
+
+    func testToolsAreMutuallyExclusive() {
+        let model = makeModel()
+        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.measure)
+        XCTAssertEqual(model.toolMode, .measure, "entering measure exits green view")
+        XCTAssertEqual(model.cameraCommand?.padding, 70, "green-view focus bounds dropped")
+
+        model.enterTool(.greenView, focusBounds: greenBounds)
+        XCTAssertEqual(model.toolMode, .greenView, "entering green view exits measure")
+        XCTAssertEqual(model.cameraCommand?.padding, 40)
+    }
+
+    func testHoleNavigationDismissesMeasure() {
+        let model = makeModel()
+        model.enterTool(.measure)
+        model.nextHole()
+        XCTAssertEqual(model.toolMode, .none)
+    }
+
     // MARK: - GreenAnalysisModel
 
     /// A green outline around (15.708, 58.364) + a plane sampler → the model

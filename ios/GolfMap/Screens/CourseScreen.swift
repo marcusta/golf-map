@@ -15,6 +15,8 @@ struct CourseScreen: View {
 
     @State private var model: OnCourseModel?
     @State private var greenAnalysis: GreenAnalysisModel?
+    @State private var measure: MeasureModel?
+    @State private var profile: ElevationProfileModel?
     @State private var mapInputs: MapInputs?
     @State private var locationProvider = LocationProvider()
     @State private var loadError: String?
@@ -26,10 +28,12 @@ struct CourseScreen: View {
 
     var body: some View {
         Group {
-            if let model, let greenAnalysis, let mapInputs {
+            if let model, let greenAnalysis, let measure, let profile, let mapInputs {
                 OnCourseContentView(
                     model: model,
                     greenAnalysis: greenAnalysis,
+                    measure: measure,
+                    profile: profile,
                     configuration: mapInputs.configuration,
                     featuresGeoJSON: mapInputs.featuresGeoJSON
                 )
@@ -91,6 +95,13 @@ struct CourseScreen: View {
                 sampler: { await terrain.elevation(at: $0) }
             )
 
+            // Measure + elevation profile share the same bundle terrain
+            // pyramid (one LRU of decoded tiles for the whole screen).
+            let newMeasure = MeasureModel()
+            newMeasure.elevationSampler = { await terrain.elevation(at: $0) }
+            let newProfile = ElevationProfileModel()
+            newProfile.elevationSampler = { await terrain.elevation(at: $0) }
+
             #if DEBUG
             // Headless live-verify hook (same family as `-openCourse` in
             // CourseListScreen): `-openHole <n>` jumps straight to a hole so
@@ -128,6 +139,8 @@ struct CourseScreen: View {
             )
             model = newModel
             greenAnalysis = newGreenAnalysis
+            measure = newMeasure
+            profile = newProfile
         } catch {
             loadError = "Failed to load the course bundle: \(error.localizedDescription)"
         }
@@ -140,6 +153,8 @@ struct CourseScreen: View {
 private struct OnCourseContentView: View {
     let model: OnCourseModel
     let greenAnalysis: GreenAnalysisModel
+    let measure: MeasureModel
+    let profile: ElevationProfileModel
     let configuration: CourseMapConfiguration
     let featuresGeoJSON: Data
 
@@ -147,31 +162,49 @@ private struct OnCourseContentView: View {
     /// the bottom distances card, leaving the full-bleed hole, a small compact
     /// chip, and the right-side controls. Tap again to restore. Separate from
     /// the browse-mode long-press (move tee); the two never fire together.
-    /// Suspended while Green view is active (its chrome must stay put).
+    /// Suspended while any tool is active (Green view chrome must stay put; in
+    /// measure mode a tap PLACES a point instead).
     @State private var immersive = false
+    /// Elevation-profile sheet. NOT a map tool — non-modal, openable over any
+    /// mode; reads the measure path while measuring, else the hole route.
+    @State private var showProfile = false
 
     private var isGreenView: Bool { model.toolMode == .greenView }
+    private var isMeasure: Bool { model.toolMode == .measure }
+
+    /// Model overlays + the measure path while measuring.
+    private var overlays: MapOverlayState {
+        var overlays = model.overlays
+        if isMeasure {
+            overlays.measure = measure.overlay
+        }
+        return overlays
+    }
 
     var body: some View {
         ZStack {
             CourseMapView(
                 configuration: configuration,
                 featuresGeoJSON: featuresGeoJSON,
-                overlays: model.overlays,
+                overlays: overlays,
                 camera: model.cameraCommand,
                 zoom: model.zoomCommand,
                 analysis: isGreenView ? greenAnalysis.mapState : nil,
-                longPressEnabled: model.isBrowseMode && !isGreenView,
-                onLongPress: { model.moveActiveTee(to: $0) }
+                longPressEnabled: model.isBrowseMode && model.toolMode == .none,
+                onLongPress: { model.moveActiveTee(to: $0) },
+                measureTapEnabled: isMeasure,
+                onMeasureTap: { measure.place($0) }
             )
             .ignoresSafeArea()
             // Short tap toggles chrome. High minimumDistance drag-less tap so it
             // doesn't swallow the map's own pan; long-press (move tee) is a
-            // separate recognizer on the MLNMapView and is unaffected. Inert in
-            // Green view so a stray tap can't hide the analysis panel.
+            // separate recognizer on the MLNMapView and is unaffected. Inert
+            // while a tool is active: in Green view a stray tap must not hide
+            // the analysis panel, and in measure mode the tap places a point
+            // (the UIKit recognizer in CourseMapView).
             .simultaneousGesture(
                 TapGesture().onEnded {
-                    guard !isGreenView else { return }
+                    guard model.toolMode == .none else { return }
                     withAnimation(.easeInOut(duration: 0.28)) { immersive.toggle() }
                 }
             )
@@ -201,6 +234,15 @@ private struct OnCourseContentView: View {
                         .padding(.horizontal, 12)
                         .padding(.bottom, 8)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if isMeasure {
+                    MeasurePanel(
+                        model: measure,
+                        onProfile: { showProfile.toggle() },
+                        onClose: { exitMeasure() }
+                    )
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if !immersive {
                     DistanceCardView(model: model)
                         .padding(.horizontal, 12)
@@ -210,11 +252,30 @@ private struct OnCourseContentView: View {
             }
         }
         // Hole navigation clears `toolMode` in the model; mirror it here by
-        // dropping the analysis state (cancels any in-flight sampling).
+        // dropping the tools' own state (cancels in-flight sampling, wipes the
+        // measure path — tools are per-hole/transient).
         .onChange(of: model.currentHoleNumber) { _, _ in
             if greenAnalysis.isActive {
                 greenAnalysis.deactivate()
             }
+            measure.clear()
+            refreshProfileIfShown()
+        }
+        // The profile follows whatever path is live: the measure path while
+        // measuring (points change per tap), else the hole route (tee
+        // override / tee selection changes move it).
+        .onChange(of: model.holeRoute) { _, _ in refreshProfileIfShown() }
+        .onChange(of: measure.points) { _, _ in refreshProfileIfShown() }
+        .onChange(of: model.toolMode) { _, _ in refreshProfileIfShown() }
+        .onChange(of: showProfile) { _, shown in
+            if shown { refreshProfile() }
+        }
+        .sheet(isPresented: $showProfile) {
+            ElevationProfileSheet(
+                model: profile,
+                title: profileTitle,
+                onClose: { showProfile = false }
+            )
         }
         // The chrome floats over a dark ortho map — force dark materials.
         .environment(\.colorScheme, .dark)
@@ -246,6 +307,33 @@ private struct OnCourseContentView: View {
                     enterGreenView()
                 }
             }
+            // `-measure "lat,lon;lat,lon;…"` enters measure mode after the
+            // style-load hole fit and injects the points as if tapped, so the
+            // measure overlay + readout can be screenshotted headlessly (taps
+            // aren't scriptable via simctl). `-profile 1` opens the elevation
+            // profile sheet the same way.
+            if let raw = UserDefaults.standard.string(forKey: "measure") {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    enterMeasure()
+                    for part in raw.split(separator: ";") {
+                        let nums = part.split(separator: ",")
+                        if nums.count == 2, let lat = Double(nums[0]), let lon = Double(nums[1]) {
+                            measure.place(LatLon(lat: lat, lon: lon))
+                        }
+                    }
+                    // Give the async per-point elevation samples time to land,
+                    // then dump the readout numbers for the live-verify pass.
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    Self.writeMeasureDebugSummary(measure)
+                }
+            }
+            if UserDefaults.standard.string(forKey: "profile") == "1" {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    showProfile = true
+                }
+            }
             // `-zoomTaps N` fires N in-taps; `-zoomOutTaps N` fires N out-taps
             // (a separate positive-valued key because simctl swallows a negative
             // launch-arg value).
@@ -272,16 +360,94 @@ private struct OnCourseContentView: View {
         #endif
     }
 
-    // Stacked bottom-right controls: green view / zoom in / zoom out / recenter.
+    #if DEBUG
+    /// Live-verify hook (same family as GreenAnalysisModel's): dumps the
+    /// measure readout numbers to tmp so a headless run can check them
+    /// against an independent EPSG:3006 + terrain computation.
+    private static func writeMeasureDebugSummary(_ measure: MeasureModel) {
+        let totals = measure.totals
+        let summary: [String: Any] = [
+            "points": measure.points.map {
+                [
+                    "lat": $0.position.lat,
+                    "lon": $0.position.lon,
+                    "e": $0.e,
+                    "n": $0.n,
+                    "elevation": $0.elevation ?? NSNull() as Any,
+                ]
+            },
+            "segments": measure.segments.map {
+                [
+                    "horizontal": $0.horizontal,
+                    "elevationDelta": $0.elevationDelta ?? NSNull() as Any,
+                    "slopePct": $0.slopePct ?? NSNull() as Any,
+                    "playsLikeSimple": $0.playsLikeSimple ?? NSNull() as Any,
+                ]
+            },
+            "totals": [
+                "horizontal": totals.horizontal,
+                "elevationDelta": totals.elevationDelta ?? NSNull() as Any,
+                "slopePct": totals.slopePct ?? NSNull() as Any,
+                "playsLikeSimple": totals.playsLikeSimple ?? NSNull() as Any,
+            ],
+        ]
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "measure-debug.json")
+        if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]) {
+            try? data.write(to: url)
+            print("MEASURE-DEBUG \(String(data: data, encoding: .utf8) ?? "")")
+        }
+    }
+    #endif
+
+    // Stacked bottom-right controls: green view / measure / profile / zoom in /
+    // zoom out / recenter.
     private var controlStack: some View {
         VStack(spacing: 10) {
             greenViewButton
+            measureButton
+            profileButton
             circleButton(systemImage: "plus", label: "Zoom in") { model.zoomIn() }
             circleButton(systemImage: "minus", label: "Zoom out") { model.zoomOut() }
             circleButton(systemImage: "scope", label: "Recenter on hole", size: 18) {
                 model.recenter()
             }
         }
+    }
+
+    /// Toggles the measure tool (tap-to-place point-to-point measurement).
+    /// Amber while active, matching the measure overlay palette.
+    private var measureButton: some View {
+        Button {
+            if isMeasure {
+                exitMeasure()
+            } else {
+                enterMeasure()
+            }
+        } label: {
+            Image(systemName: "ruler")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isMeasure ? MeasurePanel.amber : Color.primary)
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isMeasure ? "Exit measure" : "Measure")
+    }
+
+    /// Toggles the elevation-profile sheet (non-modal; the map stays live).
+    private var profileButton: some View {
+        Button {
+            showProfile.toggle()
+        } label: {
+            Image(systemName: "chart.xyaxis.line")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(showProfile ? MeasurePanel.amber : Color.primary)
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(showProfile ? "Close elevation profile" : "Elevation profile")
     }
 
     /// Toggles the transient Green view (green slope/height analysis). Filled
@@ -324,6 +490,69 @@ private struct OnCourseContentView: View {
         withAnimation(.easeInOut(duration: 0.28)) {
             model.exitTool()
         }
+    }
+
+    // MARK: - Measure enter/exit
+
+    /// Tools are mutually exclusive: entering measure drops any Green view
+    /// state (enterTool replaces the mode; the analysis model must be told).
+    private func enterMeasure() {
+        if greenAnalysis.isActive {
+            greenAnalysis.deactivate()
+        }
+        withAnimation(.easeInOut(duration: 0.28)) {
+            immersive = false
+            model.enterTool(.measure)
+        }
+    }
+
+    private func exitMeasure() {
+        measure.clear()
+        withAnimation(.easeInOut(duration: 0.28)) {
+            model.exitTool()
+        }
+    }
+
+    // MARK: - Elevation profile plumbing
+
+    /// The path the profile reads: the measure path while measuring (once it
+    /// has two points), else the full hole route (tee → aims → green).
+    private var profilePath: [LatLon] {
+        if isMeasure && measure.hasPath {
+            return measure.pathPositions
+        }
+        return model.holeRoute
+    }
+
+    /// Labels paralleling `profilePath` vertices.
+    private var profileLabels: [String] {
+        if isMeasure && measure.hasPath {
+            return (0..<measure.points.count).map(MeasureOverlay.pointLabel)
+        }
+        guard let hole = model.currentHole else { return [] }
+        var labels: [String] = []
+        if model.teePosition(for: hole) != nil { labels.append("Tee") }
+        labels.append(contentsOf: hole.aimPoints.enumerated().map { index, aim in
+            aim.label.flatMap { $0.isEmpty ? nil : $0 } ?? "Aim \(index + 1)"
+        })
+        if hole.green != nil { labels.append("Green") }
+        return labels
+    }
+
+    private var profileTitle: String {
+        if isMeasure && measure.hasPath {
+            return "Elevation · Measure path"
+        }
+        return "Elevation · Hole \(model.currentHoleNumber) Tee→Green"
+    }
+
+    private func refreshProfile() {
+        profile.update(path: profilePath, labels: profileLabels)
+    }
+
+    /// Re-sample only while the sheet is up (no background sampling cost).
+    private func refreshProfileIfShown() {
+        if showProfile { refreshProfile() }
     }
 
     private func circleButton(

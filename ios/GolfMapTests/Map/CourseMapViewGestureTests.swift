@@ -75,6 +75,46 @@ final class CourseMapViewGestureTests: XCTestCase {
         XCTAssertEqual(coordinator.longPressRecognizer?.isEnabled, false, "applyUpdate disables the recognizer")
     }
 
+    // MARK: - Measure tap (measure tool)
+
+    func testMeasureTapDisabledByDefaultAndAttached() {
+        let (config, features) = makeInputs()
+        let view = CourseMapView(configuration: config, featuresGeoJSON: features)
+        let coordinator = view.makeCoordinator()
+        let mapView = view.buildMapView(coordinator: coordinator)
+
+        XCTAssertEqual(coordinator.measureTapRecognizer?.isEnabled, false,
+                       "measure tap disabled outside measure mode")
+        XCTAssertTrue(
+            mapView.gestureRecognizers?.contains { $0 === coordinator.measureTapRecognizer } ?? false,
+            "measure tap recognizer attached to the map view"
+        )
+    }
+
+    func testMeasureTapEnabledInMeasureModeAndFlippable() {
+        let (config, features) = makeInputs()
+        let coordinator = CourseMapView(configuration: config, featuresGeoJSON: features).makeCoordinator()
+
+        let onView = CourseMapView(
+            configuration: config,
+            featuresGeoJSON: features,
+            measureTapEnabled: true,
+            onMeasureTap: { _ in }
+        )
+        let mapView = onView.buildMapView(coordinator: coordinator)
+        XCTAssertEqual(coordinator.measureTapRecognizer?.isEnabled, true)
+        XCTAssertNotNil(coordinator.onMeasureTap)
+
+        let offView = CourseMapView(
+            configuration: config,
+            featuresGeoJSON: features,
+            measureTapEnabled: false
+        )
+        offView.applyUpdate(to: mapView, coordinator: coordinator)
+        XCTAssertEqual(coordinator.measureTapRecognizer?.isEnabled, false,
+                       "applyUpdate disables the measure tap recognizer")
+    }
+
     // MARK: - Zoom command (Feature B: +/- buttons)
 
     func testApplyZoomBumpsZoomLevelRelativeToCurrent() {

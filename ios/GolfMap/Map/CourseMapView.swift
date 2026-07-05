@@ -47,6 +47,15 @@ public struct CourseMapView: UIViewRepresentable {
     /// Called (main actor) with the unprojected WGS84 point of a long-press,
     /// only while `longPressEnabled` is true.
     public var onLongPress: ((LatLon) -> Void)?
+    /// When true, a single tap on the map unprojects to a coordinate and calls
+    /// `onMeasureTap` (measure mode places a point). A dedicated UIKit
+    /// recognizer — the SwiftUI immersive TapGesture is gated off separately
+    /// while measure is active. Deferring to MapLibre's double-tap zoom keeps
+    /// a quick double tap zooming instead of placing two stray points.
+    public var measureTapEnabled: Bool
+    /// Called (main actor) with the unprojected WGS84 point of a single tap,
+    /// only while `measureTapEnabled` is true.
+    public var onMeasureTap: ((LatLon) -> Void)?
 
     public init(
         configuration: CourseMapConfiguration,
@@ -57,7 +66,9 @@ public struct CourseMapView: UIViewRepresentable {
         analysis: GreenAnalysisMapState? = nil,
         onMapReady: (() -> Void)? = nil,
         longPressEnabled: Bool = false,
-        onLongPress: ((LatLon) -> Void)? = nil
+        onLongPress: ((LatLon) -> Void)? = nil,
+        measureTapEnabled: Bool = false,
+        onMeasureTap: ((LatLon) -> Void)? = nil
     ) {
         self.configuration = configuration
         self.featuresGeoJSON = featuresGeoJSON
@@ -68,6 +79,8 @@ public struct CourseMapView: UIViewRepresentable {
         self.onMapReady = onMapReady
         self.longPressEnabled = longPressEnabled
         self.onLongPress = onLongPress
+        self.measureTapEnabled = measureTapEnabled
+        self.onMeasureTap = onMeasureTap
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -116,6 +129,23 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.longPressRecognizer = longPress
         coordinator.onLongPress = onLongPress
 
+        // Single tap → place measure point (measure mode only). Sibling to the
+        // long-press; deferred to MapLibre's own double-tap recognizers so a
+        // double tap still zooms (and never places two points).
+        let measureTap = UITapGestureRecognizer(
+            target: coordinator,
+            action: #selector(Coordinator.handleMeasureTap(_:))
+        )
+        measureTap.isEnabled = measureTapEnabled
+        for recognizer in mapView.gestureRecognizers ?? [] {
+            if let tap = recognizer as? UITapGestureRecognizer, tap.numberOfTapsRequired == 2 {
+                measureTap.require(toFail: tap)
+            }
+        }
+        mapView.addGestureRecognizer(measureTap)
+        coordinator.measureTapRecognizer = measureTap
+        coordinator.onMeasureTap = onMeasureTap
+
         coordinator.desiredOverlays = overlays
         coordinator.desiredAnalysis = analysis
         coordinator.pendingCamera = camera
@@ -137,6 +167,8 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.onMapReady = onMapReady
         coordinator.onLongPress = onLongPress
         coordinator.longPressRecognizer?.isEnabled = longPressEnabled
+        coordinator.onMeasureTap = onMeasureTap
+        coordinator.measureTapRecognizer?.isEnabled = measureTapEnabled
 
         if coordinator.appliedConfiguration != configuration
             || coordinator.appliedFeaturesGeoJSON != featuresGeoJSON {
@@ -197,6 +229,8 @@ public struct CourseMapView: UIViewRepresentable {
         var onMapReady: (() -> Void)?
         var onLongPress: ((LatLon) -> Void)?
         weak var longPressRecognizer: UILongPressGestureRecognizer?
+        var onMeasureTap: ((LatLon) -> Void)?
+        weak var measureTapRecognizer: UITapGestureRecognizer?
         private var styleFileURL: URL?
 
         /// Unprojects the long-press point to a WGS84 coordinate and forwards
@@ -209,6 +243,17 @@ public struct CourseMapView: UIViewRepresentable {
             let point = gesture.location(in: mapView)
             let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
             onLongPress(LatLon(lat: coordinate.latitude, lon: coordinate.longitude))
+        }
+
+        /// Unprojects a single tap to a WGS84 coordinate → place a measure
+        /// point. Only fires while measure mode enables the recognizer.
+        @objc func handleMeasureTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended,
+                  let mapView = gesture.view as? MLNMapView,
+                  let onMeasureTap else { return }
+            let point = gesture.location(in: mapView)
+            let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+            onMeasureTap(LatLon(lat: coordinate.latitude, lon: coordinate.longitude))
         }
 
         /// Serializes the generated style to a fresh temp file (a new URL each

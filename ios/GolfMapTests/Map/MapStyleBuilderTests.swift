@@ -78,6 +78,8 @@ final class MapStyleBuilderTests: XCTestCase {
             MapStyleIDs.distanceLineSource,
             MapStyleIDs.targetsSource,
             MapStyleIDs.userLocationSource,
+            MapStyleIDs.measureLineSource,
+            MapStyleIDs.measurePointsSource,
         ] {
             let source = try XCTUnwrap(sources[id] as? [String: Any], id)
             XCTAssertEqual(source["type"] as? String, "geojson", id)
@@ -99,10 +101,31 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.distanceLineCasingLayer,
                 MapStyleIDs.distanceLineLayer,
                 MapStyleIDs.targetsLayer,
+                MapStyleIDs.measureLineCasingLayer,
+                MapStyleIDs.measureLineLayer,
+                MapStyleIDs.measurePointsLayer,
                 MapStyleIDs.userLocationHaloLayer,
                 MapStyleIDs.userLocationDotLayer,
             ]
         )
+    }
+
+    func testMeasureLayersUseWebMeasurePalette() throws {
+        let style = try buildStyle()
+        let line = try layer(MapStyleIDs.measureLineLayer, in: style)
+        let linePaint = try XCTUnwrap(line["paint"] as? [String: Any])
+        XCTAssertEqual(linePaint["line-color"] as? String, "#fbbf24", "amber measure line")
+
+        let points = try layer(MapStyleIDs.measurePointsLayer, in: style)
+        XCTAssertEqual(points["type"] as? String, "circle")
+        let pointsPaint = try XCTUnwrap(points["paint"] as? [String: Any])
+        let colorExpr = try XCTUnwrap(pointsPaint["circle-color"] as? [Any])
+        XCTAssertEqual(colorExpr.first as? String, "match")
+        let strings = colorExpr.compactMap { $0 as? String }
+        XCTAssertTrue(strings.contains("first"), "first-point color branch")
+        XCTAssertTrue(strings.contains("last"), "last-point color branch")
+        XCTAssertTrue(strings.contains("#22c55e"), "point A green")
+        XCTAssertTrue(strings.contains("#ef4444"), "last point red")
     }
 
     private func layer(_ id: String, in style: [String: Any]) throws -> [String: Any] {
@@ -187,6 +210,6 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 9)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 12)
     }
 }

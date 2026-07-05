@@ -60,6 +60,50 @@ final class MapOverlayShapesTests: XCTestCase {
         XCTAssertEqual(hidden.shapes.count, 0)
     }
 
+    // MARK: - Measure overlay
+
+    func testMeasureLineBuildsPolylineAndHidesBelowTwoPoints() throws {
+        let overlay = MeasureOverlay(points: [
+            LatLon(lat: 58.357, lon: 15.722),
+            LatLon(lat: 58.358, lon: 15.724),
+            LatLon(lat: 58.359, lon: 15.723),
+        ])
+        let line = try XCTUnwrap(MapOverlayShapes.measureLineShape(overlay) as? MLNPolylineFeature)
+        XCTAssertEqual(line.pointCount, 3)
+
+        let single = MeasureOverlay(points: [LatLon(lat: 58.357, lon: 15.722)])
+        let hidden = try XCTUnwrap(MapOverlayShapes.measureLineShape(single) as? MLNShapeCollectionFeature)
+        XCTAssertEqual(hidden.shapes.count, 0)
+    }
+
+    func testMeasurePointsCarryRoleKindsAndLabels() throws {
+        let overlay = MeasureOverlay(points: [
+            LatLon(lat: 58.357, lon: 15.722),
+            LatLon(lat: 58.358, lon: 15.724),
+            LatLon(lat: 58.359, lon: 15.723),
+        ])
+        let shape = try XCTUnwrap(MapOverlayShapes.measurePointsShape(overlay) as? MLNShapeCollectionFeature)
+        let points = try XCTUnwrap(shape.shapes as? [MLNPointFeature])
+        XCTAssertEqual(points.count, 3)
+        XCTAssertEqual(points.map { $0.attributes["kind"] as? String }, ["first", "mid", "last"])
+        XCTAssertEqual(points.map { $0.attributes["label"] as? String }, ["A", "B", "C"])
+        XCTAssertEqual(points[0].coordinate.latitude, 58.357, accuracy: 1e-9)
+
+        // A single placed point reads as the start point.
+        let single = try XCTUnwrap(
+            MapOverlayShapes.measurePointsShape(
+                MeasureOverlay(points: [LatLon(lat: 58.357, lon: 15.722)])
+            ) as? MLNShapeCollectionFeature
+        )
+        let singlePoints = try XCTUnwrap(single.shapes as? [MLNPointFeature])
+        XCTAssertEqual(singlePoints.first?.attributes["kind"] as? String, "first")
+
+        let empty = try XCTUnwrap(
+            MapOverlayShapes.measurePointsShape(.empty) as? MLNShapeCollectionFeature
+        )
+        XCTAssertEqual(empty.shapes.count, 0)
+    }
+
     /// Camera command equality drives when CourseMapView re-applies a move;
     /// the token is the escape hatch for re-issuing an identical move.
     func testCameraCommandEqualityAndToken() {
