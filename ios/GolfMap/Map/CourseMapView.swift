@@ -33,6 +33,10 @@ public struct CourseMapView: UIViewRepresentable {
     /// independent of `camera` so a zoom-button tap never triggers a hole
     /// re-fit and never fights the hole-fit camera command.
     public var zoom: MapZoomCommand?
+    /// Green-view analysis overlay (heat map + boundary + fall-line arrows);
+    /// nil renders nothing. Applied via runtime source/layer add/remove — no
+    /// style reload. Change detection is by (result identity, mode).
+    public var analysis: GreenAnalysisMapState?
     /// Called on the main actor once the style finished loading (and again
     /// after any style rebuild caused by a configuration/features change).
     public var onMapReady: (() -> Void)?
@@ -50,6 +54,7 @@ public struct CourseMapView: UIViewRepresentable {
         overlays: MapOverlayState = .empty,
         camera: MapCameraCommand? = nil,
         zoom: MapZoomCommand? = nil,
+        analysis: GreenAnalysisMapState? = nil,
         onMapReady: (() -> Void)? = nil,
         longPressEnabled: Bool = false,
         onLongPress: ((LatLon) -> Void)? = nil
@@ -59,6 +64,7 @@ public struct CourseMapView: UIViewRepresentable {
         self.overlays = overlays
         self.camera = camera
         self.zoom = zoom
+        self.analysis = analysis
         self.onMapReady = onMapReady
         self.longPressEnabled = longPressEnabled
         self.onLongPress = onLongPress
@@ -111,6 +117,7 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.onLongPress = onLongPress
 
         coordinator.desiredOverlays = overlays
+        coordinator.desiredAnalysis = analysis
         coordinator.pendingCamera = camera
         coordinator.lastCameraCommand = camera
         // Seed the zoom baseline so the first real zoom command (a later token)
@@ -144,8 +151,10 @@ public struct CourseMapView: UIViewRepresentable {
         }
 
         coordinator.desiredOverlays = overlays
+        coordinator.desiredAnalysis = analysis
         if coordinator.isStyleLoaded, let style = mapView.style {
             MapOverlayRenderer.apply(overlays, to: style)
+            coordinator.analysisRenderer.apply(analysis, to: style)
         }
 
         if let camera, camera != coordinator.lastCameraCommand {
@@ -179,6 +188,8 @@ public struct CourseMapView: UIViewRepresentable {
         var appliedConfiguration: CourseMapConfiguration?
         var appliedFeaturesGeoJSON: Data?
         var desiredOverlays: MapOverlayState = .empty
+        var desiredAnalysis: GreenAnalysisMapState?
+        let analysisRenderer = GreenAnalysisRenderer()
         var lastCameraCommand: MapCameraCommand?
         var lastZoomCommand: MapZoomCommand?
         var pendingCamera: MapCameraCommand?
@@ -277,6 +288,9 @@ public struct CourseMapView: UIViewRepresentable {
         public func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             isStyleLoaded = true
             MapOverlayRenderer.apply(desiredOverlays, to: style)
+            // A (re)loaded style starts without the runtime analysis layers.
+            analysisRenderer.styleDidReload()
+            analysisRenderer.apply(desiredAnalysis, to: style)
             if let pendingCamera {
                 Self.applyCamera(pendingCamera, to: mapView)
                 self.pendingCamera = nil

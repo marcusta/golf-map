@@ -176,8 +176,48 @@ final class OnCourseModel {
     }
 
     private func holeDidChange() {
+        // Tools are per-hole/transient — navigating away always dismisses
+        // (the screen observes `toolMode` and tears its tool UI down).
+        toolMode = .none
+        toolFocusBounds = nil
         cameraToken += 1
         refreshGreenElevationFallback()
+    }
+
+    // MARK: - Map tools (transient modes over the normal hole view)
+
+    /// A transient map tool over the normal hole view. Exactly one tool can be
+    /// active at a time; a tool may take over the camera via `focusBounds`
+    /// (e.g. Green view zooms to the green). Hole navigation dismisses the
+    /// active tool. Follow-up tools (measure, elevation profile) plug in as
+    /// new cases and reuse `enterTool`/`exitTool` + `toolFocusBounds`.
+    enum MapToolMode: Equatable, Sendable {
+        case none
+        case greenView
+    }
+
+    private(set) var toolMode: MapToolMode = .none
+    /// Camera target while a tool is active; nil keeps the hole framing.
+    private var toolFocusBounds: MapCoordinateBounds?
+
+    /// Enter a tool, optionally re-aiming the camera at `focusBounds`
+    /// (tight-fit, hole bearing kept so the view doesn't spin).
+    func enterTool(_ mode: MapToolMode, focusBounds: MapCoordinateBounds? = nil) {
+        guard mode != .none else {
+            exitTool()
+            return
+        }
+        toolMode = mode
+        toolFocusBounds = focusBounds
+        cameraToken += 1
+    }
+
+    /// Leave the active tool and restore the normal hole framing.
+    func exitTool() {
+        guard toolMode != .none else { return }
+        toolMode = .none
+        toolFocusBounds = nil
+        cameraToken += 1
     }
 
     // MARK: - Tee selection
@@ -519,9 +559,20 @@ final class OnCourseModel {
     }
 
     /// Fit-the-hole camera command (hole direction up). Changes when the hole
-    /// changes or `recenter()` bumps the token.
+    /// changes or `recenter()` bumps the token. While a tool with focus
+    /// bounds is active (Green view), fits those bounds tightly instead;
+    /// exiting the tool bumps the token and restores the hole framing.
     var cameraCommand: MapCameraCommand? {
-        holeBounds.map {
+        if let toolFocusBounds {
+            return .fitHole(
+                toolFocusBounds,
+                bearing: holeBearing,
+                padding: 40,
+                animated: true,
+                token: cameraToken
+            )
+        }
+        return holeBounds.map {
             .fitHole($0, bearing: holeBearing, padding: 70, animated: true, token: cameraToken)
         }
     }

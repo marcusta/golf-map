@@ -14,6 +14,7 @@ struct CourseScreen: View {
     let courseName: String
 
     @State private var model: OnCourseModel?
+    @State private var greenAnalysis: GreenAnalysisModel?
     @State private var mapInputs: MapInputs?
     @State private var locationProvider = LocationProvider()
     @State private var loadError: String?
@@ -25,9 +26,10 @@ struct CourseScreen: View {
 
     var body: some View {
         Group {
-            if let model, let mapInputs {
+            if let model, let greenAnalysis, let mapInputs {
                 OnCourseContentView(
                     model: model,
+                    greenAnalysis: greenAnalysis,
                     configuration: mapInputs.configuration,
                     featuresGeoJSON: mapInputs.featuresGeoJSON
                 )
@@ -81,6 +83,14 @@ struct CourseScreen: View {
             newModel.isLocationDenied = locationProvider.isDenied
             newModel.updateUserLocation(locationProvider.location)
 
+            // Green view shares the bundle terrain pyramid with plays-like
+            // sampling; green outlines come from features.geojson (greens'
+            // boundaryJson is NULL in real bundles).
+            let newGreenAnalysis = GreenAnalysisModel(
+                featuresGeoJSON: featuresGeoJSON,
+                sampler: { await terrain.elevation(at: $0) }
+            )
+
             #if DEBUG
             // Headless live-verify hook (same family as `-openCourse` in
             // CourseListScreen): `-openHole <n>` jumps straight to a hole so
@@ -117,6 +127,7 @@ struct CourseScreen: View {
                 featuresGeoJSON: featuresGeoJSON
             )
             model = newModel
+            greenAnalysis = newGreenAnalysis
         } catch {
             loadError = "Failed to load the course bundle: \(error.localizedDescription)"
         }
@@ -128,6 +139,7 @@ struct CourseScreen: View {
 /// Map + chrome once the bundle is loaded. Split out so `model` is non-optional.
 private struct OnCourseContentView: View {
     let model: OnCourseModel
+    let greenAnalysis: GreenAnalysisModel
     let configuration: CourseMapConfiguration
     let featuresGeoJSON: Data
 
@@ -135,7 +147,10 @@ private struct OnCourseContentView: View {
     /// the bottom distances card, leaving the full-bleed hole, a small compact
     /// chip, and the right-side controls. Tap again to restore. Separate from
     /// the browse-mode long-press (move tee); the two never fire together.
+    /// Suspended while Green view is active (its chrome must stay put).
     @State private var immersive = false
+
+    private var isGreenView: Bool { model.toolMode == .greenView }
 
     var body: some View {
         ZStack {
@@ -145,21 +160,24 @@ private struct OnCourseContentView: View {
                 overlays: model.overlays,
                 camera: model.cameraCommand,
                 zoom: model.zoomCommand,
-                longPressEnabled: model.isBrowseMode,
+                analysis: isGreenView ? greenAnalysis.mapState : nil,
+                longPressEnabled: model.isBrowseMode && !isGreenView,
                 onLongPress: { model.moveActiveTee(to: $0) }
             )
             .ignoresSafeArea()
             // Short tap toggles chrome. High minimumDistance drag-less tap so it
             // doesn't swallow the map's own pan; long-press (move tee) is a
-            // separate recognizer on the MLNMapView and is unaffected.
+            // separate recognizer on the MLNMapView and is unaffected. Inert in
+            // Green view so a stray tap can't hide the analysis panel.
             .simultaneousGesture(
                 TapGesture().onEnded {
+                    guard !isGreenView else { return }
                     withAnimation(.easeInOut(duration: 0.28)) { immersive.toggle() }
                 }
             )
 
             VStack(spacing: 0) {
-                if !immersive {
+                if !immersive || isGreenView {
                     HoleHeaderView(model: model)
                         .padding(.horizontal, 12)
                         .transition(.move(edge: .top).combined(with: .opacity))
@@ -175,15 +193,27 @@ private struct OnCourseContentView: View {
                     Spacer()
                     controlStack
                         .padding(.trailing, 16)
-                        .padding(.bottom, immersive ? 24 : 10)
+                        .padding(.bottom, immersive && !isGreenView ? 24 : 10)
                 }
 
-                if !immersive {
+                if isGreenView {
+                    GreenViewPanel(model: greenAnalysis, onClose: { exitGreenView() })
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if !immersive {
                     DistanceCardView(model: model)
                         .padding(.horizontal, 12)
                         .padding(.bottom, 8)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
+            }
+        }
+        // Hole navigation clears `toolMode` in the model; mirror it here by
+        // dropping the analysis state (cancels any in-flight sampling).
+        .onChange(of: model.currentHoleNumber) { _, _ in
+            if greenAnalysis.isActive {
+                greenAnalysis.deactivate()
             }
         }
         // The chrome floats over a dark ortho map — force dark materials.
@@ -197,6 +227,24 @@ private struct OnCourseContentView: View {
         .onAppear {
             if UserDefaults.standard.string(forKey: "immersive") == "1" {
                 immersive = true
+            }
+            // `-greenView 1` enters Green view after the style-load hole fit
+            // settles; `-greenMode slope|height|relative` and `-greenBuffer N`
+            // preset the overlay controls so all three modes + buffer changes
+            // can be screenshotted headlessly.
+            if UserDefaults.standard.string(forKey: "greenView") == "1" {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    if let raw = UserDefaults.standard.string(forKey: "greenMode"),
+                       let mode = AnalysisMode(rawValue: raw) {
+                        greenAnalysis.setMode(mode)
+                    }
+                    if let raw = UserDefaults.standard.string(forKey: "greenBuffer"),
+                       let buffer = Double(raw) {
+                        greenAnalysis.setBuffer(buffer)
+                    }
+                    enterGreenView()
+                }
             }
             // `-zoomTaps N` fires N in-taps; `-zoomOutTaps N` fires N out-taps
             // (a separate positive-valued key because simctl swallows a negative
@@ -224,14 +272,57 @@ private struct OnCourseContentView: View {
         #endif
     }
 
-    // Stacked bottom-right controls: zoom in / zoom out / recenter.
+    // Stacked bottom-right controls: green view / zoom in / zoom out / recenter.
     private var controlStack: some View {
         VStack(spacing: 10) {
+            greenViewButton
             circleButton(systemImage: "plus", label: "Zoom in") { model.zoomIn() }
             circleButton(systemImage: "minus", label: "Zoom out") { model.zoomOut() }
             circleButton(systemImage: "scope", label: "Recenter on hole", size: 18) {
                 model.recenter()
             }
+        }
+    }
+
+    /// Toggles the transient Green view (green slope/height analysis). Filled
+    /// tinted glyph while active so the mode is unmistakable.
+    private var greenViewButton: some View {
+        Button {
+            if isGreenView {
+                exitGreenView()
+            } else {
+                enterGreenView()
+            }
+        } label: {
+            Image(systemName: isGreenView ? "flag.circle.fill" : "flag.circle")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(isGreenView ? Color.green : Color.primary)
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.currentHole?.green == nil)
+        .opacity(model.currentHole?.green == nil ? 0.35 : 1)
+        .accessibilityLabel(isGreenView ? "Exit green view" : "Green view")
+    }
+
+    // MARK: - Green view enter/exit
+
+    private func enterGreenView() {
+        guard let hole = model.currentHole else { return }
+        let center = hole.green.map { LatLon(lat: $0.centerLat, lon: $0.centerLon) }
+        guard let bounds = greenAnalysis.activate(holeId: hole.hole.id, greenCenter: center)
+        else { return }
+        withAnimation(.easeInOut(duration: 0.28)) {
+            immersive = false
+            model.enterTool(.greenView, focusBounds: bounds)
+        }
+    }
+
+    private func exitGreenView() {
+        greenAnalysis.deactivate()
+        withAnimation(.easeInOut(duration: 0.28)) {
+            model.exitTool()
         }
     }
 
