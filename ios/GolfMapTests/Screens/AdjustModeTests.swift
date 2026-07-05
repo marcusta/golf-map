@@ -302,6 +302,28 @@ final class AdjustModeTests: XCTestCase {
         XCTAssertNotEqual(model.cameraCommand, before, "green view still zooms to the green")
     }
 
+    /// No button that isn't a deliberate re-frame may move the camera: the
+    /// GPS/Browse toggle, a tee move, and Reset hole all change the hole bounds
+    /// but must NOT bump the camera token (the map gates re-application on the
+    /// token, so an unchanged token = the view stays). Recenter is the
+    /// intentional exception.
+    func testFurnitureEditsAndGPSToggleDoNotBumpTheCameraToken() {
+        let model = makeModel()
+        let token0 = model.cameraToken
+
+        model.toggleGPS()
+        XCTAssertEqual(model.cameraToken, token0, "GPS/Browse toggle must not re-frame")
+
+        model.moveActiveTee(to: LatLon(lat: 58.3605, lon: 15.7092))
+        XCTAssertEqual(model.cameraToken, token0, "moving a tee must not re-frame")
+
+        model.resetCurrentHoleAdjustments()
+        XCTAssertEqual(model.cameraToken, token0, "Reset hole must not re-frame")
+
+        model.recenter()
+        XCTAssertNotEqual(model.cameraToken, token0, "recenter is the deliberate re-frame")
+    }
+
     func testAdjustEntersAndExitsMutuallyExclusiveWithOtherTools() throws {
         let model = makeModel()
         let greenBounds = MapCoordinateBounds(west: 15.7075, south: 58.3637, east: 15.7085, north: 58.3643)

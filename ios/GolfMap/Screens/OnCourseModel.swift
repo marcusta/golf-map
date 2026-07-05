@@ -347,13 +347,12 @@ final class OnCourseModel {
     }
     private static let aimRoutingThresholdKey = "onCourse.aimRoutingThresholdMeters"
 
-    /// Flip the GPS/browse switch (persisted per course). Bumps the camera so
-    /// the hole re-fits when the origin semantics change.
+    /// Flip the GPS/browse switch (persisted per course). Does NOT move the
+    /// camera — the hole framing is the same in both modes.
     func setGPSEnabled(_ enabled: Bool) {
         guard enabled != gpsEnabled else { return }
         gpsEnabled = enabled
         defaults.set(enabled, forKey: Self.gpsEnabledKey(courseId: courseId))
-        cameraToken += 1
     }
 
     func toggleGPS() { setGPSEnabled(!gpsEnabled) }
@@ -433,7 +432,7 @@ final class OnCourseModel {
             Self.encodeLatLon(position),
             forKey: Self.teeOverrideKey(courseId: courseId, holeId: hole.id, teeName: tee.name)
         )
-        cameraToken += 1
+        // No camera change — moving a tee must not re-frame (zoom) the map.
     }
 
     /// Remove the current hole's active-tee override (reset affordance).
@@ -444,7 +443,7 @@ final class OnCourseModel {
         defaults.removeObject(
             forKey: Self.teeOverrideKey(courseId: courseId, holeId: hole.id, teeName: tee.name)
         )
-        cameraToken += 1
+        // No camera change.
     }
 
     // MARK: - Adjust overrides (aim points + green center)
@@ -650,7 +649,7 @@ final class OnCourseModel {
             defaults.removeObject(forKey: Self.greenOverrideKey(courseId: courseId, holeId: hole.id))
             refreshGreenElevationFallback()
         }
-        cameraToken += 1
+        // No camera change — Reset hole must not re-frame (zoom) the map.
     }
 
     // MARK: - Location + elevation

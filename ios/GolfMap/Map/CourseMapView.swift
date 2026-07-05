@@ -259,7 +259,12 @@ public struct CourseMapView: UIViewRepresentable {
             coordinator.analysisRenderer.apply(analysis, to: style)
         }
 
-        if let camera, camera != coordinator.lastCameraCommand {
+        // Apply ONLY when the token changes. The command also carries the hole
+        // bounds, derived from live furniture positions — so an Adjust move /
+        // Reset hole / tee change alters the bounds WITHOUT a token bump, and
+        // gating on `==` would re-fit (zoom) the map on every such edit. Only
+        // deliberate re-frames (hole nav, recenter, Green view) bump the token.
+        if let camera, camera.token != coordinator.lastCameraCommand?.token {
             coordinator.lastCameraCommand = camera
             if coordinator.isStyleLoaded {
                 Coordinator.applyCamera(camera, to: mapView)

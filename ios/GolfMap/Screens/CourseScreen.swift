@@ -628,7 +628,8 @@ private struct OnCourseContentView: View {
         }
         withAnimation(.easeInOut(duration: 0.28)) {
             immersive = false
-            model.enterTool(.measure)
+            // Keep the user's current view — entering Measure must not zoom.
+            model.enterTool(.measure, refitCamera: false)
         }
     }
 
