@@ -324,6 +324,34 @@ final class AdjustModeTests: XCTestCase {
         XCTAssertNotEqual(model.cameraToken, token0, "recenter is the deliberate re-frame")
     }
 
+    /// Green view zooms to the green, then exiting returns to the exact view
+    /// the user had before entering — not a hole re-fit.
+    func testGreenViewRestoresPreEntryCameraOnExit() throws {
+        let model = makeModel()
+        let preEntry = LatLon(lat: 58.3610, lon: 15.7089)
+        model.noteMapCamera(center: preEntry, zoom: 18.5, bearing: 42)
+
+        let greenBounds = MapCoordinateBounds(west: 15.7075, south: 58.3637, east: 15.7085, north: 58.3643)
+        model.enterTool(.greenView, focusBounds: greenBounds)
+        guard case .bounds = model.cameraCommand?.target else {
+            return XCTFail("green view fits the green bounds")
+        }
+
+        // The map settles on the green (a new observed camera) — must not change
+        // where exit returns to.
+        model.noteMapCamera(center: LatLon(lat: 58.3640, lon: 15.7080), zoom: 20, bearing: 42)
+
+        model.exitTool()
+        XCTAssertEqual(model.cameraCommand?.target, .center(preEntry, zoom: 18.5))
+        XCTAssertEqual(model.cameraCommand?.bearing ?? 0, 42, accuracy: 1e-9)
+
+        // A deliberate re-frame afterwards clears the restore.
+        model.recenter()
+        guard case .bounds = model.cameraCommand?.target else {
+            return XCTFail("recenter re-fits the hole bounds")
+        }
+    }
+
     func testAdjustEntersAndExitsMutuallyExclusiveWithOtherTools() throws {
         let model = makeModel()
         let greenBounds = MapCoordinateBounds(west: 15.7075, south: 58.3637, east: 15.7085, north: 58.3643)

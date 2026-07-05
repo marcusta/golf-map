@@ -40,6 +40,10 @@ public struct CourseMapView: UIViewRepresentable {
     /// Called on the main actor once the style finished loading (and again
     /// after any style rebuild caused by a configuration/features change).
     public var onMapReady: (() -> Void)?
+    /// Called (main actor) whenever the camera settles, with the current
+    /// center (WGS84), zoom level, and bearing. Lets the model snapshot the
+    /// user's view before a re-framing tool so it can be restored on exit.
+    public var onCameraChange: ((LatLon, Double, Double) -> Void)?
     /// When true, a long-press on the map unprojects to a coordinate and calls
     /// `onLongPress`. Generic place-a-point gesture; the on-course screen's
     /// browse-mode "move tee" use of it is RETIRED (Adjust mode owns moves —
@@ -84,6 +88,7 @@ public struct CourseMapView: UIViewRepresentable {
         zoom: MapZoomCommand? = nil,
         analysis: GreenAnalysisMapState? = nil,
         onMapReady: (() -> Void)? = nil,
+        onCameraChange: ((LatLon, Double, Double) -> Void)? = nil,
         longPressEnabled: Bool = false,
         onLongPress: ((LatLon) -> Void)? = nil,
         measureTapEnabled: Bool = false,
@@ -100,6 +105,7 @@ public struct CourseMapView: UIViewRepresentable {
         self.zoom = zoom
         self.analysis = analysis
         self.onMapReady = onMapReady
+        self.onCameraChange = onCameraChange
         self.longPressEnabled = longPressEnabled
         self.onLongPress = onLongPress
         self.measureTapEnabled = measureTapEnabled
@@ -203,6 +209,7 @@ public struct CourseMapView: UIViewRepresentable {
         // applies but an initial value never fires on mount.
         coordinator.lastZoomCommand = zoom
         coordinator.onMapReady = onMapReady
+        coordinator.onCameraChange = onCameraChange
         return mapView
     }
 
@@ -214,6 +221,7 @@ public struct CourseMapView: UIViewRepresentable {
     /// `buildMapView`.
     func applyUpdate(to mapView: MLNMapView, coordinator: Coordinator) {
         coordinator.onMapReady = onMapReady
+        coordinator.onCameraChange = onCameraChange
         coordinator.onLongPress = onLongPress
         coordinator.longPressRecognizer?.isEnabled = longPressEnabled
         coordinator.onMeasureTap = onMeasureTap
@@ -305,6 +313,7 @@ public struct CourseMapView: UIViewRepresentable {
         var pendingCamera: MapCameraCommand?
         var isStyleLoaded = false
         var onMapReady: (() -> Void)?
+        var onCameraChange: ((LatLon, Double, Double) -> Void)?
         var onLongPress: ((LatLon) -> Void)?
         weak var longPressRecognizer: UILongPressGestureRecognizer?
         var onMeasureTap: ((LatLon) -> Void)?
@@ -552,6 +561,12 @@ public struct CourseMapView: UIViewRepresentable {
 
         public func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
             routeLegLabelRenderer.reposition(in: mapView)
+            let center = mapView.centerCoordinate
+            onCameraChange?(
+                LatLon(lat: center.latitude, lon: center.longitude),
+                mapView.zoomLevel,
+                mapView.direction
+            )
         }
     }
 }

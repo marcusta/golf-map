@@ -155,6 +155,7 @@ final class OnCourseModel {
 
     /// Re-issues the current hole's camera fit (recenter button).
     func recenter() {
+        restoreCamera = nil
         cameraToken += 1
     }
 
@@ -190,6 +191,7 @@ final class OnCourseModel {
         toolMode = .none
         toolFocusBounds = nil
         draggingHandleID = nil
+        restoreCamera = nil
         cameraToken += 1
         refreshGreenElevationFallback()
     }
@@ -222,6 +224,26 @@ final class OnCourseModel {
     /// exit — so tapping the tool button never yanks the view.
     private var toolDidRefitCamera = false
 
+    /// The live map camera, reported by `CourseMapView` on every idle. Used to
+    /// snapshot where the user was before a re-framing tool (Green view) so it
+    /// can be restored on exit. Not observed — pure bookkeeping.
+    struct ObservedCamera: Equatable, Sendable {
+        var center: LatLon
+        var zoom: Double
+        var bearing: Double
+    }
+    @ObservationIgnored private var lastObservedCamera: ObservedCamera?
+    /// Where to return when a re-framing tool exits (captured on entry).
+    @ObservationIgnored private var cameraBeforeRefitTool: ObservedCamera?
+    /// A one-shot "restore this exact view" target; overrides the hole/tool
+    /// bounds in `cameraCommand` until the next deliberate re-frame.
+    private var restoreCamera: ObservedCamera?
+
+    /// Called by the map (main actor) whenever the camera settles.
+    func noteMapCamera(center: LatLon, zoom: Double, bearing: Double) {
+        lastObservedCamera = ObservedCamera(center: center, zoom: zoom, bearing: bearing)
+    }
+
     /// Enter a tool, optionally re-aiming the camera at `focusBounds`
     /// (tight-fit, hole bearing kept so the view doesn't spin). Pass
     /// `refitCamera: false` (Adjust mode) to leave the camera exactly where the
@@ -240,19 +262,28 @@ final class OnCourseModel {
         toolFocusBounds = focusBounds
         draggingHandleID = nil
         toolDidRefitCamera = refitCamera
-        if refitCamera { cameraToken += 1 }
+        restoreCamera = nil
+        if refitCamera {
+            // Remember the current view so exiting can return to it.
+            cameraBeforeRefitTool = lastObservedCamera
+            cameraToken += 1
+        }
     }
 
-    /// Leave the active tool. Restores the normal hole framing only if entering
-    /// the tool had re-framed the camera; a no-refit tool (Adjust) leaves the
-    /// view untouched. An in-flight Adjust drag is abandoned uncommitted.
+    /// Leave the active tool. If entering re-framed the camera (Green view),
+    /// return to the exact view the user had before entering; a no-refit tool
+    /// (Adjust) leaves the view untouched. An in-flight Adjust drag is abandoned.
     func exitTool() {
         guard toolMode != .none else { return }
         toolMode = .none
         toolFocusBounds = nil
         draggingHandleID = nil
-        if toolDidRefitCamera { cameraToken += 1 }
+        if toolDidRefitCamera {
+            restoreCamera = cameraBeforeRefitTool // nil → falls back to hole fit
+            cameraToken += 1
+        }
         toolDidRefitCamera = false
+        cameraBeforeRefitTool = nil
     }
 
     // MARK: - Tee selection
@@ -813,10 +844,19 @@ final class OnCourseModel {
     }
 
     /// Fit-the-hole camera command (hole direction up). Changes when the hole
-    /// changes or `recenter()` bumps the token. While a tool with focus
-    /// bounds is active (Green view), fits those bounds tightly instead;
-    /// exiting the tool bumps the token and restores the hole framing.
+    /// changes or `recenter()` bumps the token. While a tool with focus bounds
+    /// is active (Green view), fits those bounds tightly instead; exiting such a
+    /// tool restores the exact view the user had before it (`restoreCamera`).
     var cameraCommand: MapCameraCommand? {
+        if let restoreCamera {
+            return .center(
+                restoreCamera.center,
+                zoom: restoreCamera.zoom,
+                bearing: restoreCamera.bearing,
+                animated: true,
+                token: cameraToken
+            )
+        }
         if let toolFocusBounds {
             return .fitHole(
                 toolFocusBounds,

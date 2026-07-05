@@ -201,6 +201,7 @@ private struct OnCourseContentView: View {
                 camera: model.cameraCommand,
                 zoom: model.zoomCommand,
                 analysis: isGreenView ? greenAnalysis.mapState : nil,
+                onCameraChange: { model.noteMapCamera(center: $0, zoom: $1, bearing: $2) },
                 // The browse-mode long-press "move tee" is RETIRED — it fired
                 // simultaneously with MapLibre's quick-zoom (moving the tee
                 // also zoomed the map). Adjust mode owns moves now.
