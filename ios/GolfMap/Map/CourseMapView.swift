@@ -41,8 +41,11 @@ public struct CourseMapView: UIViewRepresentable {
     /// after any style rebuild caused by a configuration/features change).
     public var onMapReady: (() -> Void)?
     /// When true, a long-press on the map unprojects to a coordinate and calls
-    /// `onLongPress`. Used for the browse-mode "move tee" gesture; false
-    /// disables the recognizer so it never fires in GPS mode.
+    /// `onLongPress`. Generic place-a-point gesture; the on-course screen's
+    /// browse-mode "move tee" use of it is RETIRED (Adjust mode owns moves —
+    /// the plain long-press recognized simultaneously with MapLibre's
+    /// quick-zoom, so moving the tee also zoomed the map). Kept as an input
+    /// for potential future use; no screen currently enables it.
     public var longPressEnabled: Bool
     /// Called (main actor) with the unprojected WGS84 point of a long-press,
     /// only while `longPressEnabled` is true.
@@ -56,6 +59,22 @@ public struct CourseMapView: UIViewRepresentable {
     /// Called (main actor) with the unprojected WGS84 point of a single tap,
     /// only while `measureTapEnabled` is true.
     public var onMeasureTap: ((LatLon) -> Void)?
+    /// When true (Adjust mode), a short-press drag on one of
+    /// `overlays.adjustHandles` grabs that handle and reports its movement
+    /// through `onHandleGrab`/`onHandleMove`/`onHandleDrop`. The drag CLAIMS
+    /// the touch: while a handle is grabbed the map's own pan/zoom/rotate are
+    /// disabled (restored on release) and the recognizer's delegate refuses
+    /// simultaneous recognition — so moving a handle can never also pan or
+    /// quick-zoom the map (the old move-tee long-press bug).
+    public var adjustEnabled: Bool
+    /// A handle was grabbed (drag began). Argument: the handle id.
+    public var onHandleGrab: ((String) -> Void)?
+    /// The grabbed handle moved; called per drag frame with the unprojected
+    /// WGS84 position under the finger.
+    public var onHandleMove: ((String, LatLon) -> Void)?
+    /// The drag ended (finger up or gesture cancelled); the model should
+    /// commit/persist the handle's current position.
+    public var onHandleDrop: ((String) -> Void)?
 
     public init(
         configuration: CourseMapConfiguration,
@@ -68,7 +87,11 @@ public struct CourseMapView: UIViewRepresentable {
         longPressEnabled: Bool = false,
         onLongPress: ((LatLon) -> Void)? = nil,
         measureTapEnabled: Bool = false,
-        onMeasureTap: ((LatLon) -> Void)? = nil
+        onMeasureTap: ((LatLon) -> Void)? = nil,
+        adjustEnabled: Bool = false,
+        onHandleGrab: ((String) -> Void)? = nil,
+        onHandleMove: ((String, LatLon) -> Void)? = nil,
+        onHandleDrop: ((String) -> Void)? = nil
     ) {
         self.configuration = configuration
         self.featuresGeoJSON = featuresGeoJSON
@@ -81,6 +104,10 @@ public struct CourseMapView: UIViewRepresentable {
         self.onLongPress = onLongPress
         self.measureTapEnabled = measureTapEnabled
         self.onMeasureTap = onMeasureTap
+        self.adjustEnabled = adjustEnabled
+        self.onHandleGrab = onHandleGrab
+        self.onHandleMove = onHandleMove
+        self.onHandleDrop = onHandleDrop
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -146,6 +173,28 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.measureTapRecognizer = measureTap
         coordinator.onMeasureTap = onMeasureTap
 
+        // Short-press drag → move an Adjust handle. A long-press recognizer
+        // with a short minimum press (grab) whose .changed states are the
+        // drag. The coordinator is its delegate: `gestureRecognizerShouldBegin`
+        // hit-tests the handles (no handle → the recognizer never begins and
+        // the map pans normally) and simultaneous recognition with the map's
+        // own recognizers is refused, so the drag owns the touch exclusively.
+        let adjustPress = UILongPressGestureRecognizer(
+            target: coordinator,
+            action: #selector(Coordinator.handleAdjustPress(_:))
+        )
+        adjustPress.minimumPressDuration = Coordinator.adjustMinimumPressDuration
+        // Grabbing is positional (the hit-test), not stillness — allow the
+        // finger to wander during the brief press without failing the grab.
+        adjustPress.allowableMovement = .greatestFiniteMagnitude
+        adjustPress.delegate = coordinator
+        adjustPress.isEnabled = adjustEnabled
+        mapView.addGestureRecognizer(adjustPress)
+        coordinator.adjustPressRecognizer = adjustPress
+        coordinator.onHandleGrab = onHandleGrab
+        coordinator.onHandleMove = onHandleMove
+        coordinator.onHandleDrop = onHandleDrop
+
         coordinator.desiredOverlays = overlays
         coordinator.desiredAnalysis = analysis
         coordinator.pendingCamera = camera
@@ -169,6 +218,12 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.longPressRecognizer?.isEnabled = longPressEnabled
         coordinator.onMeasureTap = onMeasureTap
         coordinator.measureTapRecognizer?.isEnabled = measureTapEnabled
+        coordinator.onHandleGrab = onHandleGrab
+        coordinator.onHandleMove = onHandleMove
+        coordinator.onHandleDrop = onHandleDrop
+        // Disabling mid-drag cancels the recognizer → endHandleDrag restores
+        // the map gestures (see handleAdjustPress .cancelled).
+        coordinator.adjustPressRecognizer?.isEnabled = adjustEnabled
 
         if coordinator.appliedConfiguration != configuration
             || coordinator.appliedFeaturesGeoJSON != featuresGeoJSON {
@@ -187,6 +242,7 @@ public struct CourseMapView: UIViewRepresentable {
         if coordinator.isStyleLoaded, let style = mapView.style {
             MapOverlayRenderer.apply(overlays, to: style)
             coordinator.routeLegLabelRenderer.apply(overlays.routeLegLabels, to: style)
+            coordinator.adjustHandleRenderer.apply(overlays.adjustHandles, to: style)
             coordinator.analysisRenderer.apply(analysis, to: style)
         }
 
@@ -217,13 +273,15 @@ public struct CourseMapView: UIViewRepresentable {
     // MARK: - Coordinator
 
     @MainActor
-    public final class Coordinator: NSObject, @preconcurrency MLNMapViewDelegate {
+    public final class Coordinator: NSObject, @preconcurrency MLNMapViewDelegate,
+        UIGestureRecognizerDelegate {
         var appliedConfiguration: CourseMapConfiguration?
         var appliedFeaturesGeoJSON: Data?
         var desiredOverlays: MapOverlayState = .empty
         var desiredAnalysis: GreenAnalysisMapState?
         let analysisRenderer = GreenAnalysisRenderer()
         let routeLegLabelRenderer = RouteLegLabelRenderer()
+        let adjustHandleRenderer = AdjustHandleRenderer()
         var lastCameraCommand: MapCameraCommand?
         var lastZoomCommand: MapZoomCommand?
         var pendingCamera: MapCameraCommand?
@@ -233,7 +291,22 @@ public struct CourseMapView: UIViewRepresentable {
         weak var longPressRecognizer: UILongPressGestureRecognizer?
         var onMeasureTap: ((LatLon) -> Void)?
         weak var measureTapRecognizer: UITapGestureRecognizer?
+        var onHandleGrab: ((String) -> Void)?
+        var onHandleMove: ((String, LatLon) -> Void)?
+        var onHandleDrop: ((String) -> Void)?
+        weak var adjustPressRecognizer: UILongPressGestureRecognizer?
+        /// The handle currently being dragged; nil = no drag in flight.
+        private(set) var draggedHandleID: String?
+        /// The map gesture flags saved when a drag disabled them, restored on
+        /// release (defensive — they are all `true` in this app).
+        private var savedGestureFlags: (scroll: Bool, zoom: Bool, rotate: Bool)?
         private var styleFileURL: URL?
+
+        /// Short grab press: long enough that a plain pan never grabs, short
+        /// enough to feel like picking the handle up.
+        static let adjustMinimumPressDuration: TimeInterval = 0.18
+        /// Screen-space grab radius around a handle center.
+        static let adjustHitThreshold: CGFloat = 44
 
         /// Unprojects the long-press point to a WGS84 coordinate and forwards
         /// it once, on gesture begin (a single place, not per drag frame — the
@@ -256,6 +329,109 @@ public struct CourseMapView: UIViewRepresentable {
             let point = gesture.location(in: mapView)
             let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
             onMeasureTap(LatLon(lat: coordinate.latitude, lon: coordinate.longitude))
+        }
+
+        // MARK: Adjust-handle drag
+
+        /// The Adjust drag gesture. `.began` only ever fires on a handle hit —
+        /// `gestureRecognizerShouldBegin` already hit-tested, so a press on
+        /// empty map never begins and never disturbs the map's own gestures.
+        @objc func handleAdjustPress(_ gesture: UILongPressGestureRecognizer) {
+            guard let mapView = gesture.view as? MLNMapView else { return }
+            let point = gesture.location(in: mapView)
+            switch gesture.state {
+            case .began:
+                beginHandleDrag(at: point, in: mapView)
+            case .changed:
+                continueHandleDrag(at: point, in: mapView)
+            case .ended:
+                continueHandleDrag(at: point, in: mapView)
+                endHandleDrag(in: mapView)
+            case .cancelled, .failed:
+                endHandleDrag(in: mapView)
+            default:
+                break
+            }
+        }
+
+        /// Nearest handle id within `adjustHitThreshold` screen points of
+        /// `point`, or nil. Projects each handle via
+        /// `convert(coordinate:toPointTo:)` so the test is in stable screen
+        /// space regardless of zoom.
+        func nearestHandle(to point: CGPoint, in mapView: MLNMapView) -> String? {
+            var best: (id: String, distance: CGFloat)?
+            for handle in desiredOverlays.adjustHandles {
+                let projected = mapView.convert(handle.position.clCoordinate, toPointTo: mapView)
+                let distance = hypot(projected.x - point.x, projected.y - point.y)
+                if distance <= Self.adjustHitThreshold, distance < (best?.distance ?? .infinity) {
+                    best = (handle.id, distance)
+                }
+            }
+            return best?.id
+        }
+
+        /// Grab: claim the touch. Disables the map's pan/zoom/rotate for the
+        /// duration of the drag — combined with the delegate's refusal of
+        /// simultaneous recognition, this is what stops MapLibre's own
+        /// long-press/quick-zoom from firing alongside the move (the old
+        /// move-tee bug where moving the tee also zoomed the map). Returns
+        /// false (and touches nothing) when no handle is within the threshold.
+        /// Exposed (internal) so tests can drive the state machine directly —
+        /// real finger drags aren't scriptable.
+        @discardableResult
+        func beginHandleDrag(at point: CGPoint, in mapView: MLNMapView) -> Bool {
+            guard draggedHandleID == nil,
+                  let id = nearestHandle(to: point, in: mapView) else { return false }
+            draggedHandleID = id
+            savedGestureFlags = (mapView.isScrollEnabled, mapView.isZoomEnabled, mapView.isRotateEnabled)
+            mapView.isScrollEnabled = false
+            mapView.isZoomEnabled = false
+            mapView.isRotateEnabled = false
+            onHandleGrab?(id)
+            return true
+        }
+
+        /// Drag frame: unproject the touch and report the live position.
+        func continueHandleDrag(at point: CGPoint, in mapView: MLNMapView) {
+            guard let id = draggedHandleID else { return }
+            let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+            onHandleMove?(id, LatLon(lat: coordinate.latitude, lon: coordinate.longitude))
+        }
+
+        /// Release: restore the map gestures and let the model commit.
+        func endHandleDrag(in mapView: MLNMapView) {
+            guard let id = draggedHandleID else { return }
+            draggedHandleID = nil
+            if let saved = savedGestureFlags {
+                mapView.isScrollEnabled = saved.scroll
+                mapView.isZoomEnabled = saved.zoom
+                mapView.isRotateEnabled = saved.rotate
+            }
+            savedGestureFlags = nil
+            onHandleDrop?(id)
+        }
+
+        // MARK: UIGestureRecognizerDelegate (adjust drag only)
+
+        /// Hit-test BEFORE recognition: a press that lands on no handle never
+        /// begins, so the map's own pan/pinch stay untouched ("miss = the map
+        /// pans"). Only the adjust recognizer has this coordinator as its
+        /// delegate.
+        public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === adjustPressRecognizer,
+                  let mapView = gestureRecognizer.view as? MLNMapView else { return true }
+            return nearestHandle(to: gestureRecognizer.location(in: mapView), in: mapView) != nil
+        }
+
+        /// The drag claims the gesture exclusively: never recognize together
+        /// with the map's pan/pinch/rotate/quick-zoom recognizers. (The old
+        /// move-tee long-press had no delegate, so MapLibre's quick-zoom fired
+        /// simultaneously and the map zoomed while the tee moved.)
+        public func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            false
         }
 
         /// Serializes the generated style to a fresh temp file (a new URL each
@@ -339,6 +515,8 @@ public struct CourseMapView: UIViewRepresentable {
             // images and analysis layers.
             routeLegLabelRenderer.styleDidReload()
             routeLegLabelRenderer.apply(desiredOverlays.routeLegLabels, to: style)
+            adjustHandleRenderer.styleDidReload()
+            adjustHandleRenderer.apply(desiredOverlays.adjustHandles, to: style)
             analysisRenderer.styleDidReload()
             analysisRenderer.apply(desiredAnalysis, to: style)
             if let pendingCamera {

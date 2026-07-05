@@ -40,6 +40,15 @@ public enum MapStyleIDs {
     public static let measureLineLayer = "overlay-measure-line"
     public static let measurePointsSource = "overlay-measure-points"
     public static let measurePointsLayer = "overlay-measure-points"
+
+    // Adjust-mode draggable handles (tee / aim points / green center): a
+    // kind-colored ring circle layer plus a symbol layer whose icons are
+    // pre-rendered label images ("T", "A1", "G") registered at runtime by
+    // AdjustHandleRenderer (no glyph PBFs in the offline style). Topmost —
+    // handles must stay grabbable over every other overlay.
+    public static let adjustHandlesSource = "overlay-adjust-handles"
+    public static let adjustHandlesCircleLayer = "overlay-adjust-handles-circle"
+    public static let adjustHandlesLabelLayer = "overlay-adjust-handles-label"
 }
 
 public enum MapStyleError: Error, Equatable {
@@ -108,6 +117,20 @@ public enum MapStyleBuilder {
     ]
     static let measurePointStrokeColor = "#ffffff"
 
+    // Adjust handles: large rings, clearly distinct from the small F/C/B
+    // target dots — translucent kind-colored fill with a solid kind-colored
+    // stroke, label image centered on top. Radius ≥ the drag hit slop's
+    // visual anchor so the affordance reads as grabbable.
+    public static let adjustHandleRadius = 14.0
+    static let adjustHandleColors: [(kind: String, hex: String)] = [
+        ("tee", "#22c55e"),
+        ("aim", "#fbbf24"),
+        ("green", "#c084fc"),
+    ]
+    static let adjustHandleFallbackColor = "#ffffff"
+    static let adjustHandleFillOpacity = 0.28
+    static let adjustHandleStrokeWidth = 3.0
+
     /// file:// XYZ template for the bundle's ortho tiles, with literal
     /// {z}/{x}/{y} placeholders (string concatenation — URL APIs would
     /// percent-encode the braces). Layout matches `BundlePaths`.
@@ -158,7 +181,15 @@ public enum MapStyleBuilder {
             MapStyleIDs.userLocationSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.measureLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.measurePointsSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.adjustHandlesSource: ["type": "geojson", "data": emptyCollection],
         ]
+
+        var adjustHandleColorExpr: [Any] = ["match", ["get", "kind"]]
+        for (kind, hex) in adjustHandleColors {
+            adjustHandleColorExpr.append(kind)
+            adjustHandleColorExpr.append(hex)
+        }
+        adjustHandleColorExpr.append(adjustHandleFallbackColor)
 
         var measurePointColorExpr: [Any] = ["match", ["get", "kind"]]
         for (kind, hex) in measurePointColors {
@@ -300,6 +331,30 @@ public enum MapStyleBuilder {
                 "paint": [
                     "circle-color": userDotColor,
                     "circle-radius": 6.5,
+                ],
+            ],
+            [
+                // Adjust handles above everything: the drag affordance must
+                // never hide under markers, labels or the user dot.
+                "id": MapStyleIDs.adjustHandlesCircleLayer,
+                "type": "circle",
+                "source": MapStyleIDs.adjustHandlesSource,
+                "paint": [
+                    "circle-color": adjustHandleColorExpr,
+                    "circle-opacity": adjustHandleFillOpacity,
+                    "circle-radius": adjustHandleRadius,
+                    "circle-stroke-color": adjustHandleColorExpr,
+                    "circle-stroke-width": adjustHandleStrokeWidth,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.adjustHandlesLabelLayer,
+                "type": "symbol",
+                "source": MapStyleIDs.adjustHandlesSource,
+                "layout": [
+                    "icon-image": ["get", "labelImage"],
+                    "icon-allow-overlap": true,
+                    "icon-ignore-placement": true,
                 ],
             ],
         ]

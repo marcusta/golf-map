@@ -160,10 +160,9 @@ private struct OnCourseContentView: View {
 
     /// Immersive mode: a short single-tap on the map hides the top hole bar and
     /// the bottom distances card, leaving the full-bleed hole, a small compact
-    /// chip, and the right-side controls. Tap again to restore. Separate from
-    /// the browse-mode long-press (move tee); the two never fire together.
-    /// Suspended while any tool is active (Green view chrome must stay put; in
-    /// measure mode a tap PLACES a point instead).
+    /// chip, and the right-side controls. Tap again to restore. Suspended
+    /// while any tool is active (Green view chrome must stay put; in measure
+    /// mode a tap PLACES a point; in adjust mode the handles own the touch).
     @State private var immersive = false
     /// Elevation-profile sheet. NOT a map tool — non-modal, openable over any
     /// mode; reads the measure path while measuring, else the hole route.
@@ -171,11 +170,13 @@ private struct OnCourseContentView: View {
 
     private var isGreenView: Bool { model.toolMode == .greenView }
     private var isMeasure: Bool { model.toolMode == .measure }
+    private var isAdjust: Bool { model.toolMode == .adjust }
 
-    /// Model overlays + the measure path while measuring. Route-leg distance
-    /// labels are shown ONLY in immersive mode (chrome hidden) — with the
-    /// chrome up the card's capsules already carry the legs, and the map tools
-    /// (Green view / measure) own the map surface (entering one forces
+    /// Model overlays + the measure path while measuring + the draggable
+    /// handles while adjusting. Route-leg distance labels are shown ONLY in
+    /// immersive mode (chrome hidden) — with the chrome up the card's
+    /// capsules already carry the legs, and the map tools (Green view /
+    /// measure / adjust) own the map surface (entering one forces
     /// `immersive = false`, but gate on `toolMode` anyway).
     private var overlays: MapOverlayState {
         var overlays = model.overlays(
@@ -183,6 +184,9 @@ private struct OnCourseContentView: View {
         )
         if isMeasure {
             overlays.measure = measure.overlay
+        }
+        if isAdjust {
+            overlays.adjustHandles = model.adjustHandles
         }
         return overlays
     }
@@ -196,18 +200,23 @@ private struct OnCourseContentView: View {
                 camera: model.cameraCommand,
                 zoom: model.zoomCommand,
                 analysis: isGreenView ? greenAnalysis.mapState : nil,
-                longPressEnabled: model.isBrowseMode && model.toolMode == .none,
-                onLongPress: { model.moveActiveTee(to: $0) },
+                // The browse-mode long-press "move tee" is RETIRED — it fired
+                // simultaneously with MapLibre's quick-zoom (moving the tee
+                // also zoomed the map). Adjust mode owns moves now.
                 measureTapEnabled: isMeasure,
-                onMeasureTap: { measure.place($0) }
+                onMeasureTap: { measure.place($0) },
+                adjustEnabled: isAdjust,
+                onHandleGrab: { model.beginHandleDrag(id: $0) },
+                onHandleMove: { model.moveHandle(id: $0, to: $1) },
+                onHandleDrop: { _ in model.endHandleDrag() }
             )
             .ignoresSafeArea()
             // Short tap toggles chrome. High minimumDistance drag-less tap so it
-            // doesn't swallow the map's own pan; long-press (move tee) is a
-            // separate recognizer on the MLNMapView and is unaffected. Inert
-            // while a tool is active: in Green view a stray tap must not hide
-            // the analysis panel, and in measure mode the tap places a point
-            // (the UIKit recognizer in CourseMapView).
+            // doesn't swallow the map's own pan. Inert while a tool is active:
+            // in Green view a stray tap must not hide the analysis panel, in
+            // measure mode the tap places a point, and in adjust mode the map
+            // surface belongs to the handles (UIKit recognizers in
+            // CourseMapView).
             .simultaneousGesture(
                 TapGesture().onEnded {
                     guard model.toolMode == .none else { return }
@@ -249,6 +258,11 @@ private struct OnCourseContentView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if isAdjust {
+                    AdjustPanel(model: model, onClose: { exitAdjust() })
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if !immersive {
                     DistanceCardView(model: model)
                         .padding(.horizontal, 12)
@@ -334,6 +348,37 @@ private struct OnCourseContentView: View {
                     Self.writeMeasureDebugSummary(measure)
                 }
             }
+            // `-adjust 1` enters Adjust mode after the style-load hole fit;
+            // `-adjustMove "tee:lat,lon;aim0:lat,lon;green:lat,lon"` injects
+            // overrides through the SAME setHandleOverride accessor/
+            // persistence path a drag commit takes (real finger drags aren't
+            // scriptable via simctl); `-adjustReset 1` resets the hole
+            // afterwards. Each dumps an ADJUST-DEBUG summary for live-verify.
+            if UserDefaults.standard.string(forKey: "adjust") == "1" {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    enterAdjust()
+                    if let raw = UserDefaults.standard.string(forKey: "adjustMove") {
+                        for part in raw.split(separator: ";") {
+                            let pair = part.split(separator: ":")
+                            guard pair.count == 2,
+                                  let id = Self.debugHandleID(String(pair[0]), model: model)
+                            else { continue }
+                            let nums = pair[1].split(separator: ",")
+                            guard nums.count == 2,
+                                  let lat = Double(nums[0]), let lon = Double(nums[1])
+                            else { continue }
+                            model.setHandleOverride(id: id, to: LatLon(lat: lat, lon: lon))
+                        }
+                    }
+                    if UserDefaults.standard.string(forKey: "adjustReset") == "1" {
+                        model.resetCurrentHoleAdjustments()
+                    }
+                    // Give the async green terrain re-sample time to land.
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    Self.writeAdjustDebugSummary(model)
+                }
+            }
             if UserDefaults.standard.string(forKey: "profile") == "1" {
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -367,6 +412,50 @@ private struct OnCourseContentView: View {
     }
 
     #if DEBUG
+    /// `-adjustMove` token → model handle id: "tee", "green", or "aimN"
+    /// (index into the current hole's aim points, tee→green order).
+    private static func debugHandleID(_ token: String, model: OnCourseModel) -> String? {
+        switch token {
+        case "tee": return OnCourseModel.teeHandleID
+        case "green": return OnCourseModel.greenHandleID
+        default:
+            guard token.hasPrefix("aim"),
+                  let index = Int(token.dropFirst(3)),
+                  let hole = model.currentHole,
+                  hole.aimPoints.indices.contains(index)
+            else { return nil }
+            return OnCourseModel.aimHandleID(hole.aimPoints[index].id)
+        }
+    }
+
+    /// Live-verify hook: dumps the adjust state (handles, overridden ids,
+    /// route legs, distances) so a headless run can check the moved
+    /// route/distances against an independent recompute.
+    private static func writeAdjustDebugSummary(_ model: OnCourseModel) {
+        let distances = model.distances
+        let summary: [String: Any] = [
+            "handles": model.adjustHandles.map {
+                ["id": $0.id, "label": $0.label, "lat": $0.position.lat, "lon": $0.position.lon]
+            },
+            "overridden": model.overriddenHandleIDs.sorted(),
+            "routeLegs": model.routeLegs,
+            "playingLengthMeters": model.playingLength?.meters ?? NSNull() as Any,
+            "distances": [
+                "front": distances?.front ?? NSNull() as Any,
+                "center": distances?.center ?? NSNull() as Any,
+                "back": distances?.back ?? NSNull() as Any,
+                "playsLikeCenter": distances?.playsLikeCenter ?? NSNull() as Any,
+                "aims": (distances?.aims ?? []).map { ["label": $0.label, "meters": $0.meters] },
+            ],
+        ]
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "adjust-debug.json")
+        if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]) {
+            try? data.write(to: url)
+            print("ADJUST-DEBUG \(String(data: data, encoding: .utf8) ?? "")")
+        }
+    }
+
     /// Live-verify hook (same family as GreenAnalysisModel's): dumps the
     /// measure readout numbers to tmp so a headless run can check them
     /// against an independent EPSG:3006 + terrain computation.
@@ -406,12 +495,13 @@ private struct OnCourseContentView: View {
     }
     #endif
 
-    // Stacked bottom-right controls: green view / measure / profile / zoom in /
-    // zoom out / recenter.
+    // Stacked bottom-right controls: green view / measure / adjust / profile /
+    // zoom in / zoom out / recenter.
     private var controlStack: some View {
         VStack(spacing: 10) {
             greenViewButton
             measureButton
+            adjustButton
             profileButton
             circleButton(systemImage: "plus", label: "Zoom in") { model.zoomIn() }
             circleButton(systemImage: "minus", label: "Zoom out") { model.zoomOut() }
@@ -439,6 +529,35 @@ private struct OnCourseContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isMeasure ? "Exit measure" : "Measure")
+    }
+
+    /// Toggles Adjust mode (drag tee / aim / green-center handles). Tinted
+    /// with the adjust cyan while active; a dot badge marks a hole with
+    /// moved elements.
+    private var adjustButton: some View {
+        Button {
+            if isAdjust {
+                exitAdjust()
+            } else {
+                enterAdjust()
+            }
+        } label: {
+            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isAdjust ? AdjustPanel.cyan : Color.primary)
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(alignment: .topTrailing) {
+                    if model.currentHoleHasAdjustments {
+                        Circle()
+                            .fill(AdjustPanel.cyan)
+                            .frame(width: 8, height: 8)
+                            .offset(x: -3, y: 3)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isAdjust ? "Exit adjust" : "Adjust positions")
     }
 
     /// Toggles the elevation-profile sheet (non-modal; the map stays live).
@@ -519,6 +638,28 @@ private struct OnCourseContentView: View {
         }
     }
 
+    // MARK: - Adjust enter/exit
+
+    /// Adjust keeps the current hole framing (enterTool without focus bounds
+    /// re-issues the standard hole fit). Mutually exclusive with the other
+    /// tools, like measure.
+    private func enterAdjust() {
+        if greenAnalysis.isActive {
+            greenAnalysis.deactivate()
+        }
+        measure.clear()
+        withAnimation(.easeInOut(duration: 0.28)) {
+            immersive = false
+            model.enterTool(.adjust)
+        }
+    }
+
+    private func exitAdjust() {
+        withAnimation(.easeInOut(duration: 0.28)) {
+            model.exitTool()
+        }
+    }
+
     // MARK: - Elevation profile plumbing
 
     /// The path the profile reads: the measure path while measuring (once it
@@ -575,6 +716,64 @@ private struct OnCourseContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
+    }
+}
+
+// MARK: - Adjust panel
+
+/// Bottom card while ADJUST mode is active (replaces the distance card):
+/// a one-line instruction plus a per-hole Reset button, enabled only when
+/// something on the hole is moved. The actual moving happens on the map —
+/// drag the labeled handles (T / A1… / G).
+private struct AdjustPanel: View {
+    let model: OnCourseModel
+    /// Exit adjust mode.
+    let onClose: () -> Void
+
+    /// Adjust cyan — distinct from measure amber and green-view green.
+    static let cyan = Color(red: 0.35, green: 0.78, blue: 0.98)
+
+    var body: some View {
+        VStack(spacing: 8) {
+            header
+            Text("Drag a handle to move the tee, an aim point or the green center. Moves are saved on this device only.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 9)
+        .padding(.bottom, 10)
+        .background(.ultraThinMaterial.opacity(0.88), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Label("Adjust", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Self.cyan)
+            Spacer()
+            Button {
+                model.resetCurrentHoleAdjustments()
+            } label: {
+                Label("Reset hole", systemImage: "arrow.uturn.backward")
+                    .font(.footnote.weight(.medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.white.opacity(0.08), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(!model.currentHoleHasAdjustments)
+            .opacity(model.currentHoleHasAdjustments ? 1 : 0.35)
+            .accessibilityLabel("Reset moved positions on this hole")
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Exit adjust")
+        }
     }
 }
 
@@ -876,9 +1075,7 @@ private struct DistanceCardView: View {
                     Label("Reset moved tee", systemImage: "arrow.uturn.backward")
                 }
             }
-            if model.isBrowseMode {
-                Text("Long-press the map to move this tee")
-            }
+            Text("Move this tee with the Adjust tool")
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: model.currentTeeHasOverride ? "flag.circle.fill" : "flag.circle")

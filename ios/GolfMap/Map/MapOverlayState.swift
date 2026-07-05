@@ -45,6 +45,34 @@ public struct RouteLegLabel: Equatable, Sendable {
     }
 }
 
+/// One draggable Adjust-mode handle: the active tee, an aim point, or the
+/// green center. Rendered as a large kind-colored ring with a pre-rendered
+/// text label ("T", "A1", "G" — the offline style has no glyph PBFs, so the
+/// label is an image; see `AdjustHandleRenderer`). The same array drives the
+/// drag hit-test in `CourseMapView` — `id` round-trips through the grab/move/
+/// drop callbacks back to the model.
+public struct AdjustHandle: Equatable, Sendable, Identifiable {
+    public enum Kind: String, Sendable, CaseIterable {
+        case tee
+        case aim
+        case green
+    }
+
+    /// Stable element id (model-owned scheme, e.g. "tee" / "aim.<id>" / "green").
+    public var id: String
+    public var kind: Kind
+    /// Short on-map label ("T", "A1", "A2", "G").
+    public var label: String
+    public var position: LatLon
+
+    public init(id: String, kind: Kind, label: String, position: LatLon) {
+        self.id = id
+        self.kind = kind
+        self.label = label
+        self.position = position
+    }
+}
+
 /// The measure tool's rendered path: an amber polyline through every placed
 /// point plus labelled point circles (first green, last red, mids amber —
 /// mirrors the web measure overlay styling). Deliberately its OWN overlay
@@ -83,19 +111,24 @@ public struct MapOverlayState: Equatable, Sendable {
     /// only — the caller includes them when the chrome is hidden). Empty
     /// hides the labels.
     public var routeLegLabels: [RouteLegLabel]
+    /// Adjust-mode draggable handles (tee / aim points / green center); empty
+    /// hides them. Also the drag hit-test set in `CourseMapView`.
+    public var adjustHandles: [AdjustHandle]
 
     public init(
         distanceLine: [LatLon] = [],
         targets: [TargetMarker] = [],
         userLocation: UserLocationMarker? = nil,
         measure: MeasureOverlay = .empty,
-        routeLegLabels: [RouteLegLabel] = []
+        routeLegLabels: [RouteLegLabel] = [],
+        adjustHandles: [AdjustHandle] = []
     ) {
         self.distanceLine = distanceLine
         self.targets = targets
         self.userLocation = userLocation
         self.measure = measure
         self.routeLegLabels = routeLegLabels
+        self.adjustHandles = adjustHandles
     }
 
     public static let empty = MapOverlayState()
@@ -164,9 +197,10 @@ enum MapOverlayShapes {
 /// Reassigning `MLNShapeSource.shape` is MapLibre's cheap data-update path —
 /// no layer or style mutation.
 ///
-/// `routeLegLabels` is NOT applied here: label rendering needs a stateful
-/// image cache (`RouteLegLabelRenderer`, owned by the coordinator), which the
-/// coordinator invokes right after this.
+/// `routeLegLabels` and `adjustHandles` are NOT applied here: their label
+/// rendering needs stateful image caches (`RouteLegLabelRenderer` /
+/// `AdjustHandleRenderer`, owned by the coordinator), which the coordinator
+/// invokes right after this.
 @MainActor
 enum MapOverlayRenderer {
     static func apply(_ state: MapOverlayState, to style: MLNStyle) {

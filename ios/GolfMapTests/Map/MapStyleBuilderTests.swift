@@ -81,6 +81,7 @@ final class MapStyleBuilderTests: XCTestCase {
             MapStyleIDs.userLocationSource,
             MapStyleIDs.measureLineSource,
             MapStyleIDs.measurePointsSource,
+            MapStyleIDs.adjustHandlesSource,
         ] {
             let source = try XCTUnwrap(sources[id] as? [String: Any], id)
             XCTAssertEqual(source["type"] as? String, "geojson", id)
@@ -108,6 +109,8 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.measurePointsLayer,
                 MapStyleIDs.userLocationHaloLayer,
                 MapStyleIDs.userLocationDotLayer,
+                MapStyleIDs.adjustHandlesCircleLayer,
+                MapStyleIDs.adjustHandlesLabelLayer,
             ]
         )
     }
@@ -227,6 +230,6 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 13)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 15)
     }
 }

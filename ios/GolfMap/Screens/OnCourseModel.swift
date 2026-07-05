@@ -61,8 +61,15 @@ final class OnCourseModel {
     private(set) var aimRoutingThresholdMeters: Double
 
     /// Per-(hole, tee) local tee-position overrides, loaded from `defaults`.
-    /// Keyed by `hole.id` → tee name → moved position. Browse-mode only.
+    /// Keyed by `hole.id` → tee name → moved position.
     private var teeOverrides: [String: [String: LatLon]] = [:]
+    /// Per-hole aim-point overrides (Adjust mode), `hole.id` → aim record id →
+    /// moved position.
+    private var aimOverrides: [String: [String: LatLon]] = [:]
+    /// Per-hole green-center overrides (Adjust mode), keyed by `hole.id`.
+    /// Moves the CENTER target only — front/back markers and the
+    /// green-analysis polygon keep their stored positions.
+    private var greenOverrides: [String: LatLon] = [:]
 
     /// Terrain elevation sampler (bundle terrain tiles); injected by the
     /// screen, stubbed in tests. Used for the user position and as a fallback
@@ -113,6 +120,7 @@ final class OnCourseModel {
             self.aimRoutingThresholdMeters = Self.defaultAimRoutingThresholdMeters
         }
         loadTeeOverrides()
+        loadAdjustOverrides()
         refreshGreenElevationFallback()
     }
 
@@ -177,9 +185,11 @@ final class OnCourseModel {
 
     private func holeDidChange() {
         // Tools are per-hole/transient — navigating away always dismisses
-        // (the screen observes `toolMode` and tears its tool UI down).
+        // (the screen observes `toolMode` and tears its tool UI down). An
+        // in-flight Adjust drag is abandoned uncommitted.
         toolMode = .none
         toolFocusBounds = nil
+        draggingHandleID = nil
         cameraToken += 1
         refreshGreenElevationFallback()
     }
@@ -192,14 +202,16 @@ final class OnCourseModel {
     /// view zooms to the green). Hole navigation dismisses the active tool.
     ///
     /// `.measure` re-purposes the map tap: instead of toggling immersive
-    /// chrome, a tap PLACES a measure point (see `MeasureModel`); browse
-    /// long-press is disabled while any tool is active. The elevation profile
-    /// is deliberately NOT a tool — it's a non-modal sheet openable over any
+    /// chrome, a tap PLACES a measure point (see `MeasureModel`). `.adjust`
+    /// turns on the draggable tee/aim/green handles (short-press drag moves
+    /// them; the map keeps its framing). The elevation profile is
+    /// deliberately NOT a tool — it's a non-modal sheet openable over any
     /// mode.
     enum MapToolMode: Equatable, Sendable {
         case none
         case greenView
         case measure
+        case adjust
     }
 
     private(set) var toolMode: MapToolMode = .none
@@ -215,14 +227,17 @@ final class OnCourseModel {
         }
         toolMode = mode
         toolFocusBounds = focusBounds
+        draggingHandleID = nil
         cameraToken += 1
     }
 
-    /// Leave the active tool and restore the normal hole framing.
+    /// Leave the active tool and restore the normal hole framing. An
+    /// in-flight Adjust drag is abandoned uncommitted.
     func exitTool() {
         guard toolMode != .none else { return }
         toolMode = .none
         toolFocusBounds = nil
+        draggingHandleID = nil
         cameraToken += 1
     }
 
@@ -283,8 +298,8 @@ final class OnCourseModel {
     var teeMenuEntries: [TeeMenuEntry] {
         guard let hole = currentHole else { return [] }
 
-        let aims = hole.aimPoints.map { LatLon(lat: $0.lat, lon: $0.lon) }
-        let greenCenter = hole.green.map { LatLon(lat: $0.centerLat, lon: $0.centerLon) }
+        let aims = hole.aimPoints.map { aimPosition(for: $0, in: hole) }
+        let greenCenter = greenCenterPosition(for: hole)
 
         let present: [TeeMenuEntry] = hole.tees.map { tee in
             let position = teeOverrides[hole.id]?[tee.name] ?? LatLon(lat: tee.lat, lon: tee.lon)
@@ -338,7 +353,7 @@ final class OnCourseModel {
         defaults.set(meters, forKey: Self.aimRoutingThresholdKey)
     }
 
-    // MARK: - Tee override (browse-mode local tee move)
+    // MARK: - Tee override (local tee move — Adjust mode + `-moveTee` debug hook)
 
     private static func teeOverrideKey(courseId: String, holeId: String, teeName: String) -> String {
         "onCourse.teeOverride.\(courseId).\(holeId).\(teeName)"
@@ -391,8 +406,12 @@ final class OnCourseModel {
         return teeOverrides[hole.id]?[tee.name] != nil
     }
 
-    /// Move the current hole's active tee to `position` (browse-mode gesture).
-    /// Persisted per (course, hole, tee); recomputes route/bounds/distances.
+    /// Move the current hole's active tee to `position` and persist it.
+    /// The browse-mode long-press that used to call this is RETIRED (it
+    /// recognized simultaneously with MapLibre's quick-zoom, so the map
+    /// zoomed while the tee moved) — moves now go through the Adjust-mode
+    /// drag (`moveHandle`/`endHandleDrag`, same override storage). Kept for
+    /// the `-moveTee` debug hook and tests.
     func moveActiveTee(to position: LatLon) {
         guard let hole = currentHole, let tee = activeTee(for: hole) else { return }
         teeOverrides[hole.id, default: [:]][tee.name] = position
@@ -414,6 +433,212 @@ final class OnCourseModel {
         cameraToken += 1
     }
 
+    // MARK: - Adjust overrides (aim points + green center)
+
+    /// Stable Adjust-handle id for the active tee.
+    static let teeHandleID = "tee"
+    /// Stable Adjust-handle id for the green center.
+    static let greenHandleID = "green"
+    /// Stable Adjust-handle id for one aim point record.
+    static func aimHandleID(_ aimId: String) -> String { "aim.\(aimId)" }
+
+    private static func aimOverrideKey(courseId: String, holeId: String, aimId: String) -> String {
+        "onCourse.aimOverride.\(courseId).\(holeId).\(aimId)"
+    }
+
+    private static func greenOverrideKey(courseId: String, holeId: String) -> String {
+        "onCourse.greenOverride.\(courseId).\(holeId)"
+    }
+
+    private func loadAdjustOverrides() {
+        aimOverrides = [:]
+        greenOverrides = [:]
+        for hole in holes {
+            for aim in hole.aimPoints {
+                let key = Self.aimOverrideKey(courseId: courseId, holeId: hole.id, aimId: aim.id)
+                if let encoded = defaults.string(forKey: key),
+                   let point = Self.decodeLatLon(encoded) {
+                    aimOverrides[hole.id, default: [:]][aim.id] = point
+                }
+            }
+            if hole.green != nil {
+                let key = Self.greenOverrideKey(courseId: courseId, holeId: hole.id)
+                if let encoded = defaults.string(forKey: key),
+                   let point = Self.decodeLatLon(encoded) {
+                    greenOverrides[hole.id] = point
+                }
+            }
+        }
+    }
+
+    /// Central aim-position accessor: the moved override when one exists,
+    /// else the stored coordinate. ALL aim-position reads route through this
+    /// (targets, route, leg labels, playing length, camera bounds).
+    func aimPosition(for aim: AimPointRecord, in hole: HoleData) -> LatLon {
+        aimOverrides[hole.id]?[aim.id] ?? LatLon(lat: aim.lat, lon: aim.lon)
+    }
+
+    /// Central green-center accessor: the moved override when one exists,
+    /// else the stored center. Moves the CENTER target only — front/back
+    /// markers and the green-analysis polygon keep their stored positions.
+    func greenCenterPosition(for hole: HoleData) -> LatLon? {
+        guard let green = hole.green else { return nil }
+        return greenOverrides[hole.id] ?? LatLon(lat: green.centerLat, lon: green.centerLon)
+    }
+
+    // MARK: - Adjust mode (draggable handles)
+
+    /// The draggable handles for the current hole: active tee ("T"), each aim
+    /// point ("A1", "A2", …) and the green center ("G"), at their
+    /// override-aware positions. Rendered + hit-tested by `CourseMapView`
+    /// while `.adjust` is active.
+    var adjustHandles: [AdjustHandle] {
+        guard let hole = currentHole else { return [] }
+        var handles: [AdjustHandle] = []
+        if let tee = teePosition(for: hole) {
+            handles.append(AdjustHandle(id: Self.teeHandleID, kind: .tee, label: "T", position: tee))
+        }
+        for (index, aim) in hole.aimPoints.enumerated() {
+            handles.append(AdjustHandle(
+                id: Self.aimHandleID(aim.id),
+                kind: .aim,
+                label: "A\(index + 1)",
+                position: aimPosition(for: aim, in: hole)
+            ))
+        }
+        if let green = greenCenterPosition(for: hole) {
+            handles.append(AdjustHandle(id: Self.greenHandleID, kind: .green, label: "G", position: green))
+        }
+        return handles
+    }
+
+    /// The handle being dragged right now, or nil. Set by `beginHandleDrag`,
+    /// cleared by `endHandleDrag` / tool exit / hole navigation.
+    private(set) var draggingHandleID: String?
+
+    /// A handle was grabbed on the map (Adjust mode only).
+    func beginHandleDrag(id: String) {
+        guard toolMode == .adjust, adjustHandles.contains(where: { $0.id == id }) else { return }
+        draggingHandleID = id
+    }
+
+    /// Live drag frame OR direct move: updates the element's in-memory
+    /// override so every derived output (route, distances, labels, handles)
+    /// recomputes immediately. NOT persisted and no camera bump — the map
+    /// must hold perfectly still under the finger; `endHandleDrag` /
+    /// `setHandleOverride` persist.
+    func moveHandle(id: String, to position: LatLon) {
+        guard let hole = currentHole else { return }
+        switch id {
+        case Self.teeHandleID:
+            guard let tee = activeTee(for: hole) else { return }
+            teeOverrides[hole.id, default: [:]][tee.name] = position
+        case Self.greenHandleID:
+            guard hole.green != nil else { return }
+            greenOverrides[hole.id] = position
+        default:
+            guard let aim = hole.aimPoints.first(where: { Self.aimHandleID($0.id) == id }) else { return }
+            aimOverrides[hole.id, default: [:]][aim.id] = position
+        }
+    }
+
+    /// Drop: persist the dragged handle's current position and end the drag.
+    func endHandleDrag() {
+        guard let id = draggingHandleID else { return }
+        draggingHandleID = nil
+        persistOverride(id: id)
+    }
+
+    /// Move + persist in one step — the same accessor/persistence path a drag
+    /// commit takes. Used by the `-adjustMove` debug hook.
+    func setHandleOverride(id: String, to position: LatLon) {
+        moveHandle(id: id, to: position)
+        persistOverride(id: id)
+    }
+
+    /// Writes the element's current in-memory override to `defaults`. A moved
+    /// green center re-samples the terrain elevation at the new point (its
+    /// stored elevation belongs to the original center).
+    private func persistOverride(id: String) {
+        guard let hole = currentHole else { return }
+        switch id {
+        case Self.teeHandleID:
+            guard let tee = activeTee(for: hole),
+                  let position = teeOverrides[hole.id]?[tee.name] else { return }
+            defaults.set(
+                Self.encodeLatLon(position),
+                forKey: Self.teeOverrideKey(courseId: courseId, holeId: hole.id, teeName: tee.name)
+            )
+        case Self.greenHandleID:
+            guard let position = greenOverrides[hole.id] else { return }
+            defaults.set(
+                Self.encodeLatLon(position),
+                forKey: Self.greenOverrideKey(courseId: courseId, holeId: hole.id)
+            )
+            refreshGreenElevationFallback()
+        default:
+            guard let aim = hole.aimPoints.first(where: { Self.aimHandleID($0.id) == id }),
+                  let position = aimOverrides[hole.id]?[aim.id] else { return }
+            defaults.set(
+                Self.encodeLatLon(position),
+                forKey: Self.aimOverrideKey(courseId: courseId, holeId: hole.id, aimId: aim.id)
+            )
+        }
+    }
+
+    /// Handle ids on the current hole that carry an override (badging + the
+    /// Reset button's enabled state). Tee overrides are reported for the
+    /// ACTIVE tee; `currentHoleHasAdjustments` also counts inactive tees.
+    var overriddenHandleIDs: Set<String> {
+        guard let hole = currentHole else { return [] }
+        var ids: Set<String> = []
+        if let tee = activeTee(for: hole), teeOverrides[hole.id]?[tee.name] != nil {
+            ids.insert(Self.teeHandleID)
+        }
+        for aim in hole.aimPoints where aimOverrides[hole.id]?[aim.id] != nil {
+            ids.insert(Self.aimHandleID(aim.id))
+        }
+        if greenOverrides[hole.id] != nil {
+            ids.insert(Self.greenHandleID)
+        }
+        return ids
+    }
+
+    /// True when ANY element of the current hole is overridden (any tee name,
+    /// any aim, or the green center) — the Reset button's enabled state.
+    var currentHoleHasAdjustments: Bool {
+        guard let hole = currentHole else { return false }
+        return !(teeOverrides[hole.id]?.isEmpty ?? true)
+            || !(aimOverrides[hole.id]?.isEmpty ?? true)
+            || greenOverrides[hole.id] != nil
+    }
+
+    /// Per-hole reset: clears EVERY override on the current hole — all tee
+    /// names, all aim points and the green center — in memory and in
+    /// `defaults`, then re-fits the camera to the restored furniture.
+    func resetCurrentHoleAdjustments() {
+        guard let hole = currentHole else { return }
+        draggingHandleID = nil
+        for tee in hole.tees where teeOverrides[hole.id]?[tee.name] != nil {
+            teeOverrides[hole.id]?[tee.name] = nil
+            defaults.removeObject(
+                forKey: Self.teeOverrideKey(courseId: courseId, holeId: hole.id, teeName: tee.name)
+            )
+        }
+        for aim in hole.aimPoints where aimOverrides[hole.id]?[aim.id] != nil {
+            aimOverrides[hole.id]?[aim.id] = nil
+            defaults.removeObject(
+                forKey: Self.aimOverrideKey(courseId: courseId, holeId: hole.id, aimId: aim.id)
+            )
+        }
+        if greenOverrides[hole.id] != nil {
+            greenOverrides[hole.id] = nil
+            defaults.removeObject(forKey: Self.greenOverrideKey(courseId: courseId, holeId: hole.id))
+            refreshGreenElevationFallback()
+        }
+        cameraToken += 1
+    }
+
     // MARK: - Location + elevation
 
     /// Feeds a GPS fix (or nil on loss) and kicks an async terrain sample for
@@ -432,15 +657,19 @@ final class OnCourseModel {
         }
     }
 
-    /// Samples the green's terrain elevation when the record has none stored.
+    /// Samples the green's terrain elevation when the record has none stored,
+    /// or when the center is overridden (the stored elevation belongs to the
+    /// original center, so a moved center degrades to a terrain sample at the
+    /// new point).
     private func refreshGreenElevationFallback() {
         greenTerrainElevation = nil
         guard
-            let green = currentHole?.green,
-            green.elevation == nil,
-            let sampler = elevationSampler
+            let hole = currentHole,
+            let green = hole.green,
+            green.elevation == nil || greenOverrides[hole.id] != nil,
+            let sampler = elevationSampler,
+            let center = greenCenterPosition(for: hole)
         else { return }
-        let center = LatLon(lat: green.centerLat, lon: green.centerLon)
         Task { [weak self] in
             let elevation = await sampler(center)
             self?.greenTerrainElevation = elevation
@@ -486,19 +715,27 @@ final class OnCourseModel {
             return LatLon(lat: lat, lon: lon)
         }
 
+        // A moved green center degrades to the terrain-sampled elevation at
+        // the new point (refreshGreenElevationFallback); moved aims degrade
+        // their elevation to nil — the stored figures belong to the original
+        // positions.
+        let greenIsOverridden = greenOverrides[hole.id] != nil
         return HoleTargets(
             greenFront: point(green?.frontLat, green?.frontLon),
-            greenCenter: green.map { LatLon(lat: $0.centerLat, lon: $0.centerLon) },
+            greenCenter: greenCenterPosition(for: hole),
             greenBack: point(green?.backLat, green?.backLon),
-            greenElevation: green?.elevation ?? greenTerrainElevation,
+            greenElevation: greenIsOverridden
+                ? greenTerrainElevation
+                : green?.elevation ?? greenTerrainElevation,
             activePin: activePin.map { LatLon(lat: $0.lat, lon: $0.lon) },
             activePinName: activePin?.name,
             aimPoints: hole.aimPoints.enumerated().map { index, aim in
                 let label = aim.label.flatMap { $0.isEmpty ? nil : $0 } ?? "Aim \(index + 1)"
+                let overridden = aimOverrides[hole.id]?[aim.id] != nil
                 return AimTarget(
                     label: label,
-                    position: LatLon(lat: aim.lat, lon: aim.lon),
-                    elevation: aim.elevation
+                    position: aimPosition(for: aim, in: hole),
+                    elevation: overridden ? nil : aim.elevation
                 )
             }
         )
@@ -513,13 +750,14 @@ final class OnCourseModel {
         )
     }
 
-    /// Active-tee playing length of the current hole (tee → aims → green).
+    /// Active-tee playing length of the current hole (tee → aims → green),
+    /// honoring any moved tee/aim/green overrides.
     var playingLength: HoleLength.PlayingLength? {
         guard let hole = currentHole else { return nil }
         return HoleLength.playingLength(
             tee: teePosition(for: hole),
-            aims: hole.aimPoints.map { LatLon(lat: $0.lat, lon: $0.lon) },
-            greenCenter: hole.green.map { LatLon(lat: $0.centerLat, lon: $0.centerLon) }
+            aims: hole.aimPoints.map { aimPosition(for: $0, in: hole) },
+            greenCenter: greenCenterPosition(for: hole)
         )
     }
 
@@ -531,12 +769,9 @@ final class OnCourseModel {
         guard
             let hole = currentHole,
             let tee = teePosition(for: hole),
-            let green = hole.green
+            let green = greenCenterPosition(for: hole)
         else { return 0 }
-        return Distance.bearingDegrees(
-            tee,
-            LatLon(lat: green.centerLat, lon: green.centerLon)
-        )
+        return Distance.bearingDegrees(tee, green)
     }
 
     /// Bbox of everything that matters on the hole: active tee, green
@@ -585,17 +820,17 @@ final class OnCourseModel {
 
     // MARK: - Derived: routing
 
-    /// The full tee→green route for the current hole (honoring any tee
-    /// override): active tee → aim points (tee→green order) → green center.
-    /// Par-3 / no-aim holes collapse to tee → green (or fewer if furniture is
-    /// missing). Used as the browse-mode distance line.
+    /// The full tee→green route for the current hole (honoring any tee/aim/
+    /// green overrides): active tee → aim points (tee→green order) → green
+    /// center. Par-3 / no-aim holes collapse to tee → green (or fewer if
+    /// furniture is missing). Used as the browse-mode distance line.
     var holeRoute: [LatLon] {
         guard let hole = currentHole else { return [] }
         var route: [LatLon] = []
         if let tee = teePosition(for: hole) { route.append(tee) }
-        route.append(contentsOf: hole.aimPoints.map { LatLon(lat: $0.lat, lon: $0.lon) })
-        if let green = hole.green {
-            route.append(LatLon(lat: green.centerLat, lon: green.centerLon))
+        route.append(contentsOf: hole.aimPoints.map { aimPosition(for: $0, in: hole) })
+        if let green = greenCenterPosition(for: hole) {
+            route.append(green)
         }
         return route
     }
