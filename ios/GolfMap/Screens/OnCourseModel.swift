@@ -34,6 +34,13 @@ final class OnCourseModel {
     /// Bumped whenever the camera should re-apply (hole change, recenter).
     private(set) var cameraToken = 0
 
+    /// Per-tap relative zoom step + token for the +/- zoom buttons. Drives
+    /// `MapZoomCommand` imperatively (applied on top of the map's *current* zoom
+    /// level) so a tap never triggers a hole re-fit. `token` forces re-apply so
+    /// two taps of the same button (identical `delta`) both register.
+    private(set) var zoomStep = 0.0
+    private(set) var zoomToken = 0
+
     /// Latest GPS fix; nil = no fix yet / denied → tee-based fallback.
     private(set) var userLocation: LatLon?
     /// Terrain-sampled elevation at `userLocation` (plays-like input).
@@ -143,6 +150,31 @@ final class OnCourseModel {
         cameraToken += 1
     }
 
+    // MARK: - Zoom buttons
+
+    /// One zoom level per tap.
+    static let zoomButtonStep = 1.0
+
+    /// Zoom the map in by one level (relative to its current zoom). Imperative —
+    /// does not bump `cameraToken`, so it never re-fits the hole.
+    func zoomIn() {
+        zoomStep = Self.zoomButtonStep
+        zoomToken += 1
+    }
+
+    /// Zoom the map out by one level.
+    func zoomOut() {
+        zoomStep = -Self.zoomButtonStep
+        zoomToken += 1
+    }
+
+    /// Imperative zoom command for `CourseMapView`; nil until the first tap.
+    /// Independent of `cameraCommand`.
+    var zoomCommand: MapZoomCommand? {
+        guard zoomToken > 0 else { return nil }
+        return MapZoomCommand(delta: zoomStep, animated: true, token: zoomToken)
+    }
+
     private func holeDidChange() {
         cameraToken += 1
         refreshGreenElevationFallback()
@@ -182,6 +214,53 @@ final class OnCourseModel {
     /// The tee name actually in effect on the current hole (after fallback).
     var resolvedTeeName: String? {
         currentHole.flatMap { activeTee(for: $0)?.name }
+    }
+
+    /// One row of the tee picker for the current hole.
+    struct TeeMenuEntry: Identifiable, Equatable {
+        let name: String
+        /// Playing length of THIS tee on the current hole, or nil for a tee not
+        /// present on this hole (its position/length is undefined here).
+        let length: HoleLength.PlayingLength?
+        /// True when the tee is placed on the current hole (has a length).
+        var isPresentOnHole: Bool { length != nil }
+        var id: String { name }
+    }
+
+    /// Tee picker rows for the current hole. Tees placed on this hole come first,
+    /// sorted DESCENDING by playing length (longest/championship tee at top),
+    /// each carrying its own tee→aims→green length (same math as the header's
+    /// `playingLength`, honoring any moved-tee override). Tees NOT placed on this
+    /// hole (course-level names) follow, alphabetically, with a nil length shown
+    /// as "—" in the UI — their position on this hole is undefined so no figure
+    /// is claimed.
+    var teeMenuEntries: [TeeMenuEntry] {
+        guard let hole = currentHole else { return [] }
+
+        let aims = hole.aimPoints.map { LatLon(lat: $0.lat, lon: $0.lon) }
+        let greenCenter = hole.green.map { LatLon(lat: $0.centerLat, lon: $0.centerLon) }
+
+        let present: [TeeMenuEntry] = hole.tees.map { tee in
+            let position = teeOverrides[hole.id]?[tee.name] ?? LatLon(lat: tee.lat, lon: tee.lon)
+            return TeeMenuEntry(
+                name: tee.name,
+                length: HoleLength.playingLength(tee: position, aims: aims, greenCenter: greenCenter)
+            )
+        }
+        // Longest first; break ties by name for a stable order.
+        .sorted { lhs, rhs in
+            let l = lhs.length?.meters ?? .min
+            let r = rhs.length?.meters ?? .min
+            if l != r { return l > r }
+            return lhs.name < rhs.name
+        }
+
+        let presentNames = Set(hole.tees.map(\.name))
+        let absent: [TeeMenuEntry] = availableTeeNames
+            .filter { !presentNames.contains($0) }
+            .map { TeeMenuEntry(name: $0, length: nil) }
+
+        return present + absent
     }
 
     // MARK: - GPS toggle + browse mode

@@ -69,3 +69,24 @@ public struct MapCameraCommand: Equatable, Sendable {
         )
     }
 }
+
+/// An imperative relative-zoom request for `CourseMapView` — bump the map's
+/// current zoom level by `delta` (positive = zoom in), keeping the center.
+/// Deliberately separate from `MapCameraCommand`: zoom buttons drive this so a
+/// tap never triggers a hole re-fit and never fights the hole-fit camera. The
+/// map applies it once when it changes (compared with `==`); re-issuing an
+/// identical delta requires bumping `token`.
+public struct MapZoomCommand: Equatable, Sendable {
+    /// Zoom-level change to add to the map's current level (≈ 1 per button tap).
+    public var delta: Double
+    public var animated: Bool
+    /// Change detector escape hatch — bump to re-apply an otherwise equal delta
+    /// (e.g. tapping "+" twice in a row).
+    public var token: Int
+
+    public init(delta: Double, animated: Bool = true, token: Int = 0) {
+        self.delta = delta
+        self.animated = animated
+        self.token = token
+    }
+}

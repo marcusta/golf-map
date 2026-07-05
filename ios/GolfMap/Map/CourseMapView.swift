@@ -29,6 +29,10 @@ public struct CourseMapView: UIViewRepresentable {
     public var featuresGeoJSON: Data
     public var overlays: MapOverlayState
     public var camera: MapCameraCommand?
+    /// Imperative relative-zoom request. Applied once per change (token bump),
+    /// independent of `camera` so a zoom-button tap never triggers a hole
+    /// re-fit and never fights the hole-fit camera command.
+    public var zoom: MapZoomCommand?
     /// Called on the main actor once the style finished loading (and again
     /// after any style rebuild caused by a configuration/features change).
     public var onMapReady: (() -> Void)?
@@ -45,6 +49,7 @@ public struct CourseMapView: UIViewRepresentable {
         featuresGeoJSON: Data,
         overlays: MapOverlayState = .empty,
         camera: MapCameraCommand? = nil,
+        zoom: MapZoomCommand? = nil,
         onMapReady: (() -> Void)? = nil,
         longPressEnabled: Bool = false,
         onLongPress: ((LatLon) -> Void)? = nil
@@ -53,6 +58,7 @@ public struct CourseMapView: UIViewRepresentable {
         self.featuresGeoJSON = featuresGeoJSON
         self.overlays = overlays
         self.camera = camera
+        self.zoom = zoom
         self.onMapReady = onMapReady
         self.longPressEnabled = longPressEnabled
         self.onLongPress = onLongPress
@@ -107,6 +113,9 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.desiredOverlays = overlays
         coordinator.pendingCamera = camera
         coordinator.lastCameraCommand = camera
+        // Seed the zoom baseline so the first real zoom command (a later token)
+        // applies but an initial value never fires on mount.
+        coordinator.lastZoomCommand = zoom
         coordinator.onMapReady = onMapReady
         return mapView
     }
@@ -147,6 +156,15 @@ public struct CourseMapView: UIViewRepresentable {
                 coordinator.pendingCamera = camera
             }
         }
+
+        // Relative zoom is applied imperatively on top of whatever center the
+        // map currently has — it never touches `cameraCommand`, so a per-GPS-fix
+        // updateUIView (which leaves `zoom` unchanged) won't re-fire it, and it
+        // won't provoke a hole re-fit.
+        if let zoom, zoom != coordinator.lastZoomCommand {
+            coordinator.lastZoomCommand = zoom
+            Coordinator.applyZoom(zoom, to: mapView)
+        }
     }
 
     public static func dismantleUIView(_ uiView: MLNMapView, coordinator: Coordinator) {
@@ -162,6 +180,7 @@ public struct CourseMapView: UIViewRepresentable {
         var appliedFeaturesGeoJSON: Data?
         var desiredOverlays: MapOverlayState = .empty
         var lastCameraCommand: MapCameraCommand?
+        var lastZoomCommand: MapZoomCommand?
         var pendingCamera: MapCameraCommand?
         var isStyleLoaded = false
         var onMapReady: (() -> Void)?
@@ -239,6 +258,18 @@ public struct CourseMapView: UIViewRepresentable {
                     animated: command.animated
                 )
             }
+        }
+
+        /// Applies a relative zoom: bumps the map's current zoom level by
+        /// `command.delta` (clamped to the map's min/max), keeping the current
+        /// center. Independent of the hole-fit camera. Exposed (internal) so
+        /// tests can exercise it against a real MLNMapView.
+        static func applyZoom(_ command: MapZoomCommand, to mapView: MLNMapView) {
+            let target = min(
+                max(mapView.zoomLevel + command.delta, mapView.minimumZoomLevel),
+                mapView.maximumZoomLevel
+            )
+            mapView.setZoomLevel(target, animated: command.animated)
         }
 
         // MARK: MLNMapViewDelegate

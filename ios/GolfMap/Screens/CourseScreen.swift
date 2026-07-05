@@ -131,6 +131,12 @@ private struct OnCourseContentView: View {
     let configuration: CourseMapConfiguration
     let featuresGeoJSON: Data
 
+    /// Immersive mode: a short single-tap on the map hides the top hole bar and
+    /// the bottom distances card, leaving the full-bleed hole, a small compact
+    /// chip, and the right-side controls. Tap again to restore. Separate from
+    /// the browse-mode long-press (move tee); the two never fire together.
+    @State private var immersive = false
+
     var body: some View {
         ZStack {
             CourseMapView(
@@ -138,41 +144,148 @@ private struct OnCourseContentView: View {
                 featuresGeoJSON: featuresGeoJSON,
                 overlays: model.overlays,
                 camera: model.cameraCommand,
+                zoom: model.zoomCommand,
                 longPressEnabled: model.isBrowseMode,
                 onLongPress: { model.moveActiveTee(to: $0) }
             )
             .ignoresSafeArea()
+            // Short tap toggles chrome. High minimumDistance drag-less tap so it
+            // doesn't swallow the map's own pan; long-press (move tee) is a
+            // separate recognizer on the MLNMapView and is unaffected.
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    withAnimation(.easeInOut(duration: 0.28)) { immersive.toggle() }
+                }
+            )
 
             VStack(spacing: 0) {
-                HoleHeaderView(model: model)
-                    .padding(.horizontal, 12)
-                Spacer()
-                HStack {
-                    Spacer()
-                    recenterButton
-                        .padding(.trailing, 16)
-                        .padding(.bottom, 10)
+                if !immersive {
+                    HoleHeaderView(model: model)
+                        .padding(.horizontal, 12)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                } else {
+                    CompactChipView(model: model)
+                        .padding(.top, 4)
+                        .transition(.opacity)
                 }
-                DistanceCardView(model: model)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
+
+                Spacer()
+
+                HStack(alignment: .bottom) {
+                    Spacer()
+                    controlStack
+                        .padding(.trailing, 16)
+                        .padding(.bottom, immersive ? 24 : 10)
+                }
+
+                if !immersive {
+                    DistanceCardView(model: model)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
         }
         // The chrome floats over a dark ortho map — force dark materials.
         .environment(\.colorScheme, .dark)
+        #if DEBUG
+        // Headless live-verify hooks (same family as `-openHole`): `-immersive 1`
+        // starts in immersive mode so the hidden-chrome layout can be
+        // screenshotted; `-zoomTaps N` fires N zoom-in taps (negative = out)
+        // after appear so the imperative zoom path can be verified without a real
+        // button tap. DEBUG-only and inert without the flags.
+        .onAppear {
+            if UserDefaults.standard.string(forKey: "immersive") == "1" {
+                immersive = true
+            }
+            // `-zoomTaps N` fires N in-taps; `-zoomOutTaps N` fires N out-taps
+            // (a separate positive-valued key because simctl swallows a negative
+            // launch-arg value).
+            let inTaps = UserDefaults.standard.string(forKey: "zoomTaps").flatMap(Int.init) ?? 0
+            let outTaps = UserDefaults.standard.string(forKey: "zoomOutTaps").flatMap(Int.init) ?? 0
+            if inTaps != 0 || outTaps != 0 {
+                // Space the taps so each relative zoom applies (the imperative
+                // command coalesces if fired synchronously).
+                Task { @MainActor in
+                    // Wait out the async style-load hole-fit before zooming, so
+                    // the debug taps aren't overridden by the initial camera fit.
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    for _ in 0..<inTaps {
+                        model.zoomIn()
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                    }
+                    for _ in 0..<outTaps {
+                        model.zoomOut()
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                    }
+                }
+            }
+        }
+        #endif
     }
 
-    private var recenterButton: some View {
-        Button {
-            model.recenter()
-        } label: {
-            Image(systemName: "scope")
-                .font(.system(size: 18, weight: .semibold))
+    // Stacked bottom-right controls: zoom in / zoom out / recenter.
+    private var controlStack: some View {
+        VStack(spacing: 10) {
+            circleButton(systemImage: "plus", label: "Zoom in") { model.zoomIn() }
+            circleButton(systemImage: "minus", label: "Zoom out") { model.zoomOut() }
+            circleButton(systemImage: "scope", label: "Recenter on hole", size: 18) {
+                model.recenter()
+            }
+        }
+    }
+
+    private func circleButton(
+        systemImage: String,
+        label: String,
+        size: CGFloat = 17,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: size, weight: .semibold))
                 .frame(width: 44, height: 44)
                 .background(.ultraThinMaterial, in: Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Recenter on hole")
+        .accessibilityLabel(label)
+    }
+}
+
+// MARK: - Compact chip (immersive mode)
+
+/// The single always-visible readout in immersive mode: hole number + the
+/// primary center distance (routed target label when GPS routing is active).
+private struct CompactChipView: View {
+    let model: OnCourseModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("H\(model.currentHoleNumber)")
+                .font(.footnote.weight(.bold))
+            Divider().frame(height: 14)
+            if let routed = model.routedAimDistance {
+                Image(systemName: "arrow.up.forward")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("\(routed.meters) m")
+                    .font(.footnote.weight(.semibold))
+                    .monospacedDigit()
+            } else {
+                Text(centerText)
+                    .font(.footnote.weight(.semibold))
+                    .monospacedDigit()
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(.ultraThinMaterial.opacity(0.85), in: Capsule())
+        .accessibilityElement(children: .combine)
+    }
+
+    private var centerText: String {
+        if let center = model.distances?.center { return "\(center) m" }
+        return "–"
     }
 }
 
@@ -200,8 +313,8 @@ private struct HoleHeaderView: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 4)
+        .background(.ultraThinMaterial.opacity(0.82), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .holeSwipeGesture(model: model)
     }
 
@@ -240,7 +353,7 @@ private struct DistanceCardView: View {
     private static let pinColor = Color(red: 1.0, green: 0.83, blue: 0.23)
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             frontCenterBack
             if let routed = model.routedAimDistance {
                 toAimRow(routed)
@@ -255,10 +368,10 @@ private struct DistanceCardView: View {
             }
             bottomRow
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal, 14)
+        .padding(.top, 9)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial.opacity(0.82), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .holeSwipeGesture(model: model)
     }
 
@@ -407,14 +520,26 @@ private struct DistanceCardView: View {
         }
     }
 
+    // "Black — 512 m" for a tee on this hole; "White — —" for a course-level
+    // tee not placed here (length undefined). Matches the header's figure for
+    // the active tee.
+    private func teeMenuLabel(_ entry: OnCourseModel.TeeMenuEntry) -> String {
+        guard let length = entry.length, let meters = length.meters else {
+            return "\(entry.name) — —"
+        }
+        return "\(entry.name) — \(length.approximate ? "~" : "")\(meters) m"
+    }
+
     private var teeMenu: some View {
         Menu {
+            // Longest-first, each row carrying THIS tee's playing length on the
+            // current hole. Tees not placed on this hole trail with no length.
             Picker("Tee", selection: Binding(
                 get: { model.resolvedTeeName ?? "" },
                 set: { model.selectTee(named: $0) }
             )) {
-                ForEach(model.availableTeeNames, id: \.self) { name in
-                    Text(name).tag(name)
+                ForEach(model.teeMenuEntries) { entry in
+                    Text(teeMenuLabel(entry)).tag(entry.name)
                 }
             }
             if model.currentTeeHasOverride {

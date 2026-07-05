@@ -447,4 +447,122 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertFalse(model.currentTeeHasOverride)
         XCTAssertEqual(model.origin, LatLon(lat: 58.3590, lon: 15.7100), "Blue's stored position")
     }
+
+    // MARK: - Tee menu (Feature A: longest-first + per-tee length)
+
+    /// One-hole course whose single hole carries four tees at increasing
+    /// distance from the green (so length order ≠ sortOrder) plus a course-level
+    /// tee name ("Red") that only exists on a *second* hole — i.e. absent from
+    /// the first hole. Shared aim + green so lengths differ only by tee position.
+    private func makeMultiTeeFurniture() -> CourseFurniture {
+        let course = CourseRecord(
+            id: "course-mt", name: "Multi-tee GC", status: "published",
+            revision: 1, downloadedRevision: 1, updatedAt: "2026-01-01T00:00:00Z",
+            bundleState: .complete
+        )
+        let holes = [
+            HoleRecord(id: "mh1", courseId: "course-mt", number: 1, par: 4, strokeIndex: 3),
+            HoleRecord(id: "mh2", courseId: "course-mt", number: 2, par: 4, strokeIndex: 5),
+        ]
+        // Hole 1 tees, all due south of the green on the same meridian so the
+        // farther-south (lower lat) tee is the longer hole. sortOrder is
+        // deliberately unrelated to length.
+        let tees = [
+            TeeRecord(id: "yellow", holeId: "mh1", name: "Yellow", lat: 58.3610, lon: 15.7080, sortOrder: 0),
+            TeeRecord(id: "white",  holeId: "mh1", name: "White",  lat: 58.3605, lon: 15.7080, sortOrder: 1),
+            TeeRecord(id: "black",  holeId: "mh1", name: "Black",  lat: 58.3595, lon: 15.7080, sortOrder: 2),
+            TeeRecord(id: "blue",   holeId: "mh1", name: "Blue",   lat: 58.3600, lon: 15.7080, sortOrder: 3),
+            // "Red" exists only on hole 2 → a course-level name absent on hole 1.
+            TeeRecord(id: "red2",   holeId: "mh2", name: "Red",    lat: 58.3660, lon: 15.7080, sortOrder: 0),
+        ]
+        let greens = [
+            GreenRecord(id: "mg1", holeId: "mh1", centerLat: 58.3640, centerLon: 15.7080),
+            GreenRecord(id: "mg2", holeId: "mh2", centerLat: 58.3700, centerLon: 15.7080),
+        ]
+        let aims = [
+            AimPointRecord(id: "ma1", holeId: "mh1", sortOrder: 0, lat: 58.3625, lon: 15.7080, label: nil),
+        ]
+        let manifest = TileManifestRecord(
+            courseId: "course-mt", west: 15.70, south: 58.35, east: 15.72, north: 58.37,
+            orthoMinZoom: 14, orthoMaxZoom: 20, terrainMinZoom: 12, terrainMaxZoom: 17,
+            elevMin: 0, elevMax: 100, generatedAt: "2026-01-01T00:00:00Z", versionParam: "v1"
+        )
+        return CourseFurniture(
+            course: course, holes: holes, tees: tees, greens: greens,
+            pins: [], aimPoints: aims, manifest: manifest
+        )
+    }
+
+    func testTeeMenuOrdersLongestFirstWithPerTeeLength() {
+        let model = OnCourseModel(furniture: makeMultiTeeFurniture(), defaults: defaults)
+        let entries = model.teeMenuEntries
+
+        // Present tees (Black/Blue/White/Yellow), longest-first, then absent Red.
+        XCTAssertEqual(entries.map(\.name), ["Black", "Blue", "White", "Yellow", "Red"])
+
+        // Present tees carry a length; the absent one does not.
+        XCTAssertNil(entries.last?.length, "Red is absent on this hole → no length")
+        for entry in entries.dropLast() {
+            XCTAssertNotNil(entry.length?.meters, "\(entry.name) should have a length")
+        }
+
+        // Lengths are strictly descending across the present tees.
+        let presentMeters = entries.dropLast().compactMap { $0.length?.meters }
+        XCTAssertEqual(presentMeters, presentMeters.sorted(by: >), "descending by length")
+
+        // Each present tee's figure equals HoleLength for that tee → aim → green.
+        let aim = LatLon(lat: 58.3625, lon: 15.7080)
+        let green = LatLon(lat: 58.3640, lon: 15.7080)
+        let teeCoords: [String: LatLon] = [
+            "Yellow": LatLon(lat: 58.3610, lon: 15.7080),
+            "White":  LatLon(lat: 58.3605, lon: 15.7080),
+            "Black":  LatLon(lat: 58.3595, lon: 15.7080),
+            "Blue":   LatLon(lat: 58.3600, lon: 15.7080),
+        ]
+        for entry in entries.dropLast() {
+            let expected = HoleLength.playingLength(
+                tee: teeCoords[entry.name], aims: [aim], greenCenter: green
+            )
+            XCTAssertEqual(entry.length, expected, "\(entry.name) length matches HoleLength")
+        }
+    }
+
+    func testTeeMenuActiveTeeLengthMatchesHeaderPlayingLength() {
+        let model = OnCourseModel(furniture: makeMultiTeeFurniture(), defaults: defaults)
+        model.selectTee(named: "Black")
+        let active = try! XCTUnwrap(model.teeMenuEntries.first { $0.name == "Black" })
+        // The menu's length for the active tee == the header's playingLength.
+        XCTAssertEqual(active.length, model.playingLength)
+    }
+
+    func testTeeMenuLengthHonorsMovedTeeOverride() {
+        let model = OnCourseModel(furniture: makeMultiTeeFurniture(), defaults: defaults)
+        model.setGPSEnabled(false)
+        model.selectTee(named: "Yellow")
+        // Move Yellow far south → it becomes the longest, so it climbs to top.
+        model.moveActiveTee(to: LatLon(lat: 58.3580, lon: 15.7080))
+        let entries = model.teeMenuEntries
+        XCTAssertEqual(entries.first?.name, "Yellow", "moved-far Yellow is now longest")
+        XCTAssertEqual(entries.first?.length, model.playingLength, "override honored in menu length")
+    }
+
+    // MARK: - Zoom buttons (Feature B)
+
+    func testZoomButtonsEmitTokenedCommandsWithoutTouchingCamera() {
+        let model = makeModel()
+        XCTAssertNil(model.zoomCommand, "no zoom command before any tap")
+        let camBefore = model.cameraCommand
+
+        model.zoomIn()
+        let inCmd = try! XCTUnwrap(model.zoomCommand)
+        XCTAssertGreaterThan(inCmd.delta, 0, "zoom in is a positive delta")
+        XCTAssertEqual(inCmd.token, 1)
+        XCTAssertEqual(model.cameraCommand, camBefore, "zoom must not bump the hole-fit camera")
+
+        model.zoomOut()
+        let outCmd = try! XCTUnwrap(model.zoomCommand)
+        XCTAssertLessThan(outCmd.delta, 0, "zoom out is a negative delta")
+        XCTAssertEqual(outCmd.token, 2, "token bumps each tap so identical deltas re-apply")
+        XCTAssertEqual(model.cameraCommand, camBefore, "still no re-fit")
+    }
 }
