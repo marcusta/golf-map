@@ -186,6 +186,7 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.desiredAnalysis = analysis
         if coordinator.isStyleLoaded, let style = mapView.style {
             MapOverlayRenderer.apply(overlays, to: style)
+            coordinator.routeLegLabelRenderer.apply(overlays.routeLegLabels, to: style)
             coordinator.analysisRenderer.apply(analysis, to: style)
         }
 
@@ -222,6 +223,7 @@ public struct CourseMapView: UIViewRepresentable {
         var desiredOverlays: MapOverlayState = .empty
         var desiredAnalysis: GreenAnalysisMapState?
         let analysisRenderer = GreenAnalysisRenderer()
+        let routeLegLabelRenderer = RouteLegLabelRenderer()
         var lastCameraCommand: MapCameraCommand?
         var lastZoomCommand: MapZoomCommand?
         var pendingCamera: MapCameraCommand?
@@ -333,7 +335,10 @@ public struct CourseMapView: UIViewRepresentable {
         public func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             isStyleLoaded = true
             MapOverlayRenderer.apply(desiredOverlays, to: style)
-            // A (re)loaded style starts without the runtime analysis layers.
+            // A (re)loaded style starts without the runtime-registered label
+            // images and analysis layers.
+            routeLegLabelRenderer.styleDidReload()
+            routeLegLabelRenderer.apply(desiredOverlays.routeLegLabels, to: style)
             analysisRenderer.styleDidReload()
             analysisRenderer.apply(desiredAnalysis, to: style)
             if let pendingCamera {

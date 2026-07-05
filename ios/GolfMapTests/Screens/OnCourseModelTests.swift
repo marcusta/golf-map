@@ -355,8 +355,15 @@ final class OnCourseModelTests: XCTestCase {
         let aim = try! XCTUnwrap(model.nextAimAhead)
         // First aim ahead in tee→green order is "Aim 1" (closer to green than user).
         XCTAssertEqual(aim.label, "Aim 1")
-        // Primary line goes user → that aim, not user → green.
-        XCTAssertEqual(model.overlays.distanceLine, [farUser, aim.position])
+        // The line runs user → routed aim → remaining forward aims → green
+        // (extended past the routed aim so the immersive leg labels have a
+        // line to sit on); the emphasized first leg still points at "Aim 1".
+        XCTAssertEqual(model.overlays.distanceLine, [
+            farUser,
+            aim.position,
+            LatLon(lat: 58.3625, lon: 15.7088), // aim 2 ("Layup")
+            green,
+        ])
         XCTAssertEqual(model.routedAimDistance?.label, "Aim 1")
     }
 

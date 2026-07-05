@@ -21,6 +21,14 @@ public enum MapStyleIDs {
     public static let targetsSource = "overlay-targets"
     public static let targetsLayer = "overlay-targets"
 
+    // On-map route-leg distance labels (immersive mode). A symbol layer whose
+    // icons are pre-rendered number images registered at runtime by
+    // RouteLegLabelRenderer — the offline style has no glyph PBFs, so symbol
+    // text-field cannot render (same wall/workaround as the Green-view slope
+    // chips).
+    public static let routeLegLabelsSource = "overlay-route-leg-labels"
+    public static let routeLegLabelsLayer = "overlay-route-leg-labels"
+
     public static let userLocationSource = "overlay-user-location"
     public static let userLocationHaloLayer = "overlay-user-location-halo"
     public static let userLocationDotLayer = "overlay-user-location-dot"
@@ -77,6 +85,12 @@ public enum MapStyleBuilder {
     // MLNMapView's own user-location tracking).
     static let userDotColor = "#3a7bd5"
     static let userHaloColor = "#ffffff"
+
+    // Route-leg label icons: nudged sideways (screen px) so the number sits
+    // beside the route line rather than on it — the hole camera draws the
+    // route roughly vertically (hole bearing up), so a horizontal offset is
+    // perpendicular to the line in the common framing.
+    static let routeLegLabelOffsetX = 18.0
 
     // Measure overlay: web measure-tool palette (measure-tool.service.ts) —
     // amber path, point A green, last point red, mid points amber. No text
@@ -140,6 +154,7 @@ public enum MapStyleBuilder {
             MapStyleIDs.featuresSource: ["type": "geojson", "data": features],
             MapStyleIDs.distanceLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.targetsSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.routeLegLabelsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.userLocationSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.measureLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.measurePointsSource: ["type": "geojson", "data": emptyCollection],
@@ -210,6 +225,19 @@ public enum MapStyleBuilder {
                 "paint": [
                     "line-color": distanceLineColor,
                     "line-width": distanceLineWidth,
+                ],
+            ],
+            [
+                // Above the route line, below the F/C/B/pin markers so the
+                // markers stay legible when a label lands near the green.
+                "id": MapStyleIDs.routeLegLabelsLayer,
+                "type": "symbol",
+                "source": MapStyleIDs.routeLegLabelsSource,
+                "layout": [
+                    "icon-image": ["get", "labelImage"],
+                    "icon-allow-overlap": true,
+                    "icon-ignore-placement": true,
+                    "icon-offset": [routeLegLabelOffsetX, 0.0],
                 ],
             ],
             [

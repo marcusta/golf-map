@@ -636,25 +636,65 @@ final class OnCourseModel {
         )
     }
 
-    /// The primary distance line in GPS mode: user → next aim ahead (when one
-    /// exists past the threshold), else user → green center.
-    private var gpsPrimaryLine: [LatLon] {
+    /// The distance line in GPS mode: when aim routing is active (feature 3),
+    /// origin → every not-yet-passed aim (tee→green order) → green center;
+    /// else origin → green center. The line used to stop at the routed aim —
+    /// it now continues through the remaining forward aims to the green so
+    /// the immersive leg labels have a line to sit on. The card's TO AIM
+    /// emphasis still tracks the first leg (`routedAimDistance`).
+    private var gpsForwardRoute: [LatLon] {
         guard let origin, let center = targets.greenCenter else {
             if let origin { return [origin] }
             return []
         }
-        if let aim = nextAimAhead {
-            return [origin, aim.position]
+        guard nextAimAhead != nil else { return [origin, center] }
+        let originToGreen = Distance.planarMeters(origin, center)
+        let forwardAims = targets.aimPoints
+            .map(\.position)
+            .filter { Distance.planarMeters($0, center) < originToGreen }
+        return [origin] + forwardAims + [center]
+    }
+
+    // MARK: - Derived: route-leg labels (immersive on-map distances)
+
+    /// The active-mode route's legs as on-map label data: browse = the full
+    /// tee→aims→green `holeRoute`; GPS = the live origin forward through the
+    /// not-yet-passed aims to the green (`gpsForwardRoute`). Lengths use the
+    /// same planar-metre rounding as the card's leg capsules and TO AIM row,
+    /// so the on-map figures always match the card.
+    var routeLegLabels: [RouteLegLabel] {
+        Self.routeLegLabels(along: isBrowseMode ? holeRoute : gpsForwardRoute)
+    }
+
+    /// Pure leg decomposition: consecutive route vertices → (midpoint, whole
+    /// metres). The midpoint is computed in projected SWEREF 99 TM so it is
+    /// the true halfway point of the measured leg.
+    nonisolated static func routeLegLabels(along route: [LatLon]) -> [RouteLegLabel] {
+        guard route.count >= 2 else { return [] }
+        return (1..<route.count).map { index in
+            let a = route[index - 1]
+            let b = route[index]
+            let pa = Sweref99TM.fromWGS84(a)
+            let pb = Sweref99TM.fromWGS84(b)
+            return RouteLegLabel(
+                midpoint: Sweref99TM.toWGS84(x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2),
+                meters: Int(Distance.planarMeters(a, b).rounded())
+            )
         }
-        return [origin, center]
     }
 
     // MARK: - Derived: map
 
     /// Distance line + F/C/B + pin markers + user dot. In browse mode the line
     /// is the full hole route and the user dot is hidden; in GPS mode it's the
-    /// user→aim/green primary line (feature 3) with the live dot shown.
-    var overlays: MapOverlayState {
+    /// user→aims→green forward route (feature 3) with the live dot shown.
+    var overlays: MapOverlayState { overlays(showRouteLabels: false) }
+
+    /// `overlays` with the immersive flag applied: `showRouteLabels` adds the
+    /// per-leg distance labels along the line (immersive mode — the screen
+    /// owns the chrome flag; when the chrome is up the card already shows the
+    /// legs, so the map stays clean).
+    func overlays(showRouteLabels: Bool) -> MapOverlayState {
         let targets = targets
         var markers: [TargetMarker] = []
         if let p = targets.greenFront { markers.append(TargetMarker(kind: .front, position: p)) }
@@ -662,12 +702,13 @@ final class OnCourseModel {
         if let p = targets.greenBack { markers.append(TargetMarker(kind: .back, position: p)) }
         if let p = targets.activePin { markers.append(TargetMarker(kind: .pin, position: p)) }
 
-        let line: [LatLon] = isBrowseMode ? holeRoute : gpsPrimaryLine
+        let line: [LatLon] = isBrowseMode ? holeRoute : gpsForwardRoute
 
         return MapOverlayState(
             distanceLine: line,
             targets: markers,
-            userLocation: isUsingGPS ? userLocation.map { UserLocationMarker(position: $0) } : nil
+            userLocation: isUsingGPS ? userLocation.map { UserLocationMarker(position: $0) } : nil,
+            routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : []
         )
     }
 }

@@ -172,9 +172,15 @@ private struct OnCourseContentView: View {
     private var isGreenView: Bool { model.toolMode == .greenView }
     private var isMeasure: Bool { model.toolMode == .measure }
 
-    /// Model overlays + the measure path while measuring.
+    /// Model overlays + the measure path while measuring. Route-leg distance
+    /// labels are shown ONLY in immersive mode (chrome hidden) — with the
+    /// chrome up the card's capsules already carry the legs, and the map tools
+    /// (Green view / measure) own the map surface (entering one forces
+    /// `immersive = false`, but gate on `toolMode` anyway).
     private var overlays: MapOverlayState {
-        var overlays = model.overlays
+        var overlays = model.overlays(
+            showRouteLabels: immersive && model.toolMode == .none
+        )
         if isMeasure {
             overlays.measure = measure.overlay
         }

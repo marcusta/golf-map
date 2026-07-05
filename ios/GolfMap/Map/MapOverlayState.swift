@@ -31,6 +31,20 @@ public struct UserLocationMarker: Equatable, Sendable {
     }
 }
 
+/// One on-map route-leg distance label (immersive mode): the whole-metre
+/// length of a route segment, anchored at the segment's midpoint. Rendered by
+/// `RouteLegLabelRenderer` as a pre-rendered number image (the offline style
+/// has no glyph PBFs, so symbol text cannot render).
+public struct RouteLegLabel: Equatable, Sendable {
+    public var midpoint: LatLon
+    public var meters: Int
+
+    public init(midpoint: LatLon, meters: Int) {
+        self.midpoint = midpoint
+        self.meters = meters
+    }
+}
+
 /// The measure tool's rendered path: an amber polyline through every placed
 /// point plus labelled point circles (first green, last red, mids amber —
 /// mirrors the web measure overlay styling). Deliberately its OWN overlay
@@ -65,17 +79,23 @@ public struct MapOverlayState: Equatable, Sendable {
     public var userLocation: UserLocationMarker?
     /// Measure-tool path (amber line + point circles); `.empty` hides it.
     public var measure: MeasureOverlay
+    /// Per-leg distance labels printed along `distanceLine` (immersive mode
+    /// only — the caller includes them when the chrome is hidden). Empty
+    /// hides the labels.
+    public var routeLegLabels: [RouteLegLabel]
 
     public init(
         distanceLine: [LatLon] = [],
         targets: [TargetMarker] = [],
         userLocation: UserLocationMarker? = nil,
-        measure: MeasureOverlay = .empty
+        measure: MeasureOverlay = .empty,
+        routeLegLabels: [RouteLegLabel] = []
     ) {
         self.distanceLine = distanceLine
         self.targets = targets
         self.userLocation = userLocation
         self.measure = measure
+        self.routeLegLabels = routeLegLabels
     }
 
     public static let empty = MapOverlayState()
@@ -143,6 +163,10 @@ enum MapOverlayShapes {
 /// Pushes a `MapOverlayState` into the style's overlay shape sources.
 /// Reassigning `MLNShapeSource.shape` is MapLibre's cheap data-update path —
 /// no layer or style mutation.
+///
+/// `routeLegLabels` is NOT applied here: label rendering needs a stateful
+/// image cache (`RouteLegLabelRenderer`, owned by the coordinator), which the
+/// coordinator invokes right after this.
 @MainActor
 enum MapOverlayRenderer {
     static func apply(_ state: MapOverlayState, to style: MLNStyle) {

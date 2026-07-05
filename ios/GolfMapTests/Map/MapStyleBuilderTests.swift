@@ -77,6 +77,7 @@ final class MapStyleBuilderTests: XCTestCase {
         for id in [
             MapStyleIDs.distanceLineSource,
             MapStyleIDs.targetsSource,
+            MapStyleIDs.routeLegLabelsSource,
             MapStyleIDs.userLocationSource,
             MapStyleIDs.measureLineSource,
             MapStyleIDs.measurePointsSource,
@@ -100,6 +101,7 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.featuresOutlineLayer,
                 MapStyleIDs.distanceLineCasingLayer,
                 MapStyleIDs.distanceLineLayer,
+                MapStyleIDs.routeLegLabelsLayer,
                 MapStyleIDs.targetsLayer,
                 MapStyleIDs.measureLineCasingLayer,
                 MapStyleIDs.measureLineLayer,
@@ -131,6 +133,21 @@ final class MapStyleBuilderTests: XCTestCase {
     private func layer(_ id: String, in style: [String: Any]) throws -> [String: Any] {
         let layers = try XCTUnwrap(style["layers"] as? [[String: Any]])
         return try XCTUnwrap(layers.first { $0["id"] as? String == id }, "layer \(id)")
+    }
+
+    /// The route-leg label layer: a symbol layer whose icon is data-driven by
+    /// the per-feature `labelImage` id (pre-rendered numbers — no glyphs in
+    /// the offline style), always drawn, nudged sideways off the line.
+    func testRouteLegLabelLayerIsDataDrivenIconSymbol() throws {
+        let labels = try layer(MapStyleIDs.routeLegLabelsLayer, in: buildStyle())
+        XCTAssertEqual(labels["type"] as? String, "symbol")
+        XCTAssertEqual(labels["source"] as? String, MapStyleIDs.routeLegLabelsSource)
+        let layout = try XCTUnwrap(labels["layout"] as? [String: Any])
+        XCTAssertEqual(layout["icon-image"] as? [String], ["get", "labelImage"])
+        XCTAssertEqual(layout["icon-allow-overlap"] as? Bool, true)
+        XCTAssertEqual(layout["icon-ignore-placement"] as? Bool, true)
+        let offset = try XCTUnwrap(layout["icon-offset"] as? [Double])
+        XCTAssertNotEqual(offset, [0, 0], "label sits beside the line, not on it")
     }
 
     func testBackgroundMatchesWebEditor() throws {
@@ -210,6 +227,6 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 12)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 13)
     }
 }
