@@ -4,6 +4,7 @@ import { seedUsers, TEST_USER_ID } from '../db/seeds/users';
 import { seedCourse, TEST_COURSE_ID, TEST_HOLE_1_ID } from '../db/seeds/course';
 import { seedClubs, TEST_CLUB_DRIVER_ID, TEST_CLUB_7I_ID } from '../db/seeds/clubs';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
+import { ConflictError } from '@basics/core/server/auth';
 import { GamePlansService } from './game-plans.service';
 
 async function setup() {
@@ -240,4 +241,221 @@ test('removeByCourse throws VersionConflictError on stale version', async () => 
     const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
 
     await expect(svc.removeByCourse(TEST_COURSE_ID, 99, TEST_USER_ID)).rejects.toBeInstanceOf(VersionConflictError);
+});
+
+// --- Per-hole wind override & notes (Phase 5) ---
+
+test('setHole sets per-hole wind override and notes on create', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID, windSpeedMps: 5, windDirectionDeg: 90 });
+
+    const hole = await svc.setHole(plan.id, 1, {
+        windSpeedMps: 6.5,
+        windDirectionDeg: 200,
+        notes: 'Watch the crosswind off the trees',
+    });
+
+    expect(hole.windSpeedMps).toBe(6.5);
+    expect(hole.windDirectionDeg).toBe(200);
+    expect(hole.notes).toBe('Watch the crosswind off the trees');
+});
+
+test('setHole per-hole wind override defaults to null (inherit plan wind) when unset', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID, windSpeedMps: 5, windDirectionDeg: 90 });
+
+    const hole = await svc.setHole(plan.id, 1, { teeId: `${TEST_HOLE_1_ID}-tee-yellow` });
+
+    expect(hole.windSpeedMps).toBeNull();
+    expect(hole.windDirectionDeg).toBeNull();
+    expect(hole.notes).toBeNull();
+});
+
+test('setHole clears per-hole wind override and notes by passing null', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, { windSpeedMps: 4, windDirectionDeg: 180, notes: 'Draft note' });
+
+    const cleared = await svc.setHole(plan.id, 1, {
+        version: hole.version,
+        windSpeedMps: null,
+        windDirectionDeg: null,
+        notes: null,
+    });
+
+    expect(cleared.windSpeedMps).toBeNull();
+    expect(cleared.windDirectionDeg).toBeNull();
+    expect(cleared.notes).toBeNull();
+});
+
+test('setHole preserves per-hole wind override when patch omits it', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, { windSpeedMps: 4, windDirectionDeg: 180 });
+
+    const updated = await svc.setHole(plan.id, 1, {
+        version: hole.version,
+        preferredClubId: TEST_CLUB_7I_ID,
+    });
+
+    expect(updated.windSpeedMps).toBe(4);
+    expect(updated.windDirectionDeg).toBe(180);
+});
+
+// --- Shot label round-trip (Phase 5) ---
+
+test('addShot and updateShot round-trip a label', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+
+    const shot = await svc.addShot(hole.id, { lat: 58.4, lon: 15.5, label: 'Layup left of bunker' });
+    expect(shot.label).toBe('Layup left of bunker');
+
+    const updated = await svc.updateShot(shot.id, shot.version, { label: 'Aim at right edge' });
+    expect(updated.label).toBe('Aim at right edge');
+
+    const cleared = await svc.updateShot(updated.id, updated.version, { label: null });
+    expect(cleared.label).toBeNull();
+});
+
+test('addShot defaults label to null when omitted', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+
+    const shot = await svc.addShot(hole.id, { lat: 58.4, lon: 15.5 });
+    expect(shot.label).toBeNull();
+});
+
+// --- Gates (Phase 5) ---
+
+test('addGate creates a manual-source gate with increasing sort order', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+
+    const gate1 = await svc.addGate(hole.id, {
+        lat: 58.401, lon: 15.501, directionDeg: 45, halfWidthLeftM: 12, halfWidthRightM: 18,
+    });
+    const gate2 = await svc.addGate(hole.id, {
+        lat: 58.402, lon: 15.502, directionDeg: 50, halfWidthLeftM: 10, halfWidthRightM: 10, source: 'computed',
+    });
+
+    expect(gate1.source).toBe('manual');
+    expect(gate1.sortOrder).toBe(0);
+    expect(gate1.version).toBe(1);
+    expect(gate2.source).toBe('computed');
+    expect(gate2.sortOrder).toBe(1);
+});
+
+test('updateGate patches fields, bumps version, and throws VersionConflictError on stale version', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const gate = await svc.addGate(hole.id, {
+        lat: 58.401, lon: 15.501, directionDeg: 45, halfWidthLeftM: 12, halfWidthRightM: 18,
+    });
+
+    const updated = await svc.updateGate(gate.id, gate.version, { halfWidthLeftM: 20, source: 'computed' });
+    expect(updated.halfWidthLeftM).toBe(20);
+    expect(updated.source).toBe('computed');
+    expect(updated.halfWidthRightM).toBe(18); // unchanged
+    expect(updated.version).toBe(2);
+
+    await expect(svc.updateGate(gate.id, 99, { halfWidthLeftM: 1 })).rejects.toBeInstanceOf(VersionConflictError);
+});
+
+test('removeGate deletes a gate and throws VersionConflictError on stale version', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const gate = await svc.addGate(hole.id, {
+        lat: 58.401, lon: 15.501, directionDeg: 45, halfWidthLeftM: 12, halfWidthRightM: 18,
+    });
+
+    await expect(svc.removeGate(gate.id, 99)).rejects.toBeInstanceOf(VersionConflictError);
+
+    await svc.removeGate(gate.id, gate.version);
+
+    const fetched = await svc.getByCourse(TEST_COURSE_ID, TEST_USER_ID);
+    const fetchedHole = fetched?.holes.find((h) => h.id === hole.id);
+    expect(fetchedHole?.gates).toHaveLength(0);
+});
+
+test('getByCourse includes gates on each hole ordered by sort_order', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+
+    const gateA = await svc.addGate(hole.id, { lat: 1, lon: 1, directionDeg: 0, halfWidthLeftM: 5, halfWidthRightM: 5 });
+    const gateB = await svc.addGate(hole.id, { lat: 2, lon: 2, directionDeg: 0, halfWidthLeftM: 5, halfWidthRightM: 5 });
+
+    const tree = await svc.getByCourse(TEST_COURSE_ID, TEST_USER_ID);
+    const fetchedHole = tree?.holes.find((h) => h.id === hole.id);
+    expect(fetchedHole?.gates.map((g) => g.id)).toEqual([gateA.id, gateB.id]);
+});
+
+test('removeByCourse cascades plan -> holes -> gates', async () => {
+    const { db, svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    await svc.addGate(hole.id, { lat: 1, lon: 1, directionDeg: 0, halfWidthLeftM: 5, halfWidthRightM: 5 });
+
+    await svc.removeByCourse(TEST_COURSE_ID, plan.version, TEST_USER_ID);
+
+    const remainingGates = await db.selectFrom('plan_gates').selectAll().where('game_plan_hole_id', '=', hole.id).execute();
+    expect(remainingGates).toHaveLength(0);
+});
+
+// --- reorderShots id-set validation (Phase 5 tightening) ---
+
+test('reorderShots rejects an incomplete id set', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const shot1 = await svc.addShot(hole.id, { lat: 1, lon: 1 });
+    await svc.addShot(hole.id, { lat: 2, lon: 2 });
+
+    await expect(svc.reorderShots(hole.id, [shot1.id])).rejects.toBeInstanceOf(ConflictError);
+});
+
+test('reorderShots rejects ids foreign to the hole', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole1 = await svc.setHole(plan.id, 1, {});
+    const hole2 = await svc.setHole(plan.id, 2, {});
+    const shot1 = await svc.addShot(hole1.id, { lat: 1, lon: 1 });
+    const foreignShot = await svc.addShot(hole2.id, { lat: 2, lon: 2 });
+
+    await expect(svc.reorderShots(hole1.id, [shot1.id, foreignShot.id])).rejects.toBeInstanceOf(ConflictError);
+
+    // Original order/state untouched.
+    const fetched = await svc.getByCourse(TEST_COURSE_ID, TEST_USER_ID);
+    const fetchedHole1 = fetched?.holes.find((h) => h.id === hole1.id);
+    expect(fetchedHole1?.shots.map((s) => s.id)).toEqual([shot1.id]);
+});
+
+test('reorderShots rejects unknown/nonexistent ids', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const shot1 = await svc.addShot(hole.id, { lat: 1, lon: 1 });
+
+    await expect(svc.reorderShots(hole.id, [shot1.id, 'nonexistent'])).rejects.toBeInstanceOf(ConflictError);
+});
+
+test('reorderShots still succeeds on a valid permutation', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const shot1 = await svc.addShot(hole.id, { lat: 1, lon: 1 });
+    const shot2 = await svc.addShot(hole.id, { lat: 2, lon: 2 });
+    const shot3 = await svc.addShot(hole.id, { lat: 3, lon: 3 });
+
+    await svc.reorderShots(hole.id, [shot3.id, shot1.id, shot2.id]);
+
+    const fetched = await svc.getByCourse(TEST_COURSE_ID, TEST_USER_ID);
+    const fetchedHole = fetched?.holes.find((h) => h.id === hole.id);
+    expect(fetchedHole?.shots.map((s) => s.id)).toEqual([shot3.id, shot1.id, shot2.id]);
 });

@@ -14,6 +14,7 @@ export interface Database {
     game_plans: GamePlansTable;
     game_plan_holes: GamePlanHolesTable;
     plan_shots: PlanShotsTable;
+    plan_gates: PlanGatesTable;
     rounds: RoundsTable;
     shots: ShotsTable;
     course_assets: CourseAssetsTable;
@@ -172,6 +173,9 @@ export interface GamePlanHolesTable {
     tee_id: string | null;
     preferred_club_id: string | null;
     planned_direction_deg: number | null;
+    wind_speed_mps: number | null; // per-hole override; null = inherit plan wind
+    wind_direction_deg: number | null;
+    notes: string | null;
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;
@@ -185,6 +189,22 @@ export interface PlanShotsTable {
     lon: number;
     elevation: number | null;
     club_id: string | null;
+    label: string | null;
+    version: number;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+}
+
+export interface PlanGatesTable {
+    id: string;
+    game_plan_hole_id: string;
+    lat: number; // absolute WGS84 station point
+    lon: number;
+    direction_deg: number; // corridor-axis bearing; the ruler is its perpendicular
+    half_width_left_m: number;
+    half_width_right_m: number;
+    source: string; // 'manual' | 'computed'
+    sort_order: number;
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

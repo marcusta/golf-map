@@ -18,7 +18,11 @@ export interface GamePlanHole {
     teeId: null | string;
     preferredClubId: null | string;
     plannedDirectionDeg: null | number;
+    windSpeedMps: null | number;
+    windDirectionDeg: null | number;
+    notes: null | string;
     shots: PlanShot[];
+    gates: PlanGate[];
     version: number;
 }
 
@@ -30,6 +34,20 @@ export interface PlanShot {
     lon: number;
     elevation: null | number;
     clubId: null | string;
+    label: null | string;
+    version: number;
+}
+
+export interface PlanGate {
+    id: string;
+    gamePlanHoleId: string;
+    lat: number;
+    lon: number;
+    directionDeg: number;
+    halfWidthLeftM: number;
+    halfWidthRightM: number;
+    source: 'manual' | 'computed';
+    sortOrder: number;
     version: number;
 }
 
@@ -37,11 +55,14 @@ export interface GamePlansApi {
     getByCourse(input: { userId?: string; courseId: string }): Promise<null | GamePlan>;
     upsert(input: { userId?: string; version?: number; windSpeedMps?: null | number; windDirectionDeg?: null | number; courseId: string }): Promise<GamePlan>;
     remove(input: { userId?: string; courseId: string; version: number }): Promise<{ ok: boolean }>;
-    setHole(input: { version?: number; teeId?: null | string; preferredClubId?: null | string; plannedDirectionDeg?: null | number; planId: string; holeNumber: number }): Promise<GamePlanHole>;
-    addShot(input: { elevation?: null | number; clubId?: null | string; lat: number; lon: number; gamePlanHoleId: string }): Promise<PlanShot>;
-    updateShot(input: { lat?: number; lon?: number; elevation?: null | number; clubId?: null | string; id: string; version: number }): Promise<PlanShot>;
+    setHole(input: { version?: number; notes?: null | string; windSpeedMps?: null | number; windDirectionDeg?: null | number; teeId?: null | string; preferredClubId?: null | string; plannedDirectionDeg?: null | number; planId: string; holeNumber: number }): Promise<GamePlanHole>;
+    addShot(input: { elevation?: null | number; clubId?: null | string; label?: null | string; lat: number; lon: number; gamePlanHoleId: string }): Promise<PlanShot>;
+    updateShot(input: { lat?: number; lon?: number; elevation?: null | number; clubId?: null | string; label?: null | string; id: string; version: number }): Promise<PlanShot>;
     removeShot(input: { id: string; version: number }): Promise<{ ok: boolean }>;
     reorderShots(input: { orderedIds: string[]; gamePlanHoleId: string }): Promise<{ ok: boolean }>;
+    addGate(input: { source?: 'manual' | 'computed'; lat: number; lon: number; gamePlanHoleId: string; directionDeg: number; halfWidthLeftM: number; halfWidthRightM: number }): Promise<PlanGate>;
+    updateGate(input: { lat?: number; lon?: number; directionDeg?: number; halfWidthLeftM?: number; halfWidthRightM?: number; source?: 'manual' | 'computed'; id: string; version: number }): Promise<PlanGate>;
+    removeGate(input: { id: string; version: number }): Promise<{ ok: boolean }>;
 }
 
 export function createGamePlansClient(baseUrl: string): GamePlansApi {
@@ -73,6 +94,15 @@ export function createGamePlansClient(baseUrl: string): GamePlansApi {
         },
         async reorderShots(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/game-plans/shots/reorder`, body: input });
+        },
+        async addGate(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/game-plans/gates/add`, body: input });
+        },
+        async updateGate(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/game-plans/gates/update`, body: input });
+        },
+        async removeGate(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/game-plans/gates/remove`, body: input });
         },
     };
 }

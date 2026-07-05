@@ -138,3 +138,100 @@ test('foreign keys cascade on delete (course -> holes -> tees)', async () => {
     expect(holes).toHaveLength(0);
     expect(tees).toHaveLength(0);
 });
+
+test('migration 003 columns and plan_gates table exist on a fresh DB', async () => {
+    const { db } = await createTestDb(seedUsers, seedCourse);
+
+    // game_plan_holes gains nullable wind override + notes columns.
+    await db
+        .insertInto('game_plans')
+        .values({
+            id: 'plan-1',
+            course_id: TEST_COURSE_ID,
+            user_id: TEST_USER_ID,
+            wind_speed_mps: null,
+            wind_direction_deg: null,
+            version: 1,
+        })
+        .execute();
+
+    await db
+        .insertInto('game_plan_holes')
+        .values({
+            id: 'plan-hole-1',
+            game_plan_id: 'plan-1',
+            hole_number: 1,
+            tee_id: null,
+            preferred_club_id: null,
+            planned_direction_deg: null,
+            wind_speed_mps: 4.5,
+            wind_direction_deg: 270,
+            notes: 'Play it safe left',
+            version: 1,
+        })
+        .execute();
+
+    const hole = await db
+        .selectFrom('game_plan_holes')
+        .selectAll()
+        .where('id', '=', 'plan-hole-1')
+        .executeTakeFirstOrThrow();
+    expect(hole.wind_speed_mps).toBe(4.5);
+    expect(hole.wind_direction_deg).toBe(270);
+    expect(hole.notes).toBe('Play it safe left');
+
+    // plan_shots gains a nullable label column.
+    await db
+        .insertInto('plan_shots')
+        .values({
+            id: 'plan-shot-1',
+            game_plan_hole_id: 'plan-hole-1',
+            sort_order: 0,
+            lat: 58.4,
+            lon: 15.5,
+            elevation: null,
+            club_id: null,
+            label: 'Layup left of bunker',
+            version: 1,
+        })
+        .execute();
+
+    const shot = await db
+        .selectFrom('plan_shots')
+        .selectAll()
+        .where('id', '=', 'plan-shot-1')
+        .executeTakeFirstOrThrow();
+    expect(shot.label).toBe('Layup left of bunker');
+
+    // plan_gates table exists with the expected shape and FK cascade.
+    await db
+        .insertInto('plan_gates')
+        .values({
+            id: 'plan-gate-1',
+            game_plan_hole_id: 'plan-hole-1',
+            lat: 58.401,
+            lon: 15.501,
+            direction_deg: 45,
+            half_width_left_m: 12,
+            half_width_right_m: 18,
+            source: 'manual',
+            sort_order: 0,
+            version: 1,
+        })
+        .execute();
+
+    const gate = await db
+        .selectFrom('plan_gates')
+        .selectAll()
+        .where('id', '=', 'plan-gate-1')
+        .executeTakeFirstOrThrow();
+    expect(gate.direction_deg).toBe(45);
+    expect(gate.half_width_left_m).toBe(12);
+    expect(gate.half_width_right_m).toBe(18);
+    expect(gate.source).toBe('manual');
+    expect(gate.version).toBe(1);
+
+    await db.deleteFrom('game_plan_holes').where('id', '=', 'plan-hole-1').execute();
+    const remainingGates = await db.selectFrom('plan_gates').selectAll().execute();
+    expect(remainingGates).toHaveLength(0);
+});

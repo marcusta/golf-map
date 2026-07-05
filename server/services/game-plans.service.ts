@@ -5,10 +5,14 @@ import type {
     GamePlansTable,
     GamePlanHolesTable,
     PlanShotsTable,
+    PlanGatesTable,
 } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
+import { ConflictError } from '@basics/core/server/auth';
 
 // --- Output types ---
+
+export type GateSource = 'manual' | 'computed';
 
 export interface PlanShot {
     id: string;
@@ -18,6 +22,20 @@ export interface PlanShot {
     lon: number;
     elevation: number | null;
     clubId: string | null;
+    label: string | null;
+    version: number;
+}
+
+export interface PlanGate {
+    id: string;
+    gamePlanHoleId: string;
+    lat: number;
+    lon: number;
+    directionDeg: number;
+    halfWidthLeftM: number;
+    halfWidthRightM: number;
+    source: GateSource;
+    sortOrder: number;
     version: number;
 }
 
@@ -28,7 +46,11 @@ export interface GamePlanHole {
     teeId: string | null;
     preferredClubId: string | null;
     plannedDirectionDeg: number | null;
+    windSpeedMps: number | null;
+    windDirectionDeg: number | null;
+    notes: string | null;
     shots: PlanShot[];
+    gates: PlanGate[];
     version: number;
 }
 
@@ -47,6 +69,7 @@ export interface GamePlan {
 type GamePlanRow = Selectable<GamePlansTable>;
 type GamePlanHoleRow = Selectable<GamePlanHolesTable>;
 type PlanShotRow = Selectable<PlanShotsTable>;
+type PlanGateRow = Selectable<PlanGatesTable>;
 
 function toPlanShot(row: PlanShotRow): PlanShot {
     return {
@@ -57,11 +80,27 @@ function toPlanShot(row: PlanShotRow): PlanShot {
         lon: row.lon,
         elevation: row.elevation,
         clubId: row.club_id,
+        label: row.label,
         version: row.version,
     };
 }
 
-function toGamePlanHole(row: GamePlanHoleRow, shots: PlanShot[]): GamePlanHole {
+function toPlanGate(row: PlanGateRow): PlanGate {
+    return {
+        id: row.id,
+        gamePlanHoleId: row.game_plan_hole_id,
+        lat: row.lat,
+        lon: row.lon,
+        directionDeg: row.direction_deg,
+        halfWidthLeftM: row.half_width_left_m,
+        halfWidthRightM: row.half_width_right_m,
+        source: row.source as GateSource,
+        sortOrder: row.sort_order,
+        version: row.version,
+    };
+}
+
+function toGamePlanHole(row: GamePlanHoleRow, shots: PlanShot[], gates: PlanGate[]): GamePlanHole {
     return {
         id: row.id,
         gamePlanId: row.game_plan_id,
@@ -69,7 +108,11 @@ function toGamePlanHole(row: GamePlanHoleRow, shots: PlanShot[]): GamePlanHole {
         teeId: row.tee_id,
         preferredClubId: row.preferred_club_id,
         plannedDirectionDeg: row.planned_direction_deg,
+        windSpeedMps: row.wind_speed_mps,
+        windDirectionDeg: row.wind_direction_deg,
+        notes: row.notes,
         shots,
+        gates,
         version: row.version,
     };
 }
@@ -143,6 +186,24 @@ export class GamePlansService {
             .where('game_plan_hole_id', '=', gamePlanHoleId);
     }
 
+    private planGates() {
+        return this.db.selectFrom('plan_gates').selectAll();
+    }
+
+    private gateById(id: string) {
+        return this.planGates().where('id', '=', id);
+    }
+
+    private gatesByHole(gamePlanHoleId: string) {
+        return this.planGates().where('game_plan_hole_id', '=', gamePlanHoleId).orderBy('sort_order');
+    }
+
+    private maxGateSortOrder(gamePlanHoleId: string) {
+        return this.db.selectFrom('plan_gates')
+            .select((eb) => eb.fn.max('sort_order').as('max_order'))
+            .where('game_plan_hole_id', '=', gamePlanHoleId);
+    }
+
     // --- Queries (write) ---
 
     private insertGamePlan(values: {
@@ -171,6 +232,9 @@ export class GamePlansService {
         tee_id: string | null;
         preferred_club_id: string | null;
         planned_direction_deg: number | null;
+        wind_speed_mps: number | null;
+        wind_direction_deg: number | null;
+        notes: string | null;
         version?: number;
     }, trx: Kysely<Database> = this.db) {
         return trx.insertInto('game_plan_holes').values({ ...values, version: values.version ?? 1 });
@@ -188,6 +252,7 @@ export class GamePlansService {
         lon: number;
         elevation: number | null;
         club_id: string | null;
+        label: string | null;
         version?: number;
     }, trx: Kysely<Database> = this.db) {
         return trx.insertInto('plan_shots').values({ ...values, version: values.version ?? 1 });
@@ -201,6 +266,29 @@ export class GamePlansService {
         return trx.deleteFrom('plan_shots').where('id', '=', id);
     }
 
+    private insertPlanGate(values: {
+        id: string;
+        game_plan_hole_id: string;
+        lat: number;
+        lon: number;
+        direction_deg: number;
+        half_width_left_m: number;
+        half_width_right_m: number;
+        source: string;
+        sort_order: number;
+        version?: number;
+    }, trx: Kysely<Database> = this.db) {
+        return trx.insertInto('plan_gates').values({ ...values, version: values.version ?? 1 });
+    }
+
+    private updateGateById(id: string, trx: Kysely<Database> = this.db) {
+        return trx.updateTable('plan_gates').where('id', '=', id);
+    }
+
+    private deleteGateById(id: string, trx: Kysely<Database> = this.db) {
+        return trx.deleteFrom('plan_gates').where('id', '=', id);
+    }
+
     // --- Tree assembly ---
 
     private async loadTree(planRow: GamePlanRow): Promise<GamePlan> {
@@ -208,6 +296,9 @@ export class GamePlansService {
         const holeIds = holeRows.map((h) => h.id);
         const shotRows = holeIds.length > 0
             ? await this.planShots().where('game_plan_hole_id', 'in', holeIds).orderBy('sort_order').execute()
+            : [];
+        const gateRows = holeIds.length > 0
+            ? await this.planGates().where('game_plan_hole_id', 'in', holeIds).orderBy('sort_order').execute()
             : [];
 
         const shotsByHole = new Map<string, PlanShot[]>();
@@ -217,7 +308,14 @@ export class GamePlansService {
             shotsByHole.set(shot.game_plan_hole_id, list);
         }
 
-        const holes = holeRows.map((h) => toGamePlanHole(h, shotsByHole.get(h.id) ?? []));
+        const gatesByHole = new Map<string, PlanGate[]>();
+        for (const gate of gateRows) {
+            const list = gatesByHole.get(gate.game_plan_hole_id) ?? [];
+            list.push(toPlanGate(gate));
+            gatesByHole.set(gate.game_plan_hole_id, list);
+        }
+
+        const holes = holeRows.map((h) => toGamePlanHole(h, shotsByHole.get(h.id) ?? [], gatesByHole.get(h.id) ?? []));
         return toGamePlan(planRow, holes);
     }
 
@@ -283,6 +381,9 @@ export class GamePlansService {
         teeId?: string | null;
         preferredClubId?: string | null;
         plannedDirectionDeg?: number | null;
+        windSpeedMps?: number | null;
+        windDirectionDeg?: number | null;
+        notes?: string | null;
     }): Promise<GamePlanHole> {
         const existing = await this.holeByPlanAndNumber(planId, holeNumber).executeTakeFirst();
 
@@ -295,9 +396,12 @@ export class GamePlansService {
                 tee_id: patch.teeId ?? null,
                 preferred_club_id: patch.preferredClubId ?? null,
                 planned_direction_deg: patch.plannedDirectionDeg ?? null,
+                wind_speed_mps: patch.windSpeedMps ?? null,
+                wind_direction_deg: patch.windDirectionDeg ?? null,
+                notes: patch.notes ?? null,
             }).execute();
             const created = await this.holeById(id).executeTakeFirstOrThrow();
-            return toGamePlanHole(created, []);
+            return toGamePlanHole(created, [], []);
         }
 
         if (patch.version === undefined || existing.version !== patch.version) {
@@ -308,6 +412,9 @@ export class GamePlansService {
         if (patch.teeId !== undefined) dbInput.tee_id = patch.teeId;
         if (patch.preferredClubId !== undefined) dbInput.preferred_club_id = patch.preferredClubId;
         if (patch.plannedDirectionDeg !== undefined) dbInput.planned_direction_deg = patch.plannedDirectionDeg;
+        if (patch.windSpeedMps !== undefined) dbInput.wind_speed_mps = patch.windSpeedMps;
+        if (patch.windDirectionDeg !== undefined) dbInput.wind_direction_deg = patch.windDirectionDeg;
+        if (patch.notes !== undefined) dbInput.notes = patch.notes;
 
         await this.updateHoleById(existing.id).set({
             ...dbInput,
@@ -317,7 +424,8 @@ export class GamePlansService {
 
         const updated = await this.holeById(existing.id).executeTakeFirstOrThrow();
         const shots = await this.shotsByHole(existing.id).execute();
-        return toGamePlanHole(updated, shots.map(toPlanShot));
+        const gates = await this.gatesByHole(existing.id).execute();
+        return toGamePlanHole(updated, shots.map(toPlanShot), gates.map(toPlanGate));
     }
 
     // --- Methods: shots ---
@@ -327,6 +435,7 @@ export class GamePlansService {
         lon: number;
         elevation?: number | null;
         clubId?: string | null;
+        label?: string | null;
     }): Promise<PlanShot> {
         const id = crypto.randomUUID();
         const maxRow = await this.maxShotSortOrder(gamePlanHoleId).executeTakeFirst();
@@ -340,6 +449,7 @@ export class GamePlansService {
             lon: input.lon,
             elevation: input.elevation ?? null,
             club_id: input.clubId ?? null,
+            label: input.label ?? null,
         }).execute();
 
         return {
@@ -350,6 +460,7 @@ export class GamePlansService {
             lon: input.lon,
             elevation: input.elevation ?? null,
             clubId: input.clubId ?? null,
+            label: input.label ?? null,
             version: 1,
         };
     }
@@ -359,6 +470,7 @@ export class GamePlansService {
         lon?: number;
         elevation?: number | null;
         clubId?: string | null;
+        label?: string | null;
     }): Promise<PlanShot> {
         const row = await this.shotById(id).executeTakeFirst();
         if (!row || row.version !== version) throw new VersionConflictError('plan_shots', id);
@@ -368,6 +480,7 @@ export class GamePlansService {
         if (patch.lon !== undefined) dbInput.lon = patch.lon;
         if (patch.elevation !== undefined) dbInput.elevation = patch.elevation;
         if (patch.clubId !== undefined) dbInput.club_id = patch.clubId;
+        if (patch.label !== undefined) dbInput.label = patch.label;
 
         await this.updateShotById(id).set({
             ...dbInput,
@@ -387,6 +500,21 @@ export class GamePlansService {
 
     async reorderShots(gamePlanHoleId: string, orderedIds: string[]): Promise<void> {
         await this.db.transaction().execute(async (trx) => {
+            const existing = await trx.selectFrom('plan_shots')
+                .select('id')
+                .where('game_plan_hole_id', '=', gamePlanHoleId)
+                .execute();
+
+            const existingIds = new Set(existing.map((row) => row.id));
+            const incomingIds = new Set(orderedIds);
+            const sameSize = existingIds.size === incomingIds.size;
+            const sameMembers = sameSize && orderedIds.every((id) => existingIds.has(id));
+            if (!sameSize || !sameMembers) {
+                throw new ConflictError(
+                    `orderedIds must exactly match the shots belonging to game_plan_hole ${gamePlanHoleId}`,
+                );
+            }
+
             for (let i = 0; i < orderedIds.length; i++) {
                 await this.updateShotById(orderedIds[i], trx).set({
                     sort_order: i,
@@ -394,5 +522,81 @@ export class GamePlansService {
                 }).execute();
             }
         });
+    }
+
+    // --- Methods: gates ---
+
+    async addGate(gamePlanHoleId: string, input: {
+        lat: number;
+        lon: number;
+        directionDeg: number;
+        halfWidthLeftM: number;
+        halfWidthRightM: number;
+        source?: GateSource;
+    }): Promise<PlanGate> {
+        const id = crypto.randomUUID();
+        const maxRow = await this.maxGateSortOrder(gamePlanHoleId).executeTakeFirst();
+        const sortOrder = (maxRow?.max_order != null ? Number(maxRow.max_order) : -1) + 1;
+        const source = input.source ?? 'manual';
+
+        await this.insertPlanGate({
+            id,
+            game_plan_hole_id: gamePlanHoleId,
+            lat: input.lat,
+            lon: input.lon,
+            direction_deg: input.directionDeg,
+            half_width_left_m: input.halfWidthLeftM,
+            half_width_right_m: input.halfWidthRightM,
+            source,
+            sort_order: sortOrder,
+        }).execute();
+
+        return {
+            id,
+            gamePlanHoleId,
+            lat: input.lat,
+            lon: input.lon,
+            directionDeg: input.directionDeg,
+            halfWidthLeftM: input.halfWidthLeftM,
+            halfWidthRightM: input.halfWidthRightM,
+            source,
+            sortOrder,
+            version: 1,
+        };
+    }
+
+    async updateGate(id: string, version: number, patch: {
+        lat?: number;
+        lon?: number;
+        directionDeg?: number;
+        halfWidthLeftM?: number;
+        halfWidthRightM?: number;
+        source?: GateSource;
+    }): Promise<PlanGate> {
+        const row = await this.gateById(id).executeTakeFirst();
+        if (!row || row.version !== version) throw new VersionConflictError('plan_gates', id);
+
+        const dbInput: Record<string, unknown> = {};
+        if (patch.lat !== undefined) dbInput.lat = patch.lat;
+        if (patch.lon !== undefined) dbInput.lon = patch.lon;
+        if (patch.directionDeg !== undefined) dbInput.direction_deg = patch.directionDeg;
+        if (patch.halfWidthLeftM !== undefined) dbInput.half_width_left_m = patch.halfWidthLeftM;
+        if (patch.halfWidthRightM !== undefined) dbInput.half_width_right_m = patch.halfWidthRightM;
+        if (patch.source !== undefined) dbInput.source = patch.source;
+
+        await this.updateGateById(id).set({
+            ...dbInput,
+            version: version + 1,
+            updated_at: sql`(datetime('now'))`,
+        }).execute();
+
+        const updated = await this.gateById(id).executeTakeFirstOrThrow();
+        return toPlanGate(updated);
+    }
+
+    async removeGate(id: string, version: number): Promise<void> {
+        const row = await this.gateById(id).executeTakeFirst();
+        if (!row || row.version !== version) throw new VersionConflictError('plan_gates', id);
+        await this.deleteGateById(id).execute();
     }
 }
