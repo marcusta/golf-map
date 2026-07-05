@@ -5,12 +5,15 @@ import { s } from '../css';
 import { LoginComponent } from '../auth/login.component';
 import { CourseListComponent } from '../courses/course-list.component';
 import { CourseDetailComponent } from '../course-detail/course-detail.component';
+import { PlannerComponent } from '../planner/planner.component';
+import { PlayerSettingsComponent } from '../player/player-settings.component';
 
 const tpl = template(`
     <div bind="layout" class="app-layout">
         <header bind="topbar" class="topbar">
             <a bind="homeLink" href="/">&#9971; Golf Map</a>
             <span class="topbar__spacer"></span>
+            <a bind="playerLink" href="/player" class="topbar__player">Player</a>
             <span bind="username" class="topbar__user"></span>
             <button bind="logout" class="topbar__logout">Log out</button>
         </header>
@@ -53,6 +56,18 @@ export class AppComponent extends Component {
                 color: ${t('topbar-logo')};
             }
 
+            & .topbar__player {
+                font-size: 0.8rem;
+                font-weight: 400;
+                color: ${t('topbar-logo')};
+                text-decoration: none;
+                padding: ${s('xs')} ${s('md')};
+                border: 1px solid transparent;
+                border-radius: ${t('radius-pill')};
+                transition: border-color 0.15s;
+                &:hover { border-color: ${t('topbar-logo')}; }
+            }
+
             & .topbar__logout {
                 padding: ${s('xs')} ${s('md')};
                 font-size: 0.8rem;
@@ -84,6 +99,15 @@ export class AppComponent extends Component {
                 style: () => isLogin() ? 'display:none' : '',
             },
             homeLink: this.router.link('/'),
+            // Manual navigate (not router.link) — link() drives className,
+            // which would clobber the styling class on this anchor.
+            playerLink: {
+                onclick: (e: Event) => {
+                    e.preventDefault();
+                    this.router.navigate('/player');
+                },
+                style: () => isLogin() ? 'display:none' : '',
+            },
             username: () => this.auth.currentUser.get()?.username ?? '',
             logout: {
                 onclick: async () => {
@@ -96,6 +120,8 @@ export class AppComponent extends Component {
         this.$swap(this.ref(frag, 'content'), this.router.route, {
             '/': CourseListComponent,
             '/course': CourseDetailComponent,
+            '/planner': PlannerComponent,
+            '/player': PlayerSettingsComponent,
             '/login': LoginComponent,
         }, CourseListComponent);
 

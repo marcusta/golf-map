@@ -119,7 +119,9 @@ export class EditorCanvasComponent extends Component {
     private mapSvc = this.inject(MapService);
     private elevation = this.inject(ElevationService);
     private router = this.inject(Router);
-    private params = this.router.params<{ courseId: string }>('/course/:courseId');
+    // courseId is the second path segment on every route hosting this canvas
+    // (/course/:courseId for the builder, /planner/:courseId for the planner).
+    private params = this.router.params<{ courseId: string }>('/:host/:courseId');
 
     private cursor = new Signal<{ lng: number; lat: number } | null>(null);
     private cursorElevation = new Signal<number | null>(null);
@@ -158,7 +160,12 @@ export class EditorCanvasComponent extends Component {
         });
 
         this.mapHost = this.ref(frag, 'mapHost');
-        this.spawn(EditorToolbarComponent, this.ref(frag, 'tools'));
+        // The builder toolbar (draw/furniture/measure/analysis) belongs to
+        // the /course editor page only — other hosts (/planner) drive their
+        // own tool directly against MapService.
+        if (this.router.route.peek().startsWith('/course')) {
+            this.spawn(EditorToolbarComponent, this.ref(frag, 'tools'));
+        }
         return frag;
     }
 

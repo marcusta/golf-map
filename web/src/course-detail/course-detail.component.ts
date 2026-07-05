@@ -17,6 +17,7 @@ const tpl = template(`
             <span bind="parTotal" class="meta"></span>
             <span bind="georef" class="meta georef-warn"></span>
             <div class="header-actions">
+                <button bind="plan" class="plan-btn" type="button" title="Open the game-plan editor for this course">Plan</button>
                 <button bind="importSvg" class="import-btn" type="button" title="Import traced course features from an SVG file">Import SVG</button>
                 <button bind="publish" class="publish-btn" type="button" title="Publish this course revision for device sync"></button>
             </div>
@@ -103,6 +104,11 @@ export class CourseDetailComponent extends Component {
                     gap: ${s('sm')};
                     margin-left: auto;
 
+                    & .plan-btn {
+                        padding: ${s('xs')} ${s('sm')};
+                        font-size: 0.8rem;
+                        ${btn()}
+                    }
                     & .import-btn {
                         padding: ${s('xs')} ${s('sm')};
                         font-size: 0.8rem;
@@ -233,6 +239,15 @@ export class CourseDetailComponent extends Component {
             georef: () => {
                 const course = this.svc.course.get();
                 return course && !course.georeferenceJson ? '⚠ no georeference' : '';
+            },
+            plan: {
+                onclick: () => {
+                    const { courseId } = this.params.peek();
+                    const hole = this.selectedHole.peek();
+                    if (!courseId) return;
+                    this.router.navigate(`/planner/${courseId}`,
+                        hole !== undefined ? { query: { hole } } : undefined);
+                },
             },
             importSvg: {
                 onclick: () => {
