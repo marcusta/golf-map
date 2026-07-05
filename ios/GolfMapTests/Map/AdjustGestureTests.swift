@@ -222,6 +222,37 @@ final class AdjustGestureTests: XCTestCase {
         XCTAssertEqual(features[0].coordinate.latitude, handleCoordinate.lat, accuracy: 1e-9)
     }
 
+    /// Adjust mode disables gesture zoom + rotate for the WHOLE mode (not just
+    /// during a grab) so a missed handle can't fall through to MapLibre's
+    /// quick-zoom — the "zooms out all the time" report. Pan stays on; the +/-
+    /// buttons zoom imperatively regardless of `isZoomEnabled`.
+    func testAdjustModeDisablesGestureZoomForWholeMode() {
+        let coordinator = makeCoordinator()
+        let (config, features) = makeInputs()
+        let mapView = makeMapView(coordinator: coordinator, adjustEnabled: true)
+
+        // Not dragging: entering adjust mode disables gesture zoom + rotate.
+        let adjustView = CourseMapView(
+            configuration: config, featuresGeoJSON: features,
+            overlays: makeOverlays(), adjustEnabled: true
+        )
+        adjustView.applyUpdate(to: mapView, coordinator: coordinator)
+        XCTAssertNil(coordinator.draggedHandleID)
+        XCTAssertFalse(mapView.isZoomEnabled)
+        XCTAssertFalse(mapView.isRotateEnabled)
+        XCTAssertTrue(mapView.isScrollEnabled) // pan stays for repositioning
+
+        // Leaving adjust mode restores gesture zoom + rotate.
+        let normalView = CourseMapView(
+            configuration: config, featuresGeoJSON: features,
+            overlays: makeOverlays(), adjustEnabled: false
+        )
+        normalView.applyUpdate(to: mapView, coordinator: coordinator)
+        XCTAssertTrue(mapView.isZoomEnabled)
+        XCTAssertTrue(mapView.isRotateEnabled)
+        XCTAssertTrue(mapView.isScrollEnabled)
+    }
+
     func testAdjustHandleLabelImageRenders() {
         let image = AdjustHandleRenderer.labelImage(label: "A1")
         XCTAssertGreaterThan(image.size.width, 0)

@@ -175,12 +175,13 @@ private struct OnCourseContentView: View {
     /// Model overlays + the measure path while measuring + the draggable
     /// handles while adjusting. Route-leg distance labels are shown ONLY in
     /// immersive mode (chrome hidden) — with the chrome up the card's
-    /// capsules already carry the legs, and the map tools (Green view /
-    /// measure / adjust) own the map surface (entering one forces
-    /// `immersive = false`, but gate on `toolMode` anyway).
+    /// capsules already carry the legs — AND in Adjust mode, where the panel
+    /// replaces the card (no duplication) and the on-map labels let you watch a
+    /// leg distance change as you drag a tee / aim / green handle.
     private var overlays: MapOverlayState {
         var overlays = model.overlays(
-            showRouteLabels: immersive && model.toolMode == .none
+            showRouteLabels: (immersive && model.toolMode == .none)
+                || model.toolMode == .adjust
         )
         if isMeasure {
             overlays.measure = measure.overlay

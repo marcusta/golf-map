@@ -224,6 +224,19 @@ public struct CourseMapView: UIViewRepresentable {
         // Disabling mid-drag cancels the recognizer → endHandleDrag restores
         // the map gestures (see handleAdjustPress .cancelled).
         coordinator.adjustPressRecognizer?.isEnabled = adjustEnabled
+        // In Adjust mode, kill gesture zoom + rotate for the WHOLE mode, not
+        // just during a successful grab. With a finger/mouse you routinely MISS
+        // the small handle, so `gestureRecognizerShouldBegin` returns false, the
+        // drag never begins, and MapLibre's own quick-zoom fires instead — the
+        // "zooms out all the time" report. Pan stays on (reposition freely) and
+        // the +/- buttons still zoom (imperative `setZoomLevel`, unaffected by
+        // `isZoomEnabled`). Skipped while a drag is live so the per-drag scroll
+        // disable in `beginHandleDrag` isn't stomped.
+        if coordinator.draggedHandleID == nil {
+            mapView.isZoomEnabled = !adjustEnabled
+            mapView.isRotateEnabled = !adjustEnabled
+            mapView.isScrollEnabled = true
+        }
 
         if coordinator.appliedConfiguration != configuration
             || coordinator.appliedFeaturesGeoJSON != featuresGeoJSON {
