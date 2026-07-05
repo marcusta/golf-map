@@ -219,6 +219,7 @@ Detailed kickoff: `docs/prompts/phase5-kickoff.md`. Server surface (schema `club
 - **Player config UI** (parallelizable, Opus) — CRUD for the active player's clubs (+ other player settings) against the club fields the math port settles. Not a prerequisite: seed v1 clubs and it runs concurrent with the planner.
 - iOS: plan viewing on course + light edits; plan-vs-reality display. **Deferred** to a follow-on prompt.
 - Exit criteria: plan built on web (incl. dispersion + corridor rulers) is the on-course guidance on the phone.
+- **STATUS (2026-07-05): web + shared half landed.** `shared/strategy/` (62 tests against v1 fixtures), migration 003 + gates API (270 server tests), web planner at `/planner/:courseId` (shots, ellipses, gates, wind override, plays-like) and `/player` club config (407 web tests). Live-verified on Landeryd Masters incl. map interactions. Remaining for exit criterion: iOS plan sync + on-course render (follow-on prompt); corridor auto-compute (ray-cast fill) is modeled but not surfaced in UI; no shot-reorder UI yet.
 
 ### Phase 6 — 3D & advanced building
 - Port golf-map-2's Three.js terrain + adaptive tessellation into the web app (per-course 3D view, green slope analysis).
