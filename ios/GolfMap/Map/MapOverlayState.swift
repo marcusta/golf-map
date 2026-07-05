@@ -36,12 +36,24 @@ public struct UserLocationMarker: Equatable, Sendable {
 /// `RouteLegLabelRenderer` as a pre-rendered number image (the offline style
 /// has no glyph PBFs, so symbol text cannot render).
 public struct RouteLegLabel: Equatable, Sendable {
+    /// Leg endpoints in route order — used to pull the label onto the visible
+    /// part of the leg when its midpoint scrolls off-screen.
+    public var start: LatLon
+    public var end: LatLon
+    /// True planar (SWEREF 99 TM) halfway point — the default anchor.
     public var midpoint: LatLon
     public var meters: Int
 
-    public init(midpoint: LatLon, meters: Int) {
+    public init(start: LatLon, end: LatLon, midpoint: LatLon, meters: Int) {
+        self.start = start
+        self.end = end
         self.midpoint = midpoint
         self.meters = meters
+    }
+
+    /// Convenience (tests / degenerate placement): start = end = midpoint.
+    public init(midpoint: LatLon, meters: Int) {
+        self.init(start: midpoint, end: midpoint, midpoint: midpoint, meters: meters)
     }
 }
 

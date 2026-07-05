@@ -54,4 +54,34 @@ final class RouteLegLabelRendererTests: XCTestCase {
         let short = RouteLegLabelRenderer.labelImage(meters: 9)
         XCTAssertLessThan(short.size.width, image.size.width)
     }
+
+    // MARK: - Viewport clip (pull the label into view)
+
+    private var clipRect: CGRect { CGRect(x: 0, y: 0, width: 100, height: 100) }
+
+    func testClipFullyInsideKeepsWholeSegment() throws {
+        let clip = try XCTUnwrap(
+            RouteLegLabelRenderer.clipSegment(CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 90), to: clipRect)
+        )
+        XCTAssertEqual(clip.0, 0, accuracy: 1e-9)
+        XCTAssertEqual(clip.1, 1, accuracy: 1e-9)
+    }
+
+    func testClipCrossingPullsMidpointToVisibleCenter() throws {
+        // Horizontal leg with both ends off-screen but the middle crossing the
+        // rect: the clipped-portion midpoint is the on-screen center (x = 50).
+        let p0 = CGPoint(x: -50, y: 50)
+        let p1 = CGPoint(x: 150, y: 50)
+        let clip = try XCTUnwrap(RouteLegLabelRenderer.clipSegment(p0, p1, to: clipRect))
+        XCTAssertEqual(clip.0, 0.25, accuracy: 1e-9)
+        XCTAssertEqual(clip.1, 0.75, accuracy: 1e-9)
+        let t = (clip.0 + clip.1) / 2
+        XCTAssertEqual(p0.x + (p1.x - p0.x) * t, 50, accuracy: 1e-9)
+    }
+
+    func testClipFullyOutsideReturnsNil() {
+        XCTAssertNil(
+            RouteLegLabelRenderer.clipSegment(CGPoint(x: -50, y: -50), CGPoint(x: -10, y: -10), to: clipRect)
+        )
+    }
 }

@@ -254,7 +254,7 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.desiredAnalysis = analysis
         if coordinator.isStyleLoaded, let style = mapView.style {
             MapOverlayRenderer.apply(overlays, to: style)
-            coordinator.routeLegLabelRenderer.apply(overlays.routeLegLabels, to: style)
+            coordinator.routeLegLabelRenderer.apply(overlays.routeLegLabels, to: mapView)
             coordinator.adjustHandleRenderer.apply(overlays.adjustHandles, to: style)
             coordinator.analysisRenderer.apply(analysis, to: style)
         }
@@ -527,7 +527,7 @@ public struct CourseMapView: UIViewRepresentable {
             // A (re)loaded style starts without the runtime-registered label
             // images and analysis layers.
             routeLegLabelRenderer.styleDidReload()
-            routeLegLabelRenderer.apply(desiredOverlays.routeLegLabels, to: style)
+            routeLegLabelRenderer.apply(desiredOverlays.routeLegLabels, to: mapView)
             adjustHandleRenderer.styleDidReload()
             adjustHandleRenderer.apply(desiredOverlays.adjustHandles, to: style)
             analysisRenderer.styleDidReload()
@@ -537,6 +537,16 @@ public struct CourseMapView: UIViewRepresentable {
                 self.pendingCamera = nil
             }
             onMapReady?()
+        }
+
+        /// As the camera moves, re-anchor route-leg labels so one whose midpoint
+        /// scrolls off-screen is pulled onto the visible part of its leg.
+        public func mapViewRegionIsChanging(_ mapView: MLNMapView) {
+            routeLegLabelRenderer.reposition(in: mapView)
+        }
+
+        public func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
+            routeLegLabelRenderer.reposition(in: mapView)
         }
     }
 }

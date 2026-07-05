@@ -926,6 +926,8 @@ final class OnCourseModel {
             let pa = Sweref99TM.fromWGS84(a)
             let pb = Sweref99TM.fromWGS84(b)
             return RouteLegLabel(
+                start: a,
+                end: b,
                 midpoint: Sweref99TM.toWGS84(x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2),
                 meters: Int(Distance.planarMeters(a, b).rounded())
             )
