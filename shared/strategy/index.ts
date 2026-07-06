@@ -63,6 +63,13 @@ export {
     type CarryOverHazard,
     hazardsAlongLine,
 } from './carry';
+export {
+    type PointRole,
+    type DistanceTarget,
+    type FeatureDistance,
+    type FeatureDistancesInput,
+    featureDistances,
+} from './feature-distances';
 export { type Lie, lieFromFeatureType } from './lie';
 export {
     EXPECTED_STROKES_ANCHORS_M,
@@ -78,10 +85,12 @@ export {
     optimizeAim,
     standardNormalPairs,
 } from './aim';
-// Smart-caddy advice layer. NOTE: FeatureDistance / GreenSlopeSummary are
-// FORWARD-DECLARED here (see caddy/rule.ts) until the distances feature (T4)
-// and the slope adapter (T9) export the canonical types — at which point
-// those exports supersede these and this line should re-source them.
+// Smart-caddy advice layer. NOTE: GreenSlopeSummary is still
+// FORWARD-DECLARED (see caddy/rule.ts) until the slope adapter (T9) exports
+// the canonical type. FeatureDistance is now sourced from feature-distances.ts
+// (T4, above) — the caddy's own forward-declared FeatureDistance (rule.ts)
+// stays as an internal structural-subset type for CaddyContext but is no
+// longer re-exported here to avoid a duplicate export name.
 export {
     type CaddyLeg,
     type CaddyContext,
@@ -89,7 +98,6 @@ export {
     type CaddyAdvice,
     type CaddyRule,
     type RiskProfile,
-    type FeatureDistance,
     type GreenSlopeSummary,
     runCaddy,
     exampleLongParRule,
