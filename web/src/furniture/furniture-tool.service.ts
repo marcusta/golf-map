@@ -134,10 +134,23 @@ export class FurnitureToolService {
      * (moving a marker keeps the key stable, so the camera stays put).
      */
     private attachHoleFraming(ctx: ToolContext): () => void {
+        // Key on the selected hole's ACTUAL framable furniture, not the
+        // `loading` flag: `loading` flips false a microtask before the
+        // tee/aim/green signals are populated (furniture.service.load), so a
+        // key built from `loading` can fire while `holeBounds` is still empty
+        // — the effect then bails and never re-fires, leaving the camera at
+        // course bounds (the load-order race). Reading the furniture signals
+        // here makes the key recompute once this hole's furniture lands; it
+        // stays equal to the hole id across later marker edits, so those don't
+        // re-frame.
         const frameKey = new Computed<string | null>(() => {
             const hole = this.selectedHole.get();
-            if (!hole || this.svc.loading.get()) return null;
-            return hole.id;
+            if (!hole) return null;
+            this.svc.tees.items.get();
+            this.svc.aims.items.get();
+            this.svc.greens.get();
+            this.svc.pins.items.get();
+            return this.holeBounds(hole.id) ? hole.id : null;
         });
         return effect(() => {
             const holeId = frameKey.get();

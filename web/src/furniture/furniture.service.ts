@@ -1,4 +1,4 @@
-import { Signal, Computed } from '@basics/core/client/core';
+import { Signal, Computed, batch } from '@basics/core/client/core';
 import { EntityStore } from '@basics/core/client/entity-store';
 import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
@@ -201,10 +201,15 @@ export class FurnitureService {
             return { tees, pins, perHole };
         });
         if (!data) return;
-        this.tees.set(sortBySortOrder(data.tees));
-        this.pins.set(data.pins);
-        this.aims.set(data.perHole.flatMap(h => sortBySortOrder(h.aims)));
-        this.greens.set(data.perHole.map(h => h.green).filter((g): g is Green => g !== null));
+        // Apply all four furniture signals atomically so downstream effects
+        // (the overlay geojson build, hole framing) see a complete set in one
+        // pass instead of rebuilding on each partial intermediate state.
+        batch(() => {
+            this.tees.set(sortBySortOrder(data.tees));
+            this.pins.set(data.pins);
+            this.aims.set(data.perHole.flatMap(h => sortBySortOrder(h.aims)));
+            this.greens.set(data.perHole.map(h => h.green).filter((g): g is Green => g !== null));
+        });
         this.loadedCourseId = courseId;
     }
 
