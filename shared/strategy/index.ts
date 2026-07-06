@@ -78,3 +78,19 @@ export {
     optimizeAim,
     standardNormalPairs,
 } from './aim';
+// Smart-caddy advice layer. NOTE: FeatureDistance / GreenSlopeSummary are
+// FORWARD-DECLARED here (see caddy/rule.ts) until the distances feature (T4)
+// and the slope adapter (T9) export the canonical types — at which point
+// those exports supersede these and this line should re-source them.
+export {
+    type CaddyLeg,
+    type CaddyContext,
+    type CaddyAdviceKind,
+    type CaddyAdvice,
+    type CaddyRule,
+    type RiskProfile,
+    type FeatureDistance,
+    type GreenSlopeSummary,
+    runCaddy,
+    exampleLongParRule,
+} from './caddy';
