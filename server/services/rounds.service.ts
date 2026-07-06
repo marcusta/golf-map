@@ -15,6 +15,10 @@ export interface Shot {
     lon: number;
     clubId: string | null;
     lie: string | null;
+    shotType: string;
+    targetLat: number | null;
+    targetLon: number | null;
+    penaltyStrokes: number;
     recordedAt: string;
     version: number;
     createdAt: string;
@@ -28,6 +32,9 @@ export interface Round {
     startedAt: string;
     endedAt: string | null;
     notes: string | null;
+    gamePlanId: string | null;
+    windSpeedMps: number | null;
+    windDirectionDeg: number | null;
     version: number;
     createdAt: string;
     updatedAt: string;
@@ -50,6 +57,9 @@ function toRound(row: RoundRow): Round {
         startedAt: row.started_at,
         endedAt: row.ended_at,
         notes: row.notes,
+        gamePlanId: row.game_plan_id,
+        windSpeedMps: row.wind_speed_mps,
+        windDirectionDeg: row.wind_direction_deg,
         version: row.version,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -66,6 +76,10 @@ function toShot(row: ShotRow): Shot {
         lon: row.lon,
         clubId: row.club_id,
         lie: row.lie,
+        shotType: row.shot_type,
+        targetLat: row.target_lat,
+        targetLon: row.target_lon,
+        penaltyStrokes: row.penalty_strokes,
         recordedAt: row.recorded_at,
         version: row.version,
         createdAt: row.created_at,
@@ -117,7 +131,9 @@ export class RoundsService {
 
     private insertRound(values: {
         id: string; course_id: string; user_id: string | null;
-        started_at: string; ended_at: string | null; notes: string | null; version?: number;
+        started_at: string; ended_at: string | null; notes: string | null;
+        game_plan_id: string | null; wind_speed_mps: number | null; wind_direction_deg: number | null;
+        version?: number;
     }, trx: Kysely<Database> = this.db) {
         return trx.insertInto('rounds').values({ ...values, version: values.version ?? 1 });
     }
@@ -133,6 +149,8 @@ export class RoundsService {
     private insertShot(values: {
         id: string; round_id: string; hole_number: number; sort_order: number;
         lat: number; lon: number; club_id: string | null; lie: string | null;
+        shot_type: string; target_lat: number | null; target_lon: number | null;
+        penalty_strokes: number;
         recorded_at: string; version?: number;
     }, trx: Kysely<Database> = this.db) {
         return trx.insertInto('shots').values({ ...values, version: values.version ?? 1 });
@@ -164,7 +182,11 @@ export class RoundsService {
         return { ...toRound(row), shots: shotRows.map(toShot) };
     }
 
-    async start(courseId: string, userId?: string, startedAt?: string): Promise<Round> {
+    async start(courseId: string, userId?: string, startedAt?: string, opts?: {
+        gamePlanId?: string;
+        windSpeedMps?: number;
+        windDirectionDeg?: number;
+    }): Promise<Round> {
         const id = crypto.randomUUID();
         const values = {
             id,
@@ -173,19 +195,29 @@ export class RoundsService {
             started_at: startedAt ?? new Date().toISOString(),
             ended_at: null,
             notes: null,
+            game_plan_id: opts?.gamePlanId ?? null,
+            wind_speed_mps: opts?.windSpeedMps ?? null,
+            wind_direction_deg: opts?.windDirectionDeg ?? null,
         };
         await this.insertRound(values).execute();
         const row = await this.roundById(id).executeTakeFirstOrThrow();
         return toRound(row);
     }
 
-    async end(id: string, version: number, endedAt: string, notes?: string): Promise<Round> {
+    async end(id: string, version: number, endedAt: string, notes?: string, opts?: {
+        gamePlanId?: string;
+        windSpeedMps?: number;
+        windDirectionDeg?: number;
+    }): Promise<Round> {
         const row = await this.roundById(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Round ${id} not found`);
         if (row.version !== version) throw new VersionConflictError('rounds', id);
 
         const dbInput: Record<string, unknown> = { ended_at: endedAt };
         if (notes !== undefined) dbInput.notes = notes;
+        if (opts?.gamePlanId !== undefined) dbInput.game_plan_id = opts.gamePlanId;
+        if (opts?.windSpeedMps !== undefined) dbInput.wind_speed_mps = opts.windSpeedMps;
+        if (opts?.windDirectionDeg !== undefined) dbInput.wind_direction_deg = opts.windDirectionDeg;
 
         await this.updateRoundById(id).set({
             ...dbInput,
@@ -214,6 +246,10 @@ export class RoundsService {
         lon: number;
         clubId?: string;
         lie?: string;
+        shotType?: string;
+        targetLat?: number;
+        targetLon?: number;
+        penaltyStrokes?: number;
         recordedAt?: string;
     }): Promise<Shot> {
         const round = await this.roundById(roundId).executeTakeFirst();
@@ -232,6 +268,10 @@ export class RoundsService {
             lon: input.lon,
             club_id: input.clubId ?? null,
             lie: input.lie ?? null,
+            shot_type: input.shotType ?? 'full',
+            target_lat: input.targetLat ?? null,
+            target_lon: input.targetLon ?? null,
+            penalty_strokes: input.penaltyStrokes ?? 0,
             recorded_at: input.recordedAt ?? new Date().toISOString(),
         };
         await this.insertShot(values).execute();
@@ -245,6 +285,10 @@ export class RoundsService {
         lon?: number;
         clubId?: string;
         lie?: string;
+        shotType?: string;
+        targetLat?: number;
+        targetLon?: number;
+        penaltyStrokes?: number;
         recordedAt?: string;
     }): Promise<Shot> {
         const row = await this.shotById(id).executeTakeFirst();
@@ -257,6 +301,10 @@ export class RoundsService {
         if (patch.lon !== undefined) dbInput.lon = patch.lon;
         if (patch.clubId !== undefined) dbInput.club_id = patch.clubId;
         if (patch.lie !== undefined) dbInput.lie = patch.lie;
+        if (patch.shotType !== undefined) dbInput.shot_type = patch.shotType;
+        if (patch.targetLat !== undefined) dbInput.target_lat = patch.targetLat;
+        if (patch.targetLon !== undefined) dbInput.target_lon = patch.targetLon;
+        if (patch.penaltyStrokes !== undefined) dbInput.penalty_strokes = patch.penaltyStrokes;
         if (patch.recordedAt !== undefined) dbInput.recorded_at = patch.recordedAt;
 
         await this.updateShotById(id).set({

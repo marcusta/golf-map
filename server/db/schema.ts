@@ -219,6 +219,9 @@ export interface RoundsTable {
     started_at: string;
     ended_at: string | null;
     notes: string | null;
+    game_plan_id: string | null;
+    wind_speed_mps: number | null;
+    wind_direction_deg: number | null;
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;
@@ -233,6 +236,10 @@ export interface ShotsTable {
     lon: number;
     club_id: string | null;
     lie: string | null;
+    shot_type: string;
+    target_lat: number | null;
+    target_lon: number | null;
+    penalty_strokes: number;
     recorded_at: string;
     version: number;
     created_at: Generated<string>;

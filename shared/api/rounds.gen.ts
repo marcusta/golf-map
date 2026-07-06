@@ -8,6 +8,9 @@ export interface Round {
     startedAt: string;
     endedAt: null | string;
     notes: null | string;
+    gamePlanId: null | string;
+    windSpeedMps: null | number;
+    windDirectionDeg: null | number;
     version: number;
     createdAt: string;
     updatedAt: string;
@@ -21,6 +24,9 @@ export interface RoundWithShots {
     startedAt: string;
     endedAt: null | string;
     notes: null | string;
+    gamePlanId: null | string;
+    windSpeedMps: null | number;
+    windDirectionDeg: null | number;
     version: number;
     createdAt: string;
     updatedAt: string;
@@ -35,6 +41,10 @@ export interface Shot {
     lon: number;
     clubId: null | string;
     lie: null | string;
+    shotType: string;
+    targetLat: null | number;
+    targetLon: null | number;
+    penaltyStrokes: number;
     recordedAt: string;
     version: number;
     createdAt: string;
@@ -44,11 +54,11 @@ export interface Shot {
 export interface RoundsApi {
     listByCourse(input: { courseId: string }): Promise<Round[]>;
     get(input: { id: string }): Promise<RoundWithShots>;
-    start(input: { startedAt?: string; courseId: string }): Promise<Round>;
-    end(input: { notes?: string; id: string; version: number; endedAt: string }): Promise<Round>;
+    start(input: { windSpeedMps?: number; windDirectionDeg?: number; startedAt?: string; gamePlanId?: string; courseId: string }): Promise<Round>;
+    end(input: { notes?: string; windSpeedMps?: number; windDirectionDeg?: number; gamePlanId?: string; id: string; version: number; endedAt: string }): Promise<Round>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
-    addShot(input: { clubId?: string; lie?: string; recordedAt?: string; lat: number; lon: number; holeNumber: number; roundId: string }): Promise<Shot>;
-    updateShot(input: { lat?: number; lon?: number; holeNumber?: number; clubId?: string; lie?: string; recordedAt?: string; id: string; version: number }): Promise<Shot>;
+    addShot(input: { clubId?: string; lie?: string; shotType?: string; targetLat?: number; targetLon?: number; penaltyStrokes?: number; recordedAt?: string; lat: number; lon: number; holeNumber: number; roundId: string }): Promise<Shot>;
+    updateShot(input: { lat?: number; lon?: number; holeNumber?: number; clubId?: string; lie?: string; shotType?: string; targetLat?: number; targetLon?: number; penaltyStrokes?: number; recordedAt?: string; id: string; version: number }): Promise<Shot>;
     removeShot(input: { id: string; version: number }): Promise<{ ok: boolean }>;
 }
 

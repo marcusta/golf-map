@@ -16,6 +16,9 @@ const GetRoundInput = Type.Object({
 const StartRoundInput = Type.Object({
     courseId: Type.String(),
     startedAt: Type.Optional(Type.String()),
+    gamePlanId: Type.Optional(Type.String()),
+    windSpeedMps: Type.Optional(Type.Number()),
+    windDirectionDeg: Type.Optional(Type.Number()),
 });
 
 const EndRoundInput = Type.Object({
@@ -23,6 +26,9 @@ const EndRoundInput = Type.Object({
     version: Type.Number(),
     endedAt: Type.String(),
     notes: Type.Optional(Type.String()),
+    gamePlanId: Type.Optional(Type.String()),
+    windSpeedMps: Type.Optional(Type.Number()),
+    windDirectionDeg: Type.Optional(Type.Number()),
 });
 
 const RemoveRoundInput = Type.Object({
@@ -37,6 +43,10 @@ const AddShotInput = Type.Object({
     lon: Type.Number(),
     clubId: Type.Optional(Type.String()),
     lie: Type.Optional(Type.String()),
+    shotType: Type.Optional(Type.String()),
+    targetLat: Type.Optional(Type.Number()),
+    targetLon: Type.Optional(Type.Number()),
+    penaltyStrokes: Type.Optional(Type.Number()),
     recordedAt: Type.Optional(Type.String()),
 });
 
@@ -48,6 +58,10 @@ const UpdateShotInput = Type.Object({
     lon: Type.Optional(Type.Number()),
     clubId: Type.Optional(Type.String()),
     lie: Type.Optional(Type.String()),
+    shotType: Type.Optional(Type.String()),
+    targetLat: Type.Optional(Type.Number()),
+    targetLon: Type.Optional(Type.Number()),
+    penaltyStrokes: Type.Optional(Type.Number()),
     recordedAt: Type.Optional(Type.String()),
 });
 
@@ -79,14 +93,22 @@ export function createRoundsApi(svc: RoundsService) {
             method: 'POST' as const,
             path: '/rounds/start',
             fn: (input: Static<typeof StartRoundInput>, c: Context) =>
-                svc.start(input.courseId, requireUser(c).id, input.startedAt),
+                svc.start(input.courseId, requireUser(c).id, input.startedAt, {
+                    gamePlanId: input.gamePlanId,
+                    windSpeedMps: input.windSpeedMps,
+                    windDirectionDeg: input.windDirectionDeg,
+                }),
             schema: StartRoundInput,
             middleware: mw,
         },
         end: {
             method: 'POST' as const,
             path: '/rounds/end',
-            fn: (input: Static<typeof EndRoundInput>) => svc.end(input.id, input.version, input.endedAt, input.notes),
+            fn: (input: Static<typeof EndRoundInput>) => svc.end(input.id, input.version, input.endedAt, input.notes, {
+                gamePlanId: input.gamePlanId,
+                windSpeedMps: input.windSpeedMps,
+                windDirectionDeg: input.windDirectionDeg,
+            }),
             schema: EndRoundInput,
             middleware: mw,
         },
@@ -106,6 +128,10 @@ export function createRoundsApi(svc: RoundsService) {
                 lon: input.lon,
                 clubId: input.clubId,
                 lie: input.lie,
+                shotType: input.shotType,
+                targetLat: input.targetLat,
+                targetLon: input.targetLon,
+                penaltyStrokes: input.penaltyStrokes,
                 recordedAt: input.recordedAt,
             }),
             schema: AddShotInput,
@@ -120,6 +146,10 @@ export function createRoundsApi(svc: RoundsService) {
                 lon: input.lon,
                 clubId: input.clubId,
                 lie: input.lie,
+                shotType: input.shotType,
+                targetLat: input.targetLat,
+                targetLon: input.targetLon,
+                penaltyStrokes: input.penaltyStrokes,
                 recordedAt: input.recordedAt,
             }),
             schema: UpdateShotInput,

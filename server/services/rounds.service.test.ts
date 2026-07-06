@@ -206,3 +206,84 @@ test('removeShot throws NotFoundError for missing shot', async () => {
     const svc = await setup();
     await expect(svc.removeShot('nope', 1)).rejects.toBeInstanceOf(NotFoundError);
 });
+
+// --- Shot-capture schema extension (T12) ---
+
+test('start defaults game_plan_id and wind snapshot to null when omitted', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    expect(round.gamePlanId).toBeNull();
+    expect(round.windSpeedMps).toBeNull();
+    expect(round.windDirectionDeg).toBeNull();
+});
+
+test('start accepts game_plan_id and wind snapshot', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID, undefined, {
+        gamePlanId: 'plan-123',
+        windSpeedMps: 4.5,
+        windDirectionDeg: 270,
+    });
+    expect(round.gamePlanId).toBe('plan-123');
+    expect(round.windSpeedMps).toBe(4.5);
+    expect(round.windDirectionDeg).toBe(270);
+});
+
+test('end can set game_plan_id and wind snapshot after the fact', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    const ended = await svc.end(round.id, 1, '2026-01-01T14:00:00.000Z', undefined, {
+        gamePlanId: 'plan-456',
+        windSpeedMps: 3.2,
+        windDirectionDeg: 90,
+    });
+    expect(ended.gamePlanId).toBe('plan-456');
+    expect(ended.windSpeedMps).toBe(3.2);
+    expect(ended.windDirectionDeg).toBe(90);
+});
+
+test('addShot defaults shot_type to full and penalty_strokes to 0, targets to null', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    const shot = await svc.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
+    expect(shot.shotType).toBe('full');
+    expect(shot.penaltyStrokes).toBe(0);
+    expect(shot.targetLat).toBeNull();
+    expect(shot.targetLon).toBeNull();
+});
+
+test('addShot stores shot_type, target_lat/lon, and penalty_strokes', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    const shot = await svc.addShot(round.id, {
+        holeNumber: 1,
+        lat: 58.4,
+        lon: 15.5,
+        shotType: 'putt',
+        targetLat: 58.401,
+        targetLon: 15.501,
+        penaltyStrokes: 1,
+    });
+    expect(shot.shotType).toBe('putt');
+    expect(shot.targetLat).toBe(58.401);
+    expect(shot.targetLon).toBe(15.501);
+    expect(shot.penaltyStrokes).toBe(1);
+});
+
+test('updateShot round-trips shot_type, target_lat/lon, and penalty_strokes', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    const shot = await svc.addShot(round.id, { holeNumber: 1, lat: 1, lon: 1 });
+
+    const updated = await svc.updateShot(shot.id, 1, {
+        shotType: 'recovery',
+        targetLat: 2.5,
+        targetLon: 3.5,
+        penaltyStrokes: 2,
+    });
+    expect(updated.shotType).toBe('recovery');
+    expect(updated.targetLat).toBe(2.5);
+    expect(updated.targetLon).toBe(3.5);
+    expect(updated.penaltyStrokes).toBe(2);
+    expect(updated.version).toBe(2);
+});
