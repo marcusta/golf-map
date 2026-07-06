@@ -11,45 +11,29 @@
 // caddy a finished CaddyContext — the rules never read the feature store,
 // the DEM, or HTTP (§4.2).
 //
-// Forward-declared context inputs: FeatureDistance and GreenSlopeSummary do
-// not exist yet (they land with the distances feature / the slope adapter in
-// later tasks T4/T9). They are declared here as MINIMAL structural
-// interfaces so this skeleton compiles and is testable standalone; when the
-// real modules land, those modules should EXPORT the canonical type and this
-// file should re-import it (replacing the local forward declaration) — the
-// field names below are chosen to be a subset the real type will satisfy, so
-// rules written against them keep compiling. Each such block is tagged
-// FORWARD-DECL so it is trivial to find and retire.
+// Context inputs from sibling modules: FeatureDistance is imported from the
+// distances engine (feature-distances.ts, T4) and re-exported for the caddy
+// barrel. GreenSlopeSummary remains FORWARD-DECLARED below — there is no
+// shared slope type yet; the web adapter (T9) produces a structurally
+// compatible object, and a rule reads only the fields declared here. Retire
+// that forward declaration when a canonical shared slope type lands.
 
 import { type AimResult } from '../aim';
 import { type ClubSpec } from '../club';
 import { type FlatRing } from '../corridor';
 import { type Vec2 } from '../ellipse';
+import { type FeatureDistance } from '../feature-distances';
 import { type StrategyPoint } from '../plays-like';
+
+export { type FeatureDistance };
 
 // ---------------------------------------------------------------------------
 // Forward-declared context inputs (retire when the real modules land).
+// FeatureDistance is now the canonical type imported from feature-distances.ts
+// (T4, re-exported above). GreenSlopeSummary is still forward-declared until
+// a shared slope type lands — the web adapter (T9) produces a structurally
+// compatible object.
 // ---------------------------------------------------------------------------
-
-/**
- * FORWARD-DECL (retire when feature-distances.ts / T4 lands and exports the
- * canonical type). A single measured target along the shot: the flat line
- * distance plus, where computable, the plays-like and per-leg club fit. Only
- * the fields the caddy reads are declared; the real FeatureDistance is a
- * superset, so this stays assignable. Meters throughout; null (not
- * undefined) marks a distance that could not be computed (missing wind /
- * elevation) — matching the distances feature's null-propagation contract.
- */
-export interface FeatureDistance {
-    /** Human label for the target, e.g. 'green front', 'bunker carry'. */
-    label: string;
-    /** Straight-line ground distance to the target, meters. Always present. */
-    lineM: number;
-    /** Plays-like distance (horizontal + elevation ± wind), meters, or null. */
-    playsLikeM?: number | null;
-    /** Suggested club for the plays-like number, if one was resolved. */
-    club?: ClubSpec | null;
-}
 
 /**
  * FORWARD-DECL (retire when the web GreenSlopeSummary adapter / T9 lands and
