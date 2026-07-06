@@ -8,19 +8,33 @@ import type { PlanGate, PlanShot } from '../../../shared/api/game-plans.gen';
 import {
     bearingToUnitVector,
     closestClub,
+    featureDistances,
+    optimizeAim,
     playsAsM,
     runCaddy,
     segmentStats,
     windEffect,
+    type AimResult,
     type CaddyAdvice,
     type CaddyContext,
+    type CaddyRule,
+    type DistanceTarget,
+    type FeatureDistance,
+    type FlatRing,
     type GreenSlopeSummary,
     type Vec2,
 } from '../../../shared/strategy';
-// greenSlopeHalfRule is re-exported from the caddy barrel but not (yet) from
-// the strategy index — that index line is owned by another task this wave, so
-// we import the rule from the barrel directly.
-import { greenSlopeHalfRule } from '../../../shared/strategy/caddy';
+// The caddy rules are re-exported from the caddy barrel but not (yet) from the
+// strategy index — that index line is owned by another task this wave, so we
+// import the rules from the barrel directly.
+import {
+    greenSlopeHalfRule,
+    noDoublesRule,
+    par5AttackRule,
+    shortSideGuardRule,
+    specificTargetRule,
+    takeYourMedicineRule,
+} from '../../../shared/strategy/caddy';
 import { MapService, type MapPointerEvent, type OverlayLayerSpec } from '../map/map.service';
 import { ElevationService } from '../map/elevation.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
@@ -43,6 +57,7 @@ import {
     type EffectiveWind,
     type GhostAim,
     type HolePlan,
+    type PlanLeg,
 } from './plan-overlay';
 import { buildLieMap, type LieMap } from './lie-map';
 
@@ -98,6 +113,60 @@ const MIN_HALF_WIDTH_M = 1;
  */
 const NOMINAL_GREEN_DEPTH_M = 9;
 const DRAG_MOVE_THRESHOLD_PX = 2;
+
+/**
+ * The full v1 caddy rule set (feature-smart-caddy.md §5). The evaluator
+ * (`runCaddy`) is fixed; this is the growing list — order is irrelevant, the
+ * evaluator ranks by priority × confidence and resolves vetoes (§4.4). Each
+ * rule self-gates on the leg it cares about (green-slope/short-side/
+ * specific-target on approaches, par5-attack on par-5 tee/layup,
+ * take-your-medicine on recovery, no-doubles on any full shot), so passing the
+ * whole set for every leg is correct — inapplicable rules simply return
+ * nothing.
+ */
+const CADDY_RULES: readonly CaddyRule[] = [
+    greenSlopeHalfRule,
+    par5AttackRule,
+    shortSideGuardRule,
+    noDoublesRule,
+    takeYourMedicineRule,
+    specificTargetRule,
+];
+
+/** The inputs the locked leg-contract mapping decides on. */
+export interface CaddyLegKindInput {
+    /** Leg index within the plan (0 = tee shot). */
+    index: number;
+    /** The leg's destination node kind. */
+    toKind: 'tee' | 'shot' | 'green';
+    /** The hole par. */
+    par: number;
+    /** The strokes-gained lie the leg is played FROM (lie-map classification). */
+    originLie: string;
+}
+
+/**
+ * The LOCKED caddy leg-contract mapping (feature-smart-caddy.md / delegation
+ * brief T10) — get this exactly right or rules silently never fire:
+ *  - a leg played FROM a recovery lie is `'recovery'` (take-your-medicine) —
+ *    a jailed shot is a punch-out regardless of shot number, so this wins;
+ *  - a leg landing on the green is an `'approach'` (green-slope / short-side /
+ *    specific-target / no-doubles);
+ *  - the tee shot (index 0) is `'tee'`;
+ *  - the par-5 SECOND shot (index 1, not into the green) is `'layup'` — this is
+ *    what `par5AttackRule.appliesTo` checks;
+ *  - any remaining full shot to a landing area maps to `'tee'` (closest honest
+ *    kind; no rule mis-fires on it).
+ *
+ * Exported pure so the contract is unit-testable without the service graph.
+ */
+export function caddyLegKind(input: CaddyLegKindInput): CaddyContext['leg'] {
+    if (input.originLie === 'recovery') return 'recovery';
+    if (input.toKind === 'green') return 'approach';
+    if (input.index === 0) return 'tee';
+    if (input.par === 5 && input.index === 1) return 'layup';
+    return 'tee';
+}
 
 export type PlannerMode = 'select' | 'add-shot' | 'add-gate';
 
@@ -327,6 +396,7 @@ export class PlannerToolService {
             const greenCenter = this.greenCenterVec();
             if (!base || !greenCenter) {
                 this.enrichedPlan.set(null);
+                this.caddyResult.set(null);
                 return;
             }
             const enriched = enrichPlanStrategy(base, {
@@ -335,6 +405,11 @@ export class PlannerToolService {
                 wind: this.effectiveWind.peek(),
             });
             this.enrichedPlan.set({ base, enriched });
+            // Caddy advice runs on the SAME cadence as EV enrichment (shot-place
+            // / drag-release, coalesced onto this microtask) — never per frame
+            // (feature-smart-caddy.md §4.5). It reads the just-enriched plan so
+            // every rule sees the settled geometry + lie breakdowns.
+            this.caddyResult.set({ base, advice: this.computeCaddyAdvice(enriched) });
         });
     }
 
@@ -367,59 +442,187 @@ export class PlannerToolService {
     }
 
     /**
-     * Smart-caddy advice for the approach leg (the marquee green-slope rule,
-     * task T9 / feature-smart-caddy.md Phase B). Runs only when the hole has a
-     * green-terminated approach leg AND a green-slope summary has been fed in
-     * via `greenSlopeSummary`; otherwise empty. Derived like the EV numbers —
-     * never persisted, recomputed reactively.
-     *
-     * The CaddyContext is assembled from the plan's approach leg: `front`/
-     * `back` are the green centre nudged ±NOMINAL_GREEN_DEPTH_M along the shot
-     * bearing (the plan model carries only the green centre, not its polygon —
-     * an honest approximation until T6 wires the full green geometry). Hazards
-     * are empty for now, so front-clean (D9) passes by default until the lie
-     * map is available here; a hazard short of the green will start suppressing
-     * the advice the moment it is supplied.
+     * The last caddy run, paired with the `holePlan` it was derived from
+     * (`base`) — exactly like `enrichedPlan`. Populated by `refreshStrategy` on
+     * the shot-place / drag-release cadence, so `runCaddy` (which itself calls
+     * `optimizeAim` for the EV rules) never runs on the per-frame drag path.
+     * `caddyAdvice` (below) only surfaces it while `base` is still the live
+     * `holePlan`, so no stale advice shows mid-drag.
+     */
+    private readonly caddyResult = new Signal<{ base: HolePlan; advice: readonly CaddyAdvice[] } | null>(null);
+
+    /**
+     * Ranked smart-caddy advice for the current hole across ALL its legs
+     * (feature-smart-caddy.md §5). Surfaces the stored `caddyResult` only while
+     * its `base` still matches the live `holePlan` — during a drag `holePlan`
+     * recomputes into a fresh object, so the advice falls silent until the next
+     * release re-runs the caddy over the settled plan (same guard as
+     * `overlayPlan`). Derived, never persisted (§4.5).
      */
     readonly caddyAdvice = new Computed<readonly CaddyAdvice[]>(() => {
-        const plan = this.holePlan.get();
-        const summary = this.greenSlopeSummary.get();
-        if (!plan || !summary) return [];
+        const live = this.holePlan.get();
+        const result = this.caddyResult.get();
+        return result && result.base === live ? result.advice : [];
+    });
 
-        const approach = plan.legs.find(l => l.to.kind === 'green');
-        if (!approach) return [];
+    /**
+     * Assemble a `CaddyContext` per leg of the (already enriched) plan and run
+     * the full rule set over each, returning the concatenated advice ranked as
+     * the evaluator ordered it within each leg. Called only from
+     * `refreshStrategy` (shot-place / drag-release cadence) — it re-runs
+     * `optimizeAim` per clubbed leg to get the full `AimResult` (with the
+     * per-candidate tail the `no-doubles` rule reads, D16), which is exactly
+     * the sweep the cadence guarantee exists to keep off the hot loop.
+     */
+    private computeCaddyAdvice(plan: HolePlan): readonly CaddyAdvice[] {
+        const greenCenter = this.greenCenterVec();
+        if (!greenCenter) return [];
+        const lieMap = this.lieMap.peek();
+        const wind = this.effectiveWind.peek();
+        const clubs = this.orderedClubs.peek();
+        const par = this.selectedHole.peek()?.par ?? 4;
+        const index = this.selectedHole.peek()?.number ?? 0;
+        const summary = this.greenSlopeSummary.peek();
+        const hazards = lieMap.hazardRings();
+        const surfaces = lieMap.surfaces();
 
-        const center: Vec2 = { x: approach.to.x, y: approach.to.y };
-        const back: Vec2 = { x: approach.from.x, y: approach.from.y };
-        // Unit vector from origin toward the green (the shot direction).
-        const dir = bearingToUnitVector(approach.bearingDeg);
+        const out: CaddyAdvice[] = [];
+        for (const leg of plan.legs) {
+            const ctx = this.buildLegContext(leg, {
+                greenCenter, hazards, surfaces, clubs, wind, par, index, summary,
+                classify: (p: Vec2) => lieMap.classifyLie(p),
+            });
+            if (!ctx) continue;
+            for (const advice of runCaddy(ctx, CADDY_RULES)) out.push(advice);
+        }
+        return out;
+    }
+
+    /**
+     * Build the per-leg `CaddyContext` (feature-smart-caddy.md §4.2), or null
+     * for a leg no rule can act on (no club → no aim to reason about, and not a
+     * recovery/approach the geometry-only rules gate on).
+     *
+     * LEG CONTRACT (locked — the rules gate on this exactly):
+     *  - a leg landing on the green is an `'approach'` (green-slope / short-side
+     *    / specific-target / no-doubles);
+     *  - the tee shot (leg index 0) is `'tee'`;
+     *  - the par-5 SECOND shot (index 1, not into the green) is `'layup'` — this
+     *    is what `par5-attack.appliesTo` checks;
+     *  - a leg played FROM a recovery lie is `'recovery'` (take-your-medicine),
+     *    overriding the above so a jailed tee/second shot punches out.
+     */
+    private buildLegContext(
+        leg: PlanLeg,
+        shared: {
+            greenCenter: Vec2;
+            hazards: readonly FlatRing[];
+            surfaces: readonly FlatRing[];
+            clubs: readonly Club[];
+            wind: EffectiveWind | null;
+            par: number;
+            index: number;
+            summary: GreenSlopeSummary | null;
+            classify: (p: Vec2) => string;
+        },
+    ): CaddyContext | null {
+        const origin: Vec2 = { x: leg.from.x, y: leg.from.y };
+        const originLie = shared.surfaces.length > 0 ? shared.classify(origin) : 'rough';
+        const toGreen = leg.to.kind === 'green';
+        const legKind = caddyLegKind(
+            { index: leg.index, toKind: leg.to.kind, par: shared.par, originLie },
+        );
+
+        // Green reference points: the plan model carries only the green centre,
+        // so front/back are the centre nudged ±NOMINAL_GREEN_DEPTH_M along this
+        // leg's bearing (an honest stand-in until full green geometry lands).
+        const center: Vec2 = toGreen
+            ? { x: leg.to.x, y: leg.to.y }
+            : shared.greenCenter;
+        const dir = bearingToUnitVector(leg.bearingDeg);
         const front: Vec2 = {
             x: center.x - dir.x * NOMINAL_GREEN_DEPTH_M,
             y: center.y - dir.y * NOMINAL_GREEN_DEPTH_M,
         };
-        const backEdge: Vec2 = {
+        const back: Vec2 = {
             x: center.x + dir.x * NOMINAL_GREEN_DEPTH_M,
             y: center.y + dir.y * NOMINAL_GREEN_DEPTH_M,
         };
 
-        const ctx: CaddyContext = {
-            leg: 'approach',
-            origin: { x: back.x, y: back.y },
-            target: {
-                greenPoly: { kind: 'green', points: [] },
-                center,
-                front,
-                back: backEdge,
-            },
-            distances: [],
-            greenSlope: summary,
-            hazards: [],
-            clubs: [],
-            hole: { par: this.selectedHole.get()?.par ?? 4, index: this.selectedHole.get()?.number ?? 0 },
+        // Full AimResult (with the per-candidate tail no-doubles reads, D16) —
+        // re-optimise this leg when it has a club. Off the hot loop by cadence.
+        const aim: AimResult | undefined = leg.club
+            ? optimizeAim({
+                origin,
+                club: { name: leg.club.name, carryM: leg.club.carryM, dispersionM: leg.club.dispersionM },
+                targetBearingDeg: leg.bearingDeg,
+                surfaces: shared.surfaces,
+                greenCenter: center,
+                ...(shared.wind !== null
+                    ? { windSpeedMps: shared.wind.speedMps, windDirectionDeg: shared.wind.directionDeg }
+                    : {}),
+            })
+            : undefined;
+
+        const distances = this.buildLegDistances(leg, center, front, back, shared);
+
+        // Only pass the slope summary on the green-terminated approach leg —
+        // it describes THIS green and green-slope-half is an approach rule.
+        const greenSlope = toGreen && shared.summary ? shared.summary : undefined;
+
+        // A leg no rule can act on (no aim, not recovery, no slope) is skipped.
+        if (!aim && legKind !== 'recovery' && !greenSlope) return null;
+
+        return {
+            leg: legKind,
+            origin: { x: origin.x, y: origin.y, elevation: leg.from.elevation },
+            target: { greenPoly: { kind: 'green', points: [] }, center, front, back },
+            distances,
+            ...(aim ? { aim } : {}),
+            ...(greenSlope ? { greenSlope } : {}),
+            hazards: shared.hazards,
+            clubs: shared.clubs.map(c => ({ name: c.name, carryM: c.carryM, dispersionM: c.dispersionM })),
+            ...(shared.wind !== null
+                ? { wind: { speedMps: shared.wind.speedMps, directionDeg: shared.wind.directionDeg } }
+                : {}),
+            hole: { par: shared.par, index: shared.index },
             risk: { riskAversion: 0 },
         };
-        return runCaddy(ctx, [greenSlopeHalfRule]);
-    });
+    }
+
+    /**
+     * The yardage rows (◄ feature-distances.ts / T4) for one leg's context:
+     * green front/centre/back always, plus each hazard ring the shot line
+     * crosses (front + carry rows). Cast along the leg bearing (D6). Cheap
+     * pure composition; part of the per-leg context so distance-consuming rules
+     * (future carry rule) have their inputs ready.
+     */
+    private buildLegDistances(
+        leg: PlanLeg,
+        center: Vec2,
+        front: Vec2,
+        back: Vec2,
+        shared: { hazards: readonly FlatRing[]; clubs: readonly Club[]; wind: EffectiveWind | null },
+    ): readonly FeatureDistance[] {
+        const origin = { x: leg.from.x, y: leg.from.y, elevation: leg.from.elevation };
+        const targets: DistanceTarget[] = [
+            { kind: 'point', label: 'Green front', role: 'green_front', at: { x: front.x, y: front.y } },
+            { kind: 'point', label: 'Green centre', role: 'green_center', at: { x: center.x, y: center.y } },
+            { kind: 'point', label: 'Green back', role: 'green_back', at: { x: back.x, y: back.y } },
+        ];
+        for (let i = 0; i < shared.hazards.length; i++) {
+            targets.push({ kind: 'hazard', label: `Hazard ${i + 1}`, ring: shared.hazards[i] });
+        }
+        return featureDistances({
+            origin,
+            targets,
+            bearingDeg: leg.bearingDeg,
+            ...(shared.wind !== null
+                ? { wind: { speedMps: shared.wind.speedMps, directionDeg: shared.wind.directionDeg } }
+                : {}),
+            clubs: shared.clubs.map(c => ({ name: c.name, carryM: c.carryM, dispersionM: c.dispersionM })),
+        });
+    }
 
     /**
      * The camera framing target: which hole to frame and the WGS84 bbox
@@ -603,6 +806,11 @@ export class PlannerToolService {
         track(effect(() => {
             this.strategyInputs.get();
             this.lieMap.get();
+            // The (async, server-fed) green-slope summary also re-runs the caddy
+            // — subscribing here keeps that off the per-frame path (refreshStrategy
+            // coalesces onto a microtask) while still reacting the moment a slope
+            // summary is fed in or cleared.
+            this.greenSlopeSummary.get();
             this.refreshStrategy();
         }));
 
