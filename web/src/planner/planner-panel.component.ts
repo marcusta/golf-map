@@ -60,6 +60,11 @@ const tpl = template(`
             <div bind="legsBody" class="legs-body"></div>
         </div>
 
+        <div bind="caddySection" class="plan-panel__section">
+            <h4 class="section-title">Caddy</h4>
+            <div bind="caddyBody" class="caddy-body"></div>
+        </div>
+
         <div bind="shotsSection" class="plan-panel__section">
             <h4 class="section-title">Shots</h4>
             <div bind="shotList" class="shot-list"></div>
@@ -175,6 +180,16 @@ export class PlannerPanelComponent extends Component {
 
             & .legs-body { font-size: 0.75rem; line-height: 1.6; color: ${t('text-muted')}; }
             & .legs-body b { color: ${t('text')}; }
+
+            & .caddy-body { display: flex; flex-direction: column; gap: 6px; }
+            & .caddy-card {
+                border-left: 3px solid ${t('accent')};
+                padding: 4px 8px;
+                background: ${t('hover-bg')};
+                border-radius: 3px;
+            }
+            & .caddy-headline { font-size: 0.78rem; font-weight: 600; color: ${t('text')}; }
+            & .caddy-why { font-size: 0.72rem; line-height: 1.5; color: ${t('text-muted')}; margin-top: 2px; }
 
             & .shot-list, & .gate-list { display: flex; flex-direction: column; gap: 2px; }
             & .empty-note { display: none; font-size: 0.72rem; color: ${t('text-muted')}; &.show { display: block; } }
@@ -303,6 +318,8 @@ export class PlannerPanelComponent extends Component {
             },
             legsSection: { style: () => (this.tool.holePlan.get()?.legs.length ?? 0) > 0 ? '' : 'display:none' },
             legsBody: { textContent: () => '' }, // filled via effect (multiline)
+            caddySection: { style: () => this.tool.caddyAdvice.get().length > 0 ? '' : 'display:none' },
+            caddyBody: { textContent: () => '' }, // filled via effect (multiline)
             shotsSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
             noShots: { className: () => this.tool.holeShots.get().length === 0 ? 'empty-note show' : 'empty-note' },
             seedAims: {
@@ -332,6 +349,10 @@ export class PlannerPanelComponent extends Component {
         // Multiline legs readout (distances / plays-like / carries / remaining).
         const legsBody = this.ref(frag, 'legsBody');
         this.track(effect(() => { legsBody.innerHTML = this.legsHtml(); }));
+
+        // Caddy advice (green-slope-half + future rules), ranked highest first.
+        const caddyBody = this.ref(frag, 'caddyBody');
+        this.track(effect(() => { caddyBody.innerHTML = this.caddyHtml(); }));
 
         this.buildShotRows(this.ref(frag, 'shotList'));
         this.buildGateRows(this.ref(frag, 'gateList'));
@@ -617,6 +638,21 @@ export class PlannerPanelComponent extends Component {
         }
         lines.push(totals.join(' · '));
         return lines.join('<br>');
+    }
+
+    /**
+     * Ranked caddy advice as stacked cards: bold headline + the one-sentence
+     * "why". Empty string when there is no advice (the section hides itself via
+     * its style binding). Advice is already ranked by the evaluator.
+     */
+    private caddyHtml(): string {
+        const advice = this.tool.caddyAdvice.get();
+        if (advice.length === 0) return '';
+        return advice.map(a => {
+            const why = a.detail ? `<div class="caddy-why">${escapeHtml(a.detail)}</div>` : '';
+            return `<div class="caddy-card">`
+                + `<div class="caddy-headline">${escapeHtml(a.headline)}</div>${why}</div>`;
+        }).join('');
     }
 
     private statusText(): string {

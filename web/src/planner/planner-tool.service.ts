@@ -5,8 +5,23 @@ import type { Hole } from '../../../shared/api/holes.gen';
 import type { Tee } from '../../../shared/api/tees.gen';
 import type { Club } from '../../../shared/api/clubs.gen';
 import type { PlanGate, PlanShot } from '../../../shared/api/game-plans.gen';
-import { bearingToUnitVector, closestClub, playsAsM, segmentStats, windEffect } from '../../../shared/strategy';
-import { MapService, type MapPointerEvent } from '../map/map.service';
+import {
+    bearingToUnitVector,
+    closestClub,
+    playsAsM,
+    runCaddy,
+    segmentStats,
+    windEffect,
+    type CaddyAdvice,
+    type CaddyContext,
+    type GreenSlopeSummary,
+    type Vec2,
+} from '../../../shared/strategy';
+// greenSlopeHalfRule is re-exported from the caddy barrel but not (yet) from
+// the strategy index — that index line is owned by another task this wave, so
+// we import the rule from the barrel directly.
+import { greenSlopeHalfRule } from '../../../shared/strategy/caddy';
+import { MapService, type MapPointerEvent, type OverlayLayerSpec } from '../map/map.service';
 import { ElevationService } from '../map/elevation.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FurnitureService } from '../furniture/furniture.service';
@@ -28,6 +43,38 @@ import {
 /** Interaction-claim id for the planner's single tool. */
 export const PLANNER_TOOL_ID = 'planner';
 
+/** Overlay id for the caddy-advice markers (separate from the plan overlay). */
+export const CADDY_OVERLAY_ID = 'plan-caddy';
+
+/** Marker + label layers for the caddy advice overlay. */
+function caddyLayers(): OverlayLayerSpec[] {
+    return [
+        {
+            id: `${CADDY_OVERLAY_ID}-dot`,
+            type: 'circle',
+            paint: {
+                'circle-radius': 5,
+                'circle-color': '#f5b301',
+                'circle-stroke-color': '#14281c',
+                'circle-stroke-width': 1.5,
+            },
+        },
+        {
+            id: `${CADDY_OVERLAY_ID}-label`,
+            type: 'symbol',
+            layout: {
+                'text-field': ['get', 'label'] as never,
+                'text-size': 11,
+                'text-offset': [0, 1.4],
+                'text-anchor': 'top',
+                'text-max-width': 12,
+                'text-allow-overlap': false,
+            },
+            paint: { 'text-color': '#ffffff', 'text-halo-color': '#14281c', 'text-halo-width': 1.5 },
+        },
+    ];
+}
+
 /** Screen-px radius for click-to-select and mousedown-to-drag hit testing. */
 const MARKER_HIT_PX = 12;
 /** Screen-px point-to-segment tolerance for gate-line (move) hits. */
@@ -36,6 +83,14 @@ const GATE_LINE_HIT_PX = 8;
 const GATE_PLACE_PX = 32;
 /** Smallest draggable gate half-width, meters. */
 const MIN_HALF_WIDTH_M = 1;
+/**
+ * Nominal half-depth of a green, meters — used to place `front`/`back`
+ * reference points either side of the green centre along the approach bearing
+ * for the caddy context (the plan model carries only the green centre, not its
+ * polygon). ~9 m ≈ an 18 m deep green; a coarse but honest stand-in until the
+ * full green geometry is wired through (T6).
+ */
+const NOMINAL_GREEN_DEPTH_M = 9;
 const DRAG_MOVE_THRESHOLD_PX = 2;
 
 export type PlannerMode = 'select' | 'add-shot' | 'add-gate';
@@ -86,6 +141,7 @@ export class PlannerToolService {
     private drag: Drag | null = null;
     private suppressClick = false;
     private overlayAdded = false;
+    private caddyOverlayAdded = false;
 
     /** ?hole= carries the hole NUMBER; resolve to the Hole for the course. */
     private readonly selectedHoleNumber = this.router.query('hole');
@@ -191,6 +247,77 @@ export class PlannerToolService {
     });
 
     /**
+     * Green-slope summary for the selected hole's green (D10 shape), or null.
+     * The web adapter (green-slope.ts) derives this from a server sample grid;
+     * the planner sets it here so the caddy can run. Kept a plain settable
+     * Signal so the (async, server-backed) slope fetch stays OUT of the
+     * per-frame reactive path — feeding a summary in makes `caddyAdvice` fire,
+     * clearing it (null) makes the caddy silent. The pure rule never touches
+     * analysis-math.ts; this signal is the seam (feature-smart-caddy.md §4.6).
+     */
+    readonly greenSlopeSummary = new Signal<GreenSlopeSummary | null>(null);
+
+    /** Feed the caddy a green-slope summary (or clear it with null). */
+    setGreenSlopeSummary(summary: GreenSlopeSummary | null): void {
+        this.greenSlopeSummary.set(summary);
+    }
+
+    /**
+     * Smart-caddy advice for the approach leg (the marquee green-slope rule,
+     * task T9 / feature-smart-caddy.md Phase B). Runs only when the hole has a
+     * green-terminated approach leg AND a green-slope summary has been fed in
+     * via `greenSlopeSummary`; otherwise empty. Derived like the EV numbers —
+     * never persisted, recomputed reactively.
+     *
+     * The CaddyContext is assembled from the plan's approach leg: `front`/
+     * `back` are the green centre nudged ±NOMINAL_GREEN_DEPTH_M along the shot
+     * bearing (the plan model carries only the green centre, not its polygon —
+     * an honest approximation until T6 wires the full green geometry). Hazards
+     * are empty for now, so front-clean (D9) passes by default until the lie
+     * map is available here; a hazard short of the green will start suppressing
+     * the advice the moment it is supplied.
+     */
+    readonly caddyAdvice = new Computed<readonly CaddyAdvice[]>(() => {
+        const plan = this.holePlan.get();
+        const summary = this.greenSlopeSummary.get();
+        if (!plan || !summary) return [];
+
+        const approach = plan.legs.find(l => l.to.kind === 'green');
+        if (!approach) return [];
+
+        const center: Vec2 = { x: approach.to.x, y: approach.to.y };
+        const back: Vec2 = { x: approach.from.x, y: approach.from.y };
+        // Unit vector from origin toward the green (the shot direction).
+        const dir = bearingToUnitVector(approach.bearingDeg);
+        const front: Vec2 = {
+            x: center.x - dir.x * NOMINAL_GREEN_DEPTH_M,
+            y: center.y - dir.y * NOMINAL_GREEN_DEPTH_M,
+        };
+        const backEdge: Vec2 = {
+            x: center.x + dir.x * NOMINAL_GREEN_DEPTH_M,
+            y: center.y + dir.y * NOMINAL_GREEN_DEPTH_M,
+        };
+
+        const ctx: CaddyContext = {
+            leg: 'approach',
+            origin: { x: back.x, y: back.y },
+            target: {
+                greenPoly: { kind: 'green', points: [] },
+                center,
+                front,
+                back: backEdge,
+            },
+            distances: [],
+            greenSlope: summary,
+            hazards: [],
+            clubs: [],
+            hole: { par: this.selectedHole.get()?.par ?? 4, index: this.selectedHole.get()?.number ?? 0 },
+            risk: { riskAversion: 0 },
+        };
+        return runCaddy(ctx, [greenSlopeHalfRule]);
+    });
+
+    /**
      * The camera framing target: which hole to frame and the WGS84 bbox
      * `[w,s,e,n]` around its plan nodes (tee → shots → green), or null when
      * there's no geometry yet. The framing effect reads this on a microtask,
@@ -227,6 +354,26 @@ export class PlannerToolService {
             selectedShotId: sel?.kind === 'shot' ? sel.id : null,
             selectedGateId: sel?.kind === 'gate' ? sel.id : null,
         });
+    });
+
+    /**
+     * A tiny separate overlay for caddy advice: a labelled marker at each
+     * advice `anchor` (green front for the slope rule). Kept independent of the
+     * plan overlay's GeoJSON (buildPlanGeojson, another task's module) so this
+     * task adds no edits there — its own source/layers, added in `start()`.
+     */
+    private readonly caddyOverlayData = new Computed<FeatureCollection>(() => {
+        const features: FeatureCollection['features'] = [];
+        for (const a of this.caddyAdvice.get()) {
+            if (!a.anchor) continue;
+            const { lat, lon } = sweref99tmToWgs84(a.anchor.x, a.anchor.y);
+            features.push({
+                type: 'Feature',
+                properties: { role: 'caddy', label: a.headline },
+                geometry: { type: 'Point', coordinates: [lon, lat] },
+            });
+        }
+        return { type: 'FeatureCollection', features };
     });
 
     /** The selected shot row (for the panel), or null. */
@@ -287,6 +434,29 @@ export class PlannerToolService {
             if (this.overlayAdded) {
                 this.map.removeOverlayLayer(PLAN_OVERLAY_ID);
                 this.overlayAdded = false;
+            }
+        });
+
+        // Caddy advice overlay — its own source/layer so it never touches the
+        // plan overlay's GeoJSON. Same ready-gated re-add lifecycle.
+        track(effect(() => {
+            const ready = this.map.ready.get();
+            const data = this.caddyOverlayData.get();
+            if (!ready) {
+                this.caddyOverlayAdded = false;
+                return;
+            }
+            if (!this.caddyOverlayAdded) {
+                this.map.addOverlayLayer(CADDY_OVERLAY_ID, data, caddyLayers());
+                this.caddyOverlayAdded = true;
+            } else {
+                this.map.updateOverlayData(CADDY_OVERLAY_ID, data);
+            }
+        }));
+        track(() => {
+            if (this.caddyOverlayAdded) {
+                this.map.removeOverlayLayer(CADDY_OVERLAY_ID);
+                this.caddyOverlayAdded = false;
             }
         });
 
