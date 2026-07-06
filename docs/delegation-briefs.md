@@ -112,10 +112,21 @@ Per caddy doc Phase B. `caddy/rules/green-slope-half.ts` + web `GreenSlopeSummar
 `hazardsAlongLine` on the last 30 m, needs T3). Panel row + overlay hint. **Done:** rule tests
 per caddy §6-B; advice renders on a hole with a known back-to-front green.
 
-### T10 · EV-backed caddy rules — **Opus**
+### T10 · EV-backed caddy rules + live caddy context — **Opus**
 Per caddy doc Phase C: `short-side-guard`, `no-doubles` (consumes `tailStrokes` per D16),
 `take-your-medicine`, `specific-target` over `AimResult`/`shotsToHoleOut`. Each rule one file,
-pure, fixture-tested. **Done:** rules + tests green; wired into the planner context (T6).
+pure, fixture-tested.
+
+**Also owns the caddy's live wiring (deferred by T8/T9):** assemble a `CaddyContext` per leg in
+the planner from the outputs that now exist — `enrichedPlan` legs' `AimResult`/`lieBreakdown`
+(T7), `featureDistances` (T4), the `greenSlopeSummary` signal + hazard rings (T9 left the seam
+settable but unfed), player clubs, wind — and feed `runCaddy(ctx, rules)` into the caddy panel
+section T9 stubbed. Same shot-place/drag-release cadence as T7 (reuse `refreshStrategy`; never
+per-frame). **Leg contract (locked):** the par-5 second shot must be passed as `leg: 'layup'`
+(that is what `par5-attack.appliesTo` checks — T11); a par-4/5 approach is `leg: 'approach'`, tee
+shot `leg: 'tee'`, recovery `leg: 'recovery'`. Get this mapping right or rules silently never fire.
+**Done:** rules + tests green; caddy advice renders live from the assembled context; green-slope +
+par-5 advice (T9/T11) now actually appear in the planner.
 
 ### T11 · Par-5 attack rule — **GPT-5.5 (math) per locked spec, Opus (wording)**
 Per caddy doc Phase D and **decision D22→§5 of the register** (two-shot chain: table for shot 2+,
