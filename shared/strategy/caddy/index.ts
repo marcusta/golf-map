@@ -15,6 +15,12 @@ export {
 export { runCaddy } from './run';
 export { exampleLongParRule } from './rules/example-long-par';
 export {
+    par5AttackRule,
+    FULL_NUMBER_LAYUP_M,
+    LAY_BACK_OF_PINCH_BUFFER_M,
+    LAYUP_TARGET_TOLERANCE_M,
+} from './rules/par5-attack';
+export {
     greenSlopeHalfRule,
     MIN_FALL_LINE_PCT,
     FALL_LINE_ALIGN_TOLERANCE_DEG,
