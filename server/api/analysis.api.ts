@@ -39,6 +39,17 @@ const SampleGridInput = Type.Object({
     resolutionM: Type.Optional(Type.Number()),
 });
 
+const ElevationPointSchema = Type.Object({
+    e: Type.Number(),
+    n: Type.Number(),
+});
+
+const SampleElevationsInput = Type.Object({
+    courseId: Type.String(),
+    /** EPSG:3006 points to sample. Raw bilinear height, no blur. */
+    points: Type.Array(ElevationPointSchema),
+});
+
 // --- API descriptor ---
 
 export function createAnalysisApi(svc: AnalysisService, features: CourseFeaturesService) {
@@ -68,6 +79,15 @@ export function createAnalysisApi(svc: AnalysisService, features: CourseFeatures
             fn: async (input: Static<typeof SampleGridInput>) =>
                 svc.sampleGrid(input.courseId, await resolveGeometry(input), input.bufferM, input.resolutionM),
             schema: SampleGridInput,
+            middleware: mw,
+        },
+        sampleElevations: {
+            method: 'POST' as const,
+            path: '/analysis/sample-elevations',
+            fn: async (input: Static<typeof SampleElevationsInput>) => ({
+                elevations: await svc.sampleElevations(input.courseId, input.points),
+            }),
+            schema: SampleElevationsInput,
             middleware: mw,
         },
     };

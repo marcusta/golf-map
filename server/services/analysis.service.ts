@@ -118,6 +118,43 @@ export function computeGridSpec(bbox: Bbox, bufferM: number, resolutionM: number
     };
 }
 
+/**
+ * Bbox over a set of loose points (not a closed ring), padded by
+ * `RESOLUTION_MIN_M` so a single point — or a run of collinear points —
+ * still yields a non-degenerate window for `computeGridSpec`.
+ */
+export function pointsBbox(points: readonly { e: number; n: number }[]): Bbox {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const { e, n } of points) {
+        if (e < minX) minX = e;
+        if (n < minY) minY = n;
+        if (e > maxX) maxX = e;
+        if (n > maxY) maxY = n;
+    }
+    if (!Number.isFinite(minX)) {
+        throw new InvalidAnalysisRequestError('At least one point is required');
+    }
+    if (maxX === minX) { minX -= RESOLUTION_MIN_M; maxX += RESOLUTION_MIN_M; }
+    if (maxY === minY) { minY -= RESOLUTION_MIN_M; maxY += RESOLUTION_MIN_M; }
+    return { minX, minY, maxX, maxY };
+}
+
+/**
+ * A minimal single-cell-per-axis GridSpec covering `points`' bbox — just
+ * enough shape for `readDemWindow` to compute a raster window. No buffer,
+ * DEM-native resolution; the grid itself is never sampled cell-by-cell
+ * (see `sampleElevations`, which bilinear-samples at the exact points).
+ */
+export function computePointsGridSpec(points: readonly { e: number; n: number }[]): GridSpec {
+    const bbox = pointsBbox(points);
+    return {
+        origin: { e: bbox.minX, n: bbox.maxY },
+        resolution: DEFAULT_RESOLUTION_M,
+        width: Math.max(1, Math.ceil((bbox.maxX - bbox.minX) / DEFAULT_RESOLUTION_M)),
+        height: Math.max(1, Math.ceil((bbox.maxY - bbox.minY) / DEFAULT_RESOLUTION_M)),
+    };
+}
+
 /** Ray-casting point-in-ring test (ring implicitly closed). */
 export function pointInRing(x: number, y: number, ring: Array<[number, number]>): boolean {
     let inside = false;
@@ -313,6 +350,34 @@ export class AnalysisService {
         }
 
         return { ...spec, heights, insideMask: buildInsideMask(spec, geometry) };
+    }
+
+    /**
+     * Sample raw DEM height at arbitrary EPSG:3006 points (rangefinder /
+     * yardage use — see docs/feature-distances-yardages.md §5.1). Unlike
+     * `sampleGrid`, this is **not** Gaussian-blurred: blur is a green-slope
+     * concern for smoothing gradients, and point yardages want the true
+     * bilinear-interpolated height. Synthesizes a GridSpec-shaped window
+     * over the points' bbox purely to reuse `openDem`/`readDemWindow`; the
+     * synthetic grid is never sampled cell-by-cell. Heights are rounded to
+     * the millimeter; `NaN` (nodata / off-DEM) maps to `null`, matching
+     * `sampleGrid`'s convention. Empty input returns `[]` without opening
+     * the DEM.
+     */
+    async sampleElevations(
+        courseId: string,
+        points: readonly { e: number; n: number }[],
+    ): Promise<(number | null)[]> {
+        if (points.length === 0) return [];
+
+        const spec = computePointsGridSpec(points);
+        const dem = await this.openDem(courseId);
+        const win = await this.readDemWindow(dem, spec);
+
+        return points.map(({ e, n }) => {
+            const v = bilinearSample(win, e, n);
+            return Number.isNaN(v) ? null : Math.round(v * 1000) / 1000;
+        });
     }
 
     // --- DEM access ---

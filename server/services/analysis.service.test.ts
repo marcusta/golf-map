@@ -9,6 +9,8 @@ import {
     AnalysisService,
     InvalidAnalysisRequestError,
     computeGridSpec,
+    computePointsGridSpec,
+    pointsBbox,
     geometryBbox,
     gaussianBlurGrid,
     buildInsideMask,
@@ -17,6 +19,7 @@ import {
     BUFFER_MAX_M,
     MAX_CELLS_PER_AXIS,
     RESOLUTION_MIN_M,
+    DEFAULT_RESOLUTION_M,
 } from './analysis.service';
 import type { FeatureGeometry } from './geo';
 
@@ -357,4 +360,96 @@ test('sampleGrid rejects empty geometry', async () => {
     const { svc } = await setup();
     const geom = { crs: 'EPSG:3006', rings: [] } as FeatureGeometry;
     await expect(svc.sampleGrid(TEST_COURSE_ID, geom)).rejects.toBeInstanceOf(InvalidAnalysisRequestError);
+});
+
+// ─── pointsBbox / computePointsGridSpec ────────────────────────────────────
+
+test('pointsBbox covers all points and pads a degenerate (single-point) extent', () => {
+    const bbox = pointsBbox([{ e: 100, n: 200 }, { e: 130, n: 180 }, { e: 110, n: 220 }]);
+    expect(bbox).toEqual({ minX: 100, minY: 180, maxX: 130, maxY: 220 });
+
+    const single = pointsBbox([{ e: 50, n: 60 }]);
+    expect(single.minX).toBeCloseTo(50 - RESOLUTION_MIN_M, 10);
+    expect(single.maxX).toBeCloseTo(50 + RESOLUTION_MIN_M, 10);
+    expect(single.minY).toBeCloseTo(60 - RESOLUTION_MIN_M, 10);
+    expect(single.maxY).toBeCloseTo(60 + RESOLUTION_MIN_M, 10);
+});
+
+test('pointsBbox rejects an empty point list', () => {
+    expect(() => pointsBbox([])).toThrow(InvalidAnalysisRequestError);
+});
+
+test('computePointsGridSpec synthesizes a DEM-native-resolution window over the points bbox', () => {
+    const spec = computePointsGridSpec([{ e: 100, n: 200 }, { e: 130, n: 220 }]);
+    expect(spec.origin).toEqual({ e: 100, n: 220 });
+    expect(spec.resolution).toBe(DEFAULT_RESOLUTION_M);
+    expect(spec.width).toBe(Math.ceil(30 / DEFAULT_RESOLUTION_M));
+    expect(spec.height).toBe(Math.ceil(20 / DEFAULT_RESOLUTION_M));
+});
+
+// ─── sampleElevations ───────────────────────────────────────────────────────
+
+test('sampleElevations returns [] for empty input without touching the DEM', async () => {
+    // dataDir points nowhere; if the DEM were opened this would reject instead of resolving.
+    const ctx = await createTestDb(seedCourse);
+    const svc = new AnalysisService(ctx.db, '/tmp/does-not-matter');
+    expect(await svc.sampleElevations(TEST_COURSE_ID, [])).toEqual([]);
+});
+
+test('sampleElevations matches sampleGrid\'s pre-blur (raw bilinear) value at the same coordinate', async () => {
+    const { svc } = await setup();
+    // A point well inside the fixture DEM, away from any edge effects.
+    const e = E0 + 42.37;
+    const n = N0 - 58.11;
+
+    const [elevation] = await svc.sampleElevations(TEST_COURSE_ID, [{ e, n }]);
+    expect(elevation).not.toBeNull();
+    // Ground truth: sampleElevations does no blur, so it must equal the
+    // exact bilinear interpolation of the known plane (not just sampleGrid's
+    // blurred output, which only agrees away from edges).
+    expect(elevation!).toBeCloseTo(planeHeight(e, n), 2);
+});
+
+test('sampleElevations samples multiple points independently, preserving order', async () => {
+    const { svc } = await setup();
+    const points = [
+        { e: E0 + 10, n: N0 - 10 },
+        { e: E0 + 90, n: N0 - 90 },
+        { e: E0 + 50, n: N0 - 50 },
+    ];
+    const elevations = await svc.sampleElevations(TEST_COURSE_ID, points);
+    expect(elevations).toHaveLength(3);
+    points.forEach((p, i) => {
+        expect(elevations[i]).not.toBeNull();
+        expect(elevations[i]!).toBeCloseTo(planeHeight(p.e, p.n), 2);
+    });
+});
+
+test('sampleElevations maps an off-DEM (nodata) point to null without affecting others', async () => {
+    const pixels = buildDemPixels();
+    // Kill a small block near the fixture's NW corner (rows/cols 10-19 → 5-9.5 m).
+    for (let row = 10; row < 20; row++) {
+        for (let col = 10; col < 20; col++) pixels[row * DEM_W + col] = NODATA;
+    }
+    const { svc } = await setup(pixels);
+    const offDem = { e: E0 + 7, n: N0 - 7 };
+    const onDem = { e: E0 + 70, n: N0 - 70 };
+
+    const [offValue, onValue] = await svc.sampleElevations(TEST_COURSE_ID, [offDem, onDem]);
+    expect(offValue).toBeNull();
+    expect(onValue).not.toBeNull();
+    expect(onValue!).toBeCloseTo(planeHeight(onDem.e, onDem.n), 2);
+});
+
+test('sampleElevations throws NotFoundError when the course has no DEM asset', async () => {
+    const ctx = await createTestDb(seedCourse);
+    const svc = new AnalysisService(ctx.db, '/tmp/does-not-matter');
+    await expect(svc.sampleElevations(TEST_COURSE_ID, [{ e: E0 + 10, n: N0 - 10 }]))
+        .rejects.toBeInstanceOf(NotFoundError);
+});
+
+test('sampleElevations rejects points entirely outside DEM coverage', async () => {
+    const { svc } = await setup();
+    await expect(svc.sampleElevations(TEST_COURSE_ID, [{ e: E0 + 100000, n: N0 - 100000 }]))
+        .rejects.toBeInstanceOf(InvalidAnalysisRequestError);
 });

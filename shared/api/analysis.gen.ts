@@ -12,12 +12,16 @@ export interface SampleGrid {
 
 export interface AnalysisApi {
     sampleGrid(input: { featureId?: string; geometry?: { crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; x: number; y: number }[] }[] }; bufferM?: number; resolutionM?: number; courseId: string }): Promise<SampleGrid>;
+    sampleElevations(input: { courseId: string; points: { e: number; n: number }[] }): Promise<{ elevations: (null | number)[] }>;
 }
 
 export function createAnalysisClient(baseUrl: string): AnalysisApi {
     return {
         async sampleGrid(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/analysis/sample-grid`, body: input });
+        },
+        async sampleElevations(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/analysis/sample-elevations`, body: input });
         },
     };
 }
