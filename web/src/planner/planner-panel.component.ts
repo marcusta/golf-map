@@ -10,12 +10,12 @@ import { PlannerToolService } from './planner-tool.service';
 import { gateLabel, legLight, type LegLight, type PlanLeg } from './plan-overlay';
 
 const tpl = template(`
-    <div class="plan-panel" bind="root">
+    <div class="plan-panel" bind="root" data-testid="planner-panel">
         <div class="plan-panel__section">
             <h4 class="section-title">Plan</h4>
             <div class="mode-row">
-                <button bind="addShot" type="button" class="mode-btn">+ Shot</button>
-                <button bind="addGate" type="button" class="mode-btn">+ Gate</button>
+                <button bind="addShot" type="button" class="mode-btn" data-testid="planner-add-shot">+ Shot</button>
+                <button bind="addGate" type="button" class="mode-btn" data-testid="planner-add-gate">+ Gate</button>
             </div>
             <div bind="hint" class="plan-hint"></div>
         </div>
@@ -55,29 +55,29 @@ const tpl = template(`
             <div bind="effectiveWind" class="wind-effective"></div>
         </div>
 
-        <div bind="legsSection" class="plan-panel__section">
+        <div bind="legsSection" class="plan-panel__section" data-testid="planner-legs-section">
             <h4 class="section-title">Legs</h4>
-            <div bind="legsBody" class="legs-body"></div>
+            <div bind="legsBody" class="legs-body" data-testid="planner-legs-body"></div>
         </div>
 
-        <div bind="caddySection" class="plan-panel__section">
+        <div bind="caddySection" class="plan-panel__section" data-testid="planner-caddy-section">
             <h4 class="section-title">Caddy</h4>
-            <div bind="caddyBody" class="caddy-body"></div>
+            <div bind="caddyBody" class="caddy-body" data-testid="planner-caddy-body"></div>
         </div>
 
-        <div bind="shotsSection" class="plan-panel__section">
+        <div bind="shotsSection" class="plan-panel__section" data-testid="planner-shots-section">
             <h4 class="section-title">Shots</h4>
-            <div bind="shotList" class="shot-list"></div>
+            <div bind="shotList" class="shot-list" data-testid="planner-shot-list"></div>
             <div bind="noShots" class="empty-note">No shots yet — arm “+ Shot” and click the map.</div>
-            <button bind="applyAim" type="button" class="mini-btn">Apply recommended aim</button>
-            <button bind="seedAims" type="button" class="mini-btn">Seed shots from aim points</button>
+            <button bind="applyAim" type="button" class="mini-btn" data-testid="planner-apply-aim">Apply recommended aim</button>
+            <button bind="seedAims" type="button" class="mini-btn" data-testid="planner-seed-aims">Seed shots from aim points</button>
         </div>
 
-        <div bind="gatesSection" class="plan-panel__section">
+        <div bind="gatesSection" class="plan-panel__section" data-testid="planner-gates-section">
             <h4 class="section-title">Gates</h4>
-            <div bind="gateList" class="gate-list"></div>
+            <div bind="gateList" class="gate-list" data-testid="planner-gate-list"></div>
             <div bind="noGates" class="empty-note">No gates yet — arm “+ Gate” and click near a leg.</div>
-            <button bind="autoGates" type="button" class="mini-btn">Auto gates from hazards</button>
+            <button bind="autoGates" type="button" class="mini-btn" data-testid="planner-auto-gates">Auto gates from hazards</button>
         </div>
 
         <div bind="notesSection" class="plan-panel__section">
@@ -377,6 +377,15 @@ export class PlannerPanelComponent extends Component {
         this.bindWindInputs(frag);
         this.bindNotes(this.ref(frag, 'notes') as HTMLTextAreaElement);
 
+        // E2E cadence hook (inert in prod): mirror the tool's completed-
+        // enrichment-pass counter onto the panel root as data-enrich-count.
+        // The smoke suite reads it to prove enrichment stays flat across drag
+        // frames and bumps exactly once on release (DECADE §4.5).
+        const rootEl = this.ref(frag, 'root');
+        this.track(effect(() => {
+            rootEl.dataset.enrichCount = String(this.tool.enrichCount.get());
+        }));
+
         // Multiline legs readout (distances / plays-like / carries / remaining).
         const legsBody = this.ref(frag, 'legsBody');
         this.track(effect(() => { legsBody.innerHTML = this.legsHtml(); }));
@@ -548,6 +557,17 @@ export class PlannerPanelComponent extends Component {
                     },
                 }, track);
 
+                // E2E hooks (inert in prod): identify the row + reflect the live
+                // landing point so a flow can assert "apply recommended aim"
+                // actually moved the shot (data-lat/lon change).
+                row.dataset.testid = 'planner-shot-row';
+                row.dataset.shotId = shot.id;
+                track(effect(() => {
+                    const s = live.get();
+                    row.dataset.lat = s.lat.toFixed(7);
+                    row.dataset.lon = s.lon.toFixed(7);
+                }));
+
                 const club = row.querySelector('.shot-club') as HTMLSelectElement;
                 club.addEventListener('click', e => e.stopPropagation());
                 club.addEventListener('change', () =>
@@ -689,16 +709,19 @@ export class PlannerPanelComponent extends Component {
                 parts.push(`${Math.round(leg.remainingToGreenM)} m left`);
             }
             if (leg.expectedStrokes !== undefined) {
-                parts.push(`EV ${leg.expectedStrokes.toFixed(2)}`);
+                // E2E hook (inert): the EV readout carries a testid so the smoke
+                // suite can assert it renders for an enriched leg.
+                parts.push(`<span data-testid="planner-leg-ev">EV ${leg.expectedStrokes.toFixed(2)}</span>`);
             }
-            return parts.join(' · ');
+            // E2E hook (inert): one wrapper per leg line for stable counting.
+            return `<div data-testid="planner-leg">${parts.join(' · ')}</div>`;
         });
         const totals = [`<b>Total</b> ${Math.round(plan.totalHorizontalM)} m`];
         if (plan.totalPlaysLikeM !== undefined) {
             totals.push(`plays ${Math.round(plan.totalPlaysLikeM)} m`);
         }
-        lines.push(totals.join(' · '));
-        return lines.join('<br>');
+        lines.push(`<div data-testid="planner-leg-total">${totals.join(' · ')}</div>`);
+        return lines.join('');
     }
 
     /**
@@ -711,7 +734,8 @@ export class PlannerPanelComponent extends Component {
         if (advice.length === 0) return '';
         return advice.map(a => {
             const why = a.detail ? `<div class="caddy-why">${escapeHtml(a.detail)}</div>` : '';
-            return `<div class="caddy-card">`
+            // E2E hook (inert): one testid per ranked caddy card.
+            return `<div class="caddy-card" data-testid="planner-caddy-card">`
                 + `<div class="caddy-headline">${escapeHtml(a.headline)}</div>${why}</div>`;
         }).join('');
     }
@@ -761,5 +785,6 @@ const LIGHT_TITLE: Record<LegLight, string> = {
 function lightChip(leg: PlanLeg): string {
     const light = legLight(leg);
     if (!light) return '';
-    return `<span class="leg-light leg-light--${light}" title="${LIGHT_TITLE[light]}"></span>`;
+    // E2E hook (inert): data-light exposes the confidence tier (green/yellow/red).
+    return `<span class="leg-light leg-light--${light}" data-testid="planner-leg-light" data-light="${light}" title="${LIGHT_TITLE[light]}"></span>`;
 }

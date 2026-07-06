@@ -354,6 +354,17 @@ export class PlannerToolService {
     private readonly enrichedPlan = new Signal<{ base: HolePlan; enriched: HolePlan } | null>(null);
 
     /**
+     * E2E cadence instrumentation (inert in prod): a monotonic counter bumped
+     * once per COMPLETED enrichment pass — i.e. each time `refreshStrategy`'s
+     * coalesced microtask actually runs `enrichPlanStrategy`. Reflected onto
+     * the planner panel root as `data-enrich-count`; the smoke suite asserts it
+     * stays flat across drag frames and increments exactly once on release,
+     * proving the compute-cadence guarantee (DECADE §4.5) for real. Behaviour-
+     * neutral: nothing in the app reads it.
+     */
+    readonly enrichCount = new Signal<number>(0);
+
+    /**
      * A signature of everything that should re-trigger DECADE enrichment but is
      * STABLE across a drag: the shot set + each shot's club, the tee/green, the
      * preferred club, and wind. Deliberately excludes shot lat/lon — those DO
@@ -410,6 +421,8 @@ export class PlannerToolService {
             // (feature-smart-caddy.md §4.5). It reads the just-enriched plan so
             // every rule sees the settled geometry + lie breakdowns.
             this.caddyResult.set({ base, advice: this.computeCaddyAdvice(enriched) });
+            // Cadence instrumentation — one bump per completed enrichment pass.
+            this.enrichCount.set(this.enrichCount.peek() + 1);
         });
     }
 

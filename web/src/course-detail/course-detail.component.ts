@@ -8,17 +8,17 @@ import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.s
 import { HoleInfoPanelComponent } from './hole-info-panel.component';
 
 const tpl = template(`
-    <div class="course-detail" bind="root">
-        <header class="course-detail__header">
+    <div class="course-detail" bind="root" data-testid="course-detail">
+        <header class="course-detail__header" data-testid="course-detail-header">
             <button bind="back" class="back-btn" type="button">&#8592; Courses</button>
-            <h2 bind="name"></h2>
+            <h2 bind="name" data-testid="course-name"></h2>
             <span bind="status" class="status"></span>
             <span bind="revision" class="meta"></span>
             <span bind="parTotal" class="meta"></span>
             <span bind="georef" class="meta georef-warn"></span>
             <div class="header-actions">
-                <button bind="plan" class="plan-btn" type="button" title="Open the game-plan editor for this course">Plan</button>
-                <button bind="importSvg" class="import-btn" type="button" title="Import traced course features from an SVG file">Import SVG</button>
+                <button bind="plan" class="plan-btn" type="button" title="Open the game-plan editor for this course" data-testid="course-plan-btn">Plan</button>
+                <button bind="importSvg" class="import-btn" type="button" title="Import traced course features from an SVG file" data-testid="course-import-svg-btn">Import SVG</button>
                 <button bind="publish" class="publish-btn" type="button" title="Publish this course revision for device sync"></button>
             </div>
             <div class="error" bind="error">
@@ -290,7 +290,7 @@ export class CourseDetailComponent extends Component {
 
         this.$each(this.ref(frag, 'holeList'), this.svc.holes, (hole, _i, track) => {
             const live = this.svc.holeStore.item(hole.id);
-            return this.wireEl(holeTpl, {
+            const rowEl = this.wireEl(holeTpl, {
                 row: {
                     onclick: () => this.router.navigate(`/course/${hole.courseId}`, {
                         query: { hole: String(hole.number) },
@@ -301,6 +301,10 @@ export class CourseDetailComponent extends Component {
                 number: () => `Hole ${live.get().number}`,
                 par: () => `Par ${live.get().par}`,
             }, track);
+            // E2E hook (inert in prod): per-hole selector by hole number.
+            rowEl.dataset.testid = 'course-hole-row';
+            rowEl.dataset.holeNumber = String(hole.number);
+            return rowEl;
         }, hole => hole.id);
 
         return frag;

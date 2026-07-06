@@ -10,8 +10,8 @@ import type { EditorTool, ToolContext } from './tool';
 import { EDITOR_TOOLS } from './tools/index';
 
 const tpl = template(`
-    <div class="editor-tools" bind="root">
-        <div bind="bar" class="editor-tools__bar"></div>
+    <div class="editor-tools" bind="root" data-testid="editor-toolbar">
+        <div bind="bar" class="editor-tools__bar" data-testid="editor-toolbar-bar"></div>
         <div bind="panelHost" class="editor-tools__panel"></div>
     </div>
 `);
@@ -115,7 +115,7 @@ export class EditorToolbarComponent extends Component {
 
         const bar = this.ref(frag, 'bar');
         for (const tool of [...EDITOR_TOOLS].sort((a, b) => a.order - b.order)) {
-            bar.appendChild(this.wireEl(toolBtnTpl, {
+            const btnEl = this.wireEl(toolBtnTpl, {
                 button: {
                     onclick: () => this.toggle(tool),
                     className: () => this.activeToolId.get() === tool.id ? 'tool-btn active' : 'tool-btn',
@@ -123,7 +123,12 @@ export class EditorToolbarComponent extends Component {
                 },
                 icon: { textContent: tool.icon },
                 label: { textContent: tool.label },
-            }));
+            });
+            // E2E instrumentation (inert in prod): stable per-tool hook so the
+            // smoke suite can assert every tool button is present + which is armed.
+            btnEl.dataset.testid = `tool-btn-${tool.id}`;
+            btnEl.dataset.toolId = tool.id;
+            bar.appendChild(btnEl);
         }
         return frag;
     }

@@ -4,6 +4,11 @@ dist
 .DS_Store
 uploads
 
+# E2E harness (Playwright) — isolated seeded DBs, storageState, reports
+e2e/.tmp
+e2e/test-results
+e2e/playwright-report
+
 # Python tile pipeline (pipeline/)
 pipeline/.venv
 pipeline/**/__pycache__

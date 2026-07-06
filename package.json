@@ -1,5 +1,13 @@
 {
     "name": "golf-map",
     "private": true,
-    "workspaces": ["server", "web", "shared"]
+    "workspaces": ["server", "web", "shared"],
+    "scripts": {
+        "e2e": "playwright test --config e2e/playwright.config.ts",
+        "e2e:headed": "playwright test --config e2e/playwright.config.ts --headed",
+        "e2e:ui": "playwright test --config e2e/playwright.config.ts --ui"
+    },
+    "devDependencies": {
+        "@playwright/test": "^1.61.1"
+    }
 }

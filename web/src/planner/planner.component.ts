@@ -12,7 +12,7 @@ import { PlannerToolService } from './planner-tool.service';
 import { PlannerPanelComponent } from './planner-panel.component';
 
 const tpl = template(`
-    <div class="planner" bind="root">
+    <div class="planner" bind="root" data-testid="planner">
         <header class="planner__header">
             <button bind="back" class="back-btn" type="button">&#8592; Course</button>
             <h2 bind="name"></h2>
@@ -210,7 +210,7 @@ export class PlannerComponent extends Component {
 
         this.$each(this.ref(frag, 'holeList'), this.svc.holes, (hole, _i, track) => {
             const live = this.svc.holeStore.item(hole.id);
-            return this.wireEl(holeTpl, {
+            const rowEl = this.wireEl(holeTpl, {
                 row: {
                     onclick: () => this.router.navigate(`/planner/${hole.courseId}`, {
                         query: { hole: String(hole.number) },
@@ -221,6 +221,10 @@ export class PlannerComponent extends Component {
                 number: () => `Hole ${live.get().number}`,
                 par: () => `Par ${live.get().par}`,
             }, track);
+            // E2E hook (inert in prod): per-hole selector by hole number.
+            rowEl.dataset.testid = 'planner-hole-row';
+            rowEl.dataset.holeNumber = String(hole.number);
+            return rowEl;
         }, hole => hole.id);
 
         this.spawn(EditorCanvasComponent, this.ref(frag, 'editorCanvas'));
