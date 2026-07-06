@@ -1,13 +1,13 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, field } from '../css';
-import { mpsToMph } from '../../../shared/strategy';
+import { clubAdvice, mpsToMph } from '../../../shared/strategy';
 import type { PlanShot, PlanGate } from '../../../shared/api/game-plans.gen';
 import { FurnitureService } from '../furniture/furniture.service';
 import { ClubsService } from '../player/clubs.service';
 import { PlanService } from './plan.service';
 import { PlannerToolService } from './planner-tool.service';
-import { gateLabel } from './plan-overlay';
+import { gateLabel, legLight, type LegLight, type PlanLeg } from './plan-overlay';
 
 const tpl = template(`
     <div class="plan-panel" bind="root">
@@ -69,6 +69,7 @@ const tpl = template(`
             <h4 class="section-title">Shots</h4>
             <div bind="shotList" class="shot-list"></div>
             <div bind="noShots" class="empty-note">No shots yet — arm “+ Shot” and click the map.</div>
+            <button bind="applyAim" type="button" class="mini-btn">Apply recommended aim</button>
             <button bind="seedAims" type="button" class="mini-btn">Seed shots from aim points</button>
         </div>
 
@@ -76,6 +77,7 @@ const tpl = template(`
             <h4 class="section-title">Gates</h4>
             <div bind="gateList" class="gate-list"></div>
             <div bind="noGates" class="empty-note">No gates yet — arm “+ Gate” and click near a leg.</div>
+            <button bind="autoGates" type="button" class="mini-btn">Auto gates from hazards</button>
         </div>
 
         <div bind="notesSection" class="plan-panel__section">
@@ -99,6 +101,7 @@ const shotRowTpl = template(`
         <input bind="label" class="shot-label" type="text" placeholder="label" />
         <button bind="remove" class="row-remove" type="button" title="Delete shot">✕</button>
         <span bind="dist" class="shot-dist"></span>
+        <span bind="advice" class="shot-advice"></span>
     </div>
 `);
 
@@ -180,6 +183,24 @@ export class PlannerPanelComponent extends Component {
 
             & .legs-body { font-size: 0.75rem; line-height: 1.6; color: ${t('text-muted')}; }
             & .legs-body b { color: ${t('text')}; }
+            & .leg-light {
+                display: inline-block;
+                width: 9px;
+                height: 9px;
+                border-radius: 50%;
+                margin-right: 5px;
+                vertical-align: baseline;
+                border: 1px solid rgba(0, 0, 0, 0.35);
+                &.leg-light--green { background: #22c55e; }
+                &.leg-light--yellow { background: #eab308; }
+                &.leg-light--red { background: #ef4444; }
+            }
+
+            & .shot-advice {
+                grid-column: 2 / span 3;
+                font-size: 0.68rem;
+                color: ${t('text-muted')};
+            }
 
             & .caddy-body { display: flex; flex-direction: column; gap: 6px; }
             & .caddy-card {
@@ -316,12 +337,17 @@ export class PlannerPanelComponent extends Component {
                 return `Effective: ${wind.speedMps.toFixed(1)} m/s `
                     + `(${mpsToMph(wind.speedMps).toFixed(1)} mph) from ${Math.round(wind.directionDeg)}°`;
             },
-            legsSection: { style: () => (this.tool.holePlan.get()?.legs.length ?? 0) > 0 ? '' : 'display:none' },
+            legsSection: { style: () => (this.tool.overlayPlan.get()?.legs.length ?? 0) > 0 ? '' : 'display:none' },
             legsBody: { textContent: () => '' }, // filled via effect (multiline)
             caddySection: { style: () => this.tool.caddyAdvice.get().length > 0 ? '' : 'display:none' },
             caddyBody: { textContent: () => '' }, // filled via effect (multiline)
             shotsSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
             noShots: { className: () => this.tool.holeShots.get().length === 0 ? 'empty-note show' : 'empty-note' },
+            applyAim: {
+                onclick: () => void this.tool.applyRecommendedAim(),
+                // Shown only when the selected shot has a recommended ghost aim.
+                style: () => this.tool.selectedShotGhostAim.get() ? '' : 'display:none',
+            },
             seedAims: {
                 onclick: () => void this.seedFromAims(),
                 textContent: () => {
@@ -333,6 +359,11 @@ export class PlannerPanelComponent extends Component {
             },
             gatesSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
             noGates: { className: () => this.tool.holeGates.get().length === 0 ? 'empty-note show' : 'empty-note' },
+            autoGates: {
+                onclick: () => void this.tool.generateAutoGates(),
+                // Only offer it when there are legs to cast a corridor from.
+                style: () => (this.tool.overlayPlan.get()?.legs.length ?? 0) > 0 ? '' : 'display:none',
+            },
             notesSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
             status: {
                 textContent: () => this.statusText(),
@@ -508,6 +539,7 @@ export class PlannerPanelComponent extends Component {
                     // index would go stale after a mid-list delete.
                     idx: () => String(this.tool.holeShots.get().findIndex(s => s.id === shot.id) + 1),
                     dist: () => this.shotDistText(shot.id),
+                    advice: () => this.shotAdviceText(shot.id),
                     remove: {
                         onclick: (e: Event) => {
                             e.stopPropagation();
@@ -596,7 +628,7 @@ export class PlannerPanelComponent extends Component {
 
     /** "1: Tee → ①" per-shot distance text from the leg landing on it. */
     private shotDistText(shotId: string): string {
-        const plan = this.tool.holePlan.get();
+        const plan = this.tool.overlayPlan.get();
         const leg = plan?.legs.find(l => l.to.kind === 'shot' && l.to.shot?.id === shotId);
         if (!leg) return '';
         const parts = [`${Math.round(leg.horizontalM)} m`];
@@ -610,8 +642,33 @@ export class PlannerPanelComponent extends Component {
         return parts.join(' · ');
     }
 
+    /**
+     * Front/centre/back club advice (`clubAdvice`) for the shot landing on
+     * `shotId`, priced against how far the leg plays (plays-like, else
+     * horizontal). "F 7i · C 8i · B 9i" — the shot-edit popover's club-choice
+     * helper (DECADE Phase D). Empty when there's no leg/clubs, or when a
+     * single club covers all three slots (no choice to surface).
+     */
+    private shotAdviceText(shotId: string): string {
+        const plan = this.tool.overlayPlan.get();
+        const leg = plan?.legs.find(l => l.to.kind === 'shot' && l.to.shot?.id === shotId);
+        if (!leg) return '';
+        const clubs = this.tool.orderedClubs.get();
+        if (clubs.length === 0) return '';
+        const distanceM = leg.playsLikeM ?? leg.horizontalM;
+        const { front, center, back } = clubAdvice(clubs, distanceM);
+        const parts: string[] = [];
+        if (front) parts.push(`F ${front.name}`);
+        if (center) parts.push(`C ${center.name}`);
+        if (back) parts.push(`B ${back.name}`);
+        // Collapse when every slot is the same club (nothing to choose between).
+        const distinct = new Set([front?.id, center?.id, back?.id].filter(Boolean));
+        if (distinct.size <= 1) return '';
+        return parts.join(' · ');
+    }
+
     private legsHtml(): string {
-        const plan = this.tool.holePlan.get();
+        const plan = this.tool.overlayPlan.get();
         if (!plan || plan.legs.length === 0) return '';
         const nodeName = (node: { kind: string; shot?: { id: string } }, plan2 = plan): string => {
             if (node.kind === 'tee') return 'Tee';
@@ -621,7 +678,8 @@ export class PlannerPanelComponent extends Component {
             return `S${n + 1}`;
         };
         const lines = plan.legs.map(leg => {
-            const parts = [`<b>${nodeName(leg.from)} → ${nodeName(leg.to)}</b>`,
+            const light = lightChip(leg);
+            const parts = [`<b>${light}${nodeName(leg.from)} → ${nodeName(leg.to)}</b>`,
                 `${Math.round(leg.horizontalM)} m`];
             if (leg.playsLikeM !== undefined) parts.push(`plays ${Math.round(leg.playsLikeM)} m`);
             if (leg.club && leg.adjustedCarryM !== undefined) {
@@ -629,6 +687,9 @@ export class PlannerPanelComponent extends Component {
             }
             if (leg.remainingToGreenM !== undefined && leg.to.kind !== 'green') {
                 parts.push(`${Math.round(leg.remainingToGreenM)} m left`);
+            }
+            if (leg.expectedStrokes !== undefined) {
+                parts.push(`EV ${leg.expectedStrokes.toFixed(2)}`);
             }
             return parts.join(' · ');
         });
@@ -684,4 +745,21 @@ function syncInput(input: HTMLInputElement, value: number | null, decimals: numb
 
 function escapeHtml(str: string): string {
     return str.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+/** Human labels for the generic approach-confidence chip (no DECADE branding). */
+const LIGHT_TITLE: Record<LegLight, string> = {
+    green: 'Attack — pattern holds the green',
+    yellow: 'Cautious — a slice misses',
+    red: 'Bail — take the fat side / medicine',
+};
+
+/**
+ * A leading confidence-chip span for an approach leg (green/yellow/red dot),
+ * or '' when the leg is not an enriched approach. Generic terminology only.
+ */
+function lightChip(leg: PlanLeg): string {
+    const light = legLight(leg);
+    if (!light) return '';
+    return `<span class="leg-light leg-light--${light}" title="${LIGHT_TITLE[light]}"></span>`;
 }

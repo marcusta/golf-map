@@ -193,6 +193,80 @@ export function enrichPlanStrategy(plan: HolePlan, ctx: LegStrategyContext): Hol
     return { ...plan, legs: plan.legs.map(leg => enrichLegStrategy(leg, ctx)) };
 }
 
+// ── Pin lights (DECADE Phase D) ─────────────────────────────────────────────
+//
+// Generic green/yellow/red confidence chip per APPROACH leg (a leg landing
+// on the green). Derived purely from the enriched `lieBreakdown` (the fraction
+// of dispersion samples per lie at the recommended aim) — NO DECADE branding,
+// no trademarked "light" naming (DECADE doc §9), just a three-level attack
+// confidence. The published DECADE principle is: attack (green) when the
+// pattern almost never leaves the green and never finds trouble; be cautious
+// (yellow) when a meaningful slice misses into rough/sand; bail to the fat
+// side (red) when penalty/recovery trouble is in play or the green is rarely
+// held. "Short side" here means the trouble lies (sand + penalty + recovery) —
+// the ones that leave a hard up-and-down — crossing a threshold; the plan
+// model carries only the green centre, not pin-relative geometry, so we use
+// the trouble-share of the pattern as the short-side proxy (calibratable).
+
+export type LegLight = 'green' | 'yellow' | 'red';
+
+/** Trouble share above this → at best yellow (a slice misses the short side). */
+export const LIGHT_TROUBLE_YELLOW = 0.1;
+/** Trouble share above this (or any penalty) → red (bail to the fat side). */
+export const LIGHT_TROUBLE_RED = 0.25;
+/** Green-hit share below this → at best yellow (green rarely held). */
+export const LIGHT_GREEN_HELD = 0.6;
+
+/**
+ * The confidence light for an enriched APPROACH leg, or null when the leg is
+ * not an approach (does not land on the green) or is not yet enriched (no
+ * `lieBreakdown`). Pure — reads only the leg's own breakdown.
+ *
+ * red   — any penalty in the pattern, OR trouble (sand+penalty+recovery) share
+ *         ≥ LIGHT_TROUBLE_RED: take your medicine, aim at the fat side.
+ * yellow— trouble share ≥ LIGHT_TROUBLE_YELLOW, OR green held <
+ *         LIGHT_GREEN_HELD: playable but don't fire at a tucked pin.
+ * green — pattern holds the green and stays out of trouble: attack.
+ */
+export function legLight(leg: PlanLeg): LegLight | null {
+    if (leg.to.kind !== 'green' || !leg.lieBreakdown) return null;
+    const b = leg.lieBreakdown;
+    const penalty = b.penalty ?? 0;
+    const trouble = penalty + (b.sand ?? 0) + (b.recovery ?? 0);
+    const green = b.green ?? 0;
+    if (penalty > 0 || trouble >= LIGHT_TROUBLE_RED) return 'red';
+    if (trouble >= LIGHT_TROUBLE_YELLOW || green < LIGHT_GREEN_HELD) return 'yellow';
+    return 'green';
+}
+
+// ── Ghost recommended-aim marker (DECADE Phase D) ───────────────────────────
+
+/**
+ * The recommended-aim landing point for an enriched leg, projected forward
+ * from the leg's origin along `recommendedBearingDeg` by the leg's own
+ * adjusted carry — a "ghost" marker showing where DECADE would aim this shot.
+ * Null when the leg is not enriched or has no club/carry to project.
+ */
+export interface GhostAim {
+    legIndex: number;
+    bearingDeg: number;
+    /** Landing point, EPSG:3006 meters. */
+    point: Vec2;
+    lat: number;
+    lon: number;
+}
+
+export function ghostAimForLeg(leg: PlanLeg): GhostAim | null {
+    if (leg.recommendedBearingDeg === undefined || leg.adjustedCarryM === undefined) return null;
+    const unit = bearingToUnitVector(leg.recommendedBearingDeg);
+    const point: Vec2 = {
+        x: leg.from.x + unit.x * leg.adjustedCarryM,
+        y: leg.from.y + unit.y * leg.adjustedCarryM,
+    };
+    const { lat, lon } = sweref99tmToWgs84(point.x, point.y);
+    return { legIndex: leg.index, bearingDeg: leg.recommendedBearingDeg, point, lat, lon };
+}
+
 export interface HolePlan {
     nodes: PlanNode[];
     legs: PlanLeg[];
@@ -454,7 +528,14 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
         for (const leg of plan.legs) {
             features.push({
                 type: 'Feature',
-                properties: { role: 'leg', index: leg.index, label: legLabel(leg) },
+                properties: {
+                    role: 'leg',
+                    index: leg.index,
+                    label: legLabel(leg),
+                    // Approach-leg confidence light (null on non-approach / un-enriched
+                    // legs) → tints the leg line; see legLight().
+                    light: legLight(leg) ?? '',
+                },
                 geometry: {
                     type: 'LineString',
                     coordinates: [[leg.from.lon, leg.from.lat], [leg.to.lon, leg.to.lat]],
@@ -470,6 +551,20 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
                     geometry: { type: 'Polygon', coordinates: [leg.ellipse.polygon.map(toPosition)] },
                 });
             }
+        }
+
+        // Ghost recommended-aim marker per enriched leg (DECADE Phase D): a
+        // hollow dot at where the aim optimiser would land this shot. Only
+        // enriched legs (recommendedBearingDeg set) yield one — the per-frame
+        // drag path never enriches, so no ghost flickers during a drag.
+        for (const leg of plan.legs) {
+            const ghost = ghostAimForLeg(leg);
+            if (!ghost) continue;
+            features.push({
+                type: 'Feature',
+                properties: { role: 'ghost-aim', legIndex: ghost.legIndex },
+                geometry: { type: 'Point', coordinates: [ghost.lon, ghost.lat] },
+            });
         }
 
         let shotNumber = 0;
@@ -522,6 +617,12 @@ const role = (value: string): FilterSpecification =>
 const LEG_COLOR = '#fbbf24'; // amber, like the measure path
 const ELLIPSE_COLOR = '#2f7d4f';
 const GATE_COLOR = '#06b6d4';
+const GHOST_COLOR = '#a855f7'; // violet — distinct from legs/gates/ellipses
+
+/** Confidence-light colours (generic, non-branded — DECADE doc §9). */
+export const LIGHT_GREEN_COLOR = '#22c55e';
+export const LIGHT_YELLOW_COLOR = '#eab308';
+export const LIGHT_RED_COLOR = '#ef4444';
 
 /** Layer specs for the plan overlay (ids prefixed with the overlay id). */
 export function planLayers(): OverlayLayerSpec[] {
@@ -549,7 +650,16 @@ export function planLayers(): OverlayLayerSpec[] {
             id: `${PLAN_OVERLAY_ID}-leg`,
             type: 'line',
             filter: role('leg'),
-            paint: { 'line-color': LEG_COLOR, 'line-width': 2.5 },
+            paint: {
+                'line-color': [
+                    'match', ['get', 'light'],
+                    'green', LIGHT_GREEN_COLOR,
+                    'yellow', LIGHT_YELLOW_COLOR,
+                    'red', LIGHT_RED_COLOR,
+                    LEG_COLOR,
+                ] as never,
+                'line-width': 2.5,
+            },
         },
         {
             id: `${PLAN_OVERLAY_ID}-leg-label`,
@@ -563,6 +673,18 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-allow-overlap': true,
             },
             paint: { 'text-color': '#ffffff', 'text-halo-color': '#14281c', 'text-halo-width': 1.5 },
+        },
+        {
+            id: `${PLAN_OVERLAY_ID}-ghost-aim`,
+            type: 'circle',
+            filter: role('ghost-aim'),
+            paint: {
+                'circle-radius': 6,
+                'circle-color': 'transparent',
+                'circle-stroke-color': GHOST_COLOR,
+                'circle-stroke-width': 2,
+                'circle-stroke-opacity': 0.9,
+            },
         },
         {
             id: `${PLAN_OVERLAY_ID}-gate-line`,

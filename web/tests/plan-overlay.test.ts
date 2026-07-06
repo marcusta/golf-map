@@ -7,12 +7,16 @@ import {
     enrichPlanStrategy,
     gateEndpoints,
     gateLabel,
+    ghostAimForLeg,
     legLabel,
+    legLight,
     nearestLegFoot,
     perpendicularFoot,
     planarBearingDeg,
+    type HolePlan,
     type HolePlanInput,
     type LegStrategyContext,
+    type PlanLeg,
 } from '../src/planner/plan-overlay';
 import { buildLieMap } from '../src/planner/lie-map';
 import {
@@ -501,5 +505,210 @@ describe('autoGatesForPlan', () => {
         }));
         const gates = autoGatesForPlan(plan.legs, []);
         expect(gates).toHaveLength(0);
+    });
+});
+
+// ── Pin lights (DECADE Phase D) ─────────────────────────────────────────────
+
+describe('legLight', () => {
+    /** A green-terminating approach leg with a synthetic lie breakdown. */
+    function approachLeg(breakdown: Partial<Record<string, number>>): PlanLeg {
+        const plan = buildHolePlan(northInput({
+            shots: [], green: { ...at(150), elevation: 0 }, preferredClubId: IRON7.id,
+        }));
+        const leg = plan.legs[0]; // tee → green (an approach)
+        expect(leg.to.kind).toBe('green');
+        return { ...leg, lieBreakdown: breakdown as PlanLeg['lieBreakdown'] };
+    }
+
+    test('null on a non-approach leg (does not land on the green)', () => {
+        const plan = buildHolePlan(northInput()); // leg0 tee→shot is NOT an approach
+        expect(plan.legs[0].to.kind).toBe('shot');
+        expect(legLight({ ...plan.legs[0], lieBreakdown: { green: 1 } })).toBeNull();
+    });
+
+    test('null on an un-enriched approach (no lieBreakdown yet)', () => {
+        const plan = buildHolePlan(northInput({
+            shots: [], green: { ...at(150), elevation: 0 }, preferredClubId: IRON7.id,
+        }));
+        expect(plan.legs[0].lieBreakdown).toBeUndefined();
+        expect(legLight(plan.legs[0])).toBeNull();
+    });
+
+    test('green: pattern holds the green, no trouble', () => {
+        expect(legLight(approachLeg({ green: 0.95, rough: 0.05 }))).toBe('green');
+    });
+
+    test('yellow: a slice of rough (trouble ≥ 10%) but no penalty', () => {
+        // 15% sand is trouble ≥ LIGHT_TROUBLE_YELLOW (0.1) but < RED (0.25).
+        expect(legLight(approachLeg({ green: 0.85, sand: 0.15 }))).toBe('yellow');
+    });
+
+    test('yellow: green rarely held even with little trouble', () => {
+        // green 0.5 < LIGHT_GREEN_HELD (0.6), trouble only 5% → yellow, not red.
+        expect(legLight(approachLeg({ green: 0.5, rough: 0.45, sand: 0.05 }))).toBe('yellow');
+    });
+
+    test('red: any penalty in the pattern', () => {
+        expect(legLight(approachLeg({ green: 0.9, penalty: 0.02, rough: 0.08 }))).toBe('red');
+    });
+
+    test('red: trouble share at or above the red threshold', () => {
+        // 30% sand ≥ LIGHT_TROUBLE_RED (0.25) → red even with no penalty.
+        expect(legLight(approachLeg({ green: 0.7, sand: 0.3 }))).toBe('red');
+    });
+});
+
+// ── Ghost recommended-aim marker (DECADE Phase D) ───────────────────────────
+
+describe('ghostAimForLeg', () => {
+    test('null when the leg is not enriched (no recommendedBearingDeg)', () => {
+        const plan = buildHolePlan(northInput());
+        expect(ghostAimForLeg(plan.legs[0])).toBeNull();
+    });
+
+    test('projects from the origin along recommendedBearingDeg by adjustedCarryM', () => {
+        const plan = buildHolePlan(northInput());
+        const leg = plan.legs[0];
+        // Recommend aiming 90° (due east); carry projects straight east from the tee.
+        const enriched: PlanLeg = { ...leg, recommendedBearingDeg: 90 };
+        const ghost = ghostAimForLeg(enriched)!;
+        expect(ghost).not.toBeNull();
+        expect(ghost.legIndex).toBe(0);
+        expect(ghost.bearingDeg).toBe(90);
+        expect(ghost.point.x).toBeCloseTo(leg.from.x + leg.adjustedCarryM!, 6);
+        expect(ghost.point.y).toBeCloseTo(leg.from.y, 6);
+        const wgs = sweref99tmToWgs84(ghost.point.x, ghost.point.y);
+        expect(ghost.lat).toBeCloseTo(wgs.lat, 9);
+        expect(ghost.lon).toBeCloseTo(wgs.lon, 9);
+    });
+
+    test('null when the leg has no club (no adjustedCarryM to project)', () => {
+        const plan = buildHolePlan(northInput({
+            shots: [shot('s1', at(200), { clubId: null, elevation: 5 })],
+        }));
+        // leg1 (shot → green) has no club; even with a recommended bearing it can't project.
+        const enriched: PlanLeg = { ...plan.legs[1], recommendedBearingDeg: 0 };
+        expect(ghostAimForLeg(enriched)).toBeNull();
+    });
+});
+
+// ── Overlay renders enriched strategy (lights tint + ghost marker) ──────────
+
+describe('buildPlanGeojson strategy rendering', () => {
+    const byRole = (features: Feature[], role: string) =>
+        features.filter(f => (f.properties as { role: string }).role === role);
+
+    const fairway = rectFeature('fw1', 'fairway', BASE.x - 200, BASE.x + 200, BASE.y - 50, BASE.y + 400);
+    function ctx(): LegStrategyContext {
+        return { lieMap: buildLieMap([fairway]), greenCenter: { x: BASE.x, y: BASE.y + 350 }, wind: null };
+    }
+
+    test('an enriched plan emits a ghost-aim marker per enriched clubbed leg', () => {
+        const enriched = enrichPlanStrategy(buildHolePlan(northInput()), ctx());
+        const fc = buildPlanGeojson({ plan: enriched, gates: [], selectedShotId: null, selectedGateId: null });
+        // leg0 (tee→shot, has a club) enriches; leg1 (shot→green, no club) does not.
+        expect(byRole(fc.features, 'ghost-aim')).toHaveLength(1);
+    });
+
+    test('a plain (un-enriched) plan emits NO ghost markers — the per-frame path stays clean', () => {
+        const plain = buildHolePlan(northInput());
+        const fc = buildPlanGeojson({ plan: plain, gates: [], selectedShotId: null, selectedGateId: null });
+        expect(byRole(fc.features, 'ghost-aim')).toHaveLength(0);
+        // ...and every leg's light property is empty (no tint) until enriched.
+        for (const legFeature of byRole(fc.features, 'leg')) {
+            expect((legFeature.properties as { light: string }).light).toBe('');
+        }
+    });
+
+    test('the approach leg carries its confidence light for the tint', () => {
+        // Par-3 straight up a fairway into a fairway-bounded green: pattern holds
+        // the (fairway) surround, so the approach lights up (non-red).
+        const plan = buildHolePlan(northInput({
+            shots: [], green: { ...at(150), elevation: 0 }, preferredClubId: IRON7.id,
+        }));
+        const enriched = enrichPlanStrategy(plan, ctx());
+        const fc = buildPlanGeojson({ plan: enriched, gates: [], selectedShotId: null, selectedGateId: null });
+        const approach = byRole(fc.features, 'leg')[0];
+        const light = (approach.properties as { light: string }).light;
+        expect(light).toBe(legLight(enriched.legs[0]) ?? '');
+    });
+});
+
+// ── Compute cadence: the per-frame overlay path never optimises (DECADE §4.5) ─
+//
+// The planner's per-drag-frame path is patchShotLocal → holePlan recompute →
+// buildPlanGeojson (see PlannerToolService.applyDrag / overlayData). NONE of
+// those touch optimizeAim: only enrichLegStrategy/enrichPlanStrategy do, and
+// those are called on shot-place / drag-RELEASE only. This models a drag: many
+// buildHolePlan+buildPlanGeojson passes over moving shot positions must NEVER
+// enrich, and the enriched overlay's identity gate (base === live) must fall
+// back to plain geometry the moment a fresh plan object appears (a frame).
+
+describe('compute cadence', () => {
+    const fairway = rectFeature('fw1', 'fairway', BASE.x - 200, BASE.x + 200, BASE.y - 50, BASE.y + 400);
+    function ctx(): LegStrategyContext {
+        return { lieMap: buildLieMap([fairway]), greenCenter: { x: BASE.x, y: BASE.y + 350 }, wind: null };
+    }
+
+    test('buildHolePlan/buildPlanGeojson (the per-frame path) never produce strategy fields', () => {
+        // Simulate 30 drag frames: each moves the shot and rebuilds geometry.
+        for (let f = 0; f < 30; f++) {
+            const plan = buildHolePlan(northInput({
+                shots: [shot('s1', at(150 + f, f), { clubId: DRIVER.id, elevation: 5 })],
+            }));
+            for (const leg of plan.legs) {
+                expect(leg.expectedStrokes).toBeUndefined();
+                expect(leg.lieBreakdown).toBeUndefined();
+                expect(leg.recommendedBearingDeg).toBeUndefined();
+            }
+            const fc = buildPlanGeojson({ plan, gates: [], selectedShotId: null, selectedGateId: null });
+            // No ghost markers ever appear during the drag.
+            expect(fc.features.filter(x => (x.properties as { role: string }).role === 'ghost-aim')).toHaveLength(0);
+        }
+    });
+
+    test('enrich reads the lie map surfaces (reaches optimizeAim); per-frame build never does', () => {
+        // A spying LieMap: optimizeAim (via enrichLegStrategy) MUST read
+        // surfaces(); the pure per-frame builders must not touch the lie map at
+        // all. Counting surface reads is a direct proxy for "did we optimise?".
+        const real = buildLieMap([fairway]);
+        let surfaceReads = 0;
+        const spy: LegStrategyContext['lieMap'] = {
+            classifyLie: p => real.classifyLie(p),
+            surfaces: () => { surfaceReads++; return real.surfaces(); },
+            hazardRings: () => real.hazardRings(),
+        };
+        const spyCtx: LegStrategyContext = { ...ctx(), lieMap: spy };
+
+        // Per-frame path: build geometry + overlay across frames — no surface reads.
+        for (let f = 0; f < 5; f++) {
+            const plan = buildHolePlan(northInput({
+                shots: [shot('s1', at(150 + f), { clubId: DRIVER.id, elevation: 5 })],
+            }));
+            buildPlanGeojson({ plan, gates: [], selectedShotId: null, selectedGateId: null });
+        }
+        expect(surfaceReads).toBe(0);
+
+        // Enrich (place / release cadence): now surfaces ARE read (per clubbed leg).
+        enrichPlanStrategy(buildHolePlan(northInput()), spyCtx);
+        expect(surfaceReads).toBeGreaterThan(0);
+    });
+
+    test('the overlayPlan identity gate: enriched shown only while base === live', () => {
+        // This mirrors PlannerToolService.overlayPlan: render enriched only when
+        // its base is still the live holePlan reference; a fresh (drag-frame)
+        // plan object breaks the match → plain geometry, no stale lights/ghost.
+        const overlayPlan = (live: HolePlan, enriched: { base: HolePlan; enriched: HolePlan } | null): HolePlan =>
+            enriched && enriched.base === live ? enriched.enriched : live;
+
+        const live = buildHolePlan(northInput());
+        const enriched = { base: live, enriched: enrichPlanStrategy(live, ctx()) };
+        // Same live reference → enriched (strategy visible).
+        expect(overlayPlan(live, enriched).legs[0].expectedStrokes).toBeGreaterThan(0);
+        // A drag frame recomputes holePlan into a NEW object → plain geometry.
+        const nextFrame = buildHolePlan(northInput());
+        expect(nextFrame).not.toBe(live);
+        expect(overlayPlan(nextFrame, enriched).legs[0].expectedStrokes).toBeUndefined();
     });
 });

@@ -25,20 +25,26 @@ import { MapService, type MapPointerEvent, type OverlayLayerSpec } from '../map/
 import { ElevationService } from '../map/elevation.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FurnitureService } from '../furniture/furniture.service';
+import { FeaturesService } from '../draw/features.service';
 import { lngLatToSweref99tm, sweref99tmToWgs84, wgs84ToSweref99tm } from '../geo/transform';
 import { PlanService, type PlanHoleRow } from './plan.service';
 import { ClubsService } from '../player/clubs.service';
 import {
     PLAN_OVERLAY_ID,
     GATE_DEFAULT_HALF_WIDTH_M,
+    autoGatesForPlan,
     buildHolePlan,
     buildPlanGeojson,
+    enrichPlanStrategy,
+    ghostAimForLeg,
     nearestLegFoot,
     planarBearingDeg,
     planLayers,
     type EffectiveWind,
+    type GhostAim,
     type HolePlan,
 } from './plan-overlay';
+import { buildLieMap, type LieMap } from './lie-map';
 
 /** Interaction-claim id for the planner's single tool. */
 export const PLANNER_TOOL_ID = 'planner';
@@ -130,6 +136,7 @@ export class PlannerToolService {
     private router = di.get(Router);
     private courseDetail = di.get(CourseDetailService);
     private furniture = di.get(FurnitureService);
+    private features = di.get(FeaturesService);
     private plan = di.get(PlanService);
     private clubs = di.get(ClubsService);
 
@@ -247,6 +254,103 @@ export class PlannerToolService {
     });
 
     /**
+     * The hole's pre-flattened lie map (course features → shared/strategy
+     * FlatRing[]), rebuilt when the feature store or the selected hole
+     * changes. Peeked (not subscribed) inside the enrichment path so an
+     * enrich pass reads a consistent snapshot; kept a Computed so it is only
+     * re-flattened when features actually change, never per drag frame.
+     */
+    readonly lieMap = new Computed<LieMap>(() =>
+        buildLieMap(this.features.store.items.get()));
+
+    /** Green centre as EPSG:3006 Vec2 for the aim optimiser (null = no green). */
+    private greenCenterVec(): Vec2 | null {
+        const plan = this.holePlan.peek();
+        const green = plan?.nodes.find(n => n.kind === 'green');
+        return green ? { x: green.x, y: green.y } : null;
+    }
+
+    /**
+     * The last strategy-enriched plan, paired with the exact `holePlan` object
+     * it was derived from (`base`). DECADE EV / lights / ghost-aim
+     * (`enrichPlanStrategy`) run on shot-place and drag-RELEASE ONLY (see
+     * `refreshStrategy`), NEVER per drag frame — sweeping ~13 aim candidates ×
+     * ~128 samples per mouse-move would melt the hot loop (DECADE §4.5).
+     *
+     * `overlayPlan` (below) renders `enriched` only while `base` is still the
+     * live `holePlan` reference; the moment a drag frame recomputes `holePlan`
+     * into a fresh object, the overlay falls back to plain geometry (no stale
+     * lights/ghost mid-drag), and the next release re-enriches.
+     */
+    private readonly enrichedPlan = new Signal<{ base: HolePlan; enriched: HolePlan } | null>(null);
+
+    /**
+     * A signature of everything that should re-trigger DECADE enrichment but is
+     * STABLE across a drag: the shot set + each shot's club, the tee/green, the
+     * preferred club, and wind. Deliberately excludes shot lat/lon — those DO
+     * change per drag frame (via `patchShotLocal`), and re-optimising on each
+     * would break the compute cadence (DECADE §4.5). The drag-release itself
+     * re-enriches explicitly (`persistDrag`), so positions still get picked up,
+     * just off the hot loop. This signal is what the `start()` effect watches.
+     */
+    private readonly strategyInputs = new Computed<string>(() => {
+        const hole = this.selectedHole.get()?.id ?? '';
+        const tee = this.originTee.get()?.id ?? '';
+        const preferred = this.planHole.get()?.preferredClubId ?? '';
+        const wind = this.effectiveWind.get();
+        const windSig = wind ? `${wind.speedMps}/${wind.directionDeg}` : 'calm';
+        const shots = this.holeShots.get().map(s => `${s.id}:${s.clubId ?? ''}`).join(',');
+        const clubs = this.orderedClubs.get().map(c => c.id).join(',');
+        return `${hole}|${tee}|${preferred}|${windSig}|${shots}|${clubs}`;
+    });
+
+    /** True while `refreshStrategy` has a coalescing microtask pending. */
+    private strategyScheduled = false;
+
+    /**
+     * Re-run DECADE enrichment for the current hole, coalesced onto a
+     * microtask so a burst of eager @basics/core signal updates (place/release
+     * touches shots → holeShots → holePlan) collapses into ONE optimizeAim
+     * sweep over the SETTLED plan — the same coalescing pattern as
+     * `attachHoleFraming`. Safe to call from `placeShot` / `persistDrag`; a
+     * no-op when there is nothing to optimise (no plan / no green).
+     *
+     * NEVER called from the per-frame drag path (`applyDrag` / `patchShotLocal`
+     * stay pure geometry) — that is the whole cadence guarantee.
+     */
+    private refreshStrategy(): void {
+        if (this.strategyScheduled) return;
+        this.strategyScheduled = true;
+        queueMicrotask(() => {
+            this.strategyScheduled = false;
+            const base = this.holePlan.peek();
+            const greenCenter = this.greenCenterVec();
+            if (!base || !greenCenter) {
+                this.enrichedPlan.set(null);
+                return;
+            }
+            const enriched = enrichPlanStrategy(base, {
+                lieMap: this.lieMap.peek(),
+                greenCenter,
+                wind: this.effectiveWind.peek(),
+            });
+            this.enrichedPlan.set({ base, enriched });
+        });
+    }
+
+    /**
+     * The plan the overlay + panel read: the strategy-enriched plan while it
+     * still matches the live `holePlan` (so EV/lights/ghost show), else the
+     * plain live `holePlan` (geometry stays live during a drag, strategy
+     * fields simply absent until the next release re-enriches).
+     */
+    readonly overlayPlan = new Computed<HolePlan | null>(() => {
+        const live = this.holePlan.get();
+        const enriched = this.enrichedPlan.get();
+        return enriched && enriched.base === live ? enriched.enriched : live;
+    });
+
+    /**
      * Green-slope summary for the selected hole's green (D10 shape), or null.
      * The web adapter (green-slope.ts) derives this from a server sample grid;
      * the planner sets it here so the caddy can run. Kept a plain settable
@@ -349,7 +453,7 @@ export class PlannerToolService {
     private readonly overlayData = new Computed<FeatureCollection>(() => {
         const sel = this.selection.get();
         return buildPlanGeojson({
-            plan: this.holePlan.get(),
+            plan: this.overlayPlan.get(),
             gates: this.holeGates.get(),
             selectedShotId: sel?.kind === 'shot' ? sel.id : null,
             selectedGateId: sel?.kind === 'gate' ? sel.id : null,
@@ -382,6 +486,35 @@ export class PlannerToolService {
         if (sel?.kind !== 'shot') return null;
         return this.plan.shots.items.get().find(s => s.id === sel.id) ?? null;
     });
+
+    /**
+     * The ghost recommended-aim marker for the SELECTED shot's landing leg
+     * (from the enriched overlay plan), or null when no shot is selected or its
+     * leg isn't enriched. Drives the panel's "Apply recommended aim" button.
+     */
+    readonly selectedShotGhostAim = new Computed<GhostAim | null>(() => {
+        const sel = this.selection.get();
+        if (sel?.kind !== 'shot') return null;
+        const plan = this.overlayPlan.get();
+        const leg = plan?.legs.find(l => l.to.kind === 'shot' && l.to.shot?.id === sel.id);
+        return leg ? ghostAimForLeg(leg) : null;
+    });
+
+    /**
+     * Move the selected shot to its leg's recommended-aim (ghost) landing
+     * point and persist it (re-sampling elevation) — the ghost marker's
+     * "apply" affordance (DECADE Phase D). No-op when there's no ghost for the
+     * selection. Re-enrichment fires from `updateShot`'s signature change.
+     */
+    async applyRecommendedAim(): Promise<void> {
+        const sel = this.selection.peek();
+        if (sel?.kind !== 'shot') return;
+        const ghost = this.selectedShotGhostAim.peek();
+        if (!ghost) return;
+        const elevation = await this.elevation.elevationAt({ lng: ghost.lon, lat: ghost.lat });
+        await this.plan.updateShot(sel.id, { lat: ghost.lat, lon: ghost.lon, elevation });
+        this.refreshStrategy();
+    }
 
     /** The selected gate row (for the panel), or null. */
     readonly selectedGate = new Computed<PlanGate | null>(() => {
@@ -461,6 +594,17 @@ export class PlannerToolService {
         });
 
         this.attachHoleFraming(track);
+
+        // Re-run DECADE enrichment when the strategy inputs change (hole,
+        // clubs, wind, shot set) — but NOT on the per-frame drag path: the
+        // signature deliberately omits shot lat/lon, so a drag mutates geometry
+        // without re-optimising (release re-enriches explicitly). Also fires
+        // once on first load so lights/EV appear without a user edit.
+        track(effect(() => {
+            this.strategyInputs.get();
+            this.lieMap.get();
+            this.refreshStrategy();
+        }));
 
         // Crosshair cursor while an add mode is armed.
         track(effect(() => {
@@ -570,6 +714,46 @@ export class PlannerToolService {
         }
         this.notice.set(null);
         this.selection.set(null);
+        return created;
+    }
+
+    /**
+     * Generate one computed corridor gate per clubbed leg from the mapped
+     * hazard rings (`autoGatesForPlan` over `corridorWidth`), persisting each
+     * with `source:'computed'` via the ordinary gate-add path. "Compute
+     * instead of eyeball" (DECADE doc §3). Returns the number created; a no-op
+     * with a notice when the hole has no legs to cast a corridor from.
+     */
+    async generateAutoGates(): Promise<number> {
+        const hole = this.selectedHole.peek();
+        if (!hole) {
+            this.notice.set('Select a hole first (pick one from the hole list).');
+            return 0;
+        }
+        const plan = this.holePlan.peek();
+        if (!plan || plan.legs.length === 0) {
+            this.notice.set('No legs to gate — the hole needs a tee/green (and optionally shots) first.');
+            return 0;
+        }
+        const gates = autoGatesForPlan(plan.legs, this.lieMap.peek().hazardRings());
+        if (gates.length === 0) {
+            this.notice.set('No clubbed legs to compute gates for.');
+            return 0;
+        }
+        let created = 0;
+        for (const g of gates) {
+            // Sequential so the hole row + gate versions stay consistent (autosave).
+            const row = await this.plan.addGate(hole.number, {
+                lat: g.lat,
+                lon: g.lon,
+                directionDeg: g.directionDeg,
+                halfWidthLeftM: g.halfWidthLeftM,
+                halfWidthRightM: g.halfWidthRightM,
+                source: g.source,
+            });
+            if (row) created++;
+        }
+        this.notice.set(null);
         return created;
     }
 
@@ -716,6 +900,9 @@ export class PlannerToolService {
         if (created) {
             this.notice.set(null);
             this.selection.set({ kind: 'shot', id: created.id });
+            // Shot-place cadence (DECADE §4.5): re-run EV/lights/ghost now that
+            // the plan has a new landing point.
+            this.refreshStrategy();
         }
     }
 
@@ -837,6 +1024,9 @@ export class PlannerToolService {
             if (!shot) return;
             const elevation = await this.elevation.elevationAt({ lng: shot.lon, lat: shot.lat });
             await this.plan.updateShot(target.id, { lat: shot.lat, lon: shot.lon, elevation });
+            // Drag-RELEASE cadence (DECADE §4.5): the per-frame path stayed pure
+            // geometry; now the shot has settled, re-run EV/lights/ghost.
+            this.refreshStrategy();
             return;
         }
         const gate = this.plan.gates.items.peek().find(g => g.id === target.id);
