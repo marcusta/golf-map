@@ -102,3 +102,20 @@ export {
     runCaddy,
     exampleLongParRule,
 } from './caddy';
+// Strokes-gained analytics (shot-capture doc §5). Pure fold over recorded
+// rounds; T14's lane.
+export {
+    type RecordedShotType,
+    type RecordedStroke,
+    type DistanceBand,
+    type SgCategory,
+    type ShotSg,
+    type HoleRound,
+    type SgBucket,
+    type RoundSgSummary,
+    distanceBand,
+    categorize,
+    holeStrokesGained,
+    aggregateStrokesGained,
+    roundStrokesGained,
+} from './strokes-gained-round';
