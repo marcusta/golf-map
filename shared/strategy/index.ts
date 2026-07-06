@@ -57,4 +57,20 @@ export {
     type CorridorWidth,
     DEFAULT_HAZARD_TYPES,
     corridorWidth,
+    pointInRing,
 } from './corridor';
+export { type Lie, lieFromFeatureType } from './lie';
+export {
+    EXPECTED_STROKES_ANCHORS_M,
+    HOLED_DISTANCE_M,
+    shotsToHoleOut,
+    strokesGained,
+} from './expected-strokes';
+export {
+    type AimOptions,
+    type AimCandidate,
+    type AimResult,
+    defaultSweepDeg,
+    optimizeAim,
+    standardNormalPairs,
+} from './aim';

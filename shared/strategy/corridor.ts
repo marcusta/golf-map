@@ -125,9 +125,10 @@ function rayRingDistance(origin: Vec2, dir: Vec2, points: readonly Vec2[]): numb
 /**
  * Point-in-polygon (ray casting) against an implicitly closed ring. Points
  * exactly on an edge may land on either side — acceptable for corridor
- * queries (same caveat as web pointInRing).
+ * queries (same caveat as web pointInRing). Exported (decision D22) as the
+ * shared primitive for aim.ts lie classification and the future carry.ts.
  */
-function pointInRing(p: Vec2, ring: readonly Vec2[]): boolean {
+export function pointInRing(p: Vec2, ring: readonly Vec2[]): boolean {
     let inside = false;
     const n = ring.length;
     for (let i = 0, j = n - 1; i < n; j = i++) {
