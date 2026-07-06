@@ -156,11 +156,19 @@ export function buildHolePlan(input: HolePlanInput): HolePlan {
         const effect = input.wind
             ? windEffect(input.wind.speedMps, input.wind.directionDeg, bearingDeg)
             : 0;
+        // Leg slope (signed elevationΔ / horizontal) so the ellipse projects
+        // the club's air carry onto the ground — keeps the dispersion circle
+        // consistent with plays-like club selection (downhill reaches further).
+        const seg = stats[index];
+        const groundSlope = seg.elevationDeltaM !== undefined && seg.horizontalM > 0
+            ? seg.elevationDeltaM / seg.horizontalM
+            : 0;
         const ellipse = club
             ? dispersionEllipse({
                 origin: { x: from.x, y: from.y },
                 bearingDeg,
                 club,
+                groundSlope,
                 ...(input.wind !== null
                     ? { windSpeedMps: input.wind.speedMps, windDirectionDeg: input.wind.directionDeg }
                     : {}),
@@ -269,10 +277,18 @@ function toPosition(p: Vec2): Position {
     return [lon, lat];
 }
 
-/** "184 m" / "184 m · plays 176 m" leg label. */
+/**
+ * Leg label: ground distance, then the "plays-as" (elevation plays-like)
+ * distance, then the assigned club and its ABSOLUTE (nominal) carry — so the
+ * map shows both how far the shot plays and what the club actually carries.
+ * e.g. "184 m · plays 176 m · 7 Iron 150 m" (club/plays parts omitted when
+ * absent).
+ */
 export function legLabel(leg: PlanLeg): string {
-    const base = `${Math.round(leg.horizontalM)} m`;
-    return leg.playsLikeM !== undefined ? `${base} · plays ${Math.round(leg.playsLikeM)} m` : base;
+    const parts = [`${Math.round(leg.horizontalM)} m`];
+    if (leg.playsLikeM !== undefined) parts.push(`plays ${Math.round(leg.playsLikeM)} m`);
+    if (leg.club) parts.push(`${leg.club.name} ${Math.round(leg.club.carryM)} m`);
+    return parts.join(' · ');
 }
 
 /** "L 24 m | R 31 m" gate width label. */

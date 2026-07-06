@@ -47,6 +47,17 @@ export interface DispersionEllipseOptions {
     windSpeedMps?: number;
     /** Direction the wind comes FROM, compass degrees. */
     windDirectionDeg?: number;
+    /**
+     * Ground slope along the shot line (elevationΔ / horizontal run), for
+     * projecting the club's AIR carry onto sloped ground: a club that carries
+     * C in the air reaches ground distance C / (1 + slope). Downhill (negative
+     * slope) reaches further; uphill (positive) reaches shorter. This is the
+     * inverse of the plays-like club-selection rule (playsLike = ground ×
+     * (1+slope)), so a club chosen to match a target's plays-like distance
+     * lands its ellipse on that target. Omit / 0 for flat ground (or when
+     * elevation is unknown), leaving the carry unprojected.
+     */
+    groundSlope?: number;
     /** Polygon sample count (points on the ellipse). Default 48. */
     samples?: number;
 }
@@ -93,7 +104,12 @@ export function dispersionEllipse(options: DispersionEllipseOptions): Dispersion
     // Perpendicular pointing shot-RIGHT (bearing + 90°) = (cos b, −sin b).
     const right: Vec2 = { x: along.y, y: -along.x };
 
-    const carry = adjustedCarryM(club.carryM, effect);
+    const airCarry = adjustedCarryM(club.carryM, effect);
+    // Project the air carry onto the ground along the leg's slope (see
+    // groundSlope docs). Guard against the degenerate 1+slope ≤ 0 (would need
+    // a ≥45° downhill) — impossible at course scale, but keeps it finite.
+    const slope = options.groundSlope ?? 0;
+    const carry = 1 + slope > 0 ? airCarry / (1 + slope) : airCarry;
     const center: Vec2 = {
         x: origin.x + carry * along.x + driftM * right.x,
         y: origin.y + carry * along.y + driftM * right.y,

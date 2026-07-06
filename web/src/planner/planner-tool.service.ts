@@ -5,7 +5,7 @@ import type { Hole } from '../../../shared/api/holes.gen';
 import type { Tee } from '../../../shared/api/tees.gen';
 import type { Club } from '../../../shared/api/clubs.gen';
 import type { PlanGate, PlanShot } from '../../../shared/api/game-plans.gen';
-import { bearingToUnitVector } from '../../../shared/strategy';
+import { bearingToUnitVector, closestClub, playsAsM, segmentStats, windEffect } from '../../../shared/strategy';
 import { MapService, type MapPointerEvent } from '../map/map.service';
 import { ElevationService } from '../map/elevation.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
@@ -19,6 +19,7 @@ import {
     buildHolePlan,
     buildPlanGeojson,
     nearestLegFoot,
+    planarBearingDeg,
     planLayers,
     type EffectiveWind,
     type HolePlan,
@@ -100,13 +101,43 @@ export class PlannerToolService {
         return hole ? this.plan.holeRow(hole.number) ?? null : null;
     });
 
-    /** Origin tee: GamePlanHole.teeId, falling back to first by sortOrder. */
+    /**
+     * Session-sticky tee NAME. Picking a tee on one hole (see the panel's tee
+     * select) sets this, so holes WITHOUT an explicit `GamePlanHole.teeId`
+     * anchor their plan on the same-named tee — "select Yellow once, every
+     * hole plans from Yellow". Client-side only (not persisted); resets to null
+     * on reload. Mirrors the builder's `FurnitureService.activeTeeName`.
+     */
+    readonly activeTeeName = new Signal<string | null>(null);
+
+    /** Set (or clear with null) the sticky tee name. */
+    setActiveTeeName(name: string | null): void {
+        this.activeTeeName.set(name);
+    }
+
+    /**
+     * Origin tee for the hole's plan, resolved in priority order:
+     * 1) the hole's explicit `GamePlanHole.teeId` (a deliberate per-hole pick);
+     * 2) the session-sticky `activeTeeName`, matched case-insensitively (this
+     *    is what makes a tee choice follow across holes);
+     * 3) the hole's first tee by sortOrder.
+     */
     readonly originTee = new Computed<Tee | null>(() => {
         const hole = this.selectedHole.get();
         if (!hole) return null;
         const tees = this.furniture.teesForHole(hole.id);
         const teeId = this.planHole.get()?.teeId ?? null;
-        return (teeId && tees.find(t => t.id === teeId)) || tees[0] || null;
+        if (teeId) {
+            const explicit = tees.find(t => t.id === teeId);
+            if (explicit) return explicit;
+        }
+        const name = this.activeTeeName.get();
+        if (name) {
+            const wanted = name.trim().toLowerCase();
+            const byName = tees.find(t => t.name.trim().toLowerCase() === wanted);
+            if (byName) return byName;
+        }
+        return tees[0] ?? null;
     });
 
     /** The bag in sortOrder (shared player ClubsService store). */
@@ -135,6 +166,12 @@ export class PlannerToolService {
         return ph ? this.plan.gatesForHole(ph.id) : [];
     });
 
+    /** How many furniture aim points the selected hole has (0 = nothing to seed). */
+    readonly aimCount = new Computed<number>(() => {
+        const hole = this.selectedHole.get();
+        return hole ? this.furniture.aimsForHole(hole.id).length : 0;
+    });
+
     /** The full planning model for the selected hole (overlay + readouts). */
     readonly holePlan = new Computed<HolePlan | null>(() => {
         const hole = this.selectedHole.get();
@@ -151,6 +188,35 @@ export class PlannerToolService {
             preferredClubId: this.planHole.get()?.preferredClubId ?? null,
             wind: this.effectiveWind.get(),
         });
+    });
+
+    /**
+     * The camera framing target: which hole to frame and the WGS84 bbox
+     * `[w,s,e,n]` around its plan nodes (tee → shots → green), or null when
+     * there's no geometry yet. The framing effect reads this on a microtask,
+     * AFTER the selection cascade settles — see `attachHoleFraming`.
+     *
+     * The hole id comes from `selectedHole.peek()` (non-subscribing) so this
+     * doesn't form a reactive diamond with `holePlan`. The bbox is derived
+     * from the same `holePlan.nodes` value read here, so id and bounds are
+     * internally consistent within a single evaluation. Gates are excluded —
+     * they sit on the legs, so the nodes already cover the extent.
+     */
+    private readonly holeFrame = new Computed<
+        { holeId: string; bounds: [number, number, number, number] } | null
+    >(() => {
+        const plan = this.holePlan.get();
+        if (!plan || plan.nodes.length === 0) return null;
+        const hole = this.selectedHole.peek();
+        if (!hole) return null;
+        let w = plan.nodes[0]!.lon, e = w, s = plan.nodes[0]!.lat, n = s;
+        for (const p of plan.nodes) {
+            if (p.lon < w) w = p.lon;
+            if (p.lon > e) e = p.lon;
+            if (p.lat < s) s = p.lat;
+            if (p.lat > n) n = p.lat;
+        }
+        return { holeId: hole.id, bounds: [w, s, e, n] };
     });
 
     private readonly overlayData = new Computed<FeatureCollection>(() => {
@@ -224,6 +290,8 @@ export class PlannerToolService {
             }
         });
 
+        this.attachHoleFraming(track);
+
         // Crosshair cursor while an add mode is armed.
         track(effect(() => {
             const armed = this.mode.get() !== 'select';
@@ -241,6 +309,47 @@ export class PlannerToolService {
         });
     }
 
+    /**
+     * Frame the selected hole (tee → shots → green) when the ?hole= selection
+     * changes — and once when a late load first yields geometry or the map
+     * turns ready.
+     *
+     * Why the microtask: selecting a hole triggers a SYNCHRONOUS cascade in
+     * which `holePlan` recomputes several times (its inputs — `selectedHole`,
+     * `originTee`, the green, `holeShots` — settle at different steps). Mid
+     * cascade `holePlan` can hold the new hole's tee with the previous hole's
+     * green (a transient mix), which would frame a bogus bbox if acted on
+     * immediately. Subscribing to `holeFrame` but deferring the actual
+     * `fitBounds` to a microtask coalesces the whole burst into ONE read of
+     * the SETTLED `holeFrame`, after every recompute has run.
+     *
+     * Dedupe on hole id so plan EDITS (which change `holeFrame.bounds` but not
+     * its id) don't re-pan the camera; only a genuine hole change reframes.
+     */
+    private attachHoleFraming(track: (dispose: () => void) => void): void {
+        let lastFramedHoleId: string | null = null;
+        let scheduled = false;
+        let disposed = false;
+        track(() => { disposed = true; });
+        track(effect(() => {
+            // Subscribe to both so the burst re-runs us; the microtask below
+            // reads the settled values.
+            this.holeFrame.get();
+            this.map.ready.get();
+            if (scheduled) return;
+            scheduled = true;
+            queueMicrotask(() => {
+                scheduled = false;
+                if (disposed) return;
+                const frame = this.holeFrame.peek();
+                if (!this.map.ready.peek() || !frame) return;
+                if (frame.holeId === lastFramedHoleId) return;
+                lastFramedHoleId = frame.holeId;
+                this.map.fitBounds(frame.bounds);
+            });
+        }));
+    }
+
     /** Arm an add mode (toggles back to select when already armed). */
     setMode(mode: Exclude<PlannerMode, 'select'>): void {
         this.notice.set(null);
@@ -250,6 +359,48 @@ export class PlannerToolService {
         }
         this.selection.set(null);
         this.mode.set(mode);
+    }
+
+    /**
+     * Seed the selected hole's plan shots from its furniture aim points, so
+     * the course's tee → aim → green becomes an editable starting plan (each
+     * aim → a draggable shot at the same lat/lon/elevation, in aim sortOrder).
+     *
+     * `replace` clears the hole's existing shots first — the panel passes it
+     * after confirming, so re-seeding doesn't stack duplicates onto a plan
+     * that already has shots. Returns the number of shots created.
+     */
+    async seedShotsFromAims(replace: boolean): Promise<number> {
+        const hole = this.selectedHole.peek();
+        if (!hole) return 0;
+        const aims = this.furniture.aimsForHole(hole.id);
+        if (aims.length === 0) {
+            this.notice.set('This hole has no aim points to seed from.');
+            return 0;
+        }
+        if (replace) {
+            // Sequential so the hole row + versions stay consistent (autosave).
+            for (const shot of this.holeShots.peek()) {
+                await this.plan.removeShot(shot.id);
+            }
+        }
+        let created = 0;
+        for (const aim of aims) {
+            // Auto-club each seeded shot too (origin = the previous aim/tee),
+            // so the seeded plan comes with clubs + dispersion ellipses.
+            const clubId = this.autoClubForShot({ lng: aim.lon, lat: aim.lat }, aim.elevation);
+            const shot = await this.plan.addShot(hole.number, {
+                lat: aim.lat,
+                lon: aim.lon,
+                elevation: aim.elevation,
+                label: aim.label,
+                ...(clubId ? { clubId } : {}),
+            });
+            if (shot) created++;
+        }
+        this.notice.set(null);
+        this.selection.set(null);
+        return created;
     }
 
     /** Delete the selected shot/gate after confirmation (Del key / panel). */
@@ -311,8 +462,13 @@ export class PlannerToolService {
     private onMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
         if (!this.isMyClaim()) return;
         if (e.originalEvent.button !== 0) return;
-        if (this.mode.peek() !== 'select') return;
 
+        // Grab an existing shot/gate marker in ANY mode (not just select) so
+        // placed points stay draggable without first disarming add-shot /
+        // add-gate — matching the furniture editor's "markers are always
+        // grabbable" feel. A mousedown that hits a marker starts a drag and
+        // `onMouseUp` swallows the synthesized click, so placement still only
+        // happens on clicks that DON'T land on a marker.
         const hit = this.hitTest(e.point);
         if (!hit) return;
         e.preventDefault(); // stops the map's drag-pan for this gesture
@@ -380,15 +536,59 @@ export class PlannerToolService {
             return;
         }
         const elevation = await this.elevation.elevationAt(lngLat);
+        const clubId = this.autoClubForShot(lngLat, elevation);
         const created = await this.plan.addShot(hole.number, {
             lat: lngLat.lat,
             lon: lngLat.lng,
             elevation,
+            ...(clubId ? { clubId } : {}),
         });
         if (created) {
             this.notice.set(null);
             this.selection.set({ kind: 'shot', id: created.id });
         }
+    }
+
+    /**
+     * Auto-pick the club whose nominal carry is closest to how far this shot
+     * "plays as" from its origin (the previous shot, or the tee): the leg's
+     * plays-like distance (horizontal + elevationΔ), then the wind "plays-as"
+     * (÷ 1+windEffect) when a wind is set. Returns the club id, or null when
+     * there are no clubs / no resolvable origin. Assigning a club is what makes
+     * the leg draw its dispersion ellipse, so a placed shot immediately shows
+     * where that club lands.
+     */
+    private autoClubForShot(lngLat: { lng: number; lat: number }, elevation: number | null): string | null {
+        const clubs = this.orderedClubs.peek();
+        if (clubs.length === 0) return null;
+        const origin = this.previousNodePoint();
+        if (!origin) return null;
+        const a = wgs84ToSweref99tm(origin.lat, origin.lon);
+        const b = wgs84ToSweref99tm(lngLat.lat, lngLat.lng);
+        const stats = segmentStats(
+            { x: a.x, y: a.y, elevation: origin.elevation },
+            { x: b.x, y: b.y, elevation },
+        );
+        let target = stats.playsLikeSimpleM ?? stats.horizontalM;
+        const wind = this.effectiveWind.peek();
+        if (wind) {
+            const bearing = planarBearingDeg(a, b);
+            target = playsAsM(target, windEffect(wind.speedMps, wind.directionDeg, bearing));
+        }
+        return closestClub(clubs, target)?.id ?? null;
+    }
+
+    /**
+     * The point a newly-placed shot's leg starts from: the hole's last shot
+     * (by sortOrder), or — for the first shot — the origin tee. Null when the
+     * hole has no tee.
+     */
+    private previousNodePoint(): { lat: number; lon: number; elevation: number | null } | null {
+        const shots = this.holeShots.peek();
+        const last = shots[shots.length - 1];
+        if (last) return { lat: last.lat, lon: last.lon, elevation: last.elevation };
+        const tee = this.originTee.peek();
+        return tee ? { lat: tee.lat, lon: tee.lon, elevation: tee.elevation } : null;
     }
 
     /**

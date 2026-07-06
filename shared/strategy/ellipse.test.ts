@@ -71,6 +71,35 @@ describe('dispersionEllipse — fixture E: 7i at bearing 45°, no wind', () => {
     });
 });
 
+describe('dispersionEllipse — ground slope (plays-like projection)', () => {
+    // 7i carries 155 m in the air; bearing 0 (north) → center purely along +y.
+    test('downhill slope reaches further: carry / (1 + slope)', () => {
+        const e = dispersionEllipse({ origin: ORIGIN, bearingDeg: 0, club: v1Club('7i'), groundSlope: -0.06 });
+        expect(e.center.x).toBeCloseTo(0, 9);
+        expect(e.center.y).toBeCloseTo(155 / 0.94, 6); // ≈ 164.9 m ground
+    });
+
+    test('uphill slope reaches shorter', () => {
+        const e = dispersionEllipse({ origin: ORIGIN, bearingDeg: 0, club: v1Club('7i'), groundSlope: 0.06 });
+        expect(e.center.y).toBeCloseTo(155 / 1.06, 6); // ≈ 146.2 m ground
+    });
+
+    test('slope 0 (or omitted) is unchanged — flat ground', () => {
+        const flat = dispersionEllipse({ origin: ORIGIN, bearingDeg: 0, club: v1Club('7i'), groundSlope: 0 });
+        const omitted = dispersionEllipse({ origin: ORIGIN, bearingDeg: 0, club: v1Club('7i') });
+        expect(flat.center.y).toBeCloseTo(155, 9);
+        expect(omitted.center.y).toBeCloseTo(155, 9);
+    });
+
+    test('a club chosen to match a target\'s plays-like distance lands on the target', () => {
+        // Target 100 m ground, 6 m downhill → plays-like 94 m, slope −0.06.
+        // The "perfect" club carries 94 m; its ellipse must center at 100 m ground.
+        const perfectClub = { name: 'x', carryM: 94, dispersionM: 20 };
+        const e = dispersionEllipse({ origin: ORIGIN, bearingDeg: 0, club: perfectClub, groundSlope: -6 / 100 });
+        expect(e.center.y).toBeCloseTo(100, 6);
+    });
+});
+
 describe('dispersionEllipse — wind', () => {
     test('fixture A: Driver into 10 mph pure headwind → center at 218.7 m', () => {
         const e = dispersionEllipse({

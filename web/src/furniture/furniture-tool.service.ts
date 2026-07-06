@@ -121,6 +121,60 @@ export class FurnitureToolService {
             });
         }));
         ctx.track(this.attachOverlay(ctx));
+        ctx.track(this.attachHoleFraming(ctx));
+    }
+
+    // ── Per-hole camera framing ───────────────────────────────────────────────
+
+    /**
+     * Ease the camera to the selected hole's furniture whenever the ?hole=
+     * selection changes. Gated on a "frame key" (hole id + a loaded flag) so
+     * it fires on selection — and once more when a late furniture load
+     * arrives for an already-selected hole — but NOT on every tee/aim edit
+     * (moving a marker keeps the key stable, so the camera stays put).
+     */
+    private attachHoleFraming(ctx: ToolContext): () => void {
+        const frameKey = new Computed<string | null>(() => {
+            const hole = this.selectedHole.get();
+            if (!hole || this.svc.loading.get()) return null;
+            return hole.id;
+        });
+        return effect(() => {
+            const holeId = frameKey.get();
+            if (holeId === null || !ctx.map.ready.get()) return;
+            untrack(() => {
+                const bounds = this.holeBounds(holeId);
+                if (bounds) ctx.map.fitBounds(bounds);
+            });
+        });
+    }
+
+    /**
+     * WGS84 bbox `[west, south, east, north]` enclosing all of a hole's
+     * furniture (tees, aim points, green center/front/back, pins), or null
+     * when the hole has no placed furniture yet.
+     */
+    private holeBounds(holeId: string): [number, number, number, number] | null {
+        const pts: Array<{ lat: number; lon: number }> = [];
+        for (const t of this.svc.tees.items.peek()) if (t.holeId === holeId) pts.push(t);
+        for (const a of this.svc.aims.items.peek()) if (a.holeId === holeId) pts.push(a);
+        const green = this.svc.greenForHole(holeId);
+        if (green) {
+            for (const point of ['center', 'front', 'back'] as const) {
+                const pos = this.svc.greenPointPos(green, point);
+                if (pos) pts.push(pos);
+            }
+            for (const p of this.svc.pins.items.peek()) if (p.greenId === green.id) pts.push(p);
+        }
+        if (pts.length === 0) return null;
+        let w = pts[0]!.lon, e = pts[0]!.lon, s = pts[0]!.lat, n = pts[0]!.lat;
+        for (const p of pts) {
+            if (p.lon < w) w = p.lon;
+            if (p.lon > e) e = p.lon;
+            if (p.lat < s) s = p.lat;
+            if (p.lat > n) n = p.lat;
+        }
+        return [w, s, e, n];
     }
 
     activate(ctx: ToolContext): void {
@@ -186,6 +240,7 @@ export class FurnitureToolService {
                 aims: this.svc.aims.items.get(),
                 holeIds,
                 selection: this.svc.selection.get(),
+                highlightHoleId: this.selectedHole.get()?.id ?? null,
                 lineOriginByHole,
             });
             if (!ready) {

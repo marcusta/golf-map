@@ -123,10 +123,14 @@ describe('buildHolePlan', () => {
         const leg = plan.legs[0];
         expect(leg.club?.id).toBe(DRIVER.id);
 
+        // buildHolePlan projects the air carry onto the leg's slope (tee elev
+        // 10 → shot elev 5), so the expected ellipse gets the same groundSlope.
+        const groundSlope = (plan.nodes[1].elevation! - plan.nodes[0].elevation!) / leg.horizontalM;
         const expected = dispersionEllipse({
             origin: { x: plan.nodes[0].x, y: plan.nodes[0].y },
             bearingDeg: leg.bearingDeg,
             club: DRIVER,
+            groundSlope,
             windSpeedMps: wind.speedMps,
             windDirectionDeg: wind.directionDeg,
         });
@@ -323,11 +327,17 @@ describe('buildPlanGeojson', () => {
         expect(coords[1]).toBeCloseTo(at(200).lat, 9);
     });
 
-    test('leg label carries metres (and plays-like when measured)', () => {
+    test('leg label carries metres, plays-like, and the club\'s absolute carry', () => {
+        // northInput's shot s1 carries DRIVER (200 m nominal) → club part appended.
         const plan = buildHolePlan(northInput());
-        expect(legLabel(plan.legs[0])).toBe('200 m · plays 195 m');
+        expect(legLabel(plan.legs[0])).toBe('200 m · plays 195 m · Driver 200 m');
         const noElev = buildHolePlan(northInput({ tee: { ...at(0), elevation: null } }));
-        expect(legLabel(noElev.legs[0])).toBe('200 m');
+        expect(legLabel(noElev.legs[0])).toBe('200 m · Driver 200 m');
+        // A leg without a club shows just distance (+ plays-like when measured).
+        const noClub = buildHolePlan(northInput({
+            shots: [shot('s1', at(200), { clubId: null, elevation: 5 })],
+        }));
+        expect(legLabel(noClub.legs[0])).toBe('200 m · plays 195 m');
     });
 
     test('null plan renders gates only; empty everything renders nothing', () => {

@@ -41,6 +41,13 @@ export interface OverlayInput {
     /** Selected item, for emphasis. */
     selection: Selection;
     /**
+     * Hole whose furniture is softly highlighted (the selected hole in the
+     * sidebar). Every feature carries a `holeId`; features on this hole also
+     * carry `highlighted: true`, which a halo layer + the aim-line paint key
+     * on. Null/absent → nothing highlighted.
+     */
+    highlightHoleId?: string | null;
+    /**
      * Per-hole tee id the aim polyline anchors on (holeId → teeId). Lets the
      * caller pick a "line from" tee other than the first by sortOrder. When a
      * hole is absent or its id doesn't resolve to one of the hole's tees, the
@@ -63,6 +70,10 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
         !!sel && sel.kind === kind && 'id' in sel && sel.id === id;
     const isSelGreen = (holeId: string, point: 'center' | 'front' | 'back') =>
         !!sel && sel.kind === 'green' && sel.holeId === holeId && sel.point === point;
+    const hl = (holeId: string) => holeId === input.highlightHoleId;
+    // Pins hang off a green row (greenId), not a hole — resolve pin → hole
+    // via the greens so pins highlight with the rest of their hole.
+    const holeIdByGreen = new Map(input.greens.map(g => [g.id, g.holeId]));
 
     // Per-hole ordered aim polyline: tee (first, by sortOrder) → aims → green center.
     for (const holeId of input.holeIds) {
@@ -86,7 +97,7 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
         if (line.length >= 2) {
             features.push({
                 type: 'Feature',
-                properties: { role: 'aim-line' },
+                properties: { role: 'aim-line', holeId, highlighted: hl(holeId) },
                 geometry: { type: 'LineString', coordinates: line },
             });
         }
@@ -95,12 +106,13 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
     // Greens: center / front / back dots (selectable; a selection ring layer
     // keys on the `selected` flag).
     for (const g of input.greens) {
-        features.push(point([g.centerLon, g.centerLat], { role: 'green-center', selected: isSelGreen(g.holeId, 'center') }));
+        const hlG = hl(g.holeId);
+        features.push(point([g.centerLon, g.centerLat], { role: 'green-center', holeId: g.holeId, highlighted: hlG, selected: isSelGreen(g.holeId, 'center') }));
         if (g.frontLat !== null && g.frontLon !== null) {
-            features.push(point([g.frontLon, g.frontLat], { role: 'green-front', selected: isSelGreen(g.holeId, 'front') }));
+            features.push(point([g.frontLon, g.frontLat], { role: 'green-front', holeId: g.holeId, highlighted: hlG, selected: isSelGreen(g.holeId, 'front') }));
         }
         if (g.backLat !== null && g.backLon !== null) {
-            features.push(point([g.backLon, g.backLat], { role: 'green-back', selected: isSelGreen(g.holeId, 'back') }));
+            features.push(point([g.backLon, g.backLat], { role: 'green-back', holeId: g.holeId, highlighted: hlG, selected: isSelGreen(g.holeId, 'back') }));
         }
     }
 
@@ -109,6 +121,8 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
         features.push(point([t.lon, t.lat], {
             role: 'tee',
             id: t.id,
+            holeId: t.holeId,
+            highlighted: hl(t.holeId),
             fill: teeFill(t.color),
             letter: teeLetter(t),
             selected: isSel('tee', t.id),
@@ -117,9 +131,12 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
 
     // Pins: dots, active emphasized.
     for (const p of input.pins) {
+        const holeId = holeIdByGreen.get(p.greenId);
         features.push(point([p.lon, p.lat], {
             role: 'pin',
             id: p.id,
+            holeId: holeId ?? null,
+            highlighted: holeId !== undefined && hl(holeId),
             active: p.active,
             name: p.name,
             selected: isSel('pin', p.id),
@@ -141,6 +158,8 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
         features.push(point([a.lon, a.lat], {
             role: 'aim',
             id: a.id,
+            holeId: a.holeId,
+            highlighted: hl(a.holeId),
             number,
             selected: isSel('aim', a.id),
         }));
@@ -159,12 +178,36 @@ const role = (value: string): FilterSpecification =>
 /** Layer specs for the furniture overlay (ids prefixed with the overlay id). */
 export function furnitureLayers(): OverlayLayerSpec[] {
     return [
-        // Ordered aim polyline (below the markers).
+        // Ordered aim polyline (below the markers). The selected hole's line
+        // reads brighter + thicker.
         {
             id: `${FURNITURE_OVERLAY_ID}-aim-line`,
             type: 'line',
             filter: role('aim-line'),
-            paint: { 'line-color': '#3a7bd5', 'line-width': 1.5, 'line-opacity': 0.8, 'line-dasharray': [2, 1.5] },
+            paint: {
+                'line-color': ['case', ['==', ['get', 'highlighted'], true], '#1f5fd0', '#3a7bd5'] as never,
+                'line-width': ['case', ['==', ['get', 'highlighted'], true], 2.5, 1.5] as never,
+                'line-opacity': ['case', ['==', ['get', 'highlighted'], true], 1, 0.8] as never,
+                'line-dasharray': [2, 1.5],
+            },
+        },
+        // Soft halo behind every marker on the selected hole (slight highlight).
+        // First real marker layer → sits under the dots/labels/rings.
+        {
+            id: `${FURNITURE_OVERLAY_ID}-hole-highlight`,
+            type: 'circle',
+            filter: ['all',
+                ['in', ['get', 'role'], ['literal', ['tee', 'pin', 'aim', 'green-center', 'green-front', 'green-back']]],
+                ['==', ['get', 'highlighted'], true],
+            ] as FilterSpecification,
+            paint: {
+                'circle-radius': 13,
+                'circle-color': SELECTION_COLOR,
+                'circle-opacity': 0.16,
+                'circle-stroke-color': SELECTION_COLOR,
+                'circle-stroke-width': 1,
+                'circle-stroke-opacity': 0.35,
+            },
         },
         // Green point selection ring (under the dots; same halo as tee/pin/aim).
         {

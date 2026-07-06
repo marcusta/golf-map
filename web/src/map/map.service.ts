@@ -211,6 +211,28 @@ export class MapService {
         this.map.get()?.flyTo({ center: [center.lng, center.lat], ...(zoomLevel !== undefined ? { zoom: zoomLevel } : {}) });
     }
 
+    /**
+     * Ease the camera to a WGS84 bounding box `[west, south, east, north]`.
+     * Building block for framing a hole from its furniture (holes carry no
+     * coordinates, so callers derive the box from tees/aims/green). A
+     * zero-area box (a single point) degenerates to a `flyTo` at `maxZoom`.
+     */
+    fitBounds(
+        bounds: [number, number, number, number],
+        opts: { padding?: number; maxZoom?: number } = {},
+    ): void {
+        const map = this.map.get();
+        if (!map) return;
+        const [w, s, e, n] = bounds;
+        const padding = opts.padding ?? 96;
+        const maxZoom = opts.maxZoom ?? 18;
+        if (w === e && s === n) {
+            map.flyTo({ center: [w, s], zoom: maxZoom, duration: 700 });
+            return;
+        }
+        map.fitBounds([[w, s], [e, n]], { padding, maxZoom, duration: 700 });
+    }
+
     // ── Terrain / hillshade controls ──────────────────────────────────────
 
     /** Set terrain vertical exaggeration (applied live when the map is ready). */

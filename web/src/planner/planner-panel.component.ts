@@ -64,6 +64,7 @@ const tpl = template(`
             <h4 class="section-title">Shots</h4>
             <div bind="shotList" class="shot-list"></div>
             <div bind="noShots" class="empty-note">No shots yet — arm “+ Shot” and click the map.</div>
+            <button bind="seedAims" type="button" class="mini-btn">Seed shots from aim points</button>
         </div>
 
         <div bind="gatesSection" class="plan-panel__section">
@@ -304,6 +305,15 @@ export class PlannerPanelComponent extends Component {
             legsBody: { textContent: () => '' }, // filled via effect (multiline)
             shotsSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
             noShots: { className: () => this.tool.holeShots.get().length === 0 ? 'empty-note show' : 'empty-note' },
+            seedAims: {
+                onclick: () => void this.seedFromAims(),
+                textContent: () => {
+                    const n = this.tool.aimCount.get();
+                    return `Seed shots from ${n} aim point${n === 1 ? '' : 's'}`;
+                },
+                // Only offer it when the hole actually has aim points to seed from.
+                style: () => this.tool.aimCount.get() > 0 ? '' : 'display:none',
+            },
             gatesSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
             noGates: { className: () => this.tool.holeGates.get().length === 0 ? 'empty-note show' : 'empty-note' },
             notesSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
@@ -329,13 +339,31 @@ export class PlannerPanelComponent extends Component {
         return frag;
     }
 
+    /**
+     * Seed the hole's plan shots from its furniture aim points. When the hole
+     * already has shots, confirm a replace (so re-seeding doesn't stack dupes);
+     * an empty hole seeds straight away.
+     */
+    private async seedFromAims(): Promise<void> {
+        const existing = this.tool.holeShots.peek().length;
+        if (existing > 0 && !window.confirm(
+            `Replace the ${existing} existing shot${existing === 1 ? '' : 's'} on this hole `
+            + `with its aim points?`)) return;
+        await this.tool.seedShotsFromAims(existing > 0);
+    }
+
     // ── Hole setup (tee / preferred club) ───────────────────────────────────
 
     private bindTeeSelect(sel: HTMLSelectElement): void {
         sel.addEventListener('change', () => {
             const hole = this.tool.selectedHole.peek();
             if (!hole) return;
-            void this.plan.setHoleFields(hole.number, { teeId: sel.value || null });
+            const teeId = sel.value || null;
+            void this.plan.setHoleFields(hole.number, { teeId });
+            // Remember the chosen tee BY NAME so it sticks to the other holes
+            // (holes without their own teeId anchor on this name).
+            const tee = teeId ? this.furniture.teesForHole(hole.id).find(t => t.id === teeId) : null;
+            this.tool.setActiveTeeName(tee ? tee.name : null);
         });
         this.track(effect(() => {
             const hole = this.tool.selectedHole.get();
