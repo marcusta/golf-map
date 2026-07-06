@@ -48,6 +48,9 @@ function fakeApi(result: () => Promise<SampleGrid>): FakeApi {
             api.calls.push(input);
             return result();
         },
+        async sampleElevations() {
+            return { elevations: [] };
+        },
     };
     return api;
 }
@@ -165,6 +168,7 @@ test('a stale in-flight fetch cannot overwrite a newer analysis', async () => {
             resolvers.push(resolve);
             call++;
         }),
+        sampleElevations: async () => ({ elevations: [] }),
     };
     const svc = new AnalysisToolService(api);
 
@@ -185,6 +189,7 @@ test('clear invalidates an in-flight fetch', async () => {
     let resolveFetch: (g: SampleGrid) => void = () => {};
     const api: AnalysisApi = {
         sampleGrid: () => new Promise<SampleGrid>(resolve => { resolveFetch = resolve; }),
+        sampleElevations: async () => ({ elevations: [] }),
     };
     const svc = new AnalysisToolService(api);
     const pending = svc.analyze(makeFeature());
