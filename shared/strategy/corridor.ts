@@ -14,6 +14,7 @@
 // filtering — fairway/green/tee/semi_rough/rough/path are in play.
 
 import { bearingToUnitVector, type Vec2 } from './ellipse';
+import { rayRingIntersections } from './ray';
 
 /** A flattened obstacle ring (implicitly closed) with its feature type. */
 export interface FlatRing {
@@ -104,22 +105,7 @@ function castRay(
  * a ring's segments (ring implicitly closed). Infinity when the ray misses.
  */
 function rayRingDistance(origin: Vec2, dir: Vec2, points: readonly Vec2[]): number {
-    let best = Infinity;
-    const n = points.length;
-    for (let i = 0; i < n; i++) {
-        const a = points[i];
-        const b = points[(i + 1) % n];
-        const sx = b.x - a.x;
-        const sy = b.y - a.y;
-        const denom = dir.x * sy - dir.y * sx; // dir × s
-        if (Math.abs(denom) < 1e-12) continue; // parallel (or degenerate edge)
-        const qx = a.x - origin.x;
-        const qy = a.y - origin.y;
-        const t = (qx * sy - qy * sx) / denom; // distance along the ray
-        const u = (qx * dir.y - qy * dir.x) / denom; // position along the edge
-        if (t >= 0 && u >= 0 && u <= 1 && t < best) best = t;
-    }
-    return best;
+    return rayRingIntersections(origin, dir, points)[0] ?? Infinity;
 }
 
 /**

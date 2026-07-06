@@ -59,6 +59,10 @@ export {
     corridorWidth,
     pointInRing,
 } from './corridor';
+export {
+    type CarryOverHazard,
+    hazardsAlongLine,
+} from './carry';
 export { type Lie, lieFromFeatureType } from './lie';
 export {
     EXPECTED_STROKES_ANCHORS_M,
