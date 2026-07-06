@@ -1,7 +1,10 @@
 import { test, expect, describe } from 'bun:test';
 import {
+    autoGatesForPlan,
     buildHolePlan,
     buildPlanGeojson,
+    enrichLegStrategy,
+    enrichPlanStrategy,
     gateEndpoints,
     gateLabel,
     legLabel,
@@ -9,15 +12,19 @@ import {
     perpendicularFoot,
     planarBearingDeg,
     type HolePlanInput,
+    type LegStrategyContext,
 } from '../src/planner/plan-overlay';
+import { buildLieMap } from '../src/planner/lie-map';
 import {
     adjustedCarryM,
     dispersionEllipse,
+    optimizeAim,
     segmentStats,
     windEffect,
 } from '../../shared/strategy';
 import { sweref99tmToWgs84, wgs84ToSweref99tm } from '../src/geo/transform';
 import type { Club } from '../../shared/api/clubs.gen';
+import type { CourseFeature } from '../../shared/api/course-features.gen';
 import type { PlanShot, PlanGate } from '../../shared/api/game-plans.gen';
 import type { Feature, LineString, Point, Polygon } from 'geojson';
 
@@ -50,6 +57,29 @@ function shot(id: string, pos: { lat: number; lon: number }, opts: {
         elevation: opts.elevation ?? null,
         clubId: opts.clubId ?? null,
         label: null,
+        version: 1,
+    };
+}
+
+/** A rectangular course feature in EPSG:3006 meters (straight edges, no bezier handles). */
+function rectFeature(id: string, type: string, minX: number, maxX: number, minY: number, maxY: number): CourseFeature {
+    return {
+        id,
+        courseId: 'course-1',
+        holeId: null,
+        type,
+        geometry: {
+            crs: 'EPSG:3006',
+            rings: [{
+                points: [
+                    { x: minX, y: minY },
+                    { x: maxX, y: minY },
+                    { x: maxX, y: maxY },
+                    { x: minX, y: maxY },
+                ],
+            }],
+        },
+        geojson: null,
         version: 1,
     };
 }
@@ -343,5 +373,133 @@ describe('buildPlanGeojson', () => {
     test('null plan renders gates only; empty everything renders nothing', () => {
         const fcEmpty = buildPlanGeojson({ plan: null, gates: [], selectedShotId: null, selectedGateId: null });
         expect(fcEmpty.features).toHaveLength(0);
+    });
+});
+
+// ── Strategy enrichment (DECADE Phase C) ───────────────────────────────────
+
+describe('enrichLegStrategy / enrichPlanStrategy', () => {
+    // A wide fairway spanning the whole corridor so `optimizeAim`'s sweep has
+    // somewhere to land; BASE-anchored EPSG:3006 rectangle, like rectFeature.
+    const fairway = rectFeature('fw1', 'fairway', BASE.x - 200, BASE.x + 200, BASE.y - 50, BASE.y + 400);
+
+    function ctx(overrides: Partial<LegStrategyContext> = {}): LegStrategyContext {
+        return {
+            lieMap: buildLieMap([fairway]),
+            greenCenter: { x: BASE.x, y: BASE.y + 350 },
+            wind: null,
+            ...overrides,
+        };
+    }
+
+    test('leg without a club is returned unchanged (no ellipse, nothing to optimize)', () => {
+        const plan = buildHolePlan(northInput({
+            shots: [shot('s1', at(200), { clubId: null, elevation: 5 })],
+        }));
+        const enriched = enrichLegStrategy(plan.legs[1], ctx());
+        expect(enriched).toBe(plan.legs[1]); // same reference: no-op passthrough
+        expect(enriched.expectedStrokes).toBeUndefined();
+        expect(enriched.lieBreakdown).toBeUndefined();
+        expect(enriched.recommendedBearingDeg).toBeUndefined();
+    });
+
+    test('clubbed leg gets expectedStrokes/lieBreakdown/recommendedBearingDeg matching optimizeAim directly', () => {
+        const plan = buildHolePlan(northInput());
+        const leg = plan.legs[0];
+        const c = ctx();
+        const enriched = enrichLegStrategy(leg, c);
+
+        const groundSlope = (leg.playsLikeM! - leg.horizontalM) / leg.horizontalM;
+        const expected = optimizeAim({
+            origin: { x: leg.from.x, y: leg.from.y },
+            club: leg.club!,
+            targetBearingDeg: leg.bearingDeg,
+            surfaces: c.lieMap.surfaces(),
+            greenCenter: c.greenCenter,
+            groundSlope,
+        });
+
+        expect(enriched.expectedStrokes).toBe(expected.best.expectedStrokes);
+        expect(enriched.recommendedBearingDeg).toBe(expected.bestBearingDeg);
+        expect(enriched.lieBreakdown).toEqual(expected.breakdown);
+        // Pure: original leg object is untouched.
+        expect(leg.expectedStrokes).toBeUndefined();
+    });
+
+    test('wind is forwarded into optimizeAim only when non-null (calm omits the fields)', () => {
+        const plan = buildHolePlan(northInput());
+        const leg = plan.legs[0];
+        const wind = { speedMps: 4, directionDeg: 180 }; // tailwind on a north shot
+        const withWind = enrichLegStrategy(leg, ctx({ wind }));
+        const calm = enrichLegStrategy(leg, ctx());
+        // Tailwind carries further → generally different (not equal) EV.
+        expect(withWind.expectedStrokes).not.toBe(calm.expectedStrokes);
+    });
+
+    test('enrichPlanStrategy enriches every leg, preserving leg order and count', () => {
+        const plan = buildHolePlan(northInput());
+        const enriched = enrichPlanStrategy(plan, ctx());
+        expect(enriched.legs).toHaveLength(plan.legs.length);
+        expect(enriched.legs[0].expectedStrokes).toBeGreaterThan(0);
+        expect(enriched.legs[1].expectedStrokes).toBeUndefined(); // leg 1 has no club
+        // Non-leg fields pass through unchanged.
+        expect(enriched.nodes).toBe(plan.nodes);
+        expect(enriched.totalHorizontalM).toBe(plan.totalHorizontalM);
+    });
+});
+
+describe('autoGatesForPlan', () => {
+    test('one computed gate per clubbed leg, stationed at the leg midpoint', () => {
+        const plan = buildHolePlan(northInput());
+        const gates = autoGatesForPlan(plan.legs, []);
+        expect(gates).toHaveLength(1); // only leg 0 has a club
+        expect(gates[0].legIndex).toBe(0);
+        expect(gates[0].source).toBe('computed');
+        expect(gates[0].directionDeg).toBeCloseTo(plan.legs[0].bearingDeg, 9);
+
+        const mid = { x: (plan.legs[0].from.x + plan.legs[0].to.x) / 2, y: (plan.legs[0].from.y + plan.legs[0].to.y) / 2 };
+        const midWgs = sweref99tmToWgs84(mid.x, mid.y);
+        expect(gates[0].lat).toBeCloseTo(midWgs.lat, 9);
+        expect(gates[0].lon).toBeCloseTo(midWgs.lon, 9);
+    });
+
+    test('no hazards nearby: half-widths cap at GATE_DEFAULT_HALF_WIDTH_M, not corridorWidth\'s own default', () => {
+        const plan = buildHolePlan(northInput());
+        const gates = autoGatesForPlan(plan.legs, []);
+        expect(gates[0].halfWidthLeftM).toBeLessThanOrEqual(30);
+        expect(gates[0].halfWidthRightM).toBeLessThanOrEqual(30);
+    });
+
+    test('a hazard ring narrows the corridor on its side', () => {
+        const plan = buildHolePlan(northInput());
+        const leg = plan.legs[0];
+        const mid = { x: (leg.from.x + leg.to.x) / 2, y: (leg.from.y + leg.to.y) / 2 };
+        // Bunker hugging the east (right) side of the corridor at the midpoint.
+        const bunker: CourseFeature = {
+            id: 'b1', courseId: 'c1', holeId: null, type: 'bunker',
+            geometry: {
+                crs: 'EPSG:3006',
+                rings: [{
+                    points: [
+                        { x: mid.x + 5, y: mid.y - 20 },
+                        { x: mid.x + 40, y: mid.y - 20 },
+                        { x: mid.x + 40, y: mid.y + 20 },
+                        { x: mid.x + 5, y: mid.y + 20 },
+                    ],
+                }],
+            },
+            geojson: null, version: 1,
+        };
+        const lm = buildLieMap([bunker]);
+        const gates = autoGatesForPlan(plan.legs, lm.hazardRings());
+        expect(gates[0].halfWidthRightM).toBeLessThan(30);
+    });
+
+    test('legs without a club produce no gate', () => {
+        const plan = buildHolePlan(northInput({
+            shots: [shot('s1', at(200), { clubId: null, elevation: 5 })],
+        }));
+        const gates = autoGatesForPlan(plan.legs, []);
+        expect(gates).toHaveLength(0);
     });
 });

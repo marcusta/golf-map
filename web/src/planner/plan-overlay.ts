@@ -27,14 +27,19 @@ import type { PlanShot, PlanGate } from '../../../shared/api/game-plans.gen';
 import {
     adjustedCarryM,
     bearingToUnitVector,
+    corridorWidth,
     dispersionEllipse,
+    optimizeAim,
     pathSegmentStats,
     windEffect,
     type DispersionEllipse,
+    type FlatRing,
+    type Lie,
     type StrategyPoint,
     type Vec2,
 } from '../../../shared/strategy';
 import { sweref99tmToWgs84, wgs84ToSweref99tm } from '../geo/transform';
+import type { LieMap } from './lie-map';
 
 /** Overlay/source id for the plan rendering. */
 export const PLAN_OVERLAY_ID = 'plan';
@@ -105,6 +110,87 @@ export interface PlanLeg {
     ellipse: DispersionEllipse | undefined;
     /** Straight-line distance from `to` to the green center, meters. */
     remainingToGreenM: number | undefined;
+    /**
+     * Expected strokes to hole out from this leg's approach aim, from
+     * `optimizeAim` (undefined until `enrichLegStrategy` fills it — see
+     * COMPUTE CADENCE below). Only meaningful for legs with a club (the
+     * ones that get a dispersion ellipse); undefined otherwise.
+     */
+    expectedStrokes?: number;
+    /**
+     * Fraction of dispersion samples per lie at the recommended aim (the
+     * `optimizeAim` result's `breakdown`) — drives the lights UI (T7).
+     * Undefined until enriched, same as `expectedStrokes`.
+     */
+    lieBreakdown?: Partial<Record<Lie, number>>;
+    /** The recommended aim bearing from `optimizeAim`, when enriched. */
+    recommendedBearingDeg?: number;
+}
+
+// ── Strategy enrichment (DECADE Phase C) ────────────────────────────────────
+//
+// COMPUTE CADENCE (decision DECADE §4.5): `optimizeAim`/`shotsToHoleOut` are
+// NOT run inside `buildHolePlan` above — that function is called on every
+// reactive tick, INCLUDING per-drag-frame local patches (see
+// PlannerToolService.applyDrag → patchShotLocal, which is deliberately a
+// synchronous per-frame local mutation with no network I/O). Sweeping ~13
+// aim candidates × ~128 samples × point-in-ring per frame would turn every
+// mouse-move into a full re-optimization.
+//
+// Instead, `enrichLegStrategy` is a SEPARATE, opt-in step: callers invoke it
+// only on shot-place and drag-RELEASE (see PlannerToolService.persistDrag /
+// placeShot), passing the already-built `HolePlan`'s legs. It returns new
+// leg objects with `expectedStrokes`/`lieBreakdown`/`recommendedBearingDeg`
+// filled in; `buildHolePlan`'s own output is never mutated in place, so a
+// caller that skips enrichment (e.g. the per-frame drag path) keeps getting
+// plain geometry with those fields undefined, by construction — there is no
+// per-frame code path that can accidentally reach `optimizeAim`.
+
+/** Inputs `enrichLegStrategy` needs beyond what's already on the leg. */
+export interface LegStrategyContext {
+    /** The hole's pre-flattened lie map (see planner/lie-map.ts). */
+    lieMap: LieMap;
+    /** Terminal target for remaining-distance scoring (the green center). */
+    greenCenter: Vec2;
+    wind: EffectiveWind | null;
+}
+
+/**
+ * Enrich ONE leg with `expectedStrokes`/`lieBreakdown`/`recommendedBearingDeg`
+ * via `optimizeAim`, when the leg has a club (no club → no ellipse → nothing
+ * to optimize, the leg is returned unchanged). Pure: does not mutate `leg`.
+ */
+export function enrichLegStrategy(leg: PlanLeg, ctx: LegStrategyContext): PlanLeg {
+    if (!leg.club) return leg;
+    const wind = ctx.wind;
+    // Same groundSlope derivation buildHolePlan uses for the ellipse (elevationΔ
+    // recovered from playsLikeM = horizontal + elevationΔ), so the aim sweep's
+    // ellipses land consistently with the leg's own drawn ellipse.
+    const groundSlope = leg.playsLikeM !== undefined && leg.horizontalM > 0
+        ? (leg.playsLikeM - leg.horizontalM) / leg.horizontalM
+        : 0;
+
+    const result = optimizeAim({
+        origin: { x: leg.from.x, y: leg.from.y },
+        club: leg.club,
+        targetBearingDeg: leg.bearingDeg,
+        surfaces: ctx.lieMap.surfaces(),
+        greenCenter: ctx.greenCenter,
+        groundSlope,
+        ...(wind !== null ? { windSpeedMps: wind.speedMps, windDirectionDeg: wind.directionDeg } : {}),
+    });
+
+    return {
+        ...leg,
+        expectedStrokes: result.best.expectedStrokes,
+        lieBreakdown: result.breakdown,
+        recommendedBearingDeg: result.bestBearingDeg,
+    };
+}
+
+/** Enrich every leg of a plan (shot-place / drag-release cadence — see above). */
+export function enrichPlanStrategy(plan: HolePlan, ctx: LegStrategyContext): HolePlan {
+    return { ...plan, legs: plan.legs.map(leg => enrichLegStrategy(leg, ctx)) };
 }
 
 export interface HolePlan {
@@ -261,6 +347,64 @@ export function gateEndpoints(
         left: { x: station.x + leftUnit.x * halfWidthLeftM, y: station.y + leftUnit.y * halfWidthLeftM },
         right: { x: station.x + rightUnit.x * halfWidthRightM, y: station.y + rightUnit.y * halfWidthRightM },
     };
+}
+
+// ── Auto-gates (computed corridor gates) ────────────────────────────────────
+//
+// "Compute instead of eyeball" (DECADE doc §3): a manual gate is a player
+// eyeballing corridor width; an auto-gate reads it straight off the mapped
+// hazard rings via corridorWidth(). One computed gate per leg, stationed at
+// the leg's MIDPOINT (a single representative cross-section — matching the
+// existing manual "drop a gate on this leg" affordance, which also places
+// one gate per click rather than sampling the whole leg). Half-widths are
+// corridorWidth()'s in-play widths, capped at `maxHalfWidthM` same as manual
+// gates default to (GATE_DEFAULT_HALF_WIDTH_M as the cap keeps auto-gates
+// the same visual scale as hand-placed ones on hazard-free legs).
+
+/** A computed gate's fields, ready for `PlanService.addGate` (source: 'computed'). */
+export interface AutoGate {
+    legIndex: number;
+    lat: number;
+    lon: number;
+    directionDeg: number;
+    halfWidthLeftM: number;
+    halfWidthRightM: number;
+    source: 'computed';
+}
+
+/**
+ * One computed corridor gate per leg that has a club (legs without a club
+ * have no aim line to cast a corridor from). Station = leg midpoint;
+ * half-widths from `corridorWidth()` against `hazards`, capped at
+ * `GATE_DEFAULT_HALF_WIDTH_M` so an open leg (no nearby hazard) still draws
+ * a sane-sized gate rather than the corridorWidth default 100 m cap.
+ */
+export function autoGatesForPlan(
+    legs: readonly PlanLeg[],
+    hazards: readonly FlatRing[],
+): AutoGate[] {
+    const gates: AutoGate[] = [];
+    for (const leg of legs) {
+        if (!leg.club) continue;
+        const station: Vec2 = { x: (leg.from.x + leg.to.x) / 2, y: (leg.from.y + leg.to.y) / 2 };
+        const width = corridorWidth({
+            station,
+            axisBearingDeg: leg.bearingDeg,
+            obstacles: hazards,
+            maxHalfWidthM: GATE_DEFAULT_HALF_WIDTH_M,
+        });
+        const { lat, lon } = sweref99tmToWgs84(station.x, station.y);
+        gates.push({
+            legIndex: leg.index,
+            lat,
+            lon,
+            directionDeg: leg.bearingDeg,
+            halfWidthLeftM: width.leftM,
+            halfWidthRightM: width.rightM,
+            source: 'computed',
+        });
+    }
+    return gates;
 }
 
 // ── Overlay GeoJSON ────────────────────────────────────────────────────────
