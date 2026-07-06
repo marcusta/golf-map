@@ -87,6 +87,19 @@ short-side check; ghost recommended-aim marker with "apply"; wire `clubAdvice()`
 shot-edit popover. Generic terminology only (no DECADE branding — DECADE doc §9). **Done:**
 lights + ghost aim render from T6 outputs; apply writes shot/gate.
 
+**Inherited from T6 (do this, it was deliberately deferred):** T6 built `enrichLegStrategy` /
+`enrichPlanStrategy` / `autoGatesForPlan` in `web/src/planner/plan-overlay.ts` as pure, tested
+functions but did NOT wire live call sites — nothing invokes them in the running planner yet, so
+EV is not in state. T7 owns that wiring: call `enrichPlanStrategy` on **shot-place and
+drag-release only** (in `PlannerToolService.placeShot` / `persistDrag`), NEVER on the per-frame
+drag path (`applyDrag`/`patchShotLocal`). This is where the real cadence risk lives — respect the
+reactive-cascade gotcha (coalesce derived-geometry effects via `queueMicrotask`; @basics/core
+signals are push-based eager). Add the "Auto gates" button that calls `autoGatesForPlan` +
+persists `source:'computed'` gates. Verify web tests from the `web/` dir (`cd web && bun test`) —
+the DOM preload only loads there; `bun test web/` from repo root gives false DOMParser failures.
+
+### T10 depends on T7's wiring landing first (it consumes the assembled planner `CaddyContext`).
+
 ### T8 · Caddy rule-engine skeleton — **Opus**
 Per [feature-smart-caddy.md](feature-smart-caddy.md) Phase A + §4. `shared/strategy/caddy/`
 (`rule.ts`, `run.ts`, index re-export), one trivial rule, tests: ranking order (D12
