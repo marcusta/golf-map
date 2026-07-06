@@ -50,6 +50,36 @@ import {
     type FeatureType,
 } from './feature-palette';
 
+/**
+ * Cached WGS84 lng/lat for a feature's anchor points + bezier handles, so the
+ * hover hit-test doesn't re-run the (heavy inverse-TM) datum transform for
+ * every vertex on every mouse-move. Keyed on geometry identity — geometry is
+ * replaced wholesale on edit (see features.service), so the WeakMap collects
+ * stale entries and the cache is never stale.
+ */
+interface RingLngLat {
+    anchor: Position[];
+    hIn: (Position | null)[];
+    hOut: (Position | null)[];
+}
+const vertexLngLatCache = new WeakMap<FeatureGeometry, RingLngLat[]>();
+
+function vertexLngLatFor(geometry: FeatureGeometry): RingLngLat[] {
+    const cached = vertexLngLatCache.get(geometry);
+    if (cached) return cached;
+    const ll = (p: Point): Position => {
+        const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
+        return [lon, lat];
+    };
+    const rings = geometry.rings.map(ring => ({
+        anchor: ring.points.map(ll),
+        hIn: ring.points.map(p => (p.hIn ? ll(p.hIn) : null)),
+        hOut: ring.points.map(p => (p.hOut ? ll(p.hOut) : null)),
+    }));
+    vertexLngLatCache.set(geometry, rings);
+    return rings;
+}
+
 /** Interaction-claim id AND overlay id prefix for the draw tool. */
 export const DRAW_TOOL_ID = 'draw';
 /** Preview overlay (draft line, vertex + bezier-handle markers). */
@@ -462,7 +492,12 @@ export class DrawToolService {
 
         const drag = this.drag;
         if (!drag || !this.features) {
-            this.trackHoverVertex(e);
+            // Hover highlighting only matters with the mouse button up. While a
+            // button is held the user is panning (or dragging) — skip the
+            // O(vertices) hover hit-test, which otherwise re-projects every
+            // vertex of the selected shape on every frame of a pan (2-5 fps on
+            // a large rough).
+            if (e.originalEvent.buttons === 0) this.trackHoverVertex(e);
             return;
         }
         if (!drag.moved && this.pxDist(drag.startScreen, e.point) < DRAG_MOVE_THRESHOLD_PX) return;
@@ -1161,24 +1196,42 @@ export class DrawToolService {
         feature: CourseFeature,
         screen: { x: number; y: number },
     ): { kind: 'anchor' | 'handle'; which?: 'hIn' | 'hOut'; ringIdx: number; idx: number } | null {
+        // Vertex lng/lat are cached per geometry (invariant until the shape is
+        // edited). Project with the FLAT transform, not map.project: with
+        // terrain enabled map.project raycasts the DEM (~40 us/call), so
+        // hit-testing every vertex per mouse-move cost ~30 ms on a large shape.
+        // Terrain draping shifts a marker sub-pixel at course pitch/exaggeration
+        // (< 1 px, far under the hit thresholds), so ignoring it is safe here.
+        const rings = vertexLngLatFor(feature.geometry);
+        const tr = map.transform as unknown as {
+            locationToScreenPoint?: (l: { lng: number; lat: number }) => { x: number; y: number };
+        };
+        const project = tr.locationToScreenPoint
+            ? (ll: Position) => tr.locationToScreenPoint!({ lng: ll[0], lat: ll[1] })
+            : (ll: Position) => map.project(ll as [number, number]);
+        const pxDistTo = (ll: Position): number => {
+            const pr = project(ll);
+            return Math.hypot(pr.x - screen.x, pr.y - screen.y);
+        };
         // Handles first: they are smaller and rendered on top. (B-spline
         // control points have no handles — the scan is a no-op there.)
-        for (let r = 0; r < feature.geometry.rings.length; r++) {
-            const points = feature.geometry.rings[r].points;
-            for (let i = 0; i < points.length; i++) {
-                for (const which of ['hIn', 'hOut'] as const) {
-                    const handle = points[i][which];
-                    if (!handle) continue;
-                    if (this.screenDist(handle, screen, map) < HANDLE_HIT_PX) {
-                        return { kind: 'handle', which, ringIdx: r, idx: i };
-                    }
+        for (let r = 0; r < rings.length; r++) {
+            const { hIn, hOut } = rings[r];
+            for (let i = 0; i < hIn.length; i++) {
+                const inLl = hIn[i];
+                if (inLl && pxDistTo(inLl) < HANDLE_HIT_PX) {
+                    return { kind: 'handle', which: 'hIn', ringIdx: r, idx: i };
+                }
+                const outLl = hOut[i];
+                if (outLl && pxDistTo(outLl) < HANDLE_HIT_PX) {
+                    return { kind: 'handle', which: 'hOut', ringIdx: r, idx: i };
                 }
             }
         }
-        for (let r = 0; r < feature.geometry.rings.length; r++) {
-            const points = feature.geometry.rings[r].points;
-            for (let i = 0; i < points.length; i++) {
-                if (this.screenDist(points[i], screen, map) < VERTEX_HIT_PX) {
+        for (let r = 0; r < rings.length; r++) {
+            const { anchor } = rings[r];
+            for (let i = 0; i < anchor.length; i++) {
+                if (pxDistTo(anchor[i]) < VERTEX_HIT_PX) {
                     return { kind: 'anchor', ringIdx: r, idx: i };
                 }
             }
