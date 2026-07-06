@@ -150,3 +150,18 @@ stable distribution.
 Print-quality per-hole page: geometry render, T4 numbers, slope-grid green detail, plan arrows.
 Pure rendering over existing data; taste-driven. **Done:** an A5 booklet PDF for one course that
 a player would actually carry.
+
+---
+
+## Reporting protocol (all tasks)
+
+1. **One commit per task**, message starting `T<n>:`. No unrelated changes in the commit.
+2. **Write `docs/reports/T<n>-report.md`** (committed with the work) containing:
+   - files touched (paths);
+   - the verbatim final `bun test` summary line (and typecheck result where relevant);
+   - any deviation from the brief or the decision register, with justification;
+   - anything the brief under-specified and what you chose;
+   - open concerns for the reviewer.
+3. **Never amend `docs/decisions-strategy-2026-07-06.md`.** If a decision seems wrong, say so in
+   the report and stop rather than working around it.
+4. Do not spawn sub-agents.
