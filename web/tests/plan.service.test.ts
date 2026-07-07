@@ -63,7 +63,10 @@ function fakeApi() {
         async getByCourse({ courseId }) {
             calls.getByCourse++;
             const p = plans.get(courseId);
-            return p ? tree(p) : null;
+            // Server-accurate: the API framework serialises a null result as
+            // `{ ok: true }` (mount.ts `result ?? { ok: true }`), so a plan-less
+            // course never returns literal null over the wire.
+            return p ? tree(p) : ({ ok: true } as unknown as GamePlan);
         },
         async upsert(input) {
             calls.upsert++;
@@ -90,6 +93,9 @@ function fakeApi() {
         remove: () => Promise.reject(new Error('not under test')),
         async setHole(input) {
             calls.setHole++;
+            // Server-accurate: `planId` is a required schema field — a missing
+            // one is a 400, not a silent hole with an undefined FK.
+            if (!input.planId) throw new ApiError(400, 'Validation failed');
             const existing = [...holes.values()]
                 .find(h => h.gamePlanId === input.planId && h.holeNumber === input.holeNumber);
             if (!existing) {
@@ -213,6 +219,16 @@ describe('load', () => {
         expect(calls.getByCourse).toBe(1); // cached
     });
 
+    test('no-plan sentinel {ok:true} is treated as null (not a poisoned head)', async () => {
+        const { api } = fakeApi();
+        const svc = new PlanService(api);
+
+        await svc.load('c1'); // getByCourse returns {ok:true}, not literal null
+        // Must NOT have poisoned `plan` with the id-less sentinel object.
+        expect(svc.plan.get()).toBeNull();
+        expect(svc.holes.items.get()).toEqual([]);
+    });
+
     test('flattens the plan tree into head + hole/shot/gate stores', async () => {
         const { api } = fakeApi();
         const seeded = await api.upsert({ courseId: 'c1', windSpeedMps: 4, windDirectionDeg: 270 });
@@ -241,16 +257,21 @@ describe('load', () => {
 
 describe('lazy plan/hole creation', () => {
     test('addShot on a fresh course creates plan + hole exactly once (no versions on create)', async () => {
-        const { api, calls } = fakeApi();
+        const { api, calls, holes } = fakeApi();
         const svc = new PlanService(api);
-        await svc.load('c1');
+        await svc.load('c1'); // no plan yet — arrives as the {ok:true} sentinel
 
         const created = await svc.addShot(7, { lat: LAT, lon: LON, elevation: 42 });
         expect(created?.sortOrder).toBe(0);
         expect(created?.elevation).toBe(42);
         expect(calls.upsert).toBe(1);
         expect(calls.setHole).toBe(1);
-        expect(svc.plan.get()?.id).toBeDefined();
+        expect(svc.saveError.get()).toBeNull(); // no 400 from an empty planId
+        const planId = svc.plan.get()?.id;
+        expect(planId).toBeDefined();
+        // The hole row must be wired to the just-created plan — i.e. setHole
+        // received the real planId, not undefined.
+        expect([...holes.values()][0].gamePlanId).toBe(planId!);
         expect(svc.holeRow(7)?.holeNumber).toBe(7);
 
         // Second shot reuses the created rows.

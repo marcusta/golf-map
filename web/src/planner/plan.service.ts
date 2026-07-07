@@ -22,6 +22,21 @@ function stripHole(hole: GamePlanHole): PlanHoleRow {
 }
 
 /**
+ * A real plan tree, vs the API framework's null sentinel. The server mount
+ * layer serialises a `null` handler result as `{ ok: true }` (`result ?? { ok:
+ * true }`), so `getByCourse` on a course with no plan yet arrives as that
+ * object — NOT literal `null`. Guard on the plan shape so `load` treats the
+ * sentinel as "no plan"; otherwise `setTree` would poison `plan` with an
+ * id-less `{ ok: true }` (and throw on `holes.map`), and the first edit would
+ * then skip the upsert and POST an empty `planId` (server 400).
+ */
+function isPlanTree(tree: unknown): tree is GamePlan {
+    return typeof tree === 'object' && tree !== null
+        && typeof (tree as GamePlan).id === 'string'
+        && Array.isArray((tree as GamePlan).holes);
+}
+
+/**
  * The course's game plan for the planner page. Mirrors FeaturesService:
  * the server's plan TREE (plan → holes → shots/gates) is flattened into a
  * head signal + three EntityStores so per-item signals drive $each rows and
@@ -61,7 +76,9 @@ export class PlanService {
             this.plansApi.getByCourse({ courseId }));
         if (tree === undefined) return; // failed — error signal set, cache untouched
         this.loadedCourseId = courseId;
-        if (tree === null) {
+        // `null` (no plan) reaches us as the framework's `{ ok: true }` sentinel,
+        // never literal null — treat any non-plan-shaped response as "no plan".
+        if (!isPlanTree(tree)) {
             batch(() => {
                 this.plan.set(null);
                 this.holes.set([]);
