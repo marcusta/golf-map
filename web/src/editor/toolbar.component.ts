@@ -14,6 +14,7 @@ const tpl = template(`
         <div bind="bar" class="editor-tools__bar" data-testid="editor-toolbar-bar"></div>
         <div bind="panelHost" class="editor-tools__panel"></div>
     </div>
+    <div bind="sidePanelHost" class="editor-tools-side" data-testid="editor-toolbar-side"></div>
 `);
 
 const toolBtnTpl = template(`
@@ -28,8 +29,9 @@ const toolBtnTpl = template(`
  * editor/tools/index.ts), manages exclusive activation through
  * MapService.claimInteraction (per the interaction contract), runs each
  * tool's `attach` hook once per canvas mount, shows the active tool's
- * panel in a dock on the canvas's left edge, and handles ESC
- * (tool.onEscape first, then deactivation).
+ * panel in a dock on the canvas's left edge (and, optionally, a second
+ * `sidePanel` docked on the right edge), and handles ESC (tool.onEscape
+ * first, then deactivation).
  *
  * Spawned by EditorCanvasComponent; one instance == one courseId (the
  * canvas is recreated per navigation). Tools never talk to this component
@@ -86,6 +88,29 @@ export class EditorToolbarComponent extends Component {
                 &.show { display: block; }
             }
         }
+
+        /*
+         * Right-edge dock — mirrors .editor-tools__panel above, but it is
+         * its own top-level element (no button bar on this side) so its
+         * show/hide doesn't depend on the left toolbar's map-ready gating
+         * beyond what's folded into its own className function.
+         */
+        .editor-tools-side {
+            display: none;
+            position: absolute;
+            top: ${s('md')};
+            right: ${s('md')};
+            bottom: ${s('md')};
+            width: 240px;
+            max-height: 100%;
+            overflow-y: auto;
+            z-index: 5;
+            border: 1px solid ${t('border')};
+            border-radius: ${t('radius-sm')};
+            background: ${t('surface')};
+            box-shadow: ${t('shadow')};
+            &.show { display: block; }
+        }
     `;
 
     private mapSvc = this.inject(MapService);
@@ -100,6 +125,8 @@ export class EditorToolbarComponent extends Component {
     private active: { tool: EditorTool; disposers: Array<() => void>; release: () => void } | null = null;
     private panelChild: Component | null = null;
     private panelHost!: HTMLElement;
+    private sidePanelChild: Component | null = null;
+    private sidePanelHost!: HTMLElement;
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -110,8 +137,15 @@ export class EditorToolbarComponent extends Component {
                     return tool?.panel ? 'editor-tools__panel show' : 'editor-tools__panel';
                 },
             },
+            sidePanelHost: {
+                className: () => {
+                    const tool = this.activeTool();
+                    return this.mapSvc.ready.get() && tool?.sidePanel ? 'editor-tools-side show' : 'editor-tools-side';
+                },
+            },
         });
         this.panelHost = this.ref(frag, 'panelHost');
+        this.sidePanelHost = this.ref(frag, 'sidePanelHost');
 
         const bar = this.ref(frag, 'bar');
         for (const tool of [...EDITOR_TOOLS].sort((a, b) => a.order - b.order)) {
@@ -163,6 +197,21 @@ export class EditorToolbarComponent extends Component {
             });
         }));
 
+        // Right-edge dock: same swap lifecycle as the left panel above.
+        this.track(effect(() => {
+            const tool = this.activeTool();
+            untrack(() => {
+                this.sidePanelChild?.destroy();
+                this.sidePanelChild = null;
+                this.sidePanelHost.textContent = '';
+                if (tool?.sidePanel) {
+                    const SidePanelCtor = tool.sidePanel;
+                    this.sidePanelChild = new SidePanelCtor();
+                    this.sidePanelChild.mount(this.sidePanelHost);
+                }
+            });
+        }));
+
         // ESC: offer to the active tool first; deactivate if unconsumed.
         const onKeyDown = (e: KeyboardEvent) => {
             if (e.key !== 'Escape' || !this.active) return;
@@ -176,6 +225,8 @@ export class EditorToolbarComponent extends Component {
             this.deactivate();
             this.panelChild?.destroy();
             this.panelChild = null;
+            this.sidePanelChild?.destroy();
+            this.sidePanelChild = null;
         });
     }
 

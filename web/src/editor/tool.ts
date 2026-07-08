@@ -37,6 +37,10 @@
 // active. Panels are constructed with no props — get your tool's state via
 // DI (`this.inject(MyToolService)`) so panel and tool share one instance.
 //
+// A tool may also declare `sidePanel`: same contract and lifecycle as
+// `panel`, docked on the canvas's RIGHT edge instead. Independent of
+// `panel` — a tool can have either, both, or neither.
+//
 // ## Overlays
 //
 // Use `ctx.map.addOverlayLayer(id, …)` with your tool id as the overlay id
@@ -85,6 +89,8 @@ export interface EditorTool {
     order: number;
     /** Optional side-panel component shown while active (see header doc). */
     panel?: new () => Component;
+    /** Optional RIGHT-edge dock panel shown while active (see header doc). */
+    sidePanel?: new () => Component;
     /** Optional one-time setup per canvas mount (see header doc). */
     attach?(ctx: ToolContext): void;
     /** Tool selected — register interaction handlers (see header doc). */
