@@ -8,6 +8,7 @@ export interface CourseFeature {
     type: string;
     geometry: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] };
     geojson: null | GeoJsonPolygon;
+    sortOrder: number;
     version: number;
 }
 
@@ -24,7 +25,7 @@ export interface GeoJsonPolygon {
 export interface CourseFeatureGeoJsonFeature {
     type: 'Feature';
     id: string;
-    properties: { courseId: string; holeId: null | string; type: string };
+    properties: { courseId: string; holeId: null | string; type: string; sortOrder: number; stackKey: number };
     geometry: GeoJsonPolygon;
 }
 
@@ -35,6 +36,7 @@ export interface CourseFeaturesApi {
     create(input: { holeId?: null | string; courseId: string; geometry: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; type: string }): Promise<CourseFeature>;
     update(input: { geometry?: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; holeId?: null | string; type?: string; id: string; version: number }): Promise<CourseFeature>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
+    reorder(input: { holeId?: null | string; courseId: string; orderedIds: string[] }): Promise<{ ok: boolean }>;
 }
 
 export function createCourseFeaturesClient(baseUrl: string): CourseFeaturesApi {
@@ -68,6 +70,9 @@ export function createCourseFeaturesClient(baseUrl: string): CourseFeaturesApi {
         },
         async remove(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/features/remove`, body: input });
+        },
+        async reorder(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/course-features/reorder`, body: input });
         },
     };
 }

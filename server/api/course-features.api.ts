@@ -59,6 +59,12 @@ const RemoveFeatureInput = Type.Object({
     version: Type.Number(),
 });
 
+const ReorderFeaturesInput = Type.Object({
+    courseId: Type.String(),
+    holeId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    orderedIds: Type.Array(Type.String()),
+});
+
 // --- API descriptor ---
 
 export function createCourseFeaturesApi(svc: CourseFeaturesService) {
@@ -115,6 +121,14 @@ export function createCourseFeaturesApi(svc: CourseFeaturesService) {
             path: '/features/remove',
             fn: (input: Static<typeof RemoveFeatureInput>) => svc.remove(input.id, input.version),
             schema: RemoveFeatureInput,
+            middleware: mw,
+        },
+        reorder: {
+            method: 'POST' as const,
+            path: '/course-features/reorder',
+            fn: (input: Static<typeof ReorderFeaturesInput>) =>
+                svc.reorder(input.courseId, input.holeId ?? null, input.orderedIds),
+            schema: ReorderFeaturesInput,
             middleware: mw,
         },
     };

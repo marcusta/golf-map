@@ -139,6 +139,7 @@ export interface CourseFeaturesTable {
     type: string; // tee|fairway|green|bunker|semi_rough|rough|deep_rough|water|water_creek|path|outside
     geometry_json: string; // native path/bezier geometry in projected CRS
     geojson: string | null; // derived WGS84 GeoJSON
+    sort_order: number; // per-group (course_id, hole_id) stack z-order; higher = on top (D23)
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

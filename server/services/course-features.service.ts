@@ -2,6 +2,7 @@ import type { Kysely, Selectable } from 'kysely';
 import { sql } from 'kysely';
 import type { Database, CourseFeaturesTable } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
+import { ConflictError } from '@basics/core/server/auth';
 import { toGeoJson, type FeatureGeometry, type GeoJsonPolygon } from './geo';
 
 // --- Constants ---
@@ -22,6 +23,48 @@ export const FEATURE_TYPES = [
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
 
+/**
+ * Fixed golf z-ordering, bottom -> top (duplicated from web's
+ * draw/feature-palette.ts — server and web keep independent copies, same as
+ * FEATURE_TYPES above). Per D26 this survives ONLY as the insertion
+ * heuristic for create(): where a brand-new feature lands in its group's
+ * stack. It is no longer consulted at render/hit/lie time — sort_order is
+ * truth there (D23).
+ */
+const TYPE_Z_ORDER: readonly string[] = [
+    'outside',
+    'deep_rough',
+    'rough',
+    'semi_rough',
+    'fairway',
+    'tee',
+    'green',
+    'bunker',
+    'water',
+    'water_creek',
+    'path',
+];
+
+function typeRank(type: string): number {
+    const idx = TYPE_Z_ORDER.indexOf(type);
+    return idx === -1 ? 0 : idx;
+}
+
+/**
+ * D26 insertion default: scan the group's stack (bottom -> top, i.e.
+ * ascending sort_order) top -> bottom looking for the first existing
+ * feature whose type rank is <= the new feature's rank, and insert directly
+ * above it (one past its index). If none qualifies, insert at the bottom
+ * (index 0).
+ */
+function insertionPosition(groupStack: readonly { type: string }[], newType: string): number {
+    const newRank = typeRank(newType);
+    for (let i = groupStack.length - 1; i >= 0; i--) {
+        if (typeRank(groupStack[i].type) <= newRank) return i + 1;
+    }
+    return 0;
+}
+
 // --- Output types ---
 
 export interface CourseFeature {
@@ -31,13 +74,14 @@ export interface CourseFeature {
     type: string;
     geometry: FeatureGeometry;
     geojson: GeoJsonPolygon | null;
+    sortOrder: number;
     version: number;
 }
 
 export interface CourseFeatureGeoJsonFeature {
     type: 'Feature';
     id: string;
-    properties: { courseId: string; holeId: string | null; type: string };
+    properties: { courseId: string; holeId: string | null; type: string; sortOrder: number; stackKey: number };
     geometry: GeoJsonPolygon;
 }
 
@@ -58,6 +102,7 @@ function toCourseFeature(row: FeatureRow): CourseFeature {
         type: row.type,
         geometry: JSON.parse(row.geometry_json) as FeatureGeometry,
         geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
+        sortOrder: row.sort_order,
         version: row.version,
     };
 }
@@ -139,6 +184,7 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
         type: row.type,
         geometry,
         geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
+        sortOrder: row.sort_order,
         version: row.version,
     };
 }
@@ -153,7 +199,7 @@ export class CourseFeaturesService {
             .selectFrom('course_features')
             .selectAll()
             .where('course_id', '=', courseId)
-            .orderBy('created_at');
+            .orderBy('sort_order');
     }
 
     private byHole(holeId: string) {
@@ -161,7 +207,17 @@ export class CourseFeaturesService {
             .selectFrom('course_features')
             .selectAll()
             .where('hole_id', '=', holeId)
-            .orderBy('created_at');
+            .orderBy('sort_order');
+    }
+
+    /** The stack for one group (course_id, hole_id|null), bottom -> top. */
+    private byGroup(courseId: string, holeId: string | null, trx: Kysely<Database> = this.db) {
+        let query = trx
+            .selectFrom('course_features')
+            .select(['id', 'type', 'sort_order'])
+            .where('course_id', '=', courseId);
+        query = holeId === null ? query.where('hole_id', 'is', null) : query.where('hole_id', '=', holeId);
+        return query.orderBy('sort_order');
     }
 
     private byId(id: string) {
@@ -178,6 +234,7 @@ export class CourseFeaturesService {
             type: string;
             geometry_json: string;
             geojson: string | null;
+            sort_order: number;
             version?: number;
         },
         trx: Kysely<Database> = this.db,
@@ -216,17 +273,47 @@ export class CourseFeaturesService {
         return toCourseFeature(row);
     }
 
+    /**
+     * D24 global composition order: course-level group at the bottom, then
+     * hole groups ascending by hole number, each internally by sort_order.
+     * `stackKey = groupRank * 4096 + sortOrder`, groupRank 0 = course-level.
+     */
     async geojsonByCourse(courseId: string): Promise<CourseFeatureFeatureCollection> {
-        const rows = await this.byCourse(courseId).execute();
+        const rows = await this.db
+            .selectFrom('course_features')
+            .leftJoin('holes', 'holes.id', 'course_features.hole_id')
+            .where('course_features.course_id', '=', courseId)
+            .select([
+                'course_features.id',
+                'course_features.course_id',
+                'course_features.hole_id',
+                'course_features.type',
+                'course_features.geometry_json',
+                'course_features.geojson',
+                'course_features.sort_order',
+                'course_features.version',
+                'holes.number as hole_number',
+            ])
+            .orderBy('course_features.sort_order')
+            .execute();
+
         const features: CourseFeatureGeoJsonFeature[] = [];
         for (const row of rows) {
-            const feature = toCourseFeatureSafe(row);
+            const feature = toCourseFeatureSafe(row as unknown as FeatureRow);
             if (!feature) continue;
             const geojson = feature.geojson ?? toGeoJson(feature.geometry);
+            const groupRank = row.hole_number ?? 0;
+            const stackKey = groupRank * 4096 + feature.sortOrder;
             features.push({
                 type: 'Feature',
                 id: feature.id,
-                properties: { courseId: feature.courseId, holeId: feature.holeId, type: feature.type },
+                properties: {
+                    courseId: feature.courseId,
+                    holeId: feature.holeId,
+                    type: feature.type,
+                    sortOrder: feature.sortOrder,
+                    stackKey,
+                },
                 geometry: geojson,
             });
         }
@@ -243,24 +330,45 @@ export class CourseFeaturesService {
         assertValidGeometry(input.geometry);
 
         const id = crypto.randomUUID();
+        const holeId = input.holeId ?? null;
         const geojson = toGeoJson(input.geometry);
 
-        await this.insertFeature({
-            id,
-            course_id: input.courseId,
-            hole_id: input.holeId ?? null,
-            type: input.type,
-            geometry_json: JSON.stringify(input.geometry),
-            geojson: JSON.stringify(geojson),
-        }).execute();
+        const sortOrder = await this.db.transaction().execute(async (trx) => {
+            const groupStack = await this.byGroup(input.courseId, holeId, trx).execute();
+            const pos = insertionPosition(groupStack, input.type);
+
+            for (const row of groupStack) {
+                if (row.sort_order >= pos) {
+                    await this.updateById(row.id, trx)
+                        .set({ sort_order: row.sort_order + 1, updated_at: sql`(datetime('now'))` })
+                        .execute();
+                }
+            }
+
+            await this.insertFeature(
+                {
+                    id,
+                    course_id: input.courseId,
+                    hole_id: holeId,
+                    type: input.type,
+                    geometry_json: JSON.stringify(input.geometry),
+                    geojson: JSON.stringify(geojson),
+                    sort_order: pos,
+                },
+                trx,
+            ).execute();
+
+            return pos;
+        });
 
         return {
             id,
             courseId: input.courseId,
-            holeId: input.holeId ?? null,
+            holeId,
             type: input.type,
             geometry: input.geometry,
             geojson,
+            sortOrder,
             version: 1,
         };
     }
@@ -300,5 +408,33 @@ export class CourseFeaturesService {
         const row = await this.byId(id).executeTakeFirst();
         if (!row || row.version !== version) throw new VersionConflictError('course_features', id);
         await this.deleteById(id).execute();
+    }
+
+    /**
+     * Rewrites a group's (course_id, hole_id|null) stack order in one shot
+     * (house pattern — see tees.service.ts reorder / game-plans.service.ts
+     * reorderShots). orderedIds must be exactly the group's current
+     * members, bottom -> top.
+     */
+    async reorder(courseId: string, holeId: string | null, orderedIds: string[]): Promise<void> {
+        await this.db.transaction().execute(async (trx) => {
+            const existing = await this.byGroup(courseId, holeId, trx).execute();
+
+            const existingIds = new Set(existing.map((row) => row.id));
+            const incomingIds = new Set(orderedIds);
+            const sameSize = existingIds.size === incomingIds.size;
+            const sameMembers = sameSize && orderedIds.every((id) => existingIds.has(id));
+            if (!sameSize || !sameMembers) {
+                throw new ConflictError(
+                    `orderedIds must exactly match the features in scope (course ${courseId}, hole ${holeId ?? 'course-level'})`,
+                );
+            }
+
+            for (let i = 0; i < orderedIds.length; i++) {
+                await this.updateById(orderedIds[i], trx)
+                    .set({ sort_order: i, updated_at: sql`(datetime('now'))` })
+                    .execute();
+            }
+        });
     }
 }

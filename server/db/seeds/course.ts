@@ -187,6 +187,7 @@ export async function seedCourse(ctx: TestContext): Promise<void> {
             type: 'green',
             geometry_json: JSON.stringify(featureGeometry),
             geojson: null,
+            sort_order: 0,
             version: 1,
         })
         .execute();

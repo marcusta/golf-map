@@ -2,6 +2,7 @@ import { test, expect, describe } from 'bun:test';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID, TEST_HOLE_1_ID, TEST_HOLE_2_ID } from '../db/seeds/course';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
+import { ConflictError } from '@basics/core/server/auth';
 import { CourseFeaturesService, InvalidFeatureError } from './course-features.service';
 import type { FeatureGeometry } from './geo';
 
@@ -127,6 +128,7 @@ describe('CourseFeaturesService.listByCourse / listByHole', () => {
                 type: 'green',
                 geometry_json: JSON.stringify({ kind: 'polygon', points: [[0, 0], [10, 0], [10, 10], [0, 10]] }),
                 geojson: null,
+                sort_order: 0,
                 version: 1,
             })
             .execute();
@@ -201,6 +203,7 @@ describe('CourseFeaturesService.geojsonByCourse', () => {
                 type: 'green',
                 geometry_json: JSON.stringify({ kind: 'polygon', points: [[0, 0], [10, 0], [10, 10], [0, 10]] }),
                 geojson: null,
+                sort_order: 0,
                 version: 1,
             })
             .execute();
@@ -311,5 +314,149 @@ describe('CourseFeaturesService.remove', () => {
         });
 
         await expect(svc.remove(created.id, 99)).rejects.toBeInstanceOf(VersionConflictError);
+    });
+});
+
+describe('CourseFeaturesService.create — D26 insertion order', () => {
+    // Builds the group's stack bottom -> top: [rough, fairway, bunker, water]
+    // (acceptance scenario 4's fixture), returning the type sequence
+    // bottom -> top after the new feature is inserted.
+    async function stackAfterInserting(newType: string): Promise<string[]> {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        // Course-level group (holeId: null) so the seed's own hole-1 'green'
+        // feature doesn't interfere.
+        for (const type of ['rough', 'fairway', 'bunker', 'water']) {
+            await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type, geometry: squareGeometry() });
+        }
+        await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: newType, geometry: squareGeometry() });
+
+        // listByCourse spans every group (grouping stays client-side per T22);
+        // filter to the course-level (holeId: null) group being tested here.
+        const stack = await svc.listByCourse(TEST_COURSE_ID);
+        return stack.filter((f) => f.holeId === null).map((f) => f.type);
+    }
+
+    test('new fairway lands above the existing fairway, below bunker', async () => {
+        const stack = await stackAfterInserting('fairway');
+        expect(stack).toEqual(['rough', 'fairway', 'fairway', 'bunker', 'water']);
+    });
+
+    test('new green lands above fairway', async () => {
+        const stack = await stackAfterInserting('green');
+        expect(stack).toEqual(['rough', 'fairway', 'green', 'bunker', 'water']);
+    });
+
+    test('new path lands above water (top of stack)', async () => {
+        const stack = await stackAfterInserting('path');
+        expect(stack).toEqual(['rough', 'fairway', 'bunker', 'water', 'path']);
+    });
+
+    test('new outside (lowest rank) lands at the bottom when nothing qualifies', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'fairway', geometry: squareGeometry() });
+        await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'outside', geometry: squareGeometry() });
+
+        const stack = await svc.listByCourse(TEST_COURSE_ID);
+        expect(stack.filter((f) => f.holeId === null).map((f) => f.type)).toEqual(['outside', 'fairway']);
+    });
+
+    test('insertion position is scoped per group — a hole-1 fairway does not shift a course-level stack', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: squareGeometry() });
+        const hole1Feature = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_1_ID,
+            type: 'fairway',
+            geometry: squareGeometry(),
+        });
+
+        // fairway (rank 4) ranks below the seed's existing hole-1 'green' (rank
+        // 6), so it inserts at the bottom (index 0) and the green shifts to 1.
+        expect(hole1Feature.sortOrder).toBe(0);
+        const hole1Stack = await svc.listByHole(TEST_HOLE_1_ID);
+        expect(hole1Stack.find((f) => f.type === 'green')?.sortOrder).toBe(1);
+
+        const courseLevel = await svc.listByCourse(TEST_COURSE_ID);
+        const water = courseLevel.find((f) => f.type === 'water');
+        expect(water?.sortOrder).toBe(0);
+    });
+});
+
+describe('CourseFeaturesService.reorder', () => {
+    test('rewrites sort_order for a scoped group', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const a = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'rough', geometry: squareGeometry() });
+        const b = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'fairway', geometry: squareGeometry() });
+
+        await svc.reorder(TEST_COURSE_ID, null, [b.id, a.id]);
+
+        const stack = await svc.listByCourse(TEST_COURSE_ID);
+        expect(stack.filter((f) => f.holeId === null).map((f) => f.id)).toEqual([b.id, a.id]);
+    });
+
+    test('rejects an orderedIds set that does not match the scope (missing member)', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const a = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'rough', geometry: squareGeometry() });
+        await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'fairway', geometry: squareGeometry() });
+
+        await expect(svc.reorder(TEST_COURSE_ID, null, [a.id])).rejects.toBeInstanceOf(ConflictError);
+    });
+
+    test('rejects an orderedIds set with an id from a different group', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const a = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'rough', geometry: squareGeometry() });
+        const holeFeature = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_1_ID,
+            type: 'fairway',
+            geometry: squareGeometry(),
+        });
+
+        await expect(svc.reorder(TEST_COURSE_ID, null, [a.id, holeFeature.id])).rejects.toBeInstanceOf(ConflictError);
+    });
+
+    test('does not affect other groups', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const hole2Feature = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_2_ID,
+            type: 'bunker',
+            geometry: squareGeometry(),
+        });
+
+        await svc.reorder(TEST_COURSE_ID, TEST_HOLE_1_ID, [`${TEST_COURSE_ID}-feature-green-1`]);
+
+        const hole2 = await svc.listByHole(TEST_HOLE_2_ID);
+        expect(hole2[0].id).toBe(hole2Feature.id);
+        expect(hole2[0].sortOrder).toBe(0);
+    });
+});
+
+describe('CourseFeaturesService.geojsonByCourse — D24 stackKey', () => {
+    test('course-level features get groupRank 0; hole features get groupRank = hole number', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const courseLevel = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: squareGeometry() });
+        const hole1Fairway = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_1_ID, // hole number 1
+            type: 'fairway',
+            geometry: squareGeometry(),
+        });
+
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        const byId = new Map(fc.features.map((f) => [f.id, f.properties]));
+
+        expect(byId.get(courseLevel.id)?.stackKey).toBe(0 * 4096 + courseLevel.sortOrder);
+        expect(byId.get(hole1Fairway.id)?.stackKey).toBe(1 * 4096 + hole1Fairway.sortOrder);
+        // Any hole-1 feature outranks any course-level feature (D24 composition order).
+        expect(byId.get(hole1Fairway.id)!.stackKey).toBeGreaterThan(byId.get(courseLevel.id)!.stackKey);
     });
 });
