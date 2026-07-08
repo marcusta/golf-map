@@ -5,12 +5,16 @@ import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from './features.service';
 import { DrawToolService } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
+import { HelpModalService } from '../editor/help-modal.component';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 
 const tpl = template(`
     <div class="stack-panel" bind="root" data-testid="stack-panel">
         <div class="stack-panel__section">
-            <h4 class="section-title">Feature stack</h4>
+            <div class="stack-panel__section-head">
+                <h4 class="section-title">Feature stack</h4>
+                <button bind="helpBtn" type="button" class="help-btn" title="Keyboard shortcuts (?)">?</button>
+            </div>
             <label class="scope-field">Scope
                 <select bind="scopeSelect" data-testid="stack-panel-scope"></select>
             </label>
@@ -65,6 +69,28 @@ export class FeatureStackPanelComponent extends Component {
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
                 color: ${t('text-muted')};
+            }
+
+            & .stack-panel__section-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: ${s('sm')};
+            }
+
+            & .help-btn {
+                width: 18px;
+                height: 18px;
+                flex-shrink: 0;
+                padding: 0;
+                border: 1px solid ${t('border')};
+                border-radius: 50%;
+                background: ${t('surface')};
+                color: ${t('text-muted')};
+                font-size: 0.68rem;
+                line-height: 1;
+                cursor: pointer;
+                &:hover { background: ${t('hover-bg')}; color: ${t('text')}; }
             }
 
             & .scope-field { ${field()} }
@@ -136,6 +162,7 @@ export class FeatureStackPanelComponent extends Component {
     private tool = this.inject(DrawToolService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
+    private helpModal = this.inject(HelpModalService);
 
     /**
      * Scope filter (course-level = null). Defaults to the draw target;
@@ -148,6 +175,7 @@ export class FeatureStackPanelComponent extends Component {
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
+            helpBtn: { onclick: () => this.helpModal.show() },
             empty: {
                 className: () => this.stack().length === 0 ? 'stack-empty show' : 'stack-empty',
             },

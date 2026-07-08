@@ -1,7 +1,19 @@
 import { di } from '@basics/core/client/core';
-import type { EditorTool } from '../editor/tool';
+import type { EditorTool, HelpSection } from '../editor/tool';
 import { MeasureToolService, MEASURE_TOOL_ID } from './measure-tool.service';
 import { MeasurePanelComponent } from './measure-panel.component';
+
+// Help-modal content (D27) — mirrors the measure panel's `.measure-panel__hints`.
+const HELP: HelpSection[] = [
+    {
+        title: 'Measuring',
+        shortcuts: [
+            { keys: 'Click', desc: 'Place a point (A, B, … extending the path)' },
+            { keys: 'Double-click / click near A', desc: 'End the path' },
+            { keys: 'Esc', desc: 'Clear the path' },
+        ],
+    },
+];
 
 /**
  * The `measure` EditorTool registry entry (editor/tools/index.ts). Thin
@@ -16,6 +28,7 @@ export const measureTool: EditorTool = {
     icon: '📏',
     order: 30,
     panel: MeasurePanelComponent,
+    help: HELP,
     attach: ctx => di.get(MeasureToolService).attach(ctx),
     activate: ctx => di.get(MeasureToolService).activate(ctx),
     deactivate: () => di.get(MeasureToolService).deactivate(),

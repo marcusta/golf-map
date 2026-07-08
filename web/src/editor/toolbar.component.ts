@@ -8,6 +8,7 @@ import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from '../draw/features.service';
 import type { EditorTool, ToolContext } from './tool';
 import { EDITOR_TOOLS } from './tools/index';
+import { HelpModalComponent } from './help-modal.component';
 
 const tpl = template(`
     <div class="editor-tools" bind="root" data-testid="editor-toolbar">
@@ -15,6 +16,7 @@ const tpl = template(`
         <div bind="panelHost" class="editor-tools__panel"></div>
     </div>
     <div bind="sidePanelHost" class="editor-tools-side" data-testid="editor-toolbar-side"></div>
+    <div bind="helpHost"></div>
 `);
 
 const toolBtnTpl = template(`
@@ -30,8 +32,9 @@ const toolBtnTpl = template(`
  * MapService.claimInteraction (per the interaction contract), runs each
  * tool's `attach` hook once per canvas mount, shows the active tool's
  * panel in a dock on the canvas's left edge (and, optionally, a second
- * `sidePanel` docked on the right edge), and handles ESC (tool.onEscape
- * first, then deactivation).
+ * `sidePanel` docked on the right edge), hosts the contextual help modal
+ * (help-modal.component.ts, D27), and handles ESC (help modal first if
+ * open, then tool.onEscape, then deactivation).
  *
  * Spawned by EditorCanvasComponent; one instance == one courseId (the
  * canvas is recreated per navigation). Tools never talk to this component
@@ -127,6 +130,7 @@ export class EditorToolbarComponent extends Component {
     private panelHost!: HTMLElement;
     private sidePanelChild: Component | null = null;
     private sidePanelHost!: HTMLElement;
+    private helpHost!: HTMLElement;
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -146,6 +150,7 @@ export class EditorToolbarComponent extends Component {
         });
         this.panelHost = this.ref(frag, 'panelHost');
         this.sidePanelHost = this.ref(frag, 'sidePanelHost');
+        this.helpHost = this.ref(frag, 'helpHost');
 
         const bar = this.ref(frag, 'bar');
         for (const tool of [...EDITOR_TOOLS].sort((a, b) => a.order - b.order)) {
@@ -168,6 +173,14 @@ export class EditorToolbarComponent extends Component {
     }
 
     onMount(): void {
+        // Help modal (D27): spawned FIRST so its own Escape listener
+        // (help-modal.component.ts) registers on window before this
+        // component's own ESC listener below — window keydown listeners
+        // fire in registration order, and the modal's handler
+        // stopImmediatePropagation's while open, so closing help never
+        // also falls through to tool.onEscape/deactivate.
+        this.spawn(HelpModalComponent, this.helpHost);
+
         // One-time attach hooks (persistent overlays, data loads) — their
         // disposers live until this canvas unmounts.
         for (const tool of EDITOR_TOOLS) {

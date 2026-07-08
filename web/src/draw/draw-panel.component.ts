@@ -5,11 +5,15 @@ import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from './features.service';
 import { DrawToolService, OFFSET_PRESETS } from './draw-tool.service';
 import { FEATURE_TYPES, FEATURE_STYLES } from './feature-palette';
+import { HelpModalService } from '../editor/help-modal.component';
 
 const tpl = template(`
     <div class="draw-panel" bind="root">
         <div class="draw-panel__section">
-            <h4 class="section-title">Feature type</h4>
+            <div class="draw-panel__section-head">
+                <h4 class="section-title">Feature type</h4>
+                <button bind="helpBtn" type="button" class="help-btn" title="Keyboard shortcuts (?)">?</button>
+            </div>
             <div bind="types" class="type-grid"></div>
         </div>
         <div class="draw-panel__section">
@@ -58,18 +62,6 @@ const tpl = template(`
             <button bind="deleteBtn" type="button" class="delete-btn"></button>
         </div>
         <div bind="status" class="draw-panel__status"></div>
-        <div class="draw-panel__hints">
-            <div><b>N</b> new polygon &nbsp;·&nbsp; <b>Enter</b>/click first point to close &nbsp;·&nbsp; <b>Esc</b> cancel</div>
-            <div>Click: smooth point · <b>Shift</b>-click: corner point</div>
-            <div><b>⌘Z</b> undo · <b>⌘⇧Z</b>/<b>⌘Y</b> redo (points while drawing)</div>
-            <div><b>⌘</b>-click: multi-select · drag empty ground: marquee (<b>Alt</b>: touch)</div>
-            <div>Drag inside selection: move · <b>⌘D</b> duplicate</div>
-            <div>Drag vertex to move · click edge to insert</div>
-            <div><b>Shift</b>-click/drag: select vertices · <b>I</b> insert between</div>
-            <div><b>C</b> toggle vertex smooth/corner · right-click: remove</div>
-            <div>Bezier only: <b>Alt</b>-drag: handles · <b>Alt</b>-click: straighten</div>
-            <div><b>Del</b> delete selection (or selected vertices)</div>
-        </div>
     </div>
 `);
 
@@ -118,6 +110,28 @@ export class DrawPanelComponent extends Component {
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
                 color: ${t('text-muted')};
+            }
+
+            & .draw-panel__section-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: ${s('sm')};
+            }
+
+            & .help-btn {
+                width: 18px;
+                height: 18px;
+                flex-shrink: 0;
+                padding: 0;
+                border: 1px solid ${t('border')};
+                border-radius: 50%;
+                background: ${t('surface')};
+                color: ${t('text-muted')};
+                font-size: 0.68rem;
+                line-height: 1;
+                cursor: pointer;
+                &:hover { background: ${t('hover-bg')}; color: ${t('text')}; }
             }
 
             & .type-grid {
@@ -328,24 +342,18 @@ export class DrawPanelComponent extends Component {
                 min-height: 1.4em;
                 &.error { color: ${t('error')}; }
             }
-
-            & .draw-panel__hints {
-                padding: ${s('xs')} ${s('md')} ${s('sm')};
-                font-size: 0.68rem;
-                line-height: 1.5;
-                color: ${t('text-muted')};
-                border-top: 1px solid ${t('border')};
-            }
         }
     `;
 
     private tool = this.inject(DrawToolService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
+    private helpModal = this.inject(HelpModalService);
     private holeSelect!: HTMLSelectElement;
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
+            helpBtn: { onclick: () => this.helpModal.show() },
             newPoly: {
                 onclick: () => {
                     if (this.tool.state.isDrawing.peek()) this.tool.state.disarm();

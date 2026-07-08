@@ -41,6 +41,15 @@
 // `panel`, docked on the canvas's RIGHT edge instead. Independent of
 // `panel` — a tool can have either, both, or neither.
 //
+// ## Help (D27)
+//
+// A tool may declare `help`: an array of titled shortcut sections shown in
+// the contextual help modal (editor/help-modal.component.ts) while the tool
+// is active — opened by `?` (guarded against input targets) or the small
+// `?` buttons in the dock headers. Static data, not a Component: the modal
+// reads whichever tool currently holds `MapService.interactionMode`. A tool
+// with no `help` (or none active) falls back to a generic empty state.
+//
 // ## Overlays
 //
 // Use `ctx.map.addOverlayLayer(id, …)` with your tool id as the overlay id
@@ -77,6 +86,18 @@ export interface ToolContext {
     track(dispose: () => void): void;
 }
 
+/** One row in a help-modal section: a key combo + what it does. */
+export interface HelpShortcut {
+    keys: string;
+    desc: string;
+}
+
+/** A titled group of shortcuts shown together in the help modal. */
+export interface HelpSection {
+    title: string;
+    shortcuts: HelpShortcut[];
+}
+
 /** A toolbar tool. Register instances in editor/tools/index.ts. */
 export interface EditorTool {
     /** Unique id — doubles as the MapService interaction mode string. */
@@ -91,6 +112,8 @@ export interface EditorTool {
     panel?: new () => Component;
     /** Optional RIGHT-edge dock panel shown while active (see header doc). */
     sidePanel?: new () => Component;
+    /** Optional contextual-help sections shown by `?` (see header doc). */
+    help?: HelpSection[];
     /** Optional one-time setup per canvas mount (see header doc). */
     attach?(ctx: ToolContext): void;
     /** Tool selected — register interaction handlers (see header doc). */
