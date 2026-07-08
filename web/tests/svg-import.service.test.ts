@@ -35,6 +35,7 @@ function fakeApi(failAfter = Infinity) {
         },
         update: reject,
         remove: reject,
+        reorder: reject,
     };
     return { api, created };
 }

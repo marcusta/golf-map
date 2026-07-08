@@ -1,4 +1,4 @@
-import { Signal, Computed, effect } from '@basics/core/client/core';
+import { Signal, Computed, effect, di } from '@basics/core/client/core';
 import { EntityStore } from '@basics/core/client/entity-store';
 import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
@@ -8,7 +8,16 @@ import type { FilterSpecification } from 'maplibre-gl';
 import { flattenRing, type FeatureGeometry } from '../geo/bezier';
 import { sweref99tmToWgs84 } from '../geo/transform';
 import type { MapService } from '../map/map.service';
-import { typeColorExpression, typeSortKeyExpression, SELECTION_COLOR } from './feature-palette';
+import { typeColorExpression, SELECTION_COLOR } from './feature-palette';
+import { CourseDetailService } from '../course-detail/course-detail.service';
+
+/**
+ * D24 global composition key: `groupRank * 4096 + sortOrder`, groupRank 0 =
+ * course-level, else the hole's number. Matches the server's
+ * `geojsonByCourse` formula exactly (course-features.service.ts) so live-edit
+ * GeoJSON and server-materialized GeoJSON agree.
+ */
+const GROUP_RANK_SPAN = 4096;
 
 /** Flattening tolerance in meters — matches the server's GeoJSON derivation. */
 export const FLATTEN_TOLERANCE_M = 0.25;
@@ -72,6 +81,9 @@ export class FeaturesService {
     readonly saving = new Signal(false);
     readonly saveError = new Signal<RequestError | null>(null);
 
+    /** Hole numbers for the D24 `stackKey` groupRank — set before `geojson`/`stackTopDown` (both Computed eagerly on construction). */
+    private courseDetail = di.get(CourseDetailService);
+
     private loadedCourseId: string | null = null;
 
     /**
@@ -118,6 +130,8 @@ export class FeaturesService {
                     id: f.id,
                     type: f.type,
                     holeId: f.holeId,
+                    sortOrder: f.sortOrder,
+                    stackKey: this.stackKeyFor(f),
                 },
                 geometry: {
                     type: 'Polygon',
@@ -127,7 +141,35 @@ export class FeaturesService {
         return { type: 'FeatureCollection', features };
     });
 
+    /**
+     * Every feature across the whole course (hidden types included — hit
+     * testing decides what to skip), topmost-first by the D24 global stack
+     * key. Cached: only recomputes when the store or hole numbers change,
+     * not per hit-test call.
+     */
+    readonly stackTopDown = new Computed<CourseFeature[]>(() =>
+        [...this.store.items.get()].sort((a, b) => this.stackKeyFor(b) - this.stackKeyFor(a)));
+
     constructor(private featuresApi: CourseFeaturesApi = api.courseFeatures) {}
+
+    /** D24 stack key for one feature (see `GROUP_RANK_SPAN`). */
+    private stackKeyFor(f: CourseFeature): number {
+        const groupRank = f.holeId === null
+            ? 0
+            : this.courseDetail.holes.get().find(h => h.id === f.holeId)?.number ?? 0;
+        return groupRank * GROUP_RANK_SPAN + f.sortOrder;
+    }
+
+    /**
+     * A group's features (course-level when `holeId` is null) ordered
+     * bottom-to-top by `sortOrder` (D23). Not memoized — cheap filter+sort
+     * over one group, called on demand (panel row lists, reorder ops).
+     */
+    stackFor(holeId: string | null): CourseFeature[] {
+        return this.store.items.get()
+            .filter(f => f.holeId === holeId)
+            .sort((a, b) => a.sortOrder - b.sortOrder);
+    }
 
     /** Load all features for a course. Cached per courseId. */
     async load(courseId: string): Promise<void> {
@@ -248,6 +290,60 @@ export class FeaturesService {
         return true;
     }
 
+    // ── Stack reorder (D27 verbs) ───────────────────────────────────────
+
+    /** Raise the given features one step toward the top of their group's stack. */
+    async raise(ids: string[]): Promise<boolean> {
+        return this.reorderOp(ids, order => shiftBlock(order, new Set(ids), 1));
+    }
+
+    /** Lower the given features one step toward the bottom of their group's stack. */
+    async lower(ids: string[]): Promise<boolean> {
+        return this.reorderOp(ids, order => shiftBlock(order, new Set(ids), -1));
+    }
+
+    /** Raise the given features to the top of their group's stack. */
+    async raiseToTop(ids: string[]): Promise<boolean> {
+        return this.reorderOp(ids, order => moveBlockToEdge(order, new Set(ids), 'top'));
+    }
+
+    /** Lower the given features to the bottom of their group's stack. */
+    async lowerToBottom(ids: string[]): Promise<boolean> {
+        return this.reorderOp(ids, order => moveBlockToEdge(order, new Set(ids), 'bottom'));
+    }
+
+    /**
+     * Shared reorder plumbing: resolve `ids`' shared group (they must all
+     * share one `holeId` — mixed-group calls are a no-op, since D23's stack
+     * is scoped per group), compute the new order, patch `sortOrder`
+     * optimistically, then persist via the reorder endpoint. Reverts (via
+     * `reload()`) on failure, matching `update`'s error handling.
+     */
+    private async reorderOp(ids: string[], compute: (order: string[]) => string[]): Promise<boolean> {
+        const courseId = this.loadedCourseId;
+        if (!courseId || ids.length === 0) return false;
+        const rows = ids.map(id => this.store.items.peek().find(f => f.id === id));
+        const first = rows[0];
+        if (!first || rows.some(r => !r || r.holeId !== first.holeId)) return false;
+        const holeId = first.holeId;
+        const order = this.stackFor(holeId).map(f => f.id);
+        const nextOrder = compute(order);
+        if (nextOrder.length === order.length && nextOrder.every((id, i) => id === order[i])) return true; // no-op (already at the edge)
+
+        // Optimistic local patch — mirrors furniture.service.ts's applySortOrder.
+        nextOrder.forEach((id, index) => {
+            const row = this.store.items.peek().find(f => f.id === id);
+            if (row) this.store.patch({ ...row, sortOrder: index });
+        });
+        const result = await request(this.saving, this.saveError, () =>
+            this.featuresApi.reorder({ courseId, holeId, orderedIds: nextOrder }));
+        if (result === undefined) {
+            await this.reload();
+            return false;
+        }
+        return true;
+    }
+
     /**
      * Bind the persistent features overlay to the map: adds fill + outline
      * + selection-highlight layers when the map is ready, keeps the data in
@@ -277,10 +373,10 @@ export class FeaturesService {
                     {
                         id: 'features-fill',
                         type: 'fill',
-                        // Fixed golf z-order (see TYPE_Z_ORDER): sort keys
-                        // make small features (bunker/water/path) render on
-                        // top of broad ground types within this one layer.
-                        layout: { 'fill-sort-key': typeSortKeyExpression() as never },
+                        // D23/D24: explicit per-feature stack order, not the
+                        // TYPE_Z_ORDER heuristic — sort keys make later-in-
+                        // stack features render on top within this one layer.
+                        layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
                         paint: {
                             'fill-color': typeColorExpression('fill') as never,
                             'fill-opacity': draggingHide(0.4) as never,
@@ -289,7 +385,7 @@ export class FeaturesService {
                     {
                         id: 'features-outline',
                         type: 'line',
-                        layout: { 'line-sort-key': typeSortKeyExpression() as never },
+                        layout: { 'line-sort-key': ['get', 'stackKey'] as never },
                         paint: {
                             'line-color': typeColorExpression('outline') as never,
                             'line-width': 1.5,
@@ -348,4 +444,41 @@ export class FeaturesService {
 /** features-selected layer filter for a selection set. */
 function selectionFilter(ids: ReadonlySet<string>): FilterSpecification {
     return ['in', ['get', 'id'], ['literal', [...ids]]] as unknown as FilterSpecification;
+}
+
+/**
+ * Move the `ids` subset of `order` one step toward the end (dir=1) or start
+ * (dir=-1), preserving their relative order, by swapping past exactly one
+ * neighboring non-selected item. No-op if the block is already at that edge.
+ * Exported for unit tests.
+ */
+export function shiftBlock(order: readonly string[], ids: ReadonlySet<string>, dir: 1 | -1): string[] {
+    const next = [...order];
+    const indices = next.reduce<number[]>((acc, id, i) => {
+        if (ids.has(id)) acc.push(i);
+        return acc;
+    }, []);
+    if (indices.length === 0) return next;
+    if (dir === 1) {
+        const last = indices[indices.length - 1]!;
+        if (last >= next.length - 1) return next;
+        const [neighbor] = next.splice(last + 1, 1);
+        next.splice(indices[0]!, 0, neighbor!);
+    } else {
+        const first = indices[0]!;
+        if (first <= 0) return next;
+        const [neighbor] = next.splice(first - 1, 1);
+        next.splice(indices[indices.length - 1]!, 0, neighbor!);
+    }
+    return next;
+}
+
+/**
+ * Move the `ids` subset of `order` to the top or bottom, preserving their
+ * relative order. Exported for unit tests.
+ */
+export function moveBlockToEdge(order: readonly string[], ids: ReadonlySet<string>, edge: 'top' | 'bottom'): string[] {
+    const selected = order.filter(id => ids.has(id));
+    const rest = order.filter(id => !ids.has(id));
+    return edge === 'top' ? [...rest, ...selected] : [...selected, ...rest];
 }

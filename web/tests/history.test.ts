@@ -41,6 +41,7 @@ function fakeApi(initial: CourseFeature[] = []) {
                 type: input.type,
                 geometry: structuredClone(input.geometry),
                 geojson: null,
+                sortOrder: 0,
                 version: 1,
             };
             rows.set(feature.id, feature);
@@ -61,12 +62,16 @@ function fakeApi(initial: CourseFeature[] = []) {
             rows.delete(input.id);
             return { ok: true };
         },
+        async reorder(input) {
+            input.orderedIds.forEach((id, i) => { const row = rows.get(id); if (row) row.sortOrder = i; });
+            return { ok: true };
+        },
     };
     return { api, rows };
 }
 
 function feature(id: string, type = 'bunker', version = 1, geometry = squareGeometry()): CourseFeature {
-    return { id, courseId: 'c1', holeId: null, type, geometry, geojson: null, version };
+    return { id, courseId: 'c1', holeId: null, type, geometry, geojson: null, sortOrder: 0, version };
 }
 
 async function makeService(initial: CourseFeature[]) {

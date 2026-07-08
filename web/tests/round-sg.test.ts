@@ -36,6 +36,7 @@ function squareFeature(id: string, type: string, minX: number, maxX: number, min
             }],
         },
         geojson: null,
+        sortOrder: 0,
         version: 1,
     };
 }

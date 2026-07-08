@@ -46,12 +46,14 @@ export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
 export const SELECTION_COLOR = '#ffd43b';
 
 /**
- * Fixed golf z-ordering of feature fills, bottom → top: broad ground types
- * first, small features (bunkers, water, paths) on top so overlaps render
- * sensibly. Implemented as MapLibre `fill-sort-key`/`line-sort-key` on the
- * features overlay (higher key renders later = on top) — one layer pair,
- * no per-type layer explosion. Per-feature z-order is out of scope (no
- * sort_order column).
+ * Fixed golf z-ordering of feature TYPES, bottom → top: broad ground types
+ * first, small features (bunkers, water, paths) on top. Per D26 this is now
+ * a HEURISTIC ONLY, consulted by the server on feature `create()` to pick
+ * where a new shape lands in its group's explicit `sort_order` stack — it is
+ * no longer consulted at render/hit/lie time (that's D23's stack order, see
+ * `CourseFeature.sortOrder`/`stackKey`). `typeSortKeyExpression()` below
+ * survives only for legacy iOS rendering until T27 ports the stack-key
+ * expression there.
  */
 export const TYPE_Z_ORDER: readonly FeatureType[] = [
     'outside',

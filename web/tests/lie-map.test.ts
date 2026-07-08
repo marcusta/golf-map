@@ -28,6 +28,7 @@ function squareFeature(
             }],
         },
         geojson: null,
+        sortOrder: 0,
         version: 1,
     };
 }
@@ -75,6 +76,7 @@ describe('buildLieMap', () => {
             type: 'bunker',
             geometry: { crs: 'EPSG:3006', rings: [{ points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }] },
             geojson: null,
+            sortOrder: 0,
             version: 1,
         };
         const map = buildLieMap([degenerate]);

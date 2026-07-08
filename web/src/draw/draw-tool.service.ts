@@ -800,6 +800,14 @@ export class DrawToolService {
                 e.preventDefault();
                 this.toggleHoveredVertexCorner();
             }
+        } else if (e.key === 'PageUp' || e.key === 'PageDown' || e.key === 'Home' || e.key === 'End') {
+            // D27 stack-reorder bindings (Inkscape-style — not [ / ], which
+            // needs AltGr on Swedish layouts). The map claims paging/Home/End
+            // for its own navigation, so preventDefault whenever we act.
+            if (!meta && !this.state.isDrawing.peek() && (this.features?.selectedIds.peek().size ?? 0) > 0) {
+                e.preventDefault();
+                void this.reorderSelected(e.key as 'PageUp' | 'PageDown' | 'Home' | 'End');
+            }
         }
     }
 
@@ -817,6 +825,23 @@ export class DrawToolService {
         if (!this.features) return;
         this.clearTransientOpState();
         void this.history.redo(this.features);
+    }
+
+    /**
+     * D27 stack-reorder verbs for the selected feature(s) (PageUp/PageDown/
+     * Home/End, panel buttons). Deliberately NOT undo-history integrated —
+     * `EditHistory` entries are per-feature geometry/type/holeId diffs
+     * (history.ts), which doesn't fit a whole-group order rewrite; see the
+     * T23 report.
+     */
+    private async reorderSelected(key: 'PageUp' | 'PageDown' | 'Home' | 'End'): Promise<void> {
+        const features = this.features;
+        if (!features) return;
+        const ids = [...features.selectedIds.peek()];
+        if (key === 'PageUp') await features.raise(ids);
+        else if (key === 'PageDown') await features.lower(ids);
+        else if (key === 'Home') await features.raiseToTop(ids);
+        else await features.lowerToBottom(ids);
     }
 
     /**

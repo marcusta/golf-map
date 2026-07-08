@@ -33,6 +33,7 @@ function makeFeature(id = 'green-1'): CourseFeature {
             }],
         },
         geojson: null,
+        sortOrder: 0,
         version: 1,
     };
 }
