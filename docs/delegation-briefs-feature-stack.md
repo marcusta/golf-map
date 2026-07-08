@@ -99,8 +99,13 @@ smallest-area — cite D23). (4) `shared/strategy/aim.ts`: delete the internal
 order IS priority order, topmost-first (D23 contract change); `lie-map.ts` is the only production
 caller and now supplies that order; fix any test fixtures that relied on area re-sorting. Tests:
 acceptance scenario 1 as ONE test driving render-key, hit, and lie from the same fixture;
-alt-click cycle incl. wrap; lie-map cross-group precedence (scenario 3). **Done:** all four sites
-share stack semantics; strategy + web tests green (`cd web && bun test`, `bun test shared/`).
+alt-click cycle incl. wrap; lie-map cross-group precedence (scenario 3). (5) Small carry-over
+from T23 review: the transient drag-ghost layers in this same file (`draw-ghost-fill`, ~line
+1509) still sort by `typeSortKeyExpression()` — have ghosts carry the original feature's
+`stackKey` (expose `FeaturesService.stackKeyFor` or equivalent) and switch those layers to
+`['get', 'stackKey']`, then drop the now-unused `typeSortKeyExpression` import here. **Done:**
+all four sites share stack semantics; strategy + web tests green (`cd web && bun test`,
+`bun test shared/`).
 
 ### T25 · Feature-stack panel (right dock) — **Sonnet first; escalate to Opus only if the ergonomics come back clunky**
 
