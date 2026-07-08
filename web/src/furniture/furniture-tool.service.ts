@@ -8,7 +8,7 @@ import type { Hole } from '../../../shared/api/holes.gen';
 import type { Tee } from '../../../shared/api/tees.gen';
 import type { Pin } from '../../../shared/api/pins.gen';
 import type { AimPoint } from '../../../shared/api/aim-points.gen';
-import { FurnitureService, FURNITURE_TOOL_ID, defaultTeeName, greenPointFields, type GreenPoint, type Selection } from './furniture.service';
+import { FurnitureService, FURNITURE_TOOL_ID, defaultTeeName, finiteWgs84Point, greenPointFields, type GreenPoint, type Selection } from './furniture.service';
 import { FURNITURE_OVERLAY_ID, buildFurnitureGeojson, furnitureLayers } from './furniture-overlay';
 
 /** Screen-px radius for click-to-select and mousedown-to-drag hit testing. */
@@ -156,11 +156,9 @@ export class FurnitureToolService {
         });
         return effect(() => {
             const holeId = frameKey.get();
-            console.log('[ARC] framing effect t=', performance.now().toFixed(0), 'frameKey=', holeId, 'ready=', ctx.map.ready.peek());
             if (holeId === null || !ctx.map.ready.get()) return;
             untrack(() => {
                 const bounds = this.holeBounds(holeId);
-                console.log('[ARC] framing → fitBounds hole', holeId, 'bounds?', !!bounds);
                 if (bounds) ctx.map.fitBounds(bounds);
             });
         });
@@ -173,15 +171,24 @@ export class FurnitureToolService {
      */
     private holeBounds(holeId: string): [number, number, number, number] | null {
         const pts: Array<{ lat: number; lon: number }> = [];
-        for (const t of this.svc.tees.items.peek()) if (t.holeId === holeId) pts.push(t);
-        for (const a of this.svc.aims.items.peek()) if (a.holeId === holeId) pts.push(a);
+        for (const t of this.svc.tees.items.peek()) {
+            const pos = t.holeId === holeId ? finiteWgs84Point(t.lat, t.lon) : null;
+            if (pos) pts.push(pos);
+        }
+        for (const a of this.svc.aims.items.peek()) {
+            const pos = a.holeId === holeId ? finiteWgs84Point(a.lat, a.lon) : null;
+            if (pos) pts.push(pos);
+        }
         const green = this.svc.greenForHole(holeId);
         if (green) {
             for (const point of ['center', 'front', 'back'] as const) {
                 const pos = this.svc.greenPointPos(green, point);
                 if (pos) pts.push(pos);
             }
-            for (const p of this.svc.pins.items.peek()) if (p.greenId === green.id) pts.push(p);
+            for (const p of this.svc.pins.items.peek()) {
+                const pos = p.greenId === green.id ? finiteWgs84Point(p.lat, p.lon) : null;
+                if (pos) pts.push(pos);
+            }
         }
         if (pts.length === 0) return null;
         let w = pts[0]!.lon, e = pts[0]!.lon, s = pts[0]!.lat, n = pts[0]!.lat;
@@ -474,6 +481,55 @@ export class FurnitureToolService {
         else await this.svc.removeAim(sel.id);
     }
 
+    /** Append a hole, select it, and leave the user in furniture mode ready to place markers. */
+    async addHole(): Promise<void> {
+        const courseId = this.ctx?.courseId ?? this.router.params<{ courseId: string }>('/course/:courseId').peek().courseId;
+        if (!courseId) return;
+        const created = await this.courseDetail.addHole(4);
+        if (!created) return;
+        this.router.navigate(`/course/${courseId}`, { query: { hole: String(created.number) } });
+        const holeIds = this.courseDetail.holes.peek().map(h => h.id);
+        this.svc.setHoleIds(holeIds);
+        await this.svc.reload(holeIds);
+        this.svc.disarm();
+        this.svc.arm('tee');
+    }
+
+    /** Delete the selected hole and select the next sensible hole after server-side renumbering. */
+    async deleteSelectedHole(): Promise<void> {
+        const hole = this.selectedHole.peek();
+        const courseId = this.ctx?.courseId ?? hole?.courseId;
+        if (!hole || !courseId) return;
+
+        const ok = await this.confirm.confirm({
+            title: `Delete hole ${hole.number}?`,
+            body: 'This removes the hole and its tees, green, pins, aim points, hazards, and hole-specific drawings.',
+            detail: 'Later holes will be renumbered so the course list stays continuous.',
+            confirmLabel: `Delete hole ${hole.number}`,
+            cancelLabel: 'Keep hole',
+            tone: 'danger',
+            layout: 'review',
+        });
+        if (!ok) return;
+
+        const removedNumber = hole.number;
+        const removed = await this.courseDetail.removeHole(hole.id);
+        const holes = this.courseDetail.holes.peek();
+        const holeIds = holes.map(h => h.id);
+        this.svc.setHoleIds(holeIds);
+        await this.svc.reload(holeIds);
+        this.svc.select(null);
+        this.svc.disarm();
+        if (!removed) return;
+
+        const next = holes.find(h => h.number === removedNumber) ?? holes.at(-1) ?? null;
+        if (next) {
+            this.router.navigate(`/course/${courseId}`, { query: { hole: String(next.number) } });
+        } else {
+            this.router.navigate(`/course/${courseId}`);
+        }
+    }
+
     // ── Hit testing ───────────────────────────────────────────────────────────
 
     /** Nearest tee/pin/aim/green marker within `radiusPx` of the screen point. */
@@ -486,7 +542,9 @@ export class FurnitureToolService {
         let best: MarkerHit | null = null;
         let bestDist = radiusPx;
         const consider = (hit: MarkerHit, lat: number, lon: number) => {
-            const p = map.project([lon, lat]);
+            const pos = finiteWgs84Point(lat, lon);
+            if (!pos) return;
+            const p = map.project([pos.lon, pos.lat]);
             const d = Math.hypot(p.x - screen.x, p.y - screen.y);
             if (d < bestDist) { bestDist = d; best = hit; }
         };

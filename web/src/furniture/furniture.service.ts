@@ -186,6 +186,19 @@ export class FurnitureService {
         if (this.loadedCourseId === courseId) return;
         this.selection.set(null);
         this.activeTeeName.set(null); // client-side line-origin is per-session, not persisted
+        await this.fetchAndApply(courseId, holeIds);
+    }
+
+    /** Re-fetch the loaded course (store re-sync after a failed save). */
+    async reload(holeIds: string[]): Promise<void> {
+        const courseId = this.loadedCourseId;
+        if (!courseId) return;
+        this.activeTeeName.set(null); // client-side line-origin is per-session, not persisted
+        await this.fetchAndApply(courseId, holeIds);
+    }
+
+    private async fetchAndApply(courseId: string, holeIds: string[]): Promise<void> {
+        this.selection.set(null);
         const data = await request(this.loading, this.error, async () => {
             const [tees, pins, perHole] = await Promise.all([
                 this.teesApi.listByCourse({ courseId }),
@@ -211,14 +224,6 @@ export class FurnitureService {
             this.greens.set(data.perHole.map(h => h.green).filter((g): g is Green => g !== null));
         });
         this.loadedCourseId = courseId;
-    }
-
-    /** Re-fetch the loaded course (store re-sync after a failed save). */
-    async reload(holeIds: string[]): Promise<void> {
-        const courseId = this.loadedCourseId;
-        if (!courseId) return;
-        this.loadedCourseId = null;
-        await this.load(courseId, holeIds);
     }
 
     // ── Selection / placement state machine ────────────────────────────────
@@ -281,13 +286,9 @@ export class FurnitureService {
 
     /** Position of a green point (center/front/back), or null when unset. */
     greenPointPos(green: Green, point: GreenPoint): { lat: number; lon: number } | null {
-        if (point === 'center') return { lat: green.centerLat, lon: green.centerLon };
-        if (point === 'front') {
-            return green.frontLat !== null && green.frontLon !== null
-                ? { lat: green.frontLat, lon: green.frontLon } : null;
-        }
-        return green.backLat !== null && green.backLon !== null
-            ? { lat: green.backLat, lon: green.backLon } : null;
+        if (point === 'center') return finiteWgs84Point(green.centerLat, green.centerLon);
+        if (point === 'front') return finiteWgs84Point(green.frontLat, green.frontLon);
+        return finiteWgs84Point(green.backLat, green.backLon);
     }
 
     /** Which of a hole's green points exist (for the panel summary). */
@@ -296,8 +297,8 @@ export class FurnitureService {
         if (!g) return null;
         return {
             center: true, // a row always has a center (create requires it)
-            front: g.frontLat !== null && g.frontLon !== null,
-            back: g.backLat !== null && g.backLon !== null,
+            front: finiteWgs84Point(g.frontLat, g.frontLon) !== null,
+            back: finiteWgs84Point(g.backLat, g.backLon) !== null,
         };
     }
 
@@ -597,4 +598,14 @@ export function greenPointFields(point: GreenPoint, lat: number, lon: number):
     if (point === 'center') return { centerLat: lat, centerLon: lon };
     if (point === 'front') return { frontLat: lat, frontLon: lon };
     return { backLat: lat, backLon: lon };
+}
+
+export function finiteWgs84Point(
+    lat: number | null | undefined,
+    lon: number | null | undefined,
+): { lat: number; lon: number } | null {
+    if (typeof lat !== 'number' || typeof lon !== 'number') return null;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    if (lat < -90 || lat > 90) return null;
+    return { lat, lon };
 }

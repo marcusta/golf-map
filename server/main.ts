@@ -79,6 +79,6 @@ mount(app, '/api', createMapBuildApi(mapBuildService));
 // directly without session cookies) — mounted at the root, not under /api.
 app.route('/', createTileRoutes(assetsService));
 
-export default { port: config.port, fetch: app.fetch };
+Bun.serve({ port: config.port, fetch: app.fetch });
 
 log.info({ msg: 'server started', port: config.port });

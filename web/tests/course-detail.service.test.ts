@@ -40,10 +40,13 @@ function hole(id: string, courseId: string, number: number, par = 4): Hole {
     };
 }
 
-function fakeApis(courses: Course[], holes: Hole[], opts: { publishFails?: boolean } = {}) {
+function fakeApis(courses: Course[], holes: Hole[], opts: { publishFails?: boolean; removeConflictsOnce?: boolean } = {}) {
     const reject = () => Promise.reject(new Error('not under test'));
     let getCalls = 0;
     let publishCalls = 0;
+    let createHoleCalls = 0;
+    let removeHoleCalls = 0;
+    let removeConflicted = false;
     const coursesApi: CoursesApi = {
         list: reject,
         get: async ({ id }) => {
@@ -71,11 +74,39 @@ function fakeApis(courses: Course[], holes: Hole[], opts: { publishFails?: boole
     const holesApi: HolesApi = {
         listByCourse: async ({ courseId }) => holes.filter(h => h.courseId === courseId),
         get: reject,
-        create: reject,
+        create: async input => {
+            createHoleCalls++;
+            const row = hole(`h${input.number}`, input.courseId, input.number, input.par);
+            holes.push(row);
+            return row;
+        },
         update: reject,
-        remove: reject,
+        remove: async ({ id, version }) => {
+            removeHoleCalls++;
+            const found = holes.find(h => h.id === id);
+            if (!found) throw new ApiError(404, 'Not found');
+            if (opts.removeConflictsOnce && !removeConflicted) {
+                removeConflicted = true;
+                found.version++;
+                throw new ApiError(409, 'Version conflict');
+            }
+            if (found.version !== version) throw new ApiError(409, 'Version conflict');
+            const removedNumber = found.number;
+            holes.splice(holes.indexOf(found), 1);
+            for (const h of holes) {
+                if (h.courseId === found.courseId && h.number > removedNumber) h.number -= 1;
+            }
+            return { ok: true };
+        },
     };
-    return { coursesApi, holesApi, getCalls: () => getCalls, publishCalls: () => publishCalls };
+    return {
+        coursesApi,
+        holesApi,
+        getCalls: () => getCalls,
+        publishCalls: () => publishCalls,
+        createHoleCalls: () => createHoleCalls,
+        removeHoleCalls: () => removeHoleCalls,
+    };
 }
 
 test('load sets course and holes sorted by number', async () => {
@@ -162,4 +193,52 @@ test('publish failure sets publishError and refetches the course', async () => {
     // re-synced from the server so a stale version self-heals
     expect(getCalls()).toBe(before + 1);
     expect(svc.course.get()?.name).toBe('Masters');
+});
+
+test('addHole appends the next hole number, selects it in loaded state, and updates total par', async () => {
+    const { coursesApi, holesApi, createHoleCalls } = fakeApis(
+        [course('c1', 'Masters')],
+        [hole('h1', 'c1', 1, 4), hole('h2', 'c1', 2, 3)],
+    );
+    const svc = new CourseDetailService(coursesApi, holesApi);
+    await svc.load('c1');
+
+    const created = await svc.addHole();
+
+    expect(created?.number).toBe(3);
+    expect(created?.par).toBe(4);
+    expect(svc.holes.get().map(h => h.number)).toEqual([1, 2, 3]);
+    expect(svc.totalPar.get()).toBe(11);
+    expect(createHoleCalls()).toBe(1);
+});
+
+test('removeHole deletes through the API and replaces holes with the compact server order', async () => {
+    const backing = [hole('h1', 'c1', 1, 4), hole('h2', 'c1', 2, 3), hole('h3', 'c1', 3, 5)];
+    const { coursesApi, holesApi, removeHoleCalls } = fakeApis([course('c1', 'Masters')], backing);
+    const svc = new CourseDetailService(coursesApi, holesApi);
+    await svc.load('c1');
+
+    const ok = await svc.removeHole('h2');
+
+    expect(ok).toBe(true);
+    expect(svc.holes.get().map(h => [h.id, h.number])).toEqual([['h1', 1], ['h3', 2]]);
+    expect(svc.totalPar.get()).toBe(9);
+    expect(removeHoleCalls()).toBe(1);
+});
+
+test('removeHole retries once after a stale-version conflict', async () => {
+    const backing = [hole('h1', 'c1', 1, 4), hole('h2', 'c1', 2, 3)];
+    const { coursesApi, holesApi, removeHoleCalls } = fakeApis(
+        [course('c1', 'Masters')],
+        backing,
+        { removeConflictsOnce: true },
+    );
+    const svc = new CourseDetailService(coursesApi, holesApi);
+    await svc.load('c1');
+
+    const ok = await svc.removeHole('h2');
+
+    expect(ok).toBe(true);
+    expect(removeHoleCalls()).toBe(2);
+    expect(svc.holes.get().map(h => h.id)).toEqual(['h1']);
 });

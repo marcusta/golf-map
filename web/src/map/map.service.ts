@@ -128,7 +128,6 @@ export class MapService {
         // size. Poll cheaply, resize on mismatch, and re-fit the course the
         // first time we recover from a degenerate initial size.
         const degenerateAtInit = container.clientWidth === 0 || container.clientHeight === 0;
-        console.log('[ARC] init degenerateAtInit=', degenerateAtInit, 'size=', container.clientWidth, 'x', container.clientHeight);
         let needsRefit = degenerateAtInit;
         const watchdog = setInterval(() => {
             if (container.clientWidth === 0 || container.clientHeight === 0) return;
@@ -137,9 +136,7 @@ export class MapService {
                 map.resize();
                 if (needsRefit) {
                     needsRefit = false;
-                    console.log('[ARC] WATCHDOG refit→course t=', performance.now().toFixed(0), 'zoomBefore=', map.getZoom().toFixed(2));
                     map.fitBounds(boundsToArray(manifest.bounds), { padding: 24, duration: 0 });
-                    console.log('[ARC] WATCHDOG refit done zoomAfter=', map.getZoom().toFixed(2));
                 }
             }
         }, 250);
@@ -224,7 +221,6 @@ export class MapService {
         bounds: [number, number, number, number],
         opts: { padding?: number; maxZoom?: number } = {},
     ): void {
-        console.log('[ARC] fitBounds t=', performance.now().toFixed(0), 'caller=', (new Error().stack || '').split('\n')[2]?.trim());
         const map = this.map.get();
         if (!map) return;
         const [w, s, e, n] = bounds;

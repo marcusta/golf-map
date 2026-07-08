@@ -148,6 +148,65 @@ export class HolesService {
         const row = await this.byId(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Hole ${id} not found`);
         if (row.version !== version) throw new VersionConflictError('holes', id);
-        await this.deleteById(id).execute();
+        await this.db.transaction().execute(async trx => {
+            const later = await trx
+                .selectFrom('holes')
+                .select(['id', 'number'])
+                .where('course_id', '=', row.course_id)
+                .where('number', '>', row.number)
+                .orderBy('number')
+                .execute();
+
+            await this.deleteById(id, trx).execute();
+
+            const remainingNumbers = (await trx
+                .selectFrom('holes')
+                .select('number')
+                .where('course_id', '=', row.course_id)
+                .execute()).map(hole => hole.number);
+            const planIds = (await trx
+                .selectFrom('game_plans')
+                .select('id')
+                .where('course_id', '=', row.course_id)
+                .execute()).map(plan => plan.id);
+            if (planIds.length > 0) {
+                let deletePlanRows = trx
+                    .deleteFrom('game_plan_holes')
+                    .where('game_plan_id', 'in', planIds);
+                deletePlanRows = remainingNumbers.length === 0
+                    ? deletePlanRows
+                    : deletePlanRows.where('hole_number', 'not in', remainingNumbers);
+                await deletePlanRows.execute();
+
+                const laterNumbers = later.map(hole => hole.number);
+                if (laterNumbers.length > 0) {
+                    await trx
+                        .updateTable('game_plan_holes')
+                        .set({
+                            hole_number: sql`hole_number - 1`,
+                            version: sql`version + 1`,
+                            updated_at: sql`(datetime('now'))`,
+                        })
+                        .where('game_plan_id', 'in', planIds)
+                        .where('hole_number', 'in', laterNumbers)
+                        .execute();
+                }
+            }
+
+            for (const hole of later) {
+                await this.updateById(hole.id, trx)
+                    .set({ number: -hole.number })
+                    .execute();
+            }
+            for (const hole of later) {
+                await this.updateById(hole.id, trx)
+                    .set({
+                        number: hole.number - 1,
+                        version: sql`version + 1`,
+                        updated_at: sql`(datetime('now'))`,
+                    })
+                    .execute();
+            }
+        });
     }
 }

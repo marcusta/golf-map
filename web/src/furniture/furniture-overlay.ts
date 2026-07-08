@@ -5,7 +5,7 @@ import type { Tee } from '../../../shared/api/tees.gen';
 import type { Green } from '../../../shared/api/greens.gen';
 import type { Pin } from '../../../shared/api/pins.gen';
 import type { AimPoint } from '../../../shared/api/aim-points.gen';
-import { FURNITURE_TOOL_ID, type Selection } from './furniture.service';
+import { FURNITURE_TOOL_ID, finiteWgs84Point, type Selection } from './furniture.service';
 
 /** Overlay/source id for the persistent furniture rendering. */
 export const FURNITURE_OVERLAY_ID = FURNITURE_TOOL_ID;
@@ -91,9 +91,14 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
         const originId = input.lineOriginByHole?.get(holeId);
         const originTee = (originId && holeTees.find(t => t.id === originId)) || holeTees[0];
         const line: Position[] = [];
-        if (originTee) line.push([originTee.lon, originTee.lat]);
-        for (const a of holeAims) line.push([a.lon, a.lat]);
-        if (green) line.push([green.centerLon, green.centerLat]);
+        const originPos = originTee ? finiteWgs84Point(originTee.lat, originTee.lon) : null;
+        if (originPos) line.push([originPos.lon, originPos.lat]);
+        for (const a of holeAims) {
+            const pos = finiteWgs84Point(a.lat, a.lon);
+            if (pos) line.push([pos.lon, pos.lat]);
+        }
+        const greenCenter = green ? finiteWgs84Point(green.centerLat, green.centerLon) : null;
+        if (greenCenter) line.push([greenCenter.lon, greenCenter.lat]);
         if (line.length >= 2) {
             features.push({
                 type: 'Feature',
@@ -107,18 +112,19 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
     // keys on the `selected` flag).
     for (const g of input.greens) {
         const hlG = hl(g.holeId);
-        features.push(point([g.centerLon, g.centerLat], { role: 'green-center', holeId: g.holeId, highlighted: hlG, selected: isSelGreen(g.holeId, 'center') }));
-        if (g.frontLat !== null && g.frontLon !== null) {
-            features.push(point([g.frontLon, g.frontLat], { role: 'green-front', holeId: g.holeId, highlighted: hlG, selected: isSelGreen(g.holeId, 'front') }));
-        }
-        if (g.backLat !== null && g.backLon !== null) {
-            features.push(point([g.backLon, g.backLat], { role: 'green-back', holeId: g.holeId, highlighted: hlG, selected: isSelGreen(g.holeId, 'back') }));
-        }
+        const center = finiteWgs84Point(g.centerLat, g.centerLon);
+        const front = finiteWgs84Point(g.frontLat, g.frontLon);
+        const back = finiteWgs84Point(g.backLat, g.backLon);
+        if (center) features.push(point([center.lon, center.lat], { role: 'green-center', holeId: g.holeId, highlighted: hlG, selected: isSelGreen(g.holeId, 'center') }));
+        if (front) features.push(point([front.lon, front.lat], { role: 'green-front', holeId: g.holeId, highlighted: hlG, selected: isSelGreen(g.holeId, 'front') }));
+        if (back) features.push(point([back.lon, back.lat], { role: 'green-back', holeId: g.holeId, highlighted: hlG, selected: isSelGreen(g.holeId, 'back') }));
     }
 
     // Tees: coloured circles with a letter label.
     for (const t of input.tees) {
-        features.push(point([t.lon, t.lat], {
+        const pos = finiteWgs84Point(t.lat, t.lon);
+        if (!pos) continue;
+        features.push(point([pos.lon, pos.lat], {
             role: 'tee',
             id: t.id,
             holeId: t.holeId,
@@ -132,7 +138,9 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
     // Pins: dots, active emphasized.
     for (const p of input.pins) {
         const holeId = holeIdByGreen.get(p.greenId);
-        features.push(point([p.lon, p.lat], {
+        const pos = finiteWgs84Point(p.lat, p.lon);
+        if (!pos) continue;
+        features.push(point([pos.lon, pos.lat], {
             role: 'pin',
             id: p.id,
             holeId: holeId ?? null,
@@ -155,7 +163,9 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
     }
     for (const a of input.aims) {
         const number = aimNumberByHole.get(a.holeId)?.get(a.id) ?? 0;
-        features.push(point([a.lon, a.lat], {
+        const pos = finiteWgs84Point(a.lat, a.lon);
+        if (!pos) continue;
+        features.push(point([pos.lon, pos.lat], {
             role: 'aim',
             id: a.id,
             holeId: a.holeId,

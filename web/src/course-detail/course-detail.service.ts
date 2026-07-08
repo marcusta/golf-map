@@ -72,6 +72,47 @@ export class CourseDetailService {
         return undefined;
     }
 
+    /** Append a new hole at the next course number and add it to the loaded sidebar state. */
+    async addHole(par = 4): Promise<Hole | undefined> {
+        const course = this.course.peek();
+        if (!course) return undefined;
+        const holes = this.holes.peek();
+        const nextNumber = holes.reduce((max, hole) => Math.max(max, hole.number), 0) + 1;
+        const created = await request(this.loading, this.error, () =>
+            this.holesApi.create({ courseId: course.id, number: nextNumber, par }));
+        if (created) {
+            this.holeStore.set([...this.holes.peek(), created].sort((a, b) => a.number - b.number));
+            return created;
+        }
+        await this.reloadHoles(course.id);
+        return undefined;
+    }
+
+    /**
+     * Delete a hole and replace local state from the server so compacted hole
+     * numbers, cascaded rows, and version bumps are reflected immediately.
+     */
+    async removeHole(id: string): Promise<boolean> {
+        const current = this.holes.peek().find(h => h.id === id);
+        if (!current) return false;
+        const result = await request(this.loading, this.error, () =>
+            this.holesApi.remove({ id, version: current.version }));
+        if (result !== undefined) {
+            await this.reloadHoles(current.courseId);
+            return true;
+        }
+        const shouldRetry = this.error.peek()?.code === 'conflict';
+        await this.reloadHoles(current.courseId);
+        if (!shouldRetry) return false;
+
+        const fresh = this.holes.peek().find(h => h.id === id);
+        if (!fresh) return true;
+        const retry = await request(this.loading, this.error, () =>
+            this.holesApi.remove({ id, version: fresh.version }));
+        await this.reloadHoles(current.courseId);
+        return retry !== undefined;
+    }
+
     /** Load course + holes. Cached per courseId — only refetches when the id changes. */
     async load(courseId: string): Promise<void> {
         if (this.loadedCourseId === courseId) return;
@@ -89,5 +130,11 @@ export class CourseDetailService {
             });
             this.loadedCourseId = courseId;
         }
+    }
+
+    async reloadHoles(courseId: string): Promise<void> {
+        const holes = await request(this.loading, this.error, () =>
+            this.holesApi.listByCourse({ courseId }));
+        if (holes) this.holeStore.set([...holes].sort((a, b) => a.number - b.number));
     }
 }

@@ -138,6 +138,82 @@ test('remove deletes hole', async () => {
     const holes = await svc.listByCourse(TEST_COURSE_ID);
     expect(holes).toHaveLength(1);
     expect(holes[0].id).toBe(TEST_HOLE_2_ID);
+    expect(holes[0].number).toBe(1);
+});
+
+test('remove renumbers later holes without changing earlier holes', async () => {
+    const { db } = await createTestDb(seedUsers, seedCourse);
+    const svc = new HolesService(db);
+    const third = await svc.create({ courseId: TEST_COURSE_ID, number: 3, par: 5 });
+
+    await svc.remove(TEST_HOLE_2_ID, 1);
+
+    const holes = await svc.listByCourse(TEST_COURSE_ID);
+    expect(holes.map(h => [h.id, h.number])).toEqual([
+        [TEST_HOLE_1_ID, 1],
+        [third.id, 2],
+    ]);
+});
+
+test('remove deletes matching game-plan holes and renumbers later plan holes', async () => {
+    const { db } = await createTestDb(seedUsers, seedCourse);
+    const svc = new HolesService(db);
+    await svc.create({ courseId: TEST_COURSE_ID, number: 3, par: 5 });
+    await db.insertInto('game_plans').values({
+        id: 'plan-1',
+        course_id: TEST_COURSE_ID,
+        user_id: null,
+        wind_speed_mps: null,
+        wind_direction_deg: null,
+        version: 1,
+    }).execute();
+    await db.insertInto('game_plan_holes').values([
+        { id: 'plan-hole-1', game_plan_id: 'plan-1', hole_number: 1, tee_id: null, preferred_club_id: null, planned_direction_deg: null, wind_speed_mps: null, wind_direction_deg: null, notes: null, version: 1 },
+        { id: 'plan-hole-2', game_plan_id: 'plan-1', hole_number: 2, tee_id: null, preferred_club_id: null, planned_direction_deg: null, wind_speed_mps: null, wind_direction_deg: null, notes: null, version: 1 },
+        { id: 'plan-hole-3', game_plan_id: 'plan-1', hole_number: 3, tee_id: null, preferred_club_id: null, planned_direction_deg: null, wind_speed_mps: null, wind_direction_deg: null, notes: null, version: 1 },
+    ]).execute();
+
+    await svc.remove(TEST_HOLE_2_ID, 1);
+
+    const planHoles = await db
+        .selectFrom('game_plan_holes')
+        .select(['id', 'hole_number', 'version'])
+        .orderBy('hole_number')
+        .execute();
+    expect(planHoles).toEqual([
+        { id: 'plan-hole-1', hole_number: 1, version: 1 },
+        { id: 'plan-hole-3', hole_number: 2, version: 2 },
+    ]);
+});
+
+test('remove last real hole drops imported phantom game-plan holes beyond the course', async () => {
+    const { db } = await createTestDb(seedUsers, seedCourse);
+    const svc = new HolesService(db);
+    await db.insertInto('game_plans').values({
+        id: 'plan-1',
+        course_id: TEST_COURSE_ID,
+        user_id: null,
+        wind_speed_mps: null,
+        wind_direction_deg: null,
+        version: 1,
+    }).execute();
+    await db.insertInto('game_plan_holes').values([
+        { id: 'plan-hole-1', game_plan_id: 'plan-1', hole_number: 1, tee_id: null, preferred_club_id: null, planned_direction_deg: null, wind_speed_mps: null, wind_direction_deg: null, notes: null, version: 1 },
+        { id: 'plan-hole-2', game_plan_id: 'plan-1', hole_number: 2, tee_id: null, preferred_club_id: null, planned_direction_deg: null, wind_speed_mps: null, wind_direction_deg: null, notes: null, version: 1 },
+        { id: 'plan-hole-3', game_plan_id: 'plan-1', hole_number: 3, tee_id: null, preferred_club_id: null, planned_direction_deg: null, wind_speed_mps: null, wind_direction_deg: null, notes: null, version: 1 },
+        { id: 'plan-hole-4', game_plan_id: 'plan-1', hole_number: 4, tee_id: null, preferred_club_id: null, planned_direction_deg: null, wind_speed_mps: null, wind_direction_deg: null, notes: null, version: 1 },
+    ]).execute();
+
+    await svc.remove(TEST_HOLE_2_ID, 1);
+
+    const planHoles = await db
+        .selectFrom('game_plan_holes')
+        .select(['id', 'hole_number'])
+        .orderBy('hole_number')
+        .execute();
+    expect(planHoles).toEqual([
+        { id: 'plan-hole-1', hole_number: 1 },
+    ]);
 });
 
 test('remove throws VersionConflictError with wrong version', async () => {

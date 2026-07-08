@@ -8,6 +8,15 @@ import { teeFill } from './furniture-overlay';
 
 const tpl = template(`
     <div class="furn-panel" bind="root">
+        <div class="furn-panel__section hole-tools">
+            <h4 class="section-title">Course holes</h4>
+            <div class="hole-tools__summary" bind="holeToolsSummary"></div>
+            <div class="hole-tools__actions">
+                <button bind="addHole" type="button" class="mini-btn">＋ Add hole</button>
+                <button bind="deleteHole" type="button" class="delete-btn">Delete hole</button>
+            </div>
+        </div>
+
         <div class="furn-panel__section">
             <h4 class="section-title">Place</h4>
             <div class="place-grid">
@@ -159,12 +168,27 @@ export class FurniturePanelComponent extends Component {
             & .sel-card { font-size: 0.75rem; line-height: 1.5; color: ${t('text')}; }
             & .sel-card b { color: ${t('text-muted')}; font-weight: 600; }
 
+            & .hole-tools__summary {
+                font-size: 0.75rem;
+                line-height: 1.5;
+                color: ${t('text-muted')};
+            }
+
+            & .hole-tools__summary b { color: ${t('text')}; }
+
+            & .hole-tools__actions {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: ${s('xs')};
+            }
+
             & .reorder-row { display: none; gap: ${s('xs')}; &.show { display: flex; } }
             & .mini-btn {
                 flex: 1;
                 padding: 3px ${s('xs')};
                 font-size: 0.72rem;
                 ${btn(t('radius-sm'))}
+                &:disabled { opacity: 0.5; cursor: default; }
             }
             & .set-active { display: none; &.show { display: block; }
                 &.is-active { color: ${t('text-muted')}; }
@@ -177,6 +201,7 @@ export class FurniturePanelComponent extends Component {
                 color: ${t('error')};
                 border-color: ${t('error')};
                 &.hide { display: none; }
+                &:disabled { opacity: 0.5; cursor: default; }
             }
 
             & .summary { display: none; &.show { display: flex; } }
@@ -207,6 +232,15 @@ export class FurniturePanelComponent extends Component {
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
+            holeToolsSummary: { innerHTML: () => this.holeToolsSummaryHtml() },
+            addHole: {
+                onclick: () => void this.tool.addHole(),
+                disabled: () => this.courseDetail.loading.get() || this.svc.saving.get(),
+            },
+            deleteHole: {
+                onclick: () => void this.tool.deleteSelectedHole(),
+                disabled: () => !this.tool.selectedHole.get() || this.courseDetail.loading.get() || this.svc.saving.get(),
+            },
             placeTee: {
                 onclick: () => this.svc.arm('tee'),
                 className: () => this.placeClass('tee'),
@@ -328,6 +362,13 @@ export class FurniturePanelComponent extends Component {
 
     private gpClass(point: GreenPoint): string {
         return this.svc.pendingGreenPoint.get() === point ? 'gp-btn active' : 'gp-btn';
+    }
+
+    private holeToolsSummaryHtml(): string {
+        const holes = this.courseDetail.holes.get();
+        const hole = this.tool.selectedHole.get();
+        const selected = hole ? ` · selected <b>${hole.number}</b>` : '';
+        return `${holes.length} hole${plural(holes.length)}${selected}<br>Add then place tee, aim, and green center.`;
     }
 
     private reorderVisible(): boolean {

@@ -1,7 +1,7 @@
 import { test, expect, describe, afterEach } from 'bun:test';
 import { ApiError } from '@basics/core/client/api-error';
 import { _reset } from '@basics/core/client/error-report';
-import { FurnitureService, defaultTeeName, greenPointFields, type ElevationSampler } from '../src/furniture/furniture.service';
+import { FurnitureService, defaultTeeName, finiteWgs84Point, greenPointFields, type ElevationSampler } from '../src/furniture/furniture.service';
 import { buildFurnitureGeojson } from '../src/furniture/furniture-overlay';
 import type { Feature } from 'geojson';
 import type { Tee, TeesApi } from '../../shared/api/tees.gen';
@@ -249,6 +249,20 @@ describe('load', () => {
         const { svc } = makeService({ tees: t });
         await svc.load('c1', ['h1']);
         expect(svc.error.get()?.code).toBe('server');
+    });
+
+    test('failed reload does not poison later tee creates', async () => {
+        const t = fakeTees();
+        const { svc, tees } = makeService({ tees: t });
+        await svc.load('c1', ['h1']);
+
+        t.api.listByCourse = () => Promise.reject(new ApiError(500, 'boom'));
+        await svc.reload(['h1', 'h2']);
+        expect(svc.error.get()?.code).toBe('server');
+
+        const created = await svc.createTee({ holeId: 'h2', name: 'White', color: 'white', lat: LAT, lon: LON });
+        expect(created?.holeId).toBe('h2');
+        expect(tees.calls.create).toBe(1);
     });
 });
 
@@ -566,6 +580,24 @@ describe('green points: move / place / create-row', () => {
         expect(svc.greenPointStatus('nope')).toBeNull();
     });
 
+    test('green point helpers treat missing and non-finite coordinates as absent', async () => {
+        const green = {
+            ...greenRow('h1'),
+            frontLat: undefined,
+            frontLon: undefined,
+            backLat: Number.NaN,
+            backLon: LON,
+        } as unknown as Green;
+        const g = fakeGreens([green]);
+        const { svc } = makeService({ greens: g });
+        await svc.load('c1', ['h1']);
+
+        expect(svc.greenPointPos(green, 'center')).toEqual({ lat: LAT, lon: LON });
+        expect(svc.greenPointPos(green, 'front')).toBeNull();
+        expect(svc.greenPointPos(green, 'back')).toBeNull();
+        expect(svc.greenPointStatus('h1')).toEqual({ center: true, front: false, back: false });
+    });
+
     test('selectedGreen resolves the row + point for a green selection', async () => {
         const green = greenRow('h1');
         const g = fakeGreens([green]);
@@ -616,6 +648,19 @@ function aimLineStart(fc: { features: Feature[] }): [number, number] | null {
     return (f.geometry as unknown as { coordinates: [number, number][] }).coordinates[0] ?? null;
 }
 
+function allPositions(fc: { features: Feature[] }): [number, number][] {
+    const out: [number, number][] = [];
+    for (const feature of fc.features) {
+        const geometry = feature.geometry as unknown as { type: string; coordinates: unknown };
+        if (geometry.type === 'Point') {
+            out.push(geometry.coordinates as [number, number]);
+        } else if (geometry.type === 'LineString') {
+            out.push(...(geometry.coordinates as [number, number][]));
+        }
+    }
+    return out;
+}
+
 describe('aim polyline on holes without aim points (par 3s)', () => {
     test('draws the direct tee → green-center line when a hole has zero aims', async () => {
         const green = greenRow('h1');
@@ -638,6 +683,33 @@ describe('aim polyline on holes without aim points (par 3s)', () => {
         await svc.load('c1', ['h1']);
         const fc = buildFurnitureGeojson(overlayInputFrom(svc, ['h1']));
         expect(fc.features.find(x => x.properties?.role === 'aim-line')).toBeUndefined();
+    });
+
+    test('skips missing green front/back points instead of emitting non-finite coordinates', async () => {
+        const green = {
+            ...greenRow('h1'),
+            frontLat: undefined,
+            frontLon: undefined,
+            backLat: Number.NaN,
+            backLon: LON,
+        } as unknown as Green;
+        const t = fakeTees([
+            { id: 't1', holeId: 'h1', name: 'Yellow', color: 'yellow', lat: LAT, lon: LON, elevation: 55, sortOrder: 0, version: 1 },
+            { id: 'bad-tee', holeId: 'h1', name: 'Bad', color: null, lat: Number.NaN, lon: LON, elevation: null, sortOrder: 1, version: 1 },
+        ]);
+        const a = fakeAims([
+            { id: 'a1', holeId: 'h1', lat: LAT + 0.001, lon: LON, elevation: null, label: 'A1', sortOrder: 0, version: 1 },
+            { id: 'bad-aim', holeId: 'h1', lat: LAT, lon: Number.NaN, elevation: null, label: 'bad', sortOrder: 1, version: 1 },
+        ]);
+        const { svc } = makeService({ tees: t, greens: fakeGreens([green]), aims: a });
+        await svc.load('c1', ['h1']);
+
+        const fc = buildFurnitureGeojson(overlayInputFrom(svc, ['h1']));
+        expect(fc.features.find(x => x.properties?.role === 'green-front')).toBeUndefined();
+        expect(fc.features.find(x => x.properties?.role === 'green-back')).toBeUndefined();
+        expect(fc.features.find(x => x.properties?.role === 'tee' && x.properties?.id === 'bad-tee')).toBeUndefined();
+        expect(fc.features.find(x => x.properties?.role === 'aim' && x.properties?.id === 'bad-aim')).toBeUndefined();
+        expect(allPositions(fc).every(([lon, lat]) => finiteWgs84Point(lat, lon) !== null)).toBe(true);
     });
 });
 
