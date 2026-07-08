@@ -81,4 +81,14 @@ final class FeaturePaletteTests: XCTestCase {
         XCTAssertEqual(expr[expr.count - 3] as? String, "path")
         XCTAssertEqual(expr[expr.count - 2] as? Int, 10)
     }
+
+    /// D23/D24: rendering reads the server-assigned `stackKey`, falling back
+    /// to the fixed type order only for bundles without that property.
+    func testStackSortKeyExpressionCoalescesStackKeyOverTypeOrder() throws {
+        let expr = FeaturePalette.stackSortKeyExpression()
+        XCTAssertEqual(expr[0] as? String, "coalesce")
+        XCTAssertEqual(expr[1] as? [String], ["get", "stackKey"])
+        let fallback = try XCTUnwrap(expr[2] as? [Any])
+        XCTAssertEqual(fallback.map { "\($0)" }, FeaturePalette.typeSortKeyExpression().map { "\($0)" })
+    }
 }

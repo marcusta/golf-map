@@ -221,7 +221,7 @@ public enum MapStyleBuilder {
                 "id": MapStyleIDs.featuresFillLayer,
                 "type": "fill",
                 "source": MapStyleIDs.featuresSource,
-                "layout": ["fill-sort-key": FeaturePalette.typeSortKeyExpression()],
+                "layout": ["fill-sort-key": FeaturePalette.stackSortKeyExpression()],
                 "paint": [
                     "fill-color": FeaturePalette.typeColorExpression(outline: false),
                     "fill-opacity": FeaturePalette.fillOpacity,
@@ -231,7 +231,7 @@ public enum MapStyleBuilder {
                 "id": MapStyleIDs.featuresOutlineLayer,
                 "type": "line",
                 "source": MapStyleIDs.featuresSource,
-                "layout": ["line-sort-key": FeaturePalette.typeSortKeyExpression()],
+                "layout": ["line-sort-key": FeaturePalette.stackSortKeyExpression()],
                 "paint": [
                     "line-color": FeaturePalette.typeColorExpression(outline: true),
                     "line-width": FeaturePalette.outlineWidth,

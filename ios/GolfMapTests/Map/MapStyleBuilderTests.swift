@@ -172,7 +172,23 @@ final class MapStyleBuilderTests: XCTestCase {
         XCTAssertTrue(colorExpr.contains { $0 as? String == "#4d9e58" }, "fairway fill present")
 
         let layout = try XCTUnwrap(fill["layout"] as? [String: Any])
-        XCTAssertNotNil(layout["fill-sort-key"] as? [Any])
+        let sortKey = try XCTUnwrap(layout["fill-sort-key"] as? [Any])
+        XCTAssertEqual(sortKey.first as? String, "coalesce", "reads stackKey, falls back to type order")
+        XCTAssertEqual(sortKey[1] as? [String], ["get", "stackKey"])
+    }
+
+    /// D23/D24: fill and outline layers share the same stack sort-key
+    /// expression as each other (both read `stackKey`, not the fixed type
+    /// order) so overlap resolution is identical for fill and outline paint.
+    func testOutlineLayerUsesSameStackSortKeyAsFill() throws {
+        let style = try buildStyle()
+        let fill = try layer(MapStyleIDs.featuresFillLayer, in: style)
+        let outline = try layer(MapStyleIDs.featuresOutlineLayer, in: style)
+        let fillLayout = try XCTUnwrap(fill["layout"] as? [String: Any])
+        let outlineLayout = try XCTUnwrap(outline["layout"] as? [String: Any])
+        let fillKey = try XCTUnwrap(fillLayout["fill-sort-key"] as? [Any])
+        let lineKey = try XCTUnwrap(outlineLayout["line-sort-key"] as? [Any])
+        XCTAssertEqual(fillKey.map { "\($0)" }, lineKey.map { "\($0)" })
     }
 
     func testFeatureOutlineLayerUsesOutlinePalette() throws {

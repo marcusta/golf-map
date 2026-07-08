@@ -85,7 +85,10 @@ public enum FeaturePalette {
     }
 
     /// MapLibre `match` expression: feature `type` → z-order sort key.
-    /// Unknown types render below everything (-1).
+    /// Unknown types render below everything (-1). Superseded at render time
+    /// by `stackSortKeyExpression()` (D23/D26, docs/decisions-feature-stack-2026-07-08.md)
+    /// — this fixed type order now only backs the `stackKey`-missing fallback
+    /// (stale bundles) and the server's insertion heuristic on create.
     public static func typeSortKeyExpression() -> [Any] {
         var expr: [Any] = ["match", ["get", "type"]]
         for (index, type) in zOrder.enumerated() {
@@ -94,5 +97,14 @@ public enum FeaturePalette {
         }
         expr.append(-1)
         return expr
+    }
+
+    /// MapLibre expression for `fill-sort-key`/`line-sort-key`: the explicit
+    /// per-feature `stackKey` (D23/D24 — server-assigned, course-group-then-
+    /// hole-then-sort_order), falling back to the fixed type order for
+    /// bundles generated before the stack model shipped (no `stackKey`
+    /// property in their GeoJSON).
+    public static func stackSortKeyExpression() -> [Any] {
+        ["coalesce", ["get", "stackKey"], typeSortKeyExpression()]
     }
 }
