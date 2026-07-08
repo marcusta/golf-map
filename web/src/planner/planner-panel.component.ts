@@ -1,13 +1,37 @@
-import { Component, effect, template } from '@basics/core/client/core';
+import { Component, Signal, Computed, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, field } from '../css';
-import { clubAdvice, mpsToMph } from '../../../shared/strategy';
+import { clubAdvice, mpsToMph, type BreakSide } from '../../../shared/strategy';
 import type { PlanShot, PlanGate } from '../../../shared/api/game-plans.gen';
 import { FurnitureService } from '../furniture/furniture.service';
 import { ClubsService } from '../player/clubs.service';
+import { ConfirmService } from '../app/confirm-dialog.component';
 import { PlanService } from './plan.service';
 import { PlannerToolService } from './planner-tool.service';
-import { gateLabel, legLight, type LegLight, type PlanLeg } from './plan-overlay';
+import { PuttReadService, DEFAULT_STIMP_FT, type PuttReadDisplay } from './putt-read.service';
+import { PuttEstimateService } from './putt-estimate.service';
+import { scoreEstimate, type PuttEstimate, type PuttEstimateScore } from './putt-estimate-score';
+import { gateLabel, legDriftLabel, legLight, type LegLight, type PlanLeg } from './plan-overlay';
+
+/** localStorage key for the training-mode toggle (default ON per doc §5.1). */
+const TRAINING_MODE_KEY = 'golf-map.putt.trainingMode';
+
+function loadTrainingMode(): boolean {
+    try {
+        const v = localStorage.getItem(TRAINING_MODE_KEY);
+        return v === null ? false : v === '1'; // default OFF — show the read first
+    } catch {
+        return false;
+    }
+}
+
+function saveTrainingMode(on: boolean): void {
+    try {
+        localStorage.setItem(TRAINING_MODE_KEY, on ? '1' : '0');
+    } catch {
+        // Non-fatal — the toggle just won't persist across reloads.
+    }
+}
 
 const tpl = template(`
     <div class="plan-panel" bind="root" data-testid="planner-panel">
@@ -16,8 +40,39 @@ const tpl = template(`
             <div class="mode-row">
                 <button bind="addShot" type="button" class="mode-btn" data-testid="planner-add-shot">+ Shot</button>
                 <button bind="addGate" type="button" class="mode-btn" data-testid="planner-add-gate">+ Gate</button>
+                <button bind="puttMode" type="button" class="mode-btn" data-testid="planner-putt-mode">Putt</button>
             </div>
             <div bind="hint" class="plan-hint"></div>
+        </div>
+
+        <div bind="puttSection" class="plan-panel__section" data-testid="planner-putt-section">
+            <h4 class="section-title">Putt read</h4>
+            <div class="wind-row">
+                <label class="plan-field">Stimp ft
+                    <input bind="stimpInput" type="number" step="0.5" min="4" max="16" data-testid="planner-putt-stimp" />
+                </label>
+                <label class="putt-training-toggle" title="Estimate the read yourself before it's revealed (§5.1)">
+                    <input bind="trainingToggle" type="checkbox" data-testid="planner-putt-training-toggle" />
+                    Training
+                </label>
+            </div>
+            <div class="putt-place-row">
+                <span class="putt-place-label">Tap places:</span>
+                <button bind="placeBallBtn" type="button" class="mini-btn" data-testid="planner-putt-place-ball">Ball</button>
+                <button bind="placeHoleBtn" type="button" class="mini-btn" data-testid="planner-putt-place-hole">Hole</button>
+                <button bind="holeAtPinBtn" type="button" class="mini-btn" data-testid="planner-putt-hole-at-pin">At pin</button>
+            </div>
+            <div class="putt-overlay-row">
+                <span class="putt-place-label">Map:</span>
+                <button bind="overlaySlopeBtn" type="button" class="mini-btn" data-testid="planner-putt-overlay-slope">Slope</button>
+                <button bind="overlayHeightBtn" type="button" class="mini-btn" data-testid="planner-putt-overlay-height">Height</button>
+                <button bind="overlayNoneBtn" type="button" class="mini-btn" data-testid="planner-putt-overlay-none">Off</button>
+            </div>
+            <div bind="puttQuiz" class="putt-quiz" data-testid="planner-putt-quiz"></div>
+            <div bind="puttScore" class="putt-score" data-testid="planner-putt-score"></div>
+            <div bind="puttVerbal" class="putt-verbal" data-testid="planner-putt-verbal"></div>
+            <div bind="puttBody" class="putt-body" data-testid="planner-putt-read"></div>
+            <div bind="puttConfidence" class="putt-confidence" data-testid="planner-putt-confidence"></div>
         </div>
 
         <div bind="holeSection" class="plan-panel__section">
@@ -113,6 +168,36 @@ const gateRowTpl = template(`
     </div>
 `);
 
+// Training quiz (doc §5.1): estimate the read BEFORE it's revealed. Rendered
+// into the putt section when training mode is on and a read is available.
+const puttQuizTpl = template(`
+    <div bind="root" class="putt-quiz__form">
+        <div class="putt-quiz__prompt">Your read first — <span bind="dist"></span></div>
+        <div class="putt-quiz__grid">
+            <label class="plan-field">Slope %
+                <input bind="slope" type="number" step="0.1" min="0" data-testid="planner-putt-est-slope" />
+            </label>
+            <label class="plan-field">Break
+                <select bind="side" data-testid="planner-putt-est-side">
+                    <option value="straight">Straight</option>
+                    <option value="left">Left</option>
+                    <option value="right">Right</option>
+                </select>
+            </label>
+            <label class="plan-field">Aim cm
+                <input bind="aim" type="number" step="1" data-testid="planner-putt-est-aim" />
+            </label>
+            <label class="plan-field">Plays m
+                <input bind="pace" type="number" step="0.1" min="0" data-testid="planner-putt-est-pace" />
+            </label>
+        </div>
+        <div class="putt-quiz__actions">
+            <button bind="submit" type="button" class="mini-btn" data-testid="planner-putt-est-submit">Reveal &amp; score</button>
+            <button bind="skip" type="button" class="mini-btn" data-testid="planner-putt-est-skip">Skip</button>
+        </div>
+    </div>
+`);
+
 /**
  * The planner's control panel (sidebar, under the hole list): add-shot /
  * add-gate arming, tee + preferred-club selects, plan/hole wind with
@@ -179,7 +264,20 @@ export class PlannerPanelComponent extends Component {
                 padding: 3px ${s('xs')};
                 font-size: 0.72rem;
                 ${btn(t('radius-sm'))}
+                &[aria-pressed="true"] {
+                    border-color: ${t('primary')};
+                    color: ${t('primary-text')};
+                    background: ${t('primary')};
+                }
             }
+            & .putt-place-row {
+                display: flex;
+                gap: ${s('xs')};
+                align-items: center;
+                flex-wrap: wrap;
+            }
+            & .putt-place-label { font-size: 0.72rem; color: ${t('text-muted')}; }
+            & .putt-overlay-row { display: flex; gap: ${s('xs')}; align-items: center; }
 
             & .legs-body { font-size: 0.75rem; line-height: 1.6; color: ${t('text-muted')}; }
             & .legs-body b { color: ${t('text')}; }
@@ -201,6 +299,49 @@ export class PlannerPanelComponent extends Component {
                 font-size: 0.68rem;
                 color: ${t('text-muted')};
             }
+
+            & .putt-verbal {
+                font-size: 0.82rem;
+                font-weight: 600;
+                color: ${t('text')};
+            }
+            & .putt-body { font-size: 0.75rem; line-height: 1.6; color: ${t('text-muted')}; }
+            & .putt-body b { color: ${t('text')}; }
+            & .putt-body .putt-warn { color: ${t('error')}; }
+            & .putt-confidence { font-size: 0.7rem; color: ${t('text-muted')}; }
+
+            & .putt-training-toggle {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                font-size: 0.72rem;
+                color: ${t('text-muted')};
+                white-space: nowrap;
+                align-self: flex-end;
+            }
+            & .putt-quiz__form { display: flex; flex-direction: column; gap: ${s('xs')}; }
+            & .putt-quiz__prompt { font-size: 0.75rem; font-weight: 600; color: ${t('text')}; }
+            & .putt-quiz__grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: ${s('xs')};
+            }
+            & .putt-quiz__grid .plan-field select {
+                min-width: 0;
+                font-family: inherit;
+                padding: 2px 4px;
+                border: 1px solid ${t('border')};
+                border-radius: ${t('radius-sm')};
+                background: ${t('surface')};
+                color: ${t('text')};
+            }
+            & .putt-quiz__actions { display: flex; gap: ${s('xs')}; }
+            & .putt-score {
+                font-size: 0.75rem;
+                line-height: 1.6;
+                color: ${t('text-muted')};
+            }
+            & .putt-score b { color: ${t('text')}; }
 
             & .caddy-body { display: flex; flex-direction: column; gap: 6px; }
             & .caddy-card {
@@ -298,6 +439,39 @@ export class PlannerPanelComponent extends Component {
     private clubs = this.inject(ClubsService);
     private furniture = this.inject(FurnitureService);
     private tool = this.inject(PlannerToolService);
+    private confirm = this.inject(ConfirmService);
+    private putt = this.inject(PuttReadService);
+    private puttEstimate = this.inject(PuttEstimateService);
+
+    // ── Training-quiz state (doc §5.1) ─────────────────────────────────────
+    /** Training mode on/off (persisted). Default ON — "first-class, not incidental". */
+    private trainingMode = new Signal(loadTrainingMode());
+    /** True once the player has submitted or skipped for the CURRENT putt. */
+    private revealed = new Signal(false);
+    /** The score for the last submitted estimate (cleared when skipped/reset). */
+    private lastScore = new Signal<PuttEstimateScore | null>(null);
+
+    /**
+     * Signature of the settled putt the quiz is gating — ball, hole and stimp.
+     * When it changes (new/adjusted putt) the quiz resets to "estimate first".
+     */
+    private puttSig = new Computed<string>(() => {
+        const b = this.putt.ball.get();
+        const h = this.putt.hole.get();
+        return `${b ? `${b.x},${b.y}` : ''}|${h ? `${h.x},${h.y}` : ''}|${this.putt.stimpFt.get()}`;
+    });
+
+    /**
+     * True when the estimate FORM should replace the read: training on, a read
+     * is available (ok/soft — never for withheld/loading/place), and the player
+     * hasn't revealed this putt yet.
+     */
+    private quizActive = new Computed<boolean>(() => {
+        if (!this.trainingMode.get()) return false;
+        if (this.revealed.get()) return false;
+        const status = this.putt.display.get().status;
+        return status === 'ok' || status === 'soft';
+    });
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -309,6 +483,11 @@ export class PlannerPanelComponent extends Component {
                 onclick: () => this.tool.setMode('add-gate'),
                 className: () => this.tool.mode.get() === 'add-gate' ? 'mode-btn active' : 'mode-btn',
             },
+            puttMode: {
+                onclick: () => this.tool.setMode('putt'),
+                className: () => this.tool.mode.get() === 'putt' ? 'mode-btn active' : 'mode-btn',
+            },
+            puttSection: { style: () => this.tool.mode.get() === 'putt' ? '' : 'display:none' },
             hint: {
                 textContent: () => this.hintText() ?? '',
                 className: () => {
@@ -375,6 +554,7 @@ export class PlannerPanelComponent extends Component {
         this.bindTeeSelect(this.ref(frag, 'teeSelect') as HTMLSelectElement);
         this.bindPreferredClub(this.ref(frag, 'preferredClub') as HTMLSelectElement);
         this.bindWindInputs(frag);
+        this.bindPuttSection(frag);
         this.bindNotes(this.ref(frag, 'notes') as HTMLTextAreaElement);
 
         // E2E cadence hook (inert in prod): mirror the tool's completed-
@@ -407,9 +587,18 @@ export class PlannerPanelComponent extends Component {
      */
     private async seedFromAims(): Promise<void> {
         const existing = this.tool.holeShots.peek().length;
-        if (existing > 0 && !window.confirm(
-            `Replace the ${existing} existing shot${existing === 1 ? '' : 's'} on this hole `
-            + `with its aim points?`)) return;
+        if (existing > 0) {
+            const ok = await this.confirm.confirm({
+                title: 'Replace existing shots?',
+                body: `This will replace the ${existing} existing shot${existing === 1 ? '' : 's'} on this hole with aim point shots.`,
+                detail: 'Existing shot labels, clubs, and landing positions for this hole will be replaced.',
+                confirmLabel: 'Replace shots',
+                cancelLabel: 'Keep current shots',
+                tone: 'warning',
+                layout: 'review',
+            });
+            if (!ok) return;
+        }
         await this.tool.seedShotsFromAims(existing > 0);
     }
 
@@ -513,6 +702,177 @@ export class PlannerPanelComponent extends Component {
         await this.plan.setHoleFields(hole.number, { windSpeedMps: speed, windDirectionDeg: dir });
     }
 
+    // ── Putt read (feature-putting-green-reading §5.1) ──────────────────────
+
+    /**
+     * Stimp input follows the wind-input pattern (change → service, effect →
+     * input unless focused); the read blocks render from the single
+     * `PuttReadService.display` view-model. B2: the training quiz (doc §5.1)
+     * gates that display behind an "estimate first" step — when training mode
+     * is on and a read is available, an estimate FORM replaces the read until
+     * the player submits (scored) or skips (revealed, unrecorded). The service
+     * and tool stay untouched; all quiz state lives here.
+     */
+    private bindPuttSection(frag: DocumentFragment): void {
+        const stimp = this.ref(frag, 'stimpInput') as HTMLInputElement;
+        stimp.addEventListener('change', () =>
+            this.putt.setStimp(parseNum(stimp.value, 1) ?? DEFAULT_STIMP_FT));
+        this.track(effect(() => {
+            syncInput(stimp, this.putt.stimpFt.get(), 1);
+        }));
+
+        // "Tap places" selector — lets the user choose BOTH points by tapping
+        // (ball, then hole), and re-place either afterwards. Active button is
+        // reflected via aria-pressed so the styling can highlight it.
+        const placeBallBtn = this.ref(frag, 'placeBallBtn') as HTMLButtonElement;
+        const placeHoleBtn = this.ref(frag, 'placeHoleBtn') as HTMLButtonElement;
+        const holeAtPinBtn = this.ref(frag, 'holeAtPinBtn') as HTMLButtonElement;
+        placeBallBtn.addEventListener('click', () => this.putt.setPlacing('ball'));
+        placeHoleBtn.addEventListener('click', () => this.putt.setPlacing('hole'));
+        holeAtPinBtn.addEventListener('click', () => this.putt.placeHoleAtPin());
+        this.track(effect(() => {
+            const which = this.putt.placing.get();
+            placeBallBtn.setAttribute('aria-pressed', String(which === 'ball'));
+            placeHoleBtn.setAttribute('aria-pressed', String(which === 'hole'));
+        }));
+
+        // Map-overlay toggle — reuses the Green-analysis Slope/Height maps.
+        const overlaySlopeBtn = this.ref(frag, 'overlaySlopeBtn') as HTMLButtonElement;
+        const overlayHeightBtn = this.ref(frag, 'overlayHeightBtn') as HTMLButtonElement;
+        const overlayNoneBtn = this.ref(frag, 'overlayNoneBtn') as HTMLButtonElement;
+        overlaySlopeBtn.addEventListener('click', () => this.putt.setOverlayMode('slope'));
+        overlayHeightBtn.addEventListener('click', () => this.putt.setOverlayMode('height'));
+        overlayNoneBtn.addEventListener('click', () => this.putt.setOverlayMode('none'));
+        this.track(effect(() => {
+            const m = this.putt.overlayMode.get();
+            overlaySlopeBtn.setAttribute('aria-pressed', String(m === 'slope'));
+            overlayHeightBtn.setAttribute('aria-pressed', String(m === 'height'));
+            overlayNoneBtn.setAttribute('aria-pressed', String(m === 'none'));
+        }));
+
+        // Training-mode toggle (persisted; default ON).
+        const toggle = this.ref(frag, 'trainingToggle') as HTMLInputElement;
+        toggle.addEventListener('change', () => {
+            this.trainingMode.set(toggle.checked);
+            saveTrainingMode(toggle.checked);
+        });
+        this.track(effect(() => { toggle.checked = this.trainingMode.get(); }));
+
+        // Reset the quiz whenever the putt changes (new estimate needed). The
+        // signature read here subscribes this effect to ball/hole/stimp.
+        let lastSig: string | null = null;
+        this.track(effect(() => {
+            const sig = this.puttSig.get();
+            if (sig !== lastSig) {
+                lastSig = sig;
+                if (this.revealed.peek()) this.revealed.set(false);
+                if (this.lastScore.peek() !== null) this.lastScore.set(null);
+            }
+        }));
+
+        const quizHost = this.ref(frag, 'puttQuiz');
+        this.buildQuiz(quizHost);
+
+        const scoreHost = this.ref(frag, 'puttScore');
+        this.track(effect(() => { scoreHost.innerHTML = this.scoreHtml(); }));
+
+        const section = this.ref(frag, 'puttSection');
+        const verbal = this.ref(frag, 'puttVerbal');
+        const body = this.ref(frag, 'puttBody');
+        const confidence = this.ref(frag, 'puttConfidence');
+        this.track(effect(() => {
+            const d = this.putt.display.get();
+            // E2E hook (inert in prod): expose the presentation tier so a spec
+            // can assert softened/withheld states without parsing prose.
+            section.dataset.puttStatus = d.status;
+            // E2E hook: whether the quiz gate is currently withholding the read.
+            section.dataset.puttQuiz = this.quizActive.get() ? 'active' : 'off';
+            // Putt length straight from the LIVE marker geometry (doc §5.1) —
+            // it tracks the cursor mid-drag even while the read is pending.
+            const b = this.putt.ball.get();
+            const h = this.putt.hole.get();
+            const distanceM = b && h ? Math.hypot(h.x - b.x, h.y - b.y) : null;
+            // While the quiz gates a readable putt, WITHHOLD the read (verbal +
+            // numbers) so the estimate is honest. Confidence provenance stays.
+            const gate = this.quizActive.get();
+            verbal.textContent = gate ? '' : puttVerbalText(d);
+            body.innerHTML = gate ? '' : puttBodyHtml(d, distanceM);
+            confidence.textContent = puttConfidenceText(d);
+        }));
+    }
+
+    /** Wire the estimate form: shown only while the quiz is active; submit
+     *  scores + records, skip reveals without recording. */
+    private buildQuiz(host: HTMLElement): void {
+        const q = this.wireEl(puttQuizTpl, {
+            root: { style: () => this.quizActive.get() ? '' : 'display:none' },
+            dist: () => {
+                const b = this.putt.ball.get();
+                const h = this.putt.hole.get();
+                const d = b && h ? Math.hypot(h.x - b.x, h.y - b.y) : null;
+                return d === null ? 'place the ball' : `${d.toFixed(1)} m putt`;
+            },
+        });
+        host.appendChild(q);
+
+        const slope = q.querySelector('[data-testid="planner-putt-est-slope"]') as HTMLInputElement;
+        const side = q.querySelector('[data-testid="planner-putt-est-side"]') as HTMLSelectElement;
+        const aim = q.querySelector('[data-testid="planner-putt-est-aim"]') as HTMLInputElement;
+        const pace = q.querySelector('[data-testid="planner-putt-est-pace"]') as HTMLInputElement;
+        const submit = q.querySelector('[data-testid="planner-putt-est-submit"]') as HTMLButtonElement;
+        const skip = q.querySelector('[data-testid="planner-putt-est-skip"]') as HTMLButtonElement;
+
+        submit.addEventListener('click', () => {
+            const estimate: PuttEstimate = {
+                slopePct: parseNum(slope.value, 1) ?? 0,
+                breakSide: (side.value as BreakSide) || 'straight',
+                aimOffsetM: (parseNum(aim.value, 0) ?? 0) / 100, // cm → m
+                playsLikeM: parseNum(pace.value, 1) ?? 0,
+            };
+            this.submitEstimate(estimate);
+        });
+        skip.addEventListener('click', () => {
+            this.lastScore.set(null);
+            this.revealed.set(true); // reveal without recording
+        });
+    }
+
+    /** Score the estimate against the settled read's ground truth, record it
+     *  (server = source of truth), and reveal. */
+    private submitEstimate(estimate: PuttEstimate): void {
+        const d = this.putt.display.peek();
+        if (!d.groundTruth) { this.revealed.set(true); return; } // nothing to score
+        const score = scoreEstimate(estimate, d.groundTruth);
+        this.lastScore.set(score);
+        this.revealed.set(true);
+
+        const b = this.putt.ball.peek();
+        const h = this.putt.hole.peek();
+        const distanceM = b && h ? Math.hypot(h.x - b.x, h.y - b.y) : 0;
+        const greenId = this.putt.context.peek()?.greenId ?? null;
+        void this.puttEstimate.record({
+            greenId,
+            distanceM,
+            stimpFt: this.putt.stimpFt.peek(),
+            estimate,
+            truth: d.groundTruth,
+        });
+    }
+
+    /** The scored-result block (per-field errors + overall), or '' when none. */
+    private scoreHtml(): string {
+        const score = this.lastScore.get();
+        if (score === null) return '';
+        const rows = [
+            `<div><b>Score</b> ${score.score}/100</div>`,
+            `<div>Slope off <b>${score.slopeErrorPct.toFixed(1)}%</b> · `
+                + `break ${score.breakSideCorrect ? '✓' : '✗'} · `
+                + `aim off <b>${Math.round(score.aimErrorM * 100)} cm</b> · `
+                + `pace off <b>${score.paceErrorM.toFixed(1)} m</b></div>`,
+        ];
+        return rows.join('');
+    }
+
     // ── Notes ───────────────────────────────────────────────────────────────
 
     private bindNotes(area: HTMLTextAreaElement): void {
@@ -550,9 +910,16 @@ export class PlannerPanelComponent extends Component {
                     dist: () => this.shotDistText(shot.id),
                     advice: () => this.shotAdviceText(shot.id),
                     remove: {
-                        onclick: (e: Event) => {
+                        onclick: async (e: Event) => {
                             e.stopPropagation();
-                            if (window.confirm('Delete this shot?')) void this.plan.removeShot(shot.id);
+                            const ok = await this.confirm.confirm({
+                                title: 'Delete shot?',
+                                body: 'This shot will be removed from the hole plan.',
+                                confirmLabel: 'Delete shot',
+                                tone: 'danger',
+                                layout: 'default',
+                            });
+                            if (ok) void this.plan.removeShot(shot.id);
                         },
                     },
                 }, track);
@@ -623,9 +990,16 @@ export class PlannerPanelComponent extends Component {
                     name: () => `Gate ${this.tool.holeGates.get().findIndex(g => g.id === gate.id) + 1}`,
                     widths: () => gateLabel(live.get()),
                     remove: {
-                        onclick: (e: Event) => {
+                        onclick: async (e: Event) => {
                             e.stopPropagation();
-                            if (window.confirm('Delete this gate?')) void this.plan.removeGate(gate.id);
+                            const ok = await this.confirm.confirm({
+                                title: 'Delete gate?',
+                                body: 'This gate will be removed from the hole plan.',
+                                confirmLabel: 'Delete gate',
+                                tone: 'danger',
+                                layout: 'default',
+                            });
+                            if (ok) void this.plan.removeGate(gate.id);
                         },
                     },
                 }, track);
@@ -643,6 +1017,7 @@ export class PlannerPanelComponent extends Component {
         const mode = this.tool.mode.get();
         if (mode === 'add-shot') return 'Click the map to append shots — Esc to stop.';
         if (mode === 'add-gate') return 'Click near a leg to drop a corridor gate (Shift-click for several).';
+        if (mode === 'putt') return 'Click the green to place the ball — drag ball/hole; the read updates on release.';
         return null;
     }
 
@@ -708,6 +1083,11 @@ export class PlannerPanelComponent extends Component {
             if (leg.remainingToGreenM !== undefined && leg.to.kind !== 'green') {
                 parts.push(`${Math.round(leg.remainingToGreenM)} m left`);
             }
+            const drift = legDriftLabel(leg);
+            if (drift) {
+                // E2E hook (inert): the wind-hold readout for this leg.
+                parts.push(`<span data-testid="planner-leg-drift">wind ${escapeHtml(drift)}</span>`);
+            }
             if (leg.expectedStrokes !== undefined) {
                 // E2E hook (inert): the EV readout carries a testid so the smoke
                 // suite can assert it renders for an enriched leg.
@@ -749,6 +1129,56 @@ export class PlannerPanelComponent extends Component {
         if (error) return `Load failed: ${error.message}`;
         return this.plan.plan.get() ? 'Autosaves' : 'No plan yet — first edit creates one';
     }
+}
+
+// ── Putt readout formatting (pure — renders PuttReadService.display) ────────
+
+/**
+ * The Tour Read verbal line — ALWAYS shown alongside the exact read when one
+ * exists (doc §5.1: it's the on-course takeaway and a sanity cross-check
+ * against the integrator; big disagreement on a single-plane putt ⇒ grid
+ * problem). Empty while there's nothing readable.
+ */
+function puttVerbalText(d: PuttReadDisplay): string {
+    if (!d.verbal) return '';
+    return `Tour read: ${d.verbal.combined}`;
+}
+
+/** Exact-read rows (plays-like / aim / holed%), or the withhold message. */
+function puttBodyHtml(d: PuttReadDisplay, distanceM: number | null): string {
+    if (d.read === null) {
+        if (d.status === 'loading') return 'Loading green surface…';
+        if (d.status === 'pending') return 'Reading…';
+        return d.message ? `<span class="putt-warn">${escapeHtml(d.message)}</span>` : '';
+    }
+    const lines: string[] = [];
+    if (d.message) lines.push(`<div class="putt-warn">${escapeHtml(d.message)}</div>`);
+    const parts: string[] = [];
+    if (distanceM !== null) parts.push(`<b>Putt</b> ${distanceM.toFixed(1)} m`);
+    parts.push(`<b>plays</b> ${d.read.playsLikeM.toFixed(1)} m`);
+    parts.push(`<b>aim</b> ${formatAimOffset(d.read.aimOffsetM)}`);
+    lines.push(`<div>${parts.join(' · ')}</div>`);
+    lines.push(`<div><b>Holed</b> ~${Math.round(d.read.holedProb * 100)}%`
+        + ` <span title="Heuristic — uncalibrated single-trajectory estimate">(est.)</span></div>`);
+    return lines.join('');
+}
+
+/** Signed aim offset (m, + = right of the hole) → "37 cm left" / "straight". */
+function formatAimOffset(aimOffsetM: number): string {
+    const cm = Math.round(Math.abs(aimOffsetM) * 100);
+    if (cm === 0) return 'straight';
+    return `${cm} cm ${aimOffsetM > 0 ? 'right' : 'left'}`;
+}
+
+/** Calibration provenance line — 'scans' vs 'prior' (ordinal, not a probability). */
+function puttConfidenceText(d: PuttReadDisplay): string {
+    if (d.status === 'inactive') return '';
+    const c = d.confidence;
+    if (!c) return 'Green data: uncalibrated DEM (default confidence)';
+    const src = c.source === 'scans'
+        ? `calibrated from ${c.sampleCount} scan${c.sampleCount === 1 ? '' : 's'}`
+        : 'DEM prior (no scans yet)';
+    return `Green data: ${src} · confidence ${c.confidence.toFixed(2)}`;
 }
 
 /** Parse a numeric input value; empty/invalid → null (clears the field). */

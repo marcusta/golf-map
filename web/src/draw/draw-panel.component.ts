@@ -59,7 +59,7 @@ const tpl = template(`
         </div>
         <div bind="status" class="draw-panel__status"></div>
         <div class="draw-panel__hints">
-            <div><b>N</b> new polygon &nbsp;·&nbsp; <b>Enter</b>/dbl-click close &nbsp;·&nbsp; <b>Esc</b> cancel</div>
+            <div><b>N</b> new polygon &nbsp;·&nbsp; <b>Enter</b>/click first point to close &nbsp;·&nbsp; <b>Esc</b> cancel</div>
             <div>Click: smooth point · <b>Shift</b>-click: corner point</div>
             <div><b>⌘Z</b> undo · <b>⌘⇧Z</b>/<b>⌘Y</b> redo (points while drawing)</div>
             <div><b>⌘</b>-click: multi-select · drag empty ground: marquee (<b>Alt</b>: touch)</div>
@@ -360,7 +360,7 @@ export class DrawPanelComponent extends Component {
                     const n = this.tool.state.draft.get().length;
                     return n === 0
                         ? 'Click the map to place the first point.'
-                        : `${n} point${n === 1 ? '' : 's'} placed — Enter or double-click to close.`;
+                        : `${n} point${n === 1 ? '' : 's'} placed — Enter or click the first point to close.`;
                 },
             },
             undoBtn: {
@@ -462,12 +462,12 @@ export class DrawPanelComponent extends Component {
                 className: 'op-btn show',
             },
             convertBtn: {
-                onclick: () => this.tool.convertSelectedToBezier(),
+                onclick: () => void this.tool.convertSelectedToBezier(),
                 className: () => this.features.selected.get()?.geometry.curveType === 'bspline'
                     ? 'op-btn convert-btn show' : 'op-btn convert-btn',
             },
             deleteBtn: {
-                onclick: () => this.tool.deleteSelected(),
+                onclick: () => void this.tool.deleteSelected(),
                 textContent: () => {
                     const count = this.features.selectedIds.get().size;
                     return count > 1 ? `Delete ${count} features` : 'Delete feature';

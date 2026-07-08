@@ -2,6 +2,7 @@ import { Component, Signal, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, primaryBtn, field } from '../css';
 import { ClubsService } from './clubs.service';
+import { ConfirmService } from '../app/confirm-dialog.component';
 import { lengthDispersionM } from '../../../shared/strategy/club';
 import type { Club } from '../../../shared/api/clubs.gen';
 
@@ -236,6 +237,7 @@ export class PlayerSettingsComponent extends Component {
     `;
 
     private svc = this.inject(ClubsService);
+    private confirm = this.inject(ConfirmService);
     private readonly addErrorMsg = new Signal('');
     private addName!: HTMLInputElement;
     private addCarry!: HTMLInputElement;
@@ -363,7 +365,13 @@ export class PlayerSettingsComponent extends Component {
     }
 
     private async handleDelete(club: Club): Promise<void> {
-        const ok = window.confirm(`Delete "${club.name}"?`);
+        const ok = await this.confirm.confirm({
+            title: 'Delete club?',
+            body: `"${club.name}" will be removed from your bag.`,
+            confirmLabel: 'Delete club',
+            tone: 'danger',
+            layout: 'default',
+        });
         if (!ok) return;
         await this.svc.remove(club.id);
     }

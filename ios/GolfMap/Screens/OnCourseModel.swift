@@ -48,6 +48,11 @@ final class OnCourseModel {
     /// Set from `LocationProvider.isDenied` so the UI can explain the fallback.
     var isLocationDenied = false
 
+    /// App-level competition mode (DMD rule: distance only). Mirrored from
+    /// `AppSettings` by the screen; when true, `distances` omits the slope-
+    /// adjusted plays-like figures. Straight distances are unchanged.
+    var competitionMode = false
+
     /// Selected tee name (persisted); nil = per-hole default (lowest sortOrder).
     private(set) var activeTeeName: String?
 
@@ -790,7 +795,8 @@ final class OnCourseModel {
         return OnCourseDistances.compute(
             from: origin,
             originElevation: originElevation,
-            targets: targets
+            targets: targets,
+            competitionMode: competitionMode
         )
     }
 

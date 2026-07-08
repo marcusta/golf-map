@@ -8,6 +8,7 @@ import {
     gateEndpoints,
     gateLabel,
     ghostAimForLeg,
+    legDriftLabel,
     legLabel,
     legLight,
     nearestLegFoot,
@@ -567,20 +568,38 @@ describe('ghostAimForLeg', () => {
         expect(ghostAimForLeg(plan.legs[0])).toBeNull();
     });
 
-    test('projects from the origin along recommendedBearingDeg by adjustedCarryM', () => {
+    test('projects along recommendedBearingDeg by the slope-projected adjustedCarryM', () => {
         const plan = buildHolePlan(northInput());
         const leg = plan.legs[0];
-        // Recommend aiming 90° (due east); carry projects straight east from the tee.
+        // Recommend aiming 90° (due east); carry projects straight east from the
+        // tee, ground-projected by the leg's slope (same rule as the ellipse
+        // center, so ghost and pattern share the long axis). northInput's leg 0
+        // drops 5 m over 200 m → slope −0.025 → carry / 0.975.
         const enriched: PlanLeg = { ...leg, recommendedBearingDeg: 90 };
         const ghost = ghostAimForLeg(enriched)!;
         expect(ghost).not.toBeNull();
         expect(ghost.legIndex).toBe(0);
         expect(ghost.bearingDeg).toBe(90);
-        expect(ghost.point.x).toBeCloseTo(leg.from.x + leg.adjustedCarryM!, 6);
+        const slope = (leg.playsLikeM! - leg.horizontalM) / leg.horizontalM;
+        expect(ghost.point.x).toBeCloseTo(leg.from.x + leg.adjustedCarryM! / (1 + slope), 6);
         expect(ghost.point.y).toBeCloseTo(leg.from.y, 6);
         const wgs = sweref99tmToWgs84(ghost.point.x, ghost.point.y);
         expect(ghost.lat).toBeCloseTo(wgs.lat, 9);
         expect(ghost.lon).toBeCloseTo(wgs.lon, 9);
+    });
+
+    test('calm wind: the ghost aim point IS the recommended pattern center (no drift)', () => {
+        const fairway = rectFeature('fw1', 'fairway', BASE.x - 200, BASE.x + 200, BASE.y - 50, BASE.y + 400);
+        const enriched = enrichLegStrategy(buildHolePlan(northInput()).legs[0], {
+            lieMap: buildLieMap([fairway]),
+            greenCenter: { x: BASE.x, y: BASE.y + 350 },
+            wind: null,
+        });
+        const ghost = ghostAimForLeg(enriched)!;
+        expect(enriched.recommendedEllipse).toBeDefined();
+        expect(enriched.recommendedEllipse!.driftM).toBe(0);
+        expect(ghost.point.x).toBeCloseTo(enriched.recommendedEllipse!.center.x, 6);
+        expect(ghost.point.y).toBeCloseTo(enriched.recommendedEllipse!.center.y, 6);
     });
 
     test('null when the leg has no club (no adjustedCarryM to project)', () => {
@@ -611,10 +630,61 @@ describe('buildPlanGeojson strategy rendering', () => {
         expect(byRole(fc.features, 'ghost-aim')).toHaveLength(1);
     });
 
+    test('an enriched leg also emits its recommended pattern: dashed ellipse + finish dot', () => {
+        const enriched = enrichPlanStrategy(buildHolePlan(northInput()), ctx());
+        const fc = buildPlanGeojson({ plan: enriched, gates: [], selectedShotId: null, selectedGateId: null });
+        expect(byRole(fc.features, 'ghost-ellipse')).toHaveLength(1);
+        expect(byRole(fc.features, 'ghost-center')).toHaveLength(1);
+        // Calm wind → no visible drift → no aim→finish connector.
+        expect(byRole(fc.features, 'ghost-drift')).toHaveLength(0);
+        // The finish dot sits at the recommended pattern's (drifted) center.
+        const center = byRole(fc.features, 'ghost-center')[0].geometry as Point;
+        const rec = enriched.legs[0].recommendedEllipse!;
+        const wgs = sweref99tmToWgs84(rec.center.x, rec.center.y);
+        expect(center.coordinates[0]).toBeCloseTo(wgs.lon, 9);
+        expect(center.coordinates[1]).toBeCloseTo(wgs.lat, 9);
+    });
+
+    test('meaningful crosswind draws the aim→finish connector with a drift label', () => {
+        // 5 m/s from due west on a north shot: from shot-left → drifts right
+        // well past the 3 m label threshold for a 200 m club.
+        const wind = { speedMps: 5, directionDeg: 270 };
+        const enriched = enrichPlanStrategy(
+            buildHolePlan(northInput({ wind })),
+            { ...ctx(), wind },
+        );
+        const fc = buildPlanGeojson({ plan: enriched, gates: [], selectedShotId: null, selectedGateId: null });
+        const drifts = byRole(fc.features, 'ghost-drift');
+        expect(drifts).toHaveLength(1);
+        const props = drifts[0].properties as { label: string };
+        expect(props.label).toMatch(/^drift \d+ m R$/);
+        // The connector runs from the ghost aim point to the finish dot.
+        const line = drifts[0].geometry as LineString;
+        const ghost = ghostAimForLeg(enriched.legs[0])!;
+        const rec = enriched.legs[0].recommendedEllipse!;
+        const centerWgs = sweref99tmToWgs84(rec.center.x, rec.center.y);
+        expect(line.coordinates[0][0]).toBeCloseTo(ghost.lon, 9);
+        expect(line.coordinates[0][1]).toBeCloseTo(ghost.lat, 9);
+        expect(line.coordinates[1][0]).toBeCloseTo(centerWgs.lon, 9);
+        expect(line.coordinates[1][1]).toBeCloseTo(centerWgs.lat, 9);
+        // And the leg's own label carries the same hold amount.
+        expect(legLabel(enriched.legs[0])).toContain('drift');
+        expect(legDriftLabel(enriched.legs[0])).toMatch(/^drift \d+ m R$/);
+    });
+
+    test('calm wind: no drift text on the leg label', () => {
+        const plain = buildHolePlan(northInput());
+        expect(legDriftLabel(plain.legs[0])).toBeNull();
+        expect(legLabel(plain.legs[0])).not.toContain('drift');
+    });
+
     test('a plain (un-enriched) plan emits NO ghost markers — the per-frame path stays clean', () => {
         const plain = buildHolePlan(northInput());
         const fc = buildPlanGeojson({ plan: plain, gates: [], selectedShotId: null, selectedGateId: null });
         expect(byRole(fc.features, 'ghost-aim')).toHaveLength(0);
+        expect(byRole(fc.features, 'ghost-ellipse')).toHaveLength(0);
+        expect(byRole(fc.features, 'ghost-center')).toHaveLength(0);
+        expect(byRole(fc.features, 'ghost-drift')).toHaveLength(0);
         // ...and every leg's light property is empty (no tint) until enriched.
         for (const legFeature of byRole(fc.features, 'leg')) {
             expect((legFeature.properties as { light: string }).light).toBe('');

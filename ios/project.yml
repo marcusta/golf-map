@@ -38,6 +38,12 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSLocationWhenInUseUsageDescription: Shows live distances from your position on the course.
+        # ARKit LiDAR corridor scanning (task E1) uses the camera + LiDAR to
+        # measure the green surface along the putt line.
+        NSCameraUsageDescription: Scans the green surface along your putt line with the camera and LiDAR to read the break.
+        # Spot-level green capture lays the phone flat and reads gravity-anchored
+        # tilt from the motion sensors.
+        NSMotionUsageDescription: Reads the phone's tilt when you lay it flat on the green to measure slope.
         # Dev server runs on http://localhost:3000. Allow local networking ONLY —
         # do not widen to NSAllowsArbitraryLoads.
         NSAppTransportSecurity:

@@ -143,7 +143,7 @@ describe('active-tee radio resolution', () => {
 // ── updateHole flow (par / stroke index) ────────────────────────────────────
 
 function course(id: string): Course {
-    return { id, name: 'Masters', status: 'draft', revision: 1, crs: 'EPSG:3006', georeferenceJson: null, homeLat: null, homeLon: null, notes: null, version: 1, createdAt: '', updatedAt: '' };
+    return { id, name: 'Masters', status: 'draft', revision: 1, crs: 'EPSG:3006', georeferenceJson: null, homeLat: null, homeLon: null, notes: null, siteId: null, version: 1, createdAt: '', updatedAt: '' };
 }
 function hole(over: Partial<Hole> = {}): Hole {
     return { id: 'h1', courseId: 'c1', number: 5, par: 4, strokeIndex: null, notes: null, savedRegionJson: null, version: 1, createdAt: '', updatedAt: '', ...over };

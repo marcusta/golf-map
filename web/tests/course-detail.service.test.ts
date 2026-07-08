@@ -18,6 +18,7 @@ function course(id: string, name: string): Course {
         homeLat: null,
         homeLon: null,
         notes: null,
+        siteId: null,
         version: 1,
         createdAt: '2026-07-04T00:00:00Z',
         updatedAt: '2026-07-04T00:00:00Z',

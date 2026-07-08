@@ -35,9 +35,9 @@ export interface LngLat {
     lat: number;
 }
 
-/** Configuration for one course's terrain tile set. */
+/** Configuration for a site's terrain tile set. */
 export interface ElevationTileConfig {
-    courseId: string;
+    mapKey: string;
     /** Fixed query zoom — use the terrain layer's maxzoom from the manifest. */
     zoom: number;
     /** `?v=` cache-buster (TilesetService.tileVersion). */
@@ -239,7 +239,7 @@ export class ElevationService {
     }
 
     private tileKey(x: number, y: number): string {
-        return `${this.config!.courseId}/${this.config!.zoom}/${x}/${y}`;
+        return `${this.config!.mapKey}/${this.config!.zoom}/${x}/${y}`;
     }
 
     private loadTile(x: number, y: number): Promise<DecodedTile | null> {
@@ -249,7 +249,7 @@ export class ElevationService {
         const pending = this.inflight.get(key);
         if (pending) return pending;
 
-        const url = tileUrlTemplate(config.courseId, 'terrain', 'png', config.version)
+        const url = tileUrlTemplate(config.mapKey, 'terrain', 'png', config.version)
             .replace('{z}', String(config.zoom))
             .replace('{x}', String(x))
             .replace('{y}', String(y));

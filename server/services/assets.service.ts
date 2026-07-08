@@ -25,6 +25,7 @@ const SAFE_ID_RE = /^[A-Za-z0-9_-]+$/;
 export interface CourseAsset {
     id: string;
     courseId: string;
+    siteId: string | null;
     kind: AssetKind;
     filename: string;
     metaJson: string | null;
@@ -41,6 +42,7 @@ function toCourseAsset(row: CourseAssetRow): CourseAsset {
     return {
         id: row.id,
         courseId: row.course_id,
+        siteId: row.site_id,
         kind: row.kind as AssetKind,
         filename: row.filename,
         metaJson: row.meta_json,
@@ -77,10 +79,14 @@ export class AssetsService {
         return this.assets().where('course_id', '=', courseId).orderBy('created_at');
     }
 
+    private bySite(siteId: string) {
+        return this.assets().where('site_id', '=', siteId).orderBy('created_at');
+    }
+
     // --- Queries (write) ---
 
     private insertAsset(values: {
-        id: string; course_id: string; kind: string; filename: string;
+        id: string; course_id: string; site_id: string | null; kind: string; filename: string;
         meta_json: string | null; version?: number;
     }, trx: Kysely<Database> = this.db) {
         return trx.insertInto('course_assets').values({ ...values, version: values.version ?? 1 });
@@ -101,6 +107,12 @@ export class AssetsService {
         return rows.map(toCourseAsset);
     }
 
+    /** Map assets for a site — the shared map is site-scoped. */
+    async listBySite(siteId: string): Promise<CourseAsset[]> {
+        const rows = await this.bySite(siteId).execute();
+        return rows.map(toCourseAsset);
+    }
+
     async get(id: string): Promise<CourseAsset> {
         const row = await this.byId(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Asset ${id} not found`);
@@ -108,7 +120,8 @@ export class AssetsService {
     }
 
     async register(input: {
-        courseId: string;
+        siteId: string;
+        courseId?: string;
         kind: AssetKind;
         filename: string;
         metaJson?: string;
@@ -116,7 +129,10 @@ export class AssetsService {
         const id = crypto.randomUUID();
         const values = {
             id,
-            course_id: input.courseId,
+            // course_id stays non-null in the DB (legacy column); map assets belong
+            // to the site, so default it to the site id when no owner course is given.
+            course_id: input.courseId ?? input.siteId,
+            site_id: input.siteId,
             kind: input.kind,
             filename: input.filename,
             meta_json: input.metaJson ?? null,

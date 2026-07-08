@@ -84,13 +84,39 @@ describe('DrawState', () => {
         expect(state.draft.get()).toEqual([]);
     });
 
-    test('popPoint drops the last anchor (dblclick duplicate handling)', () => {
+    test('popPoint drops the last anchor', () => {
         const state = new DrawState();
         state.arm();
         state.addPoint({ x: 0, y: 0 });
         state.addPoint({ x: 10, y: 0 });
         state.popPoint();
         expect(state.draft.get()).toEqual([{ x: 0, y: 0 }]);
+    });
+
+    test('discardDoubleClickDuplicate removes duplicate point and keeps draft open', () => {
+        const state = new DrawState();
+        state.arm();
+        state.addPoint({ x: 0, y: 0 });
+        state.addPoint({ x: 10, y: 0 });
+        state.addPoint({ x: 10, y: 10 });
+        state.addPoint({ x: 10, y: 10 });
+
+        expect(state.discardDoubleClickDuplicate()).toBe(true);
+
+        expect(state.mode.get()).toBe('draw');
+        expect(state.draft.get()).toEqual([
+            { x: 0, y: 0 },
+            { x: 10, y: 0 },
+            { x: 10, y: 10 },
+        ]);
+        expect(state.canClose.get()).toBe(true);
+    });
+
+    test('discardDoubleClickDuplicate is ignored outside drawing', () => {
+        const state = new DrawState();
+        expect(state.discardDoubleClickDuplicate()).toBe(false);
+        expect(state.mode.get()).toBe('select');
+        expect(state.draft.get()).toEqual([]);
     });
 
     test('rearming clears a stale draft', () => {

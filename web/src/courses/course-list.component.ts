@@ -9,6 +9,8 @@ const tpl = template(`
             <header class="courses__header">
                 <h2>Courses</h2>
                 <span bind="total" class="courses__total"></span>
+                <span class="courses__spacer"></span>
+                <button bind="newCourse" type="button" class="courses__new">New course</button>
             </header>
             <div class="error" bind="error">
                 <span bind="errorText"></span>
@@ -54,6 +56,14 @@ export class CourseListComponent extends Component {
             & .courses__total {
                 font-size: 0.8rem;
                 color: ${t('text-muted')};
+            }
+
+            & .courses__spacer { flex: 1; }
+
+            & .courses__new {
+                padding: ${s('xs')} ${s('md')};
+                font-size: 0.8rem;
+                ${btn()}
             }
 
             & .error {
@@ -136,6 +146,7 @@ export class CourseListComponent extends Component {
             error: { className: () => this.svc.error.get() ? 'error show' : 'error' },
             errorText: () => this.svc.error.get()?.message ?? '',
             retry: { onclick: () => this.svc.load() },
+            newCourse: { onclick: () => this.router.navigate('/new') },
         });
 
         this.$each(this.ref(frag, 'list'), this.svc.store.items, (course, _i, track) => {

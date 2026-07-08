@@ -23,6 +23,7 @@ bun run import          # import v1 export into app.sqlite
 ## Rules
 
 - New feature = api descriptor + service + service test, mounted under `/api`. Then `bun run generate`.
+- Service tests run against a real migrated DB (`createTestDb`), no mocks. See root [TESTING.md](../TESTING.md).
 - Schema changes go through a new numbered migration in `db/migrations/`. Never edit an applied migration.
 - Optimistic locking via `version` columns; `VersionConflictError` → 409.
 - Tile/asset paths: `assets.service.ts` `resolveTilePath` → `data/tiles/{courseId}/{layer}/{z}/{x}/{y}.<ext>` (`ortho`→jpg, `terrain`→png). Tile routes unauthenticated.

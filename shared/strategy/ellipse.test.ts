@@ -141,6 +141,28 @@ describe('dispersionEllipse — wind', () => {
         expect(e.center.x).toBeCloseTo(243 * -10.606601717798213 * 0.005, 6);
     });
 
+    test('driftM reports the crosswind shift: 0 calm, signed with wind', () => {
+        const calm = dispersionEllipse({ origin: ORIGIN, bearingDeg: 0, club: v1Club('Driver') });
+        expect(calm.driftM).toBe(0);
+        const cross = dispersionEllipse({
+            origin: ORIGIN,
+            bearingDeg: 0,
+            club: v1Club('Driver'),
+            windSpeedMps: mphToMps(10),
+            windDirectionDeg: 270, // from shot-left → drifts right
+        });
+        expect(cross.driftM).toBeCloseTo(12.15, 6); // matches center.x above
+        expect(cross.center.x).toBeCloseTo(cross.driftM, 9);
+        const fromRight = dispersionEllipse({
+            origin: ORIGIN,
+            bearingDeg: 0,
+            club: v1Club('Driver'),
+            windSpeedMps: mphToMps(10),
+            windDirectionDeg: 90, // from shot-right → drifts left (negative)
+        });
+        expect(fromRight.driftM).toBeCloseTo(-12.15, 6);
+    });
+
     test('no-wind call equals explicit zero wind', () => {
         const a = dispersionEllipse({ origin: ORIGIN, bearingDeg: 30, club: v1Club('PW') });
         const b = dispersionEllipse({

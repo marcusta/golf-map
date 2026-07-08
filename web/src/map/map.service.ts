@@ -78,13 +78,13 @@ export class MapService {
      * Camera starts fitted to the manifest bounds. Idempotence guard:
      * destroys any previous map first.
      */
-    init(container: HTMLElement, courseId: string, manifest: TileManifest, version: string): void {
+    init(container: HTMLElement, mapKey: string, manifest: TileManifest, version: string): void {
         this.destroy();
         this.tiles = { manifest };
 
         const map = new maplibregl.Map({
             container,
-            style: buildEditorStyle(courseId, manifest, version),
+            style: buildEditorStyle(mapKey, manifest, version),
             bounds: boundsToArray(manifest.bounds),
             fitBoundsOptions: { padding: 24 },
             minZoom: Math.min(manifest.layers.ortho.minzoom, manifest.layers.terrain.minzoom),
@@ -128,6 +128,7 @@ export class MapService {
         // size. Poll cheaply, resize on mismatch, and re-fit the course the
         // first time we recover from a degenerate initial size.
         const degenerateAtInit = container.clientWidth === 0 || container.clientHeight === 0;
+        console.log('[ARC] init degenerateAtInit=', degenerateAtInit, 'size=', container.clientWidth, 'x', container.clientHeight);
         let needsRefit = degenerateAtInit;
         const watchdog = setInterval(() => {
             if (container.clientWidth === 0 || container.clientHeight === 0) return;
@@ -136,7 +137,9 @@ export class MapService {
                 map.resize();
                 if (needsRefit) {
                     needsRefit = false;
+                    console.log('[ARC] WATCHDOG refit→course t=', performance.now().toFixed(0), 'zoomBefore=', map.getZoom().toFixed(2));
                     map.fitBounds(boundsToArray(manifest.bounds), { padding: 24, duration: 0 });
+                    console.log('[ARC] WATCHDOG refit done zoomAfter=', map.getZoom().toFixed(2));
                 }
             }
         }, 250);
@@ -221,6 +224,7 @@ export class MapService {
         bounds: [number, number, number, number],
         opts: { padding?: number; maxZoom?: number } = {},
     ): void {
+        console.log('[ARC] fitBounds t=', performance.now().toFixed(0), 'caller=', (new Error().stack || '').split('\n')[2]?.trim());
         const map = this.map.get();
         if (!map) return;
         const [w, s, e, n] = bounds;

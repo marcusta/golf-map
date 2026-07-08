@@ -14,7 +14,7 @@ Info.plist entries, SPM deps (MapLibre, GRDB), targets, build settings → edit 
 
 ## Layout (`GolfMap/`)
 
-`App/` @main + `AppEnvironment` (DI container) + Keychain + `SyncService` · `API/` server client (`GolfAPIClient` is an `actor`; cookie session + auto re-login on 401; dev server `http://localhost:3000`) · `Geo/` geodesy (LatLon, Sweref99TM, PlaysLike, WebMercatorTiles) · `Store/` on-device course bundle store (GRDB/SQLite, tile enumerator, sync planner) · `Map/` MapLibre rendering + overlays · `Measure/` · `Analysis/` green analysis · `Screens/` SwiftUI screens · `Profile/`.
+`App/` @main + `AppEnvironment` (DI container) + Keychain + `SyncService` · `API/` server client (`GolfAPIClient` is an `actor`; cookie session + auto re-login on 401; dev server `http://localhost:3000`) · `Geo/` geodesy (LatLon, Sweref99TM, PlaysLike, WebMercatorTiles) · `Store/` on-device course bundle store (GRDB/SQLite, tile enumerator, sync planner) · `Map/` MapLibre rendering + overlays · `Measure/` · `Analysis/` green analysis · `Motion/` IMU spot level · `Scan/` LiDAR corridor scan (pure fit math + ARKit capture + `ScannedSurface`) · `Screens/` SwiftUI screens · `Profile/`.
 
 ## Build / test (CLI)
 

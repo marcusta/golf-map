@@ -30,6 +30,22 @@ DEFAULT_FETCH_BUFFER_M = 250.0
 DEFAULT_TERRAIN_EDGE_PAD_M = 250.0
 
 
+def cmd_reproject_bbox(
+    bbox_wgs84: tuple[float, float, float, float],
+    epsg: int = 3006,
+) -> tuple[float, float, float, float]:
+    """Reprojects a WGS84 (lon/lat) bbox to `epsg`, returning
+    (e_min, n_min, e_max, n_max). Used to feed grid-dem's --bbox-3006 from a
+    WGS84 area selection (SWEREF99 TM = EPSG:3006, in metres)."""
+    from rasterio.crs import CRS
+    from rasterio.warp import transform_bounds
+
+    left, bottom, right, top = transform_bounds(
+        CRS.from_epsg(4326), CRS.from_epsg(epsg), *bbox_wgs84,
+    )
+    return (left, bottom, right, top)
+
+
 def cmd_fetch_dem(bbox: tuple[float, float, float, float], workdir: Path, out: Path, buffer_m: float = DEFAULT_FETCH_BUFFER_M) -> Path:
     """STAC-searches dtm-cog for bbox, downloads matching COG(s) with basic
     auth into workdir, mosaics/crops to bbox+buffer, writes out (kept in the
@@ -54,10 +70,27 @@ def cmd_fetch_dem(bbox: tuple[float, float, float, float], workdir: Path, out: P
     return out
 
 
-def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out: Path, buffer_m: float = DEFAULT_FETCH_BUFFER_M) -> Path:
+def cmd_list_ortho_vintages(bbox: tuple[float, float, float, float]) -> list[dict]:
+    """Print (as JSON) the ortho vintages covering bbox, newest first:
+    [{collection, dates, count}, …]. Lets callers pick which flight(s) to
+    fetch (different vintages are often flown in different seasons)."""
+    import json
+
+    out = []
+    for collection, items in stac.ortho_vintages(bbox):
+        dates = sorted({it.datetime[:10] for it in items if it.datetime})
+        out.append({"collection": collection, "dates": dates, "count": len(items)})
+    print(json.dumps(out))
+    return out
+
+
+def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out: Path, buffer_m: float = DEFAULT_FETCH_BUFFER_M, collection: str | None = None) -> Path:
     """STAC-searches stac-bild across all collections for bbox (newest
     coverage first, see golfpipe.stac.search_ortho), downloads the item(s)
     with basic auth, mosaics/crops to bbox+buffer.
+
+    Without `collection`, uses the newest vintage covering the bbox. Pass
+    `collection` (e.g. from list-ortho-vintages) to fetch a specific vintage.
 
     Ortho items are RGBI (4-band); only the first 3 bands (RGB) are kept
     since tile-ortho produces JPEG (no alpha/NIR).
@@ -67,12 +100,13 @@ def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out:
         print(f"No orthophoto items found for bbox {bbox}", file=sys.stderr)
         raise SystemExit(1)
 
-    # Keep only items from the newest collection actually covering the bbox
-    # (search results are newest-first; take the leading run of items that
-    # share the first result's collection so a mosaic isn't built from
-    # mismatched years).
-    newest_collection = items[0].collection
-    selected = [it for it in items if it.collection == newest_collection]
+    # Keep only items from the requested (or newest) collection covering the
+    # bbox, so a mosaic isn't built from mismatched years.
+    target_collection = collection or items[0].collection
+    selected = [it for it in items if it.collection == target_collection]
+    if not selected:
+        print(f"No orthophoto items in collection {target_collection!r} for bbox {bbox}", file=sys.stderr)
+        raise SystemExit(1)
 
     workdir.mkdir(parents=True, exist_ok=True)
     downloaded = []

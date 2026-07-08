@@ -197,6 +197,15 @@ def write_dem_geotiff(
         "crs": CRS.from_epsg(crs) if isinstance(crs, int) else crs,
         "transform": transform,
         "nodata": nodata_value,
+        # Compressed + tiled: DEFLATE with the floating-point predictor shrinks
+        # smooth lidar DEMs several-fold vs raw float32, while staying a plain
+        # georeferenced GeoTIFF the analysis service reads unchanged.
+        "compress": "deflate",
+        "predictor": 3,  # floating-point predictor
+        "zlevel": 9,
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
     }
     with rasterio.open(out_path, "w", **profile) as dst:
         dst.write(dem, 1)

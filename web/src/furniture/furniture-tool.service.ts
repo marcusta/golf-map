@@ -2,6 +2,7 @@ import { Signal, Computed, effect, untrack, di, Router } from '@basics/core/clie
 import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
 import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent } from '../map/map.service';
+import { ConfirmService } from '../app/confirm-dialog.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import type { Hole } from '../../../shared/api/holes.gen';
 import type { Tee } from '../../../shared/api/tees.gen';
@@ -58,6 +59,7 @@ export class FurnitureToolService {
     private svc = di.get(FurnitureService);
     private router = di.get(Router);
     private courseDetail = di.get(CourseDetailService);
+    private confirm = di.get(ConfirmService);
     private ctx: ToolContext | null = null;
     private drag: DragTarget | null = null;
     private suppressClick = false;
@@ -154,9 +156,11 @@ export class FurnitureToolService {
         });
         return effect(() => {
             const holeId = frameKey.get();
+            console.log('[ARC] framing effect t=', performance.now().toFixed(0), 'frameKey=', holeId, 'ready=', ctx.map.ready.peek());
             if (holeId === null || !ctx.map.ready.get()) return;
             untrack(() => {
                 const bounds = this.holeBounds(holeId);
+                console.log('[ARC] framing → fitBounds hole', holeId, 'bounds?', !!bounds);
                 if (bounds) ctx.map.fitBounds(bounds);
             });
         });
@@ -457,7 +461,14 @@ export class FurnitureToolService {
             return;
         }
         const label = sel.kind === 'tee' ? 'tee' : sel.kind === 'pin' ? 'pin' : 'aim point';
-        if (!window.confirm(`Delete this ${label}?`)) return;
+        const ok = await this.confirm.confirm({
+            title: `Delete ${label}?`,
+            body: `This ${label} will be removed from the course.`,
+            confirmLabel: `Delete ${label}`,
+            tone: 'danger',
+            layout: 'default',
+        });
+        if (!ok) return;
         if (sel.kind === 'tee') await this.svc.removeTee(sel.id);
         else if (sel.kind === 'pin') await this.svc.removePin(sel.id);
         else await this.svc.removeAim(sel.id);

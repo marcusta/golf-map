@@ -34,6 +34,8 @@ final class AppEnvironment {
     let downloader: BundleDownloader
     let syncService: SyncService
     let keychain: Keychain
+    /// App-wide user preferences (competition mode, …).
+    let settings: AppSettings
 
     // MARK: Observable state
 
@@ -50,12 +52,14 @@ final class AppEnvironment {
         serverOrigin: URL,
         database: AppDatabase,
         bundlePaths: BundlePaths,
-        keychain: Keychain = Keychain()
+        keychain: Keychain = Keychain(),
+        settings: AppSettings = AppSettings()
     ) {
         self.serverOrigin = serverOrigin
         self.database = database
         self.bundlePaths = bundlePaths
         self.keychain = keychain
+        self.settings = settings
 
         let client = GolfAPIClient(baseURL: serverOrigin)
         self.client = client

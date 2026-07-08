@@ -2,6 +2,7 @@ import { Signal, Computed, batch } from '@basics/core/client/core';
 import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
 import type { AssetsApi, CourseAsset } from '../../../shared/api/assets.gen';
+import type { CoursesApi } from '../../../shared/api/courses.gen';
 
 /** WGS84 bounding box, as stored in the tile manifest. */
 export interface TileBounds {
@@ -32,6 +33,16 @@ export interface TileManifest {
     /** ISO timestamp of tile generation — drives the `?v=` cache-buster. */
     generatedAt: string;
     attribution?: string;
+    /** Orthophoto vintages persisted for this course (newest first), if any. */
+    orthoVintages?: OrthoVintage[];
+    /** Which vintage is currently tiled/served. */
+    activeOrtho?: string;
+}
+
+/** One orthophoto vintage (flight) available to switch to. */
+export interface OrthoVintage {
+    collection: string;
+    dates: string[];
 }
 
 /**
@@ -71,6 +82,12 @@ export function parseTileManifest(metaJson: string | null | undefined): TileMani
         },
         generatedAt: m.generatedAt,
         attribution: typeof m.attribution === 'string' ? m.attribution : undefined,
+        orthoVintages: Array.isArray(m.orthoVintages)
+            ? m.orthoVintages
+                .filter((v: any) => typeof v?.collection === 'string')
+                .map((v: any) => ({ collection: v.collection, dates: Array.isArray(v.dates) ? v.dates : [] }))
+            : undefined,
+        activeOrtho: typeof m.activeOrtho === 'string' ? m.activeOrtho : undefined,
     };
 }
 
@@ -98,10 +115,16 @@ export function deriveTileVersion(generatedAt: string): string {
  * refetches when the id changes.
  */
 export class TilesetService {
-    /** Parsed manifest for `courseId`, or null (not loaded / course has no tiles). */
+    /** Parsed manifest for `courseId`, or null (not loaded / no map). */
     readonly manifest = new Signal<TileManifest | null>(null);
     /** The courseId the current signals describe. Set after a successful load. */
     readonly courseId = new Signal<string | null>(null);
+    /**
+     * The map key (the course's site id) — the on-disk/tile-URL key for the
+     * shared map. Null when the course has no site (no map). Editor-canvas
+     * passes this to MapService.init / ElevationService.configure.
+     */
+    readonly mapKey = new Signal<string | null>(null);
     readonly loading = new Signal(false);
     readonly error = new Signal<RequestError | null>(null);
 
@@ -119,18 +142,42 @@ export class TilesetService {
 
     private loadedCourseId: string | null = null;
 
-    constructor(private assetsApi: AssetsApi = api.assets) {}
+    constructor(
+        private assetsApi: AssetsApi = api.assets,
+        private coursesApi: CoursesApi = api.courses,
+    ) {}
 
-    /** Load the tile manifest for a course. Cached per courseId. */
+    /**
+     * Force a refetch of a course's manifest, bypassing the per-courseId cache.
+     * Used after a map build/vintage switch so the map refreshes without a full
+     * navigation (the course may also have just been assigned a site).
+     */
+    async reload(courseId: string): Promise<void> {
+        if (this.loadedCourseId === courseId) this.loadedCourseId = null;
+        await this.load(courseId);
+    }
+
+    /**
+     * Resolve a course's map: course → site → tile_manifest asset. A course with
+     * no site (`siteId == null`) has no map — `hasTiles` stays false and the
+     * editor shows the empty "Set map area" state. Cached per courseId.
+     */
     async load(courseId: string): Promise<void> {
         if (this.loadedCourseId === courseId) return;
-        const assets = await request(this.loading, this.error, () =>
-            this.assetsApi.listByCourse({ courseId }));
-        if (!assets) return; // request failed — error signal is set, cache untouched
-        const manifestAsset: CourseAsset | undefined = assets.find(a => a.kind === 'tile_manifest');
+        const course = await request(this.loading, this.error, () => this.coursesApi.get({ id: courseId }));
+        if (!course) return; // request failed — error set, cache untouched
+        const siteId = course.siteId;
+
+        let manifestAsset: CourseAsset | undefined;
+        if (siteId) {
+            const assets = await request(this.loading, this.error, () => this.assetsApi.listBySite({ siteId }));
+            if (!assets) return;
+            manifestAsset = assets.find(a => a.kind === 'tile_manifest');
+        }
         batch(() => {
             this.manifest.set(parseTileManifest(manifestAsset?.metaJson));
             this.courseId.set(courseId);
+            this.mapKey.set(siteId ?? null);
         });
         this.loadedCourseId = courseId;
     }

@@ -8,6 +8,7 @@ struct CourseListScreen: View {
     @Environment(AppEnvironment.self) private var env
     @State private var model: CourseListModel?
     @State private var path: [CourseDestination] = []
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -22,6 +23,9 @@ struct CourseListScreen: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button("Settings", systemImage: "gearshape") {
+                            showSettings = true
+                        }
                         Button("Log out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
                             Task { await env.logout() }
                         }
@@ -29,6 +33,9 @@ struct CourseListScreen: View {
                         Image(systemName: "person.circle")
                     }
                 }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsScreen()
             }
         }
         .task {

@@ -15,7 +15,7 @@ export interface Pin {
 export interface PinsApi {
     listByGreen(input: { greenId: string }): Promise<Pin[]>;
     listByCourse(input: { courseId: string }): Promise<Pin[]>;
-    create(input: { difficulty?: string; name: string; lat: number; lon: number; greenId: string }): Promise<Pin>;
+    create(input: { difficulty?: string; greenId: string; name: string; lat: number; lon: number }): Promise<Pin>;
     update(input: { name?: string; lat?: number; lon?: number; difficulty?: string; id: string; version: number }): Promise<Pin>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
     setActive(input: { id: string; version: number }): Promise<Pin>;

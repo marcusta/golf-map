@@ -1,21 +1,30 @@
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { Component, Router, Signal, template, effect, untrack } from '@basics/core/client/core';
+import { Component, Router, Signal, Computed, template, effect, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn } from '../css';
-import { TilesetService } from './tileset.service';
+import { TilesetService, type OrthoVintage } from './tileset.service';
 import { MapService } from './map.service';
 import { ElevationService } from './elevation.service';
 import { EditorToolbarComponent } from '../editor/toolbar.component';
+import { MapBuildClientService, isTerminal } from '../map-build/map-build.service';
+
+const vintageTpl = template(`<button bind="row" type="button" class="vintage-btn"></button>`);
 
 const tpl = template(`
     <div class="map-canvas" bind="root">
         <div bind="mapHost" class="map-canvas__map"></div>
-        <div bind="message" class="map-canvas__message"><span bind="messageText"></span></div>
+        <div bind="message" class="map-canvas__message">
+            <div class="map-canvas__message-inner">
+                <span bind="messageText"></span>
+                <button bind="setArea" type="button" class="map-canvas__set-area">Set map area</button>
+            </div>
+        </div>
         <div bind="tools"></div>
         <div bind="controls" class="map-canvas__controls">
             <button bind="fit" type="button" title="Fit view to course bounds">Fit course</button>
             <button bind="hillshade" type="button" title="Toggle hillshade layer">Hillshade</button>
             <button bind="exaggeration" type="button" title="Toggle terrain exaggeration"></button>
+            <div bind="vintages" class="map-canvas__vintages"></div>
         </div>
         <div bind="status" class="map-canvas__status">
             <span bind="cursorPos" class="status-pos"></span>
@@ -66,6 +75,25 @@ export class EditorCanvasComponent extends Component {
                 font-size: 0.875rem;
                 color: ${t('text-muted')};
                 &.show { display: flex; }
+
+                & .map-canvas__message-inner {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: ${s('md')};
+                    text-align: center;
+                    max-width: 380px;
+                    padding: ${s('lg')};
+                }
+
+                & .map-canvas__set-area {
+                    display: none;
+                    padding: ${s('xs')} ${s('lg')};
+                    font-size: 0.8rem;
+                    ${btn()}
+                    background: ${t('surface')};
+                    &.show { display: inline-block; }
+                }
             }
 
             & .map-canvas__controls {
@@ -87,6 +115,31 @@ export class EditorCanvasComponent extends Component {
                     &.active {
                         border-color: ${t('primary')};
                         color: ${t('primary')};
+                    }
+                }
+
+                & .map-canvas__vintages {
+                    display: none;
+                    flex-direction: column;
+                    gap: ${s('xs')};
+                    margin-top: ${s('xs')};
+                    padding-top: ${s('xs')};
+                    border-top: 1px solid ${t('border')};
+                    &.show { display: flex; }
+
+                    & .vintage-btn {
+                        padding: ${s('xs')} ${s('sm')};
+                        font-size: 0.7rem;
+                        text-align: left;
+                        ${btn(t('radius-sm'))}
+                        background: ${t('surface')};
+                        box-shadow: ${t('shadow')};
+                        &.active {
+                            border-color: ${t('primary')};
+                            color: ${t('primary')};
+                            font-weight: 600;
+                        }
+                        &:disabled { opacity: 0.6; cursor: default; }
                     }
                 }
             }
@@ -118,6 +171,7 @@ export class EditorCanvasComponent extends Component {
     private tileset = this.inject(TilesetService);
     private mapSvc = this.inject(MapService);
     private elevation = this.inject(ElevationService);
+    private mapBuild = this.inject(MapBuildClientService);
     private router = this.inject(Router);
     // courseId is the second path segment on every route hosting this canvas
     // (/course/:courseId for the builder, /planner/:courseId for the planner).
@@ -126,8 +180,16 @@ export class EditorCanvasComponent extends Component {
     private cursor = new Signal<{ lng: number; lat: number } | null>(null);
     private cursorElevation = new Signal<number | null>(null);
     private mapHost!: HTMLElement;
-    private initialized = false;
+    private initializedVersion: string | null = null;
     private elevationSeq = 0;
+
+    /** Ortho vintages available to switch between (only shown when >1). */
+    private vintages = new Computed<OrthoVintage[]>(() => this.tileset.manifest.get()?.orthoVintages ?? []);
+    /** True while a vintage switch (server re-tile) is in flight. */
+    private switching(): boolean {
+        const job = this.mapBuild.job.get();
+        return this.mapBuild.starting.get() || (!!job && !isTerminal(job));
+    }
 
     render(): DocumentFragment {
         const showMessage = () => this.messageText() !== null;
@@ -136,6 +198,10 @@ export class EditorCanvasComponent extends Component {
             mapHost: { className: () => this.initializedFor() ? 'map-canvas__map' : 'map-canvas__map hidden' },
             message: { className: () => showMessage() ? 'map-canvas__message show' : 'map-canvas__message' },
             messageText: () => this.messageText() ?? '',
+            setArea: {
+                className: () => this.isNoTiles() ? 'map-canvas__set-area show' : 'map-canvas__set-area',
+                onclick: () => this.router.navigate(`/set-area/${this.params.get().courseId}`),
+            },
             controls: { className: () => this.mapSvc.ready.get() ? 'map-canvas__controls show' : 'map-canvas__controls' },
             status: { className: () => this.mapSvc.ready.get() ? 'map-canvas__status show' : 'map-canvas__status' },
             fit: { onclick: () => this.mapSvc.fitCourse() },
@@ -157,7 +223,20 @@ export class EditorCanvasComponent extends Component {
                 return elevation === null ? '— m' : `${elevation.toFixed(1)} m`;
             },
             zoomLevel: () => `z ${this.mapSvc.zoom.get().toFixed(1)}`,
+            vintages: { className: () => this.vintages.get().length > 1 ? 'map-canvas__vintages show' : 'map-canvas__vintages' },
         });
+
+        // Ortho vintage switcher — one button per available flight (by date).
+        this.$each(this.ref(frag, 'vintages'), this.vintages, (v, _i, track) =>
+            this.wireEl(vintageTpl, {
+                row: {
+                    textContent: () => this.switching() && this.tileset.manifest.get()?.activeOrtho !== v.collection ? '…' : (v.dates[0] ?? v.collection),
+                    title: () => `${v.collection}${v.dates.length ? ` (${v.dates.join(', ')})` : ''}`,
+                    className: () => `vintage-btn${this.tileset.manifest.get()?.activeOrtho === v.collection ? ' active' : ''}`,
+                    disabled: () => this.switching(),
+                    onclick: () => void this.switchVintage(v.collection),
+                },
+            }, track), v => v.collection);
 
         this.mapHost = this.ref(frag, 'mapHost');
         // The builder toolbar (draw/furniture/measure/analysis) belongs to
@@ -183,17 +262,33 @@ export class EditorCanvasComponent extends Component {
             const { courseId } = this.params.get();
             const manifest = this.tileset.manifest.get();
             const version = this.tileset.tileVersion.get();
-            if (this.initialized || !manifest || !version) return;
+            const mapKey = this.tileset.mapKey.get();
+            if (!manifest || !version || !mapKey) return;
             if (this.tileset.courseId.get() !== courseId) return; // stale manifest from previous course
-            this.initialized = true;
+            if (this.initializedVersion === version) return; // already showing this tile version
+            this.initializedVersion = version;
             untrack(() => {
-                this.mapSvc.init(this.mapHost, courseId, manifest, version);
+                // The map is addressed by the site's mapKey (shared across the
+                // site's courses). init() destroys any existing map first, so a
+                // version change (e.g. switching ortho vintage) re-inits fresh.
+                this.mapSvc.init(this.mapHost, mapKey, manifest, version);
                 this.elevation.configure({
-                    courseId,
+                    mapKey,
                     zoom: manifest.layers.terrain.maxzoom,
                     version,
                 });
             });
+        }));
+
+        // A finished build/switch for THIS course → refresh the manifest so the
+        // new tiles (new version) show. Guard by courseId so an unrelated job
+        // elsewhere doesn't reload us.
+        this.track(effect(() => {
+            const job = this.mapBuild.job.get();
+            const { courseId } = this.params.get();
+            if (job?.status === 'succeeded' && job.courseId === courseId) {
+                void this.tileset.reload(courseId);
+            }
         }));
 
         // Cursor status bar: position immediately; elevation sync-first
@@ -218,6 +313,14 @@ export class EditorCanvasComponent extends Component {
         });
     }
 
+    /** Switch the served ortho to another persisted vintage (server re-tiles). */
+    private async switchVintage(collection: string): Promise<void> {
+        if (this.switching()) return;
+        if (this.tileset.manifest.peek()?.activeOrtho === collection) return;
+        await this.mapBuild.setOrtho(this.params.get().courseId, collection);
+        // On success, the job effect above reloads the tileset → map re-inits.
+    }
+
     /** True when the map has been initialized for the current course. */
     private initializedFor(): boolean {
         return this.mapSvc.map.get() !== null;
@@ -228,10 +331,15 @@ export class EditorCanvasComponent extends Component {
         const error = this.tileset.error.get();
         if (error) return `Could not load tile data — ${error.message}`;
         if (this.tileset.loading.get()) return 'Loading course tiles…';
-        const { courseId } = this.params.get();
-        if (this.tileset.courseId.get() === courseId && !this.tileset.hasTiles.get()) {
-            return 'No map tiles for this course yet — run the tile pipeline to enable the editor map.';
+        if (this.isNoTiles()) {
+            return 'No map tiles for this course yet — pick a map area to import from Lantmäteriet.';
         }
         return null;
+    }
+
+    /** True when the manifest for the current course is loaded but has no tiles. */
+    private isNoTiles(): boolean {
+        const { courseId } = this.params.get();
+        return this.tileset.courseId.get() === courseId && !this.tileset.hasTiles.get();
     }
 }

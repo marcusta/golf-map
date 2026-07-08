@@ -74,10 +74,17 @@ struct OnCourseDistances: Equatable, Sendable {
     /// Aim-point distances in hole order.
     var aims: [AimDistance]
 
+    /// - Parameter competitionMode: when true, the slope-adjusted plays-like
+    ///   figures are OMITTED (left nil) — the DMD local rule allows distance
+    ///   only. Straight distances are unaffected. Gating here (rather than at
+    ///   the view) keeps one source of truth: NO consumer of `distances` can
+    ///   surface a plays-like number in competition, and the rule is unit-
+    ///   testable without a view. Default false (friendly rounds).
     static func compute(
         from origin: LatLon,
         originElevation: Double?,
-        targets: HoleTargets
+        targets: HoleTargets,
+        competitionMode: Bool = false
     ) -> OnCourseDistances {
         func meters(to target: LatLon?) -> Int? {
             guard let target else { return nil }
@@ -85,6 +92,9 @@ struct OnCourseDistances: Equatable, Sendable {
         }
 
         func playsLike(to target: LatLon?) -> Int? {
+            // Competition mode: slope-adjusted advice is not allowed — omit it
+            // entirely (not computed) so it can never be displayed.
+            guard !competitionMode else { return nil }
             guard
                 let target,
                 let originElevation,

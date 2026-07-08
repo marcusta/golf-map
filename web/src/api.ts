@@ -1,4 +1,5 @@
 import { createMetaClient } from '../../shared/api/meta.gen';
+import { createSitesClient } from '../../shared/api/sites.gen';
 import { createCoursesClient } from '../../shared/api/courses.gen';
 import { createHolesClient } from '../../shared/api/holes.gen';
 import { createTeesClient } from '../../shared/api/tees.gen';
@@ -10,11 +11,13 @@ import { createClubsClient } from '../../shared/api/clubs.gen';
 import { createGamePlansClient } from '../../shared/api/game-plans.gen';
 import { createRoundsClient } from '../../shared/api/rounds.gen';
 import { createAssetsClient } from '../../shared/api/assets.gen';
+import { createMapBuildClient } from '../../shared/api/map-build.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
 export const api = {
     meta: createMetaClient('/api'),
+    sites: createSitesClient('/api'),
     courses: createCoursesClient('/api'),
     holes: createHolesClient('/api'),
     tees: createTeesClient('/api'),
@@ -26,4 +29,5 @@ export const api = {
     gamePlans: createGamePlansClient('/api'),
     rounds: createRoundsClient('/api'),
     assets: createAssetsClient('/api'),
+    mapBuild: createMapBuildClient('/api'),
 };

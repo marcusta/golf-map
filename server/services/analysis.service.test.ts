@@ -76,14 +76,21 @@ async function writeDemFixture(pixels: Float32Array): Promise<{ dataDir: string 
     return { dataDir };
 }
 
+/**
+ * Give the test course a site (id == course id, mirroring the 1:1 migration
+ * backfill) and register the DEM against that site — analysis resolves the DEM
+ * via course → site now.
+ */
+async function linkSiteWithDem(ctx: Awaited<ReturnType<typeof createTestDb>>, filename: string) {
+    await ctx.db.insertInto('sites').values({ id: TEST_COURSE_ID, name: 'Test Site', version: 1 }).execute();
+    await ctx.db.updateTable('courses').where('id', '=', TEST_COURSE_ID).set({ site_id: TEST_COURSE_ID }).execute();
+    await ctx.assetsService.register({ siteId: TEST_COURSE_ID, courseId: TEST_COURSE_ID, kind: 'dem_cog', filename });
+}
+
 async function setup(pixels: Float32Array = buildDemPixels()) {
     const ctx = await createTestDb(seedCourse);
     const { dataDir } = await writeDemFixture(pixels);
-    await ctx.assetsService.register({
-        courseId: TEST_COURSE_ID,
-        kind: 'dem_cog',
-        filename: 'dem/test-dem.tif',
-    });
+    await linkSiteWithDem(ctx, 'dem/test-dem.tif');
     const svc = new AnalysisService(ctx.db, dataDir);
     return { ctx, svc, dataDir };
 }
@@ -339,11 +346,7 @@ test('sampleGrid throws NotFoundError when the course has no DEM asset', async (
 
 test('sampleGrid throws NotFoundError when the DEM file is missing on disk', async () => {
     const ctx = await createTestDb(seedCourse);
-    await ctx.assetsService.register({
-        courseId: TEST_COURSE_ID,
-        kind: 'dem_cog',
-        filename: 'dem/absent.tif',
-    });
+    await linkSiteWithDem(ctx, 'dem/absent.tif');
     const svc = new AnalysisService(ctx.db, '/tmp/golf-map-analysis-missing-dem');
     const geom = squareGeometry(E0 + 40, N0 - 60, 20);
     await expect(svc.sampleGrid(TEST_COURSE_ID, geom)).rejects.toBeInstanceOf(NotFoundError);

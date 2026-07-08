@@ -149,6 +149,55 @@ public actor GolfAPIClient {
         }
     }
 
+    // MARK: - Green calibration (scan upload)
+
+    /// Uploads one green scan to `POST /api/green-calibration/scans`.
+    ///
+    /// The server (task S1) stores `payload` and `quality` verbatim as opaque
+    /// JSON; the request body is the `ingestScan` input shape from
+    /// `shared/api/green-calibration.gen.ts`:
+    /// `{ greenId, kind, capturedAt, payload, quality? }`. `payload` and
+    /// `quality` are the typed contract structs from `GreenScanPayloads.swift`,
+    /// re-encoded inline here so the outer envelope carries the discriminators
+    /// the row columns need while the nested payload stays self-describing.
+    @discardableResult
+    public func postGreenScan<Payload: Encodable & Sendable, Quality: Encodable & Sendable>(
+        greenId: String,
+        kind: GreenScanKind,
+        capturedAt: String,
+        payload: Payload,
+        quality: Quality?
+    ) async throws -> GreenScanIngestResponse {
+        let body = ScanIngestRequest(
+            greenId: greenId,
+            kind: kind,
+            capturedAt: capturedAt,
+            payload: payload,
+            quality: quality
+        )
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(body)
+        } catch {
+            throw APIError.decoding("Failed to encode green scan: \(error)")
+        }
+        return try await request(
+            path: "green-calibration/scans",
+            method: "POST",
+            body: data
+        )
+    }
+
+    /// The `ingestScan` request body. `payload`/`quality` encode inline (not as
+    /// strings) — the server parses the JSON and stores it verbatim.
+    private struct ScanIngestRequest<Payload: Encodable, Quality: Encodable>: Encodable {
+        let greenId: String
+        let kind: GreenScanKind
+        let capturedAt: String
+        let payload: Payload
+        let quality: Quality?
+    }
+
     // MARK: - Request core
 
     private func makeURL(path: String, query: [String: String]) -> URL {

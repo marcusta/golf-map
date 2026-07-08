@@ -15,6 +15,7 @@ struct CourseScreen: View {
 
     @State private var model: OnCourseModel?
     @State private var greenAnalysis: GreenAnalysisModel?
+    @State private var puttRead: PuttReadModel?
     @State private var measure: MeasureModel?
     @State private var profile: ElevationProfileModel?
     @State private var mapInputs: MapInputs?
@@ -28,14 +29,18 @@ struct CourseScreen: View {
 
     var body: some View {
         Group {
-            if let model, let greenAnalysis, let measure, let profile, let mapInputs {
+            if let model, let greenAnalysis, let puttRead, let measure, let profile,
+               let mapInputs {
                 OnCourseContentView(
                     model: model,
                     greenAnalysis: greenAnalysis,
+                    puttRead: puttRead,
                     measure: measure,
                     profile: profile,
                     configuration: mapInputs.configuration,
-                    featuresGeoJSON: mapInputs.featuresGeoJSON
+                    featuresGeoJSON: mapInputs.featuresGeoJSON,
+                    client: env.client,
+                    currentLocation: currentLocation
                 )
             } else if let loadError {
                 ContentUnavailableView(
@@ -57,6 +62,12 @@ struct CourseScreen: View {
         .onChange(of: locationProvider.isDenied) { _, denied in
             model?.isLocationDenied = denied
         }
+        // Keep the on-course gating live if the toggle is flipped in Settings
+        // and the user returns to the map without a reload.
+        .onChange(of: env.settings.competitionMode) { _, on in
+            model?.competitionMode = on
+            puttRead?.competitionMode = on
+        }
         .onAppear { locationProvider.start() }
         .onDisappear { locationProvider.stop() }
         .onChange(of: scenePhase) { _, phase in
@@ -66,6 +77,15 @@ struct CourseScreen: View {
             @unknown default: break
             }
         }
+    }
+
+    /// Latest fix as a (position, horizontal accuracy) pair for the spot-level
+    /// payload; nil until GPS locks.
+    private var currentLocation: (latLon: LatLon, horizontalAccuracyM: Double)? {
+        guard let fix = locationProvider.location,
+              let accuracy = locationProvider.horizontalAccuracy
+        else { return nil }
+        return (fix, accuracy)
     }
 
     private func load() async {
@@ -85,6 +105,7 @@ struct CourseScreen: View {
             )
             newModel.elevationSampler = { await terrain.elevation(at: $0) }
             newModel.isLocationDenied = locationProvider.isDenied
+            newModel.competitionMode = env.settings.competitionMode
             newModel.updateUserLocation(locationProvider.location)
 
             // Green view shares the bundle terrain pyramid with plays-like
@@ -94,6 +115,11 @@ struct CourseScreen: View {
                 featuresGeoJSON: featuresGeoJSON,
                 sampler: { await terrain.elevation(at: $0) }
             )
+
+            // Putt read (Tier 2 over the analysis grid + Tier 3 manual) —
+            // competition-gated like plays-like.
+            let newPuttRead = PuttReadModel()
+            newPuttRead.competitionMode = env.settings.competitionMode
 
             // Measure + elevation profile share the same bundle terrain
             // pyramid (one LRU of decoded tiles for the whole screen).
@@ -139,6 +165,7 @@ struct CourseScreen: View {
             )
             model = newModel
             greenAnalysis = newGreenAnalysis
+            puttRead = newPuttRead
             measure = newMeasure
             profile = newProfile
         } catch {
@@ -153,10 +180,13 @@ struct CourseScreen: View {
 private struct OnCourseContentView: View {
     let model: OnCourseModel
     let greenAnalysis: GreenAnalysisModel
+    let puttRead: PuttReadModel
     let measure: MeasureModel
     let profile: ElevationProfileModel
     let configuration: CourseMapConfiguration
     let featuresGeoJSON: Data
+    let client: GolfAPIClient
+    let currentLocation: (latLon: LatLon, horizontalAccuracyM: Double)?
 
     /// Immersive mode: a short single-tap on the map hides the top hole bar and
     /// the bottom distances card, leaving the full-bleed hole, a small compact
@@ -167,10 +197,27 @@ private struct OnCourseContentView: View {
     /// Elevation-profile sheet. NOT a map tool — non-modal, openable over any
     /// mode; reads the measure path while measuring, else the hole route.
     @State private var showProfile = false
+    /// Spot-level (IMU "phone as level") capture sheet.
+    @State private var showLevel = false
+    /// LiDAR corridor-scan flow (task E1) — only reachable on LiDAR devices.
+    @State private var showScan = false
 
     private var isGreenView: Bool { model.toolMode == .greenView }
     private var isMeasure: Bool { model.toolMode == .measure }
     private var isAdjust: Bool { model.toolMode == .adjust }
+
+    /// The putt read's Surface tier is live: green view up, surface installed,
+    /// not competition-gated. Gates the tap-to-place and marker-drag inputs.
+    private var isPuttSurfaceActive: Bool {
+        isGreenView && !puttRead.competitionMode
+            && puttRead.mode == .surface && puttRead.hasSurface
+    }
+
+    /// WGS84 → EPSG:3006 planar point for the putt model.
+    private func puttPoint(_ position: LatLon) -> Vec2 {
+        let p = Sweref99TM.fromWGS84(position)
+        return Vec2(x: p.x, y: p.y)
+    }
 
     /// Model overlays + the measure path while measuring + the draggable
     /// handles while adjusting. Route-leg distance labels are shown ONLY in
@@ -201,16 +248,49 @@ private struct OnCourseContentView: View {
                 camera: model.cameraCommand,
                 zoom: model.zoomCommand,
                 analysis: isGreenView ? greenAnalysis.mapState : nil,
+                putt: isGreenView ? puttRead.overlay : nil,
                 onCameraChange: { model.noteMapCamera(center: $0, zoom: $1, bearing: $2) },
                 // The browse-mode long-press "move tee" is RETIRED — it fired
                 // simultaneously with MapLibre's quick-zoom (moving the tee
                 // also zoomed the map). Adjust mode owns moves now.
-                measureTapEnabled: isMeasure,
-                onMeasureTap: { measure.place($0) },
-                adjustEnabled: isAdjust,
-                onHandleGrab: { model.beginHandleDrag(id: $0) },
-                onHandleMove: { model.moveHandle(id: $0, to: $1) },
-                onHandleDrop: { _ in model.endHandleDrag() }
+                // The single-tap recognizer is shared: measure places a point;
+                // the green view's putt read places the ball (or hole,
+                // per the panel's tap target).
+                measureTapEnabled: isMeasure || isPuttSurfaceActive,
+                onMeasureTap: { position in
+                    if isMeasure {
+                        measure.place(position)
+                    } else {
+                        puttRead.handleTap(puttPoint(position))
+                    }
+                },
+                // The handle-drag recognizer is shared too: Adjust drags the
+                // tee/aim/green handles; the green view drags the putt
+                // ball/hole markers (ids routed below). Only Adjust locks the
+                // map's gesture zoom for the whole mode.
+                adjustEnabled: isAdjust || isPuttSurfaceActive,
+                adjustLocksGestures: isAdjust,
+                onHandleGrab: { id in
+                    guard !id.hasPrefix("putt-") else { return }
+                    model.beginHandleDrag(id: id)
+                },
+                onHandleMove: { id, position in
+                    switch id {
+                    case PuttReadGeometry.PuttOverlay.ballHandleID:
+                        puttRead.dragBall(puttPoint(position))
+                    case PuttReadGeometry.PuttOverlay.holeHandleID:
+                        puttRead.dragHole(puttPoint(position))
+                    default:
+                        model.moveHandle(id: id, to: position)
+                    }
+                },
+                onHandleDrop: { id in
+                    if id.hasPrefix("putt-") {
+                        puttRead.commitDrag()
+                    } else {
+                        model.endHandleDrag()
+                    }
+                }
             )
             .ignoresSafeArea()
             // Short tap toggles chrome. High minimumDistance drag-less tap so it
@@ -247,10 +327,18 @@ private struct OnCourseContentView: View {
                 }
 
                 if isGreenView {
-                    GreenViewPanel(model: greenAnalysis, onClose: { exitGreenView() })
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 8)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    GreenViewPanel(
+                        model: greenAnalysis,
+                        putt: puttRead,
+                        onLevel: { showLevel = true },
+                        // Scan is only OFFERED where the hardware can deliver
+                        // it (sceneDepth/LiDAR) — nil hides the affordance.
+                        onScan: CorridorScanService.isSupported ? { showScan = true } : nil,
+                        onClose: { exitGreenView() }
+                    )
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if isMeasure {
                     MeasurePanel(
                         model: measure,
@@ -279,9 +367,17 @@ private struct OnCourseContentView: View {
         .onChange(of: model.currentHoleNumber) { _, _ in
             if greenAnalysis.isActive {
                 greenAnalysis.deactivate()
+                puttRead.deactivate()
             }
             measure.clear()
             refreshProfileIfShown()
+        }
+        // Hand the analysis grid to the putt read when the terrain sampling
+        // settles (also on buffer-change re-samples). A failed/absent grid
+        // auto-offers the Manual tier.
+        .onChange(of: greenAnalysis.isLoading) { _, loading in
+            guard !loading, isGreenView else { return }
+            puttRead.installGrid(greenAnalysis.result?.grid)
         }
         // The profile follows whatever path is live: the measure path while
         // measuring (points change per tap), else the hole route (tee
@@ -298,6 +394,34 @@ private struct OnCourseContentView: View {
                 title: profileTitle,
                 onClose: { showProfile = false }
             )
+        }
+        .sheet(isPresented: $showLevel) {
+            if let greenId = model.currentHole?.green?.id {
+                SpotLevelCaptureSheet(
+                    greenId: greenId,
+                    location: currentLocation,
+                    client: client,
+                    onClose: { showLevel = false }
+                )
+            }
+        }
+        // The corridor-scan flow (task E1). Requires both putt markers — the
+        // scan surface anchors to them (the Scan button is disabled until
+        // they exist, so the guards only protect against races).
+        .sheet(isPresented: $showScan) {
+            if let greenId = model.currentHole?.green?.id,
+               let ball = puttRead.ball, let hole = puttRead.hole {
+                CorridorScanSheet(
+                    greenId: greenId,
+                    ballWorld: ball,
+                    holeWorld: hole,
+                    location: currentLocation,
+                    client: client,
+                    onUse: { puttRead.installScannedSurface($0) },
+                    onClose: { showScan = false }
+                )
+                .interactiveDismissDisabled()
+            }
         }
         // The chrome floats over a dark ortho map — force dark materials.
         .environment(\.colorScheme, .dark)
@@ -327,6 +451,20 @@ private struct OnCourseContentView: View {
                         greenAnalysis.setBuffer(buffer)
                     }
                     enterGreenView()
+                    // `-puttBall "lat,lon"` places the putt-read ball after the
+                    // terrain grid settles and dumps a PUTT-DEBUG summary, so
+                    // the read numbers can be live-verified headlessly (taps
+                    // aren't scriptable via simctl).
+                    if let raw = UserDefaults.standard.string(forKey: "puttBall") {
+                        let nums = raw.split(separator: ",")
+                        if nums.count == 2, let lat = Double(nums[0]), let lon = Double(nums[1]) {
+                            // Give the async grid sampling time to land.
+                            try? await Task.sleep(nanoseconds: 4_000_000_000)
+                            puttRead.handleTap(puttPoint(LatLon(lat: lat, lon: lon)))
+                            puttRead.computeSurfaceReadNow()
+                            Self.writePuttDebugSummary(puttRead)
+                        }
+                    }
                 }
             }
             // `-measure "lat,lon;lat,lon;…"` enters measure mode after the
@@ -458,6 +596,35 @@ private struct OnCourseContentView: View {
         }
     }
 
+    /// Live-verify hook: dumps the putt-read display (status, read numbers,
+    /// tour verbal) so a headless `-puttBall` run can check them against an
+    /// independent readPutt over the same grid.
+    private static func writePuttDebugSummary(_ puttRead: PuttReadModel) {
+        let display = puttRead.display
+        let summary: [String: Any] = [
+            "status": String(describing: display.status),
+            "mode": display.mode.rawValue,
+            "stimpFt": puttRead.stimpFt,
+            "message": display.message ?? NSNull() as Any,
+            "read": display.read.map { [
+                "availability": $0.availability.rawValue,
+                "aimOffsetM": $0.aimOffsetM,
+                "playsLikeM": $0.playsLikeM,
+                "holedProb": $0.holedProb,
+                "canStop": $0.canStop,
+                "minConfidence": $0.minConfidence,
+                "pathCount": $0.path.count,
+            ] } ?? NSNull() as Any,
+            "verbal": display.verbal?.combined ?? NSNull() as Any,
+        ]
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "putt-debug.json")
+        if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]) {
+            try? data.write(to: url)
+            print("PUTT-DEBUG \(String(data: data, encoding: .utf8) ?? "")")
+        }
+    }
+
     /// Live-verify hook (same family as GreenAnalysisModel's): dumps the
     /// measure readout numbers to tmp so a headless run can check them
     /// against an independent EPSG:3006 + terrain computation.
@@ -502,6 +669,7 @@ private struct OnCourseContentView: View {
     private var controlStack: some View {
         VStack(spacing: 10) {
             greenViewButton
+            levelButton
             measureButton
             adjustButton
             profileButton
@@ -511,6 +679,25 @@ private struct OnCourseContentView: View {
                 model.recenter()
             }
         }
+    }
+
+    /// Opens the spot-level capture sheet ("phone as level" — one IMU
+    /// calibration reading on the green). Disabled when the current hole has no
+    /// green (no `greenId` to attach the scan to). Available in competition
+    /// mode: capturing a level is measurement, not advice.
+    private var levelButton: some View {
+        Button {
+            showLevel = true
+        } label: {
+            Image(systemName: "level")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.currentHole?.green == nil)
+        .opacity(model.currentHole?.green == nil ? 0.35 : 1)
+        .accessibilityLabel("Level the green")
     }
 
     /// Toggles the measure tool (tap-to-place point-to-point measurement).
@@ -606,6 +793,12 @@ private struct OnCourseContentView: View {
         let center = hole.green.map { LatLon(lat: $0.centerLat, lon: $0.centerLon) }
         guard let bounds = greenAnalysis.activate(holeId: hole.hole.id, greenCenter: center)
         else { return }
+        // Arm the putt read: hole marker defaults to the active pin, else the
+        // green center. The terrain grid follows when the sampling settles
+        // (see the greenAnalysis.isLoading onChange).
+        let activePin = hole.pins.first(where: \.active)
+            .map { LatLon(lat: $0.lat, lon: $0.lon) }
+        puttRead.activate(defaultHole: (activePin ?? center).map(puttPoint))
         withAnimation(.easeInOut(duration: 0.28)) {
             immersive = false
             model.enterTool(.greenView, focusBounds: bounds)
@@ -614,6 +807,7 @@ private struct OnCourseContentView: View {
 
     private func exitGreenView() {
         greenAnalysis.deactivate()
+        puttRead.deactivate()
         withAnimation(.easeInOut(duration: 0.28)) {
             model.exitTool()
         }
@@ -626,6 +820,7 @@ private struct OnCourseContentView: View {
     private func enterMeasure() {
         if greenAnalysis.isActive {
             greenAnalysis.deactivate()
+            puttRead.deactivate()
         }
         withAnimation(.easeInOut(duration: 0.28)) {
             immersive = false
@@ -649,6 +844,7 @@ private struct OnCourseContentView: View {
     private func enterAdjust() {
         if greenAnalysis.isActive {
             greenAnalysis.deactivate()
+            puttRead.deactivate()
         }
         measure.clear()
         withAnimation(.easeInOut(duration: 0.28)) {

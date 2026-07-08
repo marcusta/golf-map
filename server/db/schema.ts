@@ -2,6 +2,7 @@ import type { Generated } from 'kysely';
 
 export interface Database {
     users: UsersTable;
+    sites: SitesTable;
     courses: CoursesTable;
     holes: HolesTable;
     tees: TeesTable;
@@ -18,6 +19,10 @@ export interface Database {
     rounds: RoundsTable;
     shots: ShotsTable;
     course_assets: CourseAssetsTable;
+    green_scans: GreenScansTable;
+    green_calibration: GreenCalibrationTable;
+    putt_estimate_samples: PuttEstimateSamplesTable;
+    map_build_jobs: MapBuildJobsTable;
 }
 
 // --- Auth ---
@@ -27,6 +32,17 @@ export interface UsersTable {
     username: string;
     password_hash: string;
     created_at: Generated<string>;
+}
+
+// --- Sites (physical location owning the shared map) ---
+
+export interface SitesTable {
+    id: string;
+    name: string;
+    notes: string | null;
+    version: number;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
 }
 
 // --- Courses ---
@@ -41,6 +57,7 @@ export interface CoursesTable {
     home_lat: number | null; // WGS84, for course list sorting/map centering
     home_lon: number | null;
     notes: string | null;
+    site_id: string | null; // the site whose map this course uses (null = no map yet)
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;
@@ -246,15 +263,69 @@ export interface ShotsTable {
     updated_at: Generated<string>;
 }
 
+// --- Green scans & calibration (putting green reading §4.2) ---
+
+export interface GreenScansTable {
+    id: string;
+    green_id: string;
+    kind: string; // 'corridor' | 'spot_level'
+    captured_at: string;
+    payload_json: string; // raw scan / sample data
+    quality_json: string | null; // out-and-back residuals etc
+    created_at: Generated<string>;
+}
+
+export interface GreenCalibrationTable {
+    green_id: string; // pk, fk → greens
+    bias_json: string | null; // low-frequency bias fit vs DEM (nullable; v1 leaves null)
+    confidence: number; // 0..1
+    sample_count: number;
+    updated_at: Generated<string>;
+}
+
+// --- Putt estimate samples (training loop §5.1) ---
+
+export interface PuttEstimateSamplesTable {
+    id: string;
+    green_id: string | null; // fk → greens (nullable: Tier-3 manual reads have no green)
+    distance_m: number;
+    stimp_ft: number;
+    actual_slope_pct: number;
+    estimated_slope_pct: number;
+    actual_aim_offset_m: number;
+    estimated_aim_offset_m: number;
+    actual_plays_like_m: number;
+    estimated_plays_like_m: number;
+    break_side_actual: string; // 'left' | 'right' | 'straight'
+    break_side_estimated: string;
+    created_at: Generated<string>;
+}
+
 // --- Assets ---
 
 export interface CourseAssetsTable {
     id: string;
     course_id: string;
+    site_id: string | null; // map assets resolve by site (shared across a site's courses)
     kind: string; // ortho_cog|dem_cog|svg_source|tile_manifest
     filename: string;
     meta_json: string | null; // bounds/zooms/elevation range
     version: number;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+}
+
+// --- Map build jobs (server-driven golfpipe tile pipeline runs) ---
+
+export interface MapBuildJobsTable {
+    id: string;
+    course_id: string;
+    site_id: string | null; // the site (map) this build targets
+    status: string; // pending|running|succeeded|failed
+    step: string | null; // current BUILD_STEPS value, or null
+    bbox_json: string; // JSON {west,south,east,north} WGS84
+    log: string;
+    error: string | null;
     created_at: Generated<string>;
     updated_at: Generated<string>;
 }

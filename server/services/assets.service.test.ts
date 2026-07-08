@@ -22,6 +22,7 @@ test('listByCourse returns empty array with no assets', async () => {
 test('register creates an asset record', async () => {
     const { svc } = await setup();
     const asset = await svc.register({
+        siteId: TEST_COURSE_ID,
         courseId: TEST_COURSE_ID,
         kind: 'ortho_cog',
         filename: 'ortho.tif',
@@ -37,6 +38,7 @@ test('register stores metaJson when provided', async () => {
     const { svc } = await setup();
     const meta = JSON.stringify({ bounds: [0, 0, 1, 1], minZoom: 14, maxZoom: 20 });
     const asset = await svc.register({
+        siteId: TEST_COURSE_ID,
         courseId: TEST_COURSE_ID,
         kind: 'tile_manifest',
         filename: 'manifest.json',
@@ -66,9 +68,9 @@ test('listByCourse returns assets for that course only', async () => {
         })
         .execute();
 
-    await svc.register({ courseId: TEST_COURSE_ID, kind: 'ortho_cog', filename: 'a.tif' });
-    await svc.register({ courseId: TEST_COURSE_ID, kind: 'dem_cog', filename: 'b.tif' });
-    await svc.register({ courseId: otherCourseId, kind: 'ortho_cog', filename: 'c.tif' });
+    await svc.register({ siteId: TEST_COURSE_ID, courseId: TEST_COURSE_ID, kind: 'ortho_cog', filename: 'a.tif' });
+    await svc.register({ siteId: TEST_COURSE_ID, courseId: TEST_COURSE_ID, kind: 'dem_cog', filename: 'b.tif' });
+    await svc.register({ siteId: otherCourseId, courseId: otherCourseId, kind: 'ortho_cog', filename: 'c.tif' });
 
     const assets = await svc.listByCourse(TEST_COURSE_ID);
     expect(assets).toHaveLength(2);
@@ -79,7 +81,7 @@ test('listByCourse returns assets for that course only', async () => {
 
 test('get returns a single asset', async () => {
     const { svc } = await setup();
-    const created = await svc.register({ courseId: TEST_COURSE_ID, kind: 'svg_source', filename: 'course.svg' });
+    const created = await svc.register({ siteId: TEST_COURSE_ID, courseId: TEST_COURSE_ID, kind: 'svg_source', filename: 'course.svg' });
     const found = await svc.get(created.id);
     expect(found).toEqual(created);
 });
@@ -91,7 +93,7 @@ test('get throws NotFoundError for missing asset', async () => {
 
 test('update changes metaJson and bumps version', async () => {
     const { svc } = await setup();
-    const created = await svc.register({ courseId: TEST_COURSE_ID, kind: 'dem_cog', filename: 'dem.tif' });
+    const created = await svc.register({ siteId: TEST_COURSE_ID, courseId: TEST_COURSE_ID, kind: 'dem_cog', filename: 'dem.tif' });
     const updated = await svc.update(created.id, 1, { metaJson: '{"elevationRange":[10,50]}' });
     expect(updated.metaJson).toBe('{"elevationRange":[10,50]}');
     expect(updated.version).toBe(2);
@@ -99,7 +101,7 @@ test('update changes metaJson and bumps version', async () => {
 
 test('update throws VersionConflictError on stale version', async () => {
     const { svc } = await setup();
-    const created = await svc.register({ courseId: TEST_COURSE_ID, kind: 'dem_cog', filename: 'dem.tif' });
+    const created = await svc.register({ siteId: TEST_COURSE_ID, courseId: TEST_COURSE_ID, kind: 'dem_cog', filename: 'dem.tif' });
     await expect(svc.update(created.id, 99, { metaJson: '{}' })).rejects.toBeInstanceOf(VersionConflictError);
 });
 
@@ -110,14 +112,14 @@ test('update throws NotFoundError for missing asset', async () => {
 
 test('remove deletes the asset', async () => {
     const { svc } = await setup();
-    const created = await svc.register({ courseId: TEST_COURSE_ID, kind: 'ortho_cog', filename: 'ortho.tif' });
+    const created = await svc.register({ siteId: TEST_COURSE_ID, courseId: TEST_COURSE_ID, kind: 'ortho_cog', filename: 'ortho.tif' });
     await svc.remove(created.id, 1);
     await expect(svc.get(created.id)).rejects.toBeInstanceOf(NotFoundError);
 });
 
 test('remove throws VersionConflictError on stale version', async () => {
     const { svc } = await setup();
-    const created = await svc.register({ courseId: TEST_COURSE_ID, kind: 'ortho_cog', filename: 'ortho.tif' });
+    const created = await svc.register({ siteId: TEST_COURSE_ID, courseId: TEST_COURSE_ID, kind: 'ortho_cog', filename: 'ortho.tif' });
     await expect(svc.remove(created.id, 99)).rejects.toBeInstanceOf(VersionConflictError);
 });
 

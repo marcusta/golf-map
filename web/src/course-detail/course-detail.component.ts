@@ -1,6 +1,7 @@
 import { Component, Router, template, effect } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, primaryBtn } from '../css';
+import { ConfirmService } from '../app/confirm-dialog.component';
 import { CourseDetailService } from './course-detail.service';
 import { EditorCanvasComponent } from '../map/editor-canvas.component';
 import { SvgImportPanelComponent } from '../import/svg-import-panel.component';
@@ -215,6 +216,7 @@ export class CourseDetailComponent extends Component {
 
     private svc = this.inject(CourseDetailService);
     private importSvc = this.inject(SvgImportService);
+    private confirm = this.inject(ConfirmService);
     private router = this.inject(Router);
     private params = this.router.params<{ courseId: string }>('/course/:courseId');
     private selectedHole = this.router.query('hole');
@@ -259,11 +261,18 @@ export class CourseDetailComponent extends Component {
             publish: {
                 textContent: () => this.svc.publishing.get() ? 'Publishing…' : 'Publish',
                 disabled: () => this.svc.publishing.get() || !this.svc.course.get(),
-                onclick: () => {
+                onclick: async () => {
                     const course = this.svc.course.peek();
                     if (!course) return;
-                    const ok = window.confirm(
-                        `Publish "${course.name}"?\n\nPublishing bumps revision ${course.revision} → ${course.revision + 1} for device sync.`);
+                    const ok = await this.confirm.confirm({
+                        title: `Publish ${course.name}?`,
+                        body: `Publishing bumps revision ${course.revision} to ${course.revision + 1} for device sync.`,
+                        detail: 'Players already on the course keep their current local copy until they refresh.',
+                        confirmLabel: 'Publish course',
+                        cancelLabel: 'Keep editing',
+                        tone: 'primary',
+                        layout: 'review',
+                    });
                     if (ok) void this.svc.publish();
                 },
             },

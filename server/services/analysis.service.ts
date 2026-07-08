@@ -328,7 +328,7 @@ export class AnalysisService {
             throw new InvalidAnalysisRequestError('Geometry must have at least one ring');
         }
         const spec = computeGridSpec(geometryBbox(geometry), bufferM, resolutionM);
-        const dem = await this.openDem(courseId);
+        const dem = await this.openDem(await this.mapKeyForCourse(courseId));
         const win = await this.readDemWindow(dem, spec);
 
         // Sample cell centers, then blur (blur in grid space so the radius
@@ -371,7 +371,7 @@ export class AnalysisService {
         if (points.length === 0) return [];
 
         const spec = computePointsGridSpec(points);
-        const dem = await this.openDem(courseId);
+        const dem = await this.openDem(await this.mapKeyForCourse(courseId));
         const win = await this.readDemWindow(dem, spec);
 
         return points.map(({ e, n }) => {
@@ -382,14 +382,23 @@ export class AnalysisService {
 
     // --- DEM access ---
 
-    private async openDem(courseId: string): Promise<OpenDem> {
+    /** The map key (site id) for a course, or throw if the course has no map. */
+    private async mapKeyForCourse(courseId: string): Promise<string> {
+        const course = await this.db
+            .selectFrom('courses').select('site_id').where('id', '=', courseId).executeTakeFirst();
+        if (!course) throw new NotFoundError(`Course ${courseId} not found`);
+        if (!course.site_id) throw new NotFoundError(`Course ${courseId} has no map (no site)`);
+        return course.site_id;
+    }
+
+    private async openDem(mapKey: string): Promise<OpenDem> {
         const asset = await this.db
             .selectFrom('course_assets')
             .selectAll()
-            .where('course_id', '=', courseId)
+            .where('site_id', '=', mapKey)
             .where('kind', '=', 'dem_cog')
             .executeTakeFirst();
-        if (!asset) throw new NotFoundError(`No DEM asset registered for course ${courseId}`);
+        if (!asset) throw new NotFoundError(`No DEM asset registered for site ${mapKey}`);
 
         const dataRoot = path.resolve(this.dataDir);
         const demPath = path.resolve(dataRoot, asset.filename);
@@ -397,7 +406,7 @@ export class AnalysisService {
             throw new NotFoundError('DEM path escapes the data directory');
         }
         if (!fs.existsSync(demPath) || !fs.statSync(demPath).isFile()) {
-            throw new NotFoundError(`DEM file not available for course ${courseId}`);
+            throw new NotFoundError(`DEM file not available for site ${mapKey}`);
         }
 
         let pending = this.demCache.get(demPath);

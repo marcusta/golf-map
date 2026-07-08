@@ -297,6 +297,36 @@ public struct CourseFeatureCollection: Decodable, Sendable, Equatable {
     }
 }
 
+// MARK: - Green calibration (scan upload)
+
+/// A stored green scan row, echoed back by `POST /api/green-calibration/scans`.
+/// Mirrors `GreenScan` in `shared/api/green-calibration.gen.ts`.
+public struct GreenScanRecord: Codable, Sendable, Equatable {
+    public let id: String
+    public let greenId: String
+    public let kind: String
+    public let capturedAt: String
+    public let payloadJson: String
+    public let qualityJson: String?
+    public let createdAt: String
+}
+
+/// Per-green calibration summary (nil until enough scans accumulate).
+/// Mirrors `GreenCalibration` in the shared gen.
+public struct GreenCalibrationRecord: Codable, Sendable, Equatable {
+    public let greenId: String
+    public let biasJson: String?
+    public let confidence: Double
+    public let sampleCount: Int
+    public let updatedAt: String
+}
+
+/// `POST /api/green-calibration/scans` response envelope.
+public struct GreenScanIngestResponse: Codable, Sendable, Equatable {
+    public let scan: GreenScanRecord
+    public let calibration: GreenCalibrationRecord?
+}
+
 // MARK: - Error envelope
 
 /// The server's generic error body, `{ "error": string }`.

@@ -1,0 +1,392 @@
+import XCTest
+@testable import GolfMap
+
+/// Headless view-model tests for the on-course putt read (task D4, doc
+/// feature-putting-green-reading §4/§5.1): Tier-2 reads over a synthetic
+/// tilted terrain grid (AnalysisGridTests conventions), stimp behavior +
+/// persistence, competition-mode gating, the no-grid → Manual fallback, and
+/// Tier-3 manual Tour Read parity with the Strategy core.
+@MainActor
+final class PuttReadModelTests: XCTestCase {
+
+    private var suiteName: String!
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "PuttReadModelTests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults = nil
+        super.tearDown()
+    }
+
+    // MARK: - Fixtures
+
+    /// A synthetic 20 × 20 m sampled grid tilted 2% down toward EAST
+    /// (h = −0.02·e): a putt due north breaks right. All cells inside, no
+    /// nodata — the same synthetic-sampler spirit as AnalysisGridTests.
+    private func tiltedGrid(slopeEastPct: Double = 2) -> SampleGrid {
+        let width = 40, height = 40
+        let res = 0.5
+        let spec = AnalysisGridSpec(
+            originE: 0, originN: Double(height) * res,
+            resolution: res, width: width, height: height
+        )
+        var heights = [Double](repeating: 0, count: width * height)
+        for row in 0..<height {
+            for col in 0..<width {
+                let e = (Double(col) + 0.5) * res
+                heights[row * width + col] = -slopeEastPct / 100 * e
+            }
+        }
+        return SampleGrid(
+            spec: spec,
+            heights: heights,
+            insideMask: [Bool](repeating: true, count: width * height)
+        )
+    }
+
+    private func armedModel(grid: SampleGrid?) -> PuttReadModel {
+        let model = PuttReadModel(defaults: defaults)
+        model.activate(grid: grid, defaultHole: Vec2(x: 10, y: 12))
+        return model
+    }
+
+    /// 6 m putt due north across the east-tilt: ball (10, 6) → hole (10, 12).
+    private let ball = Vec2(x: 10, y: 6)
+
+    // MARK: - Tier 2: surface read on a tilted grid
+
+    func testPlaceBallProducesSoftenedReadWithVerbalAlwaysAlongside() throws {
+        let model = armedModel(grid: tiltedGrid())
+        XCTAssertEqual(model.display.status, .place, "hole defaulted, ball missing")
+
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        let display = model.display
+
+        // Terrain-tile confidence (0.45) is below the 0.5 read budget: the
+        // read shows but SOFTENED — never a confident read from weak data.
+        XCTAssertEqual(display.status, .soft)
+        let read = try XCTUnwrap(display.read)
+        XCTAssertEqual(read.availability, .ok)
+        XCTAssertEqual(read.minConfidence, PuttReadGeometry.TERRAIN_TILE_DEM_CONFIDENCE)
+        XCTAssertNotNil(display.message, "softened read carries a warning line")
+
+        // Downhill east + putt north = ball breaks right → aim LEFT (negative).
+        XCTAssertLessThan(read.aimOffsetM, 0)
+        XCTAssertGreaterThanOrEqual(read.path.count, 2, "break path rendered")
+
+        // Tour Read verbal ALWAYS shown alongside the exact tier (doc §5.1).
+        let tour = try XCTUnwrap(display.tour)
+        XCTAssertEqual(tour.aimSide, .right, "breaks right = aim side right")
+        let verbal = try XCTUnwrap(display.verbal)
+        XCTAssertTrue(verbal.aim.contains("right"), "verbal names the break side")
+        XCTAssertFalse(verbal.pace.isEmpty)
+    }
+
+    func testFlatGridReadsStraight() throws {
+        let model = armedModel(grid: tiltedGrid(slopeEastPct: 0))
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        let read = try XCTUnwrap(model.display.read)
+        XCTAssertEqual(read.aimOffsetM, 0, accuracy: 0.02)
+        XCTAssertEqual(model.display.tour?.aimSide, .straight)
+    }
+
+    func testStimpChangeRecomputesWithMoreBreakOnFasterGreen() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+
+        model.setStimp(8)
+        model.computeSurfaceReadNow()
+        let slow = try XCTUnwrap(model.display.read)
+
+        model.setStimp(13)
+        model.computeSurfaceReadNow()
+        let fast = try XCTUnwrap(model.display.read)
+
+        XCTAssertGreaterThan(
+            abs(fast.aimOffsetM), abs(slow.aimOffsetM),
+            "faster green must break more"
+        )
+        XCTAssertGreaterThan(
+            fast.playsLikeM, slow.playsLikeM,
+            "same putt rolls out farther on a faster green"
+        )
+    }
+
+    func testStimpChangeInvalidatesSettledReadUntilRecompute() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        XCTAssertNotNil(model.display.read)
+
+        model.setStimp(12)
+        // Signature diverged — the stale read must fall away, not linger.
+        XCTAssertEqual(model.display.status, .pending)
+        XCTAssertNil(model.display.read)
+    }
+
+    // MARK: - Placement / drag
+
+    func testHandleTapPlacesBallThenHoleTargetAutoReverts() throws {
+        let model = armedModel(grid: tiltedGrid())
+        XCTAssertEqual(model.hole, Vec2(x: 10, y: 12), "hole defaults to the pin")
+        XCTAssertNil(model.ball)
+
+        model.handleTap(ball)
+        XCTAssertEqual(model.ball, ball, "tap places the ball")
+
+        model.setPlaceTarget(.hole)
+        model.handleTap(Vec2(x: 11, y: 13))
+        XCTAssertEqual(model.hole, Vec2(x: 11, y: 13), "hole is re-tappable")
+        XCTAssertEqual(model.placeTarget, .ball, "hole placement auto-reverts")
+    }
+
+    func testDragUpdatesLiveMarkerWithoutReadThenCommitSettles() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        XCTAssertNotNil(model.display.read)
+
+        model.dragBall(Vec2(x: 9, y: 5))
+        XCTAssertEqual(model.ball, Vec2(x: 9, y: 5))
+        XCTAssertEqual(model.display.status, .pending, "stale read fell away mid-drag")
+        let overlay = try XCTUnwrap(model.overlay)
+        XCTAssertTrue(overlay.path.isEmpty, "no path mid-drag")
+        XCTAssertEqual(overlay.reference.count, 2, "reference line stays live")
+
+        model.commitDrag()
+        model.computeSurfaceReadNow()
+        XCTAssertNotNil(model.display.read, "commit recomputes over settled inputs")
+    }
+
+    // MARK: - Availability honesty
+
+    func testBallOffGridWithholdsRead() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(Vec2(x: -50, y: -50)) // far outside the grid
+        model.computeSurfaceReadNow()
+        let display = model.display
+        XCTAssertEqual(display.status, .unavailable)
+        XCTAssertNil(display.read, "withheld — no numbers at all")
+        XCTAssertNil(display.tour)
+        XCTAssertNotNil(display.message)
+    }
+
+    // MARK: - Competition gating
+
+    func testCompetitionModeWithholdsBothTiers() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        XCTAssertNotNil(model.display.read)
+
+        model.competitionMode = true
+        let display = model.display
+        XCTAssertEqual(display.status, .competition)
+        XCTAssertNil(display.read)
+        XCTAssertNil(display.tour)
+        XCTAssertNil(display.verbal)
+        XCTAssertNotNil(display.message, "one-line reads-off note")
+        XCTAssertNil(model.overlay, "no read rendering on the map either")
+
+        // The manual tier is gated too — switching modes must not leak a read.
+        model.setMode(.manual)
+        XCTAssertEqual(model.display.status, .competition)
+        XCTAssertNil(model.display.tour)
+    }
+
+    func testCompetitionModeOffRestoresReads() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.competitionMode = true
+        XCTAssertEqual(model.display.status, .competition)
+
+        model.competitionMode = false
+        model.computeSurfaceReadNow()
+        XCTAssertNotNil(model.display.read)
+    }
+
+    // MARK: - No grid → Manual fallback
+
+    func testNoGridFallsBackToManualAutomatically() throws {
+        let model = armedModel(grid: nil)
+        XCTAssertFalse(model.hasSurface)
+        XCTAssertEqual(model.mode, .manual, "manual offered automatically")
+        let display = model.display
+        XCTAssertEqual(display.mode, .manual)
+        XCTAssertNotNil(display.tour, "manual read works with no data at all")
+
+        model.setMode(.surface)
+        XCTAssertEqual(model.mode, .manual, "surface tier refused without a grid")
+    }
+
+    func testGridArrivalSwitchesToSurface() throws {
+        let model = armedModel(grid: nil)
+        XCTAssertEqual(model.mode, .manual)
+        model.installGrid(tiltedGrid())
+        XCTAssertEqual(model.mode, .surface)
+        XCTAssertTrue(model.hasSurface)
+        XCTAssertEqual(model.hole, Vec2(x: 10, y: 12), "markers survive a grid install")
+    }
+
+    // MARK: - Tier 3: manual Tour Read parity
+
+    func testManualPacesFormMatchesStrategyCore() throws {
+        let model = armedModel(grid: nil)
+        model.setManualLengthUnit(.paces)
+        model.setManualLength(10)
+        model.setManualSlopePct(2)
+        model.setManualGradePct(0)
+        model.setManualBreakToRight(true)
+        model.setStimp(10)
+
+        let expected = tourReadFromPaces(
+            10, gradeDeltaM: 0, slopePct: 2, stimpFt: 10, breakToRight: true
+        )
+        let display = model.display
+        XCTAssertEqual(display.status, .ok)
+        XCTAssertEqual(display.tour, expected)
+        // Tour Read arithmetic: (10 paces × 2 − 1) × 2% = 38 in at stimp 10.
+        XCTAssertEqual(display.tour?.aimInches ?? 0, 38, accuracy: 1e-9)
+        XCTAssertEqual(display.verbal, formatTourRead(expected, units: .metric))
+    }
+
+    func testManualMetersFormMatchesPacesForm() throws {
+        let model = armedModel(grid: nil)
+        model.setManualLengthUnit(.meters)
+        model.setManualLength(10 * PACE_METERS) // exactly 10 paces
+        model.setManualSlopePct(2)
+        model.setManualGradePct(0)
+        model.setManualBreakToRight(false)
+        model.setStimp(10)
+
+        let expected = tourReadFromPaces(
+            10, gradeDeltaM: 0, slopePct: 2, stimpFt: 10, breakToRight: false
+        )
+        XCTAssertEqual(model.display.tour!.aimInches, expected.aimInches, accuracy: 1e-9)
+        XCTAssertEqual(model.display.tour!.aimSide, .left)
+    }
+
+    func testManualGradePercentConvertsToDeltaMeters() throws {
+        let model = armedModel(grid: nil)
+        model.setManualLengthUnit(.meters)
+        model.setManualLength(10)
+        model.setManualSlopePct(0)
+        model.setManualGradePct(2) // +2% over 10 m = +0.2 m uphill
+        model.setStimp(10)
+
+        let expected = tourRead(
+            distanceM: 10, gradeDeltaM: 0.2, slopePct: 0, stimpFt: 10, breakToRight: true
+        )
+        XCTAssertEqual(
+            model.display.tour!.playsLikeMeters, expected.playsLikeMeters, accuracy: 1e-9
+        )
+        XCTAssertGreaterThan(model.display.tour!.playsLikeMeters, 10, "uphill plays longer")
+    }
+
+    func testManualCantStopDownhillSurfacesTheMessage() throws {
+        let model = armedModel(grid: nil)
+        model.setManualLengthUnit(.meters)
+        model.setManualLength(5)
+        model.setManualSlopePct(0)
+        model.setManualGradePct(-8) // steep downhill: Δh/μ ≪ −D at stimp 12
+        model.setStimp(12)
+
+        let display = model.display
+        XCTAssertEqual(display.tour?.canStop, false)
+        XCTAssertEqual(display.status, .soft)
+        XCTAssertNotNil(display.message)
+        XCTAssertTrue(display.verbal!.pace.contains("lag"), "verbal carries the warning")
+    }
+
+    // MARK: - Stimp persistence + clamping
+
+    func testStimpDefaultsTo10AndPersists() throws {
+        let model = PuttReadModel(defaults: defaults)
+        XCTAssertEqual(model.stimpFt, 10)
+        model.setStimp(12)
+        let reloaded = PuttReadModel(defaults: defaults)
+        XCTAssertEqual(reloaded.stimpFt, 12)
+    }
+
+    func testStimpClampsTo4Through16() throws {
+        let model = PuttReadModel(defaults: defaults)
+        model.setStimp(99)
+        XCTAssertEqual(model.stimpFt, 16)
+        model.setStimp(1)
+        XCTAssertEqual(model.stimpFt, 4)
+    }
+
+    // MARK: - Overlay
+
+    func testOverlayShowsDefaultHoleMarkerBeforeBallPlaced() throws {
+        let model = armedModel(grid: tiltedGrid())
+        let overlay = try XCTUnwrap(model.overlay)
+        XCTAssertNil(overlay.ball)
+        XCTAssertNotNil(overlay.hole)
+        XCTAssertTrue(overlay.reference.isEmpty)
+        XCTAssertTrue(overlay.path.isEmpty)
+    }
+
+    func testOverlayCarriesPathAimAndSoftFlagWhenSettled() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        let overlay = try XCTUnwrap(model.overlay)
+        XCTAssertNotNil(overlay.ball)
+        XCTAssertNotNil(overlay.hole)
+        XCTAssertNotNil(overlay.aim)
+        XCTAssertGreaterThanOrEqual(overlay.path.count, 2)
+        XCTAssertEqual(overlay.reference.count, 2)
+        XCTAssertTrue(overlay.soft, "terrain-tile confidence renders softened")
+    }
+
+    func testOverlayNilInManualMode() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.setMode(.manual)
+        XCTAssertNil(model.overlay)
+    }
+
+    // MARK: - E1 seam (Tier-1 scanned surface)
+
+    func testScannedSurfaceOverridesDemAndReadsConfident() throws {
+        // DEM says 2% east-tilt; a fresh full-confidence scan says flat.
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        XCTAssertEqual(model.display.status, .soft, "terrain-tile read is softened")
+
+        model.installScannedSurface(PlaneSurface(slopePct: 0, fallLineBearingDeg: 0))
+        model.computeSurfaceReadNow()
+        let display = model.display
+        XCTAssertEqual(display.status, .ok, "confident scan is not softened")
+        let read = try XCTUnwrap(display.read)
+        XCTAssertEqual(read.minConfidence, 1)
+        XCTAssertEqual(read.aimOffsetM, 0, accuracy: 0.02, "scan's flat surface won")
+
+        // Scan cleared → falls back to the DEM tier.
+        model.installScannedSurface(nil)
+        model.computeSurfaceReadNow()
+        XCTAssertEqual(model.display.status, .soft)
+        XCTAssertLessThan(try XCTUnwrap(model.display.read).aimOffsetM, 0)
+    }
+
+    func testDeactivateDropsState() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        model.deactivate()
+        XCTAssertNil(model.ball)
+        XCTAssertNil(model.hole)
+        XCTAssertFalse(model.hasSurface)
+        XCTAssertNil(model.overlay)
+    }
+}

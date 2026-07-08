@@ -125,6 +125,15 @@ export interface PlanLeg {
     lieBreakdown?: Partial<Record<Lie, number>>;
     /** The recommended aim bearing from `optimizeAim`, when enriched. */
     recommendedBearingDeg?: number;
+    /**
+     * The dispersion pattern the RECOMMENDED aim would produce (same club/
+     * wind/slope, `recommendedBearingDeg`), filled in by `enrichLegStrategy`
+     * alongside the other strategy fields. This is what the ghost marker's
+     * "aim here" actually lands: its (drift-shifted) `center` is the
+     * predicted finish. Undefined until enriched — so, like the ghost, it
+     * never renders mid-drag.
+     */
+    recommendedEllipse?: DispersionEllipse;
 }
 
 // ── Strategy enrichment (DECADE Phase C) ────────────────────────────────────
@@ -185,6 +194,18 @@ export function enrichLegStrategy(leg: PlanLeg, ctx: LegStrategyContext): PlanLe
         expectedStrokes: result.best.expectedStrokes,
         lieBreakdown: result.breakdown,
         recommendedBearingDeg: result.bestBearingDeg,
+        // The pattern the winning aim produces — one extra ellipse per
+        // enrichment pass (trivial next to the sweep itself). Rendered as the
+        // dashed "you'd finish here" companion to the ghost aim marker.
+        recommendedEllipse: dispersionEllipse({
+            origin: { x: leg.from.x, y: leg.from.y },
+            bearingDeg: result.bestBearingDeg,
+            club: leg.club,
+            groundSlope,
+            ...(wind !== null
+                ? { windSpeedMps: wind.speedMps, windDirectionDeg: wind.directionDeg }
+                : {}),
+        }),
     };
 }
 
@@ -259,9 +280,16 @@ export interface GhostAim {
 export function ghostAimForLeg(leg: PlanLeg): GhostAim | null {
     if (leg.recommendedBearingDeg === undefined || leg.adjustedCarryM === undefined) return null;
     const unit = bearingToUnitVector(leg.recommendedBearingDeg);
+    // Same ground-slope projection the ellipse applies to its center, so the
+    // ghost sits on the recommended pattern's long axis and the ghost →
+    // pattern-center offset is PURE crosswind drift (an honest "hold" arrow).
+    const slope = leg.playsLikeM !== undefined && leg.horizontalM > 0
+        ? (leg.playsLikeM - leg.horizontalM) / leg.horizontalM
+        : 0;
+    const carry = 1 + slope > 0 ? leg.adjustedCarryM / (1 + slope) : leg.adjustedCarryM;
     const point: Vec2 = {
-        x: leg.from.x + unit.x * leg.adjustedCarryM,
-        y: leg.from.y + unit.y * leg.adjustedCarryM,
+        x: leg.from.x + unit.x * carry,
+        y: leg.from.y + unit.y * carry,
     };
     const { lat, lon } = sweref99tmToWgs84(point.x, point.y);
     return { legIndex: leg.index, bearingDeg: leg.recommendedBearingDeg, point, lat, lon };
@@ -506,7 +534,24 @@ export function legLabel(leg: PlanLeg): string {
     const parts = [`${Math.round(leg.horizontalM)} m`];
     if (leg.playsLikeM !== undefined) parts.push(`plays ${Math.round(leg.playsLikeM)} m`);
     if (leg.club) parts.push(`${leg.club.name} ${Math.round(leg.club.carryM)} m`);
+    const drift = legDriftLabel(leg);
+    if (drift) parts.push(drift);
     return parts.join(' · ');
+}
+
+/** Show the crosswind hold only once it matters on the ground. */
+export const DRIFT_LABEL_MIN_M = 3;
+
+/**
+ * "drift 9 m R" for a clubbed leg whose pattern the wind shifts by at least
+ * DRIFT_LABEL_MIN_M laterally (positive driftM = shot-right), else null.
+ * Reads the leg's own ellipse — present whenever the leg has a club, on the
+ * live geometry path too, so the label survives mid-drag.
+ */
+export function legDriftLabel(leg: PlanLeg): string | null {
+    const driftM = leg.ellipse?.driftM ?? 0;
+    if (Math.abs(driftM) < DRIFT_LABEL_MIN_M) return null;
+    return `drift ${Math.round(Math.abs(driftM))} m ${driftM > 0 ? 'R' : 'L'}`;
 }
 
 /** "L 24 m | R 31 m" gate width label. */
@@ -553,13 +598,44 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
             }
         }
 
-        // Ghost recommended-aim marker per enriched leg (DECADE Phase D): a
-        // hollow dot at where the aim optimiser would land this shot. Only
-        // enriched legs (recommendedBearingDeg set) yield one — the per-frame
-        // drag path never enriches, so no ghost flickers during a drag.
+        // Ghost recommended-aim group per enriched leg (DECADE Phase D): the
+        // hollow aim marker ("point here"), the dashed pattern that aim would
+        // produce, a dot at its drift-shifted center ("you'd finish here"),
+        // and a connector between the two so the wind hold reads at a glance.
+        // Only enriched legs (recommendedBearingDeg set) yield these — the
+        // per-frame drag path never enriches, so none of it flickers mid-drag.
         for (const leg of plan.legs) {
             const ghost = ghostAimForLeg(leg);
             if (!ghost) continue;
+            const rec = leg.recommendedEllipse;
+            if (rec) {
+                features.push({
+                    type: 'Feature',
+                    properties: { role: 'ghost-ellipse', legIndex: ghost.legIndex },
+                    geometry: { type: 'Polygon', coordinates: [rec.polygon.map(toPosition)] },
+                });
+                features.push({
+                    type: 'Feature',
+                    properties: { role: 'ghost-center', legIndex: ghost.legIndex },
+                    geometry: { type: 'Point', coordinates: toPosition(rec.center) },
+                });
+                // Aim → finish connector: only worth drawing once the drift is
+                // visible at map scale (same threshold as the leg label).
+                if (Math.abs(rec.driftM) >= DRIFT_LABEL_MIN_M) {
+                    features.push({
+                        type: 'Feature',
+                        properties: {
+                            role: 'ghost-drift',
+                            legIndex: ghost.legIndex,
+                            label: `drift ${Math.round(Math.abs(rec.driftM))} m ${rec.driftM > 0 ? 'R' : 'L'}`,
+                        },
+                        geometry: {
+                            type: 'LineString',
+                            coordinates: [[ghost.lon, ghost.lat], toPosition(rec.center)],
+                        },
+                    });
+                }
+            }
             features.push({
                 type: 'Feature',
                 properties: { role: 'ghost-aim', legIndex: ghost.legIndex },
@@ -673,6 +749,52 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-allow-overlap': true,
             },
             paint: { 'text-color': '#ffffff', 'text-halo-color': '#14281c', 'text-halo-width': 1.5 },
+        },
+        {
+            id: `${PLAN_OVERLAY_ID}-ghost-ellipse`,
+            type: 'line',
+            filter: role('ghost-ellipse'),
+            paint: {
+                'line-color': GHOST_COLOR,
+                'line-width': 1.5,
+                'line-opacity': 0.8,
+                'line-dasharray': [2, 2] as never,
+            },
+        },
+        {
+            id: `${PLAN_OVERLAY_ID}-ghost-drift`,
+            type: 'line',
+            filter: role('ghost-drift'),
+            paint: {
+                'line-color': GHOST_COLOR,
+                'line-width': 1.5,
+                'line-opacity': 0.9,
+                'line-dasharray': [1, 1.5] as never,
+            },
+        },
+        {
+            id: `${PLAN_OVERLAY_ID}-ghost-drift-label`,
+            type: 'symbol',
+            filter: role('ghost-drift'),
+            layout: {
+                'symbol-placement': 'line-center',
+                'text-field': ['get', 'label'] as never,
+                'text-size': 11,
+                'text-offset': [0, 1],
+                'text-allow-overlap': true,
+            },
+            paint: { 'text-color': '#e9d5ff', 'text-halo-color': '#3b0764', 'text-halo-width': 1.5 },
+        },
+        {
+            id: `${PLAN_OVERLAY_ID}-ghost-center`,
+            type: 'circle',
+            filter: role('ghost-center'),
+            paint: {
+                'circle-radius': 3.5,
+                'circle-color': GHOST_COLOR,
+                'circle-stroke-color': '#3b0764',
+                'circle-stroke-width': 1,
+            },
         },
         {
             id: `${PLAN_OVERLAY_ID}-ghost-aim`,

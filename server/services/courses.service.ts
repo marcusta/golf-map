@@ -12,6 +12,7 @@ export interface CourseSummary {
     name: string;
     status: string;
     revision: number;
+    siteId: string | null;
     homeLat: number | null;
     homeLon: number | null;
     holeCount: number;
@@ -28,6 +29,7 @@ export interface Course {
     homeLat: number | null;
     homeLon: number | null;
     notes: string | null;
+    siteId: string | null;
     version: number;
     createdAt: string;
     updatedAt: string;
@@ -49,6 +51,7 @@ function toCourse(row: CourseRow): Course {
         homeLat: row.home_lat,
         homeLon: row.home_lon,
         notes: row.notes,
+        siteId: row.site_id,
         version: row.version,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -61,6 +64,7 @@ function toCourseSummary(row: CourseSummaryRow): CourseSummary {
         name: row.name,
         status: row.status,
         revision: row.revision,
+        siteId: row.site_id,
         homeLat: row.home_lat,
         homeLon: row.home_lon,
         holeCount: Number(row.hole_count),
@@ -88,13 +92,13 @@ export class CoursesService {
             .select([
                 'courses.id', 'courses.name', 'courses.status', 'courses.revision',
                 'courses.crs', 'courses.georeference_json', 'courses.home_lat', 'courses.home_lon',
-                'courses.notes', 'courses.version', 'courses.created_at', 'courses.updated_at',
+                'courses.notes', 'courses.site_id', 'courses.version', 'courses.created_at', 'courses.updated_at',
                 (eb) => eb.fn.count('holes.id').as('hole_count'),
             ])
             .groupBy([
                 'courses.id', 'courses.name', 'courses.status', 'courses.revision',
                 'courses.crs', 'courses.georeference_json', 'courses.home_lat', 'courses.home_lon',
-                'courses.notes', 'courses.version', 'courses.created_at', 'courses.updated_at',
+                'courses.notes', 'courses.site_id', 'courses.version', 'courses.created_at', 'courses.updated_at',
             ])
             .orderBy('courses.name');
     }
@@ -108,7 +112,7 @@ export class CoursesService {
     private insertCourse(values: {
         id: string; name: string; status: string; revision: number; crs: string;
         georeference_json: string | null; home_lat: number | null; home_lon: number | null;
-        notes: string | null; version?: number;
+        notes: string | null; site_id: string | null; version?: number;
     }, trx: Kysely<Database> = this.db) {
         return trx.insertInto('courses').values({ ...values, version: values.version ?? 1 });
     }
@@ -144,6 +148,7 @@ export class CoursesService {
         homeLat?: number;
         homeLon?: number;
         notes?: string;
+        siteId?: string;
     }): Promise<Course> {
         const id = crypto.randomUUID();
         const values = {
@@ -156,6 +161,7 @@ export class CoursesService {
             home_lat: input.homeLat ?? null,
             home_lon: input.homeLon ?? null,
             notes: input.notes ?? null,
+            site_id: input.siteId ?? null,
         };
         await this.insertCourse(values).execute();
         return this.get(id);
@@ -168,6 +174,7 @@ export class CoursesService {
         homeLat?: number;
         homeLon?: number;
         notes?: string;
+        siteId?: string | null;
     }): Promise<Course> {
         const row = await this.byId(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Course ${id} not found`);
@@ -179,6 +186,7 @@ export class CoursesService {
         if (patch.georeferenceJson !== undefined) dbInput.georeference_json = patch.georeferenceJson;
         if (patch.homeLat !== undefined) dbInput.home_lat = patch.homeLat;
         if (patch.homeLon !== undefined) dbInput.home_lon = patch.homeLon;
+        if (patch.siteId !== undefined) dbInput.site_id = patch.siteId;
         if (patch.notes !== undefined) dbInput.notes = patch.notes;
 
         await this.updateById(id).set({

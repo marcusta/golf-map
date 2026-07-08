@@ -98,7 +98,7 @@ test('LruCache evicts the least recently used entry past capacity', () => {
 
 // ── ElevationService ──────────────────────────────────────────────────────
 
-const CONFIG = { courseId: 'c1', zoom: 17, version: 'V1' };
+const CONFIG = { mapKey: 'c1', zoom: 17, version: 'V1' };
 
 function fakeFetcher(heightAt: (x: number, y: number) => number, opts?: { missing?: boolean; fail?: boolean }) {
     const urls: string[] = [];

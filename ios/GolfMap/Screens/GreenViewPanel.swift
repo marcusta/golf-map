@@ -1,12 +1,19 @@
 import SwiftUI
 
 /// Bottom control panel for the on-course Green view: Slope/Height/Relative
-/// segmented toggle, the active ramp's legend, green + surrounds stats, and
-/// the surrounds-buffer slider. Compact port of the web editor's analysis
-/// side panel (analysis-panel.component.ts) styled like the on-course
-/// distance card (dark material over the map).
+/// segmented toggle, the active ramp's legend, green + surrounds stats, the
+/// surrounds-buffer slider, and the putt-read section (`PuttReadSection`,
+/// doc feature-putting-green-reading §5.1). Compact port of the web editor's
+/// analysis side panel (analysis-panel.component.ts) styled like the
+/// on-course distance card (dark material over the map).
 struct GreenViewPanel: View {
     let model: GreenAnalysisModel
+    let putt: PuttReadModel
+    /// Present the spot-level capture sheet (owned by the screen).
+    let onLevel: () -> Void
+    /// Present the LiDAR corridor-scan flow (task E1); nil = unsupported
+    /// hardware, the affordance is hidden.
+    var onScan: (() -> Void)?
     let onClose: () -> Void
 
     var body: some View {
@@ -31,6 +38,14 @@ struct GreenViewPanel: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             bufferRow
+            Divider()
+                .overlay(.white.opacity(0.15))
+            PuttReadSection(
+                model: putt,
+                surfaceLoading: model.isLoading,
+                onLevel: onLevel,
+                onScan: onScan
+            )
         }
         .padding(.horizontal, 14)
         .padding(.top, 9)

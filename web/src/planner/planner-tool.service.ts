@@ -36,6 +36,7 @@ import {
     takeYourMedicineRule,
 } from '../../../shared/strategy/caddy';
 import { MapService, type MapPointerEvent, type OverlayLayerSpec } from '../map/map.service';
+import { ConfirmService } from '../app/confirm-dialog.component';
 import { ElevationService } from '../map/elevation.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FurnitureService } from '../furniture/furniture.service';
@@ -60,6 +61,18 @@ import {
     type PlanLeg,
 } from './plan-overlay';
 import { buildLieMap, type LieMap } from './lie-map';
+import { PuttReadService } from './putt-read.service';
+import {
+    PUTT_OVERLAY_ID,
+    buildPuttGeojson,
+    puttLayers,
+} from './putt-overlay';
+import maplibregl from 'maplibre-gl';
+import { AnalysisOverlayRenderer } from '../analysis/analysis-overlay';
+import { computeSlopeGrid, computeStats, type SlopeGrid, type AnalysisStats } from '../analysis/analysis-math';
+import type { AnalysisView } from '../analysis/analysis-tool.service';
+import type { SampleGrid } from '../../../shared/api/analysis.gen';
+import { puttLabelDescriptors } from './putt-labels';
 
 /** Interaction-claim id for the planner's single tool. */
 export const PLANNER_TOOL_ID = 'planner';
@@ -68,6 +81,15 @@ export const PLANNER_TOOL_ID = 'planner';
 export const CADDY_OVERLAY_ID = 'plan-caddy';
 
 /** Marker + label layers for the caddy advice overlay. */
+/** Inline style for an on-graphics putt label marker, by kind. */
+function puttLabelCss(kind: 'dist' | 'aim' | 'slope'): string {
+    const base = 'font: 600 11px/1.3 system-ui, sans-serif; padding: 1px 5px;'
+        + ' border-radius: 5px; pointer-events: none; white-space: nowrap;';
+    if (kind === 'aim') return base + ' background: rgba(245, 179, 1, 0.92); color: #14281c;';
+    if (kind === 'slope') return base + ' background: rgba(10, 20, 14, 0.6); color: #fff; font-size: 10px;';
+    return base + ' background: rgba(10, 20, 14, 0.82); color: #fff;'; // dist
+}
+
 function caddyLayers(): OverlayLayerSpec[] {
     return [
         {
@@ -168,14 +190,16 @@ export function caddyLegKind(input: CaddyLegKindInput): CaddyContext['leg'] {
     return 'tee';
 }
 
-export type PlannerMode = 'select' | 'add-shot' | 'add-gate';
+export type PlannerMode = 'select' | 'add-shot' | 'add-gate' | 'putt';
 
 export type PlannerSelection = { kind: 'shot' | 'gate'; id: string } | null;
 
 type DragTarget =
     | { kind: 'shot'; id: string }
     | { kind: 'gate-side'; id: string; side: 'left' | 'right' }
-    | { kind: 'gate-move'; id: string };
+    | { kind: 'gate-move'; id: string }
+    | { kind: 'putt-ball' }
+    | { kind: 'putt-hole' };
 
 interface Drag {
     target: DragTarget;
@@ -208,6 +232,9 @@ export class PlannerToolService {
     private features = di.get(FeaturesService);
     private plan = di.get(PlanService);
     private clubs = di.get(ClubsService);
+    private confirm = di.get(ConfirmService);
+    /** Putt-read state (feature-putting-green-reading §5.1). Shared with the panel. */
+    readonly puttRead = di.get(PuttReadService);
 
     readonly mode = new Signal<PlannerMode>('select');
     readonly selection = new Signal<PlannerSelection>(null);
@@ -218,6 +245,7 @@ export class PlannerToolService {
     private suppressClick = false;
     private overlayAdded = false;
     private caddyOverlayAdded = false;
+    private puttOverlayAdded = false;
 
     /** ?hole= carries the hole NUMBER; resolve to the Hole for the course. */
     private readonly selectedHoleNumber = this.router.query('hole');
@@ -667,6 +695,10 @@ export class PlannerToolService {
     });
 
     private readonly overlayData = new Computed<FeatureCollection>(() => {
+        // Putt mode owns the map: the shot plan (markers, aim lines, gates)
+        // would otherwise draw a full-club aim line across the green view and
+        // read as part of the putt read (feature-putting-green-reading §5.1).
+        if (this.mode.get() === 'putt') return { type: 'FeatureCollection', features: [] };
         const sel = this.selection.get();
         return buildPlanGeojson({
             plan: this.overlayPlan.get(),
@@ -683,6 +715,9 @@ export class PlannerToolService {
      * task adds no edits there — its own source/layers, added in `start()`.
      */
     private readonly caddyOverlayData = new Computed<FeatureCollection>(() => {
+        // Hidden in putt mode (see overlayData) — the "aim your Driver" advice
+        // marker has no place over a green read.
+        if (this.mode.get() === 'putt') return { type: 'FeatureCollection', features: [] };
         const features: FeatureCollection['features'] = [];
         for (const a of this.caddyAdvice.get()) {
             if (!a.anchor) continue;
@@ -694,6 +729,58 @@ export class PlannerToolService {
             });
         }
         return { type: 'FeatureCollection', features };
+    });
+
+    // ── Putt read (feature-putting-green-reading §5.1, Phase B) ─────────────
+
+    /** Reuses the Green-analysis Slope/Height heat map + fall-line arrows +
+     *  slope% labels under the putt read — NOT a bespoke overlay. */
+    private readonly puttAnalysisRenderer = new AnalysisOverlayRenderer();
+    /** DEM-derived slope/stats for the putt green, cached per grid object. */
+    private puttDerivedCache: { grid: SampleGrid; slope: SlopeGrid; stats: AnalysisStats } | null = null;
+    /** DOM-marker labels on the graphics (distance/plays/aim + cross-slope). */
+    private puttLabelMarkers: maplibregl.Marker[] = [];
+
+    /**
+     * The reused analysis view for the putt green (null → nothing / cleared):
+     * only in putt mode, with a grid + context, and the overlay toggle not on
+     * 'none'. Same view shape the Green-analysis tool renders.
+     */
+    private readonly puttAnalysisView = new Computed<AnalysisView | null>(() => {
+        if (this.mode.get() !== 'putt') return null;
+        const mode = this.puttRead.overlayMode.get();
+        if (mode === 'none') return null;
+        const grid = this.puttRead.grid.get();
+        const ctx = this.puttRead.context.get();
+        if (!grid || !ctx) return null;
+        if (!this.puttDerivedCache || this.puttDerivedCache.grid !== grid) {
+            const slope = computeSlopeGrid(grid);
+            this.puttDerivedCache = { grid, slope, stats: computeStats(grid, slope) };
+        }
+        return {
+            grid,
+            mode,
+            geometry: ctx.geometry,
+            slope: this.puttDerivedCache.slope,
+            stats: this.puttDerivedCache.stats,
+        };
+    });
+
+    /**
+     * Putt overlay GeoJSON. Ball/hole/reference-line are LIVE (drag frames
+     * move them — cheap geometry only); the break path + aim marker come from
+     * the SETTLED read and drop out mid-drag (PuttReadService.read goes null
+     * when the input signature diverges), so nothing stale renders.
+     */
+    private readonly puttOverlayData = new Computed<FeatureCollection>(() => {
+        if (this.mode.get() !== 'putt') return { type: 'FeatureCollection', features: [] };
+        const display = this.puttRead.display.get();
+        return buildPuttGeojson({
+            ball: this.puttRead.ball.get(),
+            hole: this.puttRead.hole.get(),
+            read: display.read,
+            soft: display.status === 'soft',
+        });
     });
 
     /** The selected shot row (for the panel), or null. */
@@ -809,6 +896,81 @@ export class PlannerToolService {
             }
         });
 
+        // Reused Green-analysis Slope/Height heat map + fall-line arrows +
+        // slope% labels under the putt read (not a bespoke overlay). Rendered
+        // BEFORE the putt geometry so the break path sits on top; the heat
+        // image is added at the top of the stack, so re-raise the putt
+        // geometry after each (re)render.
+        track(effect(() => {
+            if (!this.map.ready.get()) return;
+            this.puttAnalysisRenderer.render(this.map, this.puttAnalysisView.get());
+            this.raisePuttGeometry();
+        }));
+        track(() => this.puttAnalysisRenderer.clear(this.map));
+
+        // Putt-read overlay — its own source/layers, same ready-gated re-add
+        // lifecycle as the plan/caddy overlays.
+        track(effect(() => {
+            const ready = this.map.ready.get();
+            const data = this.puttOverlayData.get();
+            if (!ready) {
+                this.puttOverlayAdded = false;
+                return;
+            }
+            if (!this.puttOverlayAdded) {
+                this.map.addOverlayLayer(PUTT_OVERLAY_ID, data, puttLayers());
+                this.puttOverlayAdded = true;
+            } else {
+                this.map.updateOverlayData(PUTT_OVERLAY_ID, data);
+            }
+        }));
+        track(() => {
+            if (this.puttOverlayAdded) {
+                this.map.removeOverlayLayer(PUTT_OVERLAY_ID);
+                this.puttOverlayAdded = false;
+            }
+        });
+
+        // On-graphics read labels: distance + plays-like, aim amount, and a
+        // cross-slope % at each sampled station — DOM markers (the editor map
+        // style has no glyphs endpoint, so symbol text layers can't render).
+        // Recreated on change; a handful of nodes, cheap even mid-drag.
+        track(effect(() => {
+            const ready = this.map.ready.get();
+            const raw = this.map.map.get();
+            const isPutt = this.mode.get() === 'putt';
+            for (const m of this.puttLabelMarkers) m.remove();
+            this.puttLabelMarkers = [];
+            if (!ready || !raw || !isPutt) return;
+            const labels = puttLabelDescriptors({
+                ball: this.puttRead.ball.get(),
+                hole: this.puttRead.hole.get(),
+                read: this.puttRead.display.get().read,
+                slopeSamples: this.puttRead.pathSlopeSamples.get(),
+            });
+            for (const l of labels) {
+                const el = document.createElement('div');
+                el.className = `putt-map-label putt-map-label--${l.kind}`;
+                el.textContent = l.text;
+                el.style.cssText = puttLabelCss(l.kind);
+                const { lat, lon } = sweref99tmToWgs84(l.point.x, l.point.y);
+                // Deconflict vertically: read labels above the line, cross-slope
+                // readings below it, so they don't stack on the same point.
+                const offset: [number, number] = l.kind === 'slope' ? [0, 13] : [0, -13];
+                this.puttLabelMarkers.push(
+                    new maplibregl.Marker({ element: el, anchor: 'center', offset })
+                        .setLngLat([lon, lat]).addTo(raw),
+                );
+            }
+        }));
+        track(() => {
+            for (const m of this.puttLabelMarkers) m.remove();
+            this.puttLabelMarkers = [];
+        });
+
+        this.attachPuttActivation(track);
+        track(() => this.puttRead.deactivate());
+
         this.attachHoleFraming(track);
 
         // Re-run DECADE enrichment when the strategy inputs change (hole,
@@ -883,6 +1045,65 @@ export class PlannerToolService {
                 this.map.fitBounds(frame.bounds);
             });
         }));
+    }
+
+    /**
+     * Arm/disarm the putt read for the selected hole's green whenever putt
+     * mode or the underlying data (hole, features, furniture) changes. The
+     * context resolves the green COURSE FEATURE (DEM grid key), the furniture
+     * green row (calibration key + centre), and the default hole position —
+     * the ACTIVE PIN when one exists, else the green centre, else the green
+     * polygon's vertex centroid. `activate` is idempotent per green feature,
+     * so data-reload re-runs don't refetch or stomp the user's markers.
+     */
+    private attachPuttActivation(track: (dispose: () => void) => void): void {
+        track(effect(() => {
+            const mode = this.mode.get();
+            const hole = this.selectedHole.get();
+            const features = this.features.store.items.get();
+            const greens = this.furniture.greens.get();
+            const pins = this.furniture.pins.items.get();
+            if (mode !== 'putt' || !hole) {
+                this.puttRead.deactivate();
+                return;
+            }
+            const greenFeature = features.find(f => f.type === 'green' && f.holeId === hole.id)
+                ?? null;
+            if (!greenFeature) {
+                this.puttRead.deactivate();
+                this.notice.set('This hole has no green drawn yet — nothing to read a putt from.');
+                return;
+            }
+            const row = greens.find(g => g.holeId === hole.id) ?? null;
+            const activePin = row
+                ? pins.find(p => p.greenId === row.id && p.active) ?? null
+                : null;
+            const defaultHole: Vec2 = activePin
+                ? wgs84ToSweref99tm(activePin.lat, activePin.lon)
+                : row
+                    ? wgs84ToSweref99tm(row.centerLat, row.centerLon)
+                    : ringCentroid(greenFeature.geometry.rings[0]?.points ?? []);
+            untrack(() => void this.puttRead.activate({
+                courseId: greenFeature.courseId,
+                greenFeatureId: greenFeature.id,
+                geometry: greenFeature.geometry,
+                greenId: row?.id ?? null,
+                defaultHole,
+            }));
+        }));
+    }
+
+    /**
+     * Raise the putt geometry (break path, aim line, markers) to the top of
+     * the layer stack. The reused analysis heat image is added at the top when
+     * it (re)renders, so call this after it to keep the read drawn above it.
+     */
+    private raisePuttGeometry(): void {
+        const raw = this.map.map.peek();
+        if (!raw || !this.puttOverlayAdded) return;
+        for (const spec of puttLayers()) {
+            if (raw.getLayer(spec.id)) raw.moveLayer(spec.id); // no beforeId → to top
+        }
     }
 
     /** Arm an add mode (toggles back to select when already armed). */
@@ -983,7 +1204,14 @@ export class PlannerToolService {
         const sel = this.selection.peek();
         if (!sel) return;
         const label = sel.kind === 'shot' ? 'shot' : 'gate';
-        if (!window.confirm(`Delete this ${label}?`)) return;
+        const confirmed = await this.confirm.confirm({
+            title: `Delete ${label}?`,
+            body: `This ${label} will be removed from the hole plan.`,
+            confirmLabel: `Delete ${label}`,
+            tone: 'danger',
+            layout: 'default',
+        });
+        if (!confirmed) return;
         const ok = sel.kind === 'shot'
             ? await this.plan.removeShot(sel.id)
             : await this.plan.removeGate(sel.id);
@@ -1009,9 +1237,21 @@ export class PlannerToolService {
             void this.placeGate(e);
             return;
         }
+        if (mode === 'putt') {
+            // Click places whichever point the "Tap places" selector has
+            // active — ball first, then auto-advances to the hole, so both
+            // the origin and the target are user-chosen. Clicks on an existing
+            // marker never get here (mousedown grabs them for a drag and the
+            // synthesized click is swallowed).
+            this.puttRead.placeNext(lngLatToSweref99tm(e.lngLat));
+            return;
+        }
 
         const hit = this.hitTest(e.point);
-        this.selection.set(hit ? { kind: hit.kind === 'shot' ? 'shot' : 'gate', id: hit.id } : null);
+        // Putt targets are unreachable here (select mode never offers them).
+        this.selection.set(hit && hit.kind !== 'putt-ball' && hit.kind !== 'putt-hole'
+            ? { kind: hit.kind === 'shot' ? 'shot' : 'gate', id: hit.id }
+            : null);
     }
 
     private onMouseMove(e: MapPointerEvent): void {
@@ -1048,7 +1288,10 @@ export class PlannerToolService {
         if (!hit) return;
         e.preventDefault(); // stops the map's drag-pan for this gesture
         map.dragPan.disable();
-        this.selection.set({ kind: hit.kind === 'shot' ? 'shot' : 'gate', id: hit.id });
+        // Putt markers are session-local — they carry no selection row.
+        if (hit.kind !== 'putt-ball' && hit.kind !== 'putt-hole') {
+            this.selection.set({ kind: hit.kind === 'shot' ? 'shot' : 'gate', id: hit.id });
+        }
         this.drag = {
             target: hit,
             startScreen: { x: e.point.x, y: e.point.y },
@@ -1212,6 +1455,17 @@ export class PlannerToolService {
     // ── Dragging ────────────────────────────────────────────────────────────
 
     private applyDrag(target: DragTarget, e: MapPointerEvent): void {
+        // Putt marker drags are LIVE geometry only (marker + reference line
+        // follow the cursor); the readPutt integrator NEVER runs per frame —
+        // release (`persistDrag`) commits the settled position and recomputes.
+        if (target.kind === 'putt-ball') {
+            this.puttRead.dragBall(lngLatToSweref99tm(e.lngLat));
+            return;
+        }
+        if (target.kind === 'putt-hole') {
+            this.puttRead.dragHole(lngLatToSweref99tm(e.lngLat));
+            return;
+        }
         if (target.kind === 'shot') {
             this.plan.patchShotLocal(target.id, { lat: e.lngLat.lat, lon: e.lngLat.lng });
             return;
@@ -1240,6 +1494,11 @@ export class PlannerToolService {
     }
 
     private async persistDrag(target: DragTarget): Promise<void> {
+        if (target.kind === 'putt-ball' || target.kind === 'putt-hole') {
+            // Session-local (nothing persisted) — drag-release recompute only.
+            this.puttRead.commit();
+            return;
+        }
         if (target.kind === 'shot') {
             const shot = this.plan.shots.items.peek().find(s => s.id === target.id);
             if (!shot) return;
@@ -1286,6 +1545,23 @@ export class PlannerToolService {
             if (d < bestDist) { bestDist = d; best = target; }
         };
 
+        // Putt markers first (only meaningful in putt mode; rendered on top).
+        // Hit-testing happens on mousedown/click only — never per mouse-move —
+        // so the terrain-aware map.project cost (~40 µs/call) is fine here,
+        // matching the existing shot/gate hit path.
+        if (this.mode.peek() === 'putt') {
+            const ball = this.puttRead.ball.peek();
+            if (ball) {
+                const p = sweref99tmToWgs84(ball.x, ball.y);
+                consider({ kind: 'putt-ball' }, p.lat, p.lon);
+            }
+            const hole = this.puttRead.hole.peek();
+            if (hole) {
+                const p = sweref99tmToWgs84(hole.x, hole.y);
+                consider({ kind: 'putt-hole' }, p.lat, p.lon);
+            }
+        }
+
         for (const shot of this.holeShots.peek()) {
             consider({ kind: 'shot', id: shot.id }, shot.lat, shot.lon);
         }
@@ -1325,6 +1601,18 @@ export class PlannerToolService {
     private pxDist(a: { x: number; y: number }, b: { x: number; y: number }): number {
         return Math.hypot(a.x - b.x, a.y - b.y);
     }
+}
+
+/**
+ * Vertex centroid of a feature ring's anchor points (EPSG:3006) — the
+ * last-resort default hole position when a hole has a drawn green but no
+ * furniture green row (no centre) and no active pin. Coarse but on the green.
+ */
+function ringCentroid(points: readonly { x: number; y: number }[]): Vec2 {
+    if (points.length === 0) return { x: 0, y: 0 };
+    let sx = 0, sy = 0;
+    for (const p of points) { sx += p.x; sy += p.y; }
+    return { x: sx / points.length, y: sy / points.length };
 }
 
 /** Screen-space distance from a point to segment a→b, pixels. */

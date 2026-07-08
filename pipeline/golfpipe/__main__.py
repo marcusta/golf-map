@@ -58,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workdir", required=True, help="directory to download source COGs into")
     p.add_argument("--out", required=True, help="output path for cropped/mosaicked ortho.tif")
     p.add_argument("--buffer", type=float, default=commands.DEFAULT_FETCH_BUFFER_M, help="crop buffer in metres (default 250)")
+    p.add_argument("--collection", help="fetch a specific vintage collection (default: newest); see list-ortho-vintages")
+
+    p = sub.add_parser("list-ortho-vintages", help="List ortho vintages covering an area (JSON, newest first)")
+    _add_area_args(p)
 
     p = sub.add_parser("fetch-lidar", help="STAC search + download classified lidar COPC point cloud(s)")
     _add_area_args(p)
@@ -131,6 +135,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--course", required=True, help="course id")
     p.add_argument("--buffer", type=float, default=250.0, help="buffer in metres (default 250)")
 
+    p = sub.add_parser("reproject-bbox", help="Reproject a WGS84 bbox to another CRS; prints e_min,n_min,e_max,n_max")
+    _add_area_args(p)
+    p.add_argument("--to", type=int, default=3006, help="target EPSG code (default 3006 = SWEREF99 TM, metres)")
+
     return parser
 
 
@@ -169,7 +177,11 @@ def main(argv: list[str] | None = None) -> int:
 
         elif args.command == "fetch-ortho":
             bbox = _resolve_area(args)
-            commands.cmd_fetch_ortho(bbox, Path(args.workdir), Path(args.out), buffer_m=args.buffer)
+            commands.cmd_fetch_ortho(bbox, Path(args.workdir), Path(args.out), buffer_m=args.buffer, collection=args.collection)
+
+        elif args.command == "list-ortho-vintages":
+            bbox = _resolve_area(args)
+            commands.cmd_list_ortho_vintages(bbox)
 
         elif args.command == "fetch-lidar":
             bbox = _resolve_area(args)
@@ -226,6 +238,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "bbox-from-course":
             bbox = bbox_from_course(Path(args.db), args.course, buffer_m=args.buffer)
             print(",".join(str(v) for v in bbox))
+
+        elif args.command == "reproject-bbox":
+            bbox = _resolve_area(args)
+            out = commands.cmd_reproject_bbox(bbox, epsg=args.to)
+            print(",".join(str(v) for v in out))
 
         else:
             parser.error(f"Unknown command: {args.command}")

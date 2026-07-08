@@ -37,6 +37,13 @@ public struct CourseMapView: UIViewRepresentable {
     /// nil renders nothing. Applied via runtime source/layer add/remove — no
     /// style reload. Change detection is by (result identity, mode).
     public var analysis: GreenAnalysisMapState?
+    /// Green-view putt-read overlay (break path, aim dot, reference line,
+    /// ball/hole markers); nil renders nothing. Updates via cheap shape
+    /// reassignment — it changes on every marker drag frame. The ball/hole
+    /// markers also join the handle drag hit-test (ids
+    /// `PuttOverlay.ballHandleID`/`.holeHandleID`) whenever `adjustEnabled`
+    /// lets the drag recognizer run.
+    public var putt: PuttReadGeometry.PuttOverlay?
     /// Called on the main actor once the style finished loading (and again
     /// after any style rebuild caused by a configuration/features change).
     public var onMapReady: (() -> Void)?
@@ -71,6 +78,12 @@ public struct CourseMapView: UIViewRepresentable {
     /// simultaneous recognition — so moving a handle can never also pan or
     /// quick-zoom the map (the old move-tee long-press bug).
     public var adjustEnabled: Bool
+    /// When true (Adjust MODE, as opposed to green-view putt dragging), the
+    /// map's gesture zoom + rotate are disabled for the whole mode: with a
+    /// finger you routinely MISS the small handle, the drag never begins, and
+    /// MapLibre's own quick-zoom fires instead ("zooms out when I tap Adjust").
+    /// Green view keeps pinch zoom (a missed putt-marker grab just pans).
+    public var adjustLocksGestures: Bool
     /// A handle was grabbed (drag began). Argument: the handle id.
     public var onHandleGrab: ((String) -> Void)?
     /// The grabbed handle moved; called per drag frame with the unprojected
@@ -87,6 +100,7 @@ public struct CourseMapView: UIViewRepresentable {
         camera: MapCameraCommand? = nil,
         zoom: MapZoomCommand? = nil,
         analysis: GreenAnalysisMapState? = nil,
+        putt: PuttReadGeometry.PuttOverlay? = nil,
         onMapReady: (() -> Void)? = nil,
         onCameraChange: ((LatLon, Double, Double) -> Void)? = nil,
         longPressEnabled: Bool = false,
@@ -94,6 +108,7 @@ public struct CourseMapView: UIViewRepresentable {
         measureTapEnabled: Bool = false,
         onMeasureTap: ((LatLon) -> Void)? = nil,
         adjustEnabled: Bool = false,
+        adjustLocksGestures: Bool = true,
         onHandleGrab: ((String) -> Void)? = nil,
         onHandleMove: ((String, LatLon) -> Void)? = nil,
         onHandleDrop: ((String) -> Void)? = nil
@@ -104,6 +119,7 @@ public struct CourseMapView: UIViewRepresentable {
         self.camera = camera
         self.zoom = zoom
         self.analysis = analysis
+        self.putt = putt
         self.onMapReady = onMapReady
         self.onCameraChange = onCameraChange
         self.longPressEnabled = longPressEnabled
@@ -111,6 +127,7 @@ public struct CourseMapView: UIViewRepresentable {
         self.measureTapEnabled = measureTapEnabled
         self.onMeasureTap = onMeasureTap
         self.adjustEnabled = adjustEnabled
+        self.adjustLocksGestures = adjustLocksGestures
         self.onHandleGrab = onHandleGrab
         self.onHandleMove = onHandleMove
         self.onHandleDrop = onHandleDrop
@@ -203,6 +220,7 @@ public struct CourseMapView: UIViewRepresentable {
 
         coordinator.desiredOverlays = overlays
         coordinator.desiredAnalysis = analysis
+        coordinator.desiredPutt = putt
         coordinator.pendingCamera = camera
         coordinator.lastCameraCommand = camera
         // Seed the zoom baseline so the first real zoom command (a later token)
@@ -240,9 +258,13 @@ public struct CourseMapView: UIViewRepresentable {
         // the +/- buttons still zoom (imperative `setZoomLevel`, unaffected by
         // `isZoomEnabled`). Skipped while a drag is live so the per-drag scroll
         // disable in `beginHandleDrag` isn't stomped.
+        // The mode-wide gesture lock applies only in Adjust mode proper — the
+        // green view's putt-marker dragging keeps pinch zoom (see
+        // `adjustLocksGestures`).
+        let locksGestures = adjustEnabled && adjustLocksGestures
         if coordinator.draggedHandleID == nil {
-            mapView.isZoomEnabled = !adjustEnabled
-            mapView.isRotateEnabled = !adjustEnabled
+            mapView.isZoomEnabled = !locksGestures
+            mapView.isRotateEnabled = !locksGestures
             mapView.isScrollEnabled = true
         }
 
@@ -260,11 +282,14 @@ public struct CourseMapView: UIViewRepresentable {
 
         coordinator.desiredOverlays = overlays
         coordinator.desiredAnalysis = analysis
+        coordinator.desiredPutt = putt
         if coordinator.isStyleLoaded, let style = mapView.style {
             MapOverlayRenderer.apply(overlays, to: style)
             coordinator.routeLegLabelRenderer.apply(overlays.routeLegLabels, to: mapView)
             coordinator.adjustHandleRenderer.apply(overlays.adjustHandles, to: style)
             coordinator.analysisRenderer.apply(analysis, to: style)
+            // After analysis so the putt layers stack above the heat/arrows.
+            coordinator.puttRenderer.apply(putt, to: style)
         }
 
         // Apply ONLY when the token changes. The command also carries the hole
@@ -305,7 +330,9 @@ public struct CourseMapView: UIViewRepresentable {
         var appliedFeaturesGeoJSON: Data?
         var desiredOverlays: MapOverlayState = .empty
         var desiredAnalysis: GreenAnalysisMapState?
+        var desiredPutt: PuttReadGeometry.PuttOverlay?
         let analysisRenderer = GreenAnalysisRenderer()
+        let puttRenderer = PuttOverlayRenderer()
         let routeLegLabelRenderer = RouteLegLabelRenderer()
         let adjustHandleRenderer = AdjustHandleRenderer()
         var lastCameraCommand: MapCameraCommand?
@@ -384,10 +411,22 @@ public struct CourseMapView: UIViewRepresentable {
         /// Nearest handle id within `adjustHitThreshold` screen points of
         /// `point`, or nil. Projects each handle via
         /// `convert(coordinate:toPointTo:)` so the test is in stable screen
-        /// space regardless of zoom.
+        /// space regardless of zoom. Adjust handles and the green view's putt
+        /// ball/hole markers share the hit-test (they are never present
+        /// together — Adjust mode and Green view are mutually exclusive).
         func nearestHandle(to point: CGPoint, in mapView: MLNMapView) -> String? {
+            var candidates: [(id: String, position: LatLon)] = desiredOverlays.adjustHandles
+                .map { ($0.id, $0.position) }
+            if let putt = desiredPutt {
+                if let ball = putt.ball {
+                    candidates.append((PuttReadGeometry.PuttOverlay.ballHandleID, ball))
+                }
+                if let hole = putt.hole {
+                    candidates.append((PuttReadGeometry.PuttOverlay.holeHandleID, hole))
+                }
+            }
             var best: (id: String, distance: CGFloat)?
-            for handle in desiredOverlays.adjustHandles {
+            for handle in candidates {
                 let projected = mapView.convert(handle.position.clCoordinate, toPointTo: mapView)
                 let distance = hypot(projected.x - point.x, projected.y - point.y)
                 if distance <= Self.adjustHitThreshold, distance < (best?.distance ?? .infinity) {
@@ -546,6 +585,8 @@ public struct CourseMapView: UIViewRepresentable {
             adjustHandleRenderer.apply(desiredOverlays.adjustHandles, to: style)
             analysisRenderer.styleDidReload()
             analysisRenderer.apply(desiredAnalysis, to: style)
+            puttRenderer.styleDidReload()
+            puttRenderer.apply(desiredPutt, to: style)
             if let pendingCamera {
                 Self.applyCamera(pendingCamera, to: mapView)
                 self.pendingCamera = nil

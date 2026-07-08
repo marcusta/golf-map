@@ -7,6 +7,9 @@ import { CourseListComponent } from '../courses/course-list.component';
 import { CourseDetailComponent } from '../course-detail/course-detail.component';
 import { PlannerComponent } from '../planner/planner.component';
 import { PlayerSettingsComponent } from '../player/player-settings.component';
+import { NewCourseWizardComponent } from '../map-build/new-course-wizard.component';
+import { SetMapAreaComponent } from '../map-build/set-map-area.component';
+import { ConfirmDialogComponent } from './confirm-dialog.component';
 
 const tpl = template(`
     <div bind="layout" class="app-layout">
@@ -18,6 +21,7 @@ const tpl = template(`
             <button bind="logout" class="topbar__logout">Log out</button>
         </header>
         <main bind="content" class="app-content"></main>
+        <div bind="confirmHost"></div>
     </div>
 `);
 
@@ -119,11 +123,15 @@ export class AppComponent extends Component {
 
         this.$swap(this.ref(frag, 'content'), this.router.route, {
             '/': CourseListComponent,
+            '/new': NewCourseWizardComponent,
+            '/set-area': SetMapAreaComponent,
             '/course': CourseDetailComponent,
             '/planner': PlannerComponent,
             '/player': PlayerSettingsComponent,
             '/login': LoginComponent,
         }, CourseListComponent);
+
+        this.spawn(ConfirmDialogComponent, this.ref(frag, 'confirmHost'));
 
         return frag;
     }

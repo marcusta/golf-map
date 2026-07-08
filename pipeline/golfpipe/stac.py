@@ -140,6 +140,26 @@ def search_ortho(
     return search(ORTHO_STAC_URL, bbox, collections=None, limit=limit, session=session)
 
 
+def ortho_vintages(
+    bbox: tuple[float, float, float, float],
+    limit: int = 10,
+    session: requests.Session | None = None,
+) -> list[tuple[str, list[StacItem]]]:
+    """Group ortho search results by collection (= capture vintage, e.g.
+    orto-l2-2025), preserving the API's newest-first order. Returns
+    [(collection, items), …] newest vintage first — used to fetch/compare the
+    two most recent flights of an area (often different seasons)."""
+    order: list[str] = []
+    groups: dict[str, list[StacItem]] = {}
+    for item in search_ortho(bbox, limit=limit, session=session):
+        collection = item.collection or "unknown"
+        if collection not in groups:
+            groups[collection] = []
+            order.append(collection)
+        groups[collection].append(item)
+    return [(c, groups[c]) for c in order]
+
+
 def _credentials() -> tuple[str, str]:
     user = os.environ.get("LANTMATERIET_USER")
     password = os.environ.get("LANTMATERIET_PASS")

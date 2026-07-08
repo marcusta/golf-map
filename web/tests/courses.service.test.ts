@@ -15,6 +15,7 @@ function summary(id: string, name: string): CourseSummary {
         name,
         status: 'draft',
         revision: 0,
+        siteId: null,
         homeLat: null,
         homeLon: null,
         holeCount: 18,

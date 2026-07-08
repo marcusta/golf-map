@@ -1,8 +1,9 @@
-import { Signal, Computed, effect, untrack, batch } from '@basics/core/client/core';
+import { Signal, Computed, effect, untrack, batch, di } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent, FilterSpecification } from 'maplibre-gl';
 import type { Feature, FeatureCollection, Position } from 'geojson';
 import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent, OverlayLayerSpec } from '../map/map.service';
+import { ConfirmService } from '../app/confirm-dialog.component';
 import { geometryToWgs84Rings, type FeaturesService } from './features.service';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../geo/transform';
@@ -189,11 +190,13 @@ interface Marquee {
  *   selected feature(s) (confirm). Cmd/Ctrl+D duplicates (+10 m offset).
  *   Cmd/Ctrl+Z / Shift+Z / Y = undo / redo (snapshot history, autosaved).
  * - draw (N or panel button): click to place B-SPLINE control points
- *   (Shift+click = sharp corner), Enter / double-click / click-on-first to
- *   close, Cmd/Ctrl+Z removes the last placed point (first point cancels).
- *   ESC cancels.
+ *   (Shift+click = sharp corner), Enter / click-on-first to close,
+ *   Cmd/Ctrl+Z removes the last placed point (first point cancels). ESC
+ *   cancels. Double-click is swallowed as an accidental duplicate point, not
+ *   as a close gesture.
  */
 export class DrawToolService {
+    private confirm = di.get(ConfirmService);
     readonly state = new DrawState();
     /** Snapshot-based undo/redo of committed edits (see history.ts). */
     readonly history = new EditHistory();
@@ -305,8 +308,8 @@ export class DrawToolService {
         ctx.track(() => window.removeEventListener('keydown', onKeyDown));
 
         // Raw map handlers (mousedown/up for drags + marquee, dblclick to
-        // close, contextmenu to delete vertices) — re-bound if the map is
-        // recreated while the tool is active.
+        // swallow duplicate draw points, contextmenu to delete vertices) —
+        // re-bound if the map is recreated while the tool is active.
         ctx.track(effect(() => {
             if (!ctx.map.ready.get()) return;
             const map = ctx.map.map.get();
@@ -722,10 +725,7 @@ export class DrawToolService {
         if (!this.isMyClaim()) return;
         if (!this.state.isDrawing.peek()) return;
         e.preventDefault(); // no double-click zoom while drawing
-        // The dblclick's two click events each placed an anchor; the second
-        // is a duplicate of the intended final point — drop it, then close.
-        if (this.state.draft.peek().length > 3) this.state.popPoint();
-        this.closeDraft();
+        this.state.discardDoubleClickDuplicate();
     }
 
     private onContextMenu(e: MapMouseEvent, map: MaplibreMap): void {
@@ -783,7 +783,7 @@ export class DrawToolService {
                 this.deleteSelectedVertices();
             } else if ((this.features?.selectedIds.peek().size ?? 0) > 0) {
                 e.preventDefault();
-                this.deleteSelected();
+                void this.deleteSelected();
             }
         } else if ((e.key === 'i' || e.key === 'I') && !meta) {
             if (this.vertexSelection.peek().size === 2 && this.features?.selected.peek()) {
@@ -863,10 +863,18 @@ export class DrawToolService {
      * (bakes control points into on-curve anchors + handles). One-way:
      * bezier → b-spline is lossy and not offered.
      */
-    convertSelectedToBezier(): void {
+    async convertSelectedToBezier(): Promise<void> {
         const selected = this.features?.selected.peek();
         if (!selected || selected.geometry.curveType !== 'bspline') return;
-        if (!window.confirm('Convert this spline to bezier? The outline is preserved exactly, but the spline control points are replaced by bezier anchors and handles. This cannot be converted back.')) return;
+        const ok = await this.confirm.confirm({
+            title: 'Convert spline to bezier?',
+            body: 'The outline will stay the same, but spline controls will become bezier anchors and handles.',
+            detail: 'This cannot be converted back into the original spline controls.',
+            confirmLabel: 'Convert',
+            tone: 'warning',
+            layout: 'default',
+        });
+        if (!ok) return;
         this.hoverVertex.set(null);
         this.vertexSelection.set(new Set());
         this.commitGeometry(selected.id, bakeBsplineToBezier(selected.geometry));
@@ -876,12 +884,20 @@ export class DrawToolService {
      * Delete the whole selection after confirmation (key or panel button).
      * Bulk deletes are ONE history entry.
      */
-    deleteSelected(): void {
+    async deleteSelected(): Promise<void> {
         const features = this.features;
         const items = features?.selectedFeatures.peek() ?? [];
         if (!features || items.length === 0) return;
         const label = items.length === 1 ? `this ${items[0].type} feature` : `${items.length} features`;
-        if (!window.confirm(`Delete ${label}?`)) return;
+        const ok = await this.confirm.confirm({
+            title: items.length === 1 ? 'Delete feature?' : `Delete ${items.length} features?`,
+            body: `Delete ${label} from the course map.`,
+            detail: items.length >= 5 ? 'Bulk deletes are saved as one history entry.' : '',
+            confirmLabel: items.length === 1 ? 'Delete feature' : 'Delete features',
+            tone: 'danger',
+            layout: items.length >= 5 ? 'review' : 'default',
+        });
+        if (!ok) return;
         this.history.push(items.map(f => ({
             featureId: f.id,
             before: snapshotOf(f),
@@ -1325,29 +1341,15 @@ export class DrawToolService {
             const controls: AnchorPoint[] = [...draft];
             if (cursor) controls.push(lngLatToSweref99tm(cursor));
 
-            let line: Position[];
-            if (draft.length >= 3) {
-                // Enough controls: preview the ACTUAL closed spline curve.
-                const flat = flattenRing({ points: controls }, 0.25, 'bspline');
-                line = flat.map(([x, y]) => toLngLat({ x, y }));
-                if (line.length >= 3) line.push(line[0]); // visually closed
-            } else {
-                // Too few controls for a spline — straight rubber-band.
-                line = flattenOpenPath(draft, 0.25).map(([x, y]) => toLngLat({ x, y }));
-                if (cursor && line.length > 0) line.push([cursor.lng, cursor.lat]);
-            }
+            // In-progress b-spline drawing shows the open control path only,
+            // Inkscape-style: no closed-curve extrapolation and no fill until
+            // the user explicitly closes the ring.
+            const line = flattenOpenPath(controls, 0.25).map(([x, y]) => toLngLat({ x, y }));
             if (line.length >= 2) {
                 features.push({
                     type: 'Feature',
                     properties: { role: 'draft-line' },
                     geometry: { type: 'LineString', coordinates: line },
-                });
-            }
-            if (line.length >= 3) {
-                features.push({
-                    type: 'Feature',
-                    properties: { role: 'draft-fill' },
-                    geometry: { type: 'Polygon', coordinates: [[...line, line[0]]] },
                 });
             }
             draft.forEach((p, i) => {

@@ -26,12 +26,13 @@ export const EDITOR_MAX_ZOOM = 22;
  * mandatory: the server sends immutable cache headers on tile bytes.
  */
 export function tileUrlTemplate(
-    courseId: string,
+    mapKey: string,
     layer: 'ortho' | 'terrain',
     ext: 'jpg' | 'png',
     version: string,
 ): string {
-    return `/tiles/${courseId}/${layer}/{z}/{x}/{y}.${ext}?v=${version}`;
+    // mapKey = the site id (the shared map's on-disk/URL key), not the course id.
+    return `/tiles/${mapKey}/${layer}/{z}/{x}/{y}.${ext}?v=${version}`;
 }
 
 /** Manifest bounds → MapLibre `[west, south, east, north]` array. */
@@ -50,7 +51,7 @@ export function boundsToArray(bounds: TileBounds): [number, number, number, numb
  * runtime-adjustable signal.
  */
 export function buildEditorStyle(
-    courseId: string,
+    mapKey: string,
     manifest: TileManifest,
     version: string,
 ): StyleSpecification {
@@ -60,7 +61,7 @@ export function buildEditorStyle(
         sources: {
             [ORTHO_SOURCE_ID]: {
                 type: 'raster',
-                tiles: [tileUrlTemplate(courseId, 'ortho', 'jpg', version)],
+                tiles: [tileUrlTemplate(mapKey, 'ortho', 'jpg', version)],
                 tileSize: 256,
                 minzoom: manifest.layers.ortho.minzoom,
                 maxzoom: manifest.layers.ortho.maxzoom,
@@ -69,7 +70,7 @@ export function buildEditorStyle(
             },
             [TERRAIN_SOURCE_ID]: {
                 type: 'raster-dem',
-                tiles: [tileUrlTemplate(courseId, 'terrain', 'png', version)],
+                tiles: [tileUrlTemplate(mapKey, 'terrain', 'png', version)],
                 tileSize: 256,
                 minzoom: manifest.layers.terrain.minzoom,
                 maxzoom: manifest.layers.terrain.maxzoom,
@@ -78,7 +79,7 @@ export function buildEditorStyle(
             },
             [HILLSHADE_SOURCE_ID]: {
                 type: 'raster-dem',
-                tiles: [tileUrlTemplate(courseId, 'terrain', 'png', version)],
+                tiles: [tileUrlTemplate(mapKey, 'terrain', 'png', version)],
                 tileSize: 256,
                 minzoom: manifest.layers.terrain.minzoom,
                 maxzoom: manifest.layers.terrain.maxzoom,

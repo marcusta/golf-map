@@ -11,7 +11,7 @@ cd pipeline
 ./setup.sh              # idempotent: creates/reuses .venv, installs requirements.txt
 source .venv/bin/activate
 python -m golfpipe --help
-pytest                  # tests
+pytest                  # tests — synthetic in-memory GeoTIFF fixtures, no mocks; see root TESTING.md
 ```
 
 ## Layout (`golfpipe/`)

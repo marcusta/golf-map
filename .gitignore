@@ -16,3 +16,6 @@ pipeline/**/*.egg-info
 .pytest_cache
 .env
 data/
+
+# ATDD: transient per-feature freeze manifest (written by /atdd, removed on unfreeze)
+.claude/atdd-frozen.json

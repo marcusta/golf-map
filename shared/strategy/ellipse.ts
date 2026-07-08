@@ -65,6 +65,12 @@ export interface DispersionEllipseOptions {
 export interface DispersionEllipse {
     /** Expected landing point: origin + adjusted carry + crosswind drift. */
     center: Vec2;
+    /**
+     * Crosswind drift of the center, meters, positive = shot-right (0 when
+     * calm). Already included in `center`; exposed so callers can show the
+     * hold amount ("wind pushes 9 m right") without re-deriving wind.
+     */
+    driftM: number;
     /** Semi-axis along the shot line (length dispersion / 2), meters. */
     semiLengthM: number;
     /** Semi-axis across the shot line (lateral dispersion / 2), meters. */
@@ -131,7 +137,7 @@ export function dispersionEllipse(options: DispersionEllipseOptions): Dispersion
     }
     polygon.push({ ...polygon[0] }); // explicit closure
 
-    return { center, semiLengthM, semiLateralM, bearingDeg, polygon };
+    return { center, driftM, semiLengthM, semiLateralM, bearingDeg, polygon };
 }
 
 // ---------------------------------------------------------------------------

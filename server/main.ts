@@ -6,6 +6,7 @@ import { log } from '@basics/core/server/logger';
 import { mount } from '@basics/core/server/mount';
 import { createServices } from './services/index';
 import { createMetaApi } from './api/meta.api';
+import { createSitesApi } from './api/sites.api';
 import { createCoursesApi } from './api/courses.api';
 import { createHolesApi } from './api/holes.api';
 import { createTeesApi } from './api/tees.api';
@@ -18,6 +19,9 @@ import { createGamePlansApi } from './api/game-plans.api';
 import { createRoundsApi } from './api/rounds.api';
 import { createAssetsApi } from './api/assets.api';
 import { createAnalysisApi } from './api/analysis.api';
+import { createGreenCalibrationApi } from './api/green-calibration.api';
+import { createPuttEstimateApi } from './api/putt-estimate.api';
+import { createMapBuildApi } from './api/map-build.api';
 import { createTileRoutes } from './services/tiles';
 
 const { app, db, bootstrapAuth } = await createApp<Database>(path.join(import.meta.dir, 'db/migrations'));
@@ -26,6 +30,7 @@ const services = createServices(db);
 const {
     metaService,
     userService,
+    sitesService,
     coursesService,
     holesService,
     teesService,
@@ -38,7 +43,14 @@ const {
     roundsService,
     assetsService,
     analysisService,
+    greenCalibrationService,
+    puttEstimateService,
+    mapBuildService,
 } = services;
+
+// Clear any builds left `running` by a prior process (their in-memory runner
+// died with the restart) so the UI doesn't poll a job that can't progress.
+await mapBuildService.reconcileOrphans();
 
 await bootstrapAuth({
     verify: (u, p) => userService.verify(u, p),
@@ -46,6 +58,7 @@ await bootstrapAuth({
 });
 
 mount(app, '/api', createMetaApi(metaService));
+mount(app, '/api', createSitesApi(sitesService));
 mount(app, '/api', createCoursesApi(coursesService));
 mount(app, '/api', createHolesApi(holesService));
 mount(app, '/api', createTeesApi(teesService));
@@ -58,6 +71,9 @@ mount(app, '/api', createGamePlansApi(gamePlansService));
 mount(app, '/api', createRoundsApi(roundsService));
 mount(app, '/api', createAssetsApi(assetsService));
 mount(app, '/api', createAnalysisApi(analysisService, courseFeaturesService));
+mount(app, '/api', createGreenCalibrationApi(greenCalibrationService));
+mount(app, '/api', createPuttEstimateApi(puttEstimateService));
+mount(app, '/api', createMapBuildApi(mapBuildService));
 
 // Tile routes are deliberately unauthenticated (map clients fetch tiles
 // directly without session cookies) — mounted at the root, not under /api.

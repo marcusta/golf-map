@@ -4,6 +4,7 @@ import { apiFetch } from '@basics/core/client/fetch';
 export interface CourseAsset {
     id: string;
     courseId: string;
+    siteId: null | string;
     kind: 'ortho_cog' | 'dem_cog' | 'svg_source' | 'tile_manifest';
     filename: string;
     metaJson: null | string;
@@ -14,8 +15,9 @@ export interface CourseAsset {
 
 export interface AssetsApi {
     listByCourse(input: { courseId: string }): Promise<CourseAsset[]>;
+    listBySite(input: { siteId: string }): Promise<CourseAsset[]>;
     get(input: { id: string }): Promise<CourseAsset>;
-    register(input: { metaJson?: string; courseId: string; kind: 'ortho_cog' | 'dem_cog' | 'svg_source' | 'tile_manifest'; filename: string }): Promise<CourseAsset>;
+    register(input: { courseId?: string; metaJson?: string; kind: 'ortho_cog' | 'dem_cog' | 'svg_source' | 'tile_manifest'; siteId: string; filename: string }): Promise<CourseAsset>;
     update(input: { metaJson?: string; id: string; version: number }): Promise<CourseAsset>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
 }
@@ -28,6 +30,13 @@ export function createAssetsClient(baseUrl: string): AssetsApi {
                 if (v !== undefined) params.set(k, String(v));
             const qs = params.toString();
             return apiFetch({ method: 'GET', url: `${baseUrl}/assets/by-course${qs ? '?' + qs : ''}` });
+        },
+        async listBySite(input) {
+            const params = new URLSearchParams();
+            for (const [k, v] of Object.entries(input as any))
+                if (v !== undefined) params.set(k, String(v));
+            const qs = params.toString();
+            return apiFetch({ method: 'GET', url: `${baseUrl}/assets/by-site${qs ? '?' + qs : ''}` });
         },
         async get(input) {
             const params = new URLSearchParams();

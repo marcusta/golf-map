@@ -148,7 +148,11 @@ Per shot-capture doc §4. One-tap capture flow, auto club/type/target defaults, 
 Per shot-capture doc §5, formula verbatim (blocked on T1 for display). Distance-band table is
 the headline view. **Done:** per-round SG by category matches hand-computed fixtures.
 
-### T15 · Dispersion fitting job — **GPT-5.5**
+### T15 · Dispersion fitting job — **SUPERSEDED, do not build**
+Superseded 2026-07-07 by [feature-player-model.md](feature-player-model.md) (Phase D), which
+absorbs this scope into the full player model (asymmetric two-piece dispersion + personal ES
+surface). The median/MAD gating below survives there as the foul-shot router (§6.2).
+Original brief kept for reference:
 Per shot-capture doc §6 verbatim — sample gating, wind/elevation back-out via shared functions,
 median/MAD, k=8 shrinkage, D13 unit conversions. Suggestion UI ("based on n shots — apply?") is
 Opus if split. **Done:** synthetic-data tests recover known σ within tolerance; 5-shot case stays

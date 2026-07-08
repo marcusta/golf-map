@@ -15,12 +15,17 @@ const ListAssetsInput = Type.Object({
     courseId: Type.String(),
 });
 
+const ListBySiteInput = Type.Object({
+    siteId: Type.String(),
+});
+
 const GetAssetInput = Type.Object({
     id: Type.String(),
 });
 
 const RegisterAssetInput = Type.Object({
-    courseId: Type.String(),
+    siteId: Type.String(),
+    courseId: Type.Optional(Type.String()),
     kind: AssetKindSchema,
     filename: Type.String(),
     metaJson: Type.Optional(Type.String()),
@@ -47,6 +52,13 @@ export function createAssetsApi(svc: AssetsService) {
             path: '/assets/by-course',
             fn: (input: Static<typeof ListAssetsInput>) => svc.listByCourse(input.courseId),
             schema: ListAssetsInput,
+            middleware: mw,
+        },
+        listBySite: {
+            method: 'GET' as const,
+            path: '/assets/by-site',
+            fn: (input: Static<typeof ListBySiteInput>) => svc.listBySite(input.siteId),
+            schema: ListBySiteInput,
             middleware: mw,
         },
         get: {

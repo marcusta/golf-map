@@ -2,6 +2,7 @@ import type { Kysely } from 'kysely';
 import type { Database } from '../db/schema';
 import { MetaService } from './meta.service';
 import { UserService } from './user.service';
+import { SitesService } from './sites.service';
 import { CoursesService } from './courses.service';
 import { HolesService } from './holes.service';
 import { TeesService } from './tees.service';
@@ -14,6 +15,9 @@ import { GamePlansService } from './game-plans.service';
 import { RoundsService } from './rounds.service';
 import { AssetsService } from './assets.service';
 import { AnalysisService } from './analysis.service';
+import { GreenCalibrationService } from './green-calibration.service';
+import { PuttEstimateService } from './putt-estimate.service';
+import { MapBuildService } from './map-build.service';
 
 export interface ServicesConfig {
     /** Root directory for course assets/tiles on disk. Defaults to DATA_DIR env var, then './data'. */
@@ -25,6 +29,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
 
     const metaService = new MetaService();
     const userService = new UserService(db);
+    const sitesService = new SitesService(db);
     const coursesService = new CoursesService(db);
     const holesService = new HolesService(db);
     const teesService = new TeesService(db);
@@ -37,11 +42,15 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const roundsService = new RoundsService(db);
     const assetsService = new AssetsService(db, dataDir);
     const analysisService = new AnalysisService(db, dataDir);
+    const greenCalibrationService = new GreenCalibrationService(db, analysisService);
+    const puttEstimateService = new PuttEstimateService(db);
+    const mapBuildService = new MapBuildService({ db, assets: assetsService, dataDir });
 
     return {
         db,
         metaService,
         userService,
+        sitesService,
         coursesService,
         holesService,
         teesService,
@@ -54,5 +63,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         roundsService,
         assetsService,
         analysisService,
+        greenCalibrationService,
+        puttEstimateService,
+        mapBuildService,
     };
 }

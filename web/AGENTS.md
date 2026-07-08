@@ -23,3 +23,5 @@ bun run check:client # typecheck
 ```
 
 Prefer the `preview_*` tools to verify UI changes over asking the user to check.
+
+Testing: integration-first, no mocks, units only for hard algorithms. See root [TESTING.md](../TESTING.md).

@@ -58,9 +58,24 @@ export class DrawState {
         this.draft.update(points => [...points, { x: p.x, y: p.y, ...(corner ? { corner: true } : {}) }]);
     }
 
-    /** Drop the last draft anchor (used to swallow the dblclick duplicate). */
+    /** Drop the last draft anchor. */
     popPoint(): void {
         this.draft.update(points => points.slice(0, -1));
+    }
+
+    /**
+     * Double-click is deliberately not a close gesture while drawing: it is
+     * too easy to trigger accidentally during rapid point placement. Browser
+     * dblclick dispatch includes two click events, though, so discard the
+     * duplicate point those clicks leave behind and keep the draft open.
+     */
+    discardDoubleClickDuplicate(): boolean {
+        if (this.mode.peek() !== 'draw') return false;
+        const points = this.draft.peek();
+        if (points.length <= 1) return false;
+        this.redoPoints = [];
+        this.draft.set(points.slice(0, -1));
+        return true;
     }
 
     /**

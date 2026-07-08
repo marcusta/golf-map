@@ -24,6 +24,12 @@ Ground-up rebuild of a golf course map system. Server is source of truth; web bu
 
 `docs/` holds feature proposals (planner strategy engine, yardages, smart caddy) and `docs/reference/`, `docs/prompts/`. Read before touching the planner/strategy layer.
 
+## Testing
+
+See [TESTING.md](TESTING.md) for the strategy. In short: integration-first, **no
+mocks**, unit tests only for hard algorithms, user journeys covered by the E2E
+harness. One service = one service test. No CI — run the suites before pushing.
+
 ## Git
 
 No `Co-Authored-By` lines in commits.
