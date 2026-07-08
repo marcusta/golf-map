@@ -362,6 +362,23 @@ describe('CourseFeaturesService.create — D26 insertion order', () => {
         expect(stack.filter((f) => f.holeId === null).map((f) => f.type)).toEqual(['outside', 'fairway']);
     });
 
+    test('insertion stays correct after remove() leaves a sort_order gap', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const created: Record<string, { id: string; version: number }> = {};
+        for (const type of ['rough', 'fairway', 'bunker', 'water']) {
+            created[type] = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type, geometry: squareGeometry() });
+        }
+        // Gap: [rough(0), bunker(2), water(3)] — remove() does not compact.
+        await svc.remove(created['fairway'].id, created['fairway'].version);
+
+        // Top-ranked path must land ABOVE water, not in the gap below it
+        // (position derives from sort_order, not the stack array index).
+        await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'path', geometry: squareGeometry() });
+        const stack = await svc.listByCourse(TEST_COURSE_ID);
+        expect(stack.filter((f) => f.holeId === null).map((f) => f.type)).toEqual(['rough', 'bunker', 'water', 'path']);
+    });
+
     test('insertion position is scoped per group — a hole-1 fairway does not shift a course-level stack', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);

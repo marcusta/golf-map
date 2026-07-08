@@ -54,13 +54,14 @@ function typeRank(type: string): number {
  * D26 insertion default: scan the group's stack (bottom -> top, i.e.
  * ascending sort_order) top -> bottom looking for the first existing
  * feature whose type rank is <= the new feature's rank, and insert directly
- * above it (one past its index). If none qualifies, insert at the bottom
- * (index 0).
+ * above it (its sort_order + 1 — NOT its array index: remove() leaves
+ * sort_order gaps, so index and sort_order can diverge). If none qualifies,
+ * insert at the bottom (sort_order 0).
  */
-function insertionPosition(groupStack: readonly { type: string }[], newType: string): number {
+function insertionPosition(groupStack: readonly { type: string; sort_order: number }[], newType: string): number {
     const newRank = typeRank(newType);
     for (let i = groupStack.length - 1; i >= 0; i--) {
-        if (typeRank(groupStack[i].type) <= newRank) return i + 1;
+        if (typeRank(groupStack[i].type) <= newRank) return groupStack[i].sort_order + 1;
     }
     return 0;
 }
