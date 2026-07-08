@@ -280,10 +280,14 @@ export class DrawToolService {
      * Alt/Option+click cycle state (D27): repeated alt-clicks at the same
      * point step DOWN the hit stack, wrapping. `ids` is the stack under the
      * cursor at cycle start (topmost-first); `index` is the currently
-     * selected depth. Reset imperatively — on a plain click and on
-     * pointer-move (see `onMouseMove`) — NOT via a reactive effect on the
-     * selection, which would cascade off our own alt-select and clear the
-     * cycle every step (the reactive-cascade gotcha).
+     * selected depth. Reset imperatively on a plain/meta click — NOT via a
+     * reactive effect on the selection, which would cascade off our own
+     * alt-select and clear the cycle every step (the reactive-cascade
+     * gotcha). Deliberately NOT reset on pointer-move: the pointer always
+     * jitters a pixel between two physical clicks (trackpads especially),
+     * which would make the cycle unable to advance. Moving to a spot whose
+     * hit stack differs resets naturally via `advanceAltCycle`'s ids
+     * comparison (Inkscape behaves the same way).
      */
     private altCycle: { ids: string[]; index: number } | null = null;
 
@@ -483,8 +487,9 @@ export class DrawToolService {
 
         // Alt/Option+click cycles the selection DOWN through the hit stack
         // (D27): first click selects the topmost containing feature (same as
-        // a plain click); each subsequent alt-click at the same point steps
-        // one deeper, wrapping. Any pointer-move or plain click resets it.
+        // a plain click); each subsequent alt-click over the same hit stack
+        // steps one deeper, wrapping. A plain/meta click resets it; so does
+        // alt-clicking where the hit stack differs (advanceAltCycle).
         if (e.originalEvent.altKey) {
             const stack = this.hitStack(p);
             if (stack.length === 0) {
@@ -522,7 +527,6 @@ export class DrawToolService {
 
     private onMouseMove(e: MapPointerEvent): void {
         if (!this.isMyClaim()) return;
-        this.altCycle = null; // pointer moved — the alt-click cycle is anchored to one point
 
         if (this.state.isDrawing.peek()) {
             this.cursor.set(e.lngLat);
