@@ -5,7 +5,7 @@ import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import type { ToolContext } from '../editor/tool';
 import type { MapService, MapPointerEvent } from '../map/map.service';
 import { lngLatToSweref99tm } from '../geo/transform';
-import { pointInGeometry, outerRingArea, type FeatureGeometry } from '../geo/bezier';
+import { pointInGeometry, type FeatureGeometry } from '../geo/bezier';
 import {
     computeSlopeGrid,
     computeStats,
@@ -206,20 +206,13 @@ export class AnalysisToolService {
         }
     }
 
-    /** Topmost (smallest) GREEN feature containing the EPSG:3006 point. */
+    /**
+     * Topmost-in-stack GREEN feature containing the EPSG:3006 point (D23):
+     * the same stack rule the draw tool's `hitFeature` and lie classification
+     * use. Greens rarely overlap, but consistency avoids a second rule.
+     */
     private hitGreen(p: { x: number; y: number }): CourseFeature | null {
-        const features = this.ctx?.features.store.items.peek() ?? [];
-        let best: CourseFeature | null = null;
-        let bestArea = Infinity;
-        for (const feature of features) {
-            if (feature.type !== 'green') continue;
-            if (!pointInGeometry(p, feature.geometry)) continue;
-            const area = outerRingArea(feature.geometry);
-            if (area < bestArea) {
-                bestArea = area;
-                best = feature;
-            }
-        }
-        return best;
+        const stack = this.ctx?.features.stackTopDown.peek() ?? [];
+        return stack.find(f => f.type === 'green' && pointInGeometry(p, f.geometry)) ?? null;
     }
 }

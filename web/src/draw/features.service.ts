@@ -161,6 +161,16 @@ export class FeaturesService {
     }
 
     /**
+     * D24 stack key for the feature with `id` (0 when unknown). Public so the
+     * draw tool's transient drag ghosts can carry their original feature's
+     * `stackKey` and z-sort seamlessly with the persistent overlay (T24).
+     */
+    stackKeyForId(id: string): number {
+        const f = this.store.items.peek().find(item => item.id === id);
+        return f ? this.stackKeyFor(f) : 0;
+    }
+
+    /**
      * A group's features (course-level when `holeId` is null) ordered
      * bottom-to-top by `sortOrder` (D23). Not memoized — cheap filter+sort
      * over one group, called on demand (panel row lists, reorder ops).

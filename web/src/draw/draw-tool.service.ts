@@ -12,7 +12,6 @@ import {
     flattenRing,
     nearestOnRing,
     pointInGeometry,
-    outerRingArea,
     type AnchorPoint,
     type FeatureGeometry,
     type Point,
@@ -47,7 +46,6 @@ import {
     SELECTION_COLOR,
     SURROUND_PAIRINGS,
     typeColorExpression,
-    typeSortKeyExpression,
     type FeatureType,
 } from './feature-palette';
 
@@ -195,6 +193,36 @@ interface Marquee {
  *   cancels. Double-click is swallowed as an accidental duplicate point, not
  *   as a close gesture.
  */
+/**
+ * Visible features containing `p`, preserving the given topmost-first stack
+ * order (D23). The one hit rule the draw tool shares with render / lie: pass
+ * `FeaturesService.stackTopDown`, the hidden-type set, and the EPSG:3006
+ * point; `hitFeature` is the first element, `hitStack` the whole list.
+ * Pure + exported for tests (the tool itself is map-coupled).
+ */
+export function containingTopDown(
+    stackTopDown: readonly CourseFeature[],
+    hidden: ReadonlySet<string>,
+    p: Point,
+): CourseFeature[] {
+    return stackTopDown.filter(f => !hidden.has(f.type) && pointInGeometry(p, f.geometry));
+}
+
+/**
+ * Next Alt/Option+click cycle state (D27). Same stack as last time → step one
+ * deeper, wrapping at the bottom; a different stack (or no prior cycle) → the
+ * topmost (index 0). Pure + exported for tests.
+ */
+export function advanceAltCycle(
+    prev: { ids: string[]; index: number } | null,
+    ids: string[],
+): { ids: string[]; index: number } {
+    const same = prev !== null
+        && prev.ids.length === ids.length
+        && prev.ids.every((id, i) => id === ids[i]);
+    return { ids, index: same ? (prev!.index + 1) % ids.length : 0 };
+}
+
 export class DrawToolService {
     private confirm = di.get(ConfirmService);
     readonly state = new DrawState();
@@ -247,6 +275,17 @@ export class DrawToolService {
     private moveDrag: MoveDrag | null = null;
     private suppressClick = false;
     private previewAdded = false;
+
+    /**
+     * Alt/Option+click cycle state (D27): repeated alt-clicks at the same
+     * point step DOWN the hit stack, wrapping. `ids` is the stack under the
+     * cursor at cycle start (topmost-first); `index` is the currently
+     * selected depth. Reset imperatively — on a plain click and on
+     * pointer-move (see `onMouseMove`) — NOT via a reactive effect on the
+     * selection, which would cascade off our own alt-select and clear the
+     * cycle every step (the reactive-cascade gotcha).
+     */
+    private altCycle: { ids: string[]; index: number } | null = null;
 
     /**
      * The armed offset/simplify result for the selected feature (dashed
@@ -436,8 +475,27 @@ export class DrawToolService {
 
         // Cmd/Ctrl+click toggles multi-select membership.
         if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) {
+            this.altCycle = null;
             const hit = this.hitFeature(p);
             if (hit) this.features?.toggleSelected(hit.id);
+            return;
+        }
+
+        // Alt/Option+click cycles the selection DOWN through the hit stack
+        // (D27): first click selects the topmost containing feature (same as
+        // a plain click); each subsequent alt-click at the same point steps
+        // one deeper, wrapping. Any pointer-move or plain click resets it.
+        if (e.originalEvent.altKey) {
+            const stack = this.hitStack(p);
+            if (stack.length === 0) {
+                this.altCycle = null;
+                this.hoverVertex.set(null);
+                this.features?.select(null);
+                return;
+            }
+            this.altCycle = advanceAltCycle(this.altCycle, stack.map(f => f.id));
+            this.hoverVertex.set(null);
+            this.features?.select(this.altCycle.ids[this.altCycle.index]);
             return;
         }
 
@@ -455,6 +513,7 @@ export class DrawToolService {
                 return;
             }
         }
+        this.altCycle = null; // plain click resets alt-cycling to topmost
         const hit = this.hitFeature(p);
         const prev = this.features?.selectedIds.peek() ?? new Set();
         if (!hit || !(prev.size === 1 && prev.has(hit.id))) this.hoverVertex.set(null);
@@ -463,6 +522,7 @@ export class DrawToolService {
 
     private onMouseMove(e: MapPointerEvent): void {
         if (!this.isMyClaim()) return;
+        this.altCycle = null; // pointer moved — the alt-click cycle is anchored to one point
 
         if (this.state.isDrawing.peek()) {
             this.cursor.set(e.lngLat);
@@ -1196,24 +1256,22 @@ export class DrawToolService {
     // ── Hit testing ───────────────────────────────────────────────────────
 
     /**
-     * Topmost (smallest outer ring) VISIBLE feature containing the
-     * EPSG:3006 point. Hidden types are not selectable.
+     * Topmost-in-stack VISIBLE feature containing the EPSG:3006 point (D23):
+     * the first element of `hitStack` — the SAME rule render, `hitGreen` and
+     * lie classification now share. Hidden types are not selectable.
      */
     private hitFeature(p: Point): CourseFeature | null {
-        if (!this.features) return null;
-        const hidden = this.features.hiddenTypes.peek();
-        let best: CourseFeature | null = null;
-        let bestArea = Infinity;
-        for (const feature of this.features.store.items.peek()) {
-            if (hidden.has(feature.type)) continue;
-            if (!pointInGeometry(p, feature.geometry)) continue;
-            const area = outerRingArea(feature.geometry);
-            if (area < bestArea) {
-                bestArea = area;
-                best = feature;
-            }
-        }
-        return best;
+        return this.hitStack(p)[0] ?? null;
+    }
+
+    /**
+     * ALL visible features containing `p`, topmost-first (D23 stack order).
+     * Drives Alt/Option+click cycling (D27) — repeated alt-clicks step down
+     * this list. `hitFeature` is just its first element.
+     */
+    private hitStack(p: Point): CourseFeature[] {
+        if (!this.features) return [];
+        return containingTopDown(this.features.stackTopDown.peek(), this.features.hiddenTypes.peek(), p);
     }
 
     /**
@@ -1397,7 +1455,14 @@ export class DrawToolService {
             for (const ghost of ghosts) {
                 features.push({
                     type: 'Feature',
-                    properties: { role: 'ghost', type: ghost.type },
+                    // Carry the original feature's D24 stackKey so the ghost
+                    // z-sorts identically to the persistent overlay (the
+                    // ghost-fill layer sorts on it, not the type heuristic).
+                    properties: {
+                        role: 'ghost',
+                        type: ghost.type,
+                        stackKey: this.features?.stackKeyForId(ghost.id) ?? 0,
+                    },
                     geometry: {
                         type: 'Polygon',
                         coordinates: geometryToWgs84Rings(ghost.geometry),
@@ -1509,7 +1574,7 @@ function previewLayers(): OverlayLayerSpec[] {
             id: 'draw-ghost-fill',
             type: 'fill',
             filter: role('ghost'),
-            layout: { 'fill-sort-key': typeSortKeyExpression() as never },
+            layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
             paint: {
                 'fill-color': typeColorExpression('fill') as never,
                 'fill-opacity': 0.4,

@@ -33,6 +33,12 @@ export interface RoundSgHoleContext {
     green: Green | null;
     /** All course features (any hole) — buildLieMap resolves containment itself. */
     features: readonly CourseFeature[];
+    /**
+     * Hole id → number for the D24 stack rank (buildLieMap). Optional: omit
+     * when features are single-group / course-level, in which case `sortOrder`
+     * alone resolves the stack (see buildLieMap).
+     */
+    holeNumberById?: ReadonlyMap<string, number>;
 }
 
 /** shot_type as recorded in the schema (§3) narrowed to the core's taxonomy. */
@@ -67,7 +73,7 @@ export function buildHoleRoundForSg(
     if (holeShots.length === 0 || !ctx.green) return null;
 
     const ordered = [...holeShots].sort((a, b) => a.sortOrder - b.sortOrder);
-    const lieMap = buildLieMap(ctx.features);
+    const lieMap = buildLieMap(ctx.features, ctx.holeNumberById);
     const holeXy = wgs84ToSweref99tm(ctx.green.centerLat, ctx.green.centerLon);
 
     const strokes: RecordedStroke[] = ordered.map((shot, i) => {
@@ -108,12 +114,14 @@ export function buildRoundForSg(
     features: readonly CourseFeature[],
 ): HoleRound[] {
     const byHole = groupShotsByHole(round);
+    const holeNumberById = new Map<string, number>();
+    for (const [number, hole] of holesByNumber) holeNumberById.set(hole.id, number);
     const out: HoleRound[] = [];
     for (const [holeNumber, shots] of byHole) {
         const hole = holesByNumber.get(holeNumber);
         if (!hole) continue;
         const green = greenByHoleId.get(hole.id) ?? null;
-        const holeRound = buildHoleRoundForSg(shots, { hole, green, features });
+        const holeRound = buildHoleRoundForSg(shots, { hole, green, features, holeNumberById });
         if (holeRound) out.push(holeRound);
     }
     return out;

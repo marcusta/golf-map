@@ -358,7 +358,10 @@ export class PlannerToolService {
      * re-flattened when features actually change, never per drag frame.
      */
     readonly lieMap = new Computed<LieMap>(() =>
-        buildLieMap(this.features.store.items.get()));
+        buildLieMap(
+            this.features.store.items.get(),
+            new Map(this.courseDetail.holes.get().map(h => [h.id, h.number])),
+        ));
 
     /** Green centre as EPSG:3006 Vec2 for the aim optimiser (null = no green). */
     private greenCenterVec(): Vec2 | null {

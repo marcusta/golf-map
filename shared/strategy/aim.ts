@@ -6,9 +6,11 @@
 // Pure planar math in projected meters (EPSG:3006-style {x, y}); bearings
 // compass degrees (0 = north, clockwise); wind per wind.ts (m/s, FROM).
 // The caller pre-flattens all classified surface rings (fairway, green,
-// bunkers, water, …) and passes them in — same purity contract as
-// corridor.ts. Ring kinds are feature-type strings mapped via
-// lieFromFeatureType(); no containing ring → 'rough' (decision D17).
+// bunkers, water, …) and passes them in TOPMOST-FIRST — same purity contract
+// as corridor.ts. Array order IS priority order: the FIRST containing ring
+// wins (decision D23, which amends D17's smallest-area rule; this file no
+// longer re-sorts). Ring kinds are feature-type strings mapped via
+// lieFromFeatureType(); no containing ring → 'rough'.
 //
 // Model decisions this file implements (see docs/decisions-strategy-*.md):
 //  - D13 σ semantics: ellipse semi-axes are sigmaScale·σ, default 2
@@ -38,8 +40,11 @@ export interface AimOptions {
     targetBearingDeg: number;
     /**
      * ALL classified surface rings for the hole (fairway, green, rough,
-     * bunkers, water, outside …), pre-flattened by the caller. Nesting is
-     * resolved smallest-area-wins (D17); points in no ring lie as 'rough'.
+     * bunkers, water, outside …), pre-flattened by the caller and ordered
+     * TOPMOST-FIRST. Array order IS priority order: the first containing ring
+     * classifies the point (D23 — this function does NOT re-sort). `lie-map.ts`
+     * is the production caller and supplies D24 stack order. Points in no ring
+     * lie as 'rough'.
      */
     surfaces: readonly FlatRing[];
     /** Remaining distance for each outcome is measured to this point. */
@@ -109,11 +114,11 @@ export function optimizeAim(options: AimOptions): AimResult {
     const fallbackLie = options.fallbackLie ?? 'rough';
     const sweepDeg = options.sweepDeg ?? defaultSweepDeg(club);
 
+    // Caller passes `surfaces` topmost-first (D23): keep that order, the first
+    // containing ring wins. NO area re-sort (the pre-D23 nesting rule).
     const classified = surfaces
         .filter((ring) => ring.points.length >= 3)
         .map((ring) => classifiable(ring));
-    // Smallest-area-first so the FIRST containing ring wins nesting (D17).
-    classified.sort((a, b) => a.areaM2 - b.areaM2);
 
     const normals = standardNormalPairs(sampleCount);
     const tailCount = Math.max(1, Math.ceil(sampleCount * 0.2));
@@ -190,13 +195,13 @@ export function optimizeAim(options: AimOptions): AimResult {
 }
 
 // ---------------------------------------------------------------------------
-// Lie classification (D17): bbox pre-reject, then smallest containing ring.
+// Lie classification (D23): bbox pre-reject, then FIRST containing ring in
+// the caller's topmost-first order (no area sort).
 // ---------------------------------------------------------------------------
 
 interface ClassifiedRing {
     ring: FlatRing;
     lie: Lie;
-    areaM2: number;
     minX: number;
     maxX: number;
     minY: number;
@@ -205,25 +210,20 @@ interface ClassifiedRing {
 
 function classifiable(ring: FlatRing): ClassifiedRing {
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    let twiceArea = 0;
-    const pts = ring.points;
-    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-        const p = pts[i];
+    for (const p of ring.points) {
         if (p.x < minX) minX = p.x;
         if (p.x > maxX) maxX = p.x;
         if (p.y < minY) minY = p.y;
         if (p.y > maxY) maxY = p.y;
-        twiceArea += (pts[j].x + p.x) * (pts[j].y - p.y);
     }
     return {
         ring,
         lie: lieFromFeatureType(ring.kind),
-        areaM2: Math.abs(twiceArea) / 2,
         minX, maxX, minY, maxY,
     };
 }
 
-/** Rings are pre-sorted smallest-area-first, so first hit = smallest. */
+/** Rings are in the caller's topmost-first order (D23), so first hit = topmost. */
 function classifyLie(p: Vec2, rings: readonly ClassifiedRing[], fallback: Lie): Lie {
     for (const r of rings) {
         if (p.x < r.minX || p.x > r.maxX || p.y < r.minY || p.y > r.maxY) continue;

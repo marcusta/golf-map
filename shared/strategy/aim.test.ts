@@ -80,11 +80,23 @@ describe('optimizeAim', () => {
         expect(withGreen.best.expectedStrokes).toBeLessThan(allRough.best.expectedStrokes);
     });
 
-    test('nesting resolves smallest-area-first: bunker inside fairway wins (D17)', () => {
+    test('nesting resolves by caller order, topmost-first: bunker above fairway wins (D23)', () => {
+        // D23: optimizeAim no longer re-sorts by area — the caller passes
+        // surfaces topmost-first, so a nested bunker must come BEFORE the
+        // fairway that contains it to own those sample points.
+        const fairway = rect(-50, 50, 100, 200, 'fairway');
+        const bunker = rect(-16, 16, 139, 161, 'bunker');
+        const result = optimizeAim({ ...base, surfaces: [bunker, fairway], candidates: 1 });
+        expect(result.breakdown.sand ?? 0).toBeGreaterThan(0.95);
+    });
+
+    test('caller order IS priority: the same rings in fairway-first order classify as fairway (D23)', () => {
+        // The exact inverse — proves the re-sort is truly gone: if the caller
+        // hands the containing fairway first, IT wins (no area tiebreak).
         const fairway = rect(-50, 50, 100, 200, 'fairway');
         const bunker = rect(-16, 16, 139, 161, 'bunker');
         const result = optimizeAim({ ...base, surfaces: [fairway, bunker], candidates: 1 });
-        expect(result.breakdown.sand ?? 0).toBeGreaterThan(0.95);
+        expect(result.breakdown.fairway ?? 0).toBeGreaterThan(0.95);
     });
 
     test('single candidate: sweep collapses to the target bearing', () => {
