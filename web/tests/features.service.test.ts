@@ -1,5 +1,5 @@
 import { test, expect, describe, afterEach } from 'bun:test';
-import { di } from '@basics/core/client/core';
+import { di, Signal } from '@basics/core/client/core';
 import { ApiError } from '@basics/core/client/api-error';
 import { _reset } from '@basics/core/client/error-report';
 import { FeaturesService, geometryToWgs84Rings, shiftBlock, moveBlockToEdge } from '../src/draw/features.service';
@@ -219,6 +219,74 @@ describe('patchLocal', () => {
         expect(svc.store.items.get()[0].version).toBe(1);
         const p = svc.store.items.get()[0].geometry.rings[0].points[0];
         expect(p.x).toBeCloseTo(base.x - 25, 6);
+    });
+});
+
+describe('nice rendering', () => {
+    test('creates a cold-start overlay with nice paint instead of briefly defaulting to Draw paint', () => {
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        let layers: Array<{ id: string; paint?: Record<string, unknown> }> = [];
+        const map = {
+            ready: new Signal(false),
+            map: new Signal(null),
+            addOverlayLayer: (_id: string, _data: unknown, nextLayers: Array<{ id: string; paint?: Record<string, unknown> }>) => {
+                layers = nextLayers;
+            },
+            updateOverlayData: () => {},
+            removeOverlayLayer: () => {},
+        };
+
+        const dispose = svc.attachOverlay(map as never);
+        expect(layers).toHaveLength(0);
+
+        map.ready.set(true);
+
+        const fill = layers.find(layer => layer.id === 'features-fill')!;
+        const outline = layers.find(layer => layer.id === 'features-outline')!;
+        const rulesOutline = layers.find(layer => layer.id === 'features-rules-outline')!;
+        expect(fill.paint?.['fill-opacity']).toEqual(['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0.4]);
+        expect(outline.paint?.['line-opacity']).toEqual(['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0]);
+        expect(rulesOutline.paint?.['line-opacity']).toEqual(['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0]);
+
+        dispose();
+    });
+
+    test('blends the proven fill layer with the photo while all feature strokes stay hidden', () => {
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        const paintCalls: Array<{ layer: string; property: string; value: unknown }> = [];
+        const rawMap = {
+            setPaintProperty(layer: string, property: string, value: unknown) {
+                paintCalls.push({ layer, property, value });
+            },
+            setFilter: () => {},
+            getSource: () => ({ type: 'geojson' }),
+        };
+        const map = {
+            ready: new Signal(true),
+            map: new Signal(rawMap),
+            addOverlayLayer: () => {},
+            updateOverlayData: () => {},
+            removeOverlayLayer: () => {},
+        };
+
+        const dispose = svc.attachOverlay(map as never);
+
+        expect(paintCalls.slice(-3).map(call => [call.layer, call.property, call.value])).toEqual([
+            ['features-fill', 'fill-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0.4]],
+            ['features-outline', 'line-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0]],
+            ['features-rules-outline', 'line-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0]],
+        ]);
+
+        svc.niceRendering.set(false);
+        expect(paintCalls.slice(-3).map(call => [call.layer, call.property, call.value])).toEqual([
+            ['features-fill', 'fill-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0.86]],
+            ['features-outline', 'line-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 1]],
+            ['features-rules-outline', 'line-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 1]],
+        ]);
+
+        dispose();
     });
 });
 

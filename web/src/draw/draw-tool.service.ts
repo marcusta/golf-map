@@ -43,6 +43,7 @@ import {
 } from './draw-state';
 import { EditHistory, snapshotOf, type HistoryEntry } from './history';
 import {
+    DRAW_FILL_OPACITY,
     SELECTION_COLOR,
     SURROUND_PAIRINGS,
     typeColorExpression,
@@ -339,6 +340,10 @@ export class DrawToolService {
     activate(ctx: ToolContext): void {
         this.ctx = ctx;
         this.features = ctx.features;
+        // Draw means the whole active tool span, not only a currently armed
+        // polygon. Its high-contrast vector palette makes existing surfaces
+        // legible before the first tracing click.
+        ctx.features.niceRendering.set(false);
         // QA hook (same pattern as MapService's window.__map): expose the
         // instance for scripted/visual verification tooling. Not public API.
         (window as unknown as Record<string, unknown>).__drawTool = this;
@@ -423,6 +428,7 @@ export class DrawToolService {
         this.cursor.set(null);
         this.clearTransientOpState();
         this.features?.select(null);
+        this.features?.niceRendering.set(true);
         this.suppressClick = false;
         this.ctx = null;
     }
@@ -1580,8 +1586,8 @@ function previewLayers(): OverlayLayerSpec[] {
             filter: role('ghost'),
             layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
             paint: {
-                'fill-color': typeColorExpression('fill') as never,
-                'fill-opacity': 0.4,
+                'fill-color': typeColorExpression('draw') as never,
+                'fill-opacity': DRAW_FILL_OPACITY,
             },
         },
         {

@@ -10,8 +10,12 @@ export const FEATURE_TYPES = [
     'semi_rough',
     'rough',
     'deep_rough',
+    'trees',
     'water',
     'water_creek',
+    'penalty_yellow',
+    'penalty_red',
+    'oob',
     'path',
     'outside',
 ] as const;
@@ -23,27 +27,39 @@ export interface FeatureStyle {
     label: string;
     /** Fill color (semi-transparent fill is applied via fill-opacity). */
     fill: string;
+    /** High-contrast fill used only while actively drawing/editing. */
+    draw: string;
     /** Outline color (full strength). */
     outline: string;
 }
 
 /** Golf palette: greens light, fairway mid, roughs darkening, sand, blues. */
 export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
-    green: { label: 'Green', fill: '#8fe0a0', outline: '#4fa863' },
-    tee: { label: 'Tee', fill: '#63b578', outline: '#3c8a52' },
-    fairway: { label: 'Fairway', fill: '#4d9e58', outline: '#2f7d43' },
-    semi_rough: { label: 'Semi rough', fill: '#79a860', outline: '#557f41' },
-    rough: { label: 'Rough', fill: '#55803f', outline: '#3b5f2b' },
-    deep_rough: { label: 'Deep rough', fill: '#3c5c2e', outline: '#294420' },
-    bunker: { label: 'Bunker', fill: '#e9d8a0', outline: '#c4a95e' },
-    water: { label: 'Water', fill: '#4f8fd0', outline: '#2f6aa8' },
-    water_creek: { label: 'Creek', fill: '#6fb1e0', outline: '#4585b8' },
-    path: { label: 'Path', fill: '#b6a68d', outline: '#8f7f66' },
-    outside: { label: 'Outside', fill: '#9097a0', outline: '#6a7178' },
+    green: { label: 'Green', fill: '#72dc8e', draw: '#62ef85', outline: '#389657' },
+    tee: { label: 'Tee', fill: '#48ad66', draw: '#31d35a', outline: '#287a45' },
+    fairway: { label: 'Fairway', fill: '#269343', draw: '#0ba83b', outline: '#1d6c33' },
+    semi_rough: { label: 'Semi rough', fill: '#79a550', draw: '#91b849', outline: '#4d7433' },
+    rough: { label: 'Rough', fill: '#48732e', draw: '#4d7f24', outline: '#2f5420' },
+    deep_rough: { label: 'Deep rough', fill: '#294f23', draw: '#244b1d', outline: '#193b17' },
+    trees: { label: 'Trees', fill: '#173d27', draw: '#103c23', outline: '#0e2b19' },
+    bunker: { label: 'Bunker', fill: '#ead18b', draw: '#f0cf70', outline: '#b68f39' },
+    water: { label: 'Water', fill: '#367fcc', draw: '#2088e8', outline: '#235d9e' },
+    water_creek: { label: 'Creek', fill: '#65abe0', draw: '#62baf4', outline: '#367ba9' },
+    penalty_yellow: { label: 'Yellow penalty', fill: '#f6d94c', draw: '#f6d94c', outline: '#d8a800' },
+    penalty_red: { label: 'Red penalty', fill: '#ef5b5b', draw: '#ef5b5b', outline: '#bf2727' },
+    oob: { label: 'OOB', fill: '#f5f5f0', draw: '#f5f5f0', outline: '#1f2933' },
+    path: { label: 'Path', fill: '#b49a70', draw: '#c1a06b', outline: '#796044' },
+    outside: { label: 'Outside', fill: '#7f8994', draw: '#6f7c89', outline: '#525d68' },
 };
 
 /** Selected-feature highlight color (outline + handles). */
 export const SELECTION_COLOR = '#ffd43b';
+
+/** Raw vector-fill opacity while tracing or dragging in the draw tool. */
+export const DRAW_FILL_OPACITY = 0.86;
+
+/** Photo visibility in the stroke-free planning/nice view. */
+export const NICE_FILL_OPACITY = 0.4;
 
 /**
  * Fixed golf z-ordering of feature TYPES, bottom → top: broad ground types
@@ -63,9 +79,13 @@ export const TYPE_Z_ORDER: readonly FeatureType[] = [
     'fairway',
     'tee',
     'green',
+    'trees',
     'bunker',
     'water',
     'water_creek',
+    'penalty_yellow',
+    'penalty_red',
+    'oob',
     'path',
 ];
 
@@ -92,6 +112,10 @@ export const SURROUND_PAIRINGS: Record<FeatureType, { targetType: FeatureType; e
     bunker: null, // no surround for bunkers
     water: null, // no surround for water
     water_creek: null, // no surround for creeks
+    trees: null, // trees overlay the underlying surface
+    penalty_yellow: null, // rules overlays don't imply a surface surround
+    penalty_red: null, // rules overlays don't imply a surface surround
+    oob: null, // rules overlays don't imply a surface surround
     deep_rough: null, // already the outermost grass type
     path: null, // no surround for paths
     outside: null, // no surround for outside
@@ -101,7 +125,7 @@ export const SURROUND_PAIRINGS: Record<FeatureType, { targetType: FeatureType; e
  * MapLibre `match` expression on the feature's `type` property → color.
  * `key` picks fill or outline colors; unknown types fall back to gray.
  */
-export function typeColorExpression(key: 'fill' | 'outline'): unknown[] {
+export function typeColorExpression(key: 'fill' | 'draw' | 'outline'): unknown[] {
     const expr: unknown[] = ['match', ['get', 'type']];
     for (const type of FEATURE_TYPES) {
         expr.push(type, FEATURE_STYLES[type][key]);

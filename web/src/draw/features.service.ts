@@ -8,8 +8,9 @@ import type { FilterSpecification } from 'maplibre-gl';
 import { flattenRing, type FeatureGeometry } from '../geo/bezier';
 import { sweref99tmToWgs84 } from '../geo/transform';
 import type { MapService } from '../map/map.service';
-import { typeColorExpression, SELECTION_COLOR } from './feature-palette';
+import { DRAW_FILL_OPACITY, NICE_FILL_OPACITY, typeColorExpression, SELECTION_COLOR } from './feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
+import { resolveSurfaceStack } from './resolved-surface-stack';
 
 /**
  * D24 global composition key: `groupRank * 4096 + sortOrder`, groupRank 0 =
@@ -75,6 +76,11 @@ export class FeaturesService {
      * toggles). Purely client-side view state — never persisted.
      */
     readonly hiddenTypes = new Signal<ReadonlySet<string>>(new Set());
+    /**
+     * Nice mode is a photo-blended, stroke-free vector tint. Draw mode uses
+     * a high-contrast palette with visible feature boundaries.
+     */
+    readonly niceRendering = new Signal(true);
     readonly loading = new Signal(false);
     readonly error = new Signal<RequestError | null>(null);
     /** True while a create/update/remove is in flight (autosave indicator). */
@@ -373,12 +379,21 @@ export class FeaturesService {
             ['case', ['boolean', ['feature-state', 'dragging'], false], 0, visible];
         const disposeData = effect(() => {
             const ready = map.ready.get();
-            const data = this.geojson.get();
+            const nice = this.niceRendering.get();
+            const rawData = this.geojson.get();
+            const data = nice ? resolveSurfaceStack(rawData) : rawData;
             if (!ready) {
                 added = false; // overlay died with the map
                 return;
             }
             if (!added) {
+                // Set the correct paint at layer creation too. On a cold map
+                // load, the tint effect can observe `ready` before this
+                // effect finishes adding layers; `added` is deliberately not
+                // reactive, so that missed pass cannot be our only initial
+                // configuration path.
+                const fillOpacity = draggingHide(nice ? NICE_FILL_OPACITY : DRAW_FILL_OPACITY);
+                const boundaryOpacity = draggingHide(nice ? 0 : 1);
                 map.addOverlayLayer(FEATURES_OVERLAY_ID, data, [
                     {
                         id: 'features-fill',
@@ -388,18 +403,33 @@ export class FeaturesService {
                         // stack features render on top within this one layer.
                         layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
                         paint: {
-                            'fill-color': typeColorExpression('fill') as never,
-                            'fill-opacity': draggingHide(0.4) as never,
+                            'fill-color': typeColorExpression('draw') as never,
+                            'fill-opacity': fillOpacity as never,
                         },
                     },
                     {
                         id: 'features-outline',
                         type: 'line',
+                        filter: surfaceOutlineFilter(),
                         layout: { 'line-sort-key': ['get', 'stackKey'] as never },
                         paint: {
                             'line-color': typeColorExpression('outline') as never,
                             'line-width': 1.5,
-                            'line-opacity': draggingHide(1) as never,
+                            'line-opacity': boundaryOpacity as never,
+                        },
+                    },
+                    {
+                        // Rules do not belong to the material-tint texture.
+                        // Their boundaries stay visible while drawing and are
+                        // hidden with every other feature boundary in nice mode.
+                        id: 'features-rules-outline',
+                        type: 'line',
+                        filter: rulesOutlineFilter(),
+                        layout: { 'line-sort-key': ['get', 'stackKey'] as never },
+                        paint: {
+                            'line-color': typeColorExpression('outline') as never,
+                            'line-width': 1.5,
+                            'line-opacity': boundaryOpacity as never,
                         },
                     },
                     {
@@ -423,9 +453,30 @@ export class FeaturesService {
             if (!map.ready.get() || !added) return;
             map.map.get()?.setFilter('features-selected', selectionFilter(ids));
         });
+        const disposeTint = effect(() => {
+            // Nice mode uses the proven MapLibre fill path as a baseline:
+            // same data and D24 sort order as Draw, photo-blended opacity,
+            // and no strokes.
+            const ready = map.ready.get();
+            const nice = this.niceRendering.get();
+            if (!ready || !added) return;
+            const rawMap = map.map.get();
+            if (!rawMap) return;
+
+            if (nice) {
+                rawMap.setPaintProperty('features-fill', 'fill-opacity', draggingHide(NICE_FILL_OPACITY) as never);
+                rawMap.setPaintProperty('features-outline', 'line-opacity', draggingHide(0) as never);
+                rawMap.setPaintProperty('features-rules-outline', 'line-opacity', draggingHide(0) as never);
+            } else {
+                rawMap.setPaintProperty('features-fill', 'fill-opacity', draggingHide(DRAW_FILL_OPACITY) as never);
+                rawMap.setPaintProperty('features-outline', 'line-opacity', draggingHide(1) as never);
+                rawMap.setPaintProperty('features-rules-outline', 'line-opacity', draggingHide(1) as never);
+            }
+        });
         return () => {
             disposeData();
             disposeSelection();
+            disposeTint();
             this.overlayMap = null;
             if (added) map.removeOverlayLayer(FEATURES_OVERLAY_ID);
         };
@@ -444,7 +495,8 @@ export class FeaturesService {
         const svc = this.overlayMap;
         const map = svc?.ready.peek() ? svc.map.peek() : null;
         if (!map || !map.getSource(FEATURES_OVERLAY_ID)) return;
-        for (const id of ids) {
+        const featureIds = [...ids];
+        for (const id of featureIds) {
             if (dragging) map.setFeatureState({ source: FEATURES_OVERLAY_ID, id }, { dragging: true });
             else map.removeFeatureState({ source: FEATURES_OVERLAY_ID, id }, 'dragging');
         }
@@ -454,6 +506,16 @@ export class FeaturesService {
 /** features-selected layer filter for a selection set. */
 function selectionFilter(ids: ReadonlySet<string>): FilterSpecification {
     return ['in', ['get', 'id'], ['literal', [...ids]]] as unknown as FilterSpecification;
+}
+
+const RULES_OUTLINE_TYPES = ['penalty_yellow', 'penalty_red', 'oob'];
+
+function rulesOutlineFilter(): FilterSpecification {
+    return ['in', ['get', 'type'], ['literal', RULES_OUTLINE_TYPES]] as unknown as FilterSpecification;
+}
+
+function surfaceOutlineFilter(): FilterSpecification {
+    return ['!', rulesOutlineFilter()] as unknown as FilterSpecification;
 }
 
 /**

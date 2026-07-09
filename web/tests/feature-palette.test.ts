@@ -1,10 +1,22 @@
 import { test, expect, describe } from 'bun:test';
 import {
     FEATURE_TYPES,
+    DRAW_FILL_OPACITY,
+    NICE_FILL_OPACITY,
     SURROUND_PAIRINGS,
     TYPE_Z_ORDER,
     typeSortKeyExpression,
 } from '../src/draw/feature-palette';
+
+test('draw-mode fills carry enough color to distinguish surface types while tracing', () => {
+    expect(DRAW_FILL_OPACITY).toBeGreaterThan(0.8);
+    expect(DRAW_FILL_OPACITY).toBeLessThan(0.9);
+});
+
+test('nice-mode fill opacity keeps the orthophoto visible', () => {
+    expect(NICE_FILL_OPACITY).toBe(0.4);
+});
+
 
 describe('SURROUND_PAIRINGS (ported prototype table)', () => {
     test('exact pairing values', () => {
@@ -16,7 +28,18 @@ describe('SURROUND_PAIRINGS (ported prototype table)', () => {
     });
 
     test('types without a golf-sensible surround map to null', () => {
-        for (const type of ['bunker', 'water', 'water_creek', 'deep_rough', 'path', 'outside'] as const) {
+        for (const type of [
+            'bunker',
+            'water',
+            'water_creek',
+            'deep_rough',
+            'trees',
+            'penalty_red',
+            'penalty_yellow',
+            'oob',
+            'path',
+            'outside',
+        ] as const) {
             expect(SURROUND_PAIRINGS[type]).toBeNull();
         }
     });
@@ -46,7 +69,8 @@ describe('TYPE_Z_ORDER', () => {
         expect([...TYPE_Z_ORDER].sort()).toEqual([...FEATURE_TYPES].sort());
         expect(TYPE_Z_ORDER).toEqual([
             'outside', 'deep_rough', 'rough', 'semi_rough', 'fairway',
-            'tee', 'green', 'bunker', 'water', 'water_creek', 'path',
+            'tee', 'green', 'trees', 'bunker', 'water', 'water_creek',
+            'penalty_yellow', 'penalty_red', 'oob', 'path',
         ]);
     });
 
