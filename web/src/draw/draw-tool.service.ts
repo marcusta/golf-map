@@ -270,6 +270,13 @@ export class DrawToolService {
      * source are untouched until the mouseup commit.
      */
     private dragGhost = new Signal<GhostFeature[] | null>(null);
+    /**
+     * Space held down (reactive — drives the cursor + the momentary box-select
+     * override). While true, a left-drag rubber-bands features even off a
+     * shape, exactly like the sticky `state.boxSelect` mode but without
+     * toggling. Tracked on window keydown/keyup for the tool's active span.
+     */
+    private spaceHeld = new Signal(false);
     private ctx: ToolContext | null = null;
     private features: FeaturesService | null = null;
     private drag: DragTarget | null = null;
@@ -355,6 +362,15 @@ export class DrawToolService {
         window.addEventListener('keydown', onKeyDown);
         ctx.track(() => window.removeEventListener('keydown', onKeyDown));
 
+        // Space-release ends the momentary box-select override. Bound
+        // separately (keydown is routed through onKeyDown's claim/input
+        // guards); the release must always fire so the flag never sticks.
+        const onKeyUp = (e: KeyboardEvent) => {
+            if (e.key === ' ' || e.code === 'Space') this.spaceHeld.set(false);
+        };
+        window.addEventListener('keyup', onKeyUp);
+        ctx.track(() => window.removeEventListener('keyup', onKeyUp));
+
         // Raw map handlers (mousedown/up for drags + marquee, dblclick to
         // swallow duplicate draw points, contextmenu to delete vertices) —
         // re-bound if the map is recreated while the tool is active.
@@ -407,9 +423,10 @@ export class DrawToolService {
         ctx.track(effect(() => {
             if (!ctx.map.ready.get()) return;
             const drawing = this.state.isDrawing.get();
+            const boxMode = this.state.boxSelect.get() || this.spaceHeld.get();
             const map = ctx.map.map.get();
             if (!map) return;
-            map.getCanvas().style.cursor = drawing ? 'crosshair' : '';
+            map.getCanvas().style.cursor = drawing || boxMode ? 'crosshair' : '';
             map.boxZoom.disable();
         }));
         ctx.track(() => {
@@ -425,6 +442,8 @@ export class DrawToolService {
         this.cancelMoveDrag();
         this.marquee.set(null);
         this.state.disarm();
+        this.state.boxSelect.set(false);
+        this.spaceHeld.set(false);
         this.cursor.set(null);
         this.clearTransientOpState();
         this.features?.select(null);
@@ -511,9 +530,10 @@ export class DrawToolService {
         }
 
         // Select mode. Edge click on the (single) selected feature inserts
-        // a vertex.
+        // a vertex — suspended in box-select mode (no geometry editing).
+        const boxMode = this.state.boxSelect.peek() || this.spaceHeld.peek();
         const selected = this.features?.selected.peek() ?? null;
-        if (selected) {
+        if (selected && !boxMode) {
             const insertion = this.edgeInsertionHit(selected, p, e.lngLat.lat);
             if (insertion) {
                 const geometry = insertion.kind === 'control'
@@ -622,6 +642,20 @@ export class DrawToolService {
         const meta = e.originalEvent.metaKey || e.originalEvent.ctrlKey;
         const shift = e.originalEvent.shiftKey;
         const single = features.selected.peek();
+
+        // 0. Box-select (sticky 'B' toggle or Space held): a left-drag
+        //    rubber-bands features regardless of what it lands on — even a
+        //    shape that a plain drag would move, or the selected feature's
+        //    vertices. Meta still falls through so ⌘/Ctrl-click toggle-select
+        //    keeps working; a sub-threshold drag decays to a plain click in
+        //    onMouseUp (selects the shape under the cursor).
+        if ((this.state.boxSelect.peek() || this.spaceHeld.peek()) && !meta) {
+            e.preventDefault();
+            map.dragPan.disable();
+            const start = lngLatToSweref99tm(e.lngLat);
+            this.marquee.set({ kind: 'features', start, current: start, startScreen: { x: e.point.x, y: e.point.y } });
+            return;
+        }
 
         // 1. Vertex/handle interactions on the single selected feature.
         if (single && !meta) {
@@ -824,6 +858,15 @@ export class DrawToolService {
 
         const meta = e.metaKey || e.ctrlKey;
 
+        // Space held = momentary box-select override (released in the keyup
+        // listener). preventDefault stops the page from scrolling. Auto-repeat
+        // re-fires keydown harmlessly.
+        if ((e.key === ' ' || e.code === 'Space') && !meta) {
+            e.preventDefault();
+            this.spaceHeld.set(true);
+            return;
+        }
+
         if (meta && (e.key === 'z' || e.key === 'Z')) {
             e.preventDefault();
             if (this.state.isDrawing.peek()) {
@@ -864,6 +907,11 @@ export class DrawToolService {
             if (!this.state.isDrawing.peek() && !meta) {
                 e.preventDefault();
                 this.state.arm();
+            }
+        } else if (e.key === 'b' || e.key === 'B') {
+            if (!this.state.isDrawing.peek() && !meta) {
+                e.preventDefault();
+                this.state.toggleBoxSelect();
             }
         } else if (e.key === 'c' || e.key === 'C') {
             if (!meta && !this.state.isDrawing.peek() && this.hoverVertex.peek() && this.features?.selected.peek()) {

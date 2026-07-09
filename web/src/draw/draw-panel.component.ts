@@ -1,4 +1,4 @@
-import { Component, effect, template } from '@basics/core/client/core';
+import { Component, Computed, Router, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, primaryBtn, field } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
@@ -18,10 +18,12 @@ const tpl = template(`
         </div>
         <div class="draw-panel__section">
             <button bind="newPoly" type="button" class="new-poly"></button>
+            <button bind="boxSelectBtn" type="button" class="box-select"></button>
             <div bind="drawHint" class="draw-hint"></div>
-            <label class="hole-field">Hole
-                <select bind="holeSelect"></select>
-            </label>
+            <div class="draw-target" data-testid="draw-target">
+                <span class="draw-target__label">New shapes</span>
+                <span bind="drawTargetValue" class="draw-target__value"></span>
+            </div>
             <div class="history-row">
                 <button bind="undoBtn" type="button" class="history-btn">↶ Undo</button>
                 <button bind="redoBtn" type="button" class="history-btn">↷ Redo</button>
@@ -30,6 +32,9 @@ const tpl = template(`
         <div bind="selection" class="draw-panel__section selection">
             <h4 class="section-title">Selection</h4>
             <div bind="selInfo" class="sel-info"></div>
+            <label class="move-field">Move selected to
+                <select bind="moveSelect" data-testid="draw-move-hole"></select>
+            </label>
             <div bind="curveHint" class="curve-hint"></div>
             <button bind="cornerBtn" type="button" class="op-btn corner-btn"></button>
             <div bind="vertexOps" class="vertex-ops">
@@ -82,10 +87,11 @@ const presetBtnTpl = template(`<button bind="button" type="button" class="preset
  * active). Shares DrawToolService/FeaturesService singletons with the
  * tool: the type grid sets the next polygon's type — or, with a selection,
  * re-types the selected feature(s) (autosave, one undo step); the eye
- * buttons toggle per-type visibility (client-side only); the hole select
- * assigns the selection (or the next polygon) to a hole; the ops section
- * exposes undo/redo, expand/contract with live preview, RDP simplify with
- * an epsilon slider, auto-surround, duplicate and bulk delete.
+ * buttons toggle per-type visibility (client-side only); new polygons follow
+ * the active sidebar/route hole; selected features get an explicit
+ * move-to-hole select; the ops section exposes undo/redo, expand/contract
+ * with live preview, RDP simplify with an epsilon slider, auto-surround,
+ * duplicate and bulk delete.
  */
 export class DrawPanelComponent extends Component {
     static styles = `
@@ -206,6 +212,18 @@ export class DrawPanelComponent extends Component {
                 }
             }
 
+            & .box-select {
+                padding: ${s('xs')} ${s('sm')};
+                font-size: 0.8rem;
+                ${btn()}
+                &.active {
+                    background: ${t('primary')};
+                    border-color: ${t('primary')};
+                    color: ${t('primary-text')};
+                    &:hover { background: ${t('primary-hover')}; }
+                }
+            }
+
             & .draw-hint {
                 display: none;
                 font-size: 0.72rem;
@@ -213,7 +231,33 @@ export class DrawPanelComponent extends Component {
                 &.show { display: block; }
             }
 
-            & .hole-field { ${field()} }
+            & .draw-target {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: ${s('sm')};
+                padding: ${s('xs')} ${s('sm')};
+                border: 1px solid ${t('border')};
+                border-radius: ${t('radius-sm')};
+                background: ${t('bg')};
+            }
+            & .draw-target__label {
+                font-size: 0.68rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                color: ${t('text-muted')};
+            }
+            & .draw-target__value {
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-size: 0.75rem;
+                color: ${t('text')};
+            }
+
+            & .move-field { ${field()} }
 
             & .history-row {
                 display: flex;
@@ -349,7 +393,15 @@ export class DrawPanelComponent extends Component {
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
     private helpModal = this.inject(HelpModalService);
-    private holeSelect!: HTMLSelectElement;
+    private router = this.inject(Router);
+    private selectedHoleNumber = this.router.query('hole');
+    private moveSelect!: HTMLSelectElement;
+
+    private readonly activeHoleId = new Computed<string | null>(() => {
+        const number = this.selectedHoleNumber.get();
+        if (!number) return null;
+        return this.courseDetail.holes.get().find(h => String(h.number) === number)?.id ?? null;
+    });
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -362,6 +414,12 @@ export class DrawPanelComponent extends Component {
                 textContent: () => this.tool.state.isDrawing.get() ? 'Cancel drawing (Esc)' : 'New polygon (N)',
                 className: () => this.tool.state.isDrawing.get() ? 'new-poly drawing' : 'new-poly',
             },
+            boxSelectBtn: {
+                onclick: () => this.tool.state.toggleBoxSelect(),
+                textContent: () => this.tool.state.boxSelect.get() ? 'Box-select: on (B)' : 'Box-select (B)',
+                className: () => this.tool.state.boxSelect.get() ? 'box-select active' : 'box-select',
+                title: 'Drag anywhere to rubber-band select — even over shapes. Hold Space for a one-off.',
+            },
             drawHint: {
                 className: () => this.tool.state.isDrawing.get() ? 'draw-hint show' : 'draw-hint',
                 textContent: () => {
@@ -371,6 +429,7 @@ export class DrawPanelComponent extends Component {
                         : `${n} point${n === 1 ? '' : 's'} placed — Enter or click the first point to close.`;
                 },
             },
+            drawTargetValue: () => this.holeLabel(this.tool.drawHoleId.get()),
             undoBtn: {
                 onclick: () => this.tool.undo(),
                 disabled: () => !this.tool.history.canUndo.get(),
@@ -544,34 +603,63 @@ export class DrawPanelComponent extends Component {
             }
         }
 
-        this.holeSelect = this.ref(frag, 'holeSelect') as HTMLSelectElement;
-        this.holeSelect.addEventListener('change', () => {
-            const holeId = this.holeSelect.value || null;
-            if (this.features.selectedIds.peek().size > 0) this.tool.assignSelectionHole(holeId);
-            else this.tool.drawHoleId.set(holeId);
+        // New polygons follow the active route/sidebar hole. No second
+        // creation selector: pick a hole in the left sidebar, then draw.
+        this.track(effect(() => {
+            const number = this.selectedHoleNumber.get();
+            const holes = this.courseDetail.holes.get();
+            const activeHoleId = this.activeHoleId.get();
+            untrack(() => {
+                if (!number) {
+                    this.tool.drawHoleId.set(null);
+                } else if (activeHoleId) {
+                    this.tool.drawHoleId.set(activeHoleId);
+                } else if (holes.length > 0) {
+                    this.tool.drawHoleId.set(null);
+                }
+            });
+        }));
+
+        this.moveSelect = this.ref(frag, 'moveSelect') as HTMLSelectElement;
+        this.moveSelect.addEventListener('change', () => {
+            if (this.moveSelect.value === '__mixed') return;
+            this.tool.assignSelectionHole(this.moveSelect.value || null);
         });
 
-        // Hole options + current value: rebuilt on holes load / selection /
-        // draw-target changes (cheap — a course has ≤ 18 holes).
+        // Move-target options + current selection scope. This is explicit
+        // repair UI for "I drew that on the wrong hole" mistakes.
         this.track(effect(() => {
             const holes = this.courseDetail.holes.get();
-            const selected = this.features.selected.get();
-            const value = selected ? selected.holeId ?? '' : this.tool.drawHoleId.get() ?? '';
-            this.holeSelect.textContent = '';
+            const selected = this.features.selectedFeatures.get();
+            const selectedHoleIds = new Set(selected.map(f => f.holeId ?? ''));
+            const value = selectedHoleIds.size === 1 ? [...selectedHoleIds][0]! : '__mixed';
+            this.moveSelect.textContent = '';
+            if (selectedHoleIds.size > 1) {
+                const mixed = document.createElement('option');
+                mixed.value = '__mixed';
+                mixed.textContent = 'Mixed holes';
+                this.moveSelect.appendChild(mixed);
+            }
             const courseLevel = document.createElement('option');
             courseLevel.value = '';
             courseLevel.textContent = 'Course level';
-            this.holeSelect.appendChild(courseLevel);
+            this.moveSelect.appendChild(courseLevel);
             for (const hole of holes) {
                 const option = document.createElement('option');
                 option.value = hole.id;
                 option.textContent = `Hole ${hole.number} (par ${hole.par})`;
-                this.holeSelect.appendChild(option);
+                this.moveSelect.appendChild(option);
             }
-            this.holeSelect.value = value;
+            this.moveSelect.value = value;
         }));
 
         return frag;
+    }
+
+    private holeLabel(holeId: string | null): string {
+        if (holeId === null) return 'Course level';
+        const hole = this.courseDetail.holes.get().find(h => h.id === holeId);
+        return hole ? `Hole ${hole.number} (par ${hole.par})` : 'Selected hole';
     }
 
     private statusText(): string {

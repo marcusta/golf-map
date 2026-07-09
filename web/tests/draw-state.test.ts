@@ -84,6 +84,38 @@ describe('DrawState', () => {
         expect(state.draft.get()).toEqual([]);
     });
 
+    test('starts with box-select off', () => {
+        const state = new DrawState();
+        expect(state.boxSelect.get()).toBe(false);
+    });
+
+    test('toggleBoxSelect flips the sticky flag', () => {
+        const state = new DrawState();
+        state.toggleBoxSelect();
+        expect(state.boxSelect.get()).toBe(true);
+        state.toggleBoxSelect();
+        expect(state.boxSelect.get()).toBe(false);
+    });
+
+    test('toggleBoxSelect while drawing leaves draw mode, then arms box-select', () => {
+        const state = new DrawState();
+        state.arm();
+        state.addPoint({ x: 0, y: 0 });
+        state.toggleBoxSelect();
+        expect(state.isDrawing.get()).toBe(false);
+        expect(state.mode.get()).toBe('select');
+        expect(state.boxSelect.get()).toBe(true);
+    });
+
+    test('arm clears box-select (drawing and box-select are exclusive)', () => {
+        const state = new DrawState();
+        state.toggleBoxSelect();
+        expect(state.boxSelect.get()).toBe(true);
+        state.arm();
+        expect(state.boxSelect.get()).toBe(false);
+        expect(state.mode.get()).toBe('draw');
+    });
+
     test('popPoint drops the last anchor', () => {
         const state = new DrawState();
         state.arm();

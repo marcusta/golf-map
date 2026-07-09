@@ -22,6 +22,8 @@ const HELP: HelpSection[] = [
         shortcuts: [
             { keys: '⌘/Ctrl-click', desc: 'Multi-select' },
             { keys: 'Drag empty ground', desc: 'Marquee select (Alt: touch-friendly)' },
+            { keys: 'B', desc: 'Toggle box-select: drag anywhere marquees, even over shapes' },
+            { keys: 'Space-drag', desc: 'Momentary box-select over a shape (no toggle)' },
             { keys: 'Alt/Option-click', desc: 'Select topmost feature; repeat to cycle down the hit stack, wrapping' },
         ],
     },

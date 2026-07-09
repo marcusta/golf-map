@@ -24,6 +24,16 @@ export class DrawState {
     readonly mode = new Signal<DrawMode>('select');
     readonly draft = new Signal<AnchorPoint[]>([]);
 
+    /**
+     * Box-select mode (sticky sub-mode of 'select'). While on, a left-drag
+     * rubber-bands features even when it STARTS on top of a shape — which
+     * would otherwise move it (or, on the selected feature, edit a vertex).
+     * Whole-feature move and vertex editing are suspended for the mode's
+     * span; plain clicks still select. Toggled by the panel button / 'B';
+     * Space-held is the momentary equivalent (see DrawToolService).
+     */
+    readonly boxSelect = new Signal(false);
+
     readonly canClose = new Computed(() => this.draft.get().length >= MIN_RING_POINTS);
     readonly isDrawing = new Computed(() => this.mode.get() === 'draw');
 
@@ -38,7 +48,14 @@ export class DrawState {
     arm(): void {
         this.draft.set([]);
         this.redoPoints = [];
+        this.boxSelect.set(false); // drawing and box-select are exclusive
         this.mode.set('draw');
+    }
+
+    /** Toggle sticky box-select mode (leaves draw mode first if drawing). */
+    toggleBoxSelect(): void {
+        if (this.mode.peek() === 'draw') this.disarm();
+        this.boxSelect.update(v => !v);
     }
 
     /** Leave drawing mode, dropping the draft. */
