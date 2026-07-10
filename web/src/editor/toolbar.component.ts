@@ -67,12 +67,12 @@ export class EditorToolbarComponent extends Component {
                     padding: ${s('xs')} ${s('sm')};
                     font-size: 0.75rem;
                     ${btn(t('radius-sm'))}
-                    background: ${t('surface')};
+                    background: ${t('color-surface-card')};
                     box-shadow: ${t('shadow')};
                     &.active {
-                        border-color: ${t('primary')};
-                        color: ${t('primary')};
-                        background: ${t('surface')};
+                        border-color: ${t('color-accent-primary')};
+                        color: ${t('color-accent-primary')};
+                        background: ${t('color-surface-card')};
                     }
                     & .tool-btn__icon { font-size: 0.9rem; line-height: 1; }
                 }
@@ -84,9 +84,9 @@ export class EditorToolbarComponent extends Component {
                 max-height: 100%;
                 overflow-y: auto;
                 pointer-events: auto;
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
-                background: ${t('surface')};
+                background: ${t('color-surface-card')};
                 box-shadow: ${t('shadow')};
                 &.show { display: block; }
             }
@@ -108,9 +108,9 @@ export class EditorToolbarComponent extends Component {
             max-height: 100%;
             overflow-y: auto;
             z-index: 5;
-            border: 1px solid ${t('border')};
+            border: 1px solid ${t('color-border-default')};
             border-radius: ${t('radius-sm')};
-            background: ${t('surface')};
+            background: ${t('color-surface-card')};
             box-shadow: ${t('shadow')};
             &.show { display: block; }
         }

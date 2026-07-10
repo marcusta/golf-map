@@ -96,7 +96,7 @@ export class PlayerSettingsComponent extends Component {
         .ps-header {
             margin-bottom: ${s('lg')};
 
-            & h2 { margin: 0; font-size: 1.25rem; color: ${t('text')}; }
+            & h2 { margin: 0; font-size: 1.25rem; color: ${t('color-text-primary')}; }
         }
 
         .ps-panel {
@@ -104,8 +104,8 @@ export class PlayerSettingsComponent extends Component {
             flex-direction: column;
             gap: ${s('md')};
             padding: ${s('lg')};
-            background: ${t('surface')};
-            border: 1px solid ${t('border')};
+            background: ${t('color-surface-card')};
+            border: 1px solid ${t('color-border-default')};
             border-radius: ${t('radius')};
             box-shadow: ${t('shadow')};
         }
@@ -116,7 +116,7 @@ export class PlayerSettingsComponent extends Component {
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.06em;
-            color: ${t('text-muted')};
+            color: ${t('color-text-secondary')};
         }
 
         .clubs-table {
@@ -133,7 +133,7 @@ export class PlayerSettingsComponent extends Component {
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.04em;
-            color: ${t('text-muted')};
+            color: ${t('color-text-secondary')};
         }
 
         .clubs-rows {
@@ -146,7 +146,7 @@ export class PlayerSettingsComponent extends Component {
             display: none;
             padding: ${s('md')} ${s('sm')};
             font-size: 0.8rem;
-            color: ${t('text-muted')};
+            color: ${t('color-text-secondary')};
             &.show { display: block; }
         }
 
@@ -157,27 +157,27 @@ export class PlayerSettingsComponent extends Component {
             align-items: center;
             padding: ${s('xs')} ${s('sm')};
             border-radius: ${t('radius-sm')};
-            &:hover { background: ${t('hover-bg')}; }
+            &:hover { background: ${t('color-surface-sunken')}; }
 
             & input { ${field()} padding: 0; }
             & .club-row__name, & .club-row__num {
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.85rem;
                 font-family: inherit;
-                color: ${t('text')};
-                background: ${t('input-bg')};
-                border: 1px solid ${t('border')};
+                color: ${t('color-text-primary')};
+                background: ${t('color-surface-raised')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
                 width: 100%;
                 box-sizing: border-box;
 
-                &.invalid { border-color: ${t('error')}; }
+                &.invalid { border-color: ${t('color-status-negative')}; }
             }
 
             & .club-row__derived {
                 font-size: 0.8rem;
                 font-variant-numeric: tabular-nums;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
         }
 
@@ -193,15 +193,15 @@ export class PlayerSettingsComponent extends Component {
             ${btn(t('radius-sm'))}
 
             &:disabled { opacity: 0.35; cursor: default; }
-            &:disabled:hover { background: ${t('btn-bg')}; }
+            &:disabled:hover { background: ${t('color-surface-sunken')}; }
         }
 
         .delete-btn {
             padding: ${s('xs')} ${s('sm')};
             font-size: 0.72rem;
             ${btn(t('radius-sm'))}
-            color: ${t('error')};
-            border-color: ${t('error')};
+            color: ${t('color-status-negative')};
+            border-color: ${t('color-status-negative')};
         }
 
         .add-row {
@@ -210,7 +210,7 @@ export class PlayerSettingsComponent extends Component {
             gap: ${s('sm')};
             align-items: end;
             padding-top: ${s('sm')};
-            border-top: 1px solid ${t('border')};
+            border-top: 1px solid ${t('color-border-default')};
         }
 
         .add-field { ${field()} }
@@ -224,15 +224,15 @@ export class PlayerSettingsComponent extends Component {
         .ps-inline-error {
             display: none;
             font-size: 0.75rem;
-            color: ${t('error')};
+            color: ${t('color-status-negative')};
             &.show { display: block; }
         }
 
         .ps-panel__status {
             font-size: 0.72rem;
-            color: ${t('text-muted')};
+            color: ${t('color-text-secondary')};
             min-height: 1.4em;
-            &.error { color: ${t('error')}; }
+            &.error { color: ${t('color-status-negative')}; }
         }
     `;
 

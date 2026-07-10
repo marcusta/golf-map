@@ -31,7 +31,7 @@ export class AppComponent extends Component {
             display: flex;
             flex-direction: column;
             height: 100vh;
-            background: ${t('bg')};
+            background: ${t('color-surface-app')};
         }
 
         .topbar {
@@ -41,8 +41,8 @@ export class AppComponent extends Component {
             height: 48px;
             flex-shrink: 0;
             padding: 0 ${s('lg')};
-            background: ${t('topbar-bg')};
-            border-bottom: 1px solid ${t('border')};
+            background: ${t('color-surface-brand')};
+            border-bottom: 1px solid ${t('color-border-default')};
 
             /* router.link() drives className, so the logo <a> is styled via
                the parent selector rather than a class of its own. */

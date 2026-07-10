@@ -56,9 +56,9 @@ export class HoleInfoPanelComponent extends Component {
         .hole-info {
             display: none;
             flex-direction: column;
-            border-top: 1px solid ${t('border')};
+            border-top: 1px solid ${t('color-border-default')};
             font-size: 0.8rem;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
 
             &.show { display: flex; }
 
@@ -72,7 +72,7 @@ export class HoleInfoPanelComponent extends Component {
             & .hole-info__title {
                 margin: 0;
                 font-size: 0.9rem;
-                color: ${t('text')};
+                color: ${t('color-text-primary')};
             }
 
             & .hole-info__fields {
@@ -89,15 +89,15 @@ export class HoleInfoPanelComponent extends Component {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.04em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
 
                 & select {
                     padding: ${s('xs')} ${s('sm')};
                     font-size: 0.8rem;
                     font-family: inherit;
-                    color: ${t('text')};
-                    background: ${t('input-bg')};
-                    border: 1px solid ${t('border')};
+                    color: ${t('color-text-primary')};
+                    background: ${t('color-surface-raised')};
+                    border: 1px solid ${t('color-border-default')};
                     border-radius: ${t('radius-sm')};
                 }
             }
@@ -115,14 +115,14 @@ export class HoleInfoPanelComponent extends Component {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .hi-tee-empty {
                 display: none;
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.75rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 &.show { display: block; }
             }
 
@@ -134,7 +134,7 @@ export class HoleInfoPanelComponent extends Component {
                 border-radius: ${t('radius-sm')};
                 cursor: pointer;
                 transition: background 0.15s;
-                &:hover { background: ${t('hover-bg')}; }
+                &:hover { background: ${t('color-surface-sunken')}; }
             }
 
             & .hi-tee-radio { cursor: pointer; margin: 0; }
@@ -147,18 +147,18 @@ export class HoleInfoPanelComponent extends Component {
                 flex-shrink: 0;
             }
 
-            & .hi-tee-name { flex: 1; color: ${t('text')}; }
+            & .hi-tee-name { flex: 1; color: ${t('color-text-primary')}; }
 
             & .hi-tee-length {
                 font-variant-numeric: tabular-nums;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .hi-note {
                 padding: ${s('sm')} ${s('sm')} 0;
                 font-size: 0.68rem;
                 line-height: 1.4;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
         }
     `;

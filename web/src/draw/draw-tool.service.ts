@@ -1702,7 +1702,7 @@ function previewLayers(): OverlayLayerSpec[] {
             paint: {
                 'circle-radius': ['case', ['==', ['get', 'role'], 'first-vertex'], 7, 5] as never,
                 'circle-color': '#ffffff',
-                'circle-stroke-color': '#1d3b2a',
+                'circle-stroke-color': '#1E2B22',
                 'circle-stroke-width': 2,
             },
         },
@@ -1714,7 +1714,7 @@ function previewLayers(): OverlayLayerSpec[] {
             paint: {
                 'circle-radius': 5,
                 'circle-color': '#f59f00',
-                'circle-stroke-color': '#1d3b2a',
+                'circle-stroke-color': '#1E2B22',
                 'circle-stroke-width': 2,
             },
         },
@@ -1726,7 +1726,7 @@ function previewLayers(): OverlayLayerSpec[] {
             paint: {
                 'circle-radius': 6,
                 'circle-color': SELECTION_COLOR,
-                'circle-stroke-color': '#1d3b2a',
+                'circle-stroke-color': '#1E2B22',
                 'circle-stroke-width': 2,
             },
         },

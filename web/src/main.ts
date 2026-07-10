@@ -1,6 +1,7 @@
 import { di, Router, Theme, startApp, effect } from '@basics/core/client/core';
 import { AuthService } from '@basics/core/client/auth';
 import { pushContext } from '@basics/core/client/error-report';
+import './design-tokens.css';
 import './theme';
 import { guardRoute } from './auth/guard';
 import { AppComponent } from './app/app.component';

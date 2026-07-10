@@ -66,34 +66,34 @@ export class BuildProgressComponent extends Component {
                 align-items: center;
                 gap: ${s('sm')};
                 font-size: 0.875rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
 
                 & .build-step__icon { width: 1.25rem; text-align: center; }
 
-                &.done { color: ${t('text')}; & .build-step__icon { color: ${t('primary')}; } }
+                &.done { color: ${t('color-text-primary')}; & .build-step__icon { color: ${t('color-accent-primary')}; } }
                 &.active {
-                    color: ${t('text')};
+                    color: ${t('color-text-primary')};
                     font-weight: 600;
-                    & .build-step__icon { color: ${t('primary')}; animation: build-spin 1.2s linear infinite; }
+                    & .build-step__icon { color: ${t('color-accent-primary')}; animation: build-spin 1.2s linear infinite; }
                 }
-                &.failed { color: ${t('error')}; & .build-step__icon { color: ${t('error')}; } }
+                &.failed { color: ${t('color-status-negative')}; & .build-step__icon { color: ${t('color-status-negative')}; } }
             }
 
             @keyframes build-spin { to { transform: rotate(360deg); } }
 
             & .build-progress__error {
                 display: none;
-                color: ${t('error')};
+                color: ${t('color-status-negative')};
                 font-size: 0.875rem;
                 padding: ${s('sm')} ${s('md')};
-                border: 1px solid ${t('error')};
+                border: 1px solid ${t('color-status-negative')};
                 border-radius: ${t('radius-sm')};
                 &.show { display: block; }
             }
 
             & .build-progress__log {
                 font-size: 0.75rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
 
                 & summary { cursor: pointer; }
                 & pre {
@@ -101,7 +101,7 @@ export class BuildProgressComponent extends Component {
                     overflow: auto;
                     margin: ${s('sm')} 0 0;
                     padding: ${s('sm')};
-                    background: ${t('hover-bg')};
+                    background: ${t('color-surface-sunken')};
                     border-radius: ${t('radius-sm')};
                     white-space: pre-wrap;
                     word-break: break-word;

@@ -34,7 +34,7 @@ struct GreenViewPanel: View {
             } else if let errorText = model.errorText {
                 Text(errorText)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.statusNegative)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             bufferRow

@@ -50,12 +50,12 @@ export class CourseListComponent extends Component {
                 gap: ${s('md')};
                 margin-bottom: ${s('lg')};
 
-                & h2 { margin: 0; font-size: 1.25rem; color: ${t('text')}; }
+                & h2 { margin: 0; font-size: 1.25rem; color: ${t('color-text-primary')}; }
             }
 
             & .courses__total {
                 font-size: 0.8rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .courses__spacer { flex: 1; }
@@ -68,7 +68,7 @@ export class CourseListComponent extends Component {
 
             & .error {
                 display: none;
-                color: ${t('error')};
+                color: ${t('color-status-negative')};
                 font-size: 0.875rem;
                 margin-bottom: ${s('md')};
             }
@@ -99,12 +99,12 @@ export class CourseListComponent extends Component {
                 & .course-row__name {
                     font-size: 0.9375rem;
                     font-weight: 600;
-                    color: ${t('text')};
+                    color: ${t('color-text-primary')};
                 }
 
                 & .course-row__holes {
                     font-size: 0.8rem;
-                    color: ${t('text-muted')};
+                    color: ${t('color-text-secondary')};
                 }
 
                 & .course-row__status {
@@ -114,18 +114,18 @@ export class CourseListComponent extends Component {
                     letter-spacing: 0.04em;
                     padding: 2px ${s('sm')};
                     border-radius: ${t('radius-pill')};
-                    background: ${t('hover-bg')};
-                    color: ${t('text-muted')};
+                    background: ${t('color-surface-sunken')};
+                    color: ${t('color-text-secondary')};
 
                     &.published {
                         background: rgba(47, 125, 79, 0.12);
-                        color: ${t('primary')};
+                        color: ${t('color-accent-primary')};
                     }
                 }
 
                 & .course-row__revision {
                     font-size: 0.8rem;
-                    color: ${t('text-muted')};
+                    color: ${t('color-text-secondary')};
                     min-width: 3ch;
                     text-align: right;
                 }

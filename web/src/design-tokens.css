@@ -1,0 +1,84 @@
+/* ============================================================
+   Golf Intel — Design Tokens · v0.1 · "Links & Loam"
+   THEME-INVARIANT layers only (cartography, data-viz, scale,
+   type, motion). Imported once from main.ts.
+
+   Semantic + map-overlay tokens (light/dark) are emitted by
+   theme.ts via @basics/core createTokens so they flow through
+   the typed t() accessor and the existing data-theme toggle.
+   Source of truth: design package tokens.css / Tokens.swift.
+   ============================================================ */
+
+:root {
+  /* ---------- 4 · CARTOGRAPHY (theme-invariant) ---------- */
+  --map-green-fill:#7FC489;         --map-green-draw:#97D79B;         --map-green-outline:#3F7A55;
+  --map-tee-fill:#5FA76E;           --map-tee-draw:#6FC07E;           --map-tee-outline:#34734A;
+  --map-fairway-fill:#4C9256;       --map-fairway-draw:#4FA85E;       --map-fairway-outline:#2C6B3B;
+  --map-semi-rough-fill:#7E9E56;    --map-semi-rough-draw:#8FB157;    --map-semi-rough-outline:#4C6E37;
+  --map-rough-fill:#566E3A;         --map-rough-draw:#5F7C34;         --map-rough-outline:#384E23;
+  --map-deep-rough-fill:#3C5730;    --map-deep-rough-draw:#3E5A28;    --map-deep-rough-outline:#26381C;
+  --map-trees-fill:#24402B;         --map-trees-draw:#1E3C26;         --map-trees-outline:#142619;
+  --map-bunker-fill:#E1CC93;        --map-bunker-draw:#ECD588;        --map-bunker-outline:#B0894A;
+  --map-water-fill:#4C8FBE;         --map-water-draw:#3E93D0;         --map-water-outline:#2E6389;
+  --map-water-creek-fill:#77AED2;   --map-water-creek-draw:#6FB6E0;   --map-water-creek-outline:#3F7BA0;
+  --map-penalty-yellow-fill:#E8CB56;--map-penalty-yellow-draw:#E8CB56;--map-penalty-yellow-outline:#C39A2E;
+  --map-penalty-red-fill:#DE6152;   --map-penalty-red-draw:#DE6152;   --map-penalty-red-outline:#B0402E;
+  --map-oob-fill:#EFEAE0;           --map-oob-draw:#EFEAE0;           --map-oob-outline:#3A4148;
+  --map-path-fill:#C2A879;          --map-path-draw:#CBAE75;          --map-path-outline:#866B47;
+  --map-outside-fill:#8A8E90;       --map-outside-draw:#7C8286;       --map-outside-outline:#565C61;
+  --map-shot-line:#E4A15A;          /* shot/leg line — 3px stroke, pill ends (guide §03) */
+
+  /* ---------- 5 · DATA-VIZ (theme-invariant) ---------- */
+  --data-seq-elevation-1:#2E4A3A; --data-seq-elevation-2:#4C6142; --data-seq-elevation-3:#7D8560;
+  --data-seq-elevation-4:#B0A079; --data-seq-elevation-5:#D8C08A; --data-seq-elevation-6:#F1E4C8;
+  --data-seq-heat-1:#F6E7D5; --data-seq-heat-2:#EAC29A; --data-seq-heat-3:#E0975E;
+  --data-seq-heat-4:#CC7038; --data-seq-heat-5:#A6572F; --data-seq-heat-6:#6E3A1F;
+  --data-div-1:#3E7E92; --data-div-2:#7FA9B2; --data-div-3:#C7CBBE; --data-div-4:#EDE4D2;
+  --data-div-5:#E4A579; --data-div-6:#CC7038; --data-div-7:#A6572F;
+  --data-good:#4E7A46; --data-neutral:#9C917A; --data-risk:#C68A2E; --data-bad:#B24A32;
+  --data-cat-1:#BF6A3E; --data-cat-2:#3E8EA0; --data-cat-3:#D8A441; --data-cat-4:#5C6B4A;
+  --data-cat-5:#5E6D94; --data-cat-6:#8A5A6E; --data-cat-7:#6FA8C9; --data-cat-8:#7A6A50;
+
+  /* ---------- 6 · SCALE ---------- */
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px;
+  --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px; --space-16:64px; --space-20:80px;
+  --radius-xs:4px; --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-xl:24px; --radius-pill:999px;
+  --elev-1:0 1px 2px rgba(40,36,26,.06), 0 2px 8px -2px rgba(40,36,26,.08);
+  --elev-2:0 4px 10px -4px rgba(40,36,26,.18), 0 12px 28px -12px rgba(40,36,26,.22);
+  --elev-3:0 12px 30px -12px rgba(40,36,26,.5);
+  --elev-glow:0 0 24px -6px rgba(230,192,138,.25);
+
+  /* ---------- 7 · TYPE ---------- */
+  --font-sans:'Schibsted Grotesk', system-ui, sans-serif;
+  --font-mono:'JetBrains Mono', ui-monospace, monospace;
+  --text-display-xl:800 44px/1.02 var(--font-sans);   --tracking-display-xl:-0.03em;
+  --text-display-l:700 34px/1.08 var(--font-sans);    --tracking-display-l:-0.02em;
+  --text-title-l:700 26px/1.15 var(--font-sans);      --tracking-title-l:-0.02em;
+  --text-title-m:600 20px/1.25 var(--font-sans);      --tracking-title-m:-0.01em;
+  --text-body-l:400 17px/1.5 var(--font-sans);
+  --text-body-m:400 15px/1.5 var(--font-sans);
+  --text-body-s:400 13px/1.45 var(--font-sans);
+  --text-label:600 12px/1.3 var(--font-sans);         --tracking-label:0.02em;
+  --text-overline:600 11px/1.4 var(--font-mono);      --tracking-overline:0.16em;
+  --text-metric-xl:600 30px/1 var(--font-mono);
+  --text-metric-l:600 20px/1 var(--font-mono);
+  --text-metric-m:600 15px/1 var(--font-mono);
+
+  /* ---------- 8 · MOTION ---------- */
+  --dur-instant:80ms; --dur-fast:140ms; --dur-base:220ms; --dur-slow:320ms; --dur-map:480ms;
+  --ease-standard:cubic-bezier(.2,0,0,1);
+  --ease-out:cubic-bezier(.16,1,.3,1);
+  --ease-in-out:cubic-bezier(.65,0,.35,1);
+  --ease-map:cubic-bezier(.4,0,.1,1);
+}
+
+/* Dark render swaps ambient shadow → warm glow (README note). */
+[data-theme="dark"] {
+  --elev-1:0 1px 2px rgba(0,0,0,.4), 0 0 12px -4px rgba(230,192,138,.10);
+  --elev-2:0 6px 16px -6px rgba(0,0,0,.55), 0 0 24px -6px rgba(230,192,138,.14);
+  --elev-3:0 14px 34px -12px rgba(0,0,0,.7), 0 0 30px -8px rgba(230,192,138,.16);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-instant:0ms; --dur-fast:0ms; --dur-base:0ms; --dur-slow:0ms; --dur-map:0ms; }
+}

@@ -99,11 +99,11 @@ export class DrawPanelComponent extends Component {
             display: flex;
             flex-direction: column;
             font-size: 0.8rem;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
 
             & .draw-panel__section {
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('sm')};
@@ -115,7 +115,7 @@ export class DrawPanelComponent extends Component {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .draw-panel__section-head {
@@ -130,14 +130,14 @@ export class DrawPanelComponent extends Component {
                 height: 18px;
                 flex-shrink: 0;
                 padding: 0;
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: 50%;
-                background: ${t('surface')};
-                color: ${t('text-muted')};
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-secondary')};
                 font-size: 0.68rem;
                 line-height: 1;
                 cursor: pointer;
-                &:hover { background: ${t('hover-bg')}; color: ${t('text')}; }
+                &:hover { background: ${t('color-surface-sunken')}; color: ${t('color-text-primary')}; }
             }
 
             & .type-grid {
@@ -165,13 +165,13 @@ export class DrawPanelComponent extends Component {
                 border-radius: ${t('radius-sm')};
                 background: transparent;
                 font-family: inherit;
-                color: ${t('text')};
+                color: ${t('color-text-primary')};
                 cursor: pointer;
                 text-align: left;
-                &:hover { background: ${t('hover-bg')}; }
+                &:hover { background: ${t('color-surface-sunken')}; }
                 &.active {
-                    border-color: ${t('primary')};
-                    background: ${t('hover-bg')};
+                    border-color: ${t('color-accent-primary')};
+                    background: ${t('color-surface-sunken')};
                 }
             }
 
@@ -185,7 +185,7 @@ export class DrawPanelComponent extends Component {
                 background: transparent;
                 cursor: pointer;
                 opacity: 0.75;
-                &:hover { background: ${t('hover-bg')}; opacity: 1; }
+                &:hover { background: ${t('color-surface-sunken')}; opacity: 1; }
                 &.hidden-type { opacity: 0.35; }
             }
 
@@ -207,8 +207,8 @@ export class DrawPanelComponent extends Component {
                 font-size: 0.8rem;
                 ${primaryBtn()}
                 &.drawing {
-                    background: ${t('error')};
-                    &:hover { background: ${t('error')}; }
+                    background: ${t('color-status-negative')};
+                    &:hover { background: ${t('color-status-negative')}; }
                 }
             }
 
@@ -217,17 +217,17 @@ export class DrawPanelComponent extends Component {
                 font-size: 0.8rem;
                 ${btn()}
                 &.active {
-                    background: ${t('primary')};
-                    border-color: ${t('primary')};
-                    color: ${t('primary-text')};
-                    &:hover { background: ${t('primary-hover')}; }
+                    background: ${t('color-accent-primary')};
+                    border-color: ${t('color-accent-primary')};
+                    color: ${t('color-on-accent')};
+                    &:hover { background: ${t('color-accent-hover')}; }
                 }
             }
 
             & .draw-hint {
                 display: none;
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 &.show { display: block; }
             }
 
@@ -237,16 +237,16 @@ export class DrawPanelComponent extends Component {
                 justify-content: space-between;
                 gap: ${s('sm')};
                 padding: ${s('xs')} ${s('sm')};
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
-                background: ${t('bg')};
+                background: ${t('color-surface-app')};
             }
             & .draw-target__label {
                 font-size: 0.68rem;
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
             & .draw-target__value {
                 min-width: 0;
@@ -254,7 +254,7 @@ export class DrawPanelComponent extends Component {
                 text-overflow: ellipsis;
                 white-space: nowrap;
                 font-size: 0.75rem;
-                color: ${t('text')};
+                color: ${t('color-text-primary')};
             }
 
             & .move-field { ${field()} }
@@ -276,13 +276,13 @@ export class DrawPanelComponent extends Component {
 
             & .sel-info {
                 font-size: 0.75rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .curve-hint {
                 display: none;
                 font-size: 0.7rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 font-style: italic;
                 &.show { display: block; }
             }
@@ -317,7 +317,7 @@ export class DrawPanelComponent extends Component {
             & .offset-label {
                 width: 10px;
                 font-weight: 600;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
             & .offset-presets {
                 display: flex;
@@ -330,8 +330,8 @@ export class DrawPanelComponent extends Component {
                 font-size: 0.7rem;
                 ${btn(t('radius-sm'))}
                 &.active {
-                    border-color: ${t('primary')};
-                    color: ${t('primary')};
+                    border-color: ${t('color-accent-primary')};
+                    color: ${t('color-accent-primary')};
                 }
             }
 
@@ -363,28 +363,28 @@ export class DrawPanelComponent extends Component {
                 align-items: center;
                 gap: ${s('xs')};
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 & input { flex: 1; }
             }
             & .simplify-info {
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .delete-btn {
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.75rem;
                 ${btn(t('radius-sm'))}
-                color: ${t('error')};
-                border-color: ${t('error')};
+                color: ${t('color-status-negative')};
+                border-color: ${t('color-status-negative')};
             }
 
             & .draw-panel__status {
                 padding: ${s('xs')} ${s('md')};
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 min-height: 1.4em;
-                &.error { color: ${t('error')}; }
+                &.error { color: ${t('color-status-negative')}; }
             }
         }
     `;

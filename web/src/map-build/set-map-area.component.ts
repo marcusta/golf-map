@@ -48,21 +48,21 @@ export class SetMapAreaComponent extends Component {
                 flex-shrink: 0;
                 overflow-y: auto;
                 padding: ${s('xl')} ${s('lg')};
-                border-left: 1px solid ${t('border')};
-                background: ${t('surface')};
+                border-left: 1px solid ${t('color-border-default')};
+                background: ${t('color-surface-card')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('md')};
 
-                & h2 { margin: 0; font-size: 1.1rem; color: ${t('text')}; }
+                & h2 { margin: 0; font-size: 1.1rem; color: ${t('color-text-primary')}; }
             }
 
-            & .wizard__hint { margin: 0; font-size: 0.8rem; color: ${t('text-muted')}; }
+            & .wizard__hint { margin: 0; font-size: 0.8rem; color: ${t('color-text-secondary')}; }
 
             & .wizard__size {
                 font-size: 0.875rem;
                 font-variant-numeric: tabular-nums;
-                color: ${t('text')};
+                color: ${t('color-text-primary')};
                 min-height: 1.2em;
             }
 
@@ -75,7 +75,7 @@ export class SetMapAreaComponent extends Component {
                 gap: ${s('sm')};
                 &.show { display: flex; }
 
-                & .wizard__or { font-size: 0.75rem; color: ${t('text-muted')}; text-align: center; }
+                & .wizard__or { font-size: 0.75rem; color: ${t('color-text-secondary')}; text-align: center; }
                 & select { ${input()} }
                 & .wizard__usesite { ${btn()} }
                 & .wizard__usesite:disabled { opacity: 0.5; cursor: not-allowed; }

@@ -109,7 +109,7 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             inset: 0;
             z-index: 1000;
             display: none;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
             pointer-events: none;
 
             &.is-open {
@@ -125,9 +125,9 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             }
 
             & .confirm-dialog {
-                border: 1px solid color-mix(in srgb, ${t('border')} 82%, transparent);
+                border: 1px solid color-mix(in srgb, ${t('color-border-default')} 82%, transparent);
                 border-radius: ${t('radius')};
-                background: ${t('surface')};
+                background: ${t('color-surface-card')};
                 box-shadow: ${t('shadow-elevated')};
             }
 
@@ -139,7 +139,7 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             }
 
             & .confirm-dialog__eyebrow {
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 font-size: 0.7rem;
                 font-weight: 700;
                 letter-spacing: 0.08em;
@@ -148,14 +148,14 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
 
             & .confirm-dialog__body {
                 margin: ${s('sm')} 0 0;
-                color: ${t('text')};
+                color: ${t('color-text-primary')};
                 font-size: 0.91rem;
                 line-height: 1.48;
             }
 
             & .confirm-dialog__detail {
                 margin: ${s('sm')} 0 0;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 font-size: 0.82rem;
                 line-height: 1.45;
             }
@@ -177,16 +177,16 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             & .confirm-dialog__cancel {
                 height: 36px;
                 padding: 0 ${s('md')};
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-pill')};
-                background: ${t('surface')};
-                color: ${t('text')};
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-primary')};
                 font-size: 0.84rem;
                 font-weight: 700;
             }
 
             & .confirm-dialog__cancel:hover {
-                background: ${t('hover-bg')};
+                background: ${t('color-surface-sunken')};
             }
 
             & .confirm-dialog__confirm {
@@ -194,22 +194,22 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
                 padding: 0 ${s('lg')};
                 border: 0;
                 border-radius: ${t('radius-pill')};
-                background: ${t('primary')};
-                color: ${t('primary-text')};
+                background: ${t('color-accent-primary')};
+                color: ${t('color-on-accent')};
                 font-size: 0.84rem;
                 font-weight: 800;
             }
 
             &.tone-danger .confirm-dialog__confirm { background: #c92a2a; color: #fff; }
             &.tone-warning .confirm-dialog__confirm { background: #8a6116; color: #fff7e6; }
-            &.tone-primary .confirm-dialog__confirm { background: ${t('primary')}; color: ${t('primary-text')}; }
+            &.tone-primary .confirm-dialog__confirm { background: ${t('color-accent-primary')}; color: ${t('color-on-accent')}; }
 
             &.tone-danger .confirm-dialog__tone-mark,
             &.tone-danger .confirm-dialog__icon { background: #c92a2a; }
             &.tone-warning .confirm-dialog__tone-mark,
             &.tone-warning .confirm-dialog__icon { background: #b7791f; }
             &.tone-primary .confirm-dialog__tone-mark,
-            &.tone-primary .confirm-dialog__icon { background: ${t('primary')}; }
+            &.tone-primary .confirm-dialog__icon { background: ${t('color-accent-primary')}; }
 
             & .confirm-dialog--default {
                 position: absolute;
@@ -265,17 +265,17 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             & .confirm-dialog__close {
                 width: 32px;
                 height: 32px;
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: 50%;
-                background: ${t('surface')};
-                color: ${t('text-muted')};
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-secondary')};
                 font-size: 1.2rem;
                 line-height: 1;
             }
 
             & .confirm-dialog__close:hover {
-                background: ${t('hover-bg')};
-                color: ${t('text')};
+                background: ${t('color-surface-sunken')};
+                color: ${t('color-text-primary')};
             }
 
             & .confirm-dialog__sheet-body {
@@ -291,13 +291,13 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
                 gap: ${s('xs')};
                 margin-top: ${s('sm')};
                 padding: ${s('md')};
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius')};
-                background: ${t('bg')};
+                background: ${t('color-surface-app')};
             }
 
             & .confirm-dialog__review-box span {
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 font-size: 0.72rem;
                 font-weight: 700;
                 letter-spacing: 0.06em;

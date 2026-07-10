@@ -317,12 +317,12 @@ struct CorridorScanSheet: View {
             case .uploaded:
                 Label("Saved", systemImage: "checkmark.circle.fill")
                     .font(.headline)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Color.statusPositive)
             default:
                 if case let .failed(message) = uploadState {
                     Text(message)
                         .font(.footnote)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.statusNegative)
                         .multilineTextAlignment(.center)
                 }
                 verdictButtons(result)

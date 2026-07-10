@@ -211,13 +211,13 @@ export class PlannerPanelComponent extends Component {
             display: flex;
             flex-direction: column;
             font-size: 0.8rem;
-            color: ${t('text')};
-            border-top: 1px solid ${t('border')};
+            color: ${t('color-text-primary')};
+            border-top: 1px solid ${t('color-border-default')};
             overflow-y: auto;
 
             & .plan-panel__section {
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('sm')};
@@ -229,7 +229,7 @@ export class PlannerPanelComponent extends Component {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .mode-row { display: flex; gap: ${s('xs')}; }
@@ -239,25 +239,25 @@ export class PlannerPanelComponent extends Component {
                 font-size: 0.75rem;
                 ${btn(t('radius-sm'))}
                 &.active {
-                    border-color: ${t('primary')};
-                    color: ${t('primary-text')};
-                    background: ${t('primary')};
+                    border-color: ${t('color-accent-primary')};
+                    color: ${t('color-on-accent')};
+                    background: ${t('color-accent-primary')};
                 }
             }
 
             & .plan-hint {
                 display: none;
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 &.show { display: block; }
-                &.warn { color: ${t('error')}; }
+                &.warn { color: ${t('color-status-negative')}; }
             }
 
             & .plan-field { ${field()} min-width: 0; flex: 1; }
             & .wind-row { display: flex; gap: ${s('sm')}; }
             & .wind-mph, & .wind-effective {
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
             & .override-block { display: flex; flex-direction: column; gap: ${s('xs')}; }
             & .mini-btn {
@@ -265,9 +265,9 @@ export class PlannerPanelComponent extends Component {
                 font-size: 0.72rem;
                 ${btn(t('radius-sm'))}
                 &[aria-pressed="true"] {
-                    border-color: ${t('primary')};
-                    color: ${t('primary-text')};
-                    background: ${t('primary')};
+                    border-color: ${t('color-accent-primary')};
+                    color: ${t('color-on-accent')};
+                    background: ${t('color-accent-primary')};
                 }
             }
             & .putt-place-row {
@@ -276,11 +276,11 @@ export class PlannerPanelComponent extends Component {
                 align-items: center;
                 flex-wrap: wrap;
             }
-            & .putt-place-label { font-size: 0.72rem; color: ${t('text-muted')}; }
+            & .putt-place-label { font-size: 0.72rem; color: ${t('color-text-secondary')}; }
             & .putt-overlay-row { display: flex; gap: ${s('xs')}; align-items: center; }
 
-            & .legs-body { font-size: 0.75rem; line-height: 1.6; color: ${t('text-muted')}; }
-            & .legs-body b { color: ${t('text')}; }
+            & .legs-body { font-size: 0.75rem; line-height: 1.6; color: ${t('color-text-secondary')}; }
+            & .legs-body b { color: ${t('color-text-primary')}; }
             & .leg-light {
                 display: inline-block;
                 width: 9px;
@@ -297,30 +297,30 @@ export class PlannerPanelComponent extends Component {
             & .shot-advice {
                 grid-column: 2 / span 3;
                 font-size: 0.68rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .putt-verbal {
                 font-size: 0.82rem;
                 font-weight: 600;
-                color: ${t('text')};
+                color: ${t('color-text-primary')};
             }
-            & .putt-body { font-size: 0.75rem; line-height: 1.6; color: ${t('text-muted')}; }
-            & .putt-body b { color: ${t('text')}; }
-            & .putt-body .putt-warn { color: ${t('error')}; }
-            & .putt-confidence { font-size: 0.7rem; color: ${t('text-muted')}; }
+            & .putt-body { font-size: 0.75rem; line-height: 1.6; color: ${t('color-text-secondary')}; }
+            & .putt-body b { color: ${t('color-text-primary')}; }
+            & .putt-body .putt-warn { color: ${t('color-status-negative')}; }
+            & .putt-confidence { font-size: 0.7rem; color: ${t('color-text-secondary')}; }
 
             & .putt-training-toggle {
                 display: flex;
                 align-items: center;
                 gap: 4px;
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 white-space: nowrap;
                 align-self: flex-end;
             }
             & .putt-quiz__form { display: flex; flex-direction: column; gap: ${s('xs')}; }
-            & .putt-quiz__prompt { font-size: 0.75rem; font-weight: 600; color: ${t('text')}; }
+            & .putt-quiz__prompt { font-size: 0.75rem; font-weight: 600; color: ${t('color-text-primary')}; }
             & .putt-quiz__grid {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
@@ -330,31 +330,31 @@ export class PlannerPanelComponent extends Component {
                 min-width: 0;
                 font-family: inherit;
                 padding: 2px 4px;
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
-                background: ${t('surface')};
-                color: ${t('text')};
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-primary')};
             }
             & .putt-quiz__actions { display: flex; gap: ${s('xs')}; }
             & .putt-score {
                 font-size: 0.75rem;
                 line-height: 1.6;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
-            & .putt-score b { color: ${t('text')}; }
+            & .putt-score b { color: ${t('color-text-primary')}; }
 
             & .caddy-body { display: flex; flex-direction: column; gap: 6px; }
             & .caddy-card {
-                border-left: 3px solid ${t('accent')};
+                border-left: 3px solid ${t('color-accent-primary')};
                 padding: 4px 8px;
-                background: ${t('hover-bg')};
+                background: ${t('color-surface-sunken')};
                 border-radius: 3px;
             }
-            & .caddy-headline { font-size: 0.78rem; font-weight: 600; color: ${t('text')}; }
-            & .caddy-why { font-size: 0.72rem; line-height: 1.5; color: ${t('text-muted')}; margin-top: 2px; }
+            & .caddy-headline { font-size: 0.78rem; font-weight: 600; color: ${t('color-text-primary')}; }
+            & .caddy-why { font-size: 0.72rem; line-height: 1.5; color: ${t('color-text-secondary')}; margin-top: 2px; }
 
             & .shot-list, & .gate-list { display: flex; flex-direction: column; gap: 2px; }
-            & .empty-note { display: none; font-size: 0.72rem; color: ${t('text-muted')}; &.show { display: block; } }
+            & .empty-note { display: none; font-size: 0.72rem; color: ${t('color-text-secondary')}; &.show { display: block; } }
 
             & .shot-row {
                 display: grid;
@@ -364,8 +364,8 @@ export class PlannerPanelComponent extends Component {
                 padding: 2px ${s('xs')};
                 border-radius: ${t('radius-sm')};
                 cursor: pointer;
-                &:hover { background: ${t('hover-bg')}; }
-                &.selected { background: ${t('active-bg')}; }
+                &:hover { background: ${t('color-surface-sunken')}; }
+                &.selected { background: ${t('color-accent-primary')}; }
             }
             & .shot-idx { font-weight: 600; }
             & .shot-club, & .shot-label {
@@ -373,15 +373,15 @@ export class PlannerPanelComponent extends Component {
                 font-size: 0.72rem;
                 font-family: inherit;
                 padding: 2px 4px;
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
-                background: ${t('surface')};
-                color: ${t('text')};
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-primary')};
             }
             & .shot-dist {
                 grid-column: 2 / span 3;
                 font-size: 0.7rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .gate-row {
@@ -391,18 +391,18 @@ export class PlannerPanelComponent extends Component {
                 padding: 2px ${s('xs')};
                 border-radius: ${t('radius-sm')};
                 cursor: pointer;
-                &:hover { background: ${t('hover-bg')}; }
-                &.selected { background: ${t('active-bg')}; }
+                &:hover { background: ${t('color-surface-sunken')}; }
+                &.selected { background: ${t('color-accent-primary')}; }
             }
             & .gate-name { font-weight: 600; }
-            & .gate-widths { flex: 1; color: ${t('text-muted')}; font-size: 0.72rem; }
+            & .gate-widths { flex: 1; color: ${t('color-text-secondary')}; font-size: 0.72rem; }
 
             & .row-remove {
                 padding: 0 4px;
                 font-size: 0.72rem;
                 line-height: 1.4;
                 ${btn(t('radius-sm'))}
-                color: ${t('error')};
+                color: ${t('color-status-negative')};
                 border-color: transparent;
             }
 
@@ -410,27 +410,27 @@ export class PlannerPanelComponent extends Component {
                 padding: ${s('sm')} ${s('md')};
                 font-size: 0.8rem;
                 font-family: inherit;
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
-                background: ${t('surface')};
-                color: ${t('text')};
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-primary')};
                 resize: vertical;
             }
 
             & .plan-panel__status {
                 padding: ${s('xs')} ${s('md')};
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 min-height: 1.4em;
-                &.error { color: ${t('error')}; }
+                &.error { color: ${t('color-status-negative')}; }
             }
 
             & .plan-panel__hints {
                 padding: ${s('xs')} ${s('md')} ${s('sm')};
                 font-size: 0.68rem;
                 line-height: 1.5;
-                color: ${t('text-muted')};
-                border-top: 1px solid ${t('border')};
+                color: ${t('color-text-secondary')};
+                border-top: 1px solid ${t('color-border-default')};
             }
         }
     `;

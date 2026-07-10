@@ -53,11 +53,11 @@ export class MeasurePanelComponent extends Component {
             display: flex;
             flex-direction: column;
             font-size: 0.8rem;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
 
             & .measure-panel__section {
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('sm')};
@@ -69,7 +69,7 @@ export class MeasurePanelComponent extends Component {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .instruction {
@@ -92,7 +92,7 @@ export class MeasurePanelComponent extends Component {
             }
 
             & .segment {
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
                 padding: ${s('xs')} ${s('sm')};
             }
@@ -100,7 +100,7 @@ export class MeasurePanelComponent extends Component {
             & .segment__title {
                 font-size: 0.72rem;
                 font-weight: 600;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 margin-bottom: 2px;
             }
 
@@ -114,7 +114,7 @@ export class MeasurePanelComponent extends Component {
 
             & .totals-grid { font-weight: 600; }
 
-            & .stat-label { color: ${t('text-muted')}; }
+            & .stat-label { color: ${t('color-text-secondary')}; }
             & .stat-value { text-align: right; font-variant-numeric: tabular-nums; }
             & .stat-value.up { color: ${COLOR_UP}; }
             & .stat-value.down { color: ${COLOR_DOWN}; }
@@ -122,16 +122,16 @@ export class MeasurePanelComponent extends Component {
             & .profile-canvas {
                 width: ${PROFILE_W}px;
                 height: ${PROFILE_H}px;
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
-                background: ${t('surface')};
+                background: ${t('color-surface-card')};
             }
 
             & .profile-labels {
                 display: flex;
                 justify-content: space-between;
                 font-size: 0.68rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 font-variant-numeric: tabular-nums;
             }
 
@@ -145,8 +145,8 @@ export class MeasurePanelComponent extends Component {
                 padding: ${s('xs')} ${s('md')} ${s('sm')};
                 font-size: 0.68rem;
                 line-height: 1.5;
-                color: ${t('text-muted')};
-                border-top: 1px solid ${t('border')};
+                color: ${t('color-text-secondary')};
+                border-top: 1px solid ${t('color-border-default')};
             }
         }
     `;

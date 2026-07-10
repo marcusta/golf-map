@@ -9,7 +9,8 @@ final class FeaturePaletteTests: XCTestCase {
             CourseFeatureType.allCases.map(\.rawValue),
             [
                 "tee", "fairway", "green", "bunker", "semi_rough", "rough",
-                "deep_rough", "water", "water_creek", "path", "outside",
+                "deep_rough", "trees", "water", "water_creek",
+                "penalty_yellow", "penalty_red", "oob", "path", "outside",
             ]
         )
     }
@@ -18,17 +19,21 @@ final class FeaturePaletteTests: XCTestCase {
     /// keep in sync so app and editor render identically.
     func testFillAndOutlineColorsMatchWebPalette() {
         let expected: [CourseFeatureType: (fill: String, outline: String)] = [
-            .green: ("#8fe0a0", "#4fa863"),
-            .tee: ("#63b578", "#3c8a52"),
-            .fairway: ("#4d9e58", "#2f7d43"),
-            .semiRough: ("#79a860", "#557f41"),
-            .rough: ("#55803f", "#3b5f2b"),
-            .deepRough: ("#3c5c2e", "#294420"),
-            .bunker: ("#e9d8a0", "#c4a95e"),
-            .water: ("#4f8fd0", "#2f6aa8"),
-            .waterCreek: ("#6fb1e0", "#4585b8"),
-            .path: ("#b6a68d", "#8f7f66"),
-            .outside: ("#9097a0", "#6a7178"),
+            .green: ("#7fc489", "#3f7a55"),
+            .tee: ("#5fa76e", "#34734a"),
+            .fairway: ("#4c9256", "#2c6b3b"),
+            .semiRough: ("#7e9e56", "#4c6e37"),
+            .rough: ("#566e3a", "#384e23"),
+            .deepRough: ("#3c5730", "#26381c"),
+            .trees: ("#24402b", "#142619"),
+            .bunker: ("#e1cc93", "#b0894a"),
+            .water: ("#4c8fbe", "#2e6389"),
+            .waterCreek: ("#77aed2", "#3f7ba0"),
+            .penaltyYellow: ("#e8cb56", "#c39a2e"),
+            .penaltyRed: ("#de6152", "#b0402e"),
+            .oob: ("#efeae0", "#3a4148"),
+            .path: ("#c2a879", "#866b47"),
+            .outside: ("#8a8e90", "#565c61"),
         ]
         XCTAssertEqual(expected.count, CourseFeatureType.allCases.count)
         for (type, colors) in expected {
@@ -44,7 +49,8 @@ final class FeaturePaletteTests: XCTestCase {
             FeaturePalette.zOrder.map(\.rawValue),
             [
                 "outside", "deep_rough", "rough", "semi_rough", "fairway",
-                "tee", "green", "bunker", "water", "water_creek", "path",
+                "tee", "green", "trees", "bunker", "water", "water_creek",
+                "penalty_yellow", "penalty_red", "oob", "path",
             ]
         )
     }
@@ -75,11 +81,11 @@ final class FeaturePaletteTests: XCTestCase {
         XCTAssertEqual(expr.count, 2 + FeaturePalette.zOrder.count * 2 + 1)
         // Unknown types sort below everything.
         XCTAssertEqual(expr.last as? Int, -1)
-        // outside = 0 (bottom), path = 10 (top).
+        // outside = 0 (bottom), path = 14 (top).
         XCTAssertEqual(expr[2] as? String, "outside")
         XCTAssertEqual(expr[3] as? Int, 0)
         XCTAssertEqual(expr[expr.count - 3] as? String, "path")
-        XCTAssertEqual(expr[expr.count - 2] as? Int, 10)
+        XCTAssertEqual(expr[expr.count - 2] as? Int, 14)
     }
 
     /// D23/D24: rendering reads the server-assigned `stackKey`, falling back

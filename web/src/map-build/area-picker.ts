@@ -119,11 +119,11 @@ export class AreaPicker {
         this.map.on('load', () => {
             this.map.addSource('aoi', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
             this.map.addSource('aoi-handles', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-            this.map.addLayer({ id: 'aoi-fill', type: 'fill', source: 'aoi', paint: { 'fill-color': '#ffd400', 'fill-opacity': 0.12 } });
-            this.map.addLayer({ id: 'aoi-line', type: 'line', source: 'aoi', paint: { 'line-color': '#ffd400', 'line-width': 2 } });
+            this.map.addLayer({ id: 'aoi-fill', type: 'fill', source: 'aoi', paint: { 'fill-color': '#D8A441', 'fill-opacity': 0.12 } });
+            this.map.addLayer({ id: 'aoi-line', type: 'line', source: 'aoi', paint: { 'line-color': '#D8A441', 'line-width': 2 } });
             this.map.addLayer({
                 id: 'aoi-handle', type: 'circle', source: 'aoi-handles',
-                paint: { 'circle-radius': 6, 'circle-color': '#ffffff', 'circle-stroke-color': '#ffd400', 'circle-stroke-width': 2 },
+                paint: { 'circle-radius': 6, 'circle-color': '#ffffff', 'circle-stroke-color': '#D8A441', 'circle-stroke-width': 2 },
             });
 
             if (initial) {
@@ -156,7 +156,7 @@ export class AreaPicker {
         }
         if (this.modeButtons) {
             for (const m of ['navigate', 'draw'] as PickerMode[]) {
-                this.modeButtons[m].style.background = m === mode ? '#2f7d4f' : '#fff';
+                this.modeButtons[m].style.background = m === mode ? '#BF6A3E' : '#fff';
                 this.modeButtons[m].style.color = m === mode ? '#fff' : '#333';
             }
         }

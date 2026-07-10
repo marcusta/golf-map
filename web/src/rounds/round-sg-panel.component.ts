@@ -74,11 +74,11 @@ export class RoundSgPanelComponent extends Component<RoundSgPanelProps> {
             display: flex;
             flex-direction: column;
             font-size: 0.8rem;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
 
             & .round-sg-panel__section {
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('sm')};
@@ -90,7 +90,7 @@ export class RoundSgPanelComponent extends Component<RoundSgPanelProps> {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .sg-table__rows {
@@ -107,9 +107,9 @@ export class RoundSgPanelComponent extends Component<RoundSgPanelProps> {
                 font-size: 0.78rem;
             }
 
-            & .sg-table__label { color: ${t('text')}; }
+            & .sg-table__label { color: ${t('color-text-primary')}; }
             & .sg-table__count {
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 font-size: 0.7rem;
                 text-align: right;
             }
@@ -118,8 +118,8 @@ export class RoundSgPanelComponent extends Component<RoundSgPanelProps> {
                 font-weight: 600;
                 text-align: right;
                 min-width: 3.5em;
-                &.positive { color: ${t('primary')}; }
-                &.negative { color: ${t('error')}; }
+                &.positive { color: ${t('color-status-positive')}; }
+                &.negative { color: ${t('color-status-negative')}; }
             }
 
             & .round-sg-panel__total {

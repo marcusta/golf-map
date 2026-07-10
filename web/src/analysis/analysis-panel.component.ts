@@ -75,11 +75,11 @@ export class AnalysisPanelComponent extends Component {
             display: flex;
             flex-direction: column;
             font-size: 0.8rem;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
 
             & .analysis-panel__section {
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('sm')};
@@ -91,7 +91,7 @@ export class AnalysisPanelComponent extends Component {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .mode-row {
@@ -107,24 +107,24 @@ export class AnalysisPanelComponent extends Component {
                 border: 1px solid transparent;
                 border-radius: ${t('radius-sm')};
                 background: transparent;
-                color: ${t('text')};
+                color: ${t('color-text-primary')};
                 cursor: pointer;
-                &:hover { background: ${t('hover-bg')}; }
+                &:hover { background: ${t('color-surface-sunken')}; }
                 &.active {
-                    border-color: ${t('primary')};
-                    background: ${t('hover-bg')};
+                    border-color: ${t('color-accent-primary')};
+                    background: ${t('color-surface-sunken')};
                 }
             }
 
             & .mode-hint {
                 font-size: 0.68rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .buffer-label {
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
-                & span { color: ${t('text')}; font-weight: 600; }
+                color: ${t('color-text-secondary')};
+                & span { color: ${t('color-text-primary')}; font-weight: 600; }
             }
 
             & input[type='range'] { width: 100%; }
@@ -139,7 +139,7 @@ export class AnalysisPanelComponent extends Component {
                 display: flex;
                 justify-content: space-between;
                 font-size: 0.65rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .stats { display: none; }
@@ -150,7 +150,7 @@ export class AnalysisPanelComponent extends Component {
                 grid-template-columns: auto 1fr;
                 gap: 1px ${s('sm')};
                 font-size: 0.72rem;
-                & .stat-label { color: ${t('text-muted')}; }
+                & .stat-label { color: ${t('color-text-secondary')}; }
                 & .stat-value { text-align: right; font-variant-numeric: tabular-nums; }
             }
 
@@ -164,17 +164,17 @@ export class AnalysisPanelComponent extends Component {
             & .analysis-panel__status {
                 padding: ${s('xs')} ${s('md')};
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 min-height: 1.4em;
-                &.error { color: ${t('error')}; }
+                &.error { color: ${t('color-status-negative')}; }
             }
 
             & .analysis-panel__hints {
                 padding: ${s('xs')} ${s('md')} ${s('sm')};
                 font-size: 0.68rem;
                 line-height: 1.5;
-                color: ${t('text-muted')};
-                border-top: 1px solid ${t('border')};
+                color: ${t('color-text-secondary')};
+                border-top: 1px solid ${t('color-border-default')};
             }
         }
     `;

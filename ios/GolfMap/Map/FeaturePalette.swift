@@ -12,42 +12,54 @@ public enum CourseFeatureType: String, CaseIterable, Sendable {
     case semiRough = "semi_rough"
     case rough
     case deepRough = "deep_rough"
+    case trees
     case water
     case waterCreek = "water_creek"
+    case penaltyYellow = "penalty_yellow"
+    case penaltyRed = "penalty_red"
+    case oob
     case path
     case outside
 
     /// Semi-transparent fill color (opacity applied via `fill-opacity`).
     public var fillHex: String {
         switch self {
-        case .green: "#8fe0a0"
-        case .tee: "#63b578"
-        case .fairway: "#4d9e58"
-        case .semiRough: "#79a860"
-        case .rough: "#55803f"
-        case .deepRough: "#3c5c2e"
-        case .bunker: "#e9d8a0"
-        case .water: "#4f8fd0"
-        case .waterCreek: "#6fb1e0"
-        case .path: "#b6a68d"
-        case .outside: "#9097a0"
+        case .green: "#7fc489"
+        case .tee: "#5fa76e"
+        case .fairway: "#4c9256"
+        case .semiRough: "#7e9e56"
+        case .rough: "#566e3a"
+        case .deepRough: "#3c5730"
+        case .trees: "#24402b"
+        case .bunker: "#e1cc93"
+        case .water: "#4c8fbe"
+        case .waterCreek: "#77aed2"
+        case .penaltyYellow: "#e8cb56"
+        case .penaltyRed: "#de6152"
+        case .oob: "#efeae0"
+        case .path: "#c2a879"
+        case .outside: "#8a8e90"
         }
     }
 
     /// Full-strength outline color.
     public var outlineHex: String {
         switch self {
-        case .green: "#4fa863"
-        case .tee: "#3c8a52"
-        case .fairway: "#2f7d43"
-        case .semiRough: "#557f41"
-        case .rough: "#3b5f2b"
-        case .deepRough: "#294420"
-        case .bunker: "#c4a95e"
-        case .water: "#2f6aa8"
-        case .waterCreek: "#4585b8"
-        case .path: "#8f7f66"
-        case .outside: "#6a7178"
+        case .green: "#3f7a55"
+        case .tee: "#34734a"
+        case .fairway: "#2c6b3b"
+        case .semiRough: "#4c6e37"
+        case .rough: "#384e23"
+        case .deepRough: "#26381c"
+        case .trees: "#142619"
+        case .bunker: "#b0894a"
+        case .water: "#2e6389"
+        case .waterCreek: "#3f7ba0"
+        case .penaltyYellow: "#c39a2e"
+        case .penaltyRed: "#b0402e"
+        case .oob: "#3a4148"
+        case .path: "#866b47"
+        case .outside: "#565c61"
         }
     }
 }
@@ -69,7 +81,8 @@ public enum FeaturePalette {
     /// features (bunkers, water, paths) on top. Ported from web TYPE_Z_ORDER.
     public static let zOrder: [CourseFeatureType] = [
         .outside, .deepRough, .rough, .semiRough, .fairway,
-        .tee, .green, .bunker, .water, .waterCreek, .path,
+        .tee, .green, .trees, .bunker, .water, .waterCreek,
+        .penaltyYellow, .penaltyRed, .oob, .path,
     ]
 
     /// MapLibre `match` expression (style-spec JSON): feature `type` property

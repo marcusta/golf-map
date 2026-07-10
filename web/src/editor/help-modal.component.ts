@@ -48,7 +48,7 @@ export class HelpModalComponent extends Component {
             inset: 0;
             z-index: 1000;
             display: none;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
             pointer-events: none;
 
             &.is-open {
@@ -71,9 +71,9 @@ export class HelpModalComponent extends Component {
                 flex-direction: column;
                 width: min(480px, calc(100vw - 48px));
                 max-height: min(600px, calc(100vh - 48px));
-                border: 1px solid color-mix(in srgb, ${t('border')} 82%, transparent);
+                border: 1px solid color-mix(in srgb, ${t('color-border-default')} 82%, transparent);
                 border-radius: ${t('radius')};
-                background: ${t('surface')};
+                background: ${t('color-surface-card')};
                 box-shadow: ${t('shadow-elevated')};
                 overflow: hidden;
             }
@@ -84,7 +84,7 @@ export class HelpModalComponent extends Component {
                 justify-content: space-between;
                 gap: ${s('md')};
                 padding: ${s('md')} ${s('lg')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 flex-shrink: 0;
             }
 
@@ -98,14 +98,14 @@ export class HelpModalComponent extends Component {
                 width: 28px;
                 height: 28px;
                 flex-shrink: 0;
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: 50%;
-                background: ${t('surface')};
-                color: ${t('text-muted')};
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-secondary')};
                 font-size: 1.1rem;
                 line-height: 1;
                 cursor: pointer;
-                &:hover { background: ${t('hover-bg')}; color: ${t('text')}; }
+                &:hover { background: ${t('color-surface-sunken')}; color: ${t('color-text-primary')}; }
             }
 
             & .help-modal__body {
@@ -122,7 +122,7 @@ export class HelpModalComponent extends Component {
                 font-weight: 700;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .help-row {
@@ -137,17 +137,17 @@ export class HelpModalComponent extends Component {
                 min-width: 150px;
                 font-family: ui-monospace, monospace;
                 font-size: 0.76rem;
-                color: ${t('text')};
+                color: ${t('color-text-primary')};
             }
 
             & .help-row__desc {
                 font-size: 0.82rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .help-empty {
                 font-size: 0.85rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
         }
     `;

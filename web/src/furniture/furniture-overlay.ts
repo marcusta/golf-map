@@ -10,7 +10,7 @@ import { FURNITURE_TOOL_ID, finiteWgs84Point, type Selection } from './furniture
 /** Overlay/source id for the persistent furniture rendering. */
 export const FURNITURE_OVERLAY_ID = FURNITURE_TOOL_ID;
 
-export const SELECTION_COLOR = '#ff8c00';
+export const SELECTION_COLOR = '#BF6A3E'; // L&L accent / focus
 
 /** Tee colour name → CSS fill. Unknown/null falls back to grey. */
 const TEE_FILL: Record<string, string> = {
@@ -246,7 +246,7 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             id: `${FURNITURE_OVERLAY_ID}-green-center`,
             type: 'circle',
             filter: role('green-center'),
-            paint: { 'circle-radius': 5, 'circle-color': '#2f7d4f', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.5 },
+            paint: { 'circle-radius': 5, 'circle-color': '#5C6B4A', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.5 },
         },
         {
             id: `${FURNITURE_OVERLAY_ID}-green-labels`,
@@ -261,7 +261,7 @@ export function furnitureLayers(): OverlayLayerSpec[] {
                 'text-offset': [0, -1.1],
                 'text-allow-overlap': true,
             },
-            paint: { 'text-color': '#1d3b2a', 'text-halo-color': '#ffffff', 'text-halo-width': 1 },
+            paint: { 'text-color': '#1E2B22', 'text-halo-color': '#ffffff', 'text-halo-width': 1 },
         },
         // Aim diamonds (rotated square) + selection ring.
         {
@@ -296,7 +296,7 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             paint: {
                 'circle-radius': 7,
                 'circle-color': ['get', 'fill'] as never,
-                'circle-stroke-color': '#1d3b2a',
+                'circle-stroke-color': '#1E2B22',
                 'circle-stroke-width': 1.5,
             },
         },
@@ -310,7 +310,7 @@ export function furnitureLayers(): OverlayLayerSpec[] {
                 'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'] as never,
                 'text-allow-overlap': true,
             },
-            paint: { 'text-color': '#1d3b2a', 'text-halo-color': '#ffffff', 'text-halo-width': 1 },
+            paint: { 'text-color': '#1E2B22', 'text-halo-color': '#ffffff', 'text-halo-width': 1 },
         },
         // Pins: selection ring, active ring, dot, name label.
         {
@@ -323,7 +323,7 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             id: `${FURNITURE_OVERLAY_ID}-pin-active`,
             type: 'circle',
             filter: ['all', role('pin'), ['==', ['get', 'active'], true]] as FilterSpecification,
-            paint: { 'circle-radius': 9, 'circle-color': 'transparent', 'circle-stroke-color': '#d63a3a', 'circle-stroke-width': 2 },
+            paint: { 'circle-radius': 9, 'circle-color': 'transparent', 'circle-stroke-color': '#B24A32', 'circle-stroke-width': 2 },
         },
         {
             id: `${FURNITURE_OVERLAY_ID}-pin`,
@@ -331,8 +331,8 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             filter: role('pin'),
             paint: {
                 'circle-radius': 5,
-                'circle-color': ['case', ['==', ['get', 'active'], true], '#d63a3a', '#ffffff'] as never,
-                'circle-stroke-color': '#d63a3a',
+                'circle-color': ['case', ['==', ['get', 'active'], true], '#B24A32', '#ffffff'] as never,
+                'circle-stroke-color': '#B24A32',
                 'circle-stroke-width': 2,
             },
         },

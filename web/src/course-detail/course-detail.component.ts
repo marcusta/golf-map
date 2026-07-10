@@ -62,10 +62,10 @@ export class CourseDetailComponent extends Component {
                 gap: ${s('md')};
                 flex-shrink: 0;
                 padding: ${s('sm')} ${s('lg')};
-                background: ${t('surface')};
-                border-bottom: 1px solid ${t('border')};
+                background: ${t('color-surface-card')};
+                border-bottom: 1px solid ${t('color-border-default')};
 
-                & h2 { margin: 0; font-size: 1rem; color: ${t('text')}; }
+                & h2 { margin: 0; font-size: 1rem; color: ${t('color-text-primary')}; }
 
                 & .back-btn {
                     padding: ${s('xs')} ${s('sm')};
@@ -80,22 +80,22 @@ export class CourseDetailComponent extends Component {
                     letter-spacing: 0.04em;
                     padding: 2px ${s('sm')};
                     border-radius: ${t('radius-pill')};
-                    background: ${t('hover-bg')};
-                    color: ${t('text-muted')};
+                    background: ${t('color-surface-sunken')};
+                    color: ${t('color-text-secondary')};
 
                     &.published {
                         background: rgba(47, 125, 79, 0.12);
-                        color: ${t('primary')};
+                        color: ${t('color-accent-primary')};
                     }
                 }
 
                 & .meta {
                     font-size: 0.8rem;
-                    color: ${t('text-muted')};
+                    color: ${t('color-text-secondary')};
                 }
 
                 & .georef-warn {
-                    color: ${t('error')};
+                    color: ${t('color-status-negative')};
                     font-size: 0.75rem;
                     &:empty { display: none; }
                 }
@@ -125,7 +125,7 @@ export class CourseDetailComponent extends Component {
 
                 & .error {
                     display: none;
-                    color: ${t('error')};
+                    color: ${t('color-status-negative')};
                     font-size: 0.875rem;
                     margin-left: auto;
                 }
@@ -148,8 +148,8 @@ export class CourseDetailComponent extends Component {
                 display: flex;
                 flex-direction: column;
                 min-height: 0;
-                background: ${t('surface')};
-                border-right: 1px solid ${t('border')};
+                background: ${t('color-surface-card')};
+                border-right: 1px solid ${t('color-border-default')};
 
                 & .sidebar-title {
                     margin: 0;
@@ -158,7 +158,7 @@ export class CourseDetailComponent extends Component {
                     font-weight: 600;
                     text-transform: uppercase;
                     letter-spacing: 0.06em;
-                    color: ${t('text-muted')};
+                    color: ${t('color-text-secondary')};
                 }
             }
 
@@ -183,21 +183,21 @@ export class CourseDetailComponent extends Component {
                 cursor: pointer;
                 transition: background 0.15s;
 
-                &:hover { background: ${t('hover-bg')}; }
+                &:hover { background: ${t('color-surface-sunken')}; }
                 &.active {
-                    background: ${t('active-bg')};
-                    & .hole-row__number, & .hole-row__par { color: ${t('active-text')}; }
+                    background: ${t('color-accent-primary')};
+                    & .hole-row__number, & .hole-row__par { color: ${t('color-on-accent')}; }
                 }
 
                 & .hole-row__number {
                     font-size: 0.875rem;
                     font-weight: 600;
-                    color: ${t('text')};
+                    color: ${t('color-text-primary')};
                 }
 
                 & .hole-row__par {
                     font-size: 0.8rem;
-                    color: ${t('text-muted')};
+                    color: ${t('color-text-secondary')};
                 }
             }
 

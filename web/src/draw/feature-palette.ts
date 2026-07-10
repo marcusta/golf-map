@@ -35,21 +35,21 @@ export interface FeatureStyle {
 
 /** Golf palette: greens light, fairway mid, roughs darkening, sand, blues. */
 export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
-    green: { label: 'Green', fill: '#72dc8e', draw: '#62ef85', outline: '#389657' },
-    tee: { label: 'Tee', fill: '#48ad66', draw: '#31d35a', outline: '#287a45' },
-    fairway: { label: 'Fairway', fill: '#269343', draw: '#0ba83b', outline: '#1d6c33' },
-    semi_rough: { label: 'Semi rough', fill: '#79a550', draw: '#91b849', outline: '#4d7433' },
-    rough: { label: 'Rough', fill: '#48732e', draw: '#4d7f24', outline: '#2f5420' },
-    deep_rough: { label: 'Deep rough', fill: '#294f23', draw: '#244b1d', outline: '#193b17' },
-    trees: { label: 'Trees', fill: '#173d27', draw: '#103c23', outline: '#0e2b19' },
-    bunker: { label: 'Bunker', fill: '#ead18b', draw: '#f0cf70', outline: '#b68f39' },
-    water: { label: 'Water', fill: '#367fcc', draw: '#2088e8', outline: '#235d9e' },
-    water_creek: { label: 'Creek', fill: '#65abe0', draw: '#62baf4', outline: '#367ba9' },
-    penalty_yellow: { label: 'Yellow penalty', fill: '#f6d94c', draw: '#f6d94c', outline: '#d8a800' },
-    penalty_red: { label: 'Red penalty', fill: '#ef5b5b', draw: '#ef5b5b', outline: '#bf2727' },
-    oob: { label: 'OOB', fill: '#f5f5f0', draw: '#f5f5f0', outline: '#1f2933' },
-    path: { label: 'Path', fill: '#b49a70', draw: '#c1a06b', outline: '#796044' },
-    outside: { label: 'Outside', fill: '#7f8994', draw: '#6f7c89', outline: '#525d68' },
+    green: { label: 'Green', fill: '#7fc489', draw: '#97d79b', outline: '#3f7a55' },
+    tee: { label: 'Tee', fill: '#5fa76e', draw: '#6fc07e', outline: '#34734a' },
+    fairway: { label: 'Fairway', fill: '#4c9256', draw: '#4fa85e', outline: '#2c6b3b' },
+    semi_rough: { label: 'Semi rough', fill: '#7e9e56', draw: '#8fb157', outline: '#4c6e37' },
+    rough: { label: 'Rough', fill: '#566e3a', draw: '#5f7c34', outline: '#384e23' },
+    deep_rough: { label: 'Deep rough', fill: '#3c5730', draw: '#3e5a28', outline: '#26381c' },
+    trees: { label: 'Trees', fill: '#24402b', draw: '#1e3c26', outline: '#142619' },
+    bunker: { label: 'Bunker', fill: '#e1cc93', draw: '#ecd588', outline: '#b0894a' },
+    water: { label: 'Water', fill: '#4c8fbe', draw: '#3e93d0', outline: '#2e6389' },
+    water_creek: { label: 'Creek', fill: '#77aed2', draw: '#6fb6e0', outline: '#3f7ba0' },
+    penalty_yellow: { label: 'Yellow penalty', fill: '#e8cb56', draw: '#e8cb56', outline: '#c39a2e' },
+    penalty_red: { label: 'Red penalty', fill: '#de6152', draw: '#de6152', outline: '#b0402e' },
+    oob: { label: 'OOB', fill: '#efeae0', draw: '#efeae0', outline: '#3a4148' },
+    path: { label: 'Path', fill: '#c2a879', draw: '#cbae75', outline: '#866b47' },
+    outside: { label: 'Outside', fill: '#8a8e90', draw: '#7c8286', outline: '#565c61' },
 };
 
 /** Selected-feature highlight color (outline + handles). */

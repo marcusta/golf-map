@@ -108,12 +108,12 @@ export class SvgImportPanelComponent extends Component {
             display: none;
             flex-direction: column;
             overflow-y: auto;
-            border: 1px solid ${t('border')};
+            border: 1px solid ${t('color-border-default')};
             border-radius: ${t('radius-sm')};
-            background: ${t('surface')};
+            background: ${t('color-surface-card')};
             box-shadow: ${t('shadow-elevated')};
             font-size: 0.8rem;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
             &.show { display: flex; }
 
             & .svg-import__header {
@@ -121,14 +121,14 @@ export class SvgImportPanelComponent extends Component {
                 align-items: center;
                 justify-content: space-between;
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 & h3 { margin: 0; font-size: 0.9rem; }
                 & button { padding: 2px ${s('sm')}; font-size: 0.8rem; ${btn()} }
             }
 
             & .svg-import__section {
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('xs')};
@@ -141,11 +141,11 @@ export class SvgImportPanelComponent extends Component {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
-            & .hint { font-size: 0.72rem; color: ${t('text-muted')}; }
-            & .error { font-size: 0.75rem; color: ${t('error')}; &:empty { display: none; } }
+            & .hint { font-size: 0.72rem; color: ${t('color-text-secondary')}; }
+            & .error { font-size: 0.75rem; color: ${t('color-status-negative')}; &:empty { display: none; } }
 
             & .bucket-group__head {
                 display: flex;
@@ -178,7 +178,7 @@ export class SvgImportPanelComponent extends Component {
                     text-overflow: ellipsis;
                     white-space: nowrap;
                 }
-                & .bucket-count { font-size: 0.7rem; color: ${t('text-muted')}; }
+                & .bucket-count { font-size: 0.7rem; color: ${t('color-text-secondary')}; }
                 & select { font-size: 0.72rem; padding: 1px 2px; max-width: 110px; }
             }
 
@@ -203,7 +203,7 @@ export class SvgImportPanelComponent extends Component {
             }
 
             & .summary { font-size: 0.75rem; white-space: pre-line; }
-            & .warnings { font-size: 0.7rem; color: ${t('text-muted')}; white-space: pre-line; }
+            & .warnings { font-size: 0.7rem; color: ${t('color-text-secondary')}; white-space: pre-line; }
         }
     `;
 

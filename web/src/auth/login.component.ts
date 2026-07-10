@@ -29,7 +29,7 @@ export class LoginComponent extends Component {
             align-items: center;
             justify-content: center;
             height: 100%;
-            background: ${t('bg')};
+            background: ${t('color-surface-app')};
 
             &[inert] { opacity: 0.6; }
 
@@ -43,14 +43,14 @@ export class LoginComponent extends Component {
             & .login__title {
                 margin: 0;
                 font-size: 1.5rem;
-                color: ${t('primary')};
+                color: ${t('color-accent-primary')};
                 text-align: center;
             }
 
             & .login__subtitle {
                 margin: ${s('xs')} 0 ${s('xl')};
                 font-size: 0.875rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 text-align: center;
             }
 
@@ -58,7 +58,7 @@ export class LoginComponent extends Component {
                 display: none;
                 padding: ${s('sm')} ${s('md')};
                 margin-bottom: ${s('md')};
-                color: ${t('error')};
+                color: ${t('color-status-negative')};
                 font-size: 0.875rem;
                 border-radius: ${t('radius-sm')};
                 background: rgba(201, 42, 42, 0.08);

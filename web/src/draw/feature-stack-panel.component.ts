@@ -52,11 +52,11 @@ export class FeatureStackPanelComponent extends Component {
             display: flex;
             flex-direction: column;
             font-size: 0.8rem;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
 
             & .stack-panel__section {
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('sm')};
@@ -68,7 +68,7 @@ export class FeatureStackPanelComponent extends Component {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .stack-panel__section-head {
@@ -83,14 +83,14 @@ export class FeatureStackPanelComponent extends Component {
                 height: 18px;
                 flex-shrink: 0;
                 padding: 0;
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: 50%;
-                background: ${t('surface')};
-                color: ${t('text-muted')};
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-secondary')};
                 font-size: 0.68rem;
                 line-height: 1;
                 cursor: pointer;
-                &:hover { background: ${t('hover-bg')}; color: ${t('text')}; }
+                &:hover { background: ${t('color-surface-sunken')}; color: ${t('color-text-primary')}; }
             }
 
             & .scope-field { ${field()} }
@@ -107,11 +107,11 @@ export class FeatureStackPanelComponent extends Component {
                 gap: ${s('xs')};
                 padding: ${s('xs')} ${s('md')};
                 cursor: pointer;
-                border-bottom: 1px solid ${t('border')};
-                &:hover { background: ${t('hover-bg')}; }
+                border-bottom: 1px solid ${t('color-border-default')};
+                &:hover { background: ${t('color-surface-sunken')}; }
                 &.selected {
-                    background: ${t('hover-bg')};
-                    box-shadow: inset 3px 0 0 ${t('primary')};
+                    background: ${t('color-surface-sunken')};
+                    box-shadow: inset 3px 0 0 ${t('color-accent-primary')};
                 }
             }
 
@@ -134,14 +134,14 @@ export class FeatureStackPanelComponent extends Component {
             & .stack-row__count {
                 flex-shrink: 0;
                 font-size: 0.7rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .stack-empty {
                 display: none;
                 padding: ${s('sm')} ${s('md')};
                 font-size: 0.75rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 &.show { display: block; }
             }
 
@@ -165,11 +165,12 @@ export class FeatureStackPanelComponent extends Component {
     private helpModal = this.inject(HelpModalService);
 
     /**
-     * Scope filter (course-level = null). Defaults to the draw target;
-     * afterwards it's user-driven except that selecting a shape on the map
-     * always follows the selection into its group (see the effect below).
+     * Scope filter (course-level = null). Follows the draw target until the
+     * user explicitly changes this filter; selecting a shape on the map still
+     * follows the selection into its group (see the effects below).
      */
     private scopeHoleId = new Signal<string | null>(this.tool.drawHoleId.peek());
+    private scopeUserPinned = false;
     private scopeSelect!: HTMLSelectElement;
     private rowsHost!: HTMLElement;
 
@@ -199,6 +200,7 @@ export class FeatureStackPanelComponent extends Component {
 
         this.scopeSelect = this.ref(frag, 'scopeSelect') as HTMLSelectElement;
         this.scopeSelect.addEventListener('change', () => {
+            this.scopeUserPinned = true;
             this.scopeHoleId.set(this.scopeSelect.value || null);
         });
 
@@ -230,6 +232,13 @@ export class FeatureStackPanelComponent extends Component {
             (feature, _index, track) => this.renderRow(feature, track),
             feature => feature.id,
         );
+
+        // Follow the draw target while the stack filter is still implicit.
+        this.track(effect(() => {
+            const drawHoleId = this.tool.drawHoleId.get();
+            if (this.scopeUserPinned) return;
+            untrack(() => this.scopeHoleId.set(drawHoleId));
+        }));
 
         // Follow selection: a shape selected on the map (or via alt-cycle)
         // switches scope to its group and scrolls its row into view. The

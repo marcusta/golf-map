@@ -69,11 +69,11 @@ export class EditorCanvasComponent extends Component {
                 align-items: center;
                 justify-content: center;
                 background:
-                    linear-gradient(${t('border')} 1px, transparent 1px) 0 0 / 24px 24px,
-                    linear-gradient(90deg, ${t('border')} 1px, transparent 1px) 0 0 / 24px 24px,
-                    ${t('bg')};
+                    linear-gradient(${t('color-border-default')} 1px, transparent 1px) 0 0 / 24px 24px,
+                    linear-gradient(90deg, ${t('color-border-default')} 1px, transparent 1px) 0 0 / 24px 24px,
+                    ${t('color-surface-app')};
                 font-size: 0.875rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 &.show { display: flex; }
 
                 & .map-canvas__message-inner {
@@ -91,7 +91,7 @@ export class EditorCanvasComponent extends Component {
                     padding: ${s('xs')} ${s('lg')};
                     font-size: 0.8rem;
                     ${btn()}
-                    background: ${t('surface')};
+                    background: ${t('color-surface-card')};
                     &.show { display: inline-block; }
                 }
             }
@@ -110,11 +110,11 @@ export class EditorCanvasComponent extends Component {
                     font-size: 0.75rem;
                     text-align: left;
                     ${btn(t('radius-sm'))}
-                    background: ${t('surface')};
+                    background: ${t('color-surface-card')};
                     box-shadow: ${t('shadow')};
                     &.active {
-                        border-color: ${t('primary')};
-                        color: ${t('primary')};
+                        border-color: ${t('color-accent-primary')};
+                        color: ${t('color-accent-primary')};
                     }
                 }
 
@@ -124,7 +124,7 @@ export class EditorCanvasComponent extends Component {
                     gap: ${s('xs')};
                     margin-top: ${s('xs')};
                     padding-top: ${s('xs')};
-                    border-top: 1px solid ${t('border')};
+                    border-top: 1px solid ${t('color-border-default')};
                     &.show { display: flex; }
 
                     & .vintage-btn {
@@ -132,11 +132,11 @@ export class EditorCanvasComponent extends Component {
                         font-size: 0.7rem;
                         text-align: left;
                         ${btn(t('radius-sm'))}
-                        background: ${t('surface')};
+                        background: ${t('color-surface-card')};
                         box-shadow: ${t('shadow')};
                         &.active {
-                            border-color: ${t('primary')};
-                            color: ${t('primary')};
+                            border-color: ${t('color-accent-primary')};
+                            color: ${t('color-accent-primary')};
                             font-weight: 600;
                         }
                         &:disabled { opacity: 0.6; cursor: default; }
@@ -152,17 +152,17 @@ export class EditorCanvasComponent extends Component {
                 align-items: center;
                 gap: ${s('md')};
                 padding: ${s('xs')} ${s('sm')};
-                border: 1px solid ${t('border')};
+                border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
-                background: ${t('surface')};
+                background: ${t('color-surface-card')};
                 box-shadow: ${t('shadow')};
                 font-size: 0.75rem;
                 font-variant-numeric: tabular-nums;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 pointer-events: none;
                 &.show { display: flex; }
 
-                & .status-elev { color: ${t('text')}; min-width: 3.5rem; text-align: right; }
+                & .status-elev { color: ${t('color-text-primary')}; min-width: 3.5rem; text-align: right; }
                 & .status-zoom { min-width: 3rem; text-align: right; }
             }
         }

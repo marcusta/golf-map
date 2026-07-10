@@ -4,21 +4,24 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Golf Map — Course Builder</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         *, *::before, *::after { box-sizing: border-box; }
         html, body { margin: 0; padding: 0; height: 100%; }
 
         body {
-            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-            background: var(--bg);
-            color: var(--text);
+            font-family: var(--font-sans, system-ui, -apple-system, 'Segoe UI', sans-serif);
+            background: var(--color-surface-app);
+            color: var(--color-text-primary);
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
         }
 
         *:focus-visible {
             outline: none;
-            box-shadow: 0 0 0 2px rgba(47, 125, 79, 0.35);
+            box-shadow: 0 0 0 2px var(--color-border-focus);
         }
 
         #app { height: 100%; }

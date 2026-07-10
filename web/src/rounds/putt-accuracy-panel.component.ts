@@ -68,11 +68,11 @@ export class PuttAccuracyPanelComponent extends Component<PuttAccuracyPanelProps
             display: flex;
             flex-direction: column;
             font-size: 0.8rem;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
 
             & .putt-accuracy-panel__section {
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('sm')};
@@ -84,7 +84,7 @@ export class PuttAccuracyPanelComponent extends Component<PuttAccuracyPanelProps
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .sg-table__rows {
@@ -101,9 +101,9 @@ export class PuttAccuracyPanelComponent extends Component<PuttAccuracyPanelProps
                 font-size: 0.78rem;
             }
 
-            & .sg-table__label { color: ${t('text')}; }
+            & .sg-table__label { color: ${t('color-text-primary')}; }
             & .sg-table__count {
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 font-size: 0.7rem;
                 text-align: right;
             }

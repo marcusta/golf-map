@@ -48,7 +48,7 @@ export const PLAN_OVERLAY_ID = 'plan';
 export const GATE_DEFAULT_HALF_WIDTH_M = 30;
 
 /** Selection highlight colour (matches the builder tools). */
-export const PLAN_SELECTION_COLOR = '#ff8c00';
+export const PLAN_SELECTION_COLOR = '#BF6A3E'; // L&L accent / focus
 
 // ── Planning model ─────────────────────────────────────────────────────────
 
@@ -690,15 +690,15 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
 const role = (value: string): FilterSpecification =>
     ['==', ['get', 'role'], value] as FilterSpecification;
 
-const LEG_COLOR = '#fbbf24'; // amber, like the measure path
-const ELLIPSE_COLOR = '#2f7d4f';
-const GATE_COLOR = '#06b6d4';
-const GHOST_COLOR = '#a855f7'; // violet — distinct from legs/gates/ellipses
+const LEG_COLOR = '#D8A441'; // wheat (L&L data-cat-3), amber-like path
+const ELLIPSE_COLOR = '#5C6B4A'; // moss (L&L accent-secondary), landing dispersion
+const GATE_COLOR = '#3E8EA0'; // teal (L&L data-cat-2)
+const GHOST_COLOR = '#8A5A6E'; // plum (L&L data-cat-6) — distinct from legs/gates/ellipses
 
-/** Confidence-light colours (generic, non-branded — DECADE doc §9). */
-export const LIGHT_GREEN_COLOR = '#22c55e';
-export const LIGHT_YELLOW_COLOR = '#eab308';
-export const LIGHT_RED_COLOR = '#ef4444';
+/** Confidence-light colours (L&L data-viz semantic ramp — good / risk / bad). */
+export const LIGHT_GREEN_COLOR = '#4E7A46';
+export const LIGHT_YELLOW_COLOR = '#C68A2E';
+export const LIGHT_RED_COLOR = '#B24A32';
 
 /** Layer specs for the plan overlay (ids prefixed with the overlay id). */
 export function planLayers(): OverlayLayerSpec[] {
@@ -748,7 +748,7 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-offset': [0, -1],
                 'text-allow-overlap': true,
             },
-            paint: { 'text-color': '#ffffff', 'text-halo-color': '#14281c', 'text-halo-width': 1.5 },
+            paint: { 'text-color': '#ffffff', 'text-halo-color': '#1E2B22', 'text-halo-width': 1.5 },
         },
         {
             id: `${PLAN_OVERLAY_ID}-ghost-ellipse`,
@@ -860,11 +860,11 @@ export function planLayers(): OverlayLayerSpec[] {
                 'circle-radius': ['match', ['get', 'kind'], 'shot', 7, 6] as never,
                 'circle-color': [
                     'match', ['get', 'kind'],
-                    'tee', '#3a7bd5',
+                    'tee', '#5E6D94',
                     'green', ELLIPSE_COLOR,
                     '#ffffff',
                 ] as never,
-                'circle-stroke-color': '#1d3b2a',
+                'circle-stroke-color': '#1E2B22',
                 'circle-stroke-width': 1.5,
             },
         },
@@ -879,8 +879,8 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-allow-overlap': true,
             },
             paint: {
-                'text-color': ['match', ['get', 'kind'], 'shot', '#1d3b2a', '#ffffff'] as never,
-                'text-halo-color': ['match', ['get', 'kind'], 'shot', '#ffffff', '#1d3b2a'] as never,
+                'text-color': ['match', ['get', 'kind'], 'shot', '#1E2B22', '#ffffff'] as never,
+                'text-halo-color': ['match', ['get', 'kind'], 'shot', '#ffffff', '#1E2B22'] as never,
                 'text-halo-width': 1,
             },
         },

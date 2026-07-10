@@ -90,11 +90,11 @@ export class FurniturePanelComponent extends Component {
             display: flex;
             flex-direction: column;
             font-size: 0.8rem;
-            color: ${t('text')};
+            color: ${t('color-text-primary')};
 
             & .furn-panel__section {
                 padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('border')};
+                border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('sm')};
@@ -106,7 +106,7 @@ export class FurniturePanelComponent extends Component {
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
             & .place-grid {
@@ -126,9 +126,9 @@ export class FurniturePanelComponent extends Component {
                 font-weight: 600;
                 ${btn(t('radius-sm'))}
                 &.active {
-                    border-color: ${t('primary')};
-                    color: ${t('primary-text')};
-                    background: ${t('primary')};
+                    border-color: ${t('color-accent-primary')};
+                    color: ${t('color-on-accent')};
+                    background: ${t('color-accent-primary')};
                 }
             }
 
@@ -137,18 +137,18 @@ export class FurniturePanelComponent extends Component {
                 font-size: 0.72rem;
                 ${btn(t('radius-sm'))}
                 &.active {
-                    border-color: ${t('primary')};
-                    color: ${t('primary-text')};
-                    background: ${t('primary')};
+                    border-color: ${t('color-accent-primary')};
+                    color: ${t('color-on-accent')};
+                    background: ${t('color-accent-primary')};
                 }
             }
 
             & .place-hint {
                 display: none;
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 &.show { display: block; }
-                &.warn { color: ${t('error')}; }
+                &.warn { color: ${t('color-status-negative')}; }
             }
 
             & .attr { display: none; &.show { display: flex; } }
@@ -161,20 +161,20 @@ export class FurniturePanelComponent extends Component {
                 border-radius: 50%;
                 border: 2px solid transparent;
                 cursor: pointer;
-                &.active { border-color: ${t('primary')}; box-shadow: 0 0 0 1px ${t('primary')}; }
+                &.active { border-color: ${t('color-accent-primary')}; box-shadow: 0 0 0 1px ${t('color-accent-primary')}; }
             }
 
             & .selection { display: none; &.show { display: flex; } }
-            & .sel-card { font-size: 0.75rem; line-height: 1.5; color: ${t('text')}; }
-            & .sel-card b { color: ${t('text-muted')}; font-weight: 600; }
+            & .sel-card { font-size: 0.75rem; line-height: 1.5; color: ${t('color-text-primary')}; }
+            & .sel-card b { color: ${t('color-text-secondary')}; font-weight: 600; }
 
             & .hole-tools__summary {
                 font-size: 0.75rem;
                 line-height: 1.5;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
             }
 
-            & .hole-tools__summary b { color: ${t('text')}; }
+            & .hole-tools__summary b { color: ${t('color-text-primary')}; }
 
             & .hole-tools__actions {
                 display: grid;
@@ -191,37 +191,37 @@ export class FurniturePanelComponent extends Component {
                 &:disabled { opacity: 0.5; cursor: default; }
             }
             & .set-active { display: none; &.show { display: block; }
-                &.is-active { color: ${t('text-muted')}; }
+                &.is-active { color: ${t('color-text-secondary')}; }
             }
 
             & .delete-btn {
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.75rem;
                 ${btn(t('radius-sm'))}
-                color: ${t('error')};
-                border-color: ${t('error')};
+                color: ${t('color-status-negative')};
+                border-color: ${t('color-status-negative')};
                 &.hide { display: none; }
                 &:disabled { opacity: 0.5; cursor: default; }
             }
 
             & .summary { display: none; &.show { display: flex; } }
-            & .summary-body { font-size: 0.75rem; line-height: 1.6; color: ${t('text-muted')}; }
-            & .summary-body b { color: ${t('text')}; }
+            & .summary-body { font-size: 0.75rem; line-height: 1.6; color: ${t('color-text-secondary')}; }
+            & .summary-body b { color: ${t('color-text-primary')}; }
 
             & .furn-panel__status {
                 padding: ${s('xs')} ${s('md')};
                 font-size: 0.72rem;
-                color: ${t('text-muted')};
+                color: ${t('color-text-secondary')};
                 min-height: 1.4em;
-                &.error { color: ${t('error')}; }
+                &.error { color: ${t('color-status-negative')}; }
             }
 
             & .furn-panel__hints {
                 padding: ${s('xs')} ${s('md')} ${s('sm')};
                 font-size: 0.68rem;
                 line-height: 1.5;
-                color: ${t('text-muted')};
-                border-top: 1px solid ${t('border')};
+                color: ${t('color-text-secondary')};
+                border-top: 1px solid ${t('color-border-default')};
             }
         }
     `;
