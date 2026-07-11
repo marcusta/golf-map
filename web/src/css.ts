@@ -21,6 +21,40 @@ import { t } from './theme';
 // ============================================================
 
 /**
+ * Overlay width buckets (layout law 01 — "hug content"): every floating
+ * overlay panel picks exactly one of these three widths. Height always
+ * comes from content (long lists scroll inside; never full-height).
+ */
+export const OVERLAY_W = {
+    /** 280px — dense single-column lists (feature stack). */
+    narrow: '280px',
+    /** 340px — two-column grids / form-heavy panels (draw, left dock). */
+    standard: '340px',
+    /** 400px — only when 340 genuinely can't fit full labels. */
+    wide: '400px',
+} as const;
+
+/**
+ * Corner-inset contract (layout law 02): every overlay floats at ONE inset
+ * from the viewport/map edge; overlays sharing a corner share that edge
+ * plus an OVERLAY_GAP between them.
+ */
+export const OVERLAY_INSET = 'var(--space-5)';
+export const OVERLAY_GAP = 'var(--space-3)';
+
+/**
+ * Keyboard-shortcut hint inside a control label (layout-law addendum):
+ * mono, ~0.8em, dimmed — `New polygon <span class="key-hint">N</span>`.
+ * Inherits color so it dims relative to whatever the label uses.
+ */
+export const keyHint = () => `
+    font-family: var(--font-mono);
+    font-size: 0.8em;
+    opacity: 0.7;
+    margin-left: ${s('xs')};
+`;
+
+/**
  * Focus treatment (guide section 04): border-focus edge + 3px clay
  * glow. Apply on `:focus` / `:focus-within` of the control; pair
  * with `outline: none`.

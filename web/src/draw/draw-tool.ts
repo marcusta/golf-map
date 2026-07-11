@@ -69,7 +69,7 @@ const HELP: HelpSection[] = [
 export const drawTool: EditorTool = {
     id: DRAW_TOOL_ID,
     label: 'Draw',
-    icon: '✎',
+    icon: 'pencil',
     order: 10,
     panel: DrawPanelComponent,
     sidePanel: FeatureStackPanelComponent,

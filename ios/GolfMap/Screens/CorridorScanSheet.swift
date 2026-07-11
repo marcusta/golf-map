@@ -47,6 +47,8 @@ struct CorridorScanSheet: View {
                 content
             }
             .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.surfaceApp.ignoresSafeArea())
             .navigationTitle("Corridor scan")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -137,7 +139,7 @@ struct CorridorScanSheet: View {
                     Label("Re-scan", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PrimaryButtonStyle())
             }
         }
     }
@@ -152,9 +154,7 @@ struct CorridorScanSheet: View {
         action: @escaping () -> Void
     ) -> some View {
         VStack(spacing: 16) {
-            Text("Step \(step) of 3")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            OverlineLabel("Step \(step) of 3")
             Text(title)
                 .font(.title3.weight(.semibold))
             Text(instruction)
@@ -166,7 +166,7 @@ struct CorridorScanSheet: View {
                 Text(buttonLabel)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PrimaryButtonStyle())
         }
     }
 
@@ -186,7 +186,8 @@ struct CorridorScanSheet: View {
             HStack(spacing: 28) {
                 walkMetric(
                     label: "From ball",
-                    value: String(format: "%.1f m", service.distanceFromBallM)
+                    value: String(format: "%.1f", service.distanceFromBallM),
+                    unit: "m"
                 )
                 walkMetric(
                     label: "Surface points",
@@ -199,7 +200,7 @@ struct CorridorScanSheet: View {
                 Text(buttonLabel)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PrimaryButtonStyle())
         }
     }
 
@@ -210,14 +211,10 @@ struct CorridorScanSheet: View {
         return "\(count)"
     }
 
-    private func walkMetric(label: String, value: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .monospacedDigit()
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+    private func walkMetric(label: String, value: String, unit: String? = nil) -> some View {
+        VStack(spacing: 4) {
+            MetricText(value, unit: unit, size: 34)
+            OverlineLabel(label, size: 10)
         }
     }
 
@@ -238,14 +235,16 @@ struct CorridorScanSheet: View {
                     .foregroundStyle(.secondary)
             }
             if capture.phase == .done, let reading = capture.reading {
-                Text(String(format: "%.1f %% slope", reading.slopePct))
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .monospacedDigit()
+                VStack(spacing: 4) {
+                    MetricText(String(format: "%.1f", reading.slopePct), unit: "%", size: 34)
+                    OverlineLabel("slope", size: 10)
+                }
             } else {
-                Text(String(format: "%.1f %%", capture.liveSlopePct))
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                VStack(spacing: 4) {
+                    MetricText(String(format: "%.1f", capture.liveSlopePct), unit: "%",
+                               size: 34, color: .secondary)
+                    OverlineLabel("slope", size: 10)
+                }
             }
             Spacer()
             if capture.phase == .done {
@@ -256,13 +255,13 @@ struct CorridorScanSheet: View {
                         Label("Try again", systemImage: "arrow.clockwise")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PrimaryButtonStyle())
                 } else {
                     Button(action: onConfirm) {
                         Text("Continue")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PrimaryButtonStyle())
                 }
             }
         }
@@ -331,27 +330,27 @@ struct CorridorScanSheet: View {
     }
 
     private func qcGrid(_ result: CorridorScanService.ScanComputation) -> some View {
-        VStack(spacing: 4) {
-            qcRow("Pass mismatch", String(format: "%.2f %% slope", result.passMismatchSlopePct))
-            qcRow("Fit residual", String(format: "%.0f mm", result.combined.rmseM * 1000))
-            qcRow("Line coverage", String(format: "%.0f %%", result.combinedCoverageFrac * 100))
-            qcRow("Endpoint levels Δ", String(format: "%.2f %% slope", result.endpointLevelDeltaPct))
-            qcRow("Line length", String(format: "%.1f m", result.lineLengthM))
+        let shape = RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+        return VStack(spacing: 4) {
+            qcRow("Pass mismatch", String(format: "%.2f", result.passMismatchSlopePct), unit: "% slope")
+            qcRow("Fit residual", String(format: "%.0f", result.combined.rmseM * 1000), unit: "mm")
+            qcRow("Line coverage", String(format: "%.0f", result.combinedCoverageFrac * 100), unit: "%")
+            qcRow("Endpoint levels Δ", String(format: "%.2f", result.endpointLevelDeltaPct), unit: "% slope")
+            qcRow("Line length", String(format: "%.1f", result.lineLengthM), unit: "m")
             qcRow("Points kept", "\(result.payloadPoints.count)")
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
+        .padding(Space.s3)
+        .background(Color.surfaceCard, in: shape)
+        .overlay(shape.strokeBorder(Color.borderSubtle, lineWidth: 1))
     }
 
-    private func qcRow(_ label: String, _ value: String) -> some View {
+    private func qcRow(_ label: String, _ value: String, unit: String? = nil) -> some View {
         HStack {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            Text(value)
-                .font(.caption.weight(.semibold))
-                .monospacedDigit()
+            MetricText(value, unit: unit, size: 12)
         }
     }
 
@@ -366,7 +365,7 @@ struct CorridorScanSheet: View {
                     Label("Use read", systemImage: "checkmark.circle")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PrimaryButtonStyle())
                 rescanButton
             }
         case .yellow:
@@ -378,7 +377,7 @@ struct CorridorScanSheet: View {
                     Label("Use anyway (softened)", systemImage: "checkmark.circle")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(SecondaryButtonStyle())
             }
         case .red:
             VStack(spacing: 10) {
@@ -389,7 +388,7 @@ struct CorridorScanSheet: View {
                     Label("Save scan only", systemImage: "square.and.arrow.down")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(SecondaryButtonStyle())
             }
         }
     }
@@ -403,7 +402,7 @@ struct CorridorScanSheet: View {
             Label("Re-scan", systemImage: "arrow.clockwise")
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(SecondaryButtonStyle())
     }
 
     private func verdictColor(_ verdict: GreenScanVerdict) -> Color {

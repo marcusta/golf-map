@@ -62,6 +62,7 @@ import type { ElevationService } from '../map/elevation.service';
 import type { TilesetService } from '../map/tileset.service';
 import type { CourseDetailService } from '../course-detail/course-detail.service';
 import type { FeaturesService } from '../draw/features.service';
+import type { IconName } from '../ui/icons';
 
 /** Services + lifetime tracking handed to tools by the toolbar. */
 export interface ToolContext {
@@ -104,8 +105,8 @@ export interface EditorTool {
     id: string;
     /** Button tooltip / accessible name. */
     label: string;
-    /** Short glyph shown on the toolbar button (emoji or 1–2 chars). */
-    icon: string;
+    /** Monoline icon on the toolbar button (ui/icons.ts name, guide §06). */
+    icon: IconName;
     /** Toolbar sort order (draw=10, furniture=20, measure=30, analysis=40). */
     order: number;
     /** Optional side-panel component shown while active (see header doc). */

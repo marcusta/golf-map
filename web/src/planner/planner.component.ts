@@ -1,6 +1,6 @@
 import { Component, Router, template, effect, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn } from '../css';
+import { s, btn, card, selectedRow, statusTag, panelTitle } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from '../draw/features.service';
 import { FurnitureService } from '../furniture/furniture.service';
@@ -77,15 +77,11 @@ export class PlannerComponent extends Component {
                     ${btn()}
                 }
 
+                /* Guide §05: a quiet tag, not a loud clay pill — 12% tint
+                   of its own colour (accent-secondary, moss). */
                 & .planner__title {
-                    font-size: 0.7rem;
-                    font-weight: 600;
-                    text-transform: uppercase;
-                    letter-spacing: 0.04em;
+                    ${statusTag(t('color-accent-secondary'))}
                     padding: 2px ${s('sm')};
-                    border-radius: ${t('radius-pill')};
-                    background: rgba(47, 125, 79, 0.12);
-                    color: ${t('color-accent-primary')};
                 }
 
                 & .error {
@@ -120,11 +116,7 @@ export class PlannerComponent extends Component {
                 & .sidebar-title {
                     margin: 0;
                     padding: ${s('md')} ${s('lg')} ${s('sm')};
-                    font-size: 0.7rem;
-                    font-weight: 600;
-                    text-transform: uppercase;
-                    letter-spacing: 0.06em;
-                    color: ${t('color-text-secondary')};
+                    ${panelTitle()}
                 }
             }
 
@@ -138,23 +130,18 @@ export class PlannerComponent extends Component {
                 padding: 0 ${s('sm')} ${s('md')};
             }
 
+            /* Guide §05: list rows read as quiet cards, not bare buttons —
+               selection uses the clay tint + inset ring, never a solid fill. */
             & .hole-row {
+                ${card({ hover: true })}
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
                 padding: ${s('xs')} ${s('md')};
-                border: none;
-                border-radius: ${t('radius-sm')};
-                background: transparent;
                 font-family: inherit;
                 cursor: pointer;
-                transition: background 0.15s;
 
-                &:hover { background: ${t('color-surface-sunken')}; }
-                &.active {
-                    background: ${t('color-accent-primary')};
-                    & .hole-row__number, & .hole-row__par { color: ${t('color-on-accent')}; }
-                }
+                &.active { ${selectedRow()} }
 
                 & .hole-row__number {
                     font-size: 0.875rem;

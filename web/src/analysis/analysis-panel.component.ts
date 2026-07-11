@@ -1,6 +1,6 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn } from '../css';
+import { s, btn, panelTitle, metric } from '../css';
 import { AnalysisToolService, BUFFER_MIN, BUFFER_MAX } from './analysis-tool.service';
 import {
     HEIGHT_STOPS,
@@ -76,43 +76,53 @@ export class AnalysisPanelComponent extends Component {
             flex-direction: column;
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
+            /* The glass shell comes from the dock (.editor-tools__panel) —
+               applying the recipe here too double-stacked border, blur and
+               elevation (law 06: tiered depth, one panel layer). Sections
+               carry the space-4 interior rhythm (law 03). */
 
             & .analysis-panel__section {
-                padding: ${s('sm')} ${s('md')};
+                padding: var(--space-3) var(--space-4);
                 border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
-                gap: ${s('sm')};
+                gap: var(--space-2);
             }
 
             & .section-title {
                 margin: 0;
-                font-size: 0.7rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
+            /* Guide §04: mode switcher reads as one segmented control, not
+               loose buttons — sunken track, lifted active pill. */
             & .mode-row {
-                display: grid;
-                grid-template-columns: 1fr 1fr 1fr;
-                gap: 2px;
+                display: flex;
+                gap: 4px;
+                background: ${t('color-surface-sunken')};
+                border: 1px solid ${t('color-border-default')};
+                border-radius: 12px;
+                padding: 4px;
             }
 
             & .mode-btn {
+                flex: 1;
                 padding: 4px 2px;
                 font-size: 0.72rem;
                 font-family: inherit;
-                border: 1px solid transparent;
-                border-radius: ${t('radius-sm')};
+                border: none;
+                border-radius: 9px;
                 background: transparent;
-                color: ${t('color-text-primary')};
+                color: ${t('color-text-secondary')};
                 cursor: pointer;
-                &:hover { background: ${t('color-surface-sunken')}; }
+                transition: background var(--dur-fast) var(--ease-standard),
+                    color var(--dur-fast) var(--ease-standard);
+                &:hover { color: ${t('color-text-primary')}; }
                 &.active {
-                    border-color: ${t('color-accent-primary')};
-                    background: ${t('color-surface-sunken')};
+                    background: ${t('color-surface-raised')};
+                    color: ${t('color-text-primary')};
+                    font-weight: 600;
+                    box-shadow: var(--elev-1);
                 }
             }
 
@@ -124,10 +134,15 @@ export class AnalysisPanelComponent extends Component {
             & .buffer-label {
                 font-size: 0.72rem;
                 color: ${t('color-text-secondary')};
-                & span { color: ${t('color-text-primary')}; font-weight: 600; }
+                & span {
+                    color: ${t('color-text-primary')};
+                    font-weight: 600;
+                    font-family: var(--font-mono);
+                    font-variant-numeric: tabular-nums;
+                }
             }
 
-            & input[type='range'] { width: 100%; }
+            & input[type='range'] { width: 100%; accent-color: ${t('color-accent-primary')}; }
 
             & .legend-bar {
                 height: 12px;
@@ -140,6 +155,8 @@ export class AnalysisPanelComponent extends Component {
                 justify-content: space-between;
                 font-size: 0.65rem;
                 color: ${t('color-text-secondary')};
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
             }
 
             & .stats { display: none; }
@@ -151,7 +168,7 @@ export class AnalysisPanelComponent extends Component {
                 gap: 1px ${s('sm')};
                 font-size: 0.72rem;
                 & .stat-label { color: ${t('color-text-secondary')}; }
-                & .stat-value { text-align: right; font-variant-numeric: tabular-nums; }
+                & .stat-value { text-align: right; ${metric()} }
             }
 
             & .clear-btn {
@@ -161,20 +178,21 @@ export class AnalysisPanelComponent extends Component {
                 ${btn(t('radius-sm'))}
             }
 
+            /* Quiet footers (law 03): tertiary, minimal height; the last
+               section above already draws the major-group divider. */
             & .analysis-panel__status {
-                padding: ${s('xs')} ${s('md')};
-                font-size: 0.72rem;
-                color: ${t('color-text-secondary')};
-                min-height: 1.4em;
+                padding: var(--space-2) var(--space-4) 0;
+                font-size: 0.7rem;
+                color: ${t('color-text-tertiary')};
+                min-height: 1.2em;
                 &.error { color: ${t('color-status-negative')}; }
             }
 
             & .analysis-panel__hints {
-                padding: ${s('xs')} ${s('md')} ${s('sm')};
+                padding: var(--space-1) var(--space-4) var(--space-3);
                 font-size: 0.68rem;
                 line-height: 1.5;
-                color: ${t('color-text-secondary')};
-                border-top: 1px solid ${t('color-border-default')};
+                color: ${t('color-text-tertiary')};
             }
         }
     `;

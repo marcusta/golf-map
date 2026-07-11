@@ -47,10 +47,10 @@ struct GreenViewPanel: View {
                 onScan: onScan
             )
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 9)
-        .padding(.bottom, 10)
-        .background(.ultraThinMaterial.opacity(0.88), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal, Space.s4)
+        .padding(.top, Space.s3)
+        .padding(.bottom, Space.s3)
+        .glassPanel()
     }
 
     private var header: some View {
@@ -114,9 +114,8 @@ struct GreenViewPanel: View {
                 ForEach(Array(legendLabels.enumerated()), id: \.offset) { index, label in
                     if index > 0 { Spacer() }
                     Text(label)
-                        .font(.caption2)
+                        .font(AppFont.mono(10, .regular))
                         .foregroundStyle(.secondary)
-                        .monospacedDigit()
                 }
             }
         }
@@ -168,45 +167,39 @@ struct GreenViewPanel: View {
     private func statsGrid(_ stats: AnalysisStats) -> some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                sectionTitle("Green")
+                OverlineLabel("Green", size: 10)
                 statRow("Elev", String(
-                    format: "%.1f–%.1f m", stats.green.minHeight, stats.green.maxHeight
-                ))
-                statRow("Δ height", String(format: "%.2f m", stats.green.deltaHeight))
-                statRow("Max slope", String(format: "%.1f %%", stats.green.maxSlopePct))
-                statRow("Avg slope", String(format: "%.1f %%", stats.green.avgSlopePct))
+                    format: "%.1f–%.1f", stats.green.minHeight, stats.green.maxHeight
+                ), unit: "m")
+                statRow("Δ height", String(format: "%.2f", stats.green.deltaHeight), unit: "m")
+                statRow("Max slope", String(format: "%.1f", stats.green.maxSlopePct), unit: "%")
+                statRow("Avg slope", String(format: "%.1f", stats.green.avgSlopePct), unit: "%")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                sectionTitle("Surrounds")
-                statRow("Max slope", String(format: "%.1f %%", stats.surrounds.maxSlopePct))
-                statRow(
-                    "Hollow",
-                    stats.surrounds.deepestHollowM > 0.05
-                        ? String(format: "%.2f m below", stats.surrounds.deepestHollowM)
-                        : "none"
-                )
+                OverlineLabel("Surrounds", size: 10)
+                statRow("Max slope", String(format: "%.1f", stats.surrounds.maxSlopePct), unit: "%")
+                if stats.surrounds.deepestHollowM > 0.05 {
+                    statRow(
+                        "Hollow",
+                        String(format: "%.2f", stats.surrounds.deepestHollowM),
+                        unit: "m below"
+                    )
+                } else {
+                    statRow("Hollow", "none")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func sectionTitle(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .kerning(0.6)
-    }
-
-    private func statRow(_ label: String, _ value: String) -> some View {
+    private func statRow(_ label: String, _ value: String, unit: String? = nil) -> some View {
         HStack {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 6)
-            Text(value)
-                .font(.caption.weight(.semibold))
-                .monospacedDigit()
+            MetricText(value, unit: unit, size: 12)
         }
     }
 
@@ -224,10 +217,8 @@ struct GreenViewPanel: View {
                 ),
                 in: AnalysisGridMath.bufferMinM...AnalysisGridMath.bufferMaxM
             )
-            Text("\(Int(model.bufferM)) m")
-                .font(.caption.weight(.semibold))
-                .monospacedDigit()
-                .frame(width: 36, alignment: .trailing)
+            MetricText("\(Int(model.bufferM))", unit: "m", size: 12)
+                .frame(width: 44, alignment: .trailing)
         }
     }
 }

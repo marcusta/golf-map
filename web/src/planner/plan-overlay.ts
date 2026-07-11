@@ -39,6 +39,21 @@ import {
     type Vec2,
 } from '../../../shared/strategy';
 import { sweref99tmToWgs84, wgs84ToSweref99tm } from '../geo/transform';
+import {
+    ACCENT_COLOR,
+    CAT,
+    MAP_GREEN_FILL,
+    MARKER_FILL,
+    MARKER_RING,
+    MARKER_RING_WIDTH,
+    OVERLAY_TEXT,
+    OVERLAY_TEXT_HALO,
+    SHOT_LINE_COLOR,
+    SHOT_LINE_WIDTH,
+    STATUS_BAD,
+    STATUS_GOOD,
+    STATUS_RISK,
+} from '../map/map-palette';
 import type { LieMap } from './lie-map';
 
 /** Overlay/source id for the plan rendering. */
@@ -48,7 +63,7 @@ export const PLAN_OVERLAY_ID = 'plan';
 export const GATE_DEFAULT_HALF_WIDTH_M = 30;
 
 /** Selection highlight colour (matches the builder tools). */
-export const PLAN_SELECTION_COLOR = '#BF6A3E'; // L&L accent / focus
+export const PLAN_SELECTION_COLOR = ACCENT_COLOR; // '#BF6A3E' — --data-cat-1 / accent
 
 // ── Planning model ─────────────────────────────────────────────────────────
 
@@ -690,15 +705,15 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
 const role = (value: string): FilterSpecification =>
     ['==', ['get', 'role'], value] as FilterSpecification;
 
-const LEG_COLOR = '#D8A441'; // wheat (L&L data-cat-3), amber-like path
-const ELLIPSE_COLOR = '#5C6B4A'; // moss (L&L accent-secondary), landing dispersion
-const GATE_COLOR = '#3E8EA0'; // teal (L&L data-cat-2)
-const GHOST_COLOR = '#8A5A6E'; // plum (L&L data-cat-6) — distinct from legs/gates/ellipses
+const LEG_COLOR = SHOT_LINE_COLOR; // '#E4A15A' — --map-shot-line (guide §03 shot lines)
+const ELLIPSE_COLOR = CAT.moss; // '#5C6B4A' — --data-cat-4, landing dispersion
+const GATE_COLOR = CAT.teal; // '#3E8EA0' — --data-cat-2
+const GHOST_COLOR = CAT.plum; // '#8A5A6E' — --data-cat-6, distinct from legs/gates/ellipses
 
 /** Confidence-light colours (L&L data-viz semantic ramp — good / risk / bad). */
-export const LIGHT_GREEN_COLOR = '#4E7A46';
-export const LIGHT_YELLOW_COLOR = '#C68A2E';
-export const LIGHT_RED_COLOR = '#B24A32';
+export const LIGHT_GREEN_COLOR = STATUS_GOOD; // '#4E7A46' — --data-good
+export const LIGHT_YELLOW_COLOR = STATUS_RISK; // '#C68A2E' — --data-risk
+export const LIGHT_RED_COLOR = STATUS_BAD; // '#B24A32' — --data-bad
 
 /** Layer specs for the plan overlay (ids prefixed with the overlay id). */
 export function planLayers(): OverlayLayerSpec[] {
@@ -726,6 +741,8 @@ export function planLayers(): OverlayLayerSpec[] {
             id: `${PLAN_OVERLAY_ID}-leg`,
             type: 'line',
             filter: role('leg'),
+            // Guide §03 shot lines: 3px with rounded ("pill") ends.
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
             paint: {
                 'line-color': [
                     'match', ['get', 'light'],
@@ -734,7 +751,7 @@ export function planLayers(): OverlayLayerSpec[] {
                     'red', LIGHT_RED_COLOR,
                     LEG_COLOR,
                 ] as never,
-                'line-width': 2.5,
+                'line-width': SHOT_LINE_WIDTH,
             },
         },
         {
@@ -746,9 +763,12 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-field': ['get', 'label'] as never,
                 'text-size': 12,
                 'text-offset': [0, -1],
-                'text-allow-overlap': true,
+                // Guide §03: never let two labels overlap — MapLibre's collision
+                // engine hides the loser instead of drawing mush at low zoom.
+                'text-allow-overlap': false,
             },
-            paint: { 'text-color': '#ffffff', 'text-halo-color': '#1E2B22', 'text-halo-width': 1.5 },
+            // Scrim-equivalent for canvas text: overlay-text on a heavy pine halo.
+            paint: { 'text-color': OVERLAY_TEXT, 'text-halo-color': OVERLAY_TEXT_HALO, 'text-halo-width': 1.5 },
         },
         {
             id: `${PLAN_OVERLAY_ID}-ghost-ellipse`,
@@ -781,9 +801,9 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-field': ['get', 'label'] as never,
                 'text-size': 11,
                 'text-offset': [0, 1],
-                'text-allow-overlap': true,
+                'text-allow-overlap': false, // hide before overlapping (guide §03)
             },
-            paint: { 'text-color': '#e9d5ff', 'text-halo-color': '#3b0764', 'text-halo-width': 1.5 },
+            paint: { 'text-color': OVERLAY_TEXT, 'text-halo-color': OVERLAY_TEXT_HALO, 'text-halo-width': 1.5 },
         },
         {
             id: `${PLAN_OVERLAY_ID}-ghost-center`,
@@ -792,7 +812,7 @@ export function planLayers(): OverlayLayerSpec[] {
             paint: {
                 'circle-radius': 3.5,
                 'circle-color': GHOST_COLOR,
-                'circle-stroke-color': '#3b0764',
+                'circle-stroke-color': MARKER_RING, // '#FFFFFF' — --overlay-text
                 'circle-stroke-width': 1,
             },
         },
@@ -823,7 +843,7 @@ export function planLayers(): OverlayLayerSpec[] {
             filter: role('gate-handle'),
             paint: {
                 'circle-radius': 6,
-                'circle-color': '#ffffff',
+                'circle-color': OVERLAY_TEXT, // '#FFFFFF' — --overlay-text
                 'circle-stroke-color': ['case', ['==', ['get', 'selected'], true], PLAN_SELECTION_COLOR, GATE_COLOR] as never,
                 'circle-stroke-width': 2,
             },
@@ -837,9 +857,9 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-size': 11,
                 'text-offset': [0, 1.6],
                 'text-anchor': 'top',
-                'text-allow-overlap': true,
+                'text-allow-overlap': false, // hide before overlapping (guide §03)
             },
-            paint: { 'text-color': '#ffffff', 'text-halo-color': '#0c3a42', 'text-halo-width': 1.5 },
+            paint: { 'text-color': OVERLAY_TEXT, 'text-halo-color': OVERLAY_TEXT_HALO, 'text-halo-width': 1.5 },
         },
         {
             id: `${PLAN_OVERLAY_ID}-node-sel`,
@@ -853,6 +873,8 @@ export function planLayers(): OverlayLayerSpec[] {
             },
         },
         {
+            // Guide §03 markers: pine circle + 2px bone ring + bone glyph;
+            // the GREEN node takes the feature colour with a dark glyph.
             id: `${PLAN_OVERLAY_ID}-node`,
             type: 'circle',
             filter: role('node'),
@@ -860,12 +882,11 @@ export function planLayers(): OverlayLayerSpec[] {
                 'circle-radius': ['match', ['get', 'kind'], 'shot', 7, 6] as never,
                 'circle-color': [
                     'match', ['get', 'kind'],
-                    'tee', '#5E6D94',
-                    'green', ELLIPSE_COLOR,
-                    '#ffffff',
+                    'green', MAP_GREEN_FILL, // '#7FC489' — --map-green-fill
+                    MARKER_FILL, // '#1E2B22' — --color-surface-brand (pine): tee + shots
                 ] as never,
-                'circle-stroke-color': '#1E2B22',
-                'circle-stroke-width': 1.5,
+                'circle-stroke-color': MARKER_RING, // '#FFFFFF' — --overlay-text (bone)
+                'circle-stroke-width': MARKER_RING_WIDTH,
             },
         },
         {
@@ -876,11 +897,12 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-field': ['get', 'label'] as never,
                 'text-size': 10,
                 'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'] as never,
-                'text-allow-overlap': true,
+                'text-allow-overlap': true, // marker glyphs, must never disappear
             },
             paint: {
-                'text-color': ['match', ['get', 'kind'], 'shot', '#1E2B22', '#ffffff'] as never,
-                'text-halo-color': ['match', ['get', 'kind'], 'shot', '#ffffff', '#1E2B22'] as never,
+                // Bone glyph on pine markers; dark glyph on the green-fill marker.
+                'text-color': ['match', ['get', 'kind'], 'green', MARKER_FILL, OVERLAY_TEXT] as never,
+                'text-halo-color': ['match', ['get', 'kind'], 'green', MAP_GREEN_FILL, MARKER_FILL] as never,
                 'text-halo-width': 1,
             },
         },

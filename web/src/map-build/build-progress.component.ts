@@ -2,6 +2,7 @@ import { Component, Signal, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s } from '../css';
 import { MapBuildClientService, BUILD_STEPS, STEP_LABELS, type BuildStep, type MapBuildJob } from './map-build.service';
+import { icon } from '../ui/icons';
 
 const tpl = template(`
     <div class="build-progress" bind="root">
@@ -39,7 +40,12 @@ function stepState(job: MapBuildJob | null, step: BuildStep): StepState {
     return 'pending';
 }
 
-const ICON: Record<StepState, string> = { pending: '○', active: '◐', done: '●', failed: '✕' };
+const ICON: Record<StepState, string> = {
+    pending: icon('circle'),
+    active: icon('loader-circle'),
+    done: icon('check'),
+    failed: icon('x'),
+};
 
 /**
  * Renders the map-build pipeline steps with per-step status, plus the error
@@ -66,11 +72,16 @@ export class BuildProgressComponent extends Component {
                 align-items: center;
                 gap: ${s('sm')};
                 font-size: 0.875rem;
-                color: ${t('color-text-secondary')};
+                color: ${t('color-text-tertiary')};
 
-                & .build-step__icon { width: 1.25rem; text-align: center; }
+                & .build-step__icon {
+                    width: 1.25rem;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                }
 
-                &.done { color: ${t('color-text-primary')}; & .build-step__icon { color: ${t('color-accent-primary')}; } }
+                &.done { color: ${t('color-text-primary')}; & .build-step__icon { color: ${t('color-status-positive')}; } }
                 &.active {
                     color: ${t('color-text-primary')};
                     font-weight: 600;
@@ -86,8 +97,9 @@ export class BuildProgressComponent extends Component {
                 color: ${t('color-status-negative')};
                 font-size: 0.875rem;
                 padding: ${s('sm')} ${s('md')};
-                border: 1px solid ${t('color-status-negative')};
-                border-radius: ${t('radius-sm')};
+                border: 1px solid color-mix(in srgb, ${t('color-status-negative')} 30%, transparent);
+                background: color-mix(in srgb, ${t('color-status-negative')} 12%, transparent);
+                border-radius: ${t('radius')};
                 &.show { display: block; }
             }
 
@@ -102,7 +114,9 @@ export class BuildProgressComponent extends Component {
                     margin: ${s('sm')} 0 0;
                     padding: ${s('sm')};
                     background: ${t('color-surface-sunken')};
-                    border-radius: ${t('radius-sm')};
+                    border-radius: ${t('radius')};
+                    font-family: var(--font-mono);
+                    font-size: 0.7rem;
                     white-space: pre-wrap;
                     word-break: break-word;
                 }
@@ -123,7 +137,7 @@ export class BuildProgressComponent extends Component {
         this.$each(this.ref(frag, 'steps'), this.stepList, (step, _i, track) =>
             this.wireEl(stepTpl, {
                 row: { className: () => `build-step ${stepState(this.build.job.get(), step)}` },
-                icon: () => ICON[stepState(this.build.job.get(), step)],
+                icon: { innerHTML: () => ICON[stepState(this.build.job.get(), step)] },
                 label: () => STEP_LABELS[step],
             }, track),
         step => step);

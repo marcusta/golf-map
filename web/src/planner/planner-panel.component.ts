@@ -1,6 +1,6 @@
 import { Component, Signal, Computed, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, field } from '../css';
+import { s, btn, field, glassPanel, panelTitle, metric, selectedRow, primaryBtn } from '../css';
 import { clubAdvice, mpsToMph, type BreakSide } from '../../../shared/strategy';
 import type { PlanShot, PlanGate } from '../../../shared/api/game-plans.gen';
 import { FurnitureService } from '../furniture/furniture.service';
@@ -8,6 +8,7 @@ import { ClubsService } from '../player/clubs.service';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { PlanService } from './plan.service';
 import { PlannerToolService } from './planner-tool.service';
+import { icon } from '../ui/icons';
 import { PuttReadService, DEFAULT_STIMP_FT, type PuttReadDisplay } from './putt-read.service';
 import { PuttEstimateService } from './putt-estimate.service';
 import { scoreEstimate, type PuttEstimate, type PuttEstimateScore } from './putt-estimate-score';
@@ -154,7 +155,7 @@ const shotRowTpl = template(`
         <span bind="idx" class="shot-idx"></span>
         <select bind="club" class="shot-club" title="Club for this shot"></select>
         <input bind="label" class="shot-label" type="text" placeholder="label" />
-        <button bind="remove" class="row-remove" type="button" title="Delete shot">✕</button>
+        <button bind="remove" class="row-remove" type="button" aria-label="Delete shot" title="Delete shot">${icon('x')}</button>
         <span bind="dist" class="shot-dist"></span>
         <span bind="advice" class="shot-advice"></span>
     </div>
@@ -164,7 +165,7 @@ const gateRowTpl = template(`
     <div bind="row" class="gate-row">
         <span bind="name" class="gate-name"></span>
         <span bind="widths" class="gate-widths"></span>
-        <button bind="remove" class="row-remove" type="button" title="Delete gate">✕</button>
+        <button bind="remove" class="row-remove" type="button" aria-label="Delete gate" title="Delete gate">${icon('x')}</button>
     </div>
 `);
 
@@ -192,7 +193,7 @@ const puttQuizTpl = template(`
             </label>
         </div>
         <div class="putt-quiz__actions">
-            <button bind="submit" type="button" class="mini-btn" data-testid="planner-putt-est-submit">Reveal &amp; score</button>
+            <button bind="submit" type="button" class="mini-btn quiz-submit" data-testid="planner-putt-est-submit">Reveal &amp; score</button>
             <button bind="skip" type="button" class="mini-btn" data-testid="planner-putt-est-skip">Skip</button>
         </div>
     </div>
@@ -212,8 +213,13 @@ export class PlannerPanelComponent extends Component {
             flex-direction: column;
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
-            border-top: 1px solid ${t('color-border-default')};
             overflow-y: auto;
+            /* Guide §01: floating glass card. Padding reset to 0 — each
+               section already carries its own rhythm and several children
+               (e.g. the putt-quiz grid) are tuned to the panel's fixed
+               dock width; the recipe's own padding would double up. */
+            ${glassPanel()}
+            padding: 0;
 
             & .plan-panel__section {
                 padding: ${s('sm')} ${s('md')};
@@ -225,23 +231,37 @@ export class PlannerPanelComponent extends Component {
 
             & .section-title {
                 margin: 0;
-                font-size: 0.7rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
-            & .mode-row { display: flex; gap: ${s('xs')}; }
+            /* Guide §04: mode switcher reads as one segmented control, not
+               loose buttons — sunken track, lifted active pill. */
+            & .mode-row {
+                display: flex;
+                gap: 4px;
+                background: ${t('color-surface-sunken')};
+                border: 1px solid ${t('color-border-default')};
+                border-radius: 12px;
+                padding: 4px;
+            }
             & .mode-btn {
                 flex: 1;
                 padding: ${s('xs')} 2px;
                 font-size: 0.75rem;
-                ${btn(t('radius-sm'))}
+                border: none;
+                border-radius: 9px;
+                background: transparent;
+                color: ${t('color-text-secondary')};
+                font-family: inherit;
+                cursor: pointer;
+                transition: background var(--dur-fast) var(--ease-standard),
+                    color var(--dur-fast) var(--ease-standard);
+                &:hover { color: ${t('color-text-primary')}; }
                 &.active {
-                    border-color: ${t('color-accent-primary')};
-                    color: ${t('color-on-accent')};
-                    background: ${t('color-accent-primary')};
+                    background: ${t('color-surface-raised')};
+                    color: ${t('color-text-primary')};
+                    font-weight: 600;
+                    box-shadow: var(--elev-1);
                 }
             }
 
@@ -258,6 +278,8 @@ export class PlannerPanelComponent extends Component {
             & .wind-mph, & .wind-effective {
                 font-size: 0.72rem;
                 color: ${t('color-text-secondary')};
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
             }
             & .override-block { display: flex; flex-direction: column; gap: ${s('xs')}; }
             & .mini-btn {
@@ -269,6 +291,13 @@ export class PlannerPanelComponent extends Component {
                     color: ${t('color-on-accent')};
                     background: ${t('color-accent-primary')};
                 }
+            }
+            /* Guide §04: one clay primary per view — the quiz's "reveal" is
+               the panel's single main action; everything else stays quiet. */
+            & .mini-btn.quiz-submit {
+                ${primaryBtn()}
+                padding: 3px ${s('xs')};
+                font-size: 0.72rem;
             }
             & .putt-place-row {
                 display: flex;
@@ -289,10 +318,18 @@ export class PlannerPanelComponent extends Component {
                 margin-right: 5px;
                 vertical-align: baseline;
                 border: 1px solid rgba(0, 0, 0, 0.35);
-                &.leg-light--green { background: #22c55e; }
-                &.leg-light--yellow { background: #eab308; }
-                &.leg-light--red { background: #ef4444; }
+                &.leg-light--green { background: var(--data-good); }
+                &.leg-light--yellow { background: var(--data-risk); }
+                &.leg-light--red { background: var(--data-bad); }
             }
+
+            /* Guide §02: every measurement in mono, tabular, semibold — the
+               unit drops to text-tertiary at ~80% size. Reserved for a
+               clean isolated number+unit pair (\`.metric\`); mixed prose
+               lines (a whole "wind …" / "EV …" callout) use the lighter
+               \`.metric-line\` (mono + tabular, normal weight). */
+            & .metric { ${metric()} }
+            & .metric-line { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
             & .shot-advice {
                 grid-column: 2 / span 3;
@@ -308,7 +345,12 @@ export class PlannerPanelComponent extends Component {
             & .putt-body { font-size: 0.75rem; line-height: 1.6; color: ${t('color-text-secondary')}; }
             & .putt-body b { color: ${t('color-text-primary')}; }
             & .putt-body .putt-warn { color: ${t('color-status-negative')}; }
-            & .putt-confidence { font-size: 0.7rem; color: ${t('color-text-secondary')}; }
+            & .putt-confidence {
+                font-size: 0.7rem;
+                color: ${t('color-text-secondary')};
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
+            }
 
             & .putt-training-toggle {
                 display: flex;
@@ -365,7 +407,7 @@ export class PlannerPanelComponent extends Component {
                 border-radius: ${t('radius-sm')};
                 cursor: pointer;
                 &:hover { background: ${t('color-surface-sunken')}; }
-                &.selected { background: ${t('color-accent-primary')}; }
+                &.selected { ${selectedRow()} }
             }
             & .shot-idx { font-weight: 600; }
             & .shot-club, & .shot-label {
@@ -382,6 +424,8 @@ export class PlannerPanelComponent extends Component {
                 grid-column: 2 / span 3;
                 font-size: 0.7rem;
                 color: ${t('color-text-secondary')};
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
             }
 
             & .gate-row {
@@ -392,12 +436,21 @@ export class PlannerPanelComponent extends Component {
                 border-radius: ${t('radius-sm')};
                 cursor: pointer;
                 &:hover { background: ${t('color-surface-sunken')}; }
-                &.selected { background: ${t('color-accent-primary')}; }
+                &.selected { ${selectedRow()} }
             }
             & .gate-name { font-weight: 600; }
-            & .gate-widths { flex: 1; color: ${t('color-text-secondary')}; font-size: 0.72rem; }
+            & .gate-widths {
+                flex: 1;
+                color: ${t('color-text-secondary')};
+                font-size: 0.72rem;
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
+            }
 
             & .row-remove {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
                 padding: 0 4px;
                 font-size: 0.72rem;
                 line-height: 1.4;
@@ -864,11 +917,11 @@ export class PlannerPanelComponent extends Component {
         const score = this.lastScore.get();
         if (score === null) return '';
         const rows = [
-            `<div><b>Score</b> ${score.score}/100</div>`,
-            `<div>Slope off <b>${score.slopeErrorPct.toFixed(1)}%</b> · `
+            `<div><b>Score</b> ${metricValue(score.score, '/100')}</div>`,
+            `<div>Slope off <b>${metricValue(score.slopeErrorPct.toFixed(1), '%')}</b> · `
                 + `break ${score.breakSideCorrect ? '✓' : '✗'} · `
-                + `aim off <b>${Math.round(score.aimErrorM * 100)} cm</b> · `
-                + `pace off <b>${score.paceErrorM.toFixed(1)} m</b></div>`,
+                + `aim off <b>${metricValue(Math.round(score.aimErrorM * 100), 'cm')}</b> · `
+                + `pace off <b>${metricValue(score.paceErrorM.toFixed(1), 'm')}</b></div>`,
         ];
         return rows.join('');
     }
@@ -1075,30 +1128,30 @@ export class PlannerPanelComponent extends Component {
         const lines = plan.legs.map(leg => {
             const light = lightChip(leg);
             const parts = [`<b>${light}${nodeName(leg.from)} → ${nodeName(leg.to)}</b>`,
-                `${Math.round(leg.horizontalM)} m`];
-            if (leg.playsLikeM !== undefined) parts.push(`plays ${Math.round(leg.playsLikeM)} m`);
+                metricValue(Math.round(leg.horizontalM), 'm')];
+            if (leg.playsLikeM !== undefined) parts.push(metricLine(`plays ${Math.round(leg.playsLikeM)} m`));
             if (leg.club && leg.adjustedCarryM !== undefined) {
-                parts.push(`${escapeHtml(leg.club.name)} carries ${Math.round(leg.adjustedCarryM)} m`);
+                parts.push(metricLine(`${escapeHtml(leg.club.name)} carries ${Math.round(leg.adjustedCarryM)} m`));
             }
             if (leg.remainingToGreenM !== undefined && leg.to.kind !== 'green') {
-                parts.push(`${Math.round(leg.remainingToGreenM)} m left`);
+                parts.push(metricLine(`${Math.round(leg.remainingToGreenM)} m left`));
             }
             const drift = legDriftLabel(leg);
             if (drift) {
                 // E2E hook (inert): the wind-hold readout for this leg.
-                parts.push(`<span data-testid="planner-leg-drift">wind ${escapeHtml(drift)}</span>`);
+                parts.push(`<span class="metric-line" data-testid="planner-leg-drift">wind ${escapeHtml(drift)}</span>`);
             }
             if (leg.expectedStrokes !== undefined) {
                 // E2E hook (inert): the EV readout carries a testid so the smoke
                 // suite can assert it renders for an enriched leg.
-                parts.push(`<span data-testid="planner-leg-ev">EV ${leg.expectedStrokes.toFixed(2)}</span>`);
+                parts.push(`<span class="metric-line" data-testid="planner-leg-ev">EV ${leg.expectedStrokes.toFixed(2)}</span>`);
             }
             // E2E hook (inert): one wrapper per leg line for stable counting.
             return `<div data-testid="planner-leg">${parts.join(' · ')}</div>`;
         });
-        const totals = [`<b>Total</b> ${Math.round(plan.totalHorizontalM)} m`];
+        const totals = [`<b>Total</b> ${metricValue(Math.round(plan.totalHorizontalM), 'm')}`];
         if (plan.totalPlaysLikeM !== undefined) {
-            totals.push(`plays ${Math.round(plan.totalPlaysLikeM)} m`);
+            totals.push(metricLine(`plays ${Math.round(plan.totalPlaysLikeM)} m`));
         }
         lines.push(`<div data-testid="planner-leg-total">${totals.join(' · ')}</div>`);
         return lines.join('');
@@ -1154,11 +1207,11 @@ function puttBodyHtml(d: PuttReadDisplay, distanceM: number | null): string {
     const lines: string[] = [];
     if (d.message) lines.push(`<div class="putt-warn">${escapeHtml(d.message)}</div>`);
     const parts: string[] = [];
-    if (distanceM !== null) parts.push(`<b>Putt</b> ${distanceM.toFixed(1)} m`);
-    parts.push(`<b>plays</b> ${d.read.playsLikeM.toFixed(1)} m`);
-    parts.push(`<b>aim</b> ${formatAimOffset(d.read.aimOffsetM)}`);
+    if (distanceM !== null) parts.push(`<b>Putt</b> ${metricValue(distanceM.toFixed(1), 'm')}`);
+    parts.push(`<b>plays</b> ${metricValue(d.read.playsLikeM.toFixed(1), 'm')}`);
+    parts.push(`<b>aim</b> ${metricLine(formatAimOffset(d.read.aimOffsetM))}`);
     lines.push(`<div>${parts.join(' · ')}</div>`);
-    lines.push(`<div><b>Holed</b> ~${Math.round(d.read.holedProb * 100)}%`
+    lines.push(`<div><b>Holed</b> ${metricValue(`~${Math.round(d.read.holedProb * 100)}`, '%')}`
         + ` <span title="Heuristic — uncalibrated single-trajectory estimate">(est.)</span></div>`);
     return lines.join('');
 }
@@ -1199,6 +1252,20 @@ function syncInput(input: HTMLInputElement, value: number | null, decimals: numb
 
 function escapeHtml(str: string): string {
     return str.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+/** Guide §02: an isolated number+unit pair — mono, tabular, semibold, with
+ *  the unit dropped to text-tertiary at 80% size (the `.metric` recipe). */
+function metricValue(value: number | string, unit: string): string {
+    return `<span class="metric">${value}<span class="metric__unit">${unit}</span></span>`;
+}
+
+/** Guide §02: a whole mixed prose+number phrase kept in mono/tabular at
+ *  normal weight (the `.metric-line` treatment) — for compound readouts
+ *  like "plays 231 m" or "wind drift 9 m R" where isolating the number
+ *  alone would fragment the sentence. */
+function metricLine(text: string): string {
+    return `<span class="metric-line">${text}</span>`;
 }
 
 /** Human labels for the generic approach-confidence chip (no DECADE branding). */

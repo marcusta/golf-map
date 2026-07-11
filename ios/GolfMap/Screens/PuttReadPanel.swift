@@ -227,9 +227,7 @@ struct PuttReadSection: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.weight(.semibold))
-                .monospacedDigit()
+            MetricText(value, size: 12)
                 .frame(minWidth: 62)
             Button(action: onIncrement) {
                 Image(systemName: "plus.circle.fill").font(.system(size: 18))
@@ -261,7 +259,7 @@ struct PuttReadSection: View {
                     VStack(alignment: .leading, spacing: 2) {
                         readoutTitle(display.status == .soft ? "Read (rough)" : "Read")
                         readoutRow("Aim", aimText(read.aimOffsetM))
-                        readoutRow("Plays like", String(format: "%.1f m", read.playsLikeM))
+                        readoutRow("Plays like", String(format: "%.1f", read.playsLikeM), unit: "m")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -282,21 +280,16 @@ struct PuttReadSection: View {
     }
 
     private func readoutTitle(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .kerning(0.6)
+        OverlineLabel(text, size: 10)
     }
 
-    private func readoutRow(_ label: String, _ value: String) -> some View {
+    private func readoutRow(_ label: String, _ value: String, unit: String? = nil) -> some View {
         HStack {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 6)
-            Text(value)
-                .font(.caption.weight(.semibold))
-                .monospacedDigit()
+            MetricText(value, unit: unit, size: 12)
         }
     }
 
@@ -322,9 +315,7 @@ struct PuttReadSection: View {
                 ),
                 in: PuttReadModel.stimpMinFt...PuttReadModel.stimpMaxFt
             )
-            Text(String(format: "%.1f", model.stimpFt))
-                .font(.caption.weight(.semibold))
-                .monospacedDigit()
+            MetricText(String(format: "%.1f", model.stimpFt), size: 12)
                 .frame(width: 32, alignment: .trailing)
         }
     }

@@ -2,11 +2,12 @@ import { Component, Router, template } from '@basics/core/client/core';
 import { AuthService } from '@basics/core/client/auth';
 import { t } from '../theme';
 import { s, card, field, primaryBtn } from '../css';
+import { icon } from '../ui/icons';
 
 const tpl = template(`
     <div class="login" bind="root">
         <div class="login__card">
-            <h1 class="login__title">&#9971; Golf Map</h1>
+            <h1 class="login__title">${icon('flag', 24)} Golf Map</h1>
             <p class="login__subtitle">Course Builder</p>
             <div class="error" bind="error"></div>
             <form bind="form" class="login__form">
@@ -61,7 +62,7 @@ export class LoginComponent extends Component {
                 color: ${t('color-status-negative')};
                 font-size: 0.875rem;
                 border-radius: ${t('radius-sm')};
-                background: rgba(201, 42, 42, 0.08);
+                background: color-mix(in srgb, ${t('color-status-negative')} 8%, transparent);
             }
             & .error.show {
                 display: block;

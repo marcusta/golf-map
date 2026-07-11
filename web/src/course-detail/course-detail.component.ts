@@ -1,12 +1,13 @@
 import { Component, Router, template, effect } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, primaryBtn } from '../css';
+import { s, btn, primaryBtn, metric, panelTitle, statusTag } from '../css';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { CourseDetailService } from './course-detail.service';
 import { EditorCanvasComponent } from '../map/editor-canvas.component';
 import { SvgImportPanelComponent } from '../import/svg-import-panel.component';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
 import { HoleInfoPanelComponent } from './hole-info-panel.component';
+import { icon } from '../ui/icons';
 
 const tpl = template(`
     <div class="course-detail" bind="root" data-testid="course-detail">
@@ -67,30 +68,25 @@ export class CourseDetailComponent extends Component {
 
                 & h2 { margin: 0; font-size: 1rem; color: ${t('color-text-primary')}; }
 
-                & .back-btn {
+                & .back-btn,
+                & .header-actions .plan-btn,
+                & .header-actions .import-btn {
                     padding: ${s('xs')} ${s('sm')};
                     font-size: 0.8rem;
                     ${btn()}
                 }
 
                 & .status {
-                    font-size: 0.7rem;
-                    font-weight: 600;
-                    text-transform: uppercase;
-                    letter-spacing: 0.04em;
-                    padding: 2px ${s('sm')};
-                    border-radius: ${t('radius-pill')};
-                    background: ${t('color-surface-sunken')};
-                    color: ${t('color-text-secondary')};
+                    ${statusTag(t('color-text-tertiary'))}
 
-                    &.published {
-                        background: rgba(47, 125, 79, 0.12);
-                        color: ${t('color-accent-primary')};
-                    }
+                    &.published { ${statusTag(t('color-status-positive'))} }
+                    &.draft { ${statusTag('var(--data-risk)')} }
                 }
 
                 & .meta {
+                    ${metric()}
                     font-size: 0.8rem;
+                    font-weight: 400;
                     color: ${t('color-text-secondary')};
                 }
 
@@ -105,16 +101,6 @@ export class CourseDetailComponent extends Component {
                     gap: ${s('sm')};
                     margin-left: auto;
 
-                    & .plan-btn {
-                        padding: ${s('xs')} ${s('sm')};
-                        font-size: 0.8rem;
-                        ${btn()}
-                    }
-                    & .import-btn {
-                        padding: ${s('xs')} ${s('sm')};
-                        font-size: 0.8rem;
-                        ${btn()}
-                    }
                     & .publish-btn {
                         padding: ${s('xs')} ${s('md')};
                         font-size: 0.8rem;
@@ -154,11 +140,7 @@ export class CourseDetailComponent extends Component {
                 & .sidebar-title {
                     margin: 0;
                     padding: ${s('md')} ${s('lg')} ${s('sm')};
-                    font-size: 0.7rem;
-                    font-weight: 600;
-                    text-transform: uppercase;
-                    letter-spacing: 0.06em;
-                    color: ${t('color-text-secondary')};
+                    ${panelTitle()}
                 }
             }
 
@@ -181,7 +163,7 @@ export class CourseDetailComponent extends Component {
                 background: transparent;
                 font-family: inherit;
                 cursor: pointer;
-                transition: background 0.15s;
+                transition: background var(--dur-fast) var(--ease-standard);
 
                 &:hover { background: ${t('color-surface-sunken')}; }
                 &.active {
@@ -196,7 +178,10 @@ export class CourseDetailComponent extends Component {
                 }
 
                 & .hole-row__par {
-                    font-size: 0.8rem;
+                    ${metric()}
+                    font-size: 0.75rem;
+                    font-weight: 400;
+                    text-transform: uppercase;
                     color: ${t('color-text-secondary')};
                 }
             }
@@ -238,9 +223,11 @@ export class CourseDetailComponent extends Component {
                 const holes = this.svc.holes.get();
                 return holes.length ? `${holes.length} holes · par ${this.svc.totalPar.get()}` : '';
             },
-            georef: () => {
-                const course = this.svc.course.get();
-                return course && !course.georeferenceJson ? '⚠ no georeference' : '';
+            georef: {
+                innerHTML: () => {
+                    const course = this.svc.course.get();
+                    return course && !course.georeferenceJson ? `${icon('triangle-alert')} no georeference` : '';
+                },
             },
             plan: {
                 onclick: () => {

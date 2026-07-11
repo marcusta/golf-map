@@ -1,6 +1,6 @@
 import { Component, Router, Signal, Computed, template, effect } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, primaryBtn, btn, input } from '../css';
+import { s, primaryBtn, btn, ghostBtn, input, metric } from '../css';
 import { api } from '../api';
 import { TilesetService } from '../map/tileset.service';
 import type { Site } from '../../../shared/api/sites.gen';
@@ -60,8 +60,8 @@ export class SetMapAreaComponent extends Component {
             & .wizard__hint { margin: 0; font-size: 0.8rem; color: ${t('color-text-secondary')}; }
 
             & .wizard__size {
+                ${metric()}
                 font-size: 0.875rem;
-                font-variant-numeric: tabular-nums;
                 color: ${t('color-text-primary')};
                 min-height: 1.2em;
             }
@@ -87,7 +87,7 @@ export class SetMapAreaComponent extends Component {
                 &.show { display: block; }
             }
 
-            & .wizard__cancel { ${btn()} margin-top: auto; }
+            & .wizard__cancel { ${ghostBtn()} margin-top: auto; }
         }
     `;
 

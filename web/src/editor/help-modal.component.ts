@@ -1,9 +1,10 @@
 import { Component, Signal, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s } from '../css';
+import { s, panelTitle } from '../css';
 import { MapService } from '../map/map.service';
 import { EDITOR_TOOLS } from './tools/index';
 import type { EditorTool, HelpSection } from './tool';
+import { icon } from '../ui/icons';
 
 /** Open/close state for the contextual help modal — trivial enough not to warrant a Signal-per-tool split. */
 export class HelpModalService {
@@ -20,7 +21,7 @@ const tpl = template(`
             <section class="help-modal" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
                 <header class="help-modal__header">
                     <h2 bind="title" id="help-modal-title"></h2>
-                    <button bind="closeBtn" type="button" class="help-modal__close" aria-label="Close">&times;</button>
+                    <button bind="closeBtn" type="button" class="help-modal__close" aria-label="Close">${icon('x')}</button>
                 </header>
                 <div bind="body" class="help-modal__body"></div>
             </section>
@@ -62,8 +63,9 @@ export class HelpModalComponent extends Component {
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                background: rgba(20, 27, 22, 0.36);
-                backdrop-filter: blur(3px);
+                background: ${t('overlay-scrim')};
+                backdrop-filter: blur(6px);
+                -webkit-backdrop-filter: blur(6px);
             }
 
             & .help-modal {
@@ -71,10 +73,10 @@ export class HelpModalComponent extends Component {
                 flex-direction: column;
                 width: min(480px, calc(100vw - 48px));
                 max-height: min(600px, calc(100vh - 48px));
-                border: 1px solid color-mix(in srgb, ${t('color-border-default')} 82%, transparent);
-                border-radius: ${t('radius')};
+                border: 1px solid ${t('color-border-subtle')};
+                border-radius: var(--radius-lg);
                 background: ${t('color-surface-card')};
-                box-shadow: ${t('shadow-elevated')};
+                box-shadow: var(--elev-3);
                 overflow: hidden;
             }
 
@@ -95,6 +97,9 @@ export class HelpModalComponent extends Component {
             }
 
             & .help-modal__close {
+                display: flex;
+                align-items: center;
+                justify-content: center;
                 width: 28px;
                 height: 28px;
                 flex-shrink: 0;
@@ -102,8 +107,6 @@ export class HelpModalComponent extends Component {
                 border-radius: 50%;
                 background: ${t('color-surface-card')};
                 color: ${t('color-text-secondary')};
-                font-size: 1.1rem;
-                line-height: 1;
                 cursor: pointer;
                 &:hover { background: ${t('color-surface-sunken')}; color: ${t('color-text-primary')}; }
             }
@@ -118,24 +121,21 @@ export class HelpModalComponent extends Component {
 
             & .help-section__title {
                 margin: 0 0 ${s('sm')};
-                font-size: 0.72rem;
-                font-weight: 700;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
             & .help-row {
                 display: flex;
                 align-items: baseline;
                 gap: ${s('md')};
-                padding: 3px 0;
+                padding: ${s('xs')} 0;
             }
 
             & .help-row__keys {
                 flex-shrink: 0;
                 min-width: 150px;
-                font-family: ui-monospace, monospace;
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
                 font-size: 0.76rem;
                 color: ${t('color-text-primary')};
             }

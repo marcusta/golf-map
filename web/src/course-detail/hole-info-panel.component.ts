@@ -1,6 +1,6 @@
 import { Component, Computed, Router, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s } from '../css';
+import { s, field, metric, panelTitle } from '../css';
 import { CourseDetailService } from './course-detail.service';
 import { FurnitureService } from '../furniture/furniture.service';
 import { teeFill } from '../furniture/furniture-overlay';
@@ -82,23 +82,11 @@ export class HoleInfoPanelComponent extends Component {
             }
 
             & .hi-field {
-                display: flex;
-                flex-direction: column;
-                gap: ${s('xs')};
-                font-size: 0.68rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.04em;
-                color: ${t('color-text-secondary')};
+                ${field()}
 
                 & select {
-                    padding: ${s('xs')} ${s('sm')};
-                    font-size: 0.8rem;
-                    font-family: inherit;
-                    color: ${t('color-text-primary')};
-                    background: ${t('color-surface-raised')};
-                    border: 1px solid ${t('color-border-default')};
-                    border-radius: ${t('radius-sm')};
+                    font-family: var(--font-mono);
+                    font-variant-numeric: tabular-nums;
                 }
             }
 
@@ -111,11 +99,7 @@ export class HoleInfoPanelComponent extends Component {
 
             & .hi-tees-title {
                 padding: 0 ${s('sm')} ${s('xs')};
-                font-size: 0.68rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
             & .hi-tee-empty {
@@ -133,7 +117,7 @@ export class HoleInfoPanelComponent extends Component {
                 padding: ${s('xs')} ${s('sm')};
                 border-radius: ${t('radius-sm')};
                 cursor: pointer;
-                transition: background 0.15s;
+                transition: background var(--dur-fast) var(--ease-standard);
                 &:hover { background: ${t('color-surface-sunken')}; }
             }
 
@@ -150,7 +134,9 @@ export class HoleInfoPanelComponent extends Component {
             & .hi-tee-name { flex: 1; color: ${t('color-text-primary')}; }
 
             & .hi-tee-length {
-                font-variant-numeric: tabular-nums;
+                ${metric()}
+                font-size: 0.75rem;
+                font-weight: 400;
                 color: ${t('color-text-secondary')};
             }
 

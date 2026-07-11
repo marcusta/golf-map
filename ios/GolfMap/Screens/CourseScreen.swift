@@ -692,7 +692,7 @@ private struct OnCourseContentView: View {
             Image(systemName: "level")
                 .font(.system(size: 17, weight: .semibold))
                 .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: Circle())
+                .mapControl()
         }
         .buttonStyle(.plain)
         .disabled(model.currentHole?.green == nil)
@@ -714,7 +714,7 @@ private struct OnCourseContentView: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(isMeasure ? MeasurePanel.amber : Color.primary)
                 .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: Circle())
+                .mapControl()
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isMeasure ? "Exit measure" : "Measure")
@@ -735,7 +735,7 @@ private struct OnCourseContentView: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(isAdjust ? AdjustPanel.cyan : Color.primary)
                 .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: Circle())
+                .mapControl()
                 .overlay(alignment: .topTrailing) {
                     if model.currentHoleHasAdjustments {
                         Circle()
@@ -758,7 +758,7 @@ private struct OnCourseContentView: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(showProfile ? MeasurePanel.amber : Color.primary)
                 .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: Circle())
+                .mapControl()
         }
         .buttonStyle(.plain)
         .accessibilityLabel(showProfile ? "Close elevation profile" : "Elevation profile")
@@ -778,7 +778,7 @@ private struct OnCourseContentView: View {
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(isGreenView ? Color.green : Color.primary)
                 .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: Circle())
+                .mapControl()
         }
         .buttonStyle(.plain)
         .disabled(model.currentHole?.green == nil)
@@ -914,7 +914,7 @@ private struct OnCourseContentView: View {
             Image(systemName: systemImage)
                 .font(.system(size: size, weight: .semibold))
                 .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: Circle())
+                .mapControl()
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -943,10 +943,10 @@ private struct AdjustPanel: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 9)
-        .padding(.bottom, 10)
-        .background(.ultraThinMaterial.opacity(0.88), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal, Space.s4)
+        .padding(.top, Space.s3)
+        .padding(.bottom, Space.s3)
+        .glassPanel()
     }
 
     private var header: some View {
@@ -989,30 +989,23 @@ private struct CompactChipView: View {
     var body: some View {
         HStack(spacing: 8) {
             Text("H\(model.currentHoleNumber)")
-                .font(.footnote.weight(.bold))
+                .font(AppFont.mono(13, .semibold))
             Divider().frame(height: 14)
             if let routed = model.routedAimDistance {
                 Image(systemName: "arrow.up.forward")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text("\(routed.meters) m")
-                    .font(.footnote.weight(.semibold))
-                    .monospacedDigit()
+                    .foregroundStyle(Overlay.textMuted)
+                MetricText("\(routed.meters)", unit: "m", size: 13,
+                           color: Overlay.text, unitColor: Overlay.textMuted)
+            } else if let center = model.distances?.center {
+                MetricText("\(center)", unit: "m", size: 13,
+                           color: Overlay.text, unitColor: Overlay.textMuted)
             } else {
-                Text(centerText)
-                    .font(.footnote.weight(.semibold))
-                    .monospacedDigit()
+                MetricText("–", size: 13, color: Overlay.text)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(.ultraThinMaterial.opacity(0.85), in: Capsule())
+        .mapLabelScrim()
         .accessibilityElement(children: .combine)
-    }
-
-    private var centerText: String {
-        if let center = model.distances?.center { return "\(center) m" }
-        return "–"
     }
 }
 
@@ -1030,18 +1023,17 @@ private struct HoleHeaderView: View {
                 Text("Hole \(model.currentHoleNumber)")
                     .font(.headline)
                 Text(subtitle)
-                    .font(.caption)
+                    .font(AppFont.mono(11, .regular))
                     .foregroundStyle(.secondary)
-                    .monospacedDigit()
             }
             .frame(maxWidth: .infinity)
             stepButton(systemImage: "chevron.right", enabled: model.canGoNext) {
                 model.nextHole()
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(.ultraThinMaterial.opacity(0.82), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, Space.s2)
+        .padding(.vertical, Space.s1)
+        .glassPanel(cornerRadius: 14)
         .holeSwipeGesture(model: model)
     }
 
@@ -1095,10 +1087,10 @@ private struct DistanceCardView: View {
             }
             bottomRow
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 9)
-        .padding(.bottom, 8)
-        .background(.ultraThinMaterial.opacity(0.82), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal, Space.s4)
+        .padding(.top, Space.s3)
+        .padding(.bottom, Space.s2)
+        .glassPanel()
         .holeSwipeGesture(model: model)
     }
 
@@ -1106,38 +1098,31 @@ private struct DistanceCardView: View {
     private var frontCenterBack: some View {
         let distances = model.distances
         return HStack(alignment: .firstTextBaseline, spacing: 0) {
-            sideValue(label: "FRONT", value: distances?.front, color: Self.frontColor)
+            sideValue(label: "Front", value: distances?.front, color: Self.frontColor)
                 .frame(maxWidth: .infinity)
             VStack(spacing: 0) {
-                Text(Self.format(distances?.center))
-                    .font(.system(size: 52, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                Text(centerCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                MetricText(Self.format(distances?.center), size: 48)
+                    .minimumScaleFactor(0.7)
+                OverlineLabel(centerCaption, color: .secondary, size: 10)
             }
             .frame(maxWidth: .infinity)
-            sideValue(label: "BACK", value: distances?.back, color: Self.backColor)
+            sideValue(label: "Back", value: distances?.back, color: Self.backColor)
                 .frame(maxWidth: .infinity)
         }
     }
 
     private var centerCaption: String {
         if let playsLike = model.distances?.playsLikeCenter {
-            return "CENTER · PL \(playsLike)"
+            return "Center · PL \(playsLike)"
         }
-        return "CENTER"
+        return "Center"
     }
 
     private func sideValue(label: String, value: Int?, color: Color) -> some View {
         VStack(spacing: 2) {
-            Text(Self.format(value))
-                .font(.system(size: 30, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-            Text(label)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(color)
+            MetricText(Self.format(value), size: 28)
+                .minimumScaleFactor(0.7)
+            OverlineLabel(label, color: color, size: 10)
         }
     }
 
@@ -1151,14 +1136,9 @@ private struct DistanceCardView: View {
                 .foregroundStyle(.secondary)
             Spacer()
             if let playsLike = distances.playsLikePin {
-                Text("PL \(playsLike)")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                MetricText("PL \(playsLike)", size: 12, weight: .regular, color: .secondary)
             }
-            Text("\(Self.format(distances.pin)) m")
-                .font(.callout.weight(.semibold))
-                .monospacedDigit()
+            MetricText(Self.format(distances.pin), unit: "m", size: 15)
         }
     }
 
@@ -1173,9 +1153,7 @@ private struct DistanceCardView: View {
                         Text(aim.label)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("\(aim.meters)")
-                            .font(.caption.weight(.semibold))
-                            .monospacedDigit()
+                        MetricText("\(aim.meters)", size: 12)
                     }
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
@@ -1192,13 +1170,9 @@ private struct DistanceCardView: View {
             Image(systemName: "arrow.up.forward")
                 .font(.caption)
                 .foregroundStyle(Self.pinColor)
-            Text("TO \(aim.label.uppercased())")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
+            OverlineLabel("To \(aim.label)", color: .secondary)
             Spacer()
-            Text("\(aim.meters) m")
-                .font(.callout.weight(.bold))
-                .monospacedDigit()
+            MetricText("\(aim.meters)", unit: "m", size: 16)
         }
     }
 
@@ -1213,9 +1187,7 @@ private struct DistanceCardView: View {
                             Text(legLabel(index: index, count: legs.count))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            Text("\(meters)")
-                                .font(.caption.weight(.semibold))
-                                .monospacedDigit()
+                            MetricText("\(meters)", size: 12)
                         }
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
@@ -1224,10 +1196,8 @@ private struct DistanceCardView: View {
                 }
             }
             if let length = model.playingLength, let total = length.meters {
-                Text("Route \(length.approximate ? "~" : "")\(total) m")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                MetricText("Route \(length.approximate ? "~" : "")\(total)", unit: "m",
+                           size: 11, weight: .regular, color: .secondary)
             }
         }
     }

@@ -1,6 +1,6 @@
 import { Component, Router, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, card } from '../css';
+import { s, btn, listRow, metric, statusTag } from '../css';
 import { CoursesService } from './courses.service';
 
 const tpl = template(`
@@ -50,12 +50,20 @@ export class CourseListComponent extends Component {
                 gap: ${s('md')};
                 margin-bottom: ${s('lg')};
 
-                & h2 { margin: 0; font-size: 1.25rem; color: ${t('color-text-primary')}; }
+                & h2 {
+                    margin: 0;
+                    font-size: 1.5rem;
+                    font-weight: 700;
+                    letter-spacing: -0.01em;
+                    color: ${t('color-text-primary')};
+                }
             }
 
             & .courses__total {
-                font-size: 0.8rem;
-                color: ${t('color-text-secondary')};
+                ${metric()}
+                font-size: 0.75rem;
+                font-weight: 400;
+                color: ${t('color-text-tertiary')};
             }
 
             & .courses__spacer { flex: 1; }
@@ -90,42 +98,36 @@ export class CourseListComponent extends Component {
                 grid-template-columns: 1fr auto auto auto;
                 align-items: center;
                 gap: ${s('lg')};
-                padding: ${s('md')} ${s('lg')};
                 text-align: left;
                 font-family: inherit;
                 cursor: pointer;
-                ${card({ hover: true })}
+                ${listRow()}
 
                 & .course-row__name {
-                    font-size: 0.9375rem;
+                    font-size: 1rem;
                     font-weight: 600;
                     color: ${t('color-text-primary')};
                 }
 
                 & .course-row__holes {
-                    font-size: 0.8rem;
-                    color: ${t('color-text-secondary')};
+                    ${metric()}
+                    font-size: 0.75rem;
+                    font-weight: 400;
+                    color: ${t('color-text-tertiary')};
                 }
 
                 & .course-row__status {
-                    font-size: 0.7rem;
-                    font-weight: 600;
-                    text-transform: uppercase;
-                    letter-spacing: 0.04em;
-                    padding: 2px ${s('sm')};
-                    border-radius: ${t('radius-pill')};
-                    background: ${t('color-surface-sunken')};
-                    color: ${t('color-text-secondary')};
+                    ${statusTag(t('color-text-tertiary'))}
 
-                    &.published {
-                        background: rgba(47, 125, 79, 0.12);
-                        color: ${t('color-accent-primary')};
-                    }
+                    &.published { ${statusTag(t('color-status-positive'))} }
+                    &.draft { ${statusTag('var(--data-risk)')} }
                 }
 
                 & .course-row__revision {
-                    font-size: 0.8rem;
-                    color: ${t('color-text-secondary')};
+                    ${metric()}
+                    font-size: 0.75rem;
+                    font-weight: 400;
+                    color: ${t('color-text-tertiary')};
                     min-width: 3ch;
                     text-align: right;
                 }

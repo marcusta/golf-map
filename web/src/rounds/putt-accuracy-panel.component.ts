@@ -7,7 +7,7 @@
 
 import { Component, template } from '@basics/core/client/core';
 import type { AccuracyTrend } from '../../../shared/api/putt-estimate.gen';
-import { s } from '../css';
+import { card, metric, panelTitle, s } from '../css';
 import { t } from '../theme';
 import { accuracyRows, bucketRows, type AccuracyRow } from './putt-accuracy-rows';
 
@@ -65,32 +65,30 @@ function buildTable(rows: readonly AccuracyRow[]): HTMLElement {
 export class PuttAccuracyPanelComponent extends Component<PuttAccuracyPanelProps> {
     static styles = `
         .putt-accuracy-panel {
+            ${card()}
+            overflow: hidden;
             display: flex;
             flex-direction: column;
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
 
             & .putt-accuracy-panel__section {
-                padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('color-border-default')};
+                padding: ${s('md')} ${s('lg')};
+                border-bottom: 1px solid ${t('color-border-subtle')};
                 display: flex;
                 flex-direction: column;
                 gap: ${s('sm')};
+                &:last-child { border-bottom: none; }
             }
 
             & .section-title {
                 margin: 0;
-                font-size: 0.7rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
             & .sg-table__rows {
                 display: flex;
                 flex-direction: column;
-                gap: 2px;
             }
 
             & .sg-table__row {
@@ -99,17 +97,21 @@ export class PuttAccuracyPanelComponent extends Component<PuttAccuracyPanelProps
                 gap: ${s('sm')};
                 align-items: baseline;
                 font-size: 0.78rem;
+                padding: 4px 0;
+                border-bottom: 1px solid ${t('color-border-subtle')};
+                &:last-child { border-bottom: none; }
             }
 
             & .sg-table__label { color: ${t('color-text-primary')}; }
             & .sg-table__count {
-                color: ${t('color-text-secondary')};
+                ${metric()}
+                font-weight: 400;
+                color: ${t('color-text-tertiary')};
                 font-size: 0.7rem;
                 text-align: right;
             }
             & .sg-table__value {
-                font-variant-numeric: tabular-nums;
-                font-weight: 600;
+                ${metric()}
                 text-align: right;
                 min-width: 3.5em;
             }

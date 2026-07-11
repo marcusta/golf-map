@@ -10,11 +10,12 @@ import { PlayerSettingsComponent } from '../player/player-settings.component';
 import { NewCourseWizardComponent } from '../map-build/new-course-wizard.component';
 import { SetMapAreaComponent } from '../map-build/set-map-area.component';
 import { ConfirmDialogComponent } from './confirm-dialog.component';
+import { icon } from '../ui/icons';
 
 const tpl = template(`
     <div bind="layout" class="app-layout">
         <header bind="topbar" class="topbar">
-            <a bind="homeLink" href="/">&#9971; Golf Map</a>
+            <a bind="homeLink" href="/">${icon('flag', 20)} Golf Map</a>
             <span class="topbar__spacer"></span>
             <a bind="playerLink" href="/player" class="topbar__player">Player</a>
             <span bind="username" class="topbar__user"></span>
@@ -45,11 +46,21 @@ export class AppComponent extends Component {
             border-bottom: 1px solid ${t('color-border-default')};
 
             /* router.link() drives className, so the logo <a> is styled via
-               the parent selector rather than a class of its own. */
+               the parent selector rather than a class of its own. The
+               topbar sits on color-surface-brand, a permanently dark pine
+               chrome that does NOT flip with the theme (same hex in both
+               light and dark). color-text-inverse would invert the wrong
+               way here (it goes dark-on-dark in dark mode), so the topbar
+               reads off the overlay tokens instead — the only tokens in
+               the palette built to stay light-on-dark-chrome regardless
+               of theme (same contract as text over the map). */
             & > a {
+                display: inline-flex;
+                align-items: center;
+                gap: ${s('xs')};
                 font-size: 1rem;
                 font-weight: 700;
-                color: ${t('topbar-logo')};
+                color: ${t('overlay-text')};
                 text-decoration: none;
             }
 
@@ -57,19 +68,20 @@ export class AppComponent extends Component {
 
             & .topbar__user {
                 font-size: 0.8rem;
-                color: ${t('topbar-logo')};
+                color: ${t('overlay-text-muted')};
             }
 
             & .topbar__player {
                 font-size: 0.8rem;
                 font-weight: 400;
-                color: ${t('topbar-logo')};
+                color: ${t('overlay-text-muted')};
                 text-decoration: none;
                 padding: ${s('xs')} ${s('md')};
                 border: 1px solid transparent;
                 border-radius: ${t('radius-pill')};
-                transition: border-color 0.15s;
-                &:hover { border-color: ${t('topbar-logo')}; }
+                transition: border-color var(--dur-fast) var(--ease-standard),
+                    color var(--dur-fast) var(--ease-standard);
+                &:hover { border-color: ${t('overlay-text-muted')}; color: ${t('overlay-text')}; }
             }
 
             & .topbar__logout {
@@ -78,10 +90,11 @@ export class AppComponent extends Component {
                 border: 1px solid transparent;
                 border-radius: ${t('radius-pill')};
                 background: transparent;
-                color: ${t('topbar-logo')};
+                color: ${t('overlay-text-muted')};
                 cursor: pointer;
-                transition: border-color 0.15s, color 0.15s;
-                &:hover { border-color: ${t('topbar-logo')}; }
+                transition: border-color var(--dur-fast) var(--ease-standard),
+                    color var(--dur-fast) var(--ease-standard);
+                &:hover { border-color: ${t('overlay-text-muted')}; color: ${t('overlay-text')}; }
             }
         }
 

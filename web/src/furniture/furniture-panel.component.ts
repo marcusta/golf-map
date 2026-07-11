@@ -1,10 +1,11 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, primaryBtn, field } from '../css';
+import { s, btn, primaryBtn, field, metric, panelTitle } from '../css';
 import { FurnitureService, TEE_COLORS, PIN_DIFFICULTIES, type PlacementKind, type GreenPoint } from './furniture.service';
 import { FurnitureToolService } from './furniture-tool.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { teeFill } from './furniture-overlay';
+import { icon } from '../ui/icons';
 
 const tpl = template(`
     <div class="furn-panel" bind="root">
@@ -12,7 +13,7 @@ const tpl = template(`
             <h4 class="section-title">Course holes</h4>
             <div class="hole-tools__summary" bind="holeToolsSummary"></div>
             <div class="hole-tools__actions">
-                <button bind="addHole" type="button" class="mini-btn">＋ Add hole</button>
+                <button bind="addHole" type="button" class="mini-btn">${icon('plus')} Add hole</button>
                 <button bind="deleteHole" type="button" class="delete-btn">Delete hole</button>
             </div>
         </div>
@@ -20,10 +21,10 @@ const tpl = template(`
         <div class="furn-panel__section">
             <h4 class="section-title">Place</h4>
             <div class="place-grid">
-                <button bind="placeTee" type="button" class="place-btn">⛳ Tee</button>
-                <button bind="placePin" type="button" class="place-btn">📍 Pin</button>
-                <button bind="placeAim" type="button" class="place-btn">◆ Aim</button>
-                <button bind="placeGreen" type="button" class="place-btn">⊙ Green</button>
+                <button bind="placeTee" type="button" class="place-btn">${icon('flag')} Tee</button>
+                <button bind="placePin" type="button" class="place-btn">${icon('map-pin')} Pin</button>
+                <button bind="placeAim" type="button" class="place-btn">${icon('diamond')} Aim</button>
+                <button bind="placeGreen" type="button" class="place-btn">${icon('circle-dot')} Green</button>
             </div>
             <div bind="greenPointRow" class="green-point-row">
                 <button bind="gpCenter" type="button" class="gp-btn">C</button>
@@ -55,8 +56,8 @@ const tpl = template(`
             <h4 class="section-title">Selection</h4>
             <div bind="selCard" class="sel-card"></div>
             <div bind="reorder" class="reorder-row">
-                <button bind="upBtn" type="button" class="mini-btn">↑ Up</button>
-                <button bind="downBtn" type="button" class="mini-btn">↓ Down</button>
+                <button bind="upBtn" type="button" class="mini-btn">${icon('arrow-up')} Up</button>
+                <button bind="downBtn" type="button" class="mini-btn">${icon('arrow-down')} Down</button>
             </div>
             <button bind="setActiveBtn" type="button" class="mini-btn set-active">Set active pin</button>
             <button bind="deleteBtn" type="button" class="delete-btn">Delete</button>
@@ -92,21 +93,19 @@ export class FurniturePanelComponent extends Component {
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
 
+            /* Law 03: space-4 interior padding, space-2 row gap; hairlines
+               only between these major-group sections (dock padding is 0). */
             & .furn-panel__section {
-                padding: ${s('sm')} ${s('md')};
+                padding: var(--space-3) var(--space-4);
                 border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
-                gap: ${s('sm')};
+                gap: var(--space-2);
             }
 
             & .section-title {
                 margin: 0;
-                font-size: 0.7rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
             & .place-grid {
@@ -133,6 +132,10 @@ export class FurniturePanelComponent extends Component {
             }
 
             & .place-btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 3px;
                 padding: ${s('xs')} 2px;
                 font-size: 0.72rem;
                 ${btn(t('radius-sm'))}
@@ -167,6 +170,7 @@ export class FurniturePanelComponent extends Component {
             & .selection { display: none; &.show { display: flex; } }
             & .sel-card { font-size: 0.75rem; line-height: 1.5; color: ${t('color-text-primary')}; }
             & .sel-card b { color: ${t('color-text-secondary')}; font-weight: 600; }
+            & .sel-card .metric { ${metric()} font-size: 0.75rem; }
 
             & .hole-tools__summary {
                 font-size: 0.75rem;
@@ -175,6 +179,7 @@ export class FurniturePanelComponent extends Component {
             }
 
             & .hole-tools__summary b { color: ${t('color-text-primary')}; }
+            & .hole-tools__summary .metric { ${metric()} font-size: 0.75rem; }
 
             & .hole-tools__actions {
                 display: grid;
@@ -185,6 +190,10 @@ export class FurniturePanelComponent extends Component {
             & .reorder-row { display: none; gap: ${s('xs')}; &.show { display: flex; } }
             & .mini-btn {
                 flex: 1;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 3px;
                 padding: 3px ${s('xs')};
                 font-size: 0.72rem;
                 ${btn(t('radius-sm'))}
@@ -207,21 +216,23 @@ export class FurniturePanelComponent extends Component {
             & .summary { display: none; &.show { display: flex; } }
             & .summary-body { font-size: 0.75rem; line-height: 1.6; color: ${t('color-text-secondary')}; }
             & .summary-body b { color: ${t('color-text-primary')}; }
+            & .summary-body .metric { ${metric()} font-size: 0.75rem; }
 
+            /* Quiet footers (law 03): tertiary, minimal height; the last
+               section above already draws the major-group divider. */
             & .furn-panel__status {
-                padding: ${s('xs')} ${s('md')};
-                font-size: 0.72rem;
-                color: ${t('color-text-secondary')};
-                min-height: 1.4em;
+                padding: var(--space-2) var(--space-4) 0;
+                font-size: 0.7rem;
+                color: ${t('color-text-tertiary')};
+                min-height: 1.2em;
                 &.error { color: ${t('color-status-negative')}; }
             }
 
             & .furn-panel__hints {
-                padding: ${s('xs')} ${s('md')} ${s('sm')};
+                padding: var(--space-1) var(--space-4) var(--space-3);
                 font-size: 0.68rem;
                 line-height: 1.5;
-                color: ${t('color-text-secondary')};
-                border-top: 1px solid ${t('color-border-default')};
+                color: ${t('color-text-tertiary')};
             }
         }
     `;
@@ -297,7 +308,7 @@ export class FurniturePanelComponent extends Component {
                     if (!pin) return 'mini-btn set-active';
                     return pin.active ? 'mini-btn set-active show is-active' : 'mini-btn set-active show';
                 },
-                textContent: () => this.svc.selectedPin.get()?.active ? 'Active pin ✓' : 'Set active pin',
+                innerHTML: () => this.svc.selectedPin.get()?.active ? `Active pin ${icon('check')}` : 'Set active pin',
             },
             deleteBtn: {
                 onclick: () => void this.tool.deleteSelected(),
@@ -367,8 +378,8 @@ export class FurniturePanelComponent extends Component {
     private holeToolsSummaryHtml(): string {
         const holes = this.courseDetail.holes.get();
         const hole = this.tool.selectedHole.get();
-        const selected = hole ? ` · selected <b>${hole.number}</b>` : '';
-        return `${holes.length} hole${plural(holes.length)}${selected}<br>Add then place tee, aim, and green center.`;
+        const selected = hole ? ` · selected <b>${metricSpan(hole.number)}</b>` : '';
+        return `${metricSpan(holes.length)} hole${plural(holes.length)}${selected}<br>Add then place tee, aim, and green center.`;
     }
 
     private reorderVisible(): boolean {
@@ -430,10 +441,10 @@ export class FurniturePanelComponent extends Component {
             ? `green: C${mark(gp.center)} F${mark(gp.front)} B${mark(gp.back)}`
             : 'green: none';
         return [
-            `<b>Hole ${hole.number}</b> (par ${hole.par})`,
-            `${tees.length} tee${plural(tees.length)}`,
-            `${pins.length} pin${plural(pins.length)}${activePin ? ` · active: <b>${escapeHtml(activePin.name)}</b>` : ''}`,
-            `${aims.length} aim point${plural(aims.length)}`,
+            `<b>Hole ${metricSpan(hole.number)}</b> (par ${metricSpan(hole.par)})`,
+            `${metricSpan(tees.length)} tee${plural(tees.length)}`,
+            `${metricSpan(pins.length)} pin${plural(pins.length)}${activePin ? ` · active: <b>${escapeHtml(activePin.name)}</b>` : ''}`,
+            `${metricSpan(aims.length)} aim point${plural(aims.length)}`,
             greenLine,
         ].join('<br>');
     }
@@ -459,14 +470,19 @@ function card(
     elevation: number | null,
     extra: string,
 ): string {
-    const elev = elevation !== null ? `${elevation.toFixed(1)} m` : '—';
+    const elev = elevation !== null ? metricSpan(elevation.toFixed(1), 'm') : '—';
     return [
         `<b>${type}</b> · ${escapeHtml(name)}`,
         `${extra}`,
         `elevation ${elev}`,
         holeId ? `hole ${escapeHtml(holeId).slice(0, 8)}…` : 'no hole',
-        `${lat.toFixed(6)}, ${lon.toFixed(6)}`,
+        `<span class="metric">${lat.toFixed(6)}, ${lon.toFixed(6)}</span>`,
     ].join('<br>');
+}
+
+/** Mono tabular numeric readout (guide §02) — optional unit dropped via `.metric__unit`. */
+function metricSpan(value: string | number, unit?: string): string {
+    return `<span class="metric">${value}${unit ? `<span class="metric__unit"> ${unit}</span>` : ''}</span>`;
 }
 
 /** Return a new ordering with `id` moved by `delta`, or null if it can't move. */

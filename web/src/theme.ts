@@ -8,10 +8,9 @@ import { createTokens } from '@basics/core/client/core';
 // motion) live in design-tokens.css, imported from main.ts.
 //
 // Names match the design package 1:1 (web --color-text-primary
-// ↔ iOS Color.textPrimary). Legacy short names (bg/primary/text/
-// …) are retained as ALIASES → new values so components can be
-// migrated file-by-file without breakage. Remove aliases once no
-// consumer references them.
+// ↔ iOS Color.textPrimary). The legacy short-name aliases (bg/
+// primary/text/…) that eased the file-by-file migration have been
+// removed now that all consumers reference semantic/overlay names.
 // ============================================================
 
 const scale = {
@@ -72,26 +71,6 @@ const light = {
     // ── elevation (box-shadow) ──
     shadow: '0 1px 2px rgba(40,36,26,.06), 0 2px 8px -2px rgba(40,36,26,.08)',
     'shadow-elevated': '0 4px 10px -4px rgba(40,36,26,.18), 0 12px 28px -12px rgba(40,36,26,.22)',
-
-    // ── LEGACY ALIASES → L&L values (migrate away, then delete) ──
-    bg: '#F6F1E7',
-    surface: '#FBF8F1',
-    'input-bg': '#FFFFFF',
-    'btn-bg': '#EDE4D2',
-    'btn-hover': '#DDD0B4',
-    'hover-bg': '#EDE4D2',
-    primary: '#BF6A3E',
-    'primary-hover': '#A6572F',
-    'primary-text': '#FBF3E8',
-    accent: '#BF6A3E',
-    'active-bg': '#BF6A3E',
-    'active-text': '#FBF3E8',
-    text: '#211D14',
-    'text-muted': '#55503F',
-    border: '#DDD0B4',
-    error: '#B24A32',
-    'topbar-bg': '#1E2B22',
-    'topbar-logo': 'rgba(246, 241, 231, 0.85)',
 };
 
 const dark: typeof light = {
@@ -144,26 +123,6 @@ const dark: typeof light = {
     // ── elevation (dark swaps ambient shadow → warm glow) ──
     shadow: '0 1px 2px rgba(0,0,0,.4), 0 0 12px -4px rgba(230,192,138,.10)',
     'shadow-elevated': '0 6px 16px -6px rgba(0,0,0,.55), 0 0 24px -6px rgba(230,192,138,.14)',
-
-    // ── LEGACY ALIASES → L&L values ──
-    bg: '#16130D',
-    surface: '#221D15',
-    'input-bg': '#2C2519',
-    'btn-bg': '#100E09',
-    'btn-hover': '#3A3122',
-    'hover-bg': '#100E09',
-    primary: '#D2793F',
-    'primary-hover': '#E08A4E',
-    'primary-text': '#1C130B',
-    accent: '#D2793F',
-    'active-bg': '#D2793F',
-    'active-text': '#1C130B',
-    text: '#F1EADB',
-    'text-muted': '#C4BBA6',
-    border: '#3A3122',
-    error: '#E07C5E',
-    'topbar-bg': '#1E2B22',
-    'topbar-logo': 'rgba(241, 234, 219, 0.75)',
 };
 
 export const t = createTokens(light, dark);

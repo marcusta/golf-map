@@ -1,6 +1,7 @@
 import { Component, Router, Signal, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn } from '../css';
+import { s, segmented, glassPanel, OVERLAY_W, OVERLAY_INSET, OVERLAY_GAP } from '../css';
+import { icon } from '../ui/icons';
 import { MapService } from '../map/map.service';
 import { ElevationService } from '../map/elevation.service';
 import { TilesetService } from '../map/tileset.service';
@@ -43,22 +44,27 @@ const toolBtnTpl = template(`
 export class EditorToolbarComponent extends Component {
     static styles = `
         .editor-tools {
+            /* Corner-inset contract (layout law 02): toolbar + left dock
+               share the top-left inset and LEFT EDGE, stacked with an
+               OVERLAY_GAP. The bottom anchor only BOUNDS the column so the
+               dock can shrink-scroll — children hug content (law 01). */
             position: absolute;
-            top: ${s('md')};
-            left: ${s('md')};
-            bottom: ${s('md')};
+            top: ${OVERLAY_INSET};
+            left: ${OVERLAY_INSET};
+            bottom: ${OVERLAY_INSET};
             display: none;
             flex-direction: column;
             align-items: flex-start;
-            gap: ${s('sm')};
+            gap: ${OVERLAY_GAP};
             z-index: 5;
             pointer-events: none;
             &.show { display: flex; }
 
+            /* Tool switcher: one sunken segmented track, not loose buttons —
+               active tool gets aria-pressed="true" (guide §04). */
             & .editor-tools__bar {
-                display: flex;
-                gap: ${s('xs')};
                 pointer-events: auto;
+                ${segmented()}
 
                 & .tool-btn {
                     display: flex;
@@ -66,53 +72,60 @@ export class EditorToolbarComponent extends Component {
                     gap: ${s('xs')};
                     padding: ${s('xs')} ${s('sm')};
                     font-size: 0.75rem;
-                    ${btn(t('radius-sm'))}
-                    background: ${t('color-surface-card')};
-                    box-shadow: ${t('shadow')};
-                    &.active {
-                        border-color: ${t('color-accent-primary')};
+
+                    /* Monoline icon (guide §06) — currentColor, so the active
+                       segment tints the icon clay via the rule below. */
+                    & .tool-btn__icon { display: flex; align-items: center; }
+                    &[aria-pressed="true"] .tool-btn__icon {
                         color: ${t('color-accent-primary')};
-                        background: ${t('color-surface-card')};
                     }
-                    & .tool-btn__icon { font-size: 0.9rem; line-height: 1; }
                 }
             }
 
+            /* Left-edge dock: glass over the map (guide §01) — terrain reads
+               through, rim-light stroke, radius-lg, elev-3. Width is the
+               340 bucket (law 01: the draw panel's 2-col grid fits FULL
+               labels; furniture/measure/analysis inherit it). Height hugs
+               content — flex shrink + min-height:0 cap it at the viewport
+               bound, and overflow scrolls INSIDE. Padding 0: hosted panels
+               carry their own section rhythm (law 03). */
             & .editor-tools__panel {
                 display: none;
-                width: 240px;
-                max-height: 100%;
+                width: ${OVERLAY_W.standard};
+                flex: 0 1 auto;
+                min-height: 0;
                 overflow-y: auto;
                 pointer-events: auto;
-                border: 1px solid ${t('color-border-default')};
-                border-radius: ${t('radius-sm')};
-                background: ${t('color-surface-card')};
-                box-shadow: ${t('shadow')};
+                ${glassPanel()}
+                padding: 0;
                 &.show { display: block; }
             }
         }
 
         /*
-         * Right-edge dock — mirrors .editor-tools__panel above, but it is
-         * its own top-level element (no button bar on this side) so its
-         * show/hide doesn't depend on the left toolbar's map-ready gating
-         * beyond what's folded into its own className function.
+         * Right-edge dock — mirrors .editor-tools__panel above (same glass
+         * treatment), but it is its own top-level element (no button bar on
+         * this side) so its show/hide doesn't depend on the left toolbar's
+         * map-ready gating beyond what's folded into its own className
+         * function.
          */
         .editor-tools-side {
+            /* Layout laws 01+02: floats at the top-right corner inset,
+               280 bucket, and HUGS its content — no bottom anchor, only a
+               max-height bound so the hosted panel's list can scroll
+               inside (the panel is never full-height). Flex column so the
+               hosted component can give its row list min-height:0. */
             display: none;
             position: absolute;
-            top: ${s('md')};
-            right: ${s('md')};
-            bottom: ${s('md')};
-            width: 240px;
-            max-height: 100%;
-            overflow-y: auto;
+            top: ${OVERLAY_INSET};
+            right: ${OVERLAY_INSET};
+            width: ${OVERLAY_W.narrow};
+            max-height: calc(100% - 2 * ${OVERLAY_INSET});
             z-index: 5;
-            border: 1px solid ${t('color-border-default')};
-            border-radius: ${t('radius-sm')};
-            background: ${t('color-surface-card')};
-            box-shadow: ${t('shadow')};
-            &.show { display: block; }
+            pointer-events: auto;
+            ${glassPanel()}
+            padding: 0;
+            &.show { display: flex; flex-direction: column; }
         }
     `;
 
@@ -157,10 +170,11 @@ export class EditorToolbarComponent extends Component {
             const btnEl = this.wireEl(toolBtnTpl, {
                 button: {
                     onclick: () => this.toggle(tool),
-                    className: () => this.activeToolId.get() === tool.id ? 'tool-btn active' : 'tool-btn',
+                    className: 'tool-btn',
                     title: tool.label,
+                    'aria-pressed': () => this.activeToolId.get() === tool.id,
                 },
-                icon: { textContent: tool.icon },
+                icon: { innerHTML: icon(tool.icon, 16) },
                 label: { textContent: tool.label },
             });
             // E2E instrumentation (inert in prod): stable per-tool hook so the

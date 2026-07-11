@@ -25,7 +25,7 @@ const HELP: HelpSection[] = [
 export const measureTool: EditorTool = {
     id: MEASURE_TOOL_ID,
     label: 'Measure',
-    icon: '📏',
+    icon: 'ruler',
     order: 30,
     panel: MeasurePanelComponent,
     help: HELP,

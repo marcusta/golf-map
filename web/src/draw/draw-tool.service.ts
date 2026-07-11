@@ -42,6 +42,7 @@ import {
     parseVertexKey,
 } from './draw-state';
 import { EditHistory, snapshotOf, type HistoryEntry } from './history';
+import { CAT, MARKER_FILL, OVERLAY_TEXT, STATUS_RISK } from '../map/map-palette';
 import {
     DRAW_FILL_OPACITY,
     SELECTION_COLOR,
@@ -1657,13 +1658,13 @@ function previewLayers(): OverlayLayerSpec[] {
             id: 'draw-marquee-fill',
             type: 'fill',
             filter: role('marquee'),
-            paint: { 'fill-color': '#4dabf7', 'fill-opacity': 0.12 },
+            paint: { 'fill-color': CAT.sky /* '#6FA8C9' — --data-cat-7 */, 'fill-opacity': 0.12 },
         },
         {
             id: 'draw-marquee-line',
             type: 'line',
             filter: role('marquee'),
-            paint: { 'line-color': '#4dabf7', 'line-width': 1.5, 'line-dasharray': [2, 2] },
+            paint: { 'line-color': CAT.sky /* '#6FA8C9' — --data-cat-7 */, 'line-width': 1.5, 'line-dasharray': [2, 2] },
         },
         {
             id: 'draw-draft-line',
@@ -1672,24 +1673,25 @@ function previewLayers(): OverlayLayerSpec[] {
             paint: { 'line-color': SELECTION_COLOR, 'line-width': 2, 'line-dasharray': [2, 1.5] },
         },
         {
-            // Armed offset/simplify result: dashed "what you'll get" line.
+            // Armed offset/simplify result: dashed "what you'll get" line —
+            // amber = armed-but-uncommitted state.
             id: 'draw-op-preview',
             type: 'line',
             filter: role('op-preview'),
-            paint: { 'line-color': '#ff8787', 'line-width': 2, 'line-dasharray': [2, 1.5] },
+            paint: { 'line-color': STATUS_RISK /* '#C68A2E' — --data-risk */, 'line-width': 2, 'line-dasharray': [2, 1.5] },
         },
         {
             id: 'draw-handle-lines',
             type: 'line',
             filter: role('handle-line'),
-            paint: { 'line-color': '#ffffff', 'line-width': 1, 'line-opacity': 0.8 },
+            paint: { 'line-color': OVERLAY_TEXT /* --overlay-text */, 'line-width': 1, 'line-opacity': 0.8 },
         },
         {
             id: 'draw-control-cage',
             type: 'line',
             filter: role('control-cage'),
             paint: {
-                'line-color': '#ffffff',
+                'line-color': OVERLAY_TEXT, // --overlay-text
                 'line-width': 1,
                 'line-opacity': 0.5,
                 'line-dasharray': [1, 2],
@@ -1701,8 +1703,8 @@ function previewLayers(): OverlayLayerSpec[] {
             filter: ['in', ['get', 'role'], ['literal', ['vertex', 'first-vertex']]] as FilterSpecification,
             paint: {
                 'circle-radius': ['case', ['==', ['get', 'role'], 'first-vertex'], 7, 5] as never,
-                'circle-color': '#ffffff',
-                'circle-stroke-color': '#1E2B22',
+                'circle-color': OVERLAY_TEXT, // '#FFFFFF' — --overlay-text
+                'circle-stroke-color': MARKER_FILL, // '#1E2B22' — --color-surface-brand
                 'circle-stroke-width': 2,
             },
         },
@@ -1713,8 +1715,8 @@ function previewLayers(): OverlayLayerSpec[] {
             filter: role('vertex-corner'),
             paint: {
                 'circle-radius': 5,
-                'circle-color': '#f59f00',
-                'circle-stroke-color': '#1E2B22',
+                'circle-color': CAT.wheat, // '#D8A441' — --data-cat-3
+                'circle-stroke-color': MARKER_FILL, // --color-surface-brand
                 'circle-stroke-width': 2,
             },
         },
@@ -1726,7 +1728,7 @@ function previewLayers(): OverlayLayerSpec[] {
             paint: {
                 'circle-radius': 6,
                 'circle-color': SELECTION_COLOR,
-                'circle-stroke-color': '#1E2B22',
+                'circle-stroke-color': MARKER_FILL, // --color-surface-brand
                 'circle-stroke-width': 2,
             },
         },
@@ -1736,8 +1738,8 @@ function previewLayers(): OverlayLayerSpec[] {
             filter: role('handle'),
             paint: {
                 'circle-radius': 4,
-                'circle-color': '#4dabf7',
-                'circle-stroke-color': '#ffffff',
+                'circle-color': CAT.sky, // '#6FA8C9' — --data-cat-7 (pairs with the marquee)
+                'circle-stroke-color': OVERLAY_TEXT, // --overlay-text
                 'circle-stroke-width': 1.5,
             },
         },

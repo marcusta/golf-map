@@ -3,6 +3,7 @@ import maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, IControl, MapMouseEvent, StyleSpecification } from 'maplibre-gl';
 import { Signal } from '@basics/core/client/core';
 import type { Bbox } from '../../../shared/api/map-build.gen';
+import { ACCENT_COLOR, CAT, OVERLAY_TEXT } from '../map/map-palette';
 import { squareBox } from './bbox-math';
 
 export type { Bbox };
@@ -119,11 +120,12 @@ export class AreaPicker {
         this.map.on('load', () => {
             this.map.addSource('aoi', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
             this.map.addSource('aoi-handles', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-            this.map.addLayer({ id: 'aoi-fill', type: 'fill', source: 'aoi', paint: { 'fill-color': '#D8A441', 'fill-opacity': 0.12 } });
-            this.map.addLayer({ id: 'aoi-line', type: 'line', source: 'aoi', paint: { 'line-color': '#D8A441', 'line-width': 2 } });
+            // AOI box in wheat (--data-cat-3) — reads on any satellite turf.
+            this.map.addLayer({ id: 'aoi-fill', type: 'fill', source: 'aoi', paint: { 'fill-color': CAT.wheat, 'fill-opacity': 0.12 } });
+            this.map.addLayer({ id: 'aoi-line', type: 'line', source: 'aoi', paint: { 'line-color': CAT.wheat, 'line-width': 2 } });
             this.map.addLayer({
                 id: 'aoi-handle', type: 'circle', source: 'aoi-handles',
-                paint: { 'circle-radius': 6, 'circle-color': '#ffffff', 'circle-stroke-color': '#D8A441', 'circle-stroke-width': 2 },
+                paint: { 'circle-radius': 6, 'circle-color': OVERLAY_TEXT, 'circle-stroke-color': CAT.wheat, 'circle-stroke-width': 2 },
             });
 
             if (initial) {
@@ -156,7 +158,7 @@ export class AreaPicker {
         }
         if (this.modeButtons) {
             for (const m of ['navigate', 'draw'] as PickerMode[]) {
-                this.modeButtons[m].style.background = m === mode ? '#BF6A3E' : '#fff';
+                this.modeButtons[m].style.background = m === mode ? ACCENT_COLOR : '#fff';
                 this.modeButtons[m].style.color = m === mode ? '#fff' : '#333';
             }
         }

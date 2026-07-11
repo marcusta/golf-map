@@ -1,17 +1,19 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn } from '../css';
+import { s, btn, panelTitle, metric } from '../css';
 import { MeasureToolService } from './measure-tool.service';
 import type { SegmentStats } from './measure-state';
 import { pointLabel } from './measure-tool.service';
 
-// Colours matching the map overlay / golf-map-2 prototype.
-const COLOR_UP = '#22c55e'; // positive elevation Δ (uphill) — green
-const COLOR_DOWN = '#ef4444'; // negative elevation Δ (downhill) — red
-const COLOR_LINE = '#fbbf24'; // main line / accent — amber
+// COLOR_PROFILE is a Canvas 2D strokeStyle — the context can't resolve a
+// `var(--x)` reference, so a literal is a deliberate exception to the
+// tokens-only rule (guide §02/§06). Every CSS-side colour below instead
+// uses the shared --data-good/--data-bad/--map-shot-line tokens.
 const COLOR_PROFILE = '#06b6d4'; // sparkline stroke — cyan
 
-const PROFILE_W = 220;
+// Tuned to the left dock's 340 width bucket (layout law 01) minus the
+// panel's space-4 interior padding on each side: 340 − 2×16.
+const PROFILE_W = 308;
 const PROFILE_H = 60;
 
 const tpl = template(`
@@ -23,6 +25,7 @@ const tpl = template(`
             <h4 class="section-title">Segments</h4>
             <div bind="segments" class="segments"></div>
             <h4 class="section-title">Total</h4>
+            <div bind="playsLikeHero" class="plays-like"></div>
             <div bind="totals" class="stats-grid totals-grid"></div>
         </div>
         <div bind="profileSection" class="measure-panel__section profile-section">
@@ -54,28 +57,30 @@ export class MeasurePanelComponent extends Component {
             flex-direction: column;
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
+            /* The glass shell comes from the dock (.editor-tools__panel) —
+               applying the recipe here as well double-stacked border, blur
+               and elevation (violates law 06's tiered depth). The dock's
+               padding is 0; sections below carry the space-4 interior
+               rhythm (law 03), and the ${PROFILE_W}px profile canvas is
+               tuned to the dock's 340 bucket minus that padding. */
 
             & .measure-panel__section {
-                padding: ${s('sm')} ${s('md')};
+                padding: var(--space-3) var(--space-4);
                 border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
-                gap: ${s('sm')};
+                gap: var(--space-2);
             }
 
             & .section-title {
                 margin: 0;
-                font-size: 0.7rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
             & .instruction {
                 font-size: 0.8rem;
                 line-height: 1.4;
-                & .accent { color: ${COLOR_LINE}; font-weight: 600; }
+                & .accent { color: var(--map-shot-line); font-weight: 600; }
             }
 
             & .stats-section { display: none; }
@@ -115,9 +120,35 @@ export class MeasurePanelComponent extends Component {
             & .totals-grid { font-weight: 600; }
 
             & .stat-label { color: ${t('color-text-secondary')}; }
-            & .stat-value { text-align: right; font-variant-numeric: tabular-nums; }
-            & .stat-value.up { color: ${COLOR_UP}; }
-            & .stat-value.down { color: ${COLOR_DOWN}; }
+            & .stat-value { text-align: right; ${metric()} }
+            & .stat-value.up { color: var(--data-good); }
+            & .stat-value.down { color: var(--data-bad); }
+
+            /* Guide §02: dark hero readout for the headline "plays-like"
+               number — surface-brand at 90%, gold mono overline, large mono
+               value. Scaled down from the guide's 34px demo for the narrow
+               sidebar dock. */
+            & .plays-like {
+                display: none;
+                align-items: baseline;
+                gap: ${s('xs')};
+                padding: ${s('sm')} ${s('md')};
+                border-radius: var(--radius-md);
+                background: color-mix(in srgb, ${t('color-surface-brand')} 90%, transparent);
+                &.show { display: flex; }
+            }
+            & .plays-like__label {
+                font: var(--text-overline);
+                letter-spacing: var(--tracking-overline);
+                text-transform: uppercase;
+                color: ${t('color-accent-data')};
+            }
+            & .plays-like__value {
+                font: var(--text-metric-l);
+                font-variant-numeric: tabular-nums;
+                color: ${t('overlay-text')};
+                & .metric__unit { color: ${t('overlay-text-muted')}; font-size: 0.6em; }
+            }
 
             & .profile-canvas {
                 width: ${PROFILE_W}px;
@@ -132,6 +163,7 @@ export class MeasurePanelComponent extends Component {
                 justify-content: space-between;
                 font-size: 0.68rem;
                 color: ${t('color-text-secondary')};
+                font-family: var(--font-mono);
                 font-variant-numeric: tabular-nums;
             }
 
@@ -141,12 +173,13 @@ export class MeasurePanelComponent extends Component {
                 ${btn(t('radius-sm'))}
             }
 
+            /* Quiet footer, aligned to the space-4 interior padding. The
+               last section above already draws the major-group divider. */
             & .measure-panel__hints {
-                padding: ${s('xs')} ${s('md')} ${s('sm')};
+                padding: var(--space-2) var(--space-4) var(--space-3);
                 font-size: 0.68rem;
                 line-height: 1.5;
-                color: ${t('color-text-secondary')};
-                border-top: 1px solid ${t('color-border-default')};
+                color: ${t('color-text-tertiary')};
             }
         }
     `;
@@ -199,6 +232,20 @@ export class MeasurePanelComponent extends Component {
             totals.textContent = '';
             if (totalsData.totalSegments === 0) return;
             this.fillStatsGrid(totals, totalsData, true);
+        }));
+
+        // Hero "plays-like" readout (guide §02) — the headline number for the
+        // whole path, shown only once elevation data makes it meaningful.
+        const playsLikeHero = this.ref(frag, 'playsLikeHero');
+        this.track(effect(() => {
+            const playsLike = this.tool.state.totals.get().playsLikeSimple;
+            if (playsLike === null) {
+                playsLikeHero.className = 'plays-like';
+                return;
+            }
+            playsLikeHero.className = 'plays-like show';
+            playsLikeHero.innerHTML = '<span class="plays-like__label">Plays like</span>'
+                + `<span class="plays-like__value">${playsLike.toFixed(1)}<span class="metric__unit">m</span></span>`;
         }));
 
         // Elevation-profile sparkline.

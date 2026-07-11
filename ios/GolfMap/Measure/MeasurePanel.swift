@@ -33,10 +33,10 @@ struct MeasurePanel: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 9)
-        .padding(.bottom, 10)
-        .background(.ultraThinMaterial.opacity(0.88), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal, Space.s4)
+        .padding(.top, Space.s3)
+        .padding(.bottom, Space.s3)
+        .glassPanel()
     }
 
     // MARK: - Header
@@ -46,10 +46,8 @@ struct MeasurePanel: View {
             Label("Measure", systemImage: "ruler")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(Self.amber)
-            Text("\(model.points.count) pt")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+            MetricText("\(model.points.count)", unit: "pt", size: 11, weight: .regular,
+                       color: .secondary)
             Spacer()
             headerButton("arrow.uturn.backward", label: "Undo last point") {
                 model.undoLast()
@@ -95,26 +93,39 @@ struct MeasurePanel: View {
         let totals = model.totals
         return HStack(alignment: .firstTextBaseline, spacing: 0) {
             totalValue(
-                label: "HORIZONTAL",
-                value: Self.meters(totals.horizontal),
+                label: "Horizontal",
+                value: "\(Int(totals.horizontal.rounded()))",
+                unit: "m",
                 emphasized: true
             )
-            totalValue(label: "ELEV Δ", value: Self.signedMeters(totals.elevationDelta))
-            totalValue(label: "SLOPE", value: Self.percent(totals.slopePct))
-            totalValue(label: "PLAYS-LIKE", value: Self.meters(totals.playsLikeSimple))
+            totalValue(
+                label: "Elev Δ",
+                value: totals.elevationDelta.map { Self.signedMeters($0, unit: false) },
+                unit: "m"
+            )
+            totalValue(
+                label: "Slope",
+                value: totals.slopePct.map { String(format: "%.1f", $0) },
+                unit: "%"
+            )
+            totalValue(
+                label: "Plays-like",
+                value: totals.playsLikeSimple.map { "\(Int($0.rounded()))" },
+                unit: "m"
+            )
         }
     }
 
-    private func totalValue(label: String, value: String, emphasized: Bool = false) -> some View {
+    /// Big mono readout on the metric ramp; nil value renders "–" without a
+    /// dangling unit (missing elevation coverage).
+    private func totalValue(
+        label: String, value: String?, unit: String, emphasized: Bool = false
+    ) -> some View {
         VStack(spacing: 2) {
-            Text(value)
-                .font(.system(size: emphasized ? 28 : 21, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .lineLimit(1)
+            MetricText(value ?? "–", unit: value == nil ? nil : unit,
+                       size: emphasized ? 30 : 20)
                 .minimumScaleFactor(0.55)
-            Text(label)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(emphasized ? Self.amber : Color.secondary)
+            OverlineLabel(label, color: emphasized ? Self.amber : .secondary, size: 10)
         }
         .frame(maxWidth: .infinity)
     }
@@ -129,13 +140,11 @@ struct MeasurePanel: View {
                         Text(MeasureModel.segmentLabel(index))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        Text(Self.meters(segment.horizontal))
-                            .font(.caption.weight(.semibold))
-                            .monospacedDigit()
-                        Text("Δ \(Self.signedMeters(segment.elevationDelta, decimals: 1, unit: false))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+                        MetricText("\(Int(segment.horizontal.rounded()))", unit: "m", size: 12)
+                        MetricText(
+                            "Δ \(Self.signedMeters(segment.elevationDelta, decimals: 1, unit: false))",
+                            size: 11, weight: .regular, color: .secondary
+                        )
                     }
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)

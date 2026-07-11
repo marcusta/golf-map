@@ -1,7 +1,7 @@
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Component, Router, Signal, Computed, template, effect, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn } from '../css';
+import { s, btn, mapLabel, metric, OVERLAY_W, OVERLAY_INSET, OVERLAY_GAP } from '../css';
 import { TilesetService, type OrthoVintage } from './tileset.service';
 import { MapService } from './map.service';
 import { ElevationService } from './elevation.service';
@@ -28,7 +28,7 @@ const tpl = template(`
         </div>
         <div bind="status" class="map-canvas__status">
             <span bind="cursorPos" class="status-pos"></span>
-            <span bind="cursorElev" class="status-elev"></span>
+            <span class="status-elev"><span bind="cursorElevValue"></span><span class="metric__unit">m</span></span>
             <span bind="zoomLevel" class="status-zoom"></span>
         </div>
     </div>
@@ -96,10 +96,16 @@ export class EditorCanvasComponent extends Component {
                 }
             }
 
+            /* Corner-inset contract (layout law 02): the cluster floats at
+               the shared space-5 inset. When the right dock is up (the draw
+               tool's feature stack, rendered inside the sibling tools host)
+               both overlays share the top-right corner — the cluster yields
+               sideways by the dock's 280 bucket plus the shared space-3 gap
+               instead of being covered. */
             & .map-canvas__controls {
                 position: absolute;
-                top: ${s('md')};
-                right: ${s('md')};
+                top: ${OVERLAY_INSET};
+                right: ${OVERLAY_INSET};
                 display: none;
                 flex-direction: column;
                 gap: ${s('xs')};
@@ -144,25 +150,30 @@ export class EditorCanvasComponent extends Component {
                 }
             }
 
+            &:has(.editor-tools-side.show) .map-canvas__controls {
+                right: calc(${OVERLAY_INSET} + ${OVERLAY_W.narrow} + ${OVERLAY_GAP});
+            }
+
+            /* Cursor readout (lat/lon, elevation, zoom): text over the map
+               always gets a scrim pill (guide §03) — dark overlay-readout
+               fill + blur, mono tabular, overlay-text. */
             & .map-canvas__status {
                 position: absolute;
-                bottom: ${s('md')};
-                right: ${s('md')};
+                bottom: ${OVERLAY_INSET};
+                right: ${OVERLAY_INSET};
                 display: none;
                 align-items: center;
                 gap: ${s('md')};
-                padding: ${s('xs')} ${s('sm')};
-                border: 1px solid ${t('color-border-default')};
-                border-radius: ${t('radius-sm')};
-                background: ${t('color-surface-card')};
-                box-shadow: ${t('shadow')};
-                font-size: 0.75rem;
-                font-variant-numeric: tabular-nums;
-                color: ${t('color-text-secondary')};
                 pointer-events: none;
+                ${mapLabel()}
+                ${metric()}
+                /* Over-map text stays on overlay-text tokens, not theme
+                   surface tokens (guide §03) — dim the unit against the
+                   dark scrim instead of metric()'s default text-tertiary. */
+                & .metric__unit { color: ${t('overlay-text-muted')}; }
                 &.show { display: flex; }
 
-                & .status-elev { color: ${t('color-text-primary')}; min-width: 3.5rem; text-align: right; }
+                & .status-elev { min-width: 3.5rem; text-align: right; }
                 & .status-zoom { min-width: 3rem; text-align: right; }
             }
         }
@@ -218,9 +229,9 @@ export class EditorCanvasComponent extends Component {
                 const c = this.cursor.get();
                 return c ? `${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}` : '—';
             },
-            cursorElev: () => {
+            cursorElevValue: () => {
                 const elevation = this.cursorElevation.get();
-                return elevation === null ? '— m' : `${elevation.toFixed(1)} m`;
+                return elevation === null ? '—' : elevation.toFixed(1);
             },
             zoomLevel: () => `z ${this.mapSvc.zoom.get().toFixed(1)}`,
             vintages: { className: () => this.vintages.get().length > 1 ? 'map-canvas__vintages show' : 'map-canvas__vintages' },

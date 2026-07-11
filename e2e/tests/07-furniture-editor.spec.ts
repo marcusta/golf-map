@@ -122,7 +122,8 @@ test('furniture mode can place markers on existing and newly added holes', async
     await clickMapViewport(page, 0, 0);
     await expect.poll(async () => (await aimsForHole(page, hole3.id)).length).toBe(1);
 
-    await page.getByRole('button', { name: /Green/ }).click();
+    // Anchored: /Green/ alone is ambiguous with the "Green analysis" tool button.
+    await page.getByRole('button', { name: /^Green$/ }).click();
     await clickMapViewport(page, 80, 40);
     await expect.poll(async () => await greenForHole(page, hole3.id)).not.toBeNull();
 });

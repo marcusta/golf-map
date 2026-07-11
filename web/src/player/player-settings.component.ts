@@ -1,6 +1,6 @@
 import { Component, Signal, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, primaryBtn, field } from '../css';
+import { s, btn, primaryBtn, dangerBtn, field, input, metric, card } from '../css';
 import { ClubsService } from './clubs.service';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { lengthDispersionM } from '../../../shared/strategy/club';
@@ -104,10 +104,7 @@ export class PlayerSettingsComponent extends Component {
             flex-direction: column;
             gap: ${s('md')};
             padding: ${s('lg')};
-            background: ${t('color-surface-card')};
-            border: 1px solid ${t('color-border-default')};
-            border-radius: ${t('radius')};
-            box-shadow: ${t('shadow')};
+            ${card()}
         }
 
         .section-title {
@@ -134,6 +131,12 @@ export class PlayerSettingsComponent extends Component {
             text-transform: uppercase;
             letter-spacing: 0.04em;
             color: ${t('color-text-secondary')};
+
+            & span:nth-child(2),
+            & span:nth-child(3),
+            & span:nth-child(4) {
+                text-align: right;
+            }
         }
 
         .clubs-rows {
@@ -159,14 +162,10 @@ export class PlayerSettingsComponent extends Component {
             border-radius: ${t('radius-sm')};
             &:hover { background: ${t('color-surface-sunken')}; }
 
-            & input { ${field()} padding: 0; }
             & .club-row__name, & .club-row__num {
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.85rem;
-                font-family: inherit;
-                color: ${t('color-text-primary')};
-                background: ${t('color-surface-raised')};
-                border: 1px solid ${t('color-border-default')};
+                ${input()}
                 border-radius: ${t('radius-sm')};
                 width: 100%;
                 box-sizing: border-box;
@@ -174,9 +173,17 @@ export class PlayerSettingsComponent extends Component {
                 &.invalid { border-color: ${t('color-status-negative')}; }
             }
 
+            & .club-row__num {
+                ${metric()}
+                font-weight: 400;
+                text-align: right;
+            }
+
             & .club-row__derived {
+                ${metric()}
                 font-size: 0.8rem;
-                font-variant-numeric: tabular-nums;
+                font-weight: 400;
+                text-align: right;
                 color: ${t('color-text-secondary')};
             }
         }
@@ -199,9 +206,8 @@ export class PlayerSettingsComponent extends Component {
         .delete-btn {
             padding: ${s('xs')} ${s('sm')};
             font-size: 0.72rem;
-            ${btn(t('radius-sm'))}
-            color: ${t('color-status-negative')};
-            border-color: ${t('color-status-negative')};
+            ${dangerBtn()}
+            border-radius: ${t('radius-sm')};
         }
 
         .add-row {

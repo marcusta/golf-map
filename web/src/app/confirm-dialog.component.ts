@@ -1,6 +1,6 @@
 import { Component, Signal, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s } from '../css';
+import { s, btn, primaryBtn, dangerBtn, panelTitle } from '../css';
 
 export type ConfirmTone = 'danger' | 'primary' | 'warning';
 export type ConfirmLayout = 'default' | 'review';
@@ -120,15 +120,16 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             & .confirm-dialog-backdrop {
                 position: absolute;
                 inset: 0;
-                background: rgba(20, 27, 22, 0.36);
-                backdrop-filter: blur(3px);
+                background: ${t('overlay-scrim')};
+                backdrop-filter: blur(6px);
+                -webkit-backdrop-filter: blur(6px);
             }
 
             & .confirm-dialog {
-                border: 1px solid color-mix(in srgb, ${t('color-border-default')} 82%, transparent);
-                border-radius: ${t('radius')};
+                border: 1px solid ${t('color-border-subtle')};
+                border-radius: var(--radius-lg);
                 background: ${t('color-surface-card')};
-                box-shadow: ${t('shadow-elevated')};
+                box-shadow: var(--elev-3);
             }
 
             & h2 {
@@ -139,11 +140,7 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             }
 
             & .confirm-dialog__eyebrow {
-                color: ${t('color-text-secondary')};
-                font-size: 0.7rem;
-                font-weight: 700;
-                letter-spacing: 0.08em;
-                text-transform: uppercase;
+                ${panelTitle()}
             }
 
             & .confirm-dialog__body {
@@ -175,39 +172,36 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             }
 
             & .confirm-dialog__cancel {
+                ${btn()}
                 height: 36px;
-                padding: 0 ${s('md')};
-                border: 1px solid ${t('color-border-default')};
-                border-radius: ${t('radius-pill')};
-                background: ${t('color-surface-card')};
-                color: ${t('color-text-primary')};
+                padding: 0 ${s('lg')};
+                font-size: 0.84rem;
+                font-weight: 600;
+            }
+
+            & .confirm-dialog__confirm {
+                ${primaryBtn()}
+                height: 36px;
+                padding: 0 ${s('lg')};
                 font-size: 0.84rem;
                 font-weight: 700;
             }
 
-            & .confirm-dialog__cancel:hover {
-                background: ${t('color-surface-sunken')};
-            }
-
-            & .confirm-dialog__confirm {
+            &.tone-danger .confirm-dialog__confirm {
+                ${dangerBtn()}
                 height: 36px;
                 padding: 0 ${s('lg')};
-                border: 0;
-                border-radius: ${t('radius-pill')};
-                background: ${t('color-accent-primary')};
-                color: ${t('color-on-accent')};
                 font-size: 0.84rem;
-                font-weight: 800;
             }
-
-            &.tone-danger .confirm-dialog__confirm { background: #c92a2a; color: #fff; }
-            &.tone-warning .confirm-dialog__confirm { background: #8a6116; color: #fff7e6; }
-            &.tone-primary .confirm-dialog__confirm { background: ${t('color-accent-primary')}; color: ${t('color-on-accent')}; }
-
+            &.tone-warning .confirm-dialog__confirm {
+                border: 1px solid color-mix(in srgb, ${t('color-status-caution')} 30%, transparent);
+                background: color-mix(in srgb, ${t('color-status-caution')} 12%, transparent);
+                color: ${t('color-status-caution')};
+            }
             &.tone-danger .confirm-dialog__tone-mark,
-            &.tone-danger .confirm-dialog__icon { background: #c92a2a; }
+            &.tone-danger .confirm-dialog__icon { background: ${t('color-status-negative')}; }
             &.tone-warning .confirm-dialog__tone-mark,
-            &.tone-warning .confirm-dialog__icon { background: #b7791f; }
+            &.tone-warning .confirm-dialog__icon { background: ${t('color-status-caution')}; }
             &.tone-primary .confirm-dialog__tone-mark,
             &.tone-primary .confirm-dialog__icon { background: ${t('color-accent-primary')}; }
 
@@ -297,11 +291,7 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             }
 
             & .confirm-dialog__review-box span {
-                color: ${t('color-text-secondary')};
-                font-size: 0.72rem;
-                font-weight: 700;
-                letter-spacing: 0.06em;
-                text-transform: uppercase;
+                ${panelTitle()}
             }
 
             & .confirm-dialog__review-box strong {

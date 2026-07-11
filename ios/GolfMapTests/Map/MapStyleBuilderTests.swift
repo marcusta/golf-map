@@ -169,7 +169,10 @@ final class MapStyleBuilderTests: XCTestCase {
         XCTAssertEqual(paint["fill-opacity"] as? Double, 0.4)
         let colorExpr = try XCTUnwrap(paint["fill-color"] as? [Any])
         XCTAssertEqual(colorExpr.first as? String, "match")
-        XCTAssertTrue(colorExpr.contains { $0 as? String == "#4d9e58" }, "fairway fill present")
+        XCTAssertTrue(
+            colorExpr.contains { $0 as? String == CourseFeatureType.fairway.fillHex },
+            "fairway fill present (palette is pinned to the web by FeaturePaletteTests)"
+        )
 
         let layout = try XCTUnwrap(fill["layout"] as? [String: Any])
         let sortKey = try XCTUnwrap(layout["fill-sort-key"] as? [Any])
@@ -197,7 +200,10 @@ final class MapStyleBuilderTests: XCTestCase {
         let paint = try XCTUnwrap(line["paint"] as? [String: Any])
         XCTAssertEqual(paint["line-width"] as? Double, 1.5)
         let colorExpr = try XCTUnwrap(paint["line-color"] as? [Any])
-        XCTAssertTrue(colorExpr.contains { $0 as? String == "#2f7d43" }, "fairway outline present")
+        XCTAssertTrue(
+            colorExpr.contains { $0 as? String == CourseFeatureType.fairway.outlineHex },
+            "fairway outline present (palette is pinned to the web by FeaturePaletteTests)"
+        )
     }
 
     func testTargetLayerHasPerKindColorsAndPinEmphasis() throws {

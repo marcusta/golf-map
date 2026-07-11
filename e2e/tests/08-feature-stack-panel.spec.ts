@@ -7,13 +7,29 @@ interface CourseFeatureRow {
     sortOrder: number;
 }
 
-async function courseLevelFeatures(page: Page): Promise<CourseFeatureRow[]> {
-    const all = await page.evaluate(async (courseId) => {
+interface HoleRow {
+    id: string;
+    number: number;
+}
+
+async function allFeatures(page: Page): Promise<CourseFeatureRow[]> {
+    return page.evaluate(async (courseId) => {
         const r = await fetch(`/api/features?courseId=${courseId}`);
         if (!r.ok) throw new Error(`features -> ${r.status} ${await r.text()}`);
         return r.json();
     }, TEST_COURSE_ID);
-    return (all as CourseFeatureRow[]).filter(f => f.holeId === null);
+}
+
+async function courseLevelFeatures(page: Page): Promise<CourseFeatureRow[]> {
+    return (await allFeatures(page)).filter(f => f.holeId === null);
+}
+
+async function holes(page: Page): Promise<HoleRow[]> {
+    return page.evaluate(async (courseId) => {
+        const r = await fetch(`/api/holes?courseId=${courseId}`);
+        if (!r.ok) throw new Error(`holes -> ${r.status} ${await r.text()}`);
+        return r.json();
+    }, TEST_COURSE_ID);
 }
 
 /** Click a point offset from the map viewport's center, in screen pixels. */
@@ -89,4 +105,31 @@ test('feature-stack panel reorders and stays selection-synced with the map', asy
     await expect(page.locator(`${tid('stack-row')}[data-feature-id="${featureB!.id}"]`)).toHaveClass(/selected/);
     await clickMapViewport(page, 0, 0);
     await expect(page.locator(`${tid('stack-row')}[data-feature-id="${featureA!.id}"]`)).toHaveClass(/selected/);
+});
+
+test('draw target follows selected hole and selected features can move to course level', async ({ page }) => {
+    await page.goto(`/course/${TEST_COURSE_ID}?hole=2`);
+    await expect(page.locator(tid('course-detail'))).toBeVisible();
+    await waitForMapReady(page);
+    const hole2 = (await holes(page)).find(h => h.number === 2)!;
+
+    await page.locator(tid('tool-btn-draw')).click();
+    await expect(page.locator(tid('draw-target'))).toContainText('Hole 2');
+    await expect(page.locator(tid('stack-panel-scope'))).toHaveValue(hole2.id);
+
+    const beforeIds = new Set((await allFeatures(page)).map(f => f.id));
+    await drawSquare(page, 70);
+    await expect.poll(async () =>
+        (await allFeatures(page)).find(f => !beforeIds.has(f.id) && f.holeId === hole2.id)?.id ?? null,
+    ).not.toBeNull();
+    const created = (await allFeatures(page)).find(f => !beforeIds.has(f.id) && f.holeId === hole2.id)!;
+
+    const moveSelect = page.locator(tid('draw-move-hole'));
+    await expect(moveSelect).toBeVisible();
+    await expect(moveSelect).toHaveValue(hole2.id);
+
+    await moveSelect.selectOption('');
+    await expect.poll(async () =>
+        (await allFeatures(page)).find(f => f.id === created!.id)?.holeId,
+    ).toBeNull();
 });

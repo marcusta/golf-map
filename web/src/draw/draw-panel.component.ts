@@ -1,18 +1,23 @@
 import { Component, Computed, Router, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, primaryBtn, field } from '../css';
+import { s, btn, primaryBtn, field, panelTitle, selectedRow, keyHint } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from './features.service';
 import { DrawToolService, OFFSET_PRESETS } from './draw-tool.service';
 import { FEATURE_TYPES, FEATURE_STYLES } from './feature-palette';
 import { HelpModalService } from '../editor/help-modal.component';
+import { icon } from '../ui/icons';
 
 const tpl = template(`
     <div class="draw-panel" bind="root">
         <div class="draw-panel__section">
             <div class="draw-panel__section-head">
                 <h4 class="section-title">Feature type</h4>
-                <button bind="helpBtn" type="button" class="help-btn" title="Keyboard shortcuts (?)">?</button>
+                <span class="head-actions">
+                    <button bind="undoBtn" type="button" class="icon-btn" aria-label="Undo">${icon('undo')}</button>
+                    <button bind="redoBtn" type="button" class="icon-btn" aria-label="Redo">${icon('redo')}</button>
+                    <button bind="helpBtn" type="button" class="help-btn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">${icon('circle-help')}</button>
+                </span>
             </div>
             <div bind="types" class="type-grid"></div>
         </div>
@@ -23,10 +28,6 @@ const tpl = template(`
             <div class="draw-target" data-testid="draw-target">
                 <span class="draw-target__label">New shapes</span>
                 <span bind="drawTargetValue" class="draw-target__value"></span>
-            </div>
-            <div class="history-row">
-                <button bind="undoBtn" type="button" class="history-btn">↶ Undo</button>
-                <button bind="redoBtn" type="button" class="history-btn">↷ Redo</button>
             </div>
         </div>
         <div bind="selection" class="draw-panel__section selection">
@@ -101,21 +102,22 @@ export class DrawPanelComponent extends Component {
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
 
+            /* Law 03: interior padding space-4, row gap space-2; hairlines
+               only between these major-group sections. */
             & .draw-panel__section {
-                padding: ${s('sm')} ${s('md')};
+                padding: var(--space-3) var(--space-4);
                 border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
-                gap: ${s('sm')};
+                gap: var(--space-2);
             }
+
+            /* Keyboard hints inside labels: mono, dimmed (law 05 addendum). */
+            & .key-hint { ${keyHint()} }
 
             & .section-title {
                 margin: 0;
-                font-size: 0.7rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
             & .draw-panel__section-head {
@@ -125,84 +127,116 @@ export class DrawPanelComponent extends Component {
                 gap: ${s('sm')};
             }
 
-            & .help-btn {
-                width: 18px;
-                height: 18px;
+            & .head-actions {
+                display: flex;
+                align-items: center;
+                gap: var(--space-1);
+            }
+
+            & .help-btn, & .icon-btn {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 20px;
+                height: 20px;
                 flex-shrink: 0;
                 padding: 0;
-                border: 1px solid ${t('color-border-default')};
-                border-radius: 50%;
-                background: ${t('color-surface-card')};
+                border: none;
+                background: transparent;
                 color: ${t('color-text-secondary')};
-                font-size: 0.68rem;
-                line-height: 1;
                 cursor: pointer;
                 &:hover { background: ${t('color-surface-sunken')}; color: ${t('color-text-primary')}; }
             }
+            & .help-btn { border-radius: 50%; }
+            & .icon-btn {
+                border-radius: ${t('radius-sm')};
+                &:disabled {
+                    opacity: 0.35;
+                    cursor: default;
+                    &:hover { background: transparent; color: ${t('color-text-secondary')}; }
+                }
+            }
 
+            /* Roomier grid in the 340 bucket — two columns of FULL labels
+               (law 05: nothing ellipsizes; chrome yields, not the label). */
             & .type-grid {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
-                gap: 2px;
+                gap: var(--space-1) var(--space-2);
             }
 
             & .type-row {
-                display: flex;
-                align-items: center;
-                gap: 1px;
+                position: relative;
                 min-width: 0;
             }
 
             & .type-btn {
-                flex: 1;
-                min-width: 0;
+                width: 100%;
                 display: flex;
                 align-items: center;
-                gap: ${s('xs')};
-                padding: 3px ${s('xs')};
-                font-size: 0.72rem;
-                border: 1px solid transparent;
-                border-radius: ${t('radius-sm')};
+                gap: ${s('sm')};
+                padding: var(--space-2);
+                font-size: 0.8rem;
+                border: none;
+                border-radius: ${t('radius')};
                 background: transparent;
                 font-family: inherit;
                 color: ${t('color-text-primary')};
                 cursor: pointer;
                 text-align: left;
-                &:hover { background: ${t('color-surface-sunken')}; }
-                &.active {
-                    border-color: ${t('color-accent-primary')};
-                    background: ${t('color-surface-sunken')};
+                transition: background var(--dur-fast) var(--ease-standard);
+                &:hover { background: color-mix(in srgb, ${t('color-text-primary')} 6%, transparent); }
+                &[aria-selected="true"] {
+                    ${selectedRow()}
+                    & .type-name { font-weight: 600; }
                 }
             }
 
+            /* Law 04: the eye reveals on row hover AND :focus-within
+               (keyboard) — absolutely positioned, so it reserves ZERO
+               permanent width and the label owns the full cell. A hidden
+               type keeps its eye-off visible as the state indicator. */
             & .eye-btn {
-                flex-shrink: 0;
-                width: 18px;
-                padding: 1px 0;
-                font-size: 0.65rem;
+                position: absolute;
+                top: 50%;
+                right: var(--space-1);
+                transform: translateY(-50%);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 20px;
+                height: 20px;
+                padding: 0;
+                color: ${t('color-text-secondary')};
                 border: none;
                 border-radius: ${t('radius-sm')};
-                background: transparent;
+                background: ${t('color-surface-raised')};
                 cursor: pointer;
-                opacity: 0.75;
-                &:hover { background: ${t('color-surface-sunken')}; opacity: 1; }
-                &.hidden-type { opacity: 0.35; }
+                opacity: 0;
+                pointer-events: none;
+                transition: opacity var(--dur-fast) var(--ease-standard);
+                &:hover { background: ${t('color-surface-sunken')}; color: ${t('color-text-primary')}; }
+                &.hidden-type { opacity: 1; pointer-events: auto; color: ${t('color-text-tertiary')}; }
+            }
+            & .type-row:hover .eye-btn,
+            & .type-row:focus-within .eye-btn {
+                opacity: 1;
+                pointer-events: auto;
             }
 
             & .type-swatch {
-                width: 12px;
-                height: 12px;
+                width: 14px;
+                height: 14px;
                 flex-shrink: 0;
-                border-radius: 3px;
+                border-radius: ${t('radius-sm')};
                 border: 1px solid rgba(0, 0, 0, 0.25);
             }
             & .type-name {
-                overflow: hidden;
-                text-overflow: ellipsis;
                 white-space: nowrap;
             }
 
             & .new-poly {
+                width: 100%;
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.8rem;
                 ${primaryBtn()}
@@ -231,45 +265,25 @@ export class DrawPanelComponent extends Component {
                 &.show { display: block; }
             }
 
+            /* Quiet scope row (not a boxed control): mono overline label +
+               tertiary value, minimal height — text beats chrome (law 05,
+               nothing ellipsizes). */
             & .draw-target {
                 display: flex;
-                align-items: center;
+                align-items: baseline;
                 justify-content: space-between;
                 gap: ${s('sm')};
-                padding: ${s('xs')} ${s('sm')};
-                border: 1px solid ${t('color-border-default')};
-                border-radius: ${t('radius-sm')};
-                background: ${t('color-surface-app')};
             }
             & .draw-target__label {
-                font-size: 0.68rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
             & .draw-target__value {
-                min-width: 0;
-                overflow: hidden;
-                text-overflow: ellipsis;
                 white-space: nowrap;
                 font-size: 0.75rem;
-                color: ${t('color-text-primary')};
+                color: ${t('color-text-secondary')};
             }
 
             & .move-field { ${field()} }
-
-            & .history-row {
-                display: flex;
-                gap: ${s('xs')};
-            }
-            & .history-btn {
-                flex: 1;
-                padding: ${s('xs')} ${s('sm')};
-                font-size: 0.75rem;
-                ${btn(t('radius-sm'))}
-                &:disabled { opacity: 0.4; cursor: default; }
-            }
 
             & .selection { display: none; }
             & .selection.show { display: flex; }
@@ -379,11 +393,12 @@ export class DrawPanelComponent extends Component {
                 border-color: ${t('color-status-negative')};
             }
 
+            /* Quiet footer: tertiary, minimal height (law 03 IA cleanup). */
             & .draw-panel__status {
-                padding: ${s('xs')} ${s('md')};
-                font-size: 0.72rem;
-                color: ${t('color-text-secondary')};
-                min-height: 1.4em;
+                padding: var(--space-2) var(--space-4) var(--space-3);
+                font-size: 0.7rem;
+                color: ${t('color-text-tertiary')};
+                min-height: 1.2em;
                 &.error { color: ${t('color-status-negative')}; }
             }
         }
@@ -411,12 +426,18 @@ export class DrawPanelComponent extends Component {
                     if (this.tool.state.isDrawing.peek()) this.tool.state.disarm();
                     else this.tool.state.arm();
                 },
-                textContent: () => this.tool.state.isDrawing.get() ? 'Cancel drawing (Esc)' : 'New polygon (N)',
+                innerHTML: () => this.tool.state.isDrawing.get()
+                    ? 'Cancel drawing (Esc)'
+                    : 'New polygon <span class="key-hint">N</span>',
                 className: () => this.tool.state.isDrawing.get() ? 'new-poly drawing' : 'new-poly',
             },
             boxSelectBtn: {
                 onclick: () => this.tool.state.toggleBoxSelect(),
-                textContent: () => this.tool.state.boxSelect.get() ? 'Box-select: on (B)' : 'Box-select (B)',
+                // Visible label stays "Box-select…" (accessible name must
+                // match /Box-select/); the shortcut is a quiet mono hint.
+                innerHTML: () => this.tool.state.boxSelect.get()
+                    ? 'Box-select: on <span class="key-hint">B</span>'
+                    : 'Box-select <span class="key-hint">B</span>',
                 className: () => this.tool.state.boxSelect.get() ? 'box-select active' : 'box-select',
                 title: 'Drag anywhere to rubber-band select — even over shapes. Hold Space for a one-off.',
             },
@@ -558,11 +579,12 @@ export class DrawPanelComponent extends Component {
                         if (this.features.selectedIds.peek().size > 0) this.tool.retypeSelection(type);
                         else this.tool.drawType.set(type);
                     },
-                    className: () => {
+                    className: 'type-btn',
+                    'aria-selected': () => {
                         const selected = this.features.selected.get();
                         const multi = this.features.selectedIds.get().size > 1;
                         const current = multi ? null : selected ? selected.type : this.tool.drawType.get();
-                        return current === type ? 'type-btn active' : 'type-btn';
+                        return current === type;
                     },
                     title: style.label,
                 },
@@ -571,7 +593,9 @@ export class DrawPanelComponent extends Component {
                 eye: {
                     onclick: () => this.features.toggleTypeVisibility(type),
                     className: () => this.features.hiddenTypes.get().has(type) ? 'eye-btn hidden-type' : 'eye-btn',
-                    textContent: () => this.features.hiddenTypes.get().has(type) ? '🚫' : '👁',
+                    innerHTML: () => this.features.hiddenTypes.get().has(type) ? icon('eye-off') : icon('eye'),
+                    'aria-label': () => this.features.hiddenTypes.get().has(type)
+                        ? `Show ${style.label} features` : `Hide ${style.label} features`,
                     title: () => this.features.hiddenTypes.get().has(type)
                         ? `Show ${style.label} features` : `Hide ${style.label} features`,
                 },

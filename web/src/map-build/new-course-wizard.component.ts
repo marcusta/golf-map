@@ -1,7 +1,7 @@
 import { Component, Router, Signal, template, effect } from '@basics/core/client/core';
 import { request, type RequestError } from '@basics/core/client/request';
 import { t } from '../theme';
-import { s, field, input, primaryBtn, btn } from '../css';
+import { s, field, input, primaryBtn, ghostBtn, metric } from '../css';
 import { api } from '../api';
 import { AreaPicker, formatBboxSize, type Bbox } from './area-picker';
 import { MapBuildClientService, isTerminal } from './map-build.service';
@@ -58,8 +58,8 @@ export class NewCourseWizardComponent extends Component {
             & .wizard__hint { margin: 0; font-size: 0.8rem; color: ${t('color-text-secondary')}; }
 
             & .wizard__size {
+                ${metric()}
                 font-size: 0.875rem;
-                font-variant-numeric: tabular-nums;
                 color: ${t('color-text-primary')};
                 min-height: 1.2em;
             }
@@ -68,6 +68,10 @@ export class NewCourseWizardComponent extends Component {
                 display: none;
                 color: ${t('color-status-negative')};
                 font-size: 0.8rem;
+                padding: ${s('sm')} ${s('md')};
+                border: 1px solid color-mix(in srgb, ${t('color-status-negative')} 30%, transparent);
+                background: color-mix(in srgb, ${t('color-status-negative')} 12%, transparent);
+                border-radius: ${t('radius')};
                 &.show { display: block; }
             }
 
@@ -80,7 +84,7 @@ export class NewCourseWizardComponent extends Component {
                 &.show { display: block; }
             }
 
-            & .wizard__cancel { ${btn()} margin-top: auto; }
+            & .wizard__cancel { ${ghostBtn()} margin-top: auto; }
         }
     `;
 

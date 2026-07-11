@@ -1,11 +1,12 @@
 import { Component, Signal, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, field } from '../css';
+import { s, btn, field, panelTitle, selectedRow, metric } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from './features.service';
 import { DrawToolService } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
 import { HelpModalService } from '../editor/help-modal.component';
+import { icon } from '../ui/icons';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 
 const tpl = template(`
@@ -13,7 +14,7 @@ const tpl = template(`
         <div class="stack-panel__section">
             <div class="stack-panel__section-head">
                 <h4 class="section-title">Feature stack</h4>
-                <button bind="helpBtn" type="button" class="help-btn" title="Keyboard shortcuts (?)">?</button>
+                <button bind="helpBtn" type="button" class="help-btn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">${icon('circle-help')}</button>
             </div>
             <label class="scope-field">Scope
                 <select bind="scopeSelect" data-testid="stack-panel-scope"></select>
@@ -21,11 +22,11 @@ const tpl = template(`
         </div>
         <div bind="rows" class="stack-rows" data-testid="stack-panel-rows"></div>
         <div bind="empty" class="stack-empty">No features in this scope.</div>
-        <div class="stack-panel__section reorder-ops">
-            <button bind="raiseBtn" type="button" class="op-btn" title="Raise (PageUp)">↑ Raise</button>
-            <button bind="lowerBtn" type="button" class="op-btn" title="Lower (PageDown)">↓ Lower</button>
-            <button bind="topBtn" type="button" class="op-btn" title="Raise to top (Home)">⤒ Top</button>
-            <button bind="bottomBtn" type="button" class="op-btn" title="Lower to bottom (End)">⤓ Bottom</button>
+        <div bind="reorderOps" class="stack-panel__section reorder-ops">
+            <button bind="raiseBtn" type="button" class="op-btn" title="Raise (PageUp)">${icon('arrow-up')} Raise</button>
+            <button bind="lowerBtn" type="button" class="op-btn" title="Lower (PageDown)">${icon('arrow-down')} Lower</button>
+            <button bind="topBtn" type="button" class="op-btn" title="Raise to top (Home)">${icon('arrow-up-to-line')} Top</button>
+            <button bind="bottomBtn" type="button" class="op-btn" title="Lower to bottom (End)">${icon('arrow-down-to-line')} Bottom</button>
         </div>
     </div>
 `);
@@ -49,26 +50,29 @@ const rowTpl = template(`
 export class FeatureStackPanelComponent extends Component {
     static styles = `
         .stack-panel {
+            /* 280 bucket via the right dock (layout law 01); the dock's
+               glass provides the shell + max-height bound — min-height:0
+               here lets .stack-rows scroll INSIDE while the panel hugs
+               content. */
             display: flex;
             flex-direction: column;
+            min-height: 0;
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
 
+            /* Law 03: space carries structure — interior padding space-4,
+               no hairline after the header (the ONLY divider sits between
+               the list and the actions area, see .reorder-ops). */
             & .stack-panel__section {
-                padding: ${s('sm')} ${s('md')};
-                border-bottom: 1px solid ${t('color-border-default')};
+                padding: var(--space-4) var(--space-4) var(--space-3);
                 display: flex;
                 flex-direction: column;
-                gap: ${s('sm')};
+                gap: var(--space-2);
             }
 
             & .section-title {
                 margin: 0;
-                font-size: 0.7rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
             & .stack-panel__section-head {
@@ -79,78 +83,98 @@ export class FeatureStackPanelComponent extends Component {
             }
 
             & .help-btn {
+                display: flex;
+                align-items: center;
+                justify-content: center;
                 width: 18px;
                 height: 18px;
                 flex-shrink: 0;
                 padding: 0;
-                border: 1px solid ${t('color-border-default')};
+                border: none;
                 border-radius: 50%;
-                background: ${t('color-surface-card')};
+                background: transparent;
                 color: ${t('color-text-secondary')};
-                font-size: 0.68rem;
-                line-height: 1;
                 cursor: pointer;
                 &:hover { background: ${t('color-surface-sunken')}; color: ${t('color-text-primary')}; }
             }
 
             & .scope-field { ${field()} }
 
+            /* The long list scrolls INSIDE the panel (law 01); rows carry
+               structure with spacing + hover tint, not hairlines (law 03). */
             & .stack-rows {
                 display: flex;
                 flex-direction: column;
+                gap: 2px;
+                padding: 0 var(--space-2) var(--space-3);
                 overflow-y: auto;
+                min-height: 0;
             }
 
             & .stack-row {
                 display: flex;
                 align-items: center;
-                gap: ${s('xs')};
-                padding: ${s('xs')} ${s('md')};
+                gap: var(--space-2);
+                padding: var(--space-2);
+                border-radius: ${t('radius')};
                 cursor: pointer;
-                border-bottom: 1px solid ${t('color-border-default')};
-                &:hover { background: ${t('color-surface-sunken')}; }
+                transition: background var(--dur-fast) var(--ease-standard);
+                &:hover { background: color-mix(in srgb, ${t('color-text-primary')} 6%, transparent); }
                 &.selected {
-                    background: ${t('color-surface-sunken')};
-                    box-shadow: inset 3px 0 0 ${t('color-accent-primary')};
+                    ${selectedRow()}
+                    & .stack-row__label { font-weight: 600; }
                 }
             }
 
             & .type-swatch {
-                width: 12px;
-                height: 12px;
+                width: 14px;
+                height: 14px;
                 flex-shrink: 0;
-                border-radius: 3px;
+                border-radius: ${t('radius-sm')};
                 border: 1px solid rgba(0, 0, 0, 0.25);
             }
 
+            /* Law 05: labels never truncate — the 280 bucket fits the
+               longest palette label plus the mono count column. */
             & .stack-row__label {
                 flex: 1;
-                min-width: 0;
-                overflow: hidden;
-                text-overflow: ellipsis;
                 white-space: nowrap;
             }
 
             & .stack-row__count {
                 flex-shrink: 0;
-                font-size: 0.7rem;
-                color: ${t('color-text-secondary')};
+                text-align: right;
+                font-size: 0.75rem;
+                color: ${t('color-text-tertiary')};
+                ${metric()}
             }
 
             & .stack-empty {
                 display: none;
-                padding: ${s('sm')} ${s('md')};
+                padding: 0 var(--space-4) var(--space-3);
                 font-size: 0.75rem;
                 color: ${t('color-text-secondary')};
                 &.show { display: block; }
             }
 
+            /* Law 04 (disclosure on demand): the order controls render only
+               while a row is selected — contextual, not permanent. The
+               hairline above them is the one allowed major-group divider
+               (list ↔ actions, law 03). */
             & .reorder-ops {
+                display: none;
+                border-top: 1px solid ${t('color-border-default')};
+                padding: var(--space-3) var(--space-4) var(--space-4);
                 flex-direction: row;
                 flex-wrap: wrap;
+                &.show { display: flex; }
             }
             & .op-btn {
                 flex: 1 1 auto;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 3px;
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.72rem;
                 ${btn(t('radius-sm'))}
@@ -179,6 +203,13 @@ export class FeatureStackPanelComponent extends Component {
             helpBtn: { onclick: () => this.helpModal.show() },
             empty: {
                 className: () => this.stack().length === 0 ? 'stack-empty show' : 'stack-empty',
+            },
+            // Contextual controls (law 04): reorder ops appear only while a
+            // row is selected — selection is the context they act on.
+            reorderOps: {
+                className: () => this.selectedIds().length > 0
+                    ? 'stack-panel__section reorder-ops show'
+                    : 'stack-panel__section reorder-ops',
             },
             raiseBtn: {
                 onclick: () => void this.features.raise(this.selectedIds()),
@@ -282,7 +313,7 @@ export class FeatureStackPanelComponent extends Component {
                 },
             },
             label: { textContent: () => FEATURE_STYLES[this.liveType(feature.id) as keyof typeof FEATURE_STYLES]?.label ?? this.liveType(feature.id) },
-            count: { textContent: () => `${this.pointCount(feature.id)} pts` },
+            count: { innerHTML: () => `${this.pointCount(feature.id)}<span class="metric__unit"> pts</span>` },
         }, track);
         el.dataset.featureId = feature.id;
         return el;

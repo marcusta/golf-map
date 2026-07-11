@@ -29,7 +29,7 @@ const HELP: HelpSection[] = [
 export const analysisTool: EditorTool = {
     id: ANALYSIS_TOOL_ID,
     label: 'Green analysis',
-    icon: '◉',
+    icon: 'crosshair',
     order: 40,
     panel: AnalysisPanelComponent,
     help: HELP,

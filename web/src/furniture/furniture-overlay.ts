@@ -6,23 +6,38 @@ import type { Green } from '../../../shared/api/greens.gen';
 import type { Pin } from '../../../shared/api/pins.gen';
 import type { AimPoint } from '../../../shared/api/aim-points.gen';
 import { FURNITURE_TOOL_ID, finiteWgs84Point, type Selection } from './furniture.service';
+import {
+    ACCENT_COLOR,
+    CAT,
+    MARKER_FILL,
+    OVERLAY_TEXT,
+    SHOT_LINE_COLOR,
+    SHOT_LINE_WIDTH,
+    STATUS_BAD,
+    STATUS_NEUTRAL,
+} from '../map/map-palette';
 
 /** Overlay/source id for the persistent furniture rendering. */
 export const FURNITURE_OVERLAY_ID = FURNITURE_TOOL_ID;
 
-export const SELECTION_COLOR = '#BF6A3E'; // L&L accent / focus
+export const SELECTION_COLOR = ACCENT_COLOR; // '#BF6A3E' — --data-cat-1 / accent
 
-/** Tee colour name → CSS fill. Unknown/null falls back to grey. */
+/**
+ * Tee colour name → CSS fill. Real-world tee-marker identity colours, so
+ * hue-true, but drawn from the L&L cartography ramp (guide §03: tee markers
+ * take the feature colour with a dark glyph). Unknown/null falls back to
+ * the neutral data token.
+ */
 const TEE_FILL: Record<string, string> = {
-    black: '#222222',
-    white: '#f5f5f5',
-    yellow: '#f2c200',
-    blue: '#2f6fed',
-    red: '#d63a3a',
+    black: '#211D14', // --color-text-primary (light) — ink, not pure black
+    white: '#EFEAE0', // --map-oob-fill — bone white
+    yellow: '#E8CB56', // --map-penalty-yellow-fill
+    blue: '#4C8FBE', // --map-water-fill
+    red: '#DE6152', // --map-penalty-red-fill
 };
 
 export function teeFill(color: string | null | undefined): string {
-    return (color && TEE_FILL[color]) || '#9aa0a6';
+    return (color && TEE_FILL[color]) || STATUS_NEUTRAL; // '#9C917A' — --data-neutral
 }
 
 /** Single uppercase letter label for a tee (first char of colour, else name). */
@@ -194,10 +209,15 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             id: `${FURNITURE_OVERLAY_ID}-aim-line`,
             type: 'line',
             filter: role('aim-line'),
+            // Guide §03 shot/aim lines: --map-shot-line, 3px, rounded ends.
+            // The selected hole's line gets the full treatment; the rest of
+            // the course reads quieter (thinner + dimmer, same hue). Dashed
+            // keeps aim guides distinct from played plan legs.
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
             paint: {
-                'line-color': ['case', ['==', ['get', 'highlighted'], true], '#1f5fd0', '#3a7bd5'] as never,
-                'line-width': ['case', ['==', ['get', 'highlighted'], true], 2.5, 1.5] as never,
-                'line-opacity': ['case', ['==', ['get', 'highlighted'], true], 1, 0.8] as never,
+                'line-color': SHOT_LINE_COLOR, // '#E4A15A' — --map-shot-line
+                'line-width': ['case', ['==', ['get', 'highlighted'], true], SHOT_LINE_WIDTH, 2] as never,
+                'line-opacity': ['case', ['==', ['get', 'highlighted'], true], 1, 0.75] as never,
                 'line-dasharray': [2, 1.5],
             },
         },
@@ -229,24 +249,26 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             ] as FilterSpecification,
             paint: { 'circle-radius': 10, 'circle-color': 'transparent', 'circle-stroke-color': SELECTION_COLOR, 'circle-stroke-width': 2.5 },
         },
-        // Green reference dots.
+        // Green reference dots — the L&L green ramp (they sit ON the green
+        // fill): back = dark outline green, front = light draw green,
+        // center = moss, all ringed in overlay-text bone.
         {
             id: `${FURNITURE_OVERLAY_ID}-green-back`,
             type: 'circle',
             filter: role('green-back'),
-            paint: { 'circle-radius': 4, 'circle-color': '#6ab04c', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 },
+            paint: { 'circle-radius': 4, 'circle-color': '#3F7A55' /* --map-green-outline */, 'circle-stroke-color': OVERLAY_TEXT, 'circle-stroke-width': 1 },
         },
         {
             id: `${FURNITURE_OVERLAY_ID}-green-front`,
             type: 'circle',
             filter: role('green-front'),
-            paint: { 'circle-radius': 4, 'circle-color': '#badc58', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 },
+            paint: { 'circle-radius': 4, 'circle-color': '#97D79B' /* --map-green-draw */, 'circle-stroke-color': OVERLAY_TEXT, 'circle-stroke-width': 1 },
         },
         {
             id: `${FURNITURE_OVERLAY_ID}-green-center`,
             type: 'circle',
             filter: role('green-center'),
-            paint: { 'circle-radius': 5, 'circle-color': '#5C6B4A', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.5 },
+            paint: { 'circle-radius': 5, 'circle-color': CAT.moss /* '#5C6B4A' — --data-cat-4 */, 'circle-stroke-color': OVERLAY_TEXT, 'circle-stroke-width': 1.5 },
         },
         {
             id: `${FURNITURE_OVERLAY_ID}-green-labels`,
@@ -261,7 +283,9 @@ export function furnitureLayers(): OverlayLayerSpec[] {
                 'text-offset': [0, -1.1],
                 'text-allow-overlap': true,
             },
-            paint: { 'text-color': '#1E2B22', 'text-halo-color': '#ffffff', 'text-halo-width': 1 },
+            // Dark glyph on the light dots (guide §03: feature-coloured
+            // markers take a dark glyph): pine on a bone halo.
+            paint: { 'text-color': MARKER_FILL, 'text-halo-color': OVERLAY_TEXT, 'text-halo-width': 1 },
         },
         // Aim diamonds (rotated square) + selection ring.
         {
@@ -280,7 +304,10 @@ export function furnitureLayers(): OverlayLayerSpec[] {
                 'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'] as never,
                 'text-allow-overlap': true,
             },
-            paint: { 'text-color': '#ffffff', 'text-halo-color': '#5b3b8c', 'text-halo-width': 3 },
+            // The wide halo is the aim marker's body: slate from the
+            // categorical ramp (aims are their own annotation category),
+            // overlay-text glyph.
+            paint: { 'text-color': OVERLAY_TEXT, 'text-halo-color': CAT.slate /* '#5E6D94' — --data-cat-5 */, 'text-halo-width': 3 },
         },
         // Tees: coloured circle + selection ring + letter label.
         {
@@ -296,7 +323,9 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             paint: {
                 'circle-radius': 7,
                 'circle-color': ['get', 'fill'] as never,
-                'circle-stroke-color': '#1E2B22',
+                // Pine ring, not bone: tee fills include bone-white, which
+                // would vanish inside an overlay-text ring.
+                'circle-stroke-color': MARKER_FILL, // '#1E2B22' — --color-surface-brand
                 'circle-stroke-width': 1.5,
             },
         },
@@ -308,9 +337,10 @@ export function furnitureLayers(): OverlayLayerSpec[] {
                 'text-field': ['get', 'letter'] as never,
                 'text-size': 9,
                 'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'] as never,
-                'text-allow-overlap': true,
+                'text-allow-overlap': true, // marker glyphs, must never disappear
             },
-            paint: { 'text-color': '#1E2B22', 'text-halo-color': '#ffffff', 'text-halo-width': 1 },
+            // Feature-coloured marker → dark glyph (guide §03).
+            paint: { 'text-color': MARKER_FILL, 'text-halo-color': OVERLAY_TEXT, 'text-halo-width': 1 },
         },
         // Pins: selection ring, active ring, dot, name label.
         {
@@ -323,7 +353,7 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             id: `${FURNITURE_OVERLAY_ID}-pin-active`,
             type: 'circle',
             filter: ['all', role('pin'), ['==', ['get', 'active'], true]] as FilterSpecification,
-            paint: { 'circle-radius': 9, 'circle-color': 'transparent', 'circle-stroke-color': '#B24A32', 'circle-stroke-width': 2 },
+            paint: { 'circle-radius': 9, 'circle-color': 'transparent', 'circle-stroke-color': STATUS_BAD /* '#B24A32' — --data-bad, flag red */, 'circle-stroke-width': 2 },
         },
         {
             id: `${FURNITURE_OVERLAY_ID}-pin`,
@@ -331,8 +361,8 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             filter: role('pin'),
             paint: {
                 'circle-radius': 5,
-                'circle-color': ['case', ['==', ['get', 'active'], true], '#B24A32', '#ffffff'] as never,
-                'circle-stroke-color': '#B24A32',
+                'circle-color': ['case', ['==', ['get', 'active'], true], STATUS_BAD, OVERLAY_TEXT] as never,
+                'circle-stroke-color': STATUS_BAD, // '#B24A32' — --data-bad (flag red)
                 'circle-stroke-width': 2,
             },
         },

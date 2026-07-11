@@ -7,12 +7,13 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import type { Feature, FeatureCollection } from 'geojson';
 import { t } from '../theme';
-import { s, btn, primaryBtn, field } from '../css';
+import { s, btn, primaryBtn, field, glassPanel, panelTitle, metric, OVERLAY_W, OVERLAY_INSET } from '../css';
 import { MapService } from '../map/map.service';
 import { FeaturesService, geometryToWgs84Rings } from '../draw/features.service';
 import { FEATURE_TYPES, FEATURE_STYLES, typeColorExpression } from '../draw/feature-palette';
 import { SvgImportService, type BuildResult } from './svg-import.service';
 import type { SvgBucket } from './svg-parse';
+import { icon } from '../ui/icons';
 
 /** Overlay id for the temporary import preview. */
 export const PREVIEW_OVERLAY_ID = 'svg-import-preview';
@@ -24,7 +25,7 @@ const tpl = template(`
     <div bind="root" class="svg-import">
         <div class="svg-import__header">
             <h3>Import SVG</h3>
-            <button bind="close" type="button" title="Close">&#10005;</button>
+            <button bind="close" type="button" aria-label="Close" title="Close">${icon('x')}</button>
         </div>
 
         <div class="svg-import__section">
@@ -99,19 +100,20 @@ function builtToGeojson(built: BuildResult | null): FeatureCollection {
 export class SvgImportPanelComponent extends Component {
     static styles = `
         .svg-import {
+            /* Layout laws 01+02: self-positioned overlay at the top-right
+               corner inset, 340 bucket, height hugs content (max-height
+               bound + inner scroll — never full-height). */
             position: absolute;
-            top: ${s('md')};
-            right: ${s('md')};
-            bottom: ${s('md')};
-            width: 340px;
+            top: ${OVERLAY_INSET};
+            right: ${OVERLAY_INSET};
+            width: ${OVERLAY_W.standard};
+            max-height: calc(100% - 2 * ${OVERLAY_INSET});
             z-index: 6;
             display: none;
             flex-direction: column;
             overflow-y: auto;
-            border: 1px solid ${t('color-border-default')};
-            border-radius: ${t('radius-sm')};
-            background: ${t('color-surface-card')};
-            box-shadow: ${t('shadow-elevated')};
+            ${glassPanel()}
+            padding: 0;
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
             &.show { display: flex; }
@@ -120,28 +122,31 @@ export class SvgImportPanelComponent extends Component {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
-                padding: ${s('sm')} ${s('md')};
+                padding: var(--space-3) var(--space-4);
                 border-bottom: 1px solid ${t('color-border-default')};
-                & h3 { margin: 0; font-size: 0.9rem; }
-                & button { padding: 2px ${s('sm')}; font-size: 0.8rem; ${btn()} }
+                & h3 { margin: 0; ${panelTitle()} }
+                & button {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 2px ${s('sm')};
+                    font-size: 0.8rem;
+                    ${btn()}
+                }
             }
 
             & .svg-import__section {
-                padding: ${s('sm')} ${s('md')};
+                padding: var(--space-3) var(--space-4);
                 border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
-                gap: ${s('xs')};
+                gap: var(--space-2);
                 &.hidden { display: none; }
             }
 
             & .section-title {
                 margin: 0;
-                font-size: 0.7rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: ${t('color-text-secondary')};
+                ${panelTitle()}
             }
 
             & .hint { font-size: 0.72rem; color: ${t('color-text-secondary')}; }
@@ -172,13 +177,18 @@ export class SvgImportPanelComponent extends Component {
                     border-radius: 3px;
                     border: 1px solid rgba(0,0,0,0.25);
                 }
+                /* Law 05: labels never truncate — arbitrary user layer
+                   names wrap instead of ellipsizing. */
                 & .bucket-label {
                     font-size: 0.72rem;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    white-space: nowrap;
+                    min-width: 0;
+                    overflow-wrap: anywhere;
                 }
-                & .bucket-count { font-size: 0.7rem; color: ${t('color-text-secondary')}; }
+                & .bucket-count {
+                    font-size: 0.7rem;
+                    color: ${t('color-text-tertiary')};
+                    ${metric()}
+                }
                 & select { font-size: 0.72rem; padding: 1px 2px; max-width: 110px; }
             }
 
@@ -190,7 +200,12 @@ export class SvgImportPanelComponent extends Component {
             & .bounds-field {
                 ${field()}
                 font-size: 0.7rem;
-                & input { padding: ${s('xs')} ${s('sm')}; font-size: 0.75rem; }
+                & input {
+                    padding: ${s('xs')} ${s('sm')};
+                    font-size: 0.75rem;
+                    font-family: var(--font-mono);
+                    font-variant-numeric: tabular-nums;
+                }
             }
 
             & .actions {

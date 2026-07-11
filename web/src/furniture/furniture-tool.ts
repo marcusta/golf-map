@@ -32,7 +32,7 @@ const HELP: HelpSection[] = [
 export const furnitureTool: EditorTool = {
     id: FURNITURE_TOOL_ID,
     label: 'Furniture',
-    icon: '⛳',
+    icon: 'flag',
     order: 20,
     panel: FurniturePanelComponent,
     help: HELP,

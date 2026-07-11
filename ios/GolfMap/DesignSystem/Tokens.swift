@@ -90,6 +90,8 @@ enum Overlay {
     static let controlFill      = Color.dynamic(light: "#F6F1E7EB", dark: "#1C1810D1")
     static let dispersionFill   = Color(hex: "#BF6A3E24")                                // .14
     static let dispersionStroke = Color.dynamic(light: "#E6D8BE", dark: "#E6C08A")
+    /// Shot/route line over imagery (web `--map-shot-line`). Theme-invariant.
+    static let shotLine         = Color(hex: "#E4A15A")
     static let panelBlur: CGFloat = 14   // dark: 16
 }
 
@@ -164,8 +166,18 @@ enum AppFont {
         .custom("SchibstedGrotesk", size: size).weight(weight)
     }
     static func mono(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font {
-        .custom("JetBrainsMono", size: size).weight(weight).monospacedDigit()
+        guard hasJetBrainsMono else {
+            // Until the JetBrains Mono face ships in the bundle, fall back to
+            // the system monospaced design — `Font.custom` alone would fall
+            // back to the PROPORTIONAL system font and lose the mono/tabular
+            // numeric treatment entirely.
+            return .system(size: size, weight: weight, design: .monospaced).monospacedDigit()
+        }
+        return .custom("JetBrainsMono", size: size).weight(weight).monospacedDigit()
     }
+
+    private static let hasJetBrainsMono: Bool =
+        UIFont.familyNames.contains { $0.caseInsensitiveCompare("JetBrains Mono") == .orderedSame }
     // ramp
     static let displayXL = sans(44, .heavy)
     static let displayL  = sans(34, .bold)
