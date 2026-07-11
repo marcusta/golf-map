@@ -14,8 +14,11 @@ Covers:
 
 ## 1. DECADE engine (§8)
 
-**D1. `deep_rough` maps to `recovery`.** Consistent with `corridor.ts` treating `deep_rough` ≈
-trees (`DEFAULT_HAZARD_TYPES`). A ball in trees is a punch-out, not a full swing from rough.
+**D1. `deep_rough` and `trees` map to `recovery`.** Amended 2026-07-08 by
+[decisions-course-overlays-2026-07-08.md](decisions-course-overlays-2026-07-08.md): `deep_rough`
+is low vegetation and `trees` is vertical obstruction, so they are distinct course-feature types
+even though the current single-lie model maps both to `recovery`. Both are included in
+`DEFAULT_HAZARD_TYPES` for corridor scans.
 
 **D2. EV is derived client-side, never persisted.** No schema change, no migration. Revisit only
 if server-side plan scoring becomes a feature (then it is a new endpoint, still not a column).

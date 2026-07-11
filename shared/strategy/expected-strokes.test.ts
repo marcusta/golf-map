@@ -110,9 +110,13 @@ describe('lieFromFeatureType', () => {
         expect(lieFromFeatureType('semi_rough')).toBe('rough');
         expect(lieFromFeatureType('rough')).toBe('rough');
         expect(lieFromFeatureType('deep_rough')).toBe('recovery');
+        expect(lieFromFeatureType('trees')).toBe('recovery');
         expect(lieFromFeatureType('bunker')).toBe('sand');
         expect(lieFromFeatureType('water')).toBe('penalty');
         expect(lieFromFeatureType('water_creek')).toBe('penalty');
+        expect(lieFromFeatureType('penalty_yellow')).toBe('penalty');
+        expect(lieFromFeatureType('penalty_red')).toBe('penalty');
+        expect(lieFromFeatureType('oob')).toBe('penalty');
         expect(lieFromFeatureType('outside')).toBe('penalty');
         expect(lieFromFeatureType('path')).toBe('fairway');
     });

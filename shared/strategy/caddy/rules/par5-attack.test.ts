@@ -66,6 +66,32 @@ describe('par5-attack — strategy ranking', () => {
         expect(out[0].headline).toContain('100 m');
         expect(out[0].headline).toContain('42 m');
     });
+
+    test('topmost greenside hazards price above the green under D23 stack order', () => {
+        const out = run(ctx({
+            target: {
+                greenPoly: box('green', -100, 150, 100, 230),
+                center: { x: 0, y: 190 },
+                front: { x: 0, y: 150 },
+                back: { x: 0, y: 230 },
+            },
+            hazards: [
+                // Fixture isolates the D23 overlap rule: this hazard is above
+                // the green in the caller-provided stack and covers the attack
+                // landing area, but the selected club can still carry it.
+                box('water', -100, 150, 100, 230),
+            ],
+            clubs: [
+                club('3 wood', 220, 24), // maxCarryM = 231 m, clears the far edge
+                club('full wedge lay-up club', 90, 12), // leaves 100 m
+            ],
+        }));
+
+        expect(out).toHaveLength(1);
+        expect(out[0].kind).toBe('layup');
+        expect(out[0].headline).toContain('100 m');
+        expect(out[0].headline).not.toContain('Attack the green in two');
+    });
 });
 
 describe('par5-attack — go-in-2 candidate gate', () => {

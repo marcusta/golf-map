@@ -15,8 +15,12 @@ export const FEATURE_TYPES = [
     'semi_rough',
     'rough',
     'deep_rough',
+    'trees',
     'water',
     'water_creek',
+    'penalty_yellow',
+    'penalty_red',
+    'oob',
     'path',
     'outside',
 ] as const;
@@ -39,9 +43,13 @@ const TYPE_Z_ORDER: readonly string[] = [
     'fairway',
     'tee',
     'green',
+    'trees',
     'bunker',
     'water',
     'water_creek',
+    'penalty_yellow',
+    'penalty_red',
+    'oob',
     'path',
 ];
 
@@ -386,6 +394,9 @@ export class CourseFeaturesService {
         if (input.geometry !== undefined) assertValidGeometry(input.geometry);
 
         const dbInput: Record<string, unknown> = {};
+        const movingGroups = input.holeId !== undefined && input.holeId !== row.hole_id;
+        const nextHoleId = input.holeId !== undefined ? input.holeId : row.hole_id;
+        const nextType = input.type ?? row.type;
         if (input.holeId !== undefined) dbInput.hole_id = input.holeId;
         if (input.type !== undefined) dbInput.type = input.type;
         if (input.geometry !== undefined) {
@@ -393,13 +404,37 @@ export class CourseFeaturesService {
             dbInput.geojson = JSON.stringify(toGeoJson(input.geometry));
         }
 
-        await this.updateById(id)
-            .set({
-                ...dbInput,
-                version: version + 1,
-                updated_at: sql`(datetime('now'))`,
-            })
-            .execute();
+        if (movingGroups) {
+            await this.db.transaction().execute(async (trx) => {
+                const groupStack = await this.byGroup(row.course_id, nextHoleId, trx).execute();
+                const pos = insertionPosition(groupStack, nextType);
+
+                for (const targetRow of groupStack) {
+                    if (targetRow.sort_order >= pos) {
+                        await this.updateById(targetRow.id, trx)
+                            .set({ sort_order: targetRow.sort_order + 1, updated_at: sql`(datetime('now'))` })
+                            .execute();
+                    }
+                }
+
+                await this.updateById(id, trx)
+                    .set({
+                        ...dbInput,
+                        sort_order: pos,
+                        version: version + 1,
+                        updated_at: sql`(datetime('now'))`,
+                    })
+                    .execute();
+            });
+        } else {
+            await this.updateById(id)
+                .set({
+                    ...dbInput,
+                    version: version + 1,
+                    updated_at: sql`(datetime('now'))`,
+                })
+                .execute();
+        }
 
         const updated = await this.byId(id).executeTakeFirstOrThrow();
         return toCourseFeature(updated);

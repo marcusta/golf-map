@@ -24,9 +24,10 @@ export interface FlatRing {
 }
 
 /**
- * Default feature types treated as corridor obstacles (ROADMAP Phase-5
- * decision; deep_rough ≈ trees). The set is a parameter of the CALLER's
- * ring filtering, not enforced here.
+ * Default feature types treated as corridor obstacles. This includes physical
+ * obstacles/surfaces (bunker, water, deep_rough, trees) and rules overlays
+ * that should bound strategy corridors (penalty areas, OOB, outside). The
+ * set is a parameter of the CALLER's ring filtering, not enforced here.
  */
 export const DEFAULT_HAZARD_TYPES: readonly string[] = [
     'bunker',
@@ -34,6 +35,10 @@ export const DEFAULT_HAZARD_TYPES: readonly string[] = [
     'water_creek',
     'outside',
     'deep_rough',
+    'trees',
+    'penalty_yellow',
+    'penalty_red',
+    'oob',
 ];
 
 export interface CorridorWidthOptions {

@@ -89,10 +89,16 @@ describe('buildLieMap', () => {
         expect(map.classifyLie({ x: 50, y: 50 })).toBe('penalty');
     });
 
-    test('water/outside map to penalty via lieFromFeatureType', () => {
-        const water = squareFeature('w1', 'water', 0, 50, 0, 50);
-        const map = buildLieMap([water]);
-        expect(map.classifyLie({ x: 25, y: 25 })).toBe('penalty');
+    test('trees map to recovery and rules areas map to penalty via lieFromFeatureType', () => {
+        const trees = squareFeature('t1', 'trees', 0, 50, 0, 50);
+        const redPenalty = squareFeature('r1', 'penalty_red', 60, 100, 0, 50);
+        const yellowPenalty = squareFeature('y1', 'penalty_yellow', 110, 150, 0, 50);
+        const oob = squareFeature('o1', 'oob', 160, 200, 0, 50);
+        const map = buildLieMap([trees, redPenalty, yellowPenalty, oob]);
+        expect(map.classifyLie({ x: 25, y: 25 })).toBe('recovery');
+        expect(map.classifyLie({ x: 80, y: 25 })).toBe('penalty');
+        expect(map.classifyLie({ x: 130, y: 25 })).toBe('penalty');
+        expect(map.classifyLie({ x: 180, y: 25 })).toBe('penalty');
     });
 
     test('degenerate (< 3 point) rings are skipped, not thrown', () => {
@@ -115,9 +121,13 @@ describe('buildLieMap', () => {
         const fairway = squareFeature('f1', 'fairway', 0, 100, 0, 200);
         const bunker = squareFeature('b1', 'bunker', 40, 60, 90, 110);
         const water = squareFeature('w1', 'water', 200, 250, 200, 250);
-        const map = buildLieMap([fairway, bunker, water]);
+        const trees = squareFeature('t1', 'trees', 260, 300, 200, 250);
+        const redPenalty = squareFeature('r1', 'penalty_red', 310, 350, 200, 250);
+        const yellowPenalty = squareFeature('y1', 'penalty_yellow', 360, 400, 200, 250);
+        const oob = squareFeature('o1', 'oob', 410, 450, 200, 250);
+        const map = buildLieMap([fairway, bunker, water, trees, redPenalty, yellowPenalty, oob]);
         const hazardKinds = map.hazardRings().map(r => r.kind).sort();
-        expect(hazardKinds).toEqual(['bunker', 'water']);
+        expect(hazardKinds).toEqual(['bunker', 'oob', 'penalty_red', 'penalty_yellow', 'trees', 'water']);
     });
 
     test('surfaces() includes every classifiable feature, topmost-first (D23)', () => {

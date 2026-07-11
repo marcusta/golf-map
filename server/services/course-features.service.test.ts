@@ -56,6 +56,21 @@ describe('CourseFeaturesService.create', () => {
         expect(feature.holeId).toBeNull();
     });
 
+    test('accepts trees, penalty-area, and OOB feature types', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        for (const type of ['trees', 'penalty_red', 'penalty_yellow', 'oob']) {
+            const feature = await svc.create({
+                courseId: TEST_COURSE_ID,
+                holeId: TEST_HOLE_1_ID,
+                type,
+                geometry: squareGeometry(),
+            });
+            expect(feature.type).toBe(type);
+        }
+    });
+
     test('rejects an invalid type', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);
@@ -252,6 +267,39 @@ describe('CourseFeaturesService.update', () => {
 
         expect(updated.geojson).not.toEqual(originalGeojson);
         expect(updated.geojson!.type).toBe('Polygon');
+    });
+
+    test('moving to another hole inserts into that hole stack and shifts higher features', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const moved = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_1_ID,
+            type: 'bunker',
+            geometry: squareGeometry(),
+        });
+        const rough = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_2_ID,
+            type: 'rough',
+            geometry: squareGeometry(20, 20, 3),
+        });
+        const path = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_2_ID,
+            type: 'path',
+            geometry: squareGeometry(40, 40, 3),
+        });
+
+        const updated = await svc.update(moved.id, moved.version, { holeId: TEST_HOLE_2_ID });
+
+        expect(updated.holeId).toBe(TEST_HOLE_2_ID);
+        expect(updated.sortOrder).toBe(rough.sortOrder + 1);
+
+        const targetStack = await svc.listByHole(TEST_HOLE_2_ID);
+        expect(targetStack.map(f => f.id)).toEqual([rough.id, moved.id, path.id]);
+        expect(targetStack.find(f => f.id === path.id)?.sortOrder).toBe(path.sortOrder + 1);
     });
 
     test('throws VersionConflictError on stale version', async () => {

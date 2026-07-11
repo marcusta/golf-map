@@ -54,15 +54,15 @@ describe('corridorWidth', () => {
     });
 
     test('asymmetric corridor: different hazards at different distances', () => {
-        const leftTrees = square(-30, -25, -10, 10, 'deep_rough');
+        const leftDeepRough = square(-30, -25, -10, 10, 'deep_rough');
         const rightWater = square(10, 20, -10, 10, 'water');
         const w = corridorWidth({
             station: { x: 0, y: 0 },
             axisBearingDeg: 0,
-            obstacles: [leftTrees, rightWater],
+            obstacles: [leftDeepRough, rightWater],
         });
         expect(w.leftM).toBeCloseTo(25, 9);
-        expect(w.leftHit).toBe(leftTrees);
+        expect(w.leftHit).toBe(leftDeepRough);
         expect(w.rightM).toBeCloseTo(10, 9);
         expect(w.rightHit).toBe(rightWater);
     });
@@ -129,7 +129,17 @@ describe('corridorWidth', () => {
 });
 
 describe('DEFAULT_HAZARD_TYPES', () => {
-    test('matches the ROADMAP Phase-5 decision set', () => {
-        expect([...DEFAULT_HAZARD_TYPES]).toEqual(['bunker', 'water', 'water_creek', 'outside', 'deep_rough']);
+    test('includes physical obstacles and rules overlays that bound playable corridors', () => {
+        expect([...DEFAULT_HAZARD_TYPES]).toEqual([
+            'bunker',
+            'water',
+            'water_creek',
+            'outside',
+            'deep_rough',
+            'trees',
+            'penalty_yellow',
+            'penalty_red',
+            'oob',
+        ]);
     });
 });

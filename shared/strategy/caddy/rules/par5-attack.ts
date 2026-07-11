@@ -7,7 +7,12 @@
 // Conventions match the rest of shared/strategy: pure/zero-dep,
 // Swift-mirrorable, projected meters, compass bearings (0 = north,
 // clockwise). The caller supplies a finished CaddyContext; this rule does no
-// I/O and reads no planner state outside the context.
+// I/O and reads no planner state outside the context. CaddyContext does not
+// yet carry the full lie-map surface stack, so this rule synthesizes the
+// narrow stack it needs for optimizeAim: hazards first (ctx.hazards already
+// arrives topmost-first from lie-map hazardRings()), then the green. That
+// preserves D23's topmost-first truth where a greenside hazard overlaps the
+// green.
 
 import { optimizeAim, type AimResult } from '../../aim';
 import { hazardsAlongLine } from '../../carry';
@@ -163,7 +168,7 @@ function enumerateStrategies(ctx: CaddyContext): Par5Strategy[] {
 }
 
 function scoreStrategies(ctx: CaddyContext): ScoredPar5Strategy[] {
-    const surfaces = [ctx.target.greenPoly, ...ctx.hazards];
+    const surfaces = [...ctx.hazards, ctx.target.greenPoly];
     return enumerateStrategies(ctx).map((strategy) => {
         const aim = optimizeAim({
             origin: { x: ctx.origin.x, y: ctx.origin.y },
