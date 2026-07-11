@@ -343,6 +343,9 @@ export class FurnitureToolService {
     private onMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
         if (!this.isMyClaim()) return;
         if (e.originalEvent.button !== 0) return;
+        // ⌘/Ctrl-drag pans even from a marker (draw-tool convention): return
+        // without grabbing so MapLibre's native dragPan takes the gesture.
+        if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
         if (this.svc.placing.peek() !== null) return;
 
         const hit = this.hitMarker(e.point);

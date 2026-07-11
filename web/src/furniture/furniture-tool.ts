@@ -7,6 +7,13 @@ import { FurniturePanelComponent } from './furniture-panel.component';
 // Help-modal content (D27) — the sole home of furniture interaction hints.
 const HELP: HelpSection[] = [
     {
+        title: 'Navigation',
+        shortcuts: [
+            { keys: '⌘-drag', desc: 'Pan the map (works even starting on a marker)' },
+            { keys: 'Middle-drag', desc: 'Pan the map (mouse; works mid-gesture in any tool)' },
+        ],
+    },
+    {
         title: 'Placement',
         shortcuts: [
             { keys: 'Pick a hole, arm, click map', desc: 'Place a tee/pin/aim-point/green point' },

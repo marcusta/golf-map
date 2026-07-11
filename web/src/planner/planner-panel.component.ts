@@ -146,6 +146,7 @@ const tpl = template(`
             <div><b>+ Shot</b>: click the map to append landing points (Esc stops).</div>
             <div><b>+ Gate</b>: click near a leg — drag the endpoints to set widths.</div>
             <div>Drag markers to move · <b>Del</b> deletes the selection.</div>
+            <div><b>⌘-drag</b> pans the map from anywhere, even off a marker.</div>
         </div>
     </div>
 `);

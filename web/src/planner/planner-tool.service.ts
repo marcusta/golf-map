@@ -1281,6 +1281,14 @@ export class PlannerToolService {
         if (!this.isMyClaim()) return;
         if (e.originalEvent.button !== 0) return;
 
+        // ⌘/Ctrl-drag is the guaranteed pan escape hatch (same convention as
+        // the draw tool): never grab a marker, and return WITHOUT
+        // preventDefault/dragPan.disable so MapLibre's native dragPan takes
+        // the gesture. On a hole dense with markers this is the only drag
+        // that reliably pans — a plain drag anywhere near the plan grabs a
+        // shot/gate instead.
+        if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
+
         // Grab an existing shot/gate marker in ANY mode (not just select) so
         // placed points stay draggable without first disarming add-shot /
         // add-gate — matching the furniture editor's "markers are always
