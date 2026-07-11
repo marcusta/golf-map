@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #EDE4D2; font-family: 'Schibsted Grotesk', sans-serif; color: #211D14; -webkit-font-smoothing: antialiased; }
+  a { color: #A6572F; text-decoration: none; }
+  a:hover { color: #8F4A28; }
+  ::selection { background: #E6C08A; color: #211D14; }
+  .mono { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+  .holes-scroll::-webkit-scrollbar, .stack-scroll::-webkit-scrollbar, .ft-scroll::-webkit-scrollbar { width: 8px; }
+  .holes-scroll::-webkit-scrollbar-thumb, .stack-scroll::-webkit-scrollbar-thumb, .ft-scroll::-webkit-scrollbar-thumb { background: rgba(140,132,113,0.4); border-radius: 999px; }
+</style>
+</helmet>
+
+<div style="max-width: 1680px; margin: 0 auto; padding: 40px 32px 80px;">
+
+  <!-- EXPLAINER -->
+  <div style="margin-bottom: 24px;">
+    <div class="mono" style="font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #BF6A3E; margin-bottom: 10px;">Builder redesign · v2 · command-bar model</div>
+    <h1 style="font-size: 34px; font-weight: 800; letter-spacing: -0.025em; margin: 0 0 14px;">One bar: mode switch + contextual toolbar</h1>
+    <p style="font-size: 16px; line-height: 1.55; color: #55503F; max-width: 860px; margin: 0 0 16px; text-wrap: pretty;">Top-level <strong style="font-weight:700;">modes</strong> (Create · Plan · Play · Review) map to the four product use cases. Sub-modes (Draw / Furniture / Measure / Green analysis) are children of <strong style="font-weight:700;">Create</strong>, now a dropdown. Feature Type is a dropdown; New / Box-select are icon buttons. The floating panel &amp; tool tabs leave the map entirely.</p>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap; font-size: 13px;">
+      <span class="mono" style="padding: 7px 13px; background: #1E2B22; color: #E6C08A; border-radius: 999px; font-size: 12px;">try: mode toggle · Draw ▾ · Bunker ▾ · (i) · ⋯</span>
+      <span style="padding: 7px 13px; background: #FBF8F1; border: 1px solid #DDD0B4; border-radius: 999px; color: #55503F;">docks still collapse ⟨ ⟩</span>
+    </div>
+  </div>
+
+  <!-- ============ APP FRAME ============ -->
+  <div style="position: relative; height: 940px; border-radius: 16px; overflow: hidden; border: 1px solid #C9B899; box-shadow: 0 30px 80px -40px rgba(40,36,26,0.5); display: flex; flex-direction: column; background: #F6F1E7;">
+
+    <!-- backdrop to close menus -->
+    <sc-if value="{{ anyMenuOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeMenus }}" style="position: absolute; inset: 0; z-index: 30;"></div>
+    </sc-if>
+
+    <!-- ===== UNIFIED COMMAND BAR ===== -->
+    <div style="height: 58px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 14px; background: #F6F1E7; border-bottom: 1px solid #E0D5C0; position: relative; z-index: 40;">
+
+      <!-- ZONE 1 · identity -->
+      <span style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 24px; height: 24px; border-radius: 6px; background: #1E2B22; display: flex; align-items: center; justify-content: center;"><span style="width: 8px; height: 11px; border: 1.5px solid #E6C08A; border-right: none; border-radius: 2px 0 0 2px;"></span></span>
+        <span style="color: #6F6A5E; font-size: 13.5px; font-weight: 500; cursor: pointer; margin-left: 2px;">‹ Courses</span>
+        <span style="font-weight: 700; font-size: 15px; margin-left: 6px;">Linkan</span>
+        <span style="font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: #4E7A46; background: rgba(78,122,70,0.12); padding: 4px 8px; border-radius: 999px;">PUBLISHED</span>
+        <!-- (i) metadata popover -->
+        <span style="position: relative; display: inline-flex;">
+          <span onClick="{{ toggleInfo }}" title="Course info" style="width: 24px; height: 24px; border-radius: 999px; border: 1.5px solid {{ infoBorder }}; color: {{ infoColor }}; display: flex; align-items: center; justify-content: center; font-size: 12px; cursor: pointer; font-style: italic; font-weight: 600;">i</span>
+          <sc-if value="{{ infoOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="position: absolute; top: 34px; left: 0; z-index: 50; width: 232px; background: #FFFFFF; border: 1px solid #E0D5C0; border-radius: 12px; box-shadow: 0 20px 44px -18px rgba(40,36,26,0.5); padding: 14px 16px;">
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: baseline;"><span style="font-size: 12px; color: #8B8471;">Revision</span><span class="mono" style="font-size: 13px;">rev 1</span></div>
+              <div style="display: flex; justify-content: space-between; align-items: baseline;"><span style="font-size: 12px; color: #8B8471;">Holes</span><span class="mono" style="font-size: 13px;">18</span></div>
+              <div style="display: flex; justify-content: space-between; align-items: baseline;"><span style="font-size: 12px; color: #8B8471;">Total par</span><span class="mono" style="font-size: 13px;">71</span></div>
+              <div style="height: 1px; background: #EDE4D2;"></div>
+              <div style="display: flex; align-items: center; gap: 8px; color: #C68A2E;"><span style="width: 15px; height: 15px; border: 1.5px solid #C68A2E; border-radius: 3px; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700;">!</span><span style="font-size: 12.5px;">No georeference</span></div>
+              <button style="margin-top: 2px; background: rgba(198,138,46,0.12); color: #A6572F; border: none; font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 8px; border-radius: 8px; cursor: pointer;">Set georeference</button>
+            </div>
+          </div>
+          </sc-if>
+        </span>
+      </span>
+
+      <span style="width: 1px; height: 26px; background: #E0D5C0; margin: 0 2px;"></span>
+
+      <!-- ZONE 2 · MODE TOGGLE (top-level) -->
+      <div style="display: inline-flex; gap: 3px; background: #EDE4D2; border: 1px solid #DDD0B4; border-radius: 11px; padding: 3px;">
+        <sc-for list="{{ modes }}" as="m" hint-placeholder-count="4">
+          <span onClick="{{ m.select }}" title="{{ m.hint }}" style="display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: {{ m.weight }}; color: {{ m.fg }}; background: {{ m.bg }}; box-shadow: {{ m.shadow }}; padding: 7px 13px; border-radius: 8px; cursor: pointer;"><span style="width: 6px; height: 6px; border-radius: 999px; background: {{ m.dot }};"></span>{{ m.label }}</span>
+        </sc-for>
+      </div>
+
+      <span style="width: 1px; height: 26px; background: #E0D5C0; margin: 0 2px;"></span>
+
+      <!-- ZONE 3 · CONTEXTUAL TOOLBAR (Create mode) -->
+      <sc-if value="{{ isCreate }}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <!-- sub-mode dropdown -->
+        <span style="position: relative; display: inline-flex;">
+          <span onClick="{{ toggleSub }}" style="display: flex; align-items: center; gap: 8px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 9px; padding: 7px 11px; cursor: pointer; font-size: 13.5px; font-weight: 600;"><span style="color:#BF6A3E;">{{ subIcon }}</span>{{ subLabel }}<span style="color: #9C917A; font-size: 10px; margin-left: 2px;">▾</span></span>
+          <sc-if value="{{ subOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="position: absolute; top: 40px; left: 0; z-index: 50; width: 216px; background: #FFFFFF; border: 1px solid #E0D5C0; border-radius: 12px; box-shadow: 0 20px 44px -18px rgba(40,36,26,0.5); padding: 6px;">
+            <sc-for list="{{ submodes }}" as="sm" hint-placeholder-count="4">
+              <div onClick="{{ sm.select }}" style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; cursor: pointer; background: {{ sm.bg }};"><span style="color: {{ sm.icColor }}; width: 16px; text-align: center;">{{ sm.icon }}</span><span style="font-size: 13.5px; font-weight: {{ sm.weight }}; color: #3A362B;">{{ sm.label }}</span><sc-if value="{{ sm.active }}" hint-placeholder-val="{{ false }}"><span style="margin-left: auto; color: #BF6A3E; font-size: 12px;">✓</span></sc-if></div>
+            </sc-for>
+          </div>
+          </sc-if>
+        </span>
+
+        <!-- feature-type dropdown -->
+        <span style="position: relative; display: inline-flex;">
+          <span onClick="{{ toggleFeat }}" style="display: flex; align-items: center; gap: 8px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 9px; padding: 6px 11px 6px 8px; cursor: pointer; font-size: 13.5px; font-weight: 500;"><span style="width: 16px; height: 16px; border-radius: 4px; background: {{ selFeatColor }}; border: {{ selFeatBorder }};"></span>{{ selFeatName }}<span style="color: #9C917A; font-size: 10px; margin-left: 2px;">▾</span></span>
+          <sc-if value="{{ featOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="position: absolute; top: 40px; left: 0; z-index: 50; width: 336px; background: #FFFFFF; border: 1px solid #E0D5C0; border-radius: 14px; box-shadow: 0 22px 50px -18px rgba(40,36,26,0.55); padding: 12px;">
+            <div class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #8B8471; margin: 2px 4px 10px;">Feature type</div>
+            <div class="ft-scroll" style="display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px; max-height: 320px; overflow-y: auto;">
+              <sc-for list="{{ features }}" as="f" hint-placeholder-count="15">
+                <div onClick="{{ f.select }}" style="display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; cursor: pointer; background: {{ f.bg }}; box-shadow: {{ f.ring }};"><span style="width: 15px; height: 15px; border-radius: 4px; background: {{ f.color }}; border: {{ f.swBorder }};"></span><span style="font-size: 13px; color: #3A362B; font-weight: {{ f.weight }}; white-space: nowrap;">{{ f.name }}</span></div>
+              </sc-for>
+            </div>
+          </div>
+          </sc-if>
+        </span>
+
+        <!-- New polygon (primary icon button) -->
+        <span onClick="{{ noop }}" title="New polygon (N)" style="width: 34px; height: 34px; border-radius: 9px; background: #BF6A3E; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 14px -6px rgba(191,106,62,0.6); position: relative;"><span style="position: absolute; width: 15px; height: 2px; background: #FBF3E8; border-radius: 2px;"></span><span style="position: absolute; width: 2px; height: 15px; background: #FBF3E8; border-radius: 2px;"></span></span>
+        <!-- Box-select (ghost icon button) -->
+        <span title="Box-select (B)" style="width: 34px; height: 34px; border-radius: 9px; background: #FFFFFF; border: 1px solid #DDD0B4; display: flex; align-items: center; justify-content: center; cursor: pointer;"><span style="width: 15px; height: 15px; border: 1.5px dashed #6F6A5E; border-radius: 3px;"></span></span>
+      </div>
+      </sc-if>
+
+      <!-- CONTEXTUAL · Plan mode (placeholder) -->
+      <sc-if value="{{ isPlan }}" hint-placeholder-val="{{ false }}">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="display: flex; align-items: center; gap: 8px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 9px; padding: 7px 11px; cursor: pointer; font-size: 13.5px; font-weight: 500;"><span style="width: 20px; height: 20px; border-radius: 999px; background: #5C6B4A; color: #F6F1E7; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700;">m</span>marcus<span style="color: #9C917A; font-size: 10px;">▾</span></span>
+        <span style="display: flex; align-items: center; gap: 8px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 9px; padding: 7px 11px; cursor: pointer; font-size: 13.5px; font-weight: 500;"><span style="width: 12px; height: 12px; border-radius: 999px; background: #D8A441;"></span>Yellow tee<span style="color: #9C917A; font-size: 10px;">▾</span></span>
+        <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 9px; padding: 8px 11px; font-size: 13px; color: #3A362B;">↖ 11<span style="color:#9C917A;">mph</span></span>
+      </div>
+      </sc-if>
+
+      <!-- CONTEXTUAL · Play / Review (mobile-first note) -->
+      <sc-if value="{{ isMobileMode }}" hint-placeholder-val="{{ false }}">
+      <div style="display: flex; align-items: center; gap: 8px; color: #8B8471; font-size: 13px;"><span style="width: 15px; height: 22px; border: 1.5px solid #A69A82; border-radius: 4px;"></span>{{ mobileNote }}</div>
+      </sc-if>
+
+      <!-- ZONE 4 · right actions -->
+      <div style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
+        <span style="position: relative; display: inline-flex;">
+          <span onClick="{{ toggleActions }}" title="Actions" style="display: flex; align-items: center; gap: 3px; width: 38px; height: 34px; border-radius: 9px; background: #FFFFFF; border: 1px solid #DDD0B4; align-items: center; justify-content: center; cursor: pointer;"><span style="width: 4px; height: 4px; border-radius: 999px; background: #6F6A5E;"></span><span style="width: 4px; height: 4px; border-radius: 999px; background: #6F6A5E;"></span><span style="width: 4px; height: 4px; border-radius: 999px; background: #6F6A5E;"></span></span>
+          <sc-if value="{{ actionsOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="position: absolute; top: 40px; right: 0; z-index: 50; width: 200px; background: #FFFFFF; border: 1px solid #E0D5C0; border-radius: 12px; box-shadow: 0 20px 44px -18px rgba(40,36,26,0.5); padding: 6px;">
+            <div style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px;" style-hover="background: #F6F1E7;"><span style="color:#6F6A5E;">↧</span>Import SVG</div>
+            <div style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px;" style-hover="background: #F6F1E7;"><span style="color:#6F6A5E;">↥</span>Export</div>
+            <div style="height: 1px; background: #EDE4D2; margin: 4px 6px;"></div>
+            <div style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; font-weight: 600; color: #A6572F; background: rgba(191,106,62,0.08);"><span style="width:8px; height:8px; border-radius:2px; background:#BF6A3E;"></span>Publish revision</div>
+          </div>
+          </sc-if>
+        </span>
+        <span style="width: 1px; height: 24px; background: #E0D5C0;"></span>
+        <span style="width: 30px; height: 30px; border-radius: 999px; background: #5C6B4A; color: #F6F1E7; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; cursor: pointer;">m</span>
+      </div>
+    </div>
+
+    <!-- ===== BODY ===== -->
+    <div style="flex: 1; display: flex; position: relative; min-height: 0; z-index: 10;">
+
+      <!-- LEFT DOCK -->
+      <sc-if value="{{ leftOpen }}" hint-placeholder-val="{{ true }}">
+      <div style="width: 264px; flex: none; background: #FBF8F1; border-right: 1px solid #E0D5C0; display: flex; flex-direction: column; min-height: 0;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 14px 14px 10px;">
+          <span class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #8B8471;">Holes</span>
+          <button onClick="{{ toggleLeft }}" title="Collapse" style="width: 26px; height: 26px; border-radius: 7px; border: 1px solid #DDD0B4; background: #FFFFFF; color: #6F6A5E; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 13px;">‹</button>
+        </div>
+        <div class="holes-scroll" style="flex: 1; overflow-y: auto; padding: 0 10px;">
+          <sc-for list="{{ holes }}" as="h" hint-placeholder-count="18">
+            <div onClick="{{ h.select }}" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 9px; cursor: pointer; margin-bottom: 2px; background: {{ h.bg }};"><span style="font-size: 14px; font-weight: {{ h.weight }}; color: {{ h.fg }};">Hole {{ h.n }}</span><span class="mono" style="font-size: 12px; color: {{ h.parColor }};">PAR {{ h.par }}</span></div>
+          </sc-for>
+        </div>
+        <div style="flex: none; border-top: 1px solid #E8E0CF; background: #F6F1E7; padding: 14px;">
+          <div style="font-size: 15px; font-weight: 700; margin-bottom: 12px;">Hole {{ selHole }}</div>
+          <div style="display: flex; gap: 10px; margin-bottom: 14px;">
+            <div style="flex: 1;"><div style="font-size: 11px; color: #8B8471; margin-bottom: 5px;">Par</div><div style="display: flex; justify-content: space-between; align-items: center; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 8px; padding: 8px 10px;"><span class="mono" style="font-size: 13px;">4</span><span style="color: #9C917A; font-size: 10px;">▾</span></div></div>
+            <div style="flex: 1;"><div style="font-size: 11px; color: #8B8471; margin-bottom: 5px;">Stroke idx</div><div style="display: flex; justify-content: space-between; align-items: center; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 8px; padding: 8px 10px;"><span class="mono" style="font-size: 13px; color: #9C917A;">—</span><span style="color: #9C917A; font-size: 10px;">▾</span></div></div>
+          </div>
+          <div class="mono" style="font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #8B8471; margin-bottom: 8px;">Tee boxes</div>
+          <div style="display: flex; flex-direction: column; gap: 2px;">
+            <div style="display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 7px;"><span style="width: 12px; height: 12px; border-radius: 999px; border: 1.5px solid #C9B899; background: #EFEAE0;"></span><span style="font-size: 13px; flex: 1;">White</span><span class="mono" style="font-size: 12px; color: #6F6A5E;">317<span style="color:#9C917A;">m</span></span></div>
+            <div style="display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 7px; background: rgba(191,106,62,0.1); box-shadow: inset 0 0 0 1.5px #BF6A3E;"><span style="width: 12px; height: 12px; border-radius: 999px; background: #D8A441;"></span><span style="font-size: 13px; flex: 1; font-weight: 600;">Yellow</span><span class="mono" style="font-size: 12px; color: #3A362B; font-weight: 600;">310<span style="color:#9C917A;">m</span></span></div>
+            <div style="display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 7px;"><span style="width: 12px; height: 12px; border-radius: 999px; background: #4C8FBE;"></span><span style="font-size: 13px; flex: 1;">Blue</span><span class="mono" style="font-size: 12px; color: #6F6A5E;">291<span style="color:#9C917A;">m</span></span></div>
+            <div style="display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 7px;"><span style="width: 12px; height: 12px; border-radius: 999px; background: #DE6152;"></span><span style="font-size: 13px; flex: 1;">Red</span><span class="mono" style="font-size: 12px; color: #6F6A5E;">277<span style="color:#9C917A;">m</span></span></div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+      <sc-if value="{{ leftClosed }}" hint-placeholder-val="{{ false }}">
+      <div style="width: 58px; flex: none; background: #FBF8F1; border-right: 1px solid #E0D5C0; display: flex; flex-direction: column; align-items: center; padding: 12px 0;">
+        <button onClick="{{ toggleLeft }}" title="Expand" style="width: 30px; height: 30px; border-radius: 8px; border: 1px solid #DDD0B4; background: #FFFFFF; color: #6F6A5E; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; margin-bottom: 18px;">›</button>
+        <div class="mono" style="writing-mode: vertical-rl; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: #A69A82; margin-bottom: 14px;">Hole</div>
+        <button onClick="{{ prevHole }}" style="width: 30px; height: 24px; border: none; background: transparent; color: #9C917A; cursor: pointer; font-size: 13px;">▲</button>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 4px 0;"><span class="mono" style="font-size: 25px; font-weight: 700; line-height: 1; color: #BF6A3E;">{{ selHole }}</span><span class="mono" style="font-size: 10px; color: #8B8471;">PAR 4</span></div>
+        <button onClick="{{ nextHole }}" style="width: 30px; height: 24px; border: none; background: transparent; color: #9C917A; cursor: pointer; font-size: 13px;">▼</button>
+      </div>
+      </sc-if>
+
+      <!-- MAP -->
+      <div style="flex: 1; position: relative; min-width: 0; overflow: hidden; background: radial-gradient(340px 260px at 30% 78%, #8fa76a 0%, rgba(143,167,106,0) 66%), radial-gradient(300px 240px at 82% 20%, #4a5c3c 0%, rgba(74,92,60,0) 62%), radial-gradient(200px 160px at 62% 88%, #caa96f 0%, rgba(202,169,111,0) 60%), linear-gradient(140deg, #5f7846 0%, #506a3d 45%, #46603a 100%);">
+        <div style="position: absolute; inset: 0; background-image: radial-gradient(rgba(0,0,0,0.06) 1px, transparent 1px); background-size: 7px 7px; opacity: 0.5;"></div>
+        <div style="position: absolute; top: 48%; left: 20%; width: 620px; height: 200px; border-radius: 999px; background: #4C9256; border: 2px solid #2C6B3B; transform: rotate(-8deg); opacity: 0.92;"></div>
+        <div style="position: absolute; top: 44%; left: 30%; width: 150px; height: 120px; border-radius: 52% 48% 46% 54%/55% 50% 50% 45%; background: #7FC489; border: 2.5px solid #3F7A55;"></div>
+        <div style="position: absolute; top: 40%; left: 34%; width: 150px; height: 92px; border: 1.5px solid #E6D8BE; border-radius: 50%; transform: rotate(-16deg); box-shadow: 0 0 0 6px rgba(230,216,190,0.12);"></div>
+        <div style="position: absolute; top: 62%; left: 22%; width: 30px; height: 30px; border-radius: 999px; background: #1E2B22; border: 2px solid #F1EADB; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px -4px rgba(0,0,0,0.6);"><span class="mono" style="font-size: 12px; font-weight: 600; color: #F1EADB;">T</span></div>
+        <div style="position: absolute; top: 46%; left: 36%; width: 30px; height: 30px; border-radius: 999px; background: #7FC489; border: 2px solid #F1EADB; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px -4px rgba(0,0,0,0.6);"><span class="mono" style="font-size: 12px; font-weight: 600; color: #16221A;">G</span></div>
+
+        <!-- clean-map note -->
+        <div style="position: absolute; top: 16px; left: 50%; transform: translateX(-50%); background: rgba(30,43,34,0.82); backdrop-filter: blur(8px); border-radius: 999px; padding: 7px 15px; font-size: 12px; color: #E7DFCE; display: flex; align-items: center; gap: 8px;"><span style="width: 6px; height: 6px; border-radius: 999px; background: #E6C08A;"></span>Tools moved to the command bar — the map is now clear</div>
+
+        <!-- LAYERS control -->
+        <div style="position: absolute; bottom: 18px; left: 16px;">
+          <sc-if value="{{ layersOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="width: 236px; margin-bottom: 10px; background: rgba(246,241,231,0.86); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.55); border-radius: 14px; padding: 14px 15px; box-shadow: 0 18px 40px -16px rgba(40,36,26,0.55);">
+            <div class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #8B8471; margin-bottom: 12px;">Map layers</div>
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between;"><span style="font-size: 13px;">Hillshade</span><span onClick="{{ toggleHill }}" style="width: 38px; height: 22px; border-radius: 999px; background: {{ hillTrack }}; position: relative; cursor: pointer;"><span style="position: absolute; top: 2px; left: {{ hillKnob }}; width: 18px; height: 18px; border-radius: 999px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); transition: left .18s;"></span></span></div>
+              <div><div style="font-size: 13px; margin-bottom: 7px;">Terrain exaggeration</div><div style="display: flex; align-items: center; gap: 10px;"><div style="flex: 1; height: 4px; border-radius: 999px; background: #DDD0B4; position: relative;"><div style="position: absolute; left: 0; top: 0; height: 4px; width: 42%; border-radius: 999px; background: #BF6A3E;"></div><div style="position: absolute; left: 42%; top: 50%; transform: translate(-50%,-50%); width: 14px; height: 14px; border-radius: 999px; background: #fff; border: 2px solid #BF6A3E;"></div></div><span class="mono" style="font-size: 12px; color: #3A362B;">×1.0</span></div></div>
+              <div><div style="font-size: 13px; margin-bottom: 7px;">Imagery date</div><div style="display: flex; gap: 6px;"><span class="mono" style="flex:1; text-align:center; font-size: 12px; padding: 6px; border-radius: 7px; background: rgba(191,106,62,0.12); color: #A6572F; box-shadow: inset 0 0 0 1.5px #BF6A3E; cursor:pointer;">2025-06</span><span class="mono" style="flex:1; text-align:center; font-size: 12px; padding: 6px; border-radius: 7px; background: #FFFFFF; border: 1px solid #DDD0B4; color: #6F6A5E; cursor:pointer;">2023-04</span></div></div>
+            </div>
+          </div>
+          </sc-if>
+          <div style="display: flex; gap: 8px;">
+            <button onClick="{{ toggleLayers }}" style="display: flex; align-items: center; gap: 8px; background: rgba(30,43,34,0.9); backdrop-filter: blur(10px); border: 1px solid rgba(150,135,105,0.3); color: #F1EADB; font-family: inherit; font-size: 13px; font-weight: 500; padding: 9px 14px; border-radius: 10px; cursor: pointer;"><span style="display:flex; flex-direction:column; gap:2px;"><span style="width:14px; height:2px; background:#E6C08A; border-radius:2px;"></span><span style="width:14px; height:2px; background:#B8AE97; border-radius:2px;"></span><span style="width:14px; height:2px; background:#8B8471; border-radius:2px;"></span></span>Layers</button>
+            <button style="background: rgba(30,43,34,0.9); backdrop-filter: blur(10px); border: 1px solid rgba(150,135,105,0.3); color: #F1EADB; font-family: inherit; font-size: 13px; font-weight: 500; padding: 9px 14px; border-radius: 10px; cursor: pointer;">Fit course</button>
+          </div>
+        </div>
+
+        <div class="mono" style="position: absolute; bottom: 18px; right: 18px; display: flex; align-items: center; gap: 14px; background: rgba(20,17,11,0.78); backdrop-filter: blur(8px); border-radius: 10px; padding: 8px 14px; font-size: 12px; color: #E7DFCE;"><span>58.40220</span><span style="color:#8B8471;">·</span><span>15.56479</span><span style="color:#8B8471;">·</span><span style="color:#B8AE97;">z 17.0</span></div>
+      </div>
+
+      <!-- RIGHT DOCK -->
+      <sc-if value="{{ rightOpen }}" hint-placeholder-val="{{ true }}">
+      <div style="width: 268px; flex: none; background: #FBF8F1; border-left: 1px solid #E0D5C0; display: flex; flex-direction: column; min-height: 0;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 14px 14px 10px;">
+          <button onClick="{{ toggleRight }}" title="Collapse" style="width: 26px; height: 26px; border-radius: 7px; border: 1px solid #DDD0B4; background: #FFFFFF; color: #6F6A5E; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 13px;">›</button>
+          <span class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #8B8471;">Feature stack</span>
+        </div>
+        <div style="padding: 4px 14px 12px;"><div style="font-size: 11px; color: #8B8471; margin-bottom: 6px;">Scope</div><div style="display: flex; justify-content: space-between; align-items: center; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 9px; padding: 10px 12px; font-size: 13.5px;">Hole {{ selHole }} <span style="font-size:12px; color:#9C917A;">(par 4)</span><span style="color: #9C917A; font-size: 11px; margin-left:auto;">▾</span></div></div>
+        <div class="stack-scroll" style="flex: 1; overflow-y: auto; padding: 0 12px 16px;">
+          <sc-for list="{{ stack }}" as="s" hint-placeholder-count="9">
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 10px; border-radius: 8px; cursor: pointer;" style-hover="background: rgba(140,132,113,0.1);"><span style="display: flex; align-items: center; gap: 10px; font-size: 13px;"><span style="width: 14px; height: 14px; border-radius: 4px; background: {{ s.color }};"></span>{{ s.name }}</span><span class="mono" style="font-size: 12px; color: #8B8471;">{{ s.pts }} <span style="font-size:10px;">pts</span></span></div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+      <sc-if value="{{ rightClosed }}" hint-placeholder-val="{{ false }}">
+      <div onClick="{{ toggleRight }}" style="width: 40px; flex: none; background: #FBF8F1; border-left: 1px solid #E0D5C0; display: flex; flex-direction: column; align-items: center; padding: 14px 0; cursor: pointer;">
+        <span style="color: #6F6A5E; font-size: 14px; margin-bottom: 16px;">‹</span>
+        <span class="mono" style="writing-mode: vertical-rl; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: #8B8471;">Feature stack</span>
+        <span class="mono" style="writing-mode: vertical-rl; font-size: 11px; color: #BF6A3E; margin-top: 12px; font-weight: 600;">9</span>
+      </div>
+      </sc-if>
+
+    </div>
+  </div>
+
+  <!-- RATIONALE -->
+  <div style="margin-top: 28px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;">
+    <div style="background: #FBF8F1; border: 1px solid #E4DAC6; border-radius: 12px; padding: 18px;"><div class="mono" style="font-size: 11px; color: #BF6A3E; font-weight: 700; margin-bottom: 8px;">MODES</div><div style="font-size: 13.5px; line-height: 1.55; color: #55503F;">Create · Plan · Play · Review = the four product use cases. One segmented switch, center of the bar. Play &amp; Review are mobile/after-round but live in the same toggle.</div></div>
+    <div style="background: #FBF8F1; border: 1px solid #E4DAC6; border-radius: 12px; padding: 18px;"><div class="mono" style="font-size: 11px; color: #BF6A3E; font-weight: 700; margin-bottom: 8px;">SUB-MODES</div><div style="font-size: 13.5px; line-height: 1.55; color: #55503F;">Draw / Furniture / Measure / Green analysis are children of Create → a dropdown, not floating tabs.</div></div>
+    <div style="background: #FBF8F1; border: 1px solid #E4DAC6; border-radius: 12px; padding: 18px;"><div class="mono" style="font-size: 11px; color: #BF6A3E; font-weight: 700; margin-bottom: 8px;">TOOL OPTIONS</div><div style="font-size: 13.5px; line-height: 1.55; color: #55503F;">Feature type = dropdown (swatch + name). New = clay ＋ icon button; Box-select = ghost icon button. Classic draw-app toolbar.</div></div>
+    <div style="background: #FBF8F1; border: 1px solid #E4DAC6; border-radius: 12px; padding: 18px;"><div class="mono" style="font-size: 11px; color: #BF6A3E; font-weight: 700; margin-bottom: 8px;">TUCKED AWAY</div><div style="font-size: 13.5px; line-height: 1.55; color: #55503F;">Metadata → (i) popover. Import SVG / Publish / Export → ⋯ actions menu. The map surface is left almost entirely to terrain.</div></div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { left: true, right: true, layers: false, hole: 1, hill: true,
+            mode: 'create', sub: 0, feat: 3, menu: 'feature' };
+
+  renderVals() {
+    const s = this.state;
+    const set = (patch) => this.setState(patch);
+    const setHole = n => set({ hole: Math.max(1, Math.min(18, n)) });
+    const openMenu = (name) => set({ menu: s.menu === name ? null : name });
+
+    // modes
+    const modeDefs = [
+      ['create', 'Create', 'Build the course', '#BF6A3E'],
+      ['plan', 'Plan', 'Strategy & caddy', '#3E8EA0'],
+      ['play', 'Play', 'On-course (mobile)', '#4E7A46'],
+      ['review', 'Review', 'After the round', '#8A5A6E'],
+    ];
+    const modes = modeDefs.map(([id, label, hint, dot]) => {
+      const on = id === s.mode;
+      return { label, hint, select: () => set({ mode: id, menu: null }),
+        fg: on ? '#211D14' : '#8B8471', bg: on ? '#FFFFFF' : 'transparent',
+        weight: on ? 700 : 500, shadow: on ? '0 1px 3px rgba(40,36,26,0.14)' : 'none',
+        dot: on ? dot : '#C9B899' };
+    });
+
+    // submodes
+    const subDefs = [['✎','Draw'],['⚑','Furniture'],['📏','Measure'],['◎','Green analysis']];
+    const submodes = subDefs.map(([icon, label], i) => {
+      const on = i === s.sub;
+      return { icon, label, active: on, select: () => set({ sub: i, menu: null }),
+        bg: on ? 'rgba(191,106,62,0.1)' : 'transparent', weight: on ? 600 : 500,
+        icColor: on ? '#BF6A3E' : '#8B8471' };
+    });
+
+    // features
+    const featDefs = [
+      ['Tee','#5FA76E'],['Fairway','#4C9256'],['Green','#7FC489'],['Bunker','#E1CC93'],
+      ['Semi rough','#7E9E56'],['Rough','#566E3A'],['Deep rough','#3C5730'],['Trees','#24402B'],
+      ['Water','#4C8FBE'],['Creek','#77AED2'],['Yellow penalty','#E8CB56'],['Red penalty','#DE6152'],
+      ['OOB','#EFEAE0',true],['Path','#C2A879'],['Outside','#8A8E90'],
+    ];
+    const features = featDefs.map(([name, color, bordered], i) => {
+      const on = i === s.feat;
+      return { name, color, select: () => set({ feat: i, menu: null }),
+        weight: on ? 600 : 400,
+        bg: on ? 'rgba(191,106,62,0.12)' : 'transparent',
+        ring: on ? 'inset 0 0 0 1.5px #BF6A3E' : 'none',
+        swBorder: bordered ? '1px solid #C9B899' : 'none' };
+    });
+    const selF = featDefs[s.feat];
+
+    const pars = [4,4,3,5,3,5,3,4,4,5,3,4,4,5,4,3,4,4];
+    const holes = pars.map((p, i) => {
+      const n = i + 1, on = n === s.hole;
+      return { n, par: p, select: () => setHole(n),
+        bg: on ? '#BF6A3E' : 'transparent', fg: on ? '#FBF3E8' : '#211D14',
+        weight: on ? 600 : 500, parColor: on ? 'rgba(251,243,232,0.8)' : '#9C917A' };
+    });
+
+    const stack = [['Bunker','#E1CC93',16],['Bunker','#E1CC93',28],['Trees','#24402B',15],['Trees','#24402B',41],
+      ['Green','#7FC489',29],['Fairway','#4C9256',20],['Fairway','#4C9256',84],['Semi rough','#7E9E56',84],['Rough','#566E3A',73]]
+      .map(([name, color, pts]) => ({ name, color, pts }));
+
+    const mobileNote = s.mode === 'play' ? 'Play mode is optimized for phone on-course' : 'Review opens your finished rounds';
+
+    return {
+      leftOpen: s.left, leftClosed: !s.left, rightOpen: s.right, rightClosed: !s.right,
+      layersOpen: s.layers, selHole: s.hole,
+      isCreate: s.mode === 'create', isPlan: s.mode === 'plan',
+      isMobileMode: s.mode === 'play' || s.mode === 'review', mobileNote,
+      infoOpen: s.menu === 'info', subOpen: s.menu === 'submode',
+      featOpen: s.menu === 'feature', actionsOpen: s.menu === 'actions',
+      anyMenuOpen: !!s.menu, closeMenus: () => set({ menu: null }),
+      infoBorder: s.menu === 'info' ? '#BF6A3E' : '#C9B899',
+      infoColor: s.menu === 'info' ? '#BF6A3E' : '#8B8471',
+      toggleInfo: () => openMenu('info'), toggleSub: () => openMenu('submode'),
+      toggleFeat: () => openMenu('feature'), toggleActions: () => openMenu('actions'),
+      toggleLeft: () => set({ left: !s.left }), toggleRight: () => set({ right: !s.right }),
+      toggleLayers: () => set({ layers: !s.layers }), toggleHill: () => set({ hill: !s.hill }),
+      prevHole: () => setHole(s.hole - 1), nextHole: () => setHole(s.hole + 1),
+      hillTrack: s.hill ? '#BF6A3E' : '#C9B899', hillKnob: s.hill ? '18px' : '2px',
+      subIcon: subDefs[s.sub][0], subLabel: subDefs[s.sub][1],
+      selFeatName: selF[0], selFeatColor: selF[1], selFeatBorder: selF[2] ? '1px solid #C9B899' : 'none',
+      noop: () => {},
+      modes, submodes, features, holes, stack,
+    };
+  }
+}
+</script>
+</body>
+</html>

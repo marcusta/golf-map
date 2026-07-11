@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { TEST_COURSE_ID, tid, waitForMapReady } from './fixtures';
+import { TEST_COURSE_ID, tid, waitForMapReady, selectSubMode } from './fixtures';
 
 interface CourseFeatureRow {
     id: string;
@@ -45,14 +45,34 @@ async function clickMapViewport(page: Page, dx: number, dy: number): Promise<voi
     await page.mouse.click(p.x, p.y);
 }
 
+/**
+ * Rightward bias for all map clicks in this file. The floating draw-panel
+ * (editor-toolbar's per-tool panel) sits top-left over the map canvas at
+ * OVERLAY_INSET (20px) + OVERLAY_W.standard (340px) = 360px from the canvas's
+ * left edge (web/src/css.ts), and grows tall once a feature is selected —
+ * which, with the permanent hole/feature docks now narrowing the canvas
+ * (Builder redesign v2), puts the canvas's own horizontal CENTER only ~14px
+ * clear of the panel's right edge. Anchoring square/point clicks here instead
+ * of at dead-center keeps every click safely right of the panel regardless of
+ * its current height.
+ *
+ * This is a dx OFFSET FROM CANVAS CENTER (clickMapViewport's own frame), not
+ * an absolute canvas-relative x. Canvas center sits ~374px from the canvas's
+ * left edge (canvas width 748px ÷ 2, per the redesign's docked layout), so
+ * dx=180 lands ~554px from the left edge — comfortably clear of the panel's
+ * right edge (360px) and, with the largest halfSize used here (120), still
+ * well inside the canvas's right edge (748px).
+ */
+const SAFE_DX = 180;
+
 /** Draw a closed square (course-level, default draw type) via real clicks: 4 corners, then re-click the first to close the ring. */
 async function drawSquare(page: Page, halfSize: number): Promise<void> {
     await page.getByRole('button', { name: /New polygon/ }).click();
     const corners: Array<[number, number]> = [
-        [-halfSize, -halfSize],
-        [halfSize, -halfSize],
-        [halfSize, halfSize],
-        [-halfSize, halfSize],
+        [SAFE_DX - halfSize, -halfSize],
+        [SAFE_DX + halfSize, -halfSize],
+        [SAFE_DX + halfSize, halfSize],
+        [SAFE_DX - halfSize, halfSize],
     ];
     for (const [dx, dy] of corners) await clickMapViewport(page, dx, dy);
     await clickMapViewport(page, ...corners[0]!); // re-click first point closes the ring
@@ -75,7 +95,7 @@ test('feature-stack panel reorders and stays selection-synced with the map', asy
     await expect(page.locator(tid('course-detail'))).toBeVisible();
     await waitForMapReady(page);
 
-    await page.locator(tid('tool-btn-draw')).click();
+    await selectSubMode(page, 'draw');
     await expect(page.locator(tid('stack-panel'))).toBeVisible();
 
     const before = (await courseLevelFeatures(page)).length;
@@ -103,7 +123,7 @@ test('feature-stack panel reorders and stays selection-synced with the map', asy
     // re-selects it via the map's own hit-test, syncing back to the panel row.
     await page.locator(`${tid('stack-row')}[data-feature-id="${featureB!.id}"]`).click();
     await expect(page.locator(`${tid('stack-row')}[data-feature-id="${featureB!.id}"]`)).toHaveClass(/selected/);
-    await clickMapViewport(page, 0, 0);
+    await clickMapViewport(page, SAFE_DX, 0); // shapes are centred at SAFE_DX, not viewport dead-center
     await expect(page.locator(`${tid('stack-row')}[data-feature-id="${featureA!.id}"]`)).toHaveClass(/selected/);
 });
 
@@ -113,7 +133,7 @@ test('draw target follows selected hole and selected features can move to course
     await waitForMapReady(page);
     const hole2 = (await holes(page)).find(h => h.number === 2)!;
 
-    await page.locator(tid('tool-btn-draw')).click();
+    await selectSubMode(page, 'draw');
     await expect(page.locator(tid('draw-target'))).toContainText('Hole 2');
     await expect(page.locator(tid('stack-panel-scope'))).toHaveValue(hole2.id);
 

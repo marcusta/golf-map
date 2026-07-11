@@ -33,7 +33,7 @@ const MODES: Array<{ id: AnalysisMode; label: string; hint: string }> = [
 ];
 
 const tpl = template(`
-    <div class="analysis-panel" bind="root">
+    <div class="analysis-panel" bind="root" data-testid="analysis-panel">
         <div class="analysis-panel__section">
             <h4 class="section-title">Overlay</h4>
             <div bind="modes" class="mode-row"></div>
@@ -48,14 +48,14 @@ const tpl = template(`
             <div bind="legendBar" class="legend-bar"></div>
             <div bind="legendLabels" class="legend-labels"></div>
         </div>
-        <div bind="statsSection" class="analysis-panel__section stats">
+        <div bind="statsSection" class="analysis-panel__section stats" data-testid="analysis-stats">
             <h4 class="section-title">Green</h4>
             <div bind="greenStats" class="stats-grid"></div>
             <h4 class="section-title">Surrounds</h4>
             <div bind="surroundStats" class="stats-grid"></div>
             <button bind="clearBtn" type="button" class="clear-btn">Clear (Esc)</button>
         </div>
-        <div bind="status" class="analysis-panel__status"></div>
+        <div bind="status" class="analysis-panel__status" data-testid="analysis-status"></div>
         <div class="analysis-panel__hints">
             <div>Click a <b>green</b> to analyse it and its surrounds.</div>
             <div>Relative mode: hollows ("gropar") show blue/purple below green level.</div>
@@ -68,6 +68,13 @@ const tpl = template(`
  * slider (re-fetches), the active ramp's legend, and a stats card for the
  * green + its surrounds. Shares the AnalysisToolService DI singleton with
  * the tool.
+ *
+ * Hosted as `analysisTool.panel` (see `analysis-tool.ts`) in the
+ * ContextDockComponent's body (web/src/draw/feature-dock.component.ts) —
+ * constructed with no props, mounted flat, destroyed on sub-mode switch. Per
+ * the dock's hosting contract this is flat column content only: the dock
+ * owns the surface, the 268px width and the scroll bound, so no glass
+ * wrapper or fixed width here — just the space-4 interior section rhythm.
  */
 export class AnalysisPanelComponent extends Component {
     static styles = `
@@ -76,10 +83,6 @@ export class AnalysisPanelComponent extends Component {
             flex-direction: column;
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
-            /* The glass shell comes from the dock (.editor-tools__panel) —
-               applying the recipe here too double-stacked border, blur and
-               elevation (law 06: tiered depth, one panel layer). Sections
-               carry the space-4 interior rhythm (law 03). */
 
             & .analysis-panel__section {
                 padding: var(--space-3) var(--space-4);

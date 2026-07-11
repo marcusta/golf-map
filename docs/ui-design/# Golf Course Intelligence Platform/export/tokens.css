@@ -1,0 +1,197 @@
+/* ============================================================
+   Golf Intel — Design Tokens · v0.1 · "Links & Loam"
+   Web (CSS custom properties)
+   ------------------------------------------------------------
+   Layers:
+     1. Primitives        raw palette (reference only)
+     2. Semantic          what product code references (light + dark)
+     3. Map overlay       chrome that sits on imagery (light + dark)
+     4. Cartography        SVG feature fills (theme-invariant)
+     5. Data-viz          ramps & series (theme-invariant)
+     6. Scale             space / radius / elevation
+     7. Type              families / sizes / weights
+     8. Motion            duration / easing
+
+   Theme: default :root is LIGHT. Add [data-theme="dark"] on <html>.
+   Load Schibsted Grotesk + JetBrains Mono (weights 400–800 / 400–700).
+   ============================================================ */
+
+:root {
+  color-scheme: light;
+
+  /* ---------- 1 · PRIMITIVES (reference) ---------- */
+  --bone-50:#FBF8F1; --bone-100:#F6F1E7; --oat-200:#EDE4D2; --oat-300:#DDD0B4;
+  --sand-400:#C9B899; --taupe-500:#9C917A; --stone-600:#6F6A5E; --bark-700:#4A4436;
+  --bark-800:#2C2519; --loam-900:#16130D;
+  --pine-900:#16221A; --pine-800:#1E2B22; --pine-700:#2A3B2E;
+  --moss-600:#5C6B4A; --moss-500:#7E9159; --sage-300:#AFC08C;
+  --clay-800:#7A3E22; --clay-700:#A6572F; --clay-600:#BF6A3E; --clay-500:#D2793F; --clay-300:#E4A579;
+  --wheat-600:#C68A2E; --wheat-500:#D8A441; --wheat-400:#E6C08A;
+  --teal-500:#3E8EA0; --sky-400:#6FA8C9; --slate-500:#5E6D94; --plum-500:#8A5A6E;
+
+  /* ---------- 2 · SEMANTIC · LIGHT ---------- */
+  /* text */
+  --color-text-primary:#211D14;
+  --color-text-secondary:#55503F;
+  --color-text-tertiary:#8B8471;
+  --color-text-disabled:#B4AC98;
+  --color-text-accent:#A6572F;
+  --color-text-inverse:#F6F1E7;
+  /* surface */
+  --color-surface-app:#F6F1E7;
+  --color-surface-sunken:#EDE4D2;
+  --color-surface-card:#FBF8F1;
+  --color-surface-raised:#FFFFFF;
+  --color-surface-brand:#1E2B22;
+  /* border */
+  --color-border-subtle:#E8E0CF;
+  --color-border-default:#DDD0B4;
+  --color-border-strong:#C9B899;
+  --color-border-focus:#BF6A3E;
+  /* accent / action */
+  --color-accent-primary:#BF6A3E;
+  --color-accent-hover:#A6572F;
+  --color-accent-press:#8F4A28;
+  --color-on-accent:#FBF3E8;
+  --color-accent-secondary:#5C6B4A;
+  --color-accent-data:#C68A2E;
+  /* status */
+  --color-status-positive:#4E7A46;
+  --color-status-caution:#C68A2E;
+  --color-status-negative:#B24A32;
+  --color-status-info:#3E7E92;
+
+  /* ---------- 3 · MAP OVERLAY · LIGHT ---------- */
+  --overlay-panel-fill:rgba(246,241,231,.82);
+  --overlay-panel-stroke:rgba(255,255,255,.55);
+  --overlay-panel-blur:14px;
+  --overlay-readout-fill:rgba(30,43,34,.90);
+  --overlay-scrim:rgba(20,17,11,.45);
+  --overlay-text:#FFFFFF;
+  --overlay-text-muted:rgba(255,255,255,.72);
+  --overlay-control-fill:rgba(246,241,231,.92);
+  --overlay-dispersion-fill:rgba(191,106,62,.14);
+  --overlay-dispersion-stroke:#E6D8BE;
+
+  /* ---------- 4 · CARTOGRAPHY (theme-invariant) ---------- */
+  /* fill / draw (active) / outline (stroke) per feature */
+  --map-green-fill:#7FC489;         --map-green-draw:#97D79B;         --map-green-outline:#3F7A55;
+  --map-tee-fill:#5FA76E;           --map-tee-draw:#6FC07E;           --map-tee-outline:#34734A;
+  --map-fairway-fill:#4C9256;       --map-fairway-draw:#4FA85E;       --map-fairway-outline:#2C6B3B;
+  --map-semi-rough-fill:#7E9E56;    --map-semi-rough-draw:#8FB157;    --map-semi-rough-outline:#4C6E37;
+  --map-rough-fill:#566E3A;         --map-rough-draw:#5F7C34;         --map-rough-outline:#384E23;
+  --map-deep-rough-fill:#3C5730;    --map-deep-rough-draw:#3E5A28;    --map-deep-rough-outline:#26381C;
+  --map-trees-fill:#24402B;         --map-trees-draw:#1E3C26;         --map-trees-outline:#142619;
+  --map-bunker-fill:#E1CC93;        --map-bunker-draw:#ECD588;        --map-bunker-outline:#B0894A;
+  --map-water-fill:#4C8FBE;         --map-water-draw:#3E93D0;         --map-water-outline:#2E6389;
+  --map-water-creek-fill:#77AED2;   --map-water-creek-draw:#6FB6E0;   --map-water-creek-outline:#3F7BA0;
+  --map-penalty-yellow-fill:#E8CB56;--map-penalty-yellow-draw:#E8CB56;--map-penalty-yellow-outline:#C39A2E;
+  --map-penalty-red-fill:#DE6152;   --map-penalty-red-draw:#DE6152;   --map-penalty-red-outline:#B0402E;
+  --map-oob-fill:#EFEAE0;           --map-oob-draw:#EFEAE0;           --map-oob-outline:#3A4148;
+  --map-path-fill:#C2A879;          --map-path-draw:#CBAE75;          --map-path-outline:#866B47;
+  --map-outside-fill:#8A8E90;       --map-outside-draw:#7C8286;       --map-outside-outline:#565C61;
+
+  /* ---------- 5 · DATA-VIZ (theme-invariant) ---------- */
+  /* sequential · elevation (low→high) */
+  --data-seq-elevation-1:#2E4A3A; --data-seq-elevation-2:#4C6142; --data-seq-elevation-3:#7D8560;
+  --data-seq-elevation-4:#B0A079; --data-seq-elevation-5:#D8C08A; --data-seq-elevation-6:#F1E4C8;
+  /* sequential · probability / heat */
+  --data-seq-heat-1:#F6E7D5; --data-seq-heat-2:#EAC29A; --data-seq-heat-3:#E0975E;
+  --data-seq-heat-4:#CC7038; --data-seq-heat-5:#A6572F; --data-seq-heat-6:#6E3A1F;
+  /* diverging · below←target→above */
+  --data-div-1:#3E7E92; --data-div-2:#7FA9B2; --data-div-3:#C7CBBE; --data-div-4:#EDE4D2;
+  --data-div-5:#E4A579; --data-div-6:#CC7038; --data-div-7:#A6572F;
+  /* semantic */
+  --data-good:#4E7A46; --data-neutral:#9C917A; --data-risk:#C68A2E; --data-bad:#B24A32;
+  /* categorical (clubs / players / series) */
+  --data-cat-1:#BF6A3E; --data-cat-2:#3E8EA0; --data-cat-3:#D8A441; --data-cat-4:#5C6B4A;
+  --data-cat-5:#5E6D94; --data-cat-6:#8A5A6E; --data-cat-7:#6FA8C9; --data-cat-8:#7A6A50;
+
+  /* ---------- 6 · SCALE ---------- */
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px;
+  --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px; --space-16:64px; --space-20:80px;
+  --radius-xs:4px; --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-xl:24px; --radius-pill:999px;
+  --elev-1:0 1px 2px rgba(40,36,26,.06), 0 2px 8px -2px rgba(40,36,26,.08);
+  --elev-2:0 4px 10px -4px rgba(40,36,26,.18), 0 12px 28px -12px rgba(40,36,26,.22);
+  --elev-3:0 12px 30px -12px rgba(40,36,26,.5);
+  --elev-glow:0 0 24px -6px rgba(230,192,138,.25);
+
+  /* ---------- 7 · TYPE ---------- */
+  --font-sans:'Schibsted Grotesk', system-ui, sans-serif;
+  --font-mono:'JetBrains Mono', ui-monospace, monospace;
+  --text-display-xl:800 44px/1.02 var(--font-sans);   --tracking-display-xl:-0.03em;
+  --text-display-l:700 34px/1.08 var(--font-sans);    --tracking-display-l:-0.02em;
+  --text-title-l:700 26px/1.15 var(--font-sans);      --tracking-title-l:-0.02em;
+  --text-title-m:600 20px/1.25 var(--font-sans);      --tracking-title-m:-0.01em;
+  --text-body-l:400 17px/1.5 var(--font-sans);
+  --text-body-m:400 15px/1.5 var(--font-sans);
+  --text-body-s:400 13px/1.45 var(--font-sans);
+  --text-label:600 12px/1.3 var(--font-sans);         --tracking-label:0.02em;
+  --text-overline:600 11px/1.4 var(--font-mono);      --tracking-overline:0.16em;
+  --text-metric-xl:600 30px/1 var(--font-mono);
+  --text-metric-l:600 20px/1 var(--font-mono);
+  --text-metric-m:600 15px/1 var(--font-mono);
+
+  /* ---------- 8 · MOTION ---------- */
+  --dur-instant:80ms; --dur-fast:140ms; --dur-base:220ms; --dur-slow:320ms; --dur-map:480ms;
+  --ease-standard:cubic-bezier(.2,0,0,1);
+  --ease-out:cubic-bezier(.16,1,.3,1);
+  --ease-in-out:cubic-bezier(.65,0,.35,1);
+  --ease-map:cubic-bezier(.4,0,.1,1);
+}
+
+/* ============================================================
+   DARK THEME — semantic + overlay overrides only.
+   Cartography & data-viz are shared with light (map imagery is
+   theme-independent); dispersion stroke shifts to wheat for the
+   darker map render.
+   ============================================================ */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* text */
+  --color-text-primary:#F1EADB;
+  --color-text-secondary:#C4BBA6;
+  --color-text-tertiary:#94896F;
+  --color-text-disabled:#5F5847;
+  --color-text-accent:#E08A4E;
+  --color-text-inverse:#16130D;
+  /* surface */
+  --color-surface-app:#16130D;
+  --color-surface-sunken:#100E09;
+  --color-surface-card:#221D15;
+  --color-surface-raised:#2C2519;
+  --color-surface-brand:#1E2B22;
+  /* border */
+  --color-border-subtle:#2C2517;
+  --color-border-default:#3A3122;
+  --color-border-strong:#4A4033;
+  --color-border-focus:#D2793F;
+  /* accent / action */
+  --color-accent-primary:#D2793F;
+  --color-accent-hover:#E08A4E;
+  --color-accent-press:#BF6A3E;
+  --color-on-accent:#1C130B;
+  --color-accent-secondary:#7E9159;
+  --color-accent-data:#E6C08A;
+  /* status */
+  --color-status-positive:#7BA36A;
+  --color-status-caution:#E6B355;
+  --color-status-negative:#E07C5E;
+  --color-status-info:#6BB6C9;
+
+  /* map overlay */
+  --overlay-panel-fill:rgba(28,24,16,.74);
+  --overlay-panel-stroke:rgba(150,135,105,.28);
+  --overlay-panel-blur:16px;
+  --overlay-readout-fill:rgba(28,24,16,.84);
+  --overlay-scrim:rgba(8,6,3,.60);
+  --overlay-text:#FFFFFF;
+  --overlay-text-muted:rgba(241,234,219,.65);
+  --overlay-control-fill:rgba(28,24,16,.82);
+  --overlay-dispersion-stroke:#E6C08A;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-instant:0ms; --dur-fast:0ms; --dur-base:0ms; --dur-slow:0ms; --dur-map:0ms; }
+}

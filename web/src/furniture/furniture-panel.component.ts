@@ -11,7 +11,6 @@ const tpl = template(`
     <div class="furn-panel" bind="root">
         <div class="furn-panel__section hole-tools">
             <h4 class="section-title">Course holes</h4>
-            <div class="hole-tools__summary" bind="holeToolsSummary"></div>
             <div class="hole-tools__actions">
                 <button bind="addHole" type="button" class="mini-btn">${icon('plus')} Add hole</button>
                 <button bind="deleteHole" type="button" class="delete-btn">Delete hole</button>
@@ -69,11 +68,6 @@ const tpl = template(`
         </div>
 
         <div bind="status" class="furn-panel__status"></div>
-        <div class="furn-panel__hints">
-            <div>Pick a hole, arm a placement, then click the map to place one.</div>
-            <div><b>Shift-click</b> to place several in a row · <b>Esc</b> cancels placing.</div>
-            <div>Click a marker to select · drag to move · <b>Del</b> deletes selection.</div>
-        </div>
     </div>
 `);
 
@@ -172,15 +166,6 @@ export class FurniturePanelComponent extends Component {
             & .sel-card b { color: ${t('color-text-secondary')}; font-weight: 600; }
             & .sel-card .metric { ${metric()} font-size: 0.75rem; }
 
-            & .hole-tools__summary {
-                font-size: 0.75rem;
-                line-height: 1.5;
-                color: ${t('color-text-secondary')};
-            }
-
-            & .hole-tools__summary b { color: ${t('color-text-primary')}; }
-            & .hole-tools__summary .metric { ${metric()} font-size: 0.75rem; }
-
             & .hole-tools__actions {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
@@ -218,21 +203,14 @@ export class FurniturePanelComponent extends Component {
             & .summary-body b { color: ${t('color-text-primary')}; }
             & .summary-body .metric { ${metric()} font-size: 0.75rem; }
 
-            /* Quiet footers (law 03): tertiary, minimal height; the last
-               section above already draws the major-group divider. */
+            /* Quiet footer (law 03): tertiary, transient only (saving/errors);
+               the last section above already draws the major-group divider. */
             & .furn-panel__status {
-                padding: var(--space-2) var(--space-4) 0;
+                padding: var(--space-2) var(--space-4) var(--space-3);
                 font-size: 0.7rem;
                 color: ${t('color-text-tertiary')};
                 min-height: 1.2em;
                 &.error { color: ${t('color-status-negative')}; }
-            }
-
-            & .furn-panel__hints {
-                padding: var(--space-1) var(--space-4) var(--space-3);
-                font-size: 0.68rem;
-                line-height: 1.5;
-                color: ${t('color-text-tertiary')};
             }
         }
     `;
@@ -243,7 +221,6 @@ export class FurniturePanelComponent extends Component {
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
-            holeToolsSummary: { innerHTML: () => this.holeToolsSummaryHtml() },
             addHole: {
                 onclick: () => void this.tool.addHole(),
                 disabled: () => this.courseDetail.loading.get() || this.svc.saving.get(),
@@ -375,13 +352,6 @@ export class FurniturePanelComponent extends Component {
         return this.svc.pendingGreenPoint.get() === point ? 'gp-btn active' : 'gp-btn';
     }
 
-    private holeToolsSummaryHtml(): string {
-        const holes = this.courseDetail.holes.get();
-        const hole = this.tool.selectedHole.get();
-        const selected = hole ? ` · selected <b>${metricSpan(hole.number)}</b>` : '';
-        return `${metricSpan(holes.length)} hole${plural(holes.length)}${selected}<br>Add then place tee, aim, and green center.`;
-    }
-
     private reorderVisible(): boolean {
         return !!(this.svc.selectedTee.get() || this.svc.selectedAim.get());
     }
@@ -440,8 +410,9 @@ export class FurniturePanelComponent extends Component {
         const greenLine = gp
             ? `green: C${mark(gp.center)} F${mark(gp.front)} B${mark(gp.back)}`
             : 'green: none';
+        // Hole number/par live in the left hole dock — only per-hole
+        // completeness is this panel's to show.
         return [
-            `<b>Hole ${metricSpan(hole.number)}</b> (par ${metricSpan(hole.par)})`,
             `${metricSpan(tees.length)} tee${plural(tees.length)}`,
             `${metricSpan(pins.length)} pin${plural(pins.length)}${activePin ? ` · active: <b>${escapeHtml(activePin.name)}</b>` : ''}`,
             `${metricSpan(aims.length)} aim point${plural(aims.length)}`,
@@ -456,8 +427,7 @@ export class FurniturePanelComponent extends Component {
         if (this.svc.loading.get()) return 'Loading furniture…';
         const error = this.svc.error.get();
         if (error) return `Load failed: ${error.message}`;
-        const n = this.svc.tees.items.get().length + this.svc.pins.items.get().length + this.svc.aims.items.get().length;
-        return `${n} item${plural(n)} · autosaves`;
+        return '';
     }
 }
 

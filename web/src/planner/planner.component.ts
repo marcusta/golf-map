@@ -1,6 +1,6 @@
 import { Component, Router, template, effect, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, card, selectedRow, statusTag, panelTitle } from '../css';
+import { s, btn } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from '../draw/features.service';
 import { FurnitureService } from '../furniture/furniture.service';
@@ -10,24 +10,18 @@ import { ClubsService } from '../player/clubs.service';
 import { PlanService } from './plan.service';
 import { PlannerToolService } from './planner-tool.service';
 import { PlannerPanelComponent } from './planner-panel.component';
+import { HoleSidebarComponent } from '../course-detail/hole-sidebar.component';
+import { CommandBarComponent } from '../app/command-bar.component';
 
 const tpl = template(`
     <div class="planner" bind="root" data-testid="planner">
-        <header class="planner__header">
-            <button bind="back" class="back-btn" type="button">&#8592; Course</button>
-            <h2 bind="name"></h2>
-            <span class="planner__title">Planner</span>
-            <div class="error" bind="error">
-                <span bind="errorText"></span>
-                <button bind="retry" type="button">Retry</button>
-            </div>
-        </header>
+        <div bind="cmdbar"></div>
+        <div class="planner__error" bind="error">
+            <span bind="errorText"></span>
+            <button bind="retry" type="button">Retry</button>
+        </div>
         <div class="planner__body">
-            <aside class="planner__sidebar">
-                <h3 class="sidebar-title">Holes</h3>
-                <nav bind="holeList" class="hole-list"></nav>
-                <div bind="panel"></div>
-            </aside>
+            <div bind="holeDock"></div>
             <section class="planner__main">
                 <div bind="editorCanvas" class="editor-canvas"></div>
             </section>
@@ -35,21 +29,16 @@ const tpl = template(`
     </div>
 `);
 
-const holeTpl = template(`
-    <button bind="row" type="button" class="hole-row">
-        <span bind="number" class="hole-row__number"></span>
-        <span bind="par" class="hole-row__par"></span>
-    </button>
-`);
-
 /**
  * Game-plan editor page (Phase 5). Route: /planner/:courseId?hole=N.
- * Clones the course-detail layout — header, hole-list sidebar (selection IS
- * the URL, ?hole=), map canvas — but hosts the single planner tool instead
- * of the builder toolbar (EditorCanvasComponent only spawns the toolbar on
- * /course routes). Loads course + holes, course features (rendered via the
- * shared FeaturesService overlay), furniture (tees/greens for the planning
- * nodes), clubs and the game plan; PlannerToolService drives the map.
+ * Shares the course-detail layout — command bar header, the collapsible
+ * "Holes" dock (selection IS the URL, ?hole=), map canvas — but its dock
+ * footer hosts the planner panel and there is no right feature dock. The
+ * page hosts the single planner tool instead of the builder toolbar
+ * (EditorCanvasComponent only spawns the toolbar on /course routes). Loads
+ * course + holes, course features (rendered via the shared FeaturesService
+ * overlay), furniture (tees/greens for the planning nodes), clubs and the
+ * game plan; PlannerToolService drives the map.
  */
 export class PlannerComponent extends Component {
     static styles = `
@@ -60,99 +49,32 @@ export class PlannerComponent extends Component {
 
             &[inert] { opacity: 0.6; }
 
-            & .planner__header {
-                display: flex;
+            /* Load/plan error strip — under the command bar (the page header). */
+            & .planner__error {
+                display: none;
                 align-items: center;
-                gap: ${s('md')};
+                gap: ${s('sm')};
                 flex-shrink: 0;
                 padding: ${s('sm')} ${s('lg')};
                 background: ${t('color-surface-card')};
                 border-bottom: 1px solid ${t('color-border-default')};
-
-                & h2 { margin: 0; font-size: 1rem; color: ${t('color-text-primary')}; }
-
-                & .back-btn {
-                    padding: ${s('xs')} ${s('sm')};
-                    font-size: 0.8rem;
-                    ${btn()}
-                }
-
-                /* Guide §05: a quiet tag, not a loud clay pill — 12% tint
-                   of its own colour (accent-secondary, moss). */
-                & .planner__title {
-                    ${statusTag(t('color-accent-secondary'))}
-                    padding: 2px ${s('sm')};
-                }
-
-                & .error {
-                    display: none;
-                    color: ${t('color-status-negative')};
-                    font-size: 0.875rem;
-                    margin-left: auto;
-                }
-                & .error.show {
-                    display: flex;
-                    align-items: center;
-                    gap: ${s('sm')};
-                }
-                & .error button { padding: ${s('xs')} ${s('sm')}; font-size: 0.75rem; ${btn()} }
+                color: ${t('color-status-negative')};
+                font-size: 0.875rem;
+                &.show { display: flex; }
+                & button { padding: ${s('xs')} ${s('sm')}; font-size: 0.75rem; ${btn()} }
             }
 
+            /* The Holes dock sizes to content (264/58px); the map flexes. No
+               right dock in Plan mode. */
             & .planner__body {
                 display: grid;
-                grid-template-columns: 300px 1fr;
+                grid-template-columns: auto 1fr;
+                /* Cap the single row to the body height so the dock scrolls
+                   INSIDE its column instead of stretching the row (and the
+                   map) past the viewport. */
+                grid-template-rows: minmax(0, 1fr);
                 flex: 1;
                 min-height: 0;
-            }
-
-            & .planner__sidebar {
-                display: flex;
-                flex-direction: column;
-                min-height: 0;
-                overflow-y: auto;
-                background: ${t('color-surface-card')};
-                border-right: 1px solid ${t('color-border-default')};
-
-                & .sidebar-title {
-                    margin: 0;
-                    padding: ${s('md')} ${s('lg')} ${s('sm')};
-                    ${panelTitle()}
-                }
-            }
-
-            & .hole-list {
-                flex-shrink: 0;
-                max-height: 30%;
-                overflow-y: auto;
-                display: flex;
-                flex-direction: column;
-                gap: 2px;
-                padding: 0 ${s('sm')} ${s('md')};
-            }
-
-            /* Guide §05: list rows read as quiet cards, not bare buttons —
-               selection uses the clay tint + inset ring, never a solid fill. */
-            & .hole-row {
-                ${card({ hover: true })}
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: ${s('xs')} ${s('md')};
-                font-family: inherit;
-                cursor: pointer;
-
-                &.active { ${selectedRow()} }
-
-                & .hole-row__number {
-                    font-size: 0.875rem;
-                    font-weight: 600;
-                    color: ${t('color-text-primary')};
-                }
-
-                & .hole-row__par {
-                    font-size: 0.8rem;
-                    color: ${t('color-text-secondary')};
-                }
             }
 
             & .planner__main {
@@ -177,14 +99,11 @@ export class PlannerComponent extends Component {
     private tool = this.inject(PlannerToolService);
     private router = this.inject(Router);
     private params = this.router.params<{ courseId: string }>('/planner/:courseId');
-    private selectedHole = this.router.query('hole');
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
             root: { inert: () => this.svc.loading.get() },
-            back: { onclick: () => this.router.navigate(`/course/${this.params.peek().courseId}`) },
-            name: () => this.svc.course.get()?.name ?? '',
-            error: { className: () => this.svc.error.get() || this.plan.error.get() ? 'error show' : 'error' },
+            error: { className: () => this.svc.error.get() || this.plan.error.get() ? 'planner__error show' : 'planner__error' },
             errorText: () => this.svc.error.get()?.message ?? this.plan.error.get()?.message ?? '',
             retry: {
                 onclick: () => {
@@ -195,27 +114,18 @@ export class PlannerComponent extends Component {
             },
         });
 
-        this.$each(this.ref(frag, 'holeList'), this.svc.holes, (hole, _i, track) => {
-            const live = this.svc.holeStore.item(hole.id);
-            const rowEl = this.wireEl(holeTpl, {
-                row: {
-                    onclick: () => this.router.navigate(`/planner/${hole.courseId}`, {
-                        query: { hole: String(hole.number) },
-                    }),
-                    className: () => this.selectedHole.get() === String(hole.number)
-                        ? 'hole-row active' : 'hole-row',
-                },
-                number: () => `Hole ${live.get().number}`,
-                par: () => `Par ${live.get().par}`,
-            }, track);
-            // E2E hook (inert in prod): per-hole selector by hole number.
-            rowEl.dataset.testid = 'planner-hole-row';
-            rowEl.dataset.holeNumber = String(hole.number);
-            return rowEl;
-        }, hole => hole.id);
+        // The unified command bar is the page header (Plan mode).
+        this.spawn(CommandBarComponent, this.ref(frag, 'cmdbar'), { mode: 'plan' });
+
+        // Left "Holes" dock — shared collapsible sidebar; its footer hosts the
+        // planner panel (footerGrows so the tall panel owns the scroll room).
+        this.spawn(HoleSidebarComponent, this.ref(frag, 'holeDock'), {
+            routeBase: '/planner',
+            footer: PlannerPanelComponent,
+            footerGrows: true,
+        });
 
         this.spawn(EditorCanvasComponent, this.ref(frag, 'editorCanvas'));
-        this.spawn(PlannerPanelComponent, this.ref(frag, 'panel'));
         return frag;
     }
 

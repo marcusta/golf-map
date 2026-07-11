@@ -1,12 +1,17 @@
 import { di } from '@basics/core/client/core';
 import type { EditorTool, HelpSection } from '../editor/tool';
 import { DrawToolService, DRAW_TOOL_ID } from './draw-tool.service';
-import { DrawPanelComponent } from './draw-panel.component';
-import { FeatureStackPanelComponent } from './feature-stack-panel.component';
 
 // Help-modal content (D27) — moved here from the draw panel's old inline
 // `.draw-panel__hints` manual block, plus the D27 stack/cycle additions.
 const HELP: HelpSection[] = [
+    {
+        title: 'Navigation',
+        shortcuts: [
+            { keys: '⌘-drag', desc: 'Pan the map (trackpad-friendly; falls through to the map even in box-select)' },
+            { keys: 'Middle-drag', desc: 'Pan the map (mouse; works mid-gesture in any tool)' },
+        ],
+    },
     {
         title: 'Drawing',
         shortcuts: [
@@ -63,16 +68,16 @@ const HELP: HelpSection[] = [
 
 /**
  * The `draw` EditorTool registry entry (editor/tools/index.ts). Thin
- * descriptor over the DrawToolService DI singleton so the panel component
- * and the tool share one instance.
+ * descriptor over the DrawToolService DI singleton so the tool and its dock
+ * content (SelectionPanel + FeatureStackPanel, hosted by ContextDockComponent)
+ * share one instance. Draw declares NO `panel`: its editing surface lives in
+ * the contextual right dock, not a floating panel over the map.
  */
 export const drawTool: EditorTool = {
     id: DRAW_TOOL_ID,
     label: 'Draw',
     icon: 'pencil',
     order: 10,
-    panel: DrawPanelComponent,
-    sidePanel: FeatureStackPanelComponent,
     help: HELP,
     attach: ctx => di.get(DrawToolService).attach(ctx),
     activate: ctx => di.get(DrawToolService).activate(ctx),

@@ -109,11 +109,18 @@ export class AppComponent extends Component {
     private router = this.inject(Router);
 
     render(): DocumentFragment {
-        const isLogin = () => this.router.route.get() === '/login';
+        // The unified command bar (command-bar.component.ts) IS the header on
+        // the course/planner routes, so the global topbar is chromeless there
+        // (same mechanism as /login) — it stays only on the courses list,
+        // player settings and the map-build wizard routes.
+        const chromeless = () => {
+            const route = this.router.route.get();
+            return route === '/login' || route.startsWith('/course') || route.startsWith('/planner');
+        };
 
         const frag = this.wire(tpl, {
             topbar: {
-                style: () => isLogin() ? 'display:none' : '',
+                style: () => chromeless() ? 'display:none' : '',
             },
             homeLink: this.router.link('/'),
             // Manual navigate (not router.link) — link() drives className,
@@ -123,7 +130,7 @@ export class AppComponent extends Component {
                     e.preventDefault();
                     this.router.navigate('/player');
                 },
-                style: () => isLogin() ? 'display:none' : '',
+                style: () => chromeless() ? 'display:none' : '',
             },
             username: () => this.auth.currentUser.get()?.username ?? '',
             logout: {

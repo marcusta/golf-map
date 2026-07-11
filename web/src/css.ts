@@ -319,3 +319,124 @@ export const statusTag = (color: string) => `
     padding: 4px 9px;
     border-radius: ${t('radius-pill')};
 `;
+
+/**
+ * Square icon-only button (command-bar guide §04/06): 34px, 9px radius.
+ * Default (ghost) is quiet surface-raised chrome; `primary: true` is the
+ * ONE clay action in a toolbar (e.g. "New polygon") — accent fill, on-accent
+ * icon, lifted shadow. `aria-pressed="true"` gets an accent outline on the
+ * ghost variant so an armed tool reads without needing a second variant.
+ */
+export const iconBtn = (options?: { primary?: boolean }) => options?.primary ? `
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 9px;
+    background: ${t('color-accent-primary')};
+    color: ${t('color-on-accent')};
+    cursor: pointer;
+    box-shadow: 0 6px 14px -6px color-mix(in srgb, ${t('color-accent-primary')} 60%, transparent);
+    transition: background var(--dur-fast) var(--ease-standard);
+    &:hover { background: ${t('color-accent-hover')}; }
+` : `
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid ${t('color-border-default')};
+    border-radius: 9px;
+    background: ${t('color-surface-raised')};
+    color: ${t('color-text-secondary')};
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-standard),
+        border-color var(--dur-fast) var(--ease-standard),
+        color var(--dur-fast) var(--ease-standard);
+    &:hover {
+        border-color: ${t('color-border-strong')};
+        color: ${t('color-text-primary')};
+        background: ${t('color-surface-card')};
+    }
+    &[aria-pressed="true"] {
+        border-color: ${t('color-accent-primary')};
+        color: ${t('color-accent-primary')};
+        background: color-mix(in srgb, ${t('color-accent-primary')} 8%, transparent);
+    }
+`;
+
+/**
+ * Floating menu/dropdown panel (guide §06 — command bar): white raised
+ * surface, hairline border, ~12px radius, elevated shadow, tight 6px
+ * padding so item rows sit almost flush to the edge. Positioning (anchor,
+ * z-index, open/close) is the popover primitive's job — see
+ * `ui/popover.component.ts`; this recipe is only the panel's own chrome, so
+ * other floating menus can reuse it without the anchoring behavior.
+ */
+export const menuPanel = () => `
+    background: ${t('color-surface-raised')};
+    border: 1px solid ${t('color-border-default')};
+    border-radius: 12px;
+    box-shadow: var(--elev-3);
+    padding: 6px;
+`;
+
+/**
+ * Menu item row (guide §06): icon + label, quiet until hovered; a
+ * checked/active row gets an accent tint + accent text, and a trailing
+ * `.menu-item__check` (hidden by default) shows via `aria-checked="true"`.
+ * Apply to a `<button class="menu-item">` inside a menuPanel(); markup:
+ * `<span class="menu-item__icon">…</span><span class="menu-item__label">…</span>`.
+ */
+export const menuItem = () => `
+    display: flex;
+    align-items: center;
+    gap: ${s('sm')};
+    width: 100%;
+    padding: ${s('sm')} ${s('sm')};
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: ${t('color-text-primary')};
+    font: inherit;
+    font-size: 0.84rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-standard);
+
+    & .menu-item__icon {
+        display: flex;
+        align-items: center;
+        color: ${t('color-text-secondary')};
+    }
+    & .menu-item__label { flex: 1; }
+    & .menu-item__check { display: none; color: ${t('color-accent-primary')}; }
+
+    &:hover { background: color-mix(in srgb, ${t('color-text-primary')} 6%, transparent); }
+
+    &[aria-checked="true"] {
+        background: color-mix(in srgb, ${t('color-accent-primary')} 10%, transparent);
+        color: ${t('color-accent-primary')};
+        font-weight: 600;
+        & .menu-item__icon { color: ${t('color-accent-primary')}; }
+        & .menu-item__check { display: inline-flex; }
+    }
+
+    &[disabled] {
+        cursor: default;
+        color: ${t('color-text-disabled')};
+        &:hover { background: transparent; }
+    }
+`;
+
+/**
+ * Divider between menu-item groups inside a menuPanel() (guide §06) — e.g.
+ * separating "Export" from a destructive "Publish revision" row below it.
+ */
+export const menuDivider = () => `
+    height: 1px;
+    margin: 4px 6px;
+    background: ${t('color-border-subtle')};
+`;

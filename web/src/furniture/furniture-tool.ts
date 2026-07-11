@@ -4,7 +4,7 @@ import { FURNITURE_TOOL_ID } from './furniture.service';
 import { FurnitureToolService } from './furniture-tool.service';
 import { FurniturePanelComponent } from './furniture-panel.component';
 
-// Help-modal content (D27) — mirrors the furniture panel's `.furn-panel__hints`.
+// Help-modal content (D27) — the sole home of furniture interaction hints.
 const HELP: HelpSection[] = [
     {
         title: 'Placement',

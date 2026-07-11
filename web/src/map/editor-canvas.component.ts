@@ -1,7 +1,7 @@
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Component, Router, Signal, Computed, template, effect, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, mapLabel, metric, OVERLAY_W, OVERLAY_INSET, OVERLAY_GAP } from '../css';
+import { s, btn, mapLabel, metric, panelTitle, glassPanel, selectedRow, OVERLAY_INSET } from '../css';
 import { TilesetService, type OrthoVintage } from './tileset.service';
 import { MapService } from './map.service';
 import { ElevationService } from './elevation.service';
@@ -21,10 +21,32 @@ const tpl = template(`
         </div>
         <div bind="tools"></div>
         <div bind="controls" class="map-canvas__controls">
-            <button bind="fit" type="button" title="Fit view to course bounds">Fit course</button>
-            <button bind="hillshade" type="button" title="Toggle hillshade layer">Hillshade</button>
-            <button bind="exaggeration" type="button" title="Toggle terrain exaggeration"></button>
-            <div bind="vintages" class="map-canvas__vintages"></div>
+            <div bind="layersPopover" class="map-canvas__layers-popover">
+                <div class="layers-popover__title">Map layers</div>
+                <div class="layers-popover__row">
+                    <span>Hillshade</span>
+                    <button bind="hillshadeToggle" type="button" class="toggle-switch" role="switch" title="Toggle hillshade layer">
+                        <span class="toggle-switch__knob"></span>
+                    </button>
+                </div>
+                <div class="layers-popover__row layers-popover__row--col">
+                    <div class="layers-popover__row-head">
+                        <span>Terrain exaggeration</span>
+                        <span bind="exaggerationValue" class="layers-popover__value"></span>
+                    </div>
+                    <input bind="exaggerationSlider" type="range" min="1" max="2" step="0.25" class="exaggeration-slider" title="Terrain vertical exaggeration" />
+                </div>
+                <div bind="vintageRow" class="layers-popover__row layers-popover__row--col">
+                    <span>Imagery date</span>
+                    <div bind="vintages" class="map-canvas__vintages"></div>
+                </div>
+            </div>
+            <div class="map-canvas__control-buttons">
+                <button bind="layersBtn" type="button" class="control-pill" title="Map layers">
+                    <span class="layers-glyph"><span></span><span></span><span></span></span>Layers
+                </button>
+                <button bind="fit" type="button" class="control-pill" title="Fit view to course bounds">Fit course</button>
+            </div>
         </div>
         <div bind="status" class="map-canvas__status">
             <span bind="cursorPos" class="status-pos"></span>
@@ -38,8 +60,9 @@ const tpl = template(`
  * The editor's map canvas: hosts the MapLibre map for the current course,
  * wires TilesetService (manifest) → MapService (map lifecycle) →
  * ElevationService (terrain sampling), and renders the surrounding chrome —
- * loading/no-tiles states, a top-right control cluster, and a bottom-right
- * cursor status bar (lat/lon, elevation, zoom).
+ * loading/no-tiles states, a bottom-left Layers/Fit course control cluster
+ * (with a glass popover for hillshade/exaggeration/imagery-vintage), and a
+ * bottom-right cursor status bar (lat/lon, elevation, zoom).
  *
  * Spawned by CourseDetailComponent into the `.editor-canvas` region; $swap
  * destroys/recreates it per navigation, so one instance == one courseId.
@@ -96,62 +119,152 @@ export class EditorCanvasComponent extends Component {
                 }
             }
 
-            /* Corner-inset contract (layout law 02): the cluster floats at
-               the shared space-5 inset. When the right dock is up (the draw
-               tool's feature stack, rendered inside the sibling tools host)
-               both overlays share the top-right corner — the cluster yields
-               sideways by the dock's 280 bucket plus the shared space-3 gap
-               instead of being covered. */
+            /* Corner-inset contract (layout law 02): the layers/fit cluster
+               floats at the shared space-5 inset, bottom-left. It never
+               shares a corner with the right dock (feature stack / draw
+               panel), so no yield-sideways hack is needed here. */
             & .map-canvas__controls {
                 position: absolute;
-                top: ${OVERLAY_INSET};
-                right: ${OVERLAY_INSET};
+                bottom: ${OVERLAY_INSET};
+                left: ${OVERLAY_INSET};
                 display: none;
                 flex-direction: column;
-                gap: ${s('xs')};
+                align-items: flex-start;
+                gap: ${s('sm')};
                 &.show { display: flex; }
 
-                & button {
-                    padding: ${s('xs')} ${s('sm')};
-                    font-size: 0.75rem;
-                    text-align: left;
-                    ${btn(t('radius-sm'))}
-                    background: ${t('color-surface-card')};
+                & .map-canvas__control-buttons {
+                    display: flex;
+                    gap: ${s('xs')};
+                }
+
+                /* The two pill buttons: same dark overlay-readout scrim as
+                   the cursor status bar (guide §03), sized for a click
+                   target rather than mapLabel()'s text-pill padding. */
+                & .control-pill {
+                    display: flex;
+                    align-items: center;
+                    gap: ${s('xs')};
+                    border: 1px solid ${t('overlay-readout-stroke')};
+                    border-radius: ${t('radius')};
+                    background: ${t('overlay-readout-fill')};
+                    backdrop-filter: blur(10px);
+                    -webkit-backdrop-filter: blur(10px);
+                    color: ${t('overlay-text')};
+                    font-family: inherit;
+                    font-size: 0.8rem;
+                    font-weight: 500;
+                    padding: ${s('sm')} ${s('md')};
+                    cursor: pointer;
                     box-shadow: ${t('shadow')};
-                    &.active {
-                        border-color: ${t('color-accent-primary')};
-                        color: ${t('color-accent-primary')};
+                    transition: background var(--dur-fast) var(--ease-standard);
+                    &:hover, &.active {
+                        background: color-mix(in srgb, ${t('overlay-readout-fill')} 85%, ${t('overlay-text')} 15%);
                     }
                 }
 
-                & .map-canvas__vintages {
+                & .layers-glyph {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 2px;
+                    & span {
+                        width: 14px;
+                        height: 2px;
+                        border-radius: 2px;
+                        background: ${t('overlay-text-muted')};
+                        &:first-child { background: ${t('color-accent-data')}; }
+                    }
+                }
+
+                /* Layers popover (guide §01 glass panel) floats directly
+                   above the button row and hugs its own ~236px width. */
+                & .map-canvas__layers-popover {
                     display: none;
                     flex-direction: column;
-                    gap: ${s('xs')};
-                    margin-top: ${s('xs')};
-                    padding-top: ${s('xs')};
-                    border-top: 1px solid ${t('color-border-default')};
+                    gap: ${s('md')};
+                    width: 236px;
+                    ${glassPanel()}
                     &.show { display: flex; }
+                }
+
+                & .layers-popover__title { ${panelTitle()} }
+
+                & .layers-popover__row {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: ${s('sm')};
+                    font-size: 0.8rem;
+                    color: ${t('color-text-primary')};
+                    &--col { flex-direction: column; align-items: stretch; }
+                    &--col.hidden { display: none; }
+                }
+
+                & .layers-popover__row-head {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                }
+
+                & .layers-popover__value {
+                    ${metric()}
+                    font-size: 0.75rem;
+                    color: ${t('color-text-secondary')};
+                }
+
+                /* Toggle switch: pill track, sliding knob, accent when on. */
+                & .toggle-switch {
+                    position: relative;
+                    width: 38px;
+                    height: 22px;
+                    padding: 0;
+                    border: none;
+                    border-radius: ${t('radius-pill')};
+                    background: ${t('color-border-strong')};
+                    cursor: pointer;
+                    transition: background var(--dur-fast) var(--ease-standard);
+                    &.active { background: ${t('color-accent-primary')}; }
+
+                    & .toggle-switch__knob {
+                        position: absolute;
+                        top: 2px;
+                        left: 2px;
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 999px;
+                        background: ${t('color-surface-raised')};
+                        box-shadow: ${t('shadow')};
+                        transition: left var(--dur-fast) var(--ease-standard);
+                    }
+                    &.active .toggle-switch__knob { left: 18px; }
+                }
+
+                & .exaggeration-slider {
+                    width: 100%;
+                    accent-color: ${t('color-accent-primary')};
+                }
+
+                & .map-canvas__vintages {
+                    display: flex;
+                    gap: ${s('xs')};
 
                     & .vintage-btn {
-                        padding: ${s('xs')} ${s('sm')};
+                        flex: 1;
+                        padding: ${s('xs')};
                         font-size: 0.7rem;
-                        text-align: left;
+                        text-align: center;
+                        font-family: var(--font-mono);
                         ${btn(t('radius-sm'))}
-                        background: ${t('color-surface-card')};
-                        box-shadow: ${t('shadow')};
+                        background: ${t('color-surface-raised')};
                         &.active {
-                            border-color: ${t('color-accent-primary')};
-                            color: ${t('color-accent-primary')};
+                            ${selectedRow()}
+                            border-color: transparent;
+                            color: ${t('color-text-accent')};
                             font-weight: 600;
                         }
                         &:disabled { opacity: 0.6; cursor: default; }
                     }
                 }
-            }
-
-            &:has(.editor-tools-side.show) .map-canvas__controls {
-                right: calc(${OVERLAY_INSET} + ${OVERLAY_W.narrow} + ${OVERLAY_GAP});
             }
 
             /* Cursor readout (lat/lon, elevation, zoom): text over the map
@@ -194,6 +307,9 @@ export class EditorCanvasComponent extends Component {
     private initializedVersion: string | null = null;
     private elevationSeq = 0;
 
+    /** Whether the bottom-left "Layers" popover (hillshade/exaggeration/vintage) is open. */
+    private layersOpen = new Signal(false);
+
     /** Ortho vintages available to switch between (only shown when >1). */
     private vintages = new Computed<OrthoVintage[]>(() => this.tileset.manifest.get()?.orthoVintages ?? []);
     /** True while a vintage switch (server re-tile) is in flight. */
@@ -216,15 +332,20 @@ export class EditorCanvasComponent extends Component {
             controls: { className: () => this.mapSvc.ready.get() ? 'map-canvas__controls show' : 'map-canvas__controls' },
             status: { className: () => this.mapSvc.ready.get() ? 'map-canvas__status show' : 'map-canvas__status' },
             fit: { onclick: () => this.mapSvc.fitCourse() },
-            hillshade: {
+            layersBtn: {
+                onclick: () => this.layersOpen.set(!this.layersOpen.get()),
+                className: () => this.layersOpen.get() ? 'control-pill active' : 'control-pill',
+            },
+            layersPopover: {
+                className: () => this.layersOpen.get() ? 'map-canvas__layers-popover show' : 'map-canvas__layers-popover',
+            },
+            hillshadeToggle: {
                 onclick: () => this.mapSvc.setHillshade(!this.mapSvc.hillshadeVisible.get()),
-                className: () => this.mapSvc.hillshadeVisible.get() ? 'active' : '',
+                className: () => this.mapSvc.hillshadeVisible.get() ? 'toggle-switch active' : 'toggle-switch',
+                'aria-checked': () => String(this.mapSvc.hillshadeVisible.get()),
             },
-            exaggeration: {
-                onclick: () => this.mapSvc.setExaggeration(this.mapSvc.exaggeration.get() === 1 ? 1.5 : 1),
-                textContent: () => `Terrain ×${this.mapSvc.exaggeration.get().toFixed(1)}`,
-                className: () => this.mapSvc.exaggeration.get() !== 1 ? 'active' : '',
-            },
+            exaggerationValue: () => `×${this.mapSvc.exaggeration.get().toFixed(2)}`,
+            vintageRow: { className: () => this.vintages.get().length > 1 ? 'layers-popover__row layers-popover__row--col' : 'layers-popover__row layers-popover__row--col hidden' },
             cursorPos: () => {
                 const c = this.cursor.get();
                 return c ? `${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}` : '—';
@@ -234,7 +355,6 @@ export class EditorCanvasComponent extends Component {
                 return elevation === null ? '—' : elevation.toFixed(1);
             },
             zoomLevel: () => `z ${this.mapSvc.zoom.get().toFixed(1)}`,
-            vintages: { className: () => this.vintages.get().length > 1 ? 'map-canvas__vintages show' : 'map-canvas__vintages' },
         });
 
         // Ortho vintage switcher — one button per available flight (by date).
@@ -249,6 +369,17 @@ export class EditorCanvasComponent extends Component {
                 },
             }, track), v => v.collection);
 
+        // Terrain exaggeration slider — imperative (range inputs need input
+        // events); updates live on drag since setExaggeration() is just a
+        // cheap map.setTerrain() call.
+        const exaggerationSlider = this.ref(frag, 'exaggerationSlider') as HTMLInputElement;
+        exaggerationSlider.addEventListener('input', () => {
+            this.mapSvc.setExaggeration(Number(exaggerationSlider.value));
+        });
+        this.track(effect(() => {
+            exaggerationSlider.value = String(this.mapSvc.exaggeration.get());
+        }));
+
         this.mapHost = this.ref(frag, 'mapHost');
         // The builder toolbar (draw/furniture/measure/analysis) belongs to
         // the /course editor page only — other hosts (/planner) drive their
@@ -260,6 +391,13 @@ export class EditorCanvasComponent extends Component {
     }
 
     onMount(): void {
+        // Escape closes the layers popover.
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape' && this.layersOpen.peek()) this.layersOpen.set(false);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        this.track(() => window.removeEventListener('keydown', onKeyDown));
+
         // Resolve the course's tile manifest (cached per courseId).
         this.track(effect(() => {
             const { courseId } = this.params.get();

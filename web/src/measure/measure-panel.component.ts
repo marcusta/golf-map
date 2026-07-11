@@ -11,29 +11,27 @@ import { pointLabel } from './measure-tool.service';
 // uses the shared --data-good/--data-bad/--map-shot-line tokens.
 const COLOR_PROFILE = '#06b6d4'; // sparkline stroke — cyan
 
-// Tuned to the left dock's 340 width bucket (layout law 01) minus the
-// panel's space-4 interior padding on each side: 340 − 2×16.
-const PROFILE_W = 308;
+// Tuned to the right ctx-dock's fixed 268px column (feature-dock.component.ts)
+// minus this panel's own space-4 interior padding on each side: 268 − 2×16.
+const PROFILE_W = 236;
 const PROFILE_H = 60;
 
 const tpl = template(`
-    <div class="measure-panel" bind="root">
-        <div class="measure-panel__section">
-            <div bind="instruction" class="instruction"></div>
-        </div>
-        <div bind="statsSection" class="measure-panel__section stats-section">
+    <div class="measure-panel" bind="root" data-testid="measure-panel">
+        <div bind="instruction" class="instruction"></div>
+        <div bind="statsSection" class="stats-section">
             <h4 class="section-title">Segments</h4>
             <div bind="segments" class="segments"></div>
             <h4 class="section-title">Total</h4>
             <div bind="playsLikeHero" class="plays-like"></div>
             <div bind="totals" class="stats-grid totals-grid"></div>
         </div>
-        <div bind="profileSection" class="measure-panel__section profile-section">
+        <div bind="profileSection" class="profile-section">
             <h4 class="section-title">Elevation profile</h4>
             <canvas bind="profileCanvas" class="profile-canvas" width="${PROFILE_W}" height="${PROFILE_H}"></canvas>
             <div bind="profileLabels" class="profile-labels"></div>
         </div>
-        <div bind="actions" class="measure-panel__section actions">
+        <div bind="actions" class="actions">
             <button bind="clearBtn" type="button" class="clear-btn">Clear (Esc)</button>
         </div>
         <div class="measure-panel__hints">
@@ -53,24 +51,19 @@ const tpl = template(`
 export class MeasurePanelComponent extends Component {
     static styles = `
         .measure-panel {
+            /* Flat dock body (feature-dock.component.ts hosting contract):
+               the dock owns the surface + scroll bound with zero padding,
+               so this panel carries its own space-4 interior rhythm and a
+               single flex column — no glass wrapper, no fixed width. Law 03:
+               space carries structure, so sections lean on gap rather than
+               a hairline after every block; the one allowed divider sits
+               above .actions, mirroring feature-stack-panel's reorder-ops. */
             display: flex;
             flex-direction: column;
+            gap: var(--space-3);
+            padding: var(--space-3) var(--space-4) var(--space-4);
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
-            /* The glass shell comes from the dock (.editor-tools__panel) —
-               applying the recipe here as well double-stacked border, blur
-               and elevation (violates law 06's tiered depth). The dock's
-               padding is 0; sections below carry the space-4 interior
-               rhythm (law 03), and the ${PROFILE_W}px profile canvas is
-               tuned to the dock's 340 bucket minus that padding. */
-
-            & .measure-panel__section {
-                padding: var(--space-3) var(--space-4);
-                border-bottom: 1px solid ${t('color-border-default')};
-                display: flex;
-                flex-direction: column;
-                gap: var(--space-2);
-            }
 
             & .section-title {
                 margin: 0;
@@ -83,12 +76,19 @@ export class MeasurePanelComponent extends Component {
                 & .accent { color: var(--map-shot-line); font-weight: 600; }
             }
 
-            & .stats-section { display: none; }
-            & .stats-section.show { display: flex; }
-            & .profile-section { display: none; }
-            & .profile-section.show { display: flex; }
-            & .actions { display: none; }
-            & .actions.show { display: flex; }
+            & .stats-section, & .profile-section {
+                display: none;
+                flex-direction: column;
+                gap: ${s('sm')};
+                &.show { display: flex; }
+            }
+
+            & .actions {
+                display: none;
+                padding-top: var(--space-3);
+                border-top: 1px solid ${t('color-border-default')};
+                &.show { display: flex; }
+            }
 
             & .segments {
                 display: flex;
@@ -153,6 +153,7 @@ export class MeasurePanelComponent extends Component {
             & .profile-canvas {
                 width: ${PROFILE_W}px;
                 height: ${PROFILE_H}px;
+                max-width: 100%;
                 border: 1px solid ${t('color-border-default')};
                 border-radius: ${t('radius-sm')};
                 background: ${t('color-surface-card')};
@@ -173,10 +174,10 @@ export class MeasurePanelComponent extends Component {
                 ${btn(t('radius-sm'))}
             }
 
-            /* Quiet footer, aligned to the space-4 interior padding. The
-               last section above already draws the major-group divider. */
+            /* Quiet footer — the last section above already draws the one
+               allowed major-group divider. */
             & .measure-panel__hints {
-                padding: var(--space-2) var(--space-4) var(--space-3);
+                padding-top: var(--space-1);
                 font-size: 0.68rem;
                 line-height: 1.5;
                 color: ${t('color-text-tertiary')};
@@ -191,18 +192,18 @@ export class MeasurePanelComponent extends Component {
         const frag = this.wire(tpl, {
             statsSection: {
                 className: () => this.tool.state.hasPath.get()
-                    ? 'measure-panel__section stats-section show'
-                    : 'measure-panel__section stats-section',
+                    ? 'stats-section show'
+                    : 'stats-section',
             },
             profileSection: {
                 className: () => this.tool.state.hasPath.get()
-                    ? 'measure-panel__section profile-section show'
-                    : 'measure-panel__section profile-section',
+                    ? 'profile-section show'
+                    : 'profile-section',
             },
             actions: {
                 className: () => this.tool.state.count.get() > 0
-                    ? 'measure-panel__section actions show'
-                    : 'measure-panel__section actions',
+                    ? 'actions show'
+                    : 'actions',
             },
             clearBtn: { onclick: () => this.tool.clear() },
         });

@@ -1,21 +1,16 @@
-import { Component, Signal, effect, template, untrack } from '@basics/core/client/core';
+import { Component, Computed, Signal, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, field, panelTitle, selectedRow, metric } from '../css';
+import { s, btn, field, selectedRow, metric } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from './features.service';
 import { DrawToolService } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
-import { HelpModalService } from '../editor/help-modal.component';
 import { icon } from '../ui/icons';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 
 const tpl = template(`
     <div class="stack-panel" bind="root" data-testid="stack-panel">
         <div class="stack-panel__section">
-            <div class="stack-panel__section-head">
-                <h4 class="section-title">Feature stack</h4>
-                <button bind="helpBtn" type="button" class="help-btn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">${icon('circle-help')}</button>
-            </div>
             <label class="scope-field">Scope
                 <select bind="scopeSelect" data-testid="stack-panel-scope"></select>
             </label>
@@ -40,20 +35,24 @@ const rowTpl = template(`
 `);
 
 /**
- * Right-dock panel for the draw tool (D25/D27): lists the active scope's
- * feature stack topmost-first, click-to-select (bidirectional with
- * `features.selectedIds`), and raise/lower/top/bottom buttons over the
- * current selection — the same ops as the T23 keyboard bindings
- * (PageUp/PageDown/Home/End), just reachable by mouse. Per-feature
- * visibility stays out of scope (left panel's type eye toggles own that).
+ * Feature-stack panel body (D25/D27): lists the active scope's feature stack
+ * topmost-first, click-to-select (bidirectional with `features.selectedIds`),
+ * and raise/lower/top/bottom buttons over the current selection — the same
+ * ops as the T23 keyboard bindings (PageUp/PageDown/Home/End), just reachable
+ * by mouse. Per-feature visibility stays out of scope (the command bar's
+ * feature-type dropdown owns the type eye toggles).
+ *
+ * Hosted inside the permanent right "Feature stack" dock (FeatureDockComponent),
+ * which owns the dock header + collapse; this component is just the scope
+ * select + row list + reorder ops, and publishes `scopeCount` for the dock's
+ * collapsed rail badge.
  */
 export class FeatureStackPanelComponent extends Component {
     static styles = `
         .stack-panel {
-            /* 280 bucket via the right dock (layout law 01); the dock's
-               glass provides the shell + max-height bound — min-height:0
-               here lets .stack-rows scroll INSIDE while the panel hugs
-               content. */
+            /* Flat dock body: the dock provides the surface + max-height bound;
+               min-height:0 here lets .stack-rows scroll INSIDE while the panel
+               hugs content. */
             display: flex;
             flex-direction: column;
             min-height: 0;
@@ -68,34 +67,6 @@ export class FeatureStackPanelComponent extends Component {
                 display: flex;
                 flex-direction: column;
                 gap: var(--space-2);
-            }
-
-            & .section-title {
-                margin: 0;
-                ${panelTitle()}
-            }
-
-            & .stack-panel__section-head {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: ${s('sm')};
-            }
-
-            & .help-btn {
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                width: 18px;
-                height: 18px;
-                flex-shrink: 0;
-                padding: 0;
-                border: none;
-                border-radius: 50%;
-                background: transparent;
-                color: ${t('color-text-secondary')};
-                cursor: pointer;
-                &:hover { background: ${t('color-surface-sunken')}; color: ${t('color-text-primary')}; }
             }
 
             & .scope-field { ${field()} }
@@ -186,7 +157,6 @@ export class FeatureStackPanelComponent extends Component {
     private tool = this.inject(DrawToolService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
-    private helpModal = this.inject(HelpModalService);
 
     /**
      * Scope filter (course-level = null). Follows the draw target until the
@@ -198,9 +168,11 @@ export class FeatureStackPanelComponent extends Component {
     private scopeSelect!: HTMLSelectElement;
     private rowsHost!: HTMLElement;
 
+    /** Feature count in the current scope — the dock's collapsed rail badge. */
+    readonly scopeCount = new Computed(() => this.stack().length);
+
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
-            helpBtn: { onclick: () => this.helpModal.show() },
             empty: {
                 className: () => this.stack().length === 0 ? 'stack-empty show' : 'stack-empty',
             },

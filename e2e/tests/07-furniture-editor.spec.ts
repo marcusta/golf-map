@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { TEST_COURSE_ID, HOLE_2_PAR3, tid, waitForMapReady } from './fixtures';
+import { TEST_COURSE_ID, HOLE_2_PAR3, tid, waitForMapReady, selectSubMode } from './fixtures';
 
 type Hole = { id: string; number: number };
 type Tee = { id: string; lat: number; lon: number };
@@ -44,6 +44,25 @@ async function clickMapViewport(page: Page, dx = 0, dy = 0): Promise<void> {
     await page.mouse.click(p.x, p.y);
 }
 
+/**
+ * Real map click at a WGS84 point (project → viewport pixel → mouse.click),
+ * mirroring 06-putt-read.spec.ts's `placeBallAt` — the tool reads the click's
+ * lngLat and hit-tests course features in EPSG:3006, so a "click a shape on
+ * the map" assertion has to drive a real pointer event at the shape's
+ * projected pixel rather than an arbitrary viewport offset.
+ */
+async function clickAt(page: Page, lon: number, lat: number): Promise<void> {
+    const pt = await page.evaluate(({ lon, lat }) => {
+        const map = (window as unknown as {
+            __map?: { project: (ll: [number, number]) => { x: number; y: number }; getCanvas: () => HTMLCanvasElement };
+        }).__map!;
+        const p = map.project([lon, lat]);
+        const rect = map.getCanvas().getBoundingClientRect();
+        return { x: rect.left + p.x, y: rect.top + p.y };
+    }, { lon, lat });
+    await page.mouse.click(pt.x, pt.y);
+}
+
 async function waitForMapIdle(page: Page): Promise<void> {
     await page.evaluate(async () => {
         const map = (window as unknown as {
@@ -84,7 +103,7 @@ test('furniture mode can place markers on existing and newly added holes', async
     await expect(page.locator(tid('course-detail'))).toBeVisible();
     await waitForMapReady(page);
 
-    await page.locator(tid('tool-btn-furniture')).click();
+    await selectSubMode(page, 'furniture');
     await expect(page.getByText('Course holes')).toBeVisible();
 
     const hole2 = (await holes(page)).find(h => h.number === HOLE_2_PAR3)!;
@@ -114,16 +133,55 @@ test('furniture mode can place markers on existing and newly added holes', async
     await expect(page).toHaveURL(/hole=3/);
     await expect(page.getByText(/Placing: Tee .* on hole 3/)).toBeVisible();
 
-    // Add hole leaves Tee armed; the first click should create a tee.
-    await clickMapViewport(page, -80, -40);
+    // The furniture panel used to float top-left over the map (the old
+    // editor-toolbar's per-tool panel), which is why these clicks stayed away
+    // from dead-center. Builder redesign v2 moved it into the permanent right
+    // ContextDockComponent (feature-dock.component.ts) — nothing floats over
+    // the canvas anymore — but the offsets below still work fine (and stay
+    // clear of each other), so they're left as-is per the harness's own
+    // "don't fix what isn't broken" guidance.
+    await clickMapViewport(page, 100, -60);
     await expect.poll(async () => (await teesForHole(page, hole3.id)).length).toBe(1);
 
     await page.getByRole('button', { name: /Aim/ }).click();
-    await clickMapViewport(page, 0, 0);
+    await clickMapViewport(page, 160, 0);
     await expect.poll(async () => (await aimsForHole(page, hole3.id)).length).toBe(1);
 
     // Anchored: /Green/ alone is ambiguous with the "Green analysis" tool button.
     await page.getByRole('button', { name: /^Green$/ }).click();
-    await clickMapViewport(page, 80, 40);
+    await clickMapViewport(page, 220, 60);
     await expect.poll(async () => await greenForHole(page, hole3.id)).not.toBeNull();
+});
+
+/**
+ * Green analysis mode: clicking a green FEATURE polygon on the map fetches
+ * its DEM sample grid (AnalysisToolService.onClick → sampleGrid) and the
+ * dock's stats card renders. Hole 1's green feature is the only one seeded
+ * with a real EPSG:3006 polygon + a synthetic DEM (server/db/seed-e2e.ts,
+ * same surface 06-putt-read.spec.ts reads) — reuse its known-inside point
+ * rather than re-deriving the projection here.
+ */
+test('green analysis mode analyzes a green on click and shows slope stats in the dock', async ({ page }) => {
+    await page.goto(`/course/${TEST_COURSE_ID}`);
+    await expect(page.locator(tid('course-detail'))).toBeVisible();
+    await waitForMapReady(page);
+
+    await selectSubMode(page, 'analysis');
+    await expect(page.locator(tid('analysis-panel'))).toBeVisible();
+    // Legend renders regardless of a click — the panel is live before analysis.
+    await expect(page.locator(tid('analysis-panel')).locator('.legend-bar')).toBeVisible();
+    // No analysis yet: the stats card is hidden and the status hints to click.
+    await expect(page.locator(tid('analysis-stats'))).toBeHidden();
+    await expect(page.locator(tid('analysis-status'))).toContainText('Click a green to analyse.');
+
+    // Same WGS84 point 06-putt-read.spec.ts's BALL_LON/BALL_LAT uses — known
+    // to fall inside hole 1's seeded ~50 m green square.
+    await clickAt(page, 15.563897, 58.402873);
+
+    // sampleGrid resolves (real network round-trip) and the stats card shows
+    // the green + surrounds slope/elevation readout.
+    await expect(page.locator(tid('analysis-stats'))).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(tid('analysis-stats'))).toContainText('Elevation');
+    await expect(page.locator(tid('analysis-stats'))).toContainText('Max slope');
+    await expect(page.locator(tid('analysis-status'))).toContainText('cells @');
 });

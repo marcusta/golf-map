@@ -41,6 +41,38 @@ export async function waitForMapReady(page: Page): Promise<void> {
 export const tid = (id: string): string => `[data-testid="${id}"]`;
 
 /**
+ * Command-bar sub-mode switch (Builder redesign v2): the draw/furniture/
+ * measure/analysis tool buttons live inside a popover panel opened via the
+ * `submode-trigger` dropdown chip (app/command-bar.component.ts), rather than
+ * being directly-clickable tabs. Opens the dropdown then clicks the requested
+ * tool's `tool-btn-<id>` row — the row's own click handler closes the popover.
+ */
+export async function selectSubMode(page: Page, toolId: string): Promise<void> {
+    await page.locator(tid('submode-trigger')).click();
+    await page.locator(tid(`tool-btn-${toolId}`)).click();
+}
+
+/**
+ * Open the command bar's "⋯" actions menu (Import SVG / Publish), now hidden
+ * behind a popover rather than shown as direct header buttons.
+ */
+export async function openActionsMenu(page: Page): Promise<void> {
+    await page.locator(tid('actions-menu-trigger')).click();
+}
+
+/**
+ * Open the command bar's zone-2 mode dropdown (Create/Plan/Play/Review),
+ * spawned via the `mode-trigger` chip (app/command-bar.component.ts) — NOT
+ * to be confused with `selectSubMode`'s `submode-trigger` (zone-3 draw/
+ * furniture/measure/analysis switch). Only opens the panel; the caller picks
+ * a row (e.g. `course-plan-btn`) itself since navigating mode rows have side
+ * effects (route change) a helper shouldn't hide.
+ */
+export async function openModeMenu(page: Page): Promise<void> {
+    await page.locator(tid('mode-trigger')).click();
+}
+
+/**
  * Read the planner panel's enrichment counter (data-enrich-count) — the number
  * of COMPLETED DECADE enrichment passes so far. Used to prove the compute
  * cadence: flat across drag frames, +1 on release.

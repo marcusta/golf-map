@@ -33,13 +33,10 @@
 // ## Panels
 //
 // A tool may declare `panel`: a Component class rendered inside the
-// editor's docked panel (left side of the canvas) while the tool is
-// active. Panels are constructed with no props — get your tool's state via
-// DI (`this.inject(MyToolService)`) so panel and tool share one instance.
-//
-// A tool may also declare `sidePanel`: same contract and lifecycle as
-// `panel`, docked on the canvas's RIGHT edge instead. Independent of
-// `panel` — a tool can have either, both, or neither.
+// editor's docked panel (floating over the left side of the canvas) while
+// the tool is active. Panels are constructed with no props — get your tool's
+// state via DI (`this.inject(MyToolService)`) so panel and tool share one
+// instance.
 //
 // ## Help (D27)
 //
@@ -111,8 +108,6 @@ export interface EditorTool {
     order: number;
     /** Optional side-panel component shown while active (see header doc). */
     panel?: new () => Component;
-    /** Optional RIGHT-edge dock panel shown while active (see header doc). */
-    sidePanel?: new () => Component;
     /** Optional contextual-help sections shown by `?` (see header doc). */
     help?: HelpSection[];
     /** Optional one-time setup per canvas mount (see header doc). */

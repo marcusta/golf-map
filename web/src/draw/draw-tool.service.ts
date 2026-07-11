@@ -700,7 +700,13 @@ export class DrawToolService {
             }
         }
 
-        // Cmd/Ctrl+press is a selection-toggle click — never a drag.
+        // Cmd/Ctrl+press is a selection-toggle click — never a tool drag.
+        // Returning WITHOUT preventDefault/dragPan.disable deliberately leaves
+        // MapLibre's native dragPan engaged, so ⌘-drag PANS the map — the
+        // trackpad equivalent of the middle-button pan escape hatch in
+        // map.service.ts (MapLibre's pan accepts meta; only ctrl is reserved
+        // for rotate). A real drag exceeds clickTolerance and suppresses the
+        // click, so the selection toggle only fires on a stationary ⌘-click.
         if (meta) return;
 
         const p = lngLatToSweref99tm(e.lngLat);
