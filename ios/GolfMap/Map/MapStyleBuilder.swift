@@ -151,6 +151,10 @@ public enum MapStyleBuilder {
         ("tee", "#22c55e"),
         ("aim", "#fbbf24"),
         ("green", "#c084fc"),
+        // Shot-capture handles share the ring layer: rose crosshair (the
+        // stroke's FROM position) + pin-yellow intended target.
+        ("shot", "#fb7185"),
+        ("target", "#ffd43b"),
     ]
     static let adjustHandleFallbackColor = "#ffffff"
     static let adjustHandleFillOpacity = 0.28

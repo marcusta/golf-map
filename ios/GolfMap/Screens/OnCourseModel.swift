@@ -238,6 +238,9 @@ final class OnCourseModel {
         case greenView
         case measure
         case adjust
+        /// Shot capture: the crosshair + optional target handle own the map
+        /// touch (same drag plumbing as Adjust, without the gesture lock).
+        case capture
     }
 
     private(set) var toolMode: MapToolMode = .none
@@ -760,6 +763,13 @@ final class OnCourseModel {
     /// browse mode).
     var origin: LatLon? {
         effectiveUserLocation ?? currentTeePosition
+    }
+
+    /// Where the shot-capture crosshair drops: the live GPS fix, else (browse
+    /// mode / no fix yet) the map center the user is looking at, else the
+    /// active tee. Always adjustable by drag afterwards.
+    var captureStartPosition: LatLon? {
+        effectiveUserLocation ?? lastObservedCamera?.center ?? currentTeePosition
     }
 
     private var currentTeePosition: LatLon? {

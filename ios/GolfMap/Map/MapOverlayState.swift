@@ -68,6 +68,10 @@ public struct AdjustHandle: Equatable, Sendable, Identifiable {
         case tee
         case aim
         case green
+        /// Shot-capture crosshair (the position the stroke is played FROM).
+        case shot
+        /// Shot-capture intended target (optional secondary drag).
+        case target
     }
 
     /// Stable element id (model-owned scheme, e.g. "tee" / "aim.<id>" / "green").

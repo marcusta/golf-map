@@ -83,6 +83,8 @@ struct CoursePlan: Equatable, Sendable {
         var hasContent: Bool { !shots.isEmpty || !gates.isEmpty }
     }
 
+    /// The SERVER plan id — what a captured round links via `gamePlanId`.
+    let id: String
     let courseId: String
     /// Plan-level default wind.
     let windSpeedMps: Double?
@@ -157,6 +159,7 @@ struct CoursePlan: Equatable, Sendable {
         }
 
         return CoursePlan(
+            id: stored.plan.id,
             courseId: stored.plan.courseId,
             windSpeedMps: stored.plan.windSpeedMps,
             windDirectionDeg: stored.plan.windDirectionDeg,

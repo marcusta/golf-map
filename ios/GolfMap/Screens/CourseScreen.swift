@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The on-course screen: full-screen offline course map with live GPS
 /// distances. Top bar navigates holes (chevrons or swipe) and shows par /
@@ -18,6 +19,9 @@ struct CourseScreen: View {
     @State private var puttRead: PuttReadModel?
     @State private var measure: MeasureModel?
     @State private var profile: ElevationProfileModel?
+    @State private var roundModel: RoundModel?
+    @State private var capture: CaptureModel?
+    @State private var greenPolygons: GreenPolygonStore?
     @State private var mapInputs: MapInputs?
     @State private var locationProvider = LocationProvider()
     @State private var loadError: String?
@@ -30,13 +34,16 @@ struct CourseScreen: View {
     var body: some View {
         Group {
             if let model, let greenAnalysis, let puttRead, let measure, let profile,
-               let mapInputs {
+               let roundModel, let capture, let mapInputs {
                 OnCourseContentView(
                     model: model,
                     greenAnalysis: greenAnalysis,
                     puttRead: puttRead,
                     measure: measure,
                     profile: profile,
+                    roundModel: roundModel,
+                    capture: capture,
+                    greenPolygons: greenPolygons,
                     configuration: mapInputs.configuration,
                     featuresGeoJSON: mapInputs.featuresGeoJSON,
                     client: env.client,
@@ -162,6 +169,19 @@ struct CourseScreen: View {
             let newProfile = ElevationProfileModel()
             newProfile.elevationSampler = { await terrain.elevation(at: $0) }
 
+            // Shot capture + scorecard: the round store is offline-first —
+            // resuming the active round (endedAt == nil) works with no
+            // network at all. Green outlines feed the putt/full auto
+            // classification.
+            let newRoundModel = RoundModel(
+                courseId: courseId,
+                holes: furniture.holes,
+                database: env.database,
+                sync: env.roundSync
+            )
+            await newRoundModel.loadActiveRound()
+            greenPolygons = try? GreenPolygonStore(featuresGeoJSON: featuresGeoJSON)
+
             #if DEBUG
             // Headless live-verify hook (same family as `-openCourse` in
             // CourseListScreen): `-openHole <n>` jumps straight to a hole so
@@ -209,6 +229,8 @@ struct CourseScreen: View {
             puttRead = newPuttRead
             measure = newMeasure
             profile = newProfile
+            roundModel = newRoundModel
+            capture = CaptureModel()
         } catch {
             loadError = "Failed to load the course bundle: \(error.localizedDescription)"
         }
@@ -288,6 +310,9 @@ private struct OnCourseContentView: View {
     let puttRead: PuttReadModel
     let measure: MeasureModel
     let profile: ElevationProfileModel
+    let roundModel: RoundModel
+    let capture: CaptureModel
+    let greenPolygons: GreenPolygonStore?
     let configuration: CourseMapConfiguration
     let featuresGeoJSON: Data
     let client: GolfAPIClient
@@ -306,10 +331,14 @@ private struct OnCourseContentView: View {
     @State private var showLevel = false
     /// LiDAR corridor-scan flow (task E1) — only reachable on LiDAR devices.
     @State private var showScan = false
+    /// Scorecard sheet — non-modal like the elevation profile, openable over
+    /// any mode.
+    @State private var showScorecard = false
 
     private var isGreenView: Bool { model.toolMode == .greenView }
     private var isMeasure: Bool { model.toolMode == .measure }
     private var isAdjust: Bool { model.toolMode == .adjust }
+    private var isCapture: Bool { model.toolMode == .capture }
 
     /// The putt read's Surface tier is live: green view up, surface installed,
     /// not competition-gated. Gates the tap-to-place and marker-drag inputs.
@@ -341,7 +370,28 @@ private struct OnCourseContentView: View {
         if isAdjust {
             overlays.adjustHandles = model.adjustHandles
         }
+        if isCapture {
+            overlays.adjustHandles = captureHandles
+        }
         return overlays
+    }
+
+    /// The shot-capture crosshair (+ optional target) rendered/dragged
+    /// through the shared adjust-handle plumbing. Capture and Adjust are
+    /// mutually exclusive tool modes, so the source never carries both sets.
+    private var captureHandles: [AdjustHandle] {
+        var handles: [AdjustHandle] = []
+        if capture.targetHandleVisible, let target = capture.target {
+            handles.append(AdjustHandle(
+                id: CaptureModel.targetHandleID, kind: .target, label: "◎", position: target
+            ))
+        }
+        if capture.phase == .aiming, let position = capture.position {
+            handles.append(AdjustHandle(
+                id: CaptureModel.positionHandleID, kind: .shot, label: "✚", position: position
+            ))
+        }
+        return handles
     }
 
     var body: some View {
@@ -371,12 +421,13 @@ private struct OnCourseContentView: View {
                 },
                 // The handle-drag recognizer is shared too: Adjust drags the
                 // tee/aim/green handles; the green view drags the putt
-                // ball/hole markers (ids routed below). Only Adjust locks the
-                // map's gesture zoom for the whole mode.
-                adjustEnabled: isAdjust || isPuttSurfaceActive,
+                // ball/hole markers; shot capture drags the crosshair/target
+                // (ids routed below). Only Adjust locks the map's gesture
+                // zoom for the whole mode.
+                adjustEnabled: isAdjust || isPuttSurfaceActive || isCapture,
                 adjustLocksGestures: isAdjust,
                 onHandleGrab: { id in
-                    guard !id.hasPrefix("putt-") else { return }
+                    guard !id.hasPrefix("putt-"), !id.hasPrefix("capture-") else { return }
                     model.beginHandleDrag(id: id)
                 },
                 onHandleMove: { id, position in
@@ -385,6 +436,10 @@ private struct OnCourseContentView: View {
                         puttRead.dragBall(puttPoint(position))
                     case PuttReadGeometry.PuttOverlay.holeHandleID:
                         puttRead.dragHole(puttPoint(position))
+                    case CaptureModel.positionHandleID:
+                        capture.movePosition(position)
+                    case CaptureModel.targetHandleID:
+                        capture.moveTarget(position)
                     default:
                         model.moveHandle(id: id, to: position)
                     }
@@ -392,7 +447,8 @@ private struct OnCourseContentView: View {
                 onHandleDrop: { id in
                     if id.hasPrefix("putt-") {
                         puttRead.commitDrag()
-                    } else {
+                    } else if !id.hasPrefix("capture-") {
+                        // Capture positions commit on Confirm, not on drop.
                         model.endHandleDrag()
                     }
                 }
@@ -413,9 +469,14 @@ private struct OnCourseContentView: View {
 
             VStack(spacing: 0) {
                 if !immersive || isGreenView {
-                    HoleHeaderView(model: model)
-                        .padding(.horizontal, 12)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                    HoleHeaderView(
+                        model: model,
+                        strokesOnHole: roundModel.hasActiveRound
+                            ? roundModel.strokeCount(holeNumber: model.currentHoleNumber)
+                            : nil
+                    )
+                    .padding(.horizontal, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 } else {
                     CompactChipView(model: model)
                         .padding(.top, 4)
@@ -458,6 +519,20 @@ private struct OnCourseContentView: View {
                         .padding(.horizontal, 12)
                         .padding(.bottom, 8)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if isCapture {
+                    CapturePanel(
+                        capture: capture,
+                        holeNumber: model.currentHoleNumber,
+                        strokesSoFar: roundModel.strokeCount(holeNumber: model.currentHoleNumber),
+                        onConfirm: { confirmStroke(holeOut: false) },
+                        onHoleOut: { confirmStroke(holeOut: true) },
+                        onPenalty: { addPenaltyToLastStroke() },
+                        onNextStroke: { rearmCapture() },
+                        onClose: { exitCapture() }
+                    )
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if !immersive {
                     DistanceCardView(model: model)
                         .padding(.horizontal, 12)
@@ -475,6 +550,7 @@ private struct OnCourseContentView: View {
                 puttRead.deactivate()
             }
             measure.clear()
+            capture.end()
             refreshProfileIfShown()
         }
         // Hand the analysis grid to the putt read when the terrain sampling
@@ -498,6 +574,13 @@ private struct OnCourseContentView: View {
                 model: profile,
                 title: profileTitle,
                 onClose: { showProfile = false }
+            )
+        }
+        .sheet(isPresented: $showScorecard) {
+            ScorecardSheet(
+                roundModel: roundModel,
+                clubs: model.clubs,
+                onClose: { showScorecard = false }
             )
         }
         .sheet(isPresented: $showLevel) {
@@ -630,6 +713,49 @@ private struct OnCourseContentView: View {
                     showProfile = true
                 }
             }
+            // `-captureDemo 1` (same family as `-planDemo`): starts a round
+            // and records a scripted hole through the REAL capture write
+            // path — tee full shot, midpoint full shot (+1 penalty), green
+            // putt, hole-out — then dumps a CAPTURE-DEBUG summary (scorecard
+            // + sync states) so the whole offline pipeline can be verified
+            // headlessly. `-captureScorecard 1` also opens the sheet.
+            if UserDefaults.standard.string(forKey: "captureDemo") == "1" {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    await roundModel.startRound(
+                        gamePlanId: model.plan?.id, wind: planWindSnapshot
+                    )
+                    if let hole = model.currentHole,
+                       let tee = model.teePosition(for: hole),
+                       let green = model.greenCenterPosition(for: hole) {
+                        let holeNumber = model.currentHoleNumber
+                        let mid = LatLon(
+                            lat: (tee.lat + green.lat) / 2,
+                            lon: (tee.lon + green.lon) / 2
+                        )
+                        let club = model.clubs.first?.id
+                        _ = await roundModel.recordStroke(
+                            holeNumber: holeNumber, position: tee, clubId: club,
+                            shotType: .full, target: mid
+                        )
+                        let approach = await roundModel.recordStroke(
+                            holeNumber: holeNumber, position: mid, clubId: club,
+                            shotType: .full, target: green
+                        )
+                        if let approach {
+                            _ = await roundModel.addPenalty(shotId: approach.id)
+                        }
+                        _ = await roundModel.recordStroke(
+                            holeNumber: holeNumber, position: green, clubId: nil,
+                            shotType: .putt, target: green
+                        )
+                    }
+                    Self.writeCaptureDebugSummary(roundModel)
+                    if UserDefaults.standard.string(forKey: "captureScorecard") == "1" {
+                        showScorecard = true
+                    }
+                }
+            }
             // `-zoomTaps N` fires N in-taps; `-zoomOutTaps N` fires N out-taps
             // (a separate positive-valued key because simctl swallows a negative
             // launch-arg value).
@@ -701,6 +827,51 @@ private struct OnCourseContentView: View {
         }
     }
 
+    /// Live-verify hook (`-captureDemo`): dumps the recorded round —
+    /// scorecard lines + per-shot sync states — so a headless run can check
+    /// the capture/aggregation/queue pipeline end to end.
+    private static func writeCaptureDebugSummary(_ roundModel: RoundModel) {
+        let card = roundModel.scorecard
+        let summary: [String: Any] = [
+            "round": roundModel.round.map {
+                [
+                    "id": $0.id,
+                    "gamePlanId": $0.gamePlanId ?? NSNull() as Any,
+                    "windSpeedMps": $0.windSpeedMps ?? NSNull() as Any,
+                    "syncState": $0.syncState.rawValue,
+                ]
+            } ?? NSNull() as Any,
+            "shots": roundModel.shots.map {
+                [
+                    "hole": $0.holeNumber,
+                    "sortOrder": $0.sortOrder,
+                    "shotType": $0.shotType.rawValue,
+                    "clubId": $0.clubId ?? NSNull() as Any,
+                    "penaltyStrokes": $0.penaltyStrokes,
+                    "syncState": $0.syncState.rawValue,
+                ]
+            },
+            "scorecard": card.lines.filter(\.played).map {
+                [
+                    "hole": $0.holeNumber,
+                    "par": $0.par,
+                    "score": $0.score,
+                    "putts": $0.putts,
+                    "penalties": $0.penalties,
+                    "vsPar": $0.vsPar ?? NSNull() as Any,
+                ]
+            },
+            "totalScore": card.total.score,
+            "totalVsPar": card.total.vsPar ?? NSNull() as Any,
+        ]
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "capture-debug.json")
+        if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]) {
+            try? data.write(to: url)
+            print("CAPTURE-DEBUG \(String(data: data, encoding: .utf8) ?? "")")
+        }
+    }
+
     /// Live-verify hook: dumps the putt-read display (status, read numbers,
     /// tour verbal) so a headless `-puttBall` run can check them against an
     /// independent readPutt over the same grid.
@@ -769,11 +940,13 @@ private struct OnCourseContentView: View {
     }
     #endif
 
-    // Stacked bottom-right controls: green view / level / measure / adjust /
-    // plan (only when the course has one) / profile / zoom in / zoom out /
-    // recenter.
+    // Stacked bottom-right controls: capture / scorecard / green view /
+    // level / measure / adjust / plan (only when the course has one) /
+    // profile / zoom in / zoom out / recenter.
     private var controlStack: some View {
         VStack(spacing: 10) {
+            captureButton
+            scorecardButton
             greenViewButton
             levelButton
             measureButton
@@ -788,6 +961,50 @@ private struct OnCourseContentView: View {
                 model.recenter()
             }
         }
+    }
+
+    /// Toggles shot capture (records a stroke at the crosshair — available
+    /// in competition mode: it is measurement, not advice). Entering with no
+    /// active round starts one, snapshotting the plan link + wind.
+    private var captureButton: some View {
+        Button {
+            if isCapture {
+                exitCapture()
+            } else {
+                enterCapture()
+            }
+        } label: {
+            Image(systemName: "plus.viewfinder")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isCapture ? CapturePanel.rose : Color.primary)
+                .frame(width: 44, height: 44)
+                .mapControl()
+                .overlay(alignment: .topTrailing) {
+                    if roundModel.hasActiveRound {
+                        Circle()
+                            .fill(CapturePanel.rose)
+                            .frame(width: 8, height: 8)
+                            .offset(x: -3, y: 3)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isCapture ? "Exit shot capture" : "Capture shot")
+    }
+
+    /// Opens the scorecard sheet (per-hole strokes/putts/penalties/vs-par).
+    private var scorecardButton: some View {
+        Button {
+            showScorecard.toggle()
+        } label: {
+            Image(systemName: "list.number")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(showScorecard ? CapturePanel.rose : Color.primary)
+                .frame(width: 44, height: 44)
+                .mapControl()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Scorecard")
     }
 
     /// Opens the spot-level capture sheet ("phone as level" — one IMU
@@ -988,6 +1205,145 @@ private struct OnCourseContentView: View {
         }
     }
 
+    // MARK: - Shot capture enter/exit + stroke writes
+
+    /// The plan-level wind pair for the round snapshot (per-hole overrides
+    /// stay per-hole — the round stores the round-level conditions, §3).
+    private var planWindSnapshot: (speedMps: Double, directionDeg: Double)? {
+        guard
+            let plan = model.plan,
+            let speed = plan.windSpeedMps,
+            let direction = plan.windDirectionDeg
+        else { return nil }
+        return (speed, direction)
+    }
+
+    /// The current hole's green outline rings (EPSG:3006) for the putt/full
+    /// auto classification; empty when the hole has no green polygon.
+    private var captureGreenRings: [[Sweref99TM.Point]] {
+        guard
+            let hole = model.currentHole,
+            let store = greenPolygons,
+            let polygon = store.green(
+                forHoleId: hole.hole.id,
+                greenCenter: model.greenCenterPosition(for: hole)
+            )
+        else { return [] }
+        return polygon.rings
+    }
+
+    /// Mutually exclusive with the other tools, like measure/adjust. Starts
+    /// a round when none is active (offline: the row is local-first), then
+    /// drops the crosshair at the GPS fix (browse mode: the map center).
+    private func enterCapture() {
+        if greenAnalysis.isActive {
+            greenAnalysis.deactivate()
+            puttRead.deactivate()
+        }
+        measure.clear()
+        Task { @MainActor in
+            if !roundModel.hasActiveRound {
+                await roundModel.startRound(
+                    gamePlanId: model.plan?.id,
+                    wind: planWindSnapshot
+                )
+            }
+            guard let position = model.captureStartPosition else { return }
+            armCapture(at: position)
+            withAnimation(.easeInOut(duration: 0.28)) {
+                immersive = false
+                // Keep the user's current view — capture must not yank the map.
+                model.enterTool(.capture, refitCamera: false)
+            }
+            // The one place a placement haptic fires (with rearmCapture).
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+    }
+
+    private func exitCapture() {
+        capture.end()
+        withAnimation(.easeInOut(duration: 0.28)) {
+            model.exitTool()
+        }
+    }
+
+    /// Arms the capture draft: crosshair at `position`, target pre-filled
+    /// pin ?? next plan landing ?? green center, club pre-selected on the
+    /// plays-like remaining, shot type auto (putt on the green).
+    private func armCapture(at position: LatLon) {
+        let targets = model.targets
+        let planLandings = model.currentHolePlan?.shots.map(\.position) ?? []
+        let target = ShotCaptureDefaults.defaultTarget(
+            position: position,
+            activePin: targets.activePin,
+            planLandings: planLandings,
+            greenCenter: targets.greenCenter
+        )
+        capture.begin(
+            position: position,
+            target: target,
+            clubs: model.clubs,
+            wind: model.effectiveWind,
+            greenRings: captureGreenRings,
+            // The user's sampled elevation only applies while the crosshair
+            // IS the GPS fix; a drag degrades it (handled by the model).
+            positionElevation: position == model.userLocation ? model.userElevation : nil,
+            targetElevation: targets.greenElevation
+        )
+    }
+
+    /// Confirm = one tap → writes the stroke AT the crosshair (played FROM,
+    /// §2). Hole-out forces the final putt (its landing is the cup — no
+    /// extra row needed).
+    private func confirmStroke(holeOut: Bool) {
+        guard let position = capture.position else { return }
+        let shotType = holeOut ? ShotType.putt : capture.shotType
+        let clubId = holeOut ? nil : capture.clubId
+        let holeNumber = model.currentHoleNumber
+        let target = capture.target
+        Task { @MainActor in
+            guard let shot = await roundModel.recordStroke(
+                holeNumber: holeNumber,
+                position: position,
+                clubId: clubId,
+                shotType: shotType,
+                target: target
+            ) else { return }
+            capture.noteConfirmed(shot)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+    }
+
+    /// The "+1 penalty" stepper on the just-confirmed stroke.
+    private func addPenaltyToLastStroke() {
+        guard let shotId = capture.lastConfirmed?.id else { return }
+        Task { @MainActor in
+            if let updated = await roundModel.addPenalty(shotId: shotId) {
+                capture.noteUpdated(updated)
+            }
+        }
+    }
+
+    /// Re-arms the crosshair for the next stroke at the fresh GPS fix / map
+    /// center (walk to the ball, tap, confirm).
+    private func rearmCapture() {
+        guard let position = model.captureStartPosition else { return }
+        let targets = model.targets
+        let planLandings = model.currentHolePlan?.shots.map(\.position) ?? []
+        capture.rearm(
+            position: position,
+            target: ShotCaptureDefaults.defaultTarget(
+                position: position,
+                activePin: targets.activePin,
+                planLandings: planLandings,
+                greenCenter: targets.greenCenter
+            ),
+            positionElevation: position == model.userLocation ? model.userElevation : nil,
+            targetElevation: targets.greenElevation
+        )
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
     // MARK: - Elevation profile plumbing
 
     /// The path the profile reads: the measure path while measuring (once it
@@ -1147,6 +1503,9 @@ private struct CompactChipView: View {
 
 private struct HoleHeaderView: View {
     let model: OnCourseModel
+    /// Strokes recorded on this hole so far; nil hides the badge (no active
+    /// round).
+    var strokesOnHole: Int?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1178,6 +1537,10 @@ private struct HoleHeaderView: View {
         if let length = model.playingLength, let meters = length.meters {
             let tee = model.resolvedTeeName.map { "\($0) " } ?? ""
             parts.append("\(tee)\(length.approximate ? "~" : "")\(meters) m")
+        }
+        // Per-hole stroke count while a round is being recorded.
+        if let strokes = strokesOnHole {
+            parts.append("\(strokes) str")
         }
         return parts.joined(separator: " · ")
     }
