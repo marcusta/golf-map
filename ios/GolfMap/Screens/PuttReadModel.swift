@@ -125,6 +125,11 @@ final class PuttReadModel {
         var sig: String
         var read: PuttRead
         var tour: TourRead?
+        /// Scoring ground truth for the putt quiz — nil unless the Surface
+        /// read has both a settled integrator read AND a coverage-derived
+        /// cross-slope (mirrors the web `PuttReadService.display`'s
+        /// `groundTruth` assembly). See `runScheduledRead`.
+        var groundTruth: PuttGroundTruth?
     }
     @ObservationIgnored private var result: Settled?
     /// Observation trigger: bumped when a settled read lands so `display`
@@ -386,6 +391,11 @@ final class PuttReadModel {
         var verbal: TourReadVerbal?
         /// True when the Manual tier is available as a fallback (no surface).
         var offerManual: Bool
+        /// Putt-quiz scoring ground truth — non-nil ONLY for a live, settled
+        /// Surface-tier read (ok or soft; never competition, never withheld/
+        /// pending/manual). The putt quiz's "is a live read available to
+        /// train against" gate is simply `display.groundTruth != nil`.
+        var groundTruth: PuttGroundTruth?
     }
 
     var display: Display {
@@ -396,7 +406,7 @@ final class PuttReadModel {
             return Display(
                 status: .competition, mode: mode,
                 message: "Competition mode — reads off.",
-                read: nil, tour: nil, verbal: nil, offerManual: false
+                read: nil, tour: nil, verbal: nil, offerManual: false, groundTruth: nil
             )
         }
 
@@ -409,20 +419,20 @@ final class PuttReadModel {
             return Display(
                 status: .noSurface, mode: mode,
                 message: "No terrain data for this green — use Manual.",
-                read: nil, tour: nil, verbal: nil, offerManual: true
+                read: nil, tour: nil, verbal: nil, offerManual: true, groundTruth: nil
             )
         }
         guard ball != nil, hole != nil else {
             return Display(
                 status: .place, mode: mode,
                 message: "Tap the green to place the ball.",
-                read: nil, tour: nil, verbal: nil, offerManual: true
+                read: nil, tour: nil, verbal: nil, offerManual: true, groundTruth: nil
             )
         }
         guard let settled = result, settled.sig == inputsSig() else {
             return Display(
                 status: .pending, mode: mode, message: nil,
-                read: nil, tour: nil, verbal: nil, offerManual: true
+                read: nil, tour: nil, verbal: nil, offerManual: true, groundTruth: nil
             )
         }
 
@@ -431,7 +441,7 @@ final class PuttReadModel {
             return Display(
                 status: .unavailable, mode: mode,
                 message: "No read — ball or hole is off the green's surface.",
-                read: nil, tour: nil, verbal: nil, offerManual: true
+                read: nil, tour: nil, verbal: nil, offerManual: true, groundTruth: nil
             )
         }
 
@@ -451,11 +461,15 @@ final class PuttReadModel {
         let verbal = settled.tour.map { formatTourRead($0, units: .metric) }
         return Display(
             status: status, mode: mode, message: message,
-            read: read, tour: settled.tour, verbal: verbal, offerManual: true
+            read: read, tour: settled.tour, verbal: verbal, offerManual: true,
+            groundTruth: settled.groundTruth
         )
     }
 
     /// Tier-3 closed-form display, computed synchronously (no integrator).
+    /// `groundTruth` stays nil — the Manual tier's inputs ARE the displayed
+    /// read (the player's own slope/grade estimate), so there's no
+    /// independent truth to quiz against.
     private func manualDisplay() -> Display {
         let tour = tourReadFromPaces(
             manualLengthUnit == .paces ? manualLength : metersToPaces(manualLength),
@@ -468,7 +482,8 @@ final class PuttReadModel {
         let message = tour.canStop ? nil : "Can't stop this one — lag to the low side."
         return Display(
             status: tour.canStop ? .ok : .soft, mode: .manual, message: message,
-            read: nil, tour: tour, verbal: verbal, offerManual: hasSurface ? false : true
+            read: nil, tour: tour, verbal: verbal, offerManual: hasSurface ? false : true,
+            groundTruth: nil
         )
     }
 
@@ -508,6 +523,19 @@ final class PuttReadModel {
         return "\(gridSeq)|\(b)|\(h)|\(stimpFt)|\(competitionMode)"
     }
 
+    /// Ball/hole/stimp only — distinct from `inputsSig()` (which also tracks
+    /// `gridSeq`/`competitionMode`, used to validate the settled-read cache).
+    /// Exposed for the putt quiz's reset-on-change trigger: a ball/hole
+    /// reposition or stimp change must restart the in-progress estimate, but
+    /// a background grid refresh or a competition-mode toggle must not (the
+    /// quiz is already fully hidden by `display.groundTruth == nil` in that
+    /// case, so it doesn't need its own reset for the same event).
+    var puttSignature: String {
+        let b = ball.map { "\($0.x),\($0.y)" } ?? ""
+        let h = hole.map { "\($0.x),\($0.y)" } ?? ""
+        return "\(b)|\(h)|\(stimpFt)"
+    }
+
     /// Debounce a Surface read onto a background Task over the SETTLED inputs.
     /// Manual/competition never integrate. Coalesces a burst into one run.
     private func scheduleRead() {
@@ -535,15 +563,30 @@ final class PuttReadModel {
         // Inputs are all Sendable value types (DemSurface is a Sendable struct).
         computeTask = Task.detached(priority: .userInitiated) { [weak self] in
             let read = readPutt(surface: surface, ball: ball, hole: hole, stimpFt: stimpFt)
-            let tour = read.availability == .unavailable
+            // Call deriveTourReadInputs directly (rather than the
+            // deriveTourRead wrapper) so the cross-slope % survives for the
+            // putt quiz's groundTruth — the wrapper computes exactly this and
+            // discards it.
+            let derivedInputs = read.availability == .unavailable
                 ? nil
-                : PuttReadGeometry.deriveTourRead(
-                    surface: surface, ball: ball, hole: hole, stimpFt: stimpFt
+                : PuttReadGeometry.deriveTourReadInputs(surface: surface, ball: ball, hole: hole)
+            let tour = derivedInputs.map {
+                tourRead(
+                    distanceM: $0.distanceM, gradeDeltaM: $0.gradeDeltaM, slopePct: $0.slopePct,
+                    stimpFt: stimpFt, breakToRight: $0.breakToRight
                 )
+            }
+            var groundTruth: PuttGroundTruth?
+            if let derivedInputs, let tour {
+                groundTruth = PuttGroundTruth(
+                    slopePct: derivedInputs.slopePct, breakSide: tour.aimSide,
+                    aimOffsetM: read.aimOffsetM, playsLikeM: read.playsLikeM
+                )
+            }
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self, self.inputsSig() == sig else { return }
-                self.result = Settled(sig: sig, read: read, tour: tour)
+                self.result = Settled(sig: sig, read: read, tour: tour, groundTruth: groundTruth)
                 self.resultToken &+= 1
             }
         }
@@ -563,12 +606,23 @@ final class PuttReadModel {
         }
         let sig = inputsSig()
         let read = readPutt(surface: surface, ball: ball, hole: hole, stimpFt: stimpFt)
-        let tour = read.availability == .unavailable
+        let derivedInputs = read.availability == .unavailable
             ? nil
-            : PuttReadGeometry.deriveTourRead(
-                surface: surface, ball: ball, hole: hole, stimpFt: stimpFt
+            : PuttReadGeometry.deriveTourReadInputs(surface: surface, ball: ball, hole: hole)
+        let tour = derivedInputs.map {
+            tourRead(
+                distanceM: $0.distanceM, gradeDeltaM: $0.gradeDeltaM, slopePct: $0.slopePct,
+                stimpFt: stimpFt, breakToRight: $0.breakToRight
             )
-        result = Settled(sig: sig, read: read, tour: tour)
+        }
+        var groundTruth: PuttGroundTruth?
+        if let derivedInputs, let tour {
+            groundTruth = PuttGroundTruth(
+                slopePct: derivedInputs.slopePct, breakSide: tour.aimSide,
+                aimOffsetM: read.aimOffsetM, playsLikeM: read.playsLikeM
+            )
+        }
+        result = Settled(sig: sig, read: read, tour: tour, groundTruth: groundTruth)
         resultToken &+= 1
     }
     #endif

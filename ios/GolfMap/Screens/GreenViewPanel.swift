@@ -9,6 +9,14 @@ import SwiftUI
 struct GreenViewPanel: View {
     let model: GreenAnalysisModel
     let putt: PuttReadModel
+    /// Putt-read training quiz (doc §5.1) — headless state, hosted by
+    /// `PuttReadSection`.
+    let quiz: PuttQuizModel
+    /// API client for the quiz's fire-and-forget scored-sample POST.
+    let client: GolfAPIClient
+    /// The active hole's green id, or nil (Tier-3 manual, no surface) — the
+    /// quiz attaches it to the recorded sample.
+    let greenId: String?
     /// Smart-caddy advice for this green (top recommendation). Nil in
     /// competition mode (advice is withheld) or when nothing fires.
     let caddy: CaddyAdviceModel
@@ -48,6 +56,9 @@ struct GreenViewPanel: View {
                 .overlay(.white.opacity(0.15))
             PuttReadSection(
                 model: putt,
+                quiz: quiz,
+                client: client,
+                greenId: greenId,
                 surfaceLoading: model.isLoading,
                 onLevel: onLevel,
                 onScan: onScan

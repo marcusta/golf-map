@@ -18,6 +18,7 @@ struct CourseScreen: View {
     @State private var greenAnalysis: GreenAnalysisModel?
     @State private var caddy: CaddyAdviceModel?
     @State private var puttRead: PuttReadModel?
+    @State private var puttQuiz: PuttQuizModel?
     @State private var measure: MeasureModel?
     @State private var profile: ElevationProfileModel?
     @State private var roundModel: RoundModel?
@@ -38,13 +39,14 @@ struct CourseScreen: View {
 
     var body: some View {
         Group {
-            if let model, let greenAnalysis, let caddy, let puttRead, let measure, let profile,
-               let roundModel, let capture, let mapInputs {
+            if let model, let greenAnalysis, let caddy, let puttRead, let puttQuiz, let measure,
+               let profile, let roundModel, let capture, let mapInputs {
                 OnCourseContentView(
                     model: model,
                     greenAnalysis: greenAnalysis,
                     caddy: caddy,
                     puttRead: puttRead,
+                    puttQuiz: puttQuiz,
                     measure: measure,
                     profile: profile,
                     roundModel: roundModel,
@@ -203,6 +205,7 @@ struct CourseScreen: View {
             // competition-gated like plays-like.
             let newPuttRead = PuttReadModel(defaultStimpFt: env.settings.defaultStimpFt)
             newPuttRead.competitionMode = env.settings.competitionMode
+            let newPuttQuiz = PuttQuizModel()
 
             // Measure + elevation profile share the same bundle terrain
             // pyramid (one LRU of decoded tiles for the whole screen).
@@ -270,6 +273,7 @@ struct CourseScreen: View {
             greenAnalysis = newGreenAnalysis
             caddy = CaddyAdviceModel()
             puttRead = newPuttRead
+            puttQuiz = newPuttQuiz
             measure = newMeasure
             profile = newProfile
             roundModel = newRoundModel
@@ -352,6 +356,7 @@ private struct OnCourseContentView: View {
     let greenAnalysis: GreenAnalysisModel
     let caddy: CaddyAdviceModel
     let puttRead: PuttReadModel
+    let puttQuiz: PuttQuizModel
     let measure: MeasureModel
     let profile: ElevationProfileModel
     let roundModel: RoundModel
@@ -543,6 +548,9 @@ private struct OnCourseContentView: View {
                     GreenViewPanel(
                         model: greenAnalysis,
                         putt: puttRead,
+                        quiz: puttQuiz,
+                        client: client,
+                        greenId: model.currentHole?.green?.id,
                         caddy: caddy,
                         onLevel: { showLevel = true },
                         // Scan is only OFFERED where the hardware can deliver

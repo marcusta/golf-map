@@ -376,6 +376,83 @@ public actor GolfAPIClient {
         let quality: Quality?
     }
 
+    // MARK: - Putt estimate (training quiz)
+
+    /// Records one scored putt-quiz estimate (`POST /api/putt-estimates/samples`).
+    /// The call site (`PuttQuizModel.submit`) uses this fire-and-forget — a
+    /// lost training sample must never block the reveal — but this method
+    /// itself throws normally so a caller can await/handle errors if wanted.
+    @discardableResult
+    public func recordPuttEstimateSample(
+        greenId: String?,
+        distanceM: Double,
+        stimpFt: Double,
+        actualSlopePct: Double,
+        estimatedSlopePct: Double,
+        actualAimOffsetM: Double,
+        estimatedAimOffsetM: Double,
+        actualPlaysLikeM: Double,
+        estimatedPlaysLikeM: Double,
+        breakSideActual: String,
+        breakSideEstimated: String
+    ) async throws -> PuttEstimateSample {
+        try await postJSON(path: "putt-estimates/samples", body: RecordPuttEstimateSampleRequest(
+            greenId: greenId,
+            distanceM: distanceM,
+            stimpFt: stimpFt,
+            actualSlopePct: actualSlopePct,
+            estimatedSlopePct: estimatedSlopePct,
+            actualAimOffsetM: actualAimOffsetM,
+            estimatedAimOffsetM: estimatedAimOffsetM,
+            actualPlaysLikeM: actualPlaysLikeM,
+            estimatedPlaysLikeM: estimatedPlaysLikeM,
+            breakSideActual: breakSideActual,
+            breakSideEstimated: breakSideEstimated
+        ))
+    }
+
+    /// `recordSample` request body — matches `RecordSampleInput` in
+    /// `server/api/putt-estimate.api.ts` exactly (`shared/api/putt-estimate.gen.ts`).
+    /// Hand-written `encode(to:)`: `greenId` uses `encode` (not
+    /// `encodeIfPresent`) so a nil green (Tier-3 manual read, no surface)
+    /// emits JSON `null` rather than an omitted key — the schema requires the
+    /// key present (`null | string`), unlike the rounds endpoints' bodies
+    /// above where an absent key means "unchanged".
+    private struct RecordPuttEstimateSampleRequest: Encodable {
+        let greenId: String?
+        let distanceM: Double
+        let stimpFt: Double
+        let actualSlopePct: Double
+        let estimatedSlopePct: Double
+        let actualAimOffsetM: Double
+        let estimatedAimOffsetM: Double
+        let actualPlaysLikeM: Double
+        let estimatedPlaysLikeM: Double
+        let breakSideActual: String
+        let breakSideEstimated: String
+
+        private enum CodingKeys: String, CodingKey {
+            case greenId, distanceM, stimpFt, actualSlopePct, estimatedSlopePct
+            case actualAimOffsetM, estimatedAimOffsetM, actualPlaysLikeM, estimatedPlaysLikeM
+            case breakSideActual, breakSideEstimated
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(greenId, forKey: .greenId)
+            try container.encode(distanceM, forKey: .distanceM)
+            try container.encode(stimpFt, forKey: .stimpFt)
+            try container.encode(actualSlopePct, forKey: .actualSlopePct)
+            try container.encode(estimatedSlopePct, forKey: .estimatedSlopePct)
+            try container.encode(actualAimOffsetM, forKey: .actualAimOffsetM)
+            try container.encode(estimatedAimOffsetM, forKey: .estimatedAimOffsetM)
+            try container.encode(actualPlaysLikeM, forKey: .actualPlaysLikeM)
+            try container.encode(estimatedPlaysLikeM, forKey: .estimatedPlaysLikeM)
+            try container.encode(breakSideActual, forKey: .breakSideActual)
+            try container.encode(breakSideEstimated, forKey: .breakSideEstimated)
+        }
+    }
+
     // MARK: - Request core
 
     private func makeURL(path: String, query: [String: String]) -> URL {

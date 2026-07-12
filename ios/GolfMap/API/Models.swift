@@ -359,6 +359,29 @@ public struct CourseConfidenceResponse: Codable, Sendable, Equatable {
     public let greens: [GreenConfidenceDTO]
 }
 
+// MARK: - Putt estimate (training quiz)
+
+/// `POST /api/putt-estimates/samples` response — mirrors `PuttEstimateSample`
+/// in `shared/api/putt-estimate.gen.ts`. Decoded only to confirm a
+/// successful round-trip; `PuttQuizModel.submit` is fire-and-forget and
+/// discards the value (v1 has no trend UI — see its doc comment for the
+/// stated offline-queue limitation).
+public struct PuttEstimateSample: Codable, Sendable, Equatable {
+    public let id: String
+    public let greenId: String?
+    public let distanceM: Double
+    public let stimpFt: Double
+    public let actualSlopePct: Double
+    public let estimatedSlopePct: Double
+    public let actualAimOffsetM: Double
+    public let estimatedAimOffsetM: Double
+    public let actualPlaysLikeM: Double
+    public let estimatedPlaysLikeM: Double
+    public let breakSideActual: String
+    public let breakSideEstimated: String
+    public let createdAt: String
+}
+
 // MARK: - Error envelope
 
 /// The server's generic error body, `{ "error": string }`.

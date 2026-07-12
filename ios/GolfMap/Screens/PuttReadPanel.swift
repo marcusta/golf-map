@@ -13,6 +13,14 @@ import SwiftUI
 /// available (measurement, not advice; see AppSettings).
 struct PuttReadSection: View {
     let model: PuttReadModel
+    /// Training-quiz state (doc §5.1) — estimate the read before it's
+    /// revealed, then see it scored. Headless; this view only renders it.
+    let quiz: PuttQuizModel
+    /// API client for the quiz's fire-and-forget scored-sample POST.
+    let client: GolfAPIClient
+    /// The active hole's green id (nil for a Tier-3 manual read with no
+    /// surface) — attached to the recorded sample.
+    let greenId: String?
     /// The green-analysis terrain sampling is still in flight — the Surface
     /// tier's grid hasn't resolved yet.
     let surfaceLoading: Bool
@@ -26,6 +34,7 @@ struct PuttReadSection: View {
 
     var body: some View {
         let display = model.display
+        let quizGate = quiz.quizActive(groundTruth: display.groundTruth)
         VStack(spacing: 8) {
             header(display)
             if display.status == .competition {
@@ -42,9 +51,27 @@ struct PuttReadSection: View {
                 } else {
                     surfaceContent(display)
                 }
-                readout(display)
+                // While the quiz gates a readable putt, WITHHOLD the read
+                // (exact tier + Tour Read verbal both) so the estimate is
+                // honest — mirrors the web's `gate` check in `bindPuttSection`.
+                if quizGate {
+                    quizForm(display)
+                } else {
+                    readout(display)
+                    if let result = quiz.lastResult {
+                        scoreBlock(result)
+                    }
+                }
                 stimpRow
             }
+        }
+        // Ball/hole reposition or stimp change → the quiz resets to
+        // "estimate first" for the new putt (matches the web's puttSig
+        // effect). A background grid refresh or competition-mode flip is
+        // NOT in this signature, so it doesn't spuriously reset an
+        // in-progress estimate.
+        .onChange(of: model.puttSignature, initial: true) { _, sig in
+            quiz.notePuttSignature(sig)
         }
     }
 
@@ -57,6 +84,21 @@ struct PuttReadSection: View {
                 .foregroundStyle(.cyan)
             Spacer()
             if display.status != .competition {
+                // Quiz is advice-adjacent (it trains reading the same slope/
+                // break/aim/pace the read shows) — hidden entirely in
+                // competition mode, like the tier picker right next to it.
+                // The toggle itself is always tappable here; its EFFECT
+                // (withholding the read behind an estimate form) only
+                // engages once a live, un-softened-to-nothing read exists —
+                // see `quizActive(groundTruth:)`.
+                Toggle("Quiz", isOn: Binding(
+                    get: { quiz.enabled },
+                    set: { quiz.enabled = $0 }
+                ))
+                .toggleStyle(.switch)
+                .font(.caption2)
+                .fixedSize()
+                .accessibilityIdentifier("putt-quiz-toggle")
                 Picker("Read tier", selection: Binding(
                     get: { model.mode },
                     set: { model.setMode($0) }
@@ -257,6 +299,107 @@ struct PuttReadSection: View {
             Spacer()
             trailing()
         }
+    }
+
+    // MARK: - Training quiz (doc §5.1)
+
+    /// Live ball→hole distance from the LIVE marker geometry, straight from
+    /// `model.ball`/`model.hole` (not the settled read) — mirrors the web
+    /// quiz prompt, which tracks the cursor mid-drag even while the read is
+    /// pending. Nil until both markers are placed.
+    private var puttDistanceM: Double? {
+        guard let b = model.ball, let h = model.hole else { return nil }
+        return hypot(h.x - b.x, h.y - b.y)
+    }
+
+    /// The estimate form — shown INSTEAD of the readout while the quiz gates
+    /// a readable putt. Compact steppers for slope %, break side, aim offset
+    /// (cm), and plays-like (m); Reveal & score / Skip actions.
+    private func quizForm(_ display: PuttReadModel.Display) -> some View {
+        VStack(spacing: 6) {
+            Text(puttDistanceM.map { String(format: "Your read first — %.1f m putt", $0) }
+                ?? "Your read first — place the ball")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            stepperRow(
+                label: "Slope",
+                value: String(format: "%.1f %%", quiz.slopePct),
+                onDecrement: { quiz.setSlopePct(quiz.slopePct - 0.5) },
+                onIncrement: { quiz.setSlopePct(quiz.slopePct + 0.5) }
+            ) {
+                Picker("Break", selection: Binding(
+                    get: { quiz.breakSide },
+                    set: { quiz.setBreakSide($0) }
+                )) {
+                    Text("L").tag(BreakSide.left)
+                    Text("—").tag(BreakSide.straight)
+                    Text("R").tag(BreakSide.right)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 110)
+            }
+            stepperRow(
+                label: "Aim",
+                value: String(format: "%.0f cm", quiz.aimOffsetCm),
+                onDecrement: { quiz.setAimOffsetCm(quiz.aimOffsetCm - 5) },
+                onIncrement: { quiz.setAimOffsetCm(quiz.aimOffsetCm + 5) }
+            ) {
+                Text("+ = right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            stepperRow(
+                label: "Plays",
+                value: String(format: "%.1f m", quiz.playsLikeM),
+                onDecrement: { quiz.setPlaysLikeM(quiz.playsLikeM - 0.5) },
+                onIncrement: { quiz.setPlaysLikeM(quiz.playsLikeM + 0.5) }
+            ) {
+                EmptyView()
+            }
+            HStack(spacing: 8) {
+                Button("Reveal & score") {
+                    quiz.submit(
+                        truth: display.groundTruth,
+                        greenId: greenId,
+                        distanceM: puttDistanceM ?? 0,
+                        stimpFt: model.stimpFt,
+                        client: client
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+                Button("Skip") { quiz.skip() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                Spacer()
+            }
+        }
+    }
+
+    /// Per-component + total score, shown alongside the readout once the
+    /// quiz has scored an estimate this putt (nil after Skip — nothing was
+    /// submitted). Mirrors the web `scoreHtml()` text exactly.
+    private func scoreBlock(_ result: PuttEstimateScoreResult) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                readoutTitle("Score")
+                Spacer()
+                MetricText("\(result.score)", unit: "/100", size: 13)
+            }
+            Text(
+                "Slope off \(String(format: "%.1f", result.slopeErrorPct))% · "
+                    + "break \(result.breakSideCorrect ? "✓" : "✗") · "
+                    + "aim off \(Int((result.aimErrorM * 100).rounded()))cm · "
+                    + "pace off \(String(format: "%.1f", result.paceErrorM))m"
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.cyan.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - Readout

@@ -179,6 +179,105 @@ final class PuttReadModelTests: XCTestCase {
         XCTAssertNotNil(display.message)
     }
 
+    // MARK: - Training-quiz ground truth (`Display.groundTruth`, doc §5.1)
+    //
+    // `groundTruth` is the single gate `PuttQuizModel.quizActive(groundTruth:)`
+    // checks — non-nil ONLY for a live Surface-tier read (ok or soft), nil
+    // everywhere else (place/pending/unavailable/manual/competition). These
+    // cases double as the competition-gating proof for the quiz: the model
+    // has no separate competition awareness, it just relies on this field.
+
+    func testGroundTruthPresentForSettledSurfaceRead() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        let display = model.display
+        XCTAssertEqual(display.status, .soft)
+        let truth = try XCTUnwrap(display.groundTruth, "live soft read must expose a ground truth")
+        let read = try XCTUnwrap(display.read)
+        XCTAssertEqual(truth.aimOffsetM, read.aimOffsetM)
+        XCTAssertEqual(truth.playsLikeM, read.playsLikeM)
+        XCTAssertEqual(truth.breakSide, display.tour?.aimSide)
+    }
+
+    func testGroundTruthNilBeforeBallPlaced() throws {
+        let model = armedModel(grid: tiltedGrid())
+        XCTAssertEqual(model.display.status, .place)
+        XCTAssertNil(model.display.groundTruth)
+    }
+
+    func testGroundTruthNilWhilePending() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        XCTAssertNotNil(model.display.groundTruth)
+
+        model.setStimp(12) // invalidates the settled read → .pending
+        XCTAssertEqual(model.display.status, .pending)
+        XCTAssertNil(model.display.groundTruth, "stale/pending read must not quiz-gate")
+    }
+
+    func testGroundTruthNilWhenUnavailable() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(Vec2(x: -50, y: -50))
+        model.computeSurfaceReadNow()
+        XCTAssertEqual(model.display.status, .unavailable)
+        XCTAssertNil(model.display.groundTruth)
+    }
+
+    func testGroundTruthNilInManualMode() throws {
+        let model = armedModel(grid: nil)
+        XCTAssertEqual(model.display.mode, .manual)
+        XCTAssertNotNil(model.display.tour, "manual still has a Tour Read...")
+        XCTAssertNil(model.display.groundTruth, "...but no independent truth to quiz against")
+    }
+
+    func testGroundTruthNilInCompetitionMode() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        XCTAssertNotNil(model.display.groundTruth, "live outside competition")
+
+        model.competitionMode = true
+        XCTAssertEqual(model.display.status, .competition)
+        XCTAssertNil(model.display.groundTruth, "quiz is advice-adjacent — off in competition")
+    }
+
+    // MARK: - Putt signature (`puttSignature`, quiz reset trigger)
+
+    func testPuttSignatureChangesWithBallHoleAndStimp() throws {
+        let model = armedModel(grid: tiltedGrid())
+        let base = model.puttSignature
+
+        model.placeBall(ball)
+        let afterBall = model.puttSignature
+        XCTAssertNotEqual(base, afterBall)
+
+        model.setPlaceTarget(.hole)
+        model.handleTap(Vec2(x: 11, y: 13))
+        let afterHole = model.puttSignature
+        XCTAssertNotEqual(afterBall, afterHole)
+
+        model.setStimp(13)
+        let afterStimp = model.puttSignature
+        XCTAssertNotEqual(afterHole, afterStimp)
+    }
+
+    func testPuttSignatureStableAcrossUnrelatedStateChanges() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        let before = model.puttSignature
+
+        // Recomputing the read, or toggling competition mode, must not
+        // perturb the putt signature — only ball/hole/stimp do.
+        model.computeSurfaceReadNow()
+        XCTAssertEqual(model.puttSignature, before)
+
+        model.competitionMode = true
+        XCTAssertEqual(model.puttSignature, before)
+        model.competitionMode = false
+    }
+
     // MARK: - Competition gating
 
     func testCompetitionModeWithholdsBothTiers() throws {
