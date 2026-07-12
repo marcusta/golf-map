@@ -185,6 +185,49 @@ public struct AppDatabase: Sendable {
             }
         }
 
+        // v3: on-course shot capture (docs/feature-shot-capture.md §2/§4) —
+        // locally recorded rounds + strokes with a dirty-flag sync queue.
+        // These are USER DATA (device is the writer), so unlike v1/v2 they
+        // carry local UUID primary keys + nullable server ids, and rounds
+        // deliberately do NOT reference `course`: deleting/refreshing a
+        // bundle must never destroy recorded rounds.
+        migrator.registerMigration("v3") { db in
+            try db.create(table: "round") { t in
+                t.primaryKey("id", .text)
+                t.column("serverId", .text)
+                t.column("courseId", .text).notNull().indexed()
+                t.column("startedAt", .text).notNull()
+                t.column("endedAt", .text)
+                t.column("gamePlanId", .text)
+                t.column("windSpeedMps", .double)
+                t.column("windDirectionDeg", .double)
+                t.column("serverVersion", .integer)
+                t.column("syncState", .text).notNull()
+                    .defaults(to: RoundSyncState.pending.rawValue)
+            }
+
+            try db.create(table: "shot") { t in
+                t.primaryKey("id", .text)
+                t.column("serverId", .text)
+                t.column("roundId", .text).notNull().indexed()
+                    .references("round", onDelete: .cascade)
+                t.column("holeNumber", .integer).notNull()
+                t.column("sortOrder", .integer).notNull()
+                t.column("lat", .double).notNull()
+                t.column("lon", .double).notNull()
+                t.column("clubId", .text)
+                t.column("shotType", .text).notNull()
+                    .defaults(to: ShotType.full.rawValue)
+                t.column("targetLat", .double)
+                t.column("targetLon", .double)
+                t.column("penaltyStrokes", .integer).notNull().defaults(to: 0)
+                t.column("recordedAt", .text).notNull()
+                t.column("serverVersion", .integer)
+                t.column("syncState", .text).notNull()
+                    .defaults(to: RoundSyncState.pending.rawValue)
+            }
+        }
+
         return migrator
     }
 

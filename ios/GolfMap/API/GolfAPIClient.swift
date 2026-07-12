@@ -164,6 +164,155 @@ public actor GolfAPIClient {
         }
     }
 
+    // MARK: - Rounds + shots (offline capture sync)
+
+    /// Starts a round on the server (`POST /api/rounds/start`). Called by the
+    /// sync engine when a locally captured round is first pushed — `startedAt`
+    /// is the LOCAL capture time, not the sync time.
+    public func startRound(
+        courseId: String,
+        startedAt: String,
+        gamePlanId: String? = nil,
+        windSpeedMps: Double? = nil,
+        windDirectionDeg: Double? = nil
+    ) async throws -> Round {
+        try await postJSON(path: "rounds/start", body: StartRoundRequest(
+            courseId: courseId,
+            startedAt: startedAt,
+            gamePlanId: gamePlanId,
+            windSpeedMps: windSpeedMps,
+            windDirectionDeg: windDirectionDeg
+        ))
+    }
+
+    /// Ends a round (`POST /api/rounds/end`, optimistic-locked).
+    public func endRound(id: String, version: Int, endedAt: String, notes: String? = nil) async throws -> Round {
+        try await postJSON(path: "rounds/end", body: EndRoundRequest(
+            id: id, version: version, endedAt: endedAt, notes: notes
+        ))
+    }
+
+    /// Adds a shot (`POST /api/rounds/shots/add`). The server assigns
+    /// `sortOrder` by insert order — the sync engine pushes in capture order.
+    public func addShot(
+        roundId: String,
+        holeNumber: Int,
+        lat: Double,
+        lon: Double,
+        clubId: String? = nil,
+        shotType: String? = nil,
+        targetLat: Double? = nil,
+        targetLon: Double? = nil,
+        penaltyStrokes: Int? = nil,
+        recordedAt: String? = nil
+    ) async throws -> Shot {
+        try await postJSON(path: "rounds/shots/add", body: AddShotRequest(
+            roundId: roundId,
+            holeNumber: holeNumber,
+            lat: lat,
+            lon: lon,
+            clubId: clubId,
+            shotType: shotType,
+            targetLat: targetLat,
+            targetLon: targetLon,
+            penaltyStrokes: penaltyStrokes,
+            recordedAt: recordedAt
+        ))
+    }
+
+    /// Updates a shot (`POST /api/rounds/shots/update`, optimistic-locked).
+    /// Nil fields are omitted from the body (unchanged on the server).
+    public func updateShot(
+        id: String,
+        version: Int,
+        lat: Double? = nil,
+        lon: Double? = nil,
+        holeNumber: Int? = nil,
+        clubId: String? = nil,
+        shotType: String? = nil,
+        targetLat: Double? = nil,
+        targetLon: Double? = nil,
+        penaltyStrokes: Int? = nil
+    ) async throws -> Shot {
+        try await postJSON(path: "rounds/shots/update", body: UpdateShotRequest(
+            id: id,
+            version: version,
+            lat: lat,
+            lon: lon,
+            holeNumber: holeNumber,
+            clubId: clubId,
+            shotType: shotType,
+            targetLat: targetLat,
+            targetLon: targetLon,
+            penaltyStrokes: penaltyStrokes
+        ))
+    }
+
+    /// Removes a shot (`POST /api/rounds/shots/remove`, optimistic-locked).
+    @discardableResult
+    public func removeShot(id: String, version: Int) async throws -> OKResponse {
+        try await postJSON(path: "rounds/shots/remove", body: RemoveShotRequest(id: id, version: version))
+    }
+
+    /// Encodes `body` and POSTs it — shared by the rounds endpoints.
+    /// Synthesized Codable omits nil optionals, matching the server's
+    /// "absent means unchanged/default" validation.
+    private func postJSON<Body: Encodable, T: Decodable>(path: String, body: Body) async throws -> T {
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(body)
+        } catch {
+            throw APIError.decoding("Failed to encode \(path) body: \(error)")
+        }
+        return try await request(path: path, method: "POST", body: data)
+    }
+
+    private struct StartRoundRequest: Encodable {
+        let courseId: String
+        let startedAt: String
+        let gamePlanId: String?
+        let windSpeedMps: Double?
+        let windDirectionDeg: Double?
+    }
+
+    private struct EndRoundRequest: Encodable {
+        let id: String
+        let version: Int
+        let endedAt: String
+        let notes: String?
+    }
+
+    private struct AddShotRequest: Encodable {
+        let roundId: String
+        let holeNumber: Int
+        let lat: Double
+        let lon: Double
+        let clubId: String?
+        let shotType: String?
+        let targetLat: Double?
+        let targetLon: Double?
+        let penaltyStrokes: Int?
+        let recordedAt: String?
+    }
+
+    private struct UpdateShotRequest: Encodable {
+        let id: String
+        let version: Int
+        let lat: Double?
+        let lon: Double?
+        let holeNumber: Int?
+        let clubId: String?
+        let shotType: String?
+        let targetLat: Double?
+        let targetLon: Double?
+        let penaltyStrokes: Int?
+    }
+
+    private struct RemoveShotRequest: Encodable {
+        let id: String
+        let version: Int
+    }
+
     // MARK: - Green calibration (scan upload)
 
     /// Uploads one green scan to `POST /api/green-calibration/scans`.

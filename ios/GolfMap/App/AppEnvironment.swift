@@ -33,6 +33,9 @@ final class AppEnvironment {
     let bundlePaths: BundlePaths
     let downloader: BundleDownloader
     let syncService: SyncService
+    /// Pushes locally captured rounds/shots (dirty-flag queue). Flushed on
+    /// app-start/foreground (`GolfMapApp`) and after every capture write.
+    let roundSync: RoundSyncService
     let keychain: Keychain
     /// App-wide user preferences (competition mode, …).
     let settings: AppSettings
@@ -66,6 +69,7 @@ final class AppEnvironment {
         let downloader = BundleDownloader(database: database, paths: bundlePaths)
         self.downloader = downloader
         self.syncService = SyncService(client: client, downloader: downloader, serverOrigin: serverOrigin)
+        self.roundSync = RoundSyncService(client: client, database: database)
 
         // Wire the Keychain into the client's silent re-login hook.
         let kc = keychain
