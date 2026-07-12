@@ -1235,5 +1235,733 @@
                 "rows": []
             }
         ]
+    },
+    "caddy": {
+        "run": {
+            "cases": [
+                {
+                    "name": "orders by priority × confidence",
+                    "riskAversion": 0,
+                    "rules": [
+                        {
+                            "id": "low",
+                            "advice": [
+                                {
+                                    "ruleId": "low",
+                                    "priority": 2,
+                                    "confidence": 0.4,
+                                    "headline": "low"
+                                }
+                            ]
+                        },
+                        {
+                            "id": "high",
+                            "advice": [
+                                {
+                                    "ruleId": "high",
+                                    "priority": 4,
+                                    "confidence": 1,
+                                    "headline": "high"
+                                }
+                            ]
+                        },
+                        {
+                            "id": "mid",
+                            "advice": [
+                                {
+                                    "ruleId": "mid",
+                                    "priority": 3,
+                                    "confidence": 0.5,
+                                    "headline": "mid"
+                                }
+                            ]
+                        }
+                    ],
+                    "expected": [
+                        "high",
+                        "mid",
+                        "low"
+                    ]
+                },
+                {
+                    "name": "higher priority outranked by higher confidence",
+                    "riskAversion": 0,
+                    "rules": [
+                        {
+                            "id": "a",
+                            "advice": [
+                                {
+                                    "ruleId": "a",
+                                    "priority": 5,
+                                    "confidence": 0.3,
+                                    "headline": "a"
+                                }
+                            ]
+                        },
+                        {
+                            "id": "b",
+                            "advice": [
+                                {
+                                    "ruleId": "b",
+                                    "priority": 2,
+                                    "confidence": 1,
+                                    "headline": "b"
+                                }
+                            ]
+                        }
+                    ],
+                    "expected": [
+                        "b",
+                        "a"
+                    ]
+                },
+                {
+                    "name": "veto demotes targeted advice below all non-vetoed",
+                    "riskAversion": 0,
+                    "rules": [
+                        {
+                            "id": "attack",
+                            "advice": [
+                                {
+                                    "ruleId": "attack",
+                                    "priority": 4,
+                                    "confidence": 1,
+                                    "headline": "attack"
+                                }
+                            ]
+                        },
+                        {
+                            "id": "safety",
+                            "advice": [
+                                {
+                                    "ruleId": "safety",
+                                    "priority": 1,
+                                    "confidence": 1,
+                                    "headline": "lay up",
+                                    "vetoes": [
+                                        "attack"
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            "id": "neutral",
+                            "advice": [
+                                {
+                                    "ruleId": "neutral",
+                                    "priority": 2,
+                                    "confidence": 1,
+                                    "headline": "neutral"
+                                }
+                            ]
+                        }
+                    ],
+                    "expected": [
+                        "neutral",
+                        "safety",
+                        "attack"
+                    ]
+                },
+                {
+                    "name": "veto against absent rule is a no-op",
+                    "riskAversion": 0,
+                    "rules": [
+                        {
+                            "id": "safety",
+                            "advice": [
+                                {
+                                    "ruleId": "safety",
+                                    "headline": "safe",
+                                    "vetoes": [
+                                        "ghost-rule"
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "expected": [
+                        "safety"
+                    ]
+                },
+                {
+                    "name": "no rules → no advice",
+                    "riskAversion": 0,
+                    "rules": [],
+                    "expected": []
+                },
+                {
+                    "name": "dedupe identical recommendations",
+                    "riskAversion": 0,
+                    "rules": [
+                        {
+                            "id": "dup",
+                            "advice": [
+                                {
+                                    "ruleId": "dup",
+                                    "kind": "club",
+                                    "priority": 2,
+                                    "confidence": 1,
+                                    "headline": "same"
+                                },
+                                {
+                                    "ruleId": "dup",
+                                    "kind": "club",
+                                    "priority": 2,
+                                    "confidence": 1,
+                                    "headline": "same"
+                                }
+                            ]
+                        }
+                    ],
+                    "expected": [
+                        "dup"
+                    ]
+                },
+                {
+                    "name": "distinct headlines same rule kept",
+                    "riskAversion": 0,
+                    "rules": [
+                        {
+                            "id": "r",
+                            "advice": [
+                                {
+                                    "ruleId": "r",
+                                    "kind": "club",
+                                    "headline": "club up"
+                                },
+                                {
+                                    "ruleId": "r",
+                                    "kind": "club",
+                                    "headline": "club down"
+                                }
+                            ]
+                        }
+                    ],
+                    "expected": [
+                        "r",
+                        "r"
+                    ]
+                },
+                {
+                    "name": "risk-weighted floats up (calm, riskAversion 0)",
+                    "riskAversion": 0,
+                    "rules": [
+                        {
+                            "id": "safety",
+                            "advice": [
+                                {
+                                    "ruleId": "safety",
+                                    "priority": 2,
+                                    "confidence": 1,
+                                    "headline": "safe",
+                                    "riskWeighted": true
+                                }
+                            ]
+                        },
+                        {
+                            "id": "bold",
+                            "advice": [
+                                {
+                                    "ruleId": "bold",
+                                    "priority": 1.4,
+                                    "confidence": 1,
+                                    "headline": "bold"
+                                }
+                            ]
+                        }
+                    ],
+                    "expected": [
+                        "bold",
+                        "safety"
+                    ]
+                },
+                {
+                    "name": "risk-weighted floats up (scared, riskAversion 1)",
+                    "riskAversion": 1,
+                    "rules": [
+                        {
+                            "id": "safety",
+                            "advice": [
+                                {
+                                    "ruleId": "safety",
+                                    "priority": 2,
+                                    "confidence": 1,
+                                    "headline": "safe",
+                                    "riskWeighted": true
+                                }
+                            ]
+                        },
+                        {
+                            "id": "bold",
+                            "advice": [
+                                {
+                                    "ruleId": "bold",
+                                    "priority": 1.4,
+                                    "confidence": 1,
+                                    "headline": "bold"
+                                }
+                            ]
+                        }
+                    ],
+                    "expected": [
+                        "safety",
+                        "bold"
+                    ]
+                },
+                {
+                    "name": "equal ranks deterministic by ruleId",
+                    "riskAversion": 0,
+                    "rules": [
+                        {
+                            "id": "zulu",
+                            "advice": [
+                                {
+                                    "ruleId": "zulu",
+                                    "priority": 2,
+                                    "confidence": 1,
+                                    "headline": "z"
+                                }
+                            ]
+                        },
+                        {
+                            "id": "alpha",
+                            "advice": [
+                                {
+                                    "ruleId": "alpha",
+                                    "priority": 2,
+                                    "confidence": 1,
+                                    "headline": "a"
+                                }
+                            ]
+                        }
+                    ],
+                    "expected": [
+                        "alpha",
+                        "zulu"
+                    ]
+                }
+            ]
+        },
+        "greenSlope": {
+            "constants": {
+                "MIN_FALL_LINE_PCT": 3,
+                "FALL_LINE_ALIGN_TOLERANCE_DEG": 45,
+                "FRONT_CLEAN_WINDOW_M": 30
+            },
+            "cases": [
+                {
+                    "name": "aligned + steep + front-clean fires",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 180,
+                        "fallLinePct": 4,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [],
+                    "out": [
+                        {
+                            "ruleId": "green-slope-half",
+                            "kind": "target-half",
+                            "priority": 3,
+                            "confidence": 0.6666666666666666,
+                            "headline": "Favour the short half — the green runs away from you.",
+                            "detail": "The green falls about 4% back-to-front, so a short miss feeds toward the pin while anything long leaves a slippery downhiller — aim for the front half of the green.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 95
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "diagonal inside cone (140) fires",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 140,
+                        "fallLinePct": 4,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [],
+                    "out": [
+                        {
+                            "ruleId": "green-slope-half",
+                            "kind": "target-half",
+                            "priority": 3,
+                            "confidence": 0.5555555555555556,
+                            "headline": "Favour the short half — the green runs away from you.",
+                            "detail": "The green falls about 4% back-to-front, so a short miss feeds toward the pin while anything long leaves a slippery downhiller — aim for the front half of the green.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 95
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "shallowish (3.2%) fires, low confidence",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 180,
+                        "fallLinePct": 3.2,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [],
+                    "out": [
+                        {
+                            "ruleId": "green-slope-half",
+                            "kind": "target-half",
+                            "priority": 3,
+                            "confidence": 0.5333333333333333,
+                            "headline": "Favour the short half — the green runs away from you.",
+                            "detail": "The green falls about 3% back-to-front, so a short miss feeds toward the pin while anything long leaves a slippery downhiller — aim for the front half of the green.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 95
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "steep (6%) fires, higher confidence",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 180,
+                        "fallLinePct": 6,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [],
+                    "out": [
+                        {
+                            "ruleId": "green-slope-half",
+                            "kind": "target-half",
+                            "priority": 3,
+                            "confidence": 1,
+                            "headline": "Favour the short half — the green runs away from you.",
+                            "detail": "The green falls about 6% back-to-front, so a short miss feeds toward the pin while anything long leaves a slippery downhiller — aim for the front half of the green.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 95
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "hazard in front window suppresses",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 180,
+                        "fallLinePct": 4,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [
+                        {
+                            "kind": "bunker",
+                            "points": [
+                                {
+                                    "x": -5,
+                                    "y": 70
+                                },
+                                {
+                                    "x": 5,
+                                    "y": 70
+                                },
+                                {
+                                    "x": 5,
+                                    "y": 80
+                                },
+                                {
+                                    "x": -5,
+                                    "y": 80
+                                }
+                            ]
+                        }
+                    ],
+                    "out": []
+                },
+                {
+                    "name": "hazard beyond window does not suppress",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 180,
+                        "fallLinePct": 4,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [
+                        {
+                            "kind": "bunker",
+                            "points": [
+                                {
+                                    "x": -5,
+                                    "y": 40
+                                },
+                                {
+                                    "x": 5,
+                                    "y": 40
+                                },
+                                {
+                                    "x": 5,
+                                    "y": 50
+                                },
+                                {
+                                    "x": -5,
+                                    "y": 50
+                                }
+                            ]
+                        }
+                    ],
+                    "out": [
+                        {
+                            "ruleId": "green-slope-half",
+                            "kind": "target-half",
+                            "priority": 3,
+                            "confidence": 0.6666666666666666,
+                            "headline": "Favour the short half — the green runs away from you.",
+                            "detail": "The green falls about 4% back-to-front, so a short miss feeds toward the pin while anything long leaves a slippery downhiller — aim for the front half of the green.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 95
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "shallow (2.5%) no advice",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 180,
+                        "fallLinePct": 2.5,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [],
+                    "out": []
+                },
+                {
+                    "name": "cross-slope (90) no advice",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 90,
+                        "fallLinePct": 4,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [],
+                    "out": []
+                },
+                {
+                    "name": "front-to-back (0) no advice",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 0,
+                        "fallLinePct": 4,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [],
+                    "out": []
+                },
+                {
+                    "name": "non-approach leg no advice",
+                    "leg": "tee",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": {
+                        "fallLineBearingDeg": 180,
+                        "fallLinePct": 4,
+                        "frontHalfPct": 4,
+                        "backHalfPct": 4
+                    },
+                    "hazards": [],
+                    "out": []
+                },
+                {
+                    "name": "missing greenSlope no advice",
+                    "leg": "approach",
+                    "origin": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "front": {
+                        "x": 0,
+                        "y": 95
+                    },
+                    "center": {
+                        "x": 0,
+                        "y": 100
+                    },
+                    "back": {
+                        "x": 0,
+                        "y": 105
+                    },
+                    "greenSlope": null,
+                    "hazards": [],
+                    "out": []
+                }
+            ]
+        }
     }
 }

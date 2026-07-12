@@ -14,6 +14,9 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { type CaddyAdvice, type CaddyContext, type CaddyRule } from './caddy/rule';
+import { runCaddy } from './caddy/run';
+import { greenSlopeHalfRule } from './caddy/rules/green-slope-half';
 import { hazardsAlongLine } from './carry';
 import {
     type ClubSpec,
@@ -326,6 +329,237 @@ const featureDistancesFx = {
 };
 
 // ---------------------------------------------------------------------------
+// Caddy module — runCaddy evaluator + green-slope-half rule
+// ---------------------------------------------------------------------------
+
+// A CaddyContext the evaluator/rule can read. The run-cases only touch
+// `hole`/`risk`; the green-slope cases fill origin/target/greenSlope/hazards.
+function caddyCtx(over: Partial<CaddyContext> = {}): CaddyContext {
+    return {
+        leg: 'approach',
+        origin: { x: 0, y: 0 },
+        target: {
+            greenPoly: { kind: 'green', points: [] },
+            center: { x: 0, y: 100 },
+            front: { x: 0, y: 95 },
+            back: { x: 0, y: 105 },
+        },
+        distances: [],
+        hazards: [],
+        clubs: [],
+        hole: { par: 4, index: 1 },
+        risk: { riskAversion: 0 },
+        ...over,
+    };
+}
+
+// A synthetic rule that emits exactly the advice it is handed (mirrors the
+// run.test.ts `ruleEmitting` helper). Serialized as {id, advice[]} so Swift
+// rebuilds the identical rule set.
+function ruleEmitting(id: string, ...advice: CaddyAdvice[]): CaddyRule {
+    return { id, appliesTo: () => true, evaluate: () => advice };
+}
+
+interface AdviceInput {
+    ruleId: string;
+    kind?: CaddyAdvice['kind'];
+    priority?: number;
+    confidence?: number;
+    headline?: string;
+    detail?: string;
+    vetoes?: string[];
+    riskWeighted?: boolean;
+}
+
+function mkAdvice(a: AdviceInput): CaddyAdvice {
+    return {
+        ruleId: a.ruleId,
+        kind: a.kind ?? 'warning',
+        priority: a.priority ?? 1,
+        confidence: a.confidence ?? 1,
+        headline: a.headline ?? `advice-${a.ruleId}`,
+        ...(a.detail !== undefined ? { detail: a.detail } : {}),
+        ...(a.vetoes !== undefined ? { vetoes: a.vetoes } : {}),
+        ...(a.riskWeighted !== undefined ? { riskWeighted: a.riskWeighted } : {}),
+    };
+}
+
+interface RunRuleInput {
+    id: string;
+    advice: AdviceInput[];
+}
+interface RunCase {
+    name: string;
+    riskAversion: number;
+    rules: RunRuleInput[];
+}
+
+// Mirrors shared/strategy/caddy/run.test.ts, as data.
+const runCases: RunCase[] = [
+    {
+        name: 'orders by priority × confidence',
+        riskAversion: 0,
+        rules: [
+            { id: 'low', advice: [{ ruleId: 'low', priority: 2, confidence: 0.4, headline: 'low' }] },
+            { id: 'high', advice: [{ ruleId: 'high', priority: 4, confidence: 1, headline: 'high' }] },
+            { id: 'mid', advice: [{ ruleId: 'mid', priority: 3, confidence: 0.5, headline: 'mid' }] },
+        ],
+    },
+    {
+        name: 'higher priority outranked by higher confidence',
+        riskAversion: 0,
+        rules: [
+            { id: 'a', advice: [{ ruleId: 'a', priority: 5, confidence: 0.3, headline: 'a' }] },
+            { id: 'b', advice: [{ ruleId: 'b', priority: 2, confidence: 1, headline: 'b' }] },
+        ],
+    },
+    {
+        name: 'veto demotes targeted advice below all non-vetoed',
+        riskAversion: 0,
+        rules: [
+            { id: 'attack', advice: [{ ruleId: 'attack', priority: 4, confidence: 1, headline: 'attack' }] },
+            { id: 'safety', advice: [{ ruleId: 'safety', priority: 1, confidence: 1, headline: 'lay up', vetoes: ['attack'] }] },
+            { id: 'neutral', advice: [{ ruleId: 'neutral', priority: 2, confidence: 1, headline: 'neutral' }] },
+        ],
+    },
+    {
+        name: 'veto against absent rule is a no-op',
+        riskAversion: 0,
+        rules: [{ id: 'safety', advice: [{ ruleId: 'safety', headline: 'safe', vetoes: ['ghost-rule'] }] }],
+    },
+    { name: 'no rules → no advice', riskAversion: 0, rules: [] },
+    {
+        name: 'dedupe identical recommendations',
+        riskAversion: 0,
+        rules: [{ id: 'dup', advice: [
+            { ruleId: 'dup', kind: 'club', priority: 2, confidence: 1, headline: 'same' },
+            { ruleId: 'dup', kind: 'club', priority: 2, confidence: 1, headline: 'same' },
+        ] }],
+    },
+    {
+        name: 'distinct headlines same rule kept',
+        riskAversion: 0,
+        rules: [{ id: 'r', advice: [
+            { ruleId: 'r', kind: 'club', headline: 'club up' },
+            { ruleId: 'r', kind: 'club', headline: 'club down' },
+        ] }],
+    },
+    {
+        name: 'risk-weighted floats up (calm, riskAversion 0)',
+        riskAversion: 0,
+        rules: [
+            { id: 'safety', advice: [{ ruleId: 'safety', priority: 2, confidence: 1, headline: 'safe', riskWeighted: true }] },
+            { id: 'bold', advice: [{ ruleId: 'bold', priority: 1.4, confidence: 1, headline: 'bold' }] },
+        ],
+    },
+    {
+        name: 'risk-weighted floats up (scared, riskAversion 1)',
+        riskAversion: 1,
+        rules: [
+            { id: 'safety', advice: [{ ruleId: 'safety', priority: 2, confidence: 1, headline: 'safe', riskWeighted: true }] },
+            { id: 'bold', advice: [{ ruleId: 'bold', priority: 1.4, confidence: 1, headline: 'bold' }] },
+        ],
+    },
+    {
+        name: 'equal ranks deterministic by ruleId',
+        riskAversion: 0,
+        rules: [
+            { id: 'zulu', advice: [{ ruleId: 'zulu', priority: 2, confidence: 1, headline: 'z' }] },
+            { id: 'alpha', advice: [{ ruleId: 'alpha', priority: 2, confidence: 1, headline: 'a' }] },
+        ],
+    },
+];
+
+const caddyRun = {
+    cases: runCases.map((c) => {
+        const rules = c.rules.map((r) => ruleEmitting(r.id, ...r.advice.map(mkAdvice)));
+        const out = runCaddy(caddyCtx({ risk: { riskAversion: c.riskAversion } }), rules);
+        return {
+            name: c.name,
+            riskAversion: c.riskAversion,
+            rules: c.rules,
+            expected: out.map((a) => a.ruleId),
+        };
+    }),
+};
+
+// green-slope-half — mirrors shared/strategy/caddy/rules/green-slope-half.test.ts.
+const gsBox = (minX: number, minY: number, maxX: number, maxY: number, kind = 'bunker') => ({
+    kind,
+    points: [
+        { x: minX, y: minY },
+        { x: maxX, y: minY },
+        { x: maxX, y: maxY },
+        { x: minX, y: maxY },
+    ],
+});
+const gsSummary = (over: Partial<CaddyContext['greenSlope'] & object> = {}) => ({
+    fallLineBearingDeg: 180,
+    fallLinePct: 4,
+    frontHalfPct: 4,
+    backHalfPct: 4,
+    ...over,
+});
+
+interface GsCase {
+    name: string;
+    leg?: CaddyContext['leg'];
+    greenSlope?: ReturnType<typeof gsSummary> | null;
+    hazards?: ReturnType<typeof gsBox>[];
+}
+
+const gsCases: GsCase[] = [
+    { name: 'aligned + steep + front-clean fires', greenSlope: gsSummary() },
+    { name: 'diagonal inside cone (140) fires', greenSlope: gsSummary({ fallLineBearingDeg: 140 }) },
+    { name: 'shallowish (3.2%) fires, low confidence', greenSlope: gsSummary({ fallLinePct: 3.2 }) },
+    { name: 'steep (6%) fires, higher confidence', greenSlope: gsSummary({ fallLinePct: 6 }) },
+    { name: 'hazard in front window suppresses', greenSlope: gsSummary(), hazards: [gsBox(-5, 70, 5, 80)] },
+    { name: 'hazard beyond window does not suppress', greenSlope: gsSummary(), hazards: [gsBox(-5, 40, 5, 50)] },
+    { name: 'shallow (2.5%) no advice', greenSlope: gsSummary({ fallLinePct: 2.5 }) },
+    { name: 'cross-slope (90) no advice', greenSlope: gsSummary({ fallLineBearingDeg: 90 }) },
+    { name: 'front-to-back (0) no advice', greenSlope: gsSummary({ fallLineBearingDeg: 0 }) },
+    { name: 'non-approach leg no advice', leg: 'tee', greenSlope: gsSummary() },
+    { name: 'missing greenSlope no advice', greenSlope: null },
+];
+
+const caddyGreenSlope = {
+    constants: {
+        MIN_FALL_LINE_PCT: 3,
+        FALL_LINE_ALIGN_TOLERANCE_DEG: 45,
+        FRONT_CLEAN_WINDOW_M: 30,
+    },
+    cases: gsCases.map((c) => {
+        const ctx = caddyCtx({
+            leg: c.leg ?? 'approach',
+            greenSlope: c.greenSlope === null ? undefined : c.greenSlope,
+            hazards: (c.hazards ?? []) as CaddyContext['hazards'],
+        });
+        const out = runCaddy(ctx, [greenSlopeHalfRule]);
+        return {
+            name: c.name,
+            leg: ctx.leg,
+            origin: ctx.origin,
+            front: ctx.target.front,
+            center: ctx.target.center,
+            back: ctx.target.back,
+            greenSlope: c.greenSlope,
+            hazards: c.hazards ?? [],
+            out: out.map((a) => ({
+                ruleId: a.ruleId,
+                kind: a.kind,
+                priority: a.priority,
+                confidence: a.confidence,
+                headline: a.headline,
+                detail: a.detail ?? null,
+                anchor: a.anchor ?? null,
+            })),
+        };
+    }),
+};
+
+const caddy = { run: caddyRun, greenSlope: caddyGreenSlope };
+
+// ---------------------------------------------------------------------------
 // Write
 // ---------------------------------------------------------------------------
 
@@ -340,6 +574,7 @@ const fixture = {
     wind,
     carry,
     featureDistances: featureDistancesFx,
+    caddy,
 };
 
 mkdirSync(dirname(OUT_PATH), { recursive: true });
@@ -347,5 +582,6 @@ writeFileSync(OUT_PATH, `${JSON.stringify(fixture, null, 4)}\n`);
 console.log(
     `wrote ${OUT_PATH}: club ${club.clubAdvice.length} advice cases, ` +
         `wind ${wind.windEffect.length} cases, carry ${carry.cases.length} cases, ` +
-        `featureDistances ${featureDistancesFx.cases.length} cases`,
+        `featureDistances ${featureDistancesFx.cases.length} cases, ` +
+        `caddy ${caddy.run.cases.length} run + ${caddy.greenSlope.cases.length} green-slope cases`,
 );
