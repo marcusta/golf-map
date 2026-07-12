@@ -96,8 +96,15 @@ final class PuttReadModel {
     // MARK: - Surface source
 
     @ObservationIgnored private var grid: SampleGrid?
-    /// Tier-2 surface: bilinear DemSurface over the terrain-tile grid.
-    @ObservationIgnored private var demSurface: DemSurface?
+    /// Tier-2 surface: bilinear DemSurface over the terrain-tile grid, at the
+    /// terrain-tile confidence — or, when the active green has server
+    /// calibration, at the calibrated confidence and wrapped in a
+    /// `CalibratedSurface` that corrects the DEM gradient by the fitted bias.
+    @ObservationIgnored private var demSurface: (any GreenSurface)?
+    /// Server per-green calibration for the active green (synced + cached;
+    /// `applyCalibration`). Nil = uncalibrated → the read behaves exactly like
+    /// the bare terrain tiles (doc §4.2).
+    @ObservationIgnored private var calibration: GreenCalibration?
     /// Tier-1 surface: a fresh LiDAR corridor scan (task E1 seam, see
     /// `installScannedSurface`). Takes precedence over the DEM when present.
     @ObservationIgnored private var scannedSurface: (any GreenSurface)?
@@ -158,6 +165,7 @@ final class PuttReadModel {
         hole = defaultHole
         placeTarget = .ball
         scannedSurface = nil // a corridor scan never outlives its hole (E1 seam)
+        calibration = nil // calibration is per-green — the screen re-applies it
         installGrid(nil)
     }
 
@@ -173,14 +181,53 @@ final class PuttReadModel {
     /// Keeps the markers (a data refresh must not lose a placed ball).
     func installGrid(_ newGrid: SampleGrid?) {
         grid = newGrid
-        demSurface = newGrid.map { DemSurface(
-            grid: $0,
-            confidence: PuttReadGeometry.TERRAIN_TILE_DEM_CONFIDENCE
-        ) }
+        rebuildDemSurface()
         gridSeq += 1
         result = nil
         mode = surface == nil ? .manual : .surface
         scheduleRead()
+    }
+
+    /// Apply (or clear) the active green's server calibration — the read side
+    /// of the green-scan round-trip (doc §4.2). Set by the screen right after
+    /// `activate`, from the synced + offline-cached course calibration:
+    ///
+    ///  - **confidence:** the agreement statistic REPLACES the conservative
+    ///    terrain-tile default, so a well-calibrated green can cross
+    ///    `minReadConfidence` and stop being softened (ordinal — softening
+    ///    only, never sharpens the geometry).
+    ///  - **bias:** the fitted low-frequency tilt corrects the DEM gradient
+    ///    (`CalibratedSurface`).
+    ///
+    /// Nil (uncalibrated green) is a no-op: the terrain-tile read is unchanged.
+    /// Rebuilds the current surface so a mid-session refresh takes effect.
+    func applyCalibration(_ calibration: GreenCalibration?) {
+        self.calibration = calibration
+        rebuildDemSurface()
+        gridSeq += 1
+        result = nil
+        scheduleRead()
+    }
+
+    /// Rebuild the Tier-2 surface from the current grid + calibration: a
+    /// `DemSurface` at the calibrated (else terrain-tile) confidence, wrapped
+    /// in a `CalibratedSurface` when a bias is fitted. Nil grid → no surface.
+    private func rebuildDemSurface() {
+        guard let grid else {
+            demSurface = nil
+            return
+        }
+        let confidence = calibration?.confidence ?? PuttReadGeometry.TERRAIN_TILE_DEM_CONFIDENCE
+        let base = DemSurface(grid: grid, confidence: confidence)
+        if let bias = calibration?.bias {
+            demSurface = CalibratedSurface(
+                base: base,
+                bias: bias,
+                origin: Vec2(x: grid.spec.originE, y: grid.spec.originN)
+            )
+        } else {
+            demSurface = base
+        }
     }
 
     /// ── Seam for task E1 (LiDAR corridor scan — Tier 1) ─────────────────────
@@ -213,12 +260,26 @@ final class PuttReadModel {
         grid = nil
         demSurface = nil
         scannedSurface = nil
+        calibration = nil
         result = nil
     }
 
     var hasSurface: Bool {
         _ = gridSeq // observation dependency (surface itself is untracked)
         return surface != nil
+    }
+
+    /// Subtle calibration state for the panel — "Calibrated · N scans" when the
+    /// active green carries server calibration from real scans, else nil. Lets
+    /// a softened-vs-confident read be explained (doc §4.2). Nil in competition
+    /// mode (the whole read section is off). Reads `gridSeq` so it updates when
+    /// `applyCalibration` lands.
+    var calibrationNote: String? {
+        _ = gridSeq // observation dependency (calibration itself is untracked)
+        guard !competitionMode, let calibration else { return nil }
+        let n = calibration.sampleCount
+        let count = n == n.rounded() ? String(Int(n)) : String(format: "%.1f", n)
+        return "Calibrated · \(count) scan\(n == 1 ? "" : "s")"
     }
 
     // MARK: - Placement (settled edits — recompute)

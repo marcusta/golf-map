@@ -228,6 +228,24 @@ public struct AppDatabase: Sendable {
             }
         }
 
+        // v4: read-only per-green calibration cache — the read side of the
+        // green-scan round-trip (docs/feature-putting-green-reading.md §4.2).
+        // Fetched on course open like the game plan, consumed offline by the
+        // putt read. FK to `course` so deleting a bundle wipes it. No server
+        // version column (the device never edits these rows).
+        migrator.registerMigration("v4") { db in
+            try db.create(table: "greenCalibration") { t in
+                // Keyed by the server green ROW id (one calibration per green).
+                t.primaryKey("greenId", .text)
+                t.column("courseId", .text).notNull().indexed()
+                    .references("course", onDelete: .cascade)
+                t.column("confidence", .double).notNull()
+                t.column("sampleCount", .double).notNull()
+                t.column("biasTiltE", .double)
+                t.column("biasTiltN", .double)
+            }
+        }
+
         return migrator
     }
 
@@ -423,6 +441,33 @@ public struct AppDatabase: Sendable {
         try await dbQueue.write { db in
             try ClubRecord.deleteAll(db)
             for club in clubs { try club.insert(db) }
+        }
+    }
+
+    // MARK: - Green calibration (read-only viewer cache)
+
+    /// The cached per-green calibration rows for a course (the caller keys them
+    /// by greenId). Only greens the server calibrated from scans are stored.
+    public func greenCalibrations(courseId: String) async throws -> [GreenCalibrationCacheRecord] {
+        try await dbQueue.read { db in
+            try GreenCalibrationCacheRecord
+                .filter(Column("courseId") == courseId)
+                .fetchAll(db)
+        }
+    }
+
+    /// Atomically replaces the cached calibration for a course with the
+    /// server's list (delete-all-for-course, then insert). A green that lost
+    /// its calibration server-side simply drops out of the cache.
+    public func saveGreenCalibrations(
+        courseId: String,
+        _ records: [GreenCalibrationCacheRecord]
+    ) async throws {
+        try await dbQueue.write { db in
+            try GreenCalibrationCacheRecord
+                .filter(Column("courseId") == courseId)
+                .deleteAll(db)
+            for record in records { try record.insert(db) }
         }
     }
 }

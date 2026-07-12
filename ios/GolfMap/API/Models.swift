@@ -327,6 +327,38 @@ public struct GreenScanIngestResponse: Codable, Sendable, Equatable {
     public let calibration: GreenCalibrationRecord?
 }
 
+// MARK: - Green calibration (per-green confidence read)
+
+/// One green's calibration confidence from `GET /api/green-calibration/confidence`
+/// (`GreenConfidence` in `shared/api/green-calibration.gen.ts`) — the READ side
+/// of the scan round-trip. `source` is `"scans"` (derived from accepted phone
+/// scans; carries a fitted `bias` when a DEM comparison was possible) or
+/// `"prior"` (the server's bare-DEM fallback). iOS consumes only `"scans"`
+/// greens: the `"prior"` confidence (0.6) is tuned for the web's full-precision
+/// DEM, not the iOS terrain tiles, so iOS keeps its own conservative default
+/// there (doc feature-putting-green-reading §4.2 / PuttReadGeometry).
+public struct GreenConfidenceDTO: Codable, Sendable, Equatable {
+    public let greenId: String
+    public let confidence: Double
+    /// Weighted accepted-scan count (green 1.0, yellow 0.5).
+    public let sampleCount: Double
+    public let source: String
+    /// Present only for a `"scans"` green with a fitted bias.
+    public let bias: GreenBiasDTO?
+}
+
+/// Fitted low-frequency DEM tilt correction, rise/run fractions (EPSG:3006
+/// east/north) — `GreenBias` in the shared gen.
+public struct GreenBiasDTO: Codable, Sendable, Equatable {
+    public let tiltE: Double
+    public let tiltN: Double
+}
+
+/// `GET /api/green-calibration/confidence` response envelope.
+public struct CourseConfidenceResponse: Codable, Sendable, Equatable {
+    public let greens: [GreenConfidenceDTO]
+}
+
 // MARK: - Error envelope
 
 /// The server's generic error body, `{ "error": string }`.

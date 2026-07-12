@@ -34,6 +34,9 @@ struct PuttReadSection: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
+                if let note = model.calibrationNote {
+                    calibrationBadge(note)
+                }
                 if display.mode == .manual {
                     manualForm
                 } else {
@@ -85,6 +88,23 @@ struct PuttReadSection: View {
             .controlSize(.mini)
             .accessibilityLabel("Level the green")
         }
+    }
+
+    /// Subtle "Calibrated · N scans" line: this green's read is corrected +
+    /// confidence-lifted by accepted phone scans (doc §4.2). Explains why a
+    /// calibrated green reads confident where a bare terrain-tile green is
+    /// softened. Nil (uncalibrated / competition) → the row isn't shown.
+    private func calibrationBadge(_ note: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.caption2)
+                .foregroundStyle(.green)
+            Text(note)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Surface (Tier 2)

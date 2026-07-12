@@ -352,6 +352,20 @@ public actor GolfAPIClient {
         )
     }
 
+    /// Per-green calibration confidence + fitted bias for a course
+    /// (`GET /api/green-calibration/confidence`) — the READ side of the scan
+    /// round-trip. The putt read syncs this on course open and applies it
+    /// (confidence lift + bias correction) to the terrain-tile surface. Returns
+    /// one row per green on the course (calibrated greens carry a bias; the
+    /// rest report the DEM prior).
+    public func courseConfidence(courseId: String) async throws -> [GreenConfidenceDTO] {
+        let response: CourseConfidenceResponse = try await request(
+            path: "green-calibration/confidence",
+            query: ["courseId": courseId]
+        )
+        return response.greens
+    }
+
     /// The `ingestScan` request body. `payload`/`quality` encode inline (not as
     /// strings) — the server parses the JSON and stores it verbatim.
     private struct ScanIngestRequest<Payload: Encodable, Quality: Encodable>: Encodable {

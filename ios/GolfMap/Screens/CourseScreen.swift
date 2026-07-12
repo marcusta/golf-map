@@ -26,6 +26,10 @@ struct CourseScreen: View {
     @State private var mapInputs: MapInputs?
     @State private var locationProvider = LocationProvider()
     @State private var loadError: String?
+    /// Per-green calibration for this course (greenId → calibration), synced +
+    /// offline-cached on course open. Applied to the putt read when a green
+    /// view is entered. Empty when the course has no calibrated greens.
+    @State private var greenCalibrations: [String: GreenCalibration] = [:]
 
     private struct MapInputs {
         var configuration: CourseMapConfiguration
@@ -46,6 +50,7 @@ struct CourseScreen: View {
                     roundModel: roundModel,
                     capture: capture,
                     greenPolygons: greenPolygons,
+                    greenCalibrations: greenCalibrations,
                     configuration: mapInputs.configuration,
                     featuresGeoJSON: mapInputs.featuresGeoJSON,
                     client: env.client,
@@ -158,6 +163,31 @@ struct CourseScreen: View {
                 } catch {
                     // No network / server error: keep the cached plan. Log only.
                     print("Game plan refresh skipped: \(error)")
+                }
+            }
+
+            // Per-green calibration (the read side of the green-scan round-trip,
+            // doc §4.2): show whatever was cached last right away — so offline
+            // rounds get their calibrated reads — then refresh from the server
+            // in the background. Applied to the putt read on green-view entry;
+            // any failure degrades silently to the cache (or the plain read).
+            if let cached = try? await GreenCalibrationSync.load(
+                database: env.database, courseId: courseId
+            ) {
+                greenCalibrations = cached
+            }
+            let calCourseId = courseId
+            Task {
+                do {
+                    try await GreenCalibrationSync.refresh(
+                        client: planClient, database: planDatabase, courseId: calCourseId
+                    )
+                    greenCalibrations = try await GreenCalibrationSync.load(
+                        database: planDatabase, courseId: calCourseId
+                    )
+                } catch {
+                    // Offline / server error: keep the cached calibration. Log only.
+                    print("Green calibration refresh skipped: \(error)")
                 }
             }
 
@@ -327,6 +357,9 @@ private struct OnCourseContentView: View {
     let roundModel: RoundModel
     let capture: CaptureModel
     let greenPolygons: GreenPolygonStore?
+    /// Per-green calibration (greenId → calibration) for the putt read, synced
+    /// + offline-cached by the parent. Applied on green-view entry.
+    let greenCalibrations: [String: GreenCalibration]
     let configuration: CourseMapConfiguration
     let featuresGeoJSON: Data
     let client: GolfAPIClient
@@ -1161,6 +1194,10 @@ private struct OnCourseContentView: View {
         let activePin = hole.pins.first(where: \.active)
             .map { LatLon(lat: $0.lat, lon: $0.lon) }
         puttRead.activate(defaultHole: (activePin ?? center).map(puttPoint))
+        // Apply the synced per-green calibration (confidence lift + bias
+        // correction) before the terrain grid settles, so the surface is built
+        // right the first time. Uncalibrated greens pass nil → no-op.
+        puttRead.applyCalibration(hole.green.flatMap { greenCalibrations[$0.id] })
         withAnimation(.easeInOut(duration: 0.28)) {
             immersive = false
             model.enterTool(.greenView, focusBounds: bounds)

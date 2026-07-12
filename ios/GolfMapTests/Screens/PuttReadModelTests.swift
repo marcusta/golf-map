@@ -379,6 +379,130 @@ final class PuttReadModelTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(model.display.read).aimOffsetM, 0)
     }
 
+    // MARK: - Per-green calibration (the read side of the scan round-trip)
+
+    /// A well-calibrated green's agreement confidence replaces the conservative
+    /// terrain-tile default and lifts the read across the read budget, so it
+    /// stops being softened (doc §4.2).
+    func testCalibrationConfidenceUnsoftensTheRead() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        XCTAssertEqual(model.display.status, .soft, "uncalibrated terrain-tile read is softened")
+
+        model.applyCalibration(GreenCalibration(
+            greenId: "g1", confidence: 0.667, sampleCount: 2, bias: nil
+        ))
+        model.computeSurfaceReadNow()
+        let display = model.display
+        XCTAssertEqual(display.status, .ok, "calibration confidence crosses MIN_READ_CONFIDENCE")
+        let read = try XCTUnwrap(display.read)
+        XCTAssertEqual(read.minConfidence, 0.667, accuracy: 1e-9)
+        XCTAssertEqual(model.calibrationNote, "Calibrated · 2 scans")
+    }
+
+    /// A calibrated-but-low-confidence green stays softened — the read is still
+    /// honest — but the panel still explains it is calibrated.
+    func testLowCalibrationConfidenceStillSoftensButShowsNote() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.applyCalibration(GreenCalibration(
+            greenId: "g1", confidence: 0.3, sampleCount: 1, bias: nil
+        ))
+        model.computeSurfaceReadNow()
+        XCTAssertEqual(model.display.status, .soft)
+        XCTAssertEqual(try XCTUnwrap(model.display.read).minConfidence, 0.3, accuracy: 1e-9)
+        XCTAssertEqual(model.calibrationNote, "Calibrated · 1 scan")
+    }
+
+    /// The fitted bias corrects the DEM gradient (corrected ∇h = ∇h + tilt) and
+    /// changes the read. Over-correcting the grid's 2% east slope flips the
+    /// downhill (and the break) to the other side — an unambiguous sign change.
+    func testBiasCorrectionShiftsTheRead() throws {
+        let model = armedModel(grid: tiltedGrid()) // 2% down east → breaks right
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        XCTAssertLessThan(try XCTUnwrap(model.display.read).aimOffsetM, 0, "breaks right → aim left")
+        XCTAssertEqual(model.display.tour?.aimSide, .right)
+
+        // gradX = −0.02; a +0.04 east tilt → corrected gradX = +0.02, so the
+        // surface now falls WEST and the ball breaks LEFT (aim right).
+        model.applyCalibration(GreenCalibration(
+            greenId: "g1", confidence: 0.667, sampleCount: 2,
+            bias: GreenBias(tiltE: 0.04, tiltN: 0)
+        ))
+        model.computeSurfaceReadNow()
+        let read = try XCTUnwrap(model.display.read)
+        XCTAssertGreaterThan(read.aimOffsetM, 0, "bias flips the break to the other side")
+        XCTAssertEqual(model.display.tour?.aimSide, .left)
+    }
+
+    /// No calibration (uncalibrated green) is a strict no-op: the read behaves
+    /// exactly as the bare terrain tiles do, and no badge is shown.
+    func testMissingCalibrationIsANoOp() throws {
+        let baseline = armedModel(grid: tiltedGrid())
+        baseline.placeBall(ball)
+        baseline.computeSurfaceReadNow()
+        let baselineRead = try XCTUnwrap(baseline.display.read)
+
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.applyCalibration(nil)
+        model.computeSurfaceReadNow()
+        let read = try XCTUnwrap(model.display.read)
+
+        XCTAssertEqual(read.minConfidence, PuttReadGeometry.TERRAIN_TILE_DEM_CONFIDENCE)
+        XCTAssertEqual(model.display.status, .soft)
+        XCTAssertEqual(read.aimOffsetM, baselineRead.aimOffsetM, accuracy: 1e-12, "identical to no calibration")
+        XCTAssertNil(model.calibrationNote)
+    }
+
+    func testCalibrationNoteHiddenInCompetitionMode() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.applyCalibration(GreenCalibration(
+            greenId: "g1", confidence: 0.667, sampleCount: 3, bias: nil
+        ))
+        XCTAssertEqual(model.calibrationNote, "Calibrated · 3 scans")
+
+        model.competitionMode = true
+        XCTAssertNil(model.calibrationNote, "the whole read section is off in competition")
+    }
+
+    /// Calibration is per-green, so re-arming for a new green must clear it —
+    /// the screen re-applies the right green's calibration on entry.
+    func testActivateClearsCalibration() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.applyCalibration(GreenCalibration(
+            greenId: "g1", confidence: 0.667, sampleCount: 2, bias: nil
+        ))
+        XCTAssertNotNil(model.calibrationNote)
+
+        model.activate(grid: tiltedGrid(), defaultHole: Vec2(x: 10, y: 12))
+        XCTAssertNil(model.calibrationNote, "re-arming a new green drops the old calibration")
+        model.placeBall(ball)
+        model.computeSurfaceReadNow()
+        XCTAssertEqual(
+            try XCTUnwrap(model.display.read).minConfidence,
+            PuttReadGeometry.TERRAIN_TILE_DEM_CONFIDENCE
+        )
+    }
+
+    /// A fresh Tier-1 scan surface overrides the DEM AND its calibration bias —
+    /// the scan is ground truth, not something the DEM bias should perturb.
+    func testScannedSurfaceIgnoresCalibrationBias() throws {
+        let model = armedModel(grid: tiltedGrid())
+        model.placeBall(ball)
+        model.applyCalibration(GreenCalibration(
+            greenId: "g1", confidence: 0.667, sampleCount: 2,
+            bias: GreenBias(tiltE: 0.05, tiltN: 0.05) // large bias the scan must ignore
+        ))
+        model.installScannedSurface(PlaneSurface(slopePct: 0, fallLineBearingDeg: 0))
+        model.computeSurfaceReadNow()
+        let read = try XCTUnwrap(model.display.read)
+        XCTAssertEqual(read.minConfidence, 1, "scan confidence, not the calibration's")
+        XCTAssertEqual(read.aimOffsetM, 0, accuracy: 0.02, "flat scan won; DEM bias not applied")
+    }
+
     func testDeactivateDropsState() throws {
         let model = armedModel(grid: tiltedGrid())
         model.placeBall(ball)
