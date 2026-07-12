@@ -1,0 +1,1239 @@
+{
+    "meta": {
+        "generator": "shared/strategy/generate-swift-fixtures.ts",
+        "note": "TS-computed goldens for the Swift strategy mirror (Club/Wind/Carry/FeatureDistances). Regenerate with: bun generate-swift-fixtures.ts"
+    },
+    "constants": {
+        "MPS_TO_MPH": 2.23694
+    },
+    "clubs": [
+        {
+            "name": "Driver",
+            "carryM": 243,
+            "dispersionM": 65
+        },
+        {
+            "name": "3w",
+            "carryM": 220,
+            "dispersionM": 55
+        },
+        {
+            "name": "3h",
+            "carryM": 200,
+            "dispersionM": 42
+        },
+        {
+            "name": "4i",
+            "carryM": 187,
+            "dispersionM": 40
+        },
+        {
+            "name": "5i",
+            "carryM": 177,
+            "dispersionM": 38
+        },
+        {
+            "name": "6i",
+            "carryM": 168,
+            "dispersionM": 37
+        },
+        {
+            "name": "7i",
+            "carryM": 155,
+            "dispersionM": 32
+        },
+        {
+            "name": "8i",
+            "carryM": 142,
+            "dispersionM": 30
+        },
+        {
+            "name": "9i",
+            "carryM": 127,
+            "dispersionM": 30
+        },
+        {
+            "name": "PW",
+            "carryM": 115,
+            "dispersionM": 27
+        },
+        {
+            "name": "50",
+            "carryM": 100,
+            "dispersionM": 25
+        },
+        {
+            "name": "54",
+            "carryM": 90,
+            "dispersionM": 20
+        },
+        {
+            "name": "LW",
+            "carryM": 75,
+            "dispersionM": 16
+        }
+    ],
+    "club": {
+        "lengthDispersionM": [
+            {
+                "arg": 10,
+                "out": 0.5
+            },
+            {
+                "arg": 75,
+                "out": 3.75
+            },
+            {
+                "arg": 90,
+                "out": 4.5
+            },
+            {
+                "arg": 99.999,
+                "out": 4.99995
+            },
+            {
+                "arg": 100,
+                "out": 6
+            },
+            {
+                "arg": 142,
+                "out": 8.52
+            },
+            {
+                "arg": 150,
+                "out": 9
+            },
+            {
+                "arg": 150.001,
+                "out": 12.00008
+            },
+            {
+                "arg": 168,
+                "out": 13.44
+            },
+            {
+                "arg": 243,
+                "out": 19.44
+            }
+        ],
+        "minCarryM": [
+            {
+                "carryM": 243,
+                "effect": 0,
+                "out": 230.85
+            },
+            {
+                "carryM": 243,
+                "effect": -0.1,
+                "out": 207.765
+            },
+            {
+                "carryM": 200,
+                "effect": 0.05,
+                "out": 199.5
+            },
+            {
+                "carryM": 155,
+                "effect": -0.247,
+                "out": 110.87925
+            }
+        ],
+        "maxCarryM": [
+            {
+                "carryM": 243,
+                "effect": 0,
+                "out": 255.15
+            },
+            {
+                "carryM": 243,
+                "effect": -0.1,
+                "out": 229.63500000000002
+            },
+            {
+                "carryM": 200,
+                "effect": 0.05,
+                "out": 220.5
+            },
+            {
+                "carryM": 155,
+                "effect": 0.068,
+                "out": 173.817
+            }
+        ],
+        "minDispersionM": [
+            {
+                "dispersionM": 50,
+                "effect": 0,
+                "out": 48
+            },
+            {
+                "dispersionM": 50,
+                "effect": 0.1,
+                "out": 52.800000000000004
+            },
+            {
+                "dispersionM": 32,
+                "effect": -0.1,
+                "out": 27.648
+            }
+        ],
+        "maxDispersionM": [
+            {
+                "dispersionM": 50,
+                "effect": 0,
+                "out": 52
+            },
+            {
+                "dispersionM": 50,
+                "effect": -0.1,
+                "out": 46.800000000000004
+            },
+            {
+                "dispersionM": 32,
+                "effect": 0.1,
+                "out": 36.608000000000004
+            }
+        ],
+        "closestClub": [
+            {
+                "distanceM": 10,
+                "name": "LW"
+            },
+            {
+                "distanceM": 100,
+                "name": "50"
+            },
+            {
+                "distanceM": 150,
+                "name": "7i"
+            },
+            {
+                "distanceM": 155,
+                "name": "7i"
+            },
+            {
+                "distanceM": 240,
+                "name": "Driver"
+            },
+            {
+                "distanceM": 300,
+                "name": "Driver"
+            }
+        ],
+        "closestClubEmpty": {
+            "distanceM": 100,
+            "name": null
+        },
+        "clubAdvice": [
+            {
+                "distanceM": 10,
+                "front": "LW",
+                "center": "LW",
+                "back": null
+            },
+            {
+                "distanceM": 155,
+                "front": "7i",
+                "center": "7i",
+                "back": "7i"
+            },
+            {
+                "distanceM": 163.0434782608696,
+                "front": "6i",
+                "center": "6i",
+                "back": "7i"
+            },
+            {
+                "distanceM": 200,
+                "front": "3h",
+                "center": "3h",
+                "back": "3h"
+            },
+            {
+                "distanceM": 300,
+                "front": null,
+                "center": "Driver",
+                "back": "Driver"
+            }
+        ],
+        "suggestClubForHole": [
+            {
+                "distanceM": 160,
+                "name": "7i"
+            },
+            {
+                "distanceM": 243,
+                "name": "Driver"
+            },
+            {
+                "distanceM": 400,
+                "name": "Driver"
+            }
+        ],
+        "suggestClubForHoleEmpty": {
+            "distanceM": 160,
+            "name": null
+        }
+    },
+    "wind": {
+        "windComponents": [
+            {
+                "speedMps": 4.4703925898772425,
+                "directionDeg": 0,
+                "shotBearingDeg": 0,
+                "headTailMph": -10,
+                "crosswindMph": 1.2246467991473533e-15
+            },
+            {
+                "speedMps": 8.940785179754485,
+                "directionDeg": 180,
+                "shotBearingDeg": 0,
+                "headTailMph": 20,
+                "crosswindMph": 0
+            },
+            {
+                "speedMps": 4.4703925898772425,
+                "directionDeg": 270,
+                "shotBearingDeg": 0,
+                "headTailMph": 6.123233995736766e-16,
+                "crosswindMph": 10
+            },
+            {
+                "speedMps": 4.4703925898772425,
+                "directionDeg": 90,
+                "shotBearingDeg": 0,
+                "headTailMph": -1.8369701987210296e-15,
+                "crosswindMph": -10
+            },
+            {
+                "speedMps": 6.705588884815864,
+                "directionDeg": 45,
+                "shotBearingDeg": 0,
+                "headTailMph": -10.606601717798215,
+                "crosswindMph": -10.606601717798211
+            },
+            {
+                "speedMps": 8.046706661779037,
+                "directionDeg": 0,
+                "shotBearingDeg": 0,
+                "headTailMph": -18,
+                "crosswindMph": 2.204364238465236e-15
+            },
+            {
+                "speedMps": 8.493745920766761,
+                "directionDeg": 0,
+                "shotBearingDeg": 0,
+                "headTailMph": -19,
+                "crosswindMph": 2.326828918379971e-15
+            },
+            {
+                "speedMps": 8.046706661779037,
+                "directionDeg": 180,
+                "shotBearingDeg": 0,
+                "headTailMph": 18,
+                "crosswindMph": 0
+            },
+            {
+                "speedMps": 8.493745920766761,
+                "directionDeg": 180,
+                "shotBearingDeg": 0,
+                "headTailMph": 19,
+                "crosswindMph": 0
+            },
+            {
+                "speedMps": 8.940785179754485,
+                "directionDeg": 45,
+                "shotBearingDeg": 0,
+                "headTailMph": -14.142135623730955,
+                "crosswindMph": -14.14213562373095
+            },
+            {
+                "speedMps": 3.5763140719017943,
+                "directionDeg": 0,
+                "shotBearingDeg": 0,
+                "headTailMph": -8,
+                "crosswindMph": 9.797174393178826e-16
+            },
+            {
+                "speedMps": 4.4703925898772425,
+                "directionDeg": 10,
+                "shotBearingDeg": 350,
+                "headTailMph": -9.396926207859085,
+                "crosswindMph": -3.4202014332566866
+            },
+            {
+                "speedMps": 0,
+                "directionDeg": 123,
+                "shotBearingDeg": 45,
+                "headTailMph": 0,
+                "crosswindMph": 0
+            }
+        ],
+        "windEffect": [
+            {
+                "speedMps": 4.4703925898772425,
+                "directionDeg": 0,
+                "shotBearingDeg": 0,
+                "out": -0.1
+            },
+            {
+                "speedMps": 8.940785179754485,
+                "directionDeg": 180,
+                "shotBearingDeg": 0,
+                "out": 0.06799999999999999
+            },
+            {
+                "speedMps": 4.4703925898772425,
+                "directionDeg": 270,
+                "shotBearingDeg": 0,
+                "out": 3.061616997868383e-18
+            },
+            {
+                "speedMps": 4.4703925898772425,
+                "directionDeg": 90,
+                "shotBearingDeg": 0,
+                "out": -1.8369701987210297e-17
+            },
+            {
+                "speedMps": 6.705588884815864,
+                "directionDeg": 45,
+                "shotBearingDeg": 0,
+                "out": -0.10606601717798216
+            },
+            {
+                "speedMps": 8.046706661779037,
+                "directionDeg": 0,
+                "shotBearingDeg": 0,
+                "out": -0.18
+            },
+            {
+                "speedMps": 8.493745920766761,
+                "directionDeg": 0,
+                "shotBearingDeg": 0,
+                "out": -0.247
+            },
+            {
+                "speedMps": 8.046706661779037,
+                "directionDeg": 180,
+                "shotBearingDeg": 0,
+                "out": 0.09
+            },
+            {
+                "speedMps": 8.493745920766761,
+                "directionDeg": 180,
+                "shotBearingDeg": 0,
+                "out": 0.06459999999999999
+            },
+            {
+                "speedMps": 8.940785179754485,
+                "directionDeg": 45,
+                "shotBearingDeg": 0,
+                "out": -0.1838477631085024
+            },
+            {
+                "speedMps": 3.5763140719017943,
+                "directionDeg": 0,
+                "shotBearingDeg": 0,
+                "out": -0.08
+            },
+            {
+                "speedMps": 4.4703925898772425,
+                "directionDeg": 10,
+                "shotBearingDeg": 350,
+                "out": -0.09396926207859085
+            },
+            {
+                "speedMps": 0,
+                "directionDeg": 123,
+                "shotBearingDeg": 45,
+                "out": 0
+            }
+        ],
+        "adjustedCarryM": [
+            {
+                "carryM": 243,
+                "effect": -0.1,
+                "out": 218.70000000000002
+            },
+            {
+                "carryM": 155,
+                "effect": 0.06799999999999999,
+                "out": 165.54000000000002
+            },
+            {
+                "carryM": 243,
+                "effect": -0.10606601717798216,
+                "out": 217.22595782575033
+            }
+        ],
+        "playsAsM": [
+            {
+                "distanceM": 150,
+                "effect": -0.08,
+                "out": 163.04347826086956
+            },
+            {
+                "distanceM": 150,
+                "effect": -0.08,
+                "out": 163.04347826086956
+            },
+            {
+                "distanceM": 200,
+                "effect": 0.05,
+                "out": 190.47619047619048
+            }
+        ],
+        "crosswindDriftM": [
+            {
+                "carryM": 243,
+                "crosswindMph": 10,
+                "out": 12.15
+            },
+            {
+                "carryM": 243,
+                "crosswindMph": -10,
+                "out": -12.15
+            },
+            {
+                "carryM": 243,
+                "crosswindMph": 0,
+                "out": 0
+            }
+        ]
+    },
+    "carry": {
+        "cases": [
+            {
+                "name": "ray through a box",
+                "origin": {
+                    "x": 0,
+                    "y": 0
+                },
+                "bearingDeg": 90,
+                "rings": [
+                    {
+                        "kind": "bunker",
+                        "points": [
+                            {
+                                "x": 10,
+                                "y": -5
+                            },
+                            {
+                                "x": 20,
+                                "y": -5
+                            },
+                            {
+                                "x": 20,
+                                "y": 5
+                            },
+                            {
+                                "x": 10,
+                                "y": 5
+                            }
+                        ]
+                    }
+                ],
+                "hazards": [
+                    {
+                        "kind": "bunker",
+                        "frontM": 10,
+                        "carryM": 20
+                    }
+                ]
+            },
+            {
+                "name": "tangent and miss omitted",
+                "origin": {
+                    "x": 0,
+                    "y": 0
+                },
+                "bearingDeg": 90,
+                "rings": [
+                    {
+                        "kind": "bunker",
+                        "points": [
+                            {
+                                "x": 10,
+                                "y": -10
+                            },
+                            {
+                                "x": 20,
+                                "y": -10
+                            },
+                            {
+                                "x": 20,
+                                "y": 0
+                            },
+                            {
+                                "x": 10,
+                                "y": 0
+                            }
+                        ]
+                    },
+                    {
+                        "kind": "water",
+                        "points": [
+                            {
+                                "x": 10,
+                                "y": 10
+                            },
+                            {
+                                "x": 20,
+                                "y": 10
+                            },
+                            {
+                                "x": 20,
+                                "y": 20
+                            },
+                            {
+                                "x": 10,
+                                "y": 20
+                            }
+                        ]
+                    }
+                ],
+                "hazards": []
+            },
+            {
+                "name": "origin inside a ring",
+                "origin": {
+                    "x": 15,
+                    "y": 0
+                },
+                "bearingDeg": 90,
+                "rings": [
+                    {
+                        "kind": "water",
+                        "points": [
+                            {
+                                "x": 10,
+                                "y": -5
+                            },
+                            {
+                                "x": 20,
+                                "y": -5
+                            },
+                            {
+                                "x": 20,
+                                "y": 5
+                            },
+                            {
+                                "x": 10,
+                                "y": 5
+                            }
+                        ]
+                    }
+                ],
+                "hazards": [
+                    {
+                        "kind": "water",
+                        "frontM": 0,
+                        "carryM": 5
+                    }
+                ]
+            },
+            {
+                "name": "two rings, one crossed one missed",
+                "origin": {
+                    "x": 0,
+                    "y": 0
+                },
+                "bearingDeg": 0,
+                "rings": [
+                    {
+                        "kind": "bunker",
+                        "points": [
+                            {
+                                "x": -10,
+                                "y": 60
+                            },
+                            {
+                                "x": 10,
+                                "y": 60
+                            },
+                            {
+                                "x": 10,
+                                "y": 75
+                            },
+                            {
+                                "x": -10,
+                                "y": 75
+                            }
+                        ]
+                    },
+                    {
+                        "kind": "water",
+                        "points": [
+                            {
+                                "x": 30,
+                                "y": 60
+                            },
+                            {
+                                "x": 45,
+                                "y": 60
+                            },
+                            {
+                                "x": 45,
+                                "y": 75
+                            },
+                            {
+                                "x": 30,
+                                "y": 75
+                            }
+                        ]
+                    }
+                ],
+                "hazards": [
+                    {
+                        "kind": "bunker",
+                        "frontM": 60,
+                        "carryM": 75
+                    }
+                ]
+            },
+            {
+                "name": "diagonal ray through an offset box",
+                "origin": {
+                    "x": 0,
+                    "y": 0
+                },
+                "bearingDeg": 45,
+                "rings": [
+                    {
+                        "kind": "bunker",
+                        "points": [
+                            {
+                                "x": 20,
+                                "y": 20
+                            },
+                            {
+                                "x": 40,
+                                "y": 20
+                            },
+                            {
+                                "x": 40,
+                                "y": 40
+                            },
+                            {
+                                "x": 20,
+                                "y": 40
+                            }
+                        ]
+                    }
+                ],
+                "hazards": [
+                    {
+                        "kind": "bunker",
+                        "frontM": 28.2842712474619,
+                        "carryM": 56.5685424949238
+                    }
+                ]
+            }
+        ]
+    },
+    "featureDistances": {
+        "clubs": [
+            {
+                "name": "7i",
+                "carryM": 155,
+                "dispersionM": 32
+            },
+            {
+                "name": "9i",
+                "carryM": 127,
+                "dispersionM": 30
+            },
+            {
+                "name": "PW",
+                "carryM": 115,
+                "dispersionM": 27
+            }
+        ],
+        "cases": [
+            {
+                "name": "golden hole, no wind, clubs",
+                "origin": {
+                    "x": 0,
+                    "y": 0,
+                    "elevation": 100
+                },
+                "targets": [
+                    {
+                        "kind": "point",
+                        "label": "green front",
+                        "role": "green_front",
+                        "at": {
+                            "x": 0,
+                            "y": 140,
+                            "elevation": 104
+                        }
+                    },
+                    {
+                        "kind": "point",
+                        "label": "green center",
+                        "role": "green_center",
+                        "at": {
+                            "x": 0,
+                            "y": 150,
+                            "elevation": 105
+                        }
+                    },
+                    {
+                        "kind": "point",
+                        "label": "green back",
+                        "role": "green_back",
+                        "at": {
+                            "x": 0,
+                            "y": 160,
+                            "elevation": 106
+                        }
+                    },
+                    {
+                        "kind": "hazard",
+                        "label": "fairway bunker",
+                        "ring": {
+                            "kind": "bunker",
+                            "points": [
+                                {
+                                    "x": -10,
+                                    "y": 60
+                                },
+                                {
+                                    "x": 10,
+                                    "y": 60
+                                },
+                                {
+                                    "x": 10,
+                                    "y": 75
+                                },
+                                {
+                                    "x": -10,
+                                    "y": 75
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "bearingDeg": 0,
+                "wind": null,
+                "hasClubs": true,
+                "rows": [
+                    {
+                        "kind": "hazard_front",
+                        "label": "fairway bunker front",
+                        "bearingDeg": 0,
+                        "lineM": 60,
+                        "elevationDeltaM": null,
+                        "playsLikeM": null,
+                        "windDeltaM": null,
+                        "clubName": "PW"
+                    },
+                    {
+                        "kind": "hazard_carry",
+                        "label": "fairway bunker carry",
+                        "bearingDeg": 0,
+                        "lineM": 75,
+                        "elevationDeltaM": null,
+                        "playsLikeM": null,
+                        "windDeltaM": null,
+                        "clubName": "PW"
+                    },
+                    {
+                        "kind": "green_front",
+                        "label": "green front",
+                        "bearingDeg": 0,
+                        "lineM": 140,
+                        "elevationDeltaM": 4,
+                        "playsLikeM": 144,
+                        "windDeltaM": null,
+                        "clubName": "7i"
+                    },
+                    {
+                        "kind": "green_center",
+                        "label": "green center",
+                        "bearingDeg": 0,
+                        "lineM": 150,
+                        "elevationDeltaM": 5,
+                        "playsLikeM": 155,
+                        "windDeltaM": null,
+                        "clubName": "7i"
+                    },
+                    {
+                        "kind": "green_back",
+                        "label": "green back",
+                        "bearingDeg": 0,
+                        "lineM": 160,
+                        "elevationDeltaM": 6,
+                        "playsLikeM": 166,
+                        "windDeltaM": null,
+                        "clubName": "7i"
+                    }
+                ]
+            },
+            {
+                "name": "golden hole, headwind 5 m/s, clubs",
+                "origin": {
+                    "x": 0,
+                    "y": 0,
+                    "elevation": 100
+                },
+                "targets": [
+                    {
+                        "kind": "point",
+                        "label": "green front",
+                        "role": "green_front",
+                        "at": {
+                            "x": 0,
+                            "y": 140,
+                            "elevation": 104
+                        }
+                    },
+                    {
+                        "kind": "point",
+                        "label": "green center",
+                        "role": "green_center",
+                        "at": {
+                            "x": 0,
+                            "y": 150,
+                            "elevation": 105
+                        }
+                    },
+                    {
+                        "kind": "point",
+                        "label": "green back",
+                        "role": "green_back",
+                        "at": {
+                            "x": 0,
+                            "y": 160,
+                            "elevation": 106
+                        }
+                    },
+                    {
+                        "kind": "hazard",
+                        "label": "fairway bunker",
+                        "ring": {
+                            "kind": "bunker",
+                            "points": [
+                                {
+                                    "x": -10,
+                                    "y": 60
+                                },
+                                {
+                                    "x": 10,
+                                    "y": 60
+                                },
+                                {
+                                    "x": 10,
+                                    "y": 75
+                                },
+                                {
+                                    "x": -10,
+                                    "y": 75
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "bearingDeg": 0,
+                "wind": {
+                    "speedMps": 5,
+                    "directionDeg": 0
+                },
+                "hasClubs": true,
+                "rows": [
+                    {
+                        "kind": "hazard_front",
+                        "label": "fairway bunker front",
+                        "bearingDeg": 0,
+                        "lineM": 60,
+                        "elevationDeltaM": null,
+                        "playsLikeM": null,
+                        "windDeltaM": null,
+                        "clubName": "PW"
+                    },
+                    {
+                        "kind": "hazard_carry",
+                        "label": "fairway bunker carry",
+                        "bearingDeg": 0,
+                        "lineM": 75,
+                        "elevationDeltaM": null,
+                        "playsLikeM": null,
+                        "windDeltaM": null,
+                        "clubName": "PW"
+                    },
+                    {
+                        "kind": "green_front",
+                        "label": "green front",
+                        "bearingDeg": 0,
+                        "lineM": 140,
+                        "elevationDeltaM": 4,
+                        "playsLikeM": 144,
+                        "windDeltaM": 18.13422687307255,
+                        "clubName": "7i"
+                    },
+                    {
+                        "kind": "green_center",
+                        "label": "green center",
+                        "bearingDeg": 0,
+                        "lineM": 150,
+                        "elevationDeltaM": 5,
+                        "playsLikeM": 155,
+                        "windDeltaM": 19.519480314765588,
+                        "clubName": "7i"
+                    },
+                    {
+                        "kind": "green_back",
+                        "label": "green back",
+                        "bearingDeg": 0,
+                        "lineM": 160,
+                        "elevationDeltaM": 6,
+                        "playsLikeM": 166,
+                        "windDeltaM": 20.904733756458626,
+                        "clubName": "7i"
+                    }
+                ]
+            },
+            {
+                "name": "golden hole, no wind, no clubs",
+                "origin": {
+                    "x": 0,
+                    "y": 0,
+                    "elevation": 100
+                },
+                "targets": [
+                    {
+                        "kind": "point",
+                        "label": "green front",
+                        "role": "green_front",
+                        "at": {
+                            "x": 0,
+                            "y": 140,
+                            "elevation": 104
+                        }
+                    },
+                    {
+                        "kind": "point",
+                        "label": "green center",
+                        "role": "green_center",
+                        "at": {
+                            "x": 0,
+                            "y": 150,
+                            "elevation": 105
+                        }
+                    },
+                    {
+                        "kind": "point",
+                        "label": "green back",
+                        "role": "green_back",
+                        "at": {
+                            "x": 0,
+                            "y": 160,
+                            "elevation": 106
+                        }
+                    },
+                    {
+                        "kind": "hazard",
+                        "label": "fairway bunker",
+                        "ring": {
+                            "kind": "bunker",
+                            "points": [
+                                {
+                                    "x": -10,
+                                    "y": 60
+                                },
+                                {
+                                    "x": 10,
+                                    "y": 60
+                                },
+                                {
+                                    "x": 10,
+                                    "y": 75
+                                },
+                                {
+                                    "x": -10,
+                                    "y": 75
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "bearingDeg": 0,
+                "wind": null,
+                "hasClubs": false,
+                "rows": [
+                    {
+                        "kind": "hazard_front",
+                        "label": "fairway bunker front",
+                        "bearingDeg": 0,
+                        "lineM": 60,
+                        "elevationDeltaM": null,
+                        "playsLikeM": null,
+                        "windDeltaM": null,
+                        "clubName": null
+                    },
+                    {
+                        "kind": "hazard_carry",
+                        "label": "fairway bunker carry",
+                        "bearingDeg": 0,
+                        "lineM": 75,
+                        "elevationDeltaM": null,
+                        "playsLikeM": null,
+                        "windDeltaM": null,
+                        "clubName": null
+                    },
+                    {
+                        "kind": "green_front",
+                        "label": "green front",
+                        "bearingDeg": 0,
+                        "lineM": 140,
+                        "elevationDeltaM": 4,
+                        "playsLikeM": 144,
+                        "windDeltaM": null,
+                        "clubName": null
+                    },
+                    {
+                        "kind": "green_center",
+                        "label": "green center",
+                        "bearingDeg": 0,
+                        "lineM": 150,
+                        "elevationDeltaM": 5,
+                        "playsLikeM": 155,
+                        "windDeltaM": null,
+                        "clubName": null
+                    },
+                    {
+                        "kind": "green_back",
+                        "label": "green back",
+                        "bearingDeg": 0,
+                        "lineM": 160,
+                        "elevationDeltaM": 6,
+                        "playsLikeM": 166,
+                        "windDeltaM": null,
+                        "clubName": null
+                    }
+                ]
+            },
+            {
+                "name": "missing origin elevation",
+                "origin": {
+                    "x": 0,
+                    "y": 0
+                },
+                "targets": [
+                    {
+                        "kind": "point",
+                        "label": "green center",
+                        "role": "green_center",
+                        "at": {
+                            "x": 0,
+                            "y": 150,
+                            "elevation": 105
+                        }
+                    }
+                ],
+                "bearingDeg": 0,
+                "wind": null,
+                "hasClubs": false,
+                "rows": [
+                    {
+                        "kind": "green_center",
+                        "label": "green center",
+                        "bearingDeg": 0,
+                        "lineM": 150,
+                        "elevationDeltaM": null,
+                        "playsLikeM": null,
+                        "windDeltaM": null,
+                        "clubName": null
+                    }
+                ]
+            },
+            {
+                "name": "missing target elevation (null)",
+                "origin": {
+                    "x": 0,
+                    "y": 0,
+                    "elevation": 100
+                },
+                "targets": [
+                    {
+                        "kind": "point",
+                        "label": "aim point",
+                        "role": "aim",
+                        "at": {
+                            "x": 0,
+                            "y": 100,
+                            "elevation": null
+                        }
+                    }
+                ],
+                "bearingDeg": 0,
+                "wind": null,
+                "hasClubs": false,
+                "rows": [
+                    {
+                        "kind": "aim",
+                        "label": "aim point",
+                        "bearingDeg": 0,
+                        "lineM": 100,
+                        "elevationDeltaM": null,
+                        "playsLikeM": null,
+                        "windDeltaM": null,
+                        "clubName": null
+                    }
+                ]
+            },
+            {
+                "name": "hazard missed contributes nothing",
+                "origin": {
+                    "x": 0,
+                    "y": 0,
+                    "elevation": 100
+                },
+                "targets": [
+                    {
+                        "kind": "hazard",
+                        "label": "pond",
+                        "ring": {
+                            "kind": "water",
+                            "points": [
+                                {
+                                    "x": 30,
+                                    "y": 60
+                                },
+                                {
+                                    "x": 45,
+                                    "y": 60
+                                },
+                                {
+                                    "x": 45,
+                                    "y": 75
+                                },
+                                {
+                                    "x": 30,
+                                    "y": 75
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "bearingDeg": 0,
+                "wind": null,
+                "hasClubs": false,
+                "rows": []
+            },
+            {
+                "name": "empty targets",
+                "origin": {
+                    "x": 0,
+                    "y": 0,
+                    "elevation": 100
+                },
+                "targets": [],
+                "bearingDeg": 0,
+                "wind": null,
+                "hasClubs": false,
+                "rows": []
+            }
+        ]
+    }
+}
