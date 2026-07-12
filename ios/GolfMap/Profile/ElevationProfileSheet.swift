@@ -16,12 +16,18 @@ struct ElevationProfileSheet: View {
     let model: ElevationProfileModel
     let title: String
     let onClose: () -> Void
+    @Environment(AppEnvironment.self) private var env
 
     /// Chart plot size in pixels (for the exaggeration caption), captured
     /// from the chart's plot frame.
     @State private var plotSize: CGSize = .zero
 
     private static let amber = MeasurePanel.amber
+
+    /// X-axis (along-route distance) tick labels only — chart domain/geometry
+    /// and the y-axis (elevation) stay metric regardless of this setting (see
+    /// `DistanceFormat` doc).
+    private var unit: DistanceUnit { env.settings.distanceUnit }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -168,7 +174,7 @@ struct ElevationProfileSheet: View {
                 AxisTick()
                 AxisValueLabel {
                     if let d = value.as(Double.self) {
-                        Text("\(Int(d.rounded())) m").monospacedDigit()
+                        Text(DistanceFormat.stringWithUnit(d, unit: unit)).monospacedDigit()
                     }
                 }
             }

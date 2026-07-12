@@ -19,9 +19,12 @@ struct CapturePanel: View {
     let onPenalty: () -> Void
     let onNextStroke: () -> Void
     let onClose: () -> Void
+    @Environment(AppEnvironment.self) private var env
 
     /// Capture rose — matches the crosshair ring on the map.
     static let rose = Color(red: 0.984, green: 0.443, blue: 0.522)
+
+    private var unit: DistanceUnit { env.settings.distanceUnit }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -66,8 +69,8 @@ struct CapturePanel: View {
                 typeMenu
                 Spacer()
                 if let remaining = capture.remainingMeters {
-                    MetricText("\(remaining)", unit: "m", size: 20)
-                        .accessibilityLabel("\(remaining) meters to target")
+                    MetricText(DistanceFormat.string(remaining, unit: unit), unit: unit.abbreviation, size: 20)
+                        .accessibilityLabel("\(DistanceFormat.stringWithUnit(remaining, unit: unit)) to target")
                 }
                 targetToggle
             }

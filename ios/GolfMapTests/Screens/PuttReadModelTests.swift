@@ -324,6 +324,44 @@ final class PuttReadModelTests: XCTestCase {
         XCTAssertEqual(model.stimpFt, 4)
     }
 
+    // MARK: - Default-stimp seeding (Settings § default stimp)
+
+    /// No persisted value yet — the Settings default is the seed.
+    func testDefaultStimpFtSeedsWhenNothingPersisted() throws {
+        let model = PuttReadModel(defaults: defaults, defaultStimpFt: 12)
+        XCTAssertEqual(model.stimpFt, 12)
+    }
+
+    /// The bare `PuttReadModel(defaults:)` call (used throughout the rest of
+    /// this file and by `CompetitionModeTests`) must keep seeding 10 — the
+    /// new parameter has a default so existing call sites are unaffected.
+    func testDefaultStimpFtParameterDefaultsToTen() throws {
+        let model = PuttReadModel(defaults: defaults)
+        XCTAssertEqual(model.stimpFt, 10)
+    }
+
+    /// A persisted last-used stimp always wins over the seed — the seed only
+    /// applies to a fresh install / first-ever read.
+    func testPersistedStimpWinsOverDifferentSeed() throws {
+        let first = PuttReadModel(defaults: defaults, defaultStimpFt: 10)
+        first.setStimp(9)
+        let second = PuttReadModel(defaults: defaults, defaultStimpFt: 14)
+        XCTAssertEqual(second.stimpFt, 9, "persisted last-used value overrides the seed")
+    }
+
+    /// The seed itself is clamped to the same 4–16 range as everything else
+    /// (defensive — `AppSettings.defaultStimpFt` already clamps on its own
+    /// read, but PuttReadModel shouldn't trust a caller blindly).
+    func testDefaultStimpFtSeedClampsToValidRange() throws {
+        // init() only reads defaults (never writes), so two constructions
+        // over the same still-empty suite are independent seed trials.
+        let high = PuttReadModel(defaults: defaults, defaultStimpFt: 99)
+        XCTAssertEqual(high.stimpFt, 16)
+
+        let low = PuttReadModel(defaults: defaults, defaultStimpFt: 1)
+        XCTAssertEqual(low.stimpFt, 4)
+    }
+
     // MARK: - Overlay
 
     func testOverlayShowsDefaultHoleMarkerBeforeBallPlaced() throws {

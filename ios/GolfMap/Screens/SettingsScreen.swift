@@ -1,11 +1,16 @@
 import SwiftUI
 
-/// App preferences sheet, reached from the course-list account menu. Currently
-/// hosts the app-level competition-mode toggle; the natural home for future
-/// preferences (units, stimp default, …).
+/// App preferences sheet, reached from the course-list account menu: the
+/// app-level competition-mode toggle, on-course distance unit, default putt
+/// stimp, and the server-origin override.
 struct SettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss
+
+    /// Local text-field buffer, seeded from the persisted override — edits
+    /// only take effect (and validate) on commit, not per keystroke.
+    @State private var originText: String = ""
+    @State private var originError: String?
 
     var body: some View {
         NavigationStack {
@@ -27,14 +32,83 @@ struct SettingsScreen: View {
                 } footer: {
                     Text("Turn on for tournament rounds where slope information isn't allowed.")
                 }
+
+                Section {
+                    @Bindable var settings = env.settings
+                    Picker("Distance unit", selection: $settings.distanceUnit) {
+                        ForEach(DistanceUnit.allCases) { unit in
+                            Text(unit.label).tag(unit)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("Units")
+                } footer: {
+                    Text("On-course distances (front/center/back, plays-like, aim points, plan legs, hazard carries, measure, elevation-profile distance) show in this unit. Elevation and slope stay metric — golf convention, not a distance.")
+                }
+
+                Section {
+                    @Bindable var settings = env.settings
+                    HStack {
+                        Text("Default stimp")
+                        Spacer()
+                        Text(String(format: "%.0f ft", settings.defaultStimpFt))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { settings.defaultStimpFt },
+                            set: { settings.defaultStimpFt = $0.rounded() }
+                        ),
+                        in: PuttReadModel.stimpMinFt...PuttReadModel.stimpMaxFt,
+                        step: 1
+                    )
+                } header: {
+                    Text("Putting")
+                } footer: {
+                    Text("Seeds the green-read stimp the first time you use a putt read. Once you adjust the stimp on a green, that last-used value takes over — this only sets the starting point.")
+                }
+
+                Section {
+                    TextField("http://localhost:3000", text: $originText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .onSubmit(commitOrigin)
+                    if let originError {
+                        Text(originError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Server")
+                } footer: {
+                    Text("Leave blank to use the built-in default (http://localhost:3000). Restart the app to apply a change.")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        commitOrigin()
+                        dismiss()
+                    }
                 }
             }
+            .onAppear { originText = env.settings.serverOrigin ?? "" }
+        }
+    }
+
+    private func commitOrigin() {
+        if env.settings.setServerOrigin(originText) {
+            originError = nil
+            // Reflect the normalized form (trailing slash trimmed, …) back
+            // into the field.
+            originText = env.settings.serverOrigin ?? ""
+        } else {
+            originError = "Enter a full URL with scheme and host, e.g. http://192.168.1.20:3000."
         }
     }
 }

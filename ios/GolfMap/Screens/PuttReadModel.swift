@@ -146,11 +146,16 @@ final class PuttReadModel {
     static let stimpMaxFt = 16.0
     static let defaultStimpFt = 10.0
 
-    init(defaults: UserDefaults = .standard) {
+    /// - Parameter defaultStimpFt: seed used only when nothing is persisted yet
+    ///   (Settings § default stimp — `AppSettings.defaultStimpFt`). Once the
+    ///   player adjusts the slider it's the persisted value that wins on every
+    ///   subsequent launch, regardless of the seed passed in here.
+    init(defaults: UserDefaults = .standard, defaultStimpFt: Double = PuttReadModel.defaultStimpFt) {
         self.defaults = defaults
+        let seed = min(Self.stimpMaxFt, max(Self.stimpMinFt, defaultStimpFt))
         let stored = defaults.object(forKey: Self.stimpKey) as? Double
         self.stimpFt = stored.map { min(Self.stimpMaxFt, max(Self.stimpMinFt, $0)) }
-            ?? Self.defaultStimpFt
+            ?? seed
     }
 
     // MARK: - Lifecycle

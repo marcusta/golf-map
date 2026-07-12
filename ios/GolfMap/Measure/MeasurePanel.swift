@@ -12,9 +12,15 @@ struct MeasurePanel: View {
     let onProfile: () -> Void
     /// Exit measure mode.
     let onClose: () -> Void
+    @Environment(AppEnvironment.self) private var env
 
     /// Measure amber (web COLOR_LINE #fbbf24).
     static let amber = Color(red: 0.98, green: 0.75, blue: 0.14)
+
+    /// Elev Δ and Slope % deliberately stay metric/percent regardless of this
+    /// setting — golf convention, not a "distance" for unit-conversion
+    /// purposes (see `DistanceFormat` doc).
+    private var unit: DistanceUnit { env.settings.distanceUnit }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -94,8 +100,8 @@ struct MeasurePanel: View {
         return HStack(alignment: .firstTextBaseline, spacing: 0) {
             totalValue(
                 label: "Horizontal",
-                value: "\(Int(totals.horizontal.rounded()))",
-                unit: "m",
+                value: DistanceFormat.string(totals.horizontal, unit: unit),
+                unit: unit.abbreviation,
                 emphasized: true
             )
             totalValue(
@@ -110,8 +116,8 @@ struct MeasurePanel: View {
             )
             totalValue(
                 label: "Plays-like",
-                value: totals.playsLikeSimple.map { "\(Int($0.rounded()))" },
-                unit: "m"
+                value: totals.playsLikeSimple.map { DistanceFormat.string($0, unit: unit) },
+                unit: unit.abbreviation
             )
         }
     }
@@ -140,7 +146,7 @@ struct MeasurePanel: View {
                         Text(MeasureModel.segmentLabel(index))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        MetricText("\(Int(segment.horizontal.rounded()))", unit: "m", size: 12)
+                        MetricText(DistanceFormat.string(segment.horizontal, unit: unit), unit: unit.abbreviation, size: 12)
                         MetricText(
                             "Δ \(Self.signedMeters(segment.elevationDelta, decimals: 1, unit: false))",
                             size: 11, weight: .regular, color: .secondary

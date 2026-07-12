@@ -201,7 +201,7 @@ struct CourseScreen: View {
 
             // Putt read (Tier 2 over the analysis grid + Tier 3 manual) —
             // competition-gated like plays-like.
-            let newPuttRead = PuttReadModel()
+            let newPuttRead = PuttReadModel(defaultStimpFt: env.settings.defaultStimpFt)
             newPuttRead.competitionMode = env.settings.competitionMode
 
             // Measure + elevation profile share the same bundle terrain
@@ -1549,6 +1549,9 @@ private struct AdjustPanel: View {
 /// primary center distance (routed target label when GPS routing is active).
 private struct CompactChipView: View {
     let model: OnCourseModel
+    @Environment(AppEnvironment.self) private var env
+
+    private var unit: DistanceUnit { env.settings.distanceUnit }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1559,10 +1562,10 @@ private struct CompactChipView: View {
                 Image(systemName: "arrow.up.forward")
                     .font(.caption2)
                     .foregroundStyle(Overlay.textMuted)
-                MetricText("\(routed.meters)", unit: "m", size: 13,
+                MetricText(DistanceFormat.string(routed.meters, unit: unit), unit: unit.abbreviation, size: 13,
                            color: Overlay.text, unitColor: Overlay.textMuted)
             } else if let center = model.distances?.center {
-                MetricText("\(center)", unit: "m", size: 13,
+                MetricText(DistanceFormat.string(center, unit: unit), unit: unit.abbreviation, size: 13,
                            color: Overlay.text, unitColor: Overlay.textMuted)
             } else {
                 MetricText("–", size: 13, color: Overlay.text)
@@ -1580,6 +1583,7 @@ private struct HoleHeaderView: View {
     /// Strokes recorded on this hole so far; nil hides the badge (no active
     /// round).
     var strokesOnHole: Int?
+    @Environment(AppEnvironment.self) private var env
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1610,7 +1614,8 @@ private struct HoleHeaderView: View {
         if let si = hole.strokeIndex { parts.append("SI \(si)") }
         if let length = model.playingLength, let meters = length.meters {
             let tee = model.resolvedTeeName.map { "\($0) " } ?? ""
-            parts.append("\(tee)\(length.approximate ? "~" : "")\(meters) m")
+            let unit = env.settings.distanceUnit
+            parts.append("\(tee)\(length.approximate ? "~" : "")\(DistanceFormat.stringWithUnit(meters, unit: unit))")
         }
         // Per-hole stroke count while a round is being recorded.
         if let strokes = strokesOnHole {
@@ -1636,11 +1641,14 @@ private struct HoleHeaderView: View {
 
 private struct DistanceCardView: View {
     let model: OnCourseModel
+    @Environment(AppEnvironment.self) private var env
 
     // Match the map marker convention: front red / center white / back blue.
     private static let frontColor = Color(red: 0.88, green: 0.19, blue: 0.19)
     private static let backColor = Color(red: 0.31, green: 0.56, blue: 0.82)
     private static let pinColor = Color(red: 1.0, green: 0.83, blue: 0.23)
+
+    private var unit: DistanceUnit { env.settings.distanceUnit }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -1688,7 +1696,7 @@ private struct DistanceCardView: View {
             sideValue(label: "Front", value: distances?.front, color: Self.frontColor)
                 .frame(maxWidth: .infinity)
             VStack(spacing: 0) {
-                MetricText(Self.format(distances?.center), size: 48)
+                MetricText(DistanceFormat.string(distances?.center, unit: unit), size: 48)
                     .minimumScaleFactor(0.7)
                 OverlineLabel(centerCaption, color: .secondary, size: 10)
             }
@@ -1700,10 +1708,11 @@ private struct DistanceCardView: View {
 
     private var centerCaption: String {
         guard let playsLike = model.distances?.playsLikeCenter else { return "Center" }
+        let plText = DistanceFormat.string(playsLike, unit: unit)
         if let wind = model.distances?.windPlaysLikeCenter {
-            return "Center · PL \(playsLike) → \(wind)"
+            return "Center · PL \(plText) → \(DistanceFormat.string(wind, unit: unit))"
         }
-        return "Center · PL \(playsLike)"
+        return "Center · PL \(plText)"
     }
 
     // Front/center/back club advice for the (wind-adjusted) plays-like to the
@@ -1757,7 +1766,7 @@ private struct DistanceCardView: View {
 
     private func sideValue(label: String, value: Int?, color: Color) -> some View {
         VStack(spacing: 2) {
-            MetricText(Self.format(value), size: 28)
+            MetricText(DistanceFormat.string(value, unit: unit), size: 28)
                 .minimumScaleFactor(0.7)
             OverlineLabel(label, color: color, size: 10)
         }
@@ -1777,12 +1786,12 @@ private struct DistanceCardView: View {
             Spacer()
             if let playsLike = distances.playsLikePin {
                 if let wind = distances.windPlaysLikePin {
-                    MetricText("PL \(playsLike) → \(wind)", size: 12, weight: .regular, color: .secondary)
+                    MetricText("PL \(DistanceFormat.string(playsLike, unit: unit)) → \(DistanceFormat.string(wind, unit: unit))", size: 12, weight: .regular, color: .secondary)
                 } else {
-                    MetricText("PL \(playsLike)", size: 12, weight: .regular, color: .secondary)
+                    MetricText("PL \(DistanceFormat.string(playsLike, unit: unit))", size: 12, weight: .regular, color: .secondary)
                 }
             }
-            MetricText(Self.format(distances.pin), unit: "m", size: 15)
+            MetricText(DistanceFormat.string(distances.pin, unit: unit), unit: unit.abbreviation, size: 15)
         }
     }
 
@@ -1797,7 +1806,7 @@ private struct DistanceCardView: View {
                         Text(aim.label)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        MetricText("\(aim.meters)", size: 12)
+                        MetricText(DistanceFormat.string(aim.meters, unit: unit), size: 12)
                     }
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
@@ -1821,11 +1830,11 @@ private struct DistanceCardView: View {
                         Text(hazard.label)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        MetricText("\(hazard.frontM)", size: 12)
+                        MetricText(DistanceFormat.string(hazard.frontM, unit: unit), size: 12)
                         Text("/ carry")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        MetricText("\(hazard.carryM)", size: 12)
+                        MetricText(DistanceFormat.string(hazard.carryM, unit: unit), size: 12)
                     }
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
@@ -1847,7 +1856,7 @@ private struct DistanceCardView: View {
                 color: .secondary
             )
             Spacer()
-            MetricText("\(target.meters)", unit: "m", size: 16)
+            MetricText(DistanceFormat.string(target.meters, unit: unit), unit: unit.abbreviation, size: 16)
         }
     }
 
@@ -1865,7 +1874,7 @@ private struct DistanceCardView: View {
                         Text("\(leg.index) · \(planLegTitle(leg))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        MetricText("\(leg.meters)", size: 12)
+                        MetricText(DistanceFormat.string(leg.meters, unit: unit), size: 12)
                     }
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
@@ -1895,7 +1904,7 @@ private struct DistanceCardView: View {
                 .foregroundStyle(Self.pinColor)
             OverlineLabel("To \(aim.label)", color: .secondary)
             Spacer()
-            MetricText("\(aim.meters)", unit: "m", size: 16)
+            MetricText(DistanceFormat.string(aim.meters, unit: unit), unit: unit.abbreviation, size: 16)
         }
     }
 
@@ -1910,7 +1919,7 @@ private struct DistanceCardView: View {
                             Text(legLabel(index: index, count: legs.count))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            MetricText("\(meters)", size: 12)
+                            MetricText(DistanceFormat.string(meters, unit: unit), size: 12)
                         }
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
@@ -1919,7 +1928,7 @@ private struct DistanceCardView: View {
                 }
             }
             if let length = model.playingLength, let total = length.meters {
-                MetricText("Route \(length.approximate ? "~" : "")\(total)", unit: "m",
+                MetricText("Route \(length.approximate ? "~" : "")\(DistanceFormat.string(total, unit: unit))", unit: unit.abbreviation,
                            size: 11, weight: .regular, color: .secondary)
             }
         }
@@ -1947,7 +1956,7 @@ private struct DistanceCardView: View {
         guard let length = entry.length, let meters = length.meters else {
             return "\(entry.name) — —"
         }
-        return "\(entry.name) — \(length.approximate ? "~" : "")\(meters) m"
+        return "\(entry.name) — \(length.approximate ? "~" : "")\(DistanceFormat.stringWithUnit(meters, unit: unit))"
     }
 
     private var teeMenu: some View {
@@ -2020,10 +2029,6 @@ private struct DistanceCardView: View {
         if model.isBrowseMode { return "Browse" }
         if model.isUsingGPS { return "GPS" }
         return model.isLocationDenied ? "No location · from tee" : "From tee"
-    }
-
-    private static func format(_ value: Int?) -> String {
-        value.map(String.init) ?? "–"
     }
 }
 
