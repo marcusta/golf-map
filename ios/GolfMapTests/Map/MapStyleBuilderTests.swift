@@ -75,6 +75,9 @@ final class MapStyleBuilderTests: XCTestCase {
         XCTAssertEqual((data["features"] as? [Any])?.count, 1)
 
         for id in [
+            MapStyleIDs.planLineSource,
+            MapStyleIDs.planGatesSource,
+            MapStyleIDs.planNodesSource,
             MapStyleIDs.distanceLineSource,
             MapStyleIDs.targetsSource,
             MapStyleIDs.routeLegLabelsSource,
@@ -100,6 +103,12 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.orthoLayer,
                 MapStyleIDs.featuresFillLayer,
                 MapStyleIDs.featuresOutlineLayer,
+                // Plan overlay UNDER the distance line: the strategy is
+                // context; the white "where I am" line stays on top.
+                MapStyleIDs.planLineCasingLayer,
+                MapStyleIDs.planLineLayer,
+                MapStyleIDs.planGatesLayer,
+                MapStyleIDs.planNodesLayer,
                 MapStyleIDs.distanceLineCasingLayer,
                 MapStyleIDs.distanceLineLayer,
                 MapStyleIDs.routeLegLabelsLayer,
@@ -151,6 +160,39 @@ final class MapStyleBuilderTests: XCTestCase {
         XCTAssertEqual(layout["icon-ignore-placement"] as? Bool, true)
         let offset = try XCTUnwrap(layout["icon-offset"] as? [Double])
         XCTAssertNotEqual(offset, [0, 0], "label sits beside the line, not on it")
+    }
+
+    /// The plan overlay reads as "the strategy": violet DASHED leg line
+    /// (clearly distinct from the solid white distance line), solid gate
+    /// cross-bars and filled landing nodes in the same violet.
+    func testPlanLayersAreDashedVioletAndDistinctFromDistanceLine() throws {
+        let style = try buildStyle()
+
+        let planLine = try layer(MapStyleIDs.planLineLayer, in: style)
+        XCTAssertEqual(planLine["type"] as? String, "line")
+        let planPaint = try XCTUnwrap(planLine["paint"] as? [String: Any])
+        XCTAssertEqual(planPaint["line-color"] as? String, "#a78bfa")
+        XCTAssertNotNil(planPaint["line-dasharray"], "planned (dashed), not live")
+
+        let distanceLine = try layer(MapStyleIDs.distanceLineLayer, in: style)
+        let distancePaint = try XCTUnwrap(distanceLine["paint"] as? [String: Any])
+        XCTAssertNotEqual(
+            planPaint["line-color"] as? String,
+            distancePaint["line-color"] as? String,
+            "plan line must not look like the distance line"
+        )
+        XCTAssertNil(distancePaint["line-dasharray"], "distance line stays solid")
+
+        let gates = try layer(MapStyleIDs.planGatesLayer, in: style)
+        XCTAssertEqual(gates["type"] as? String, "line")
+        let gatesPaint = try XCTUnwrap(gates["paint"] as? [String: Any])
+        XCTAssertEqual(gatesPaint["line-color"] as? String, "#a78bfa")
+        XCTAssertNil(gatesPaint["line-dasharray"], "gate bars are solid")
+
+        let nodes = try layer(MapStyleIDs.planNodesLayer, in: style)
+        XCTAssertEqual(nodes["type"] as? String, "circle")
+        let nodesPaint = try XCTUnwrap(nodes["paint"] as? [String: Any])
+        XCTAssertEqual(nodesPaint["circle-color"] as? String, "#a78bfa")
     }
 
     func testBackgroundMatchesWebEditor() throws {
@@ -252,6 +294,6 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 15)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 19)
     }
 }

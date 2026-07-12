@@ -106,6 +106,41 @@ public struct MeasureOverlay: Equatable, Sendable {
     }
 }
 
+/// The game-plan strategy overlay for the active hole (read-only viewer of
+/// plans built on the web): leg polyline tee → shot 1 → … → green center,
+/// the planned landing points as nodes, and the target gates as cross-lines
+/// (endpoints precomputed in planar SWEREF 99 TM — see `CoursePlan.Gate`).
+/// Deliberately its OWN sources and a distinct dashed-violet style: the plan
+/// is "the strategy"; the white distance line is "where I am". No on-map
+/// text — clubs/labels/leg meters live in the distance card (the offline
+/// style has no glyph PBFs).
+public struct PlanOverlay: Equatable, Sendable {
+    /// One gate cross-line, already resolved to its two endpoints.
+    public struct GateLine: Equatable, Sendable {
+        public var left: LatLon
+        public var right: LatLon
+
+        public init(left: LatLon, right: LatLon) {
+            self.left = left
+            self.right = right
+        }
+    }
+
+    /// Leg polyline vertices in order (tee → shots… → green center). Fewer
+    /// than two points hides the line (nodes/gates still render).
+    public var line: [LatLon]
+    /// Planned landing points (shot nodes), tee→green order.
+    public var nodes: [LatLon]
+    /// Target gate cross-lines.
+    public var gates: [GateLine]
+
+    public init(line: [LatLon] = [], nodes: [LatLon] = [], gates: [GateLine] = []) {
+        self.line = line
+        self.nodes = nodes
+        self.gates = gates
+    }
+}
+
 /// Everything dynamic drawn on top of the course map. Value type — the
 /// SwiftUI layer builds a new state and passes it to `CourseMapView`; updates
 /// are cheap (shape reassignment on existing sources, no style reload).
@@ -126,6 +161,9 @@ public struct MapOverlayState: Equatable, Sendable {
     /// Adjust-mode draggable handles (tee / aim points / green center); empty
     /// hides them. Also the drag hit-test set in `CourseMapView`.
     public var adjustHandles: [AdjustHandle]
+    /// Game-plan strategy overlay for the active hole; nil hides it (course
+    /// has no plan, hole has no plan content, or the plan toggle is off).
+    public var plan: PlanOverlay?
 
     public init(
         distanceLine: [LatLon] = [],
@@ -133,7 +171,8 @@ public struct MapOverlayState: Equatable, Sendable {
         userLocation: UserLocationMarker? = nil,
         measure: MeasureOverlay = .empty,
         routeLegLabels: [RouteLegLabel] = [],
-        adjustHandles: [AdjustHandle] = []
+        adjustHandles: [AdjustHandle] = [],
+        plan: PlanOverlay? = nil
     ) {
         self.distanceLine = distanceLine
         self.targets = targets
@@ -141,6 +180,7 @@ public struct MapOverlayState: Equatable, Sendable {
         self.measure = measure
         self.routeLegLabels = routeLegLabels
         self.adjustHandles = adjustHandles
+        self.plan = plan
     }
 
     public static let empty = MapOverlayState()
@@ -203,6 +243,32 @@ enum MapOverlayShapes {
         }
         return MLNShapeCollectionFeature(shapes: features)
     }
+
+    // MARK: Game-plan overlay
+
+    /// The plan leg polyline (hidden below two points, like the distance line).
+    static func planLineShape(_ plan: PlanOverlay?) -> MLNShape {
+        distanceLineShape(plan?.line ?? [])
+    }
+
+    /// Planned landing points as point features.
+    static func planNodesShape(_ plan: PlanOverlay?) -> MLNShape {
+        let features = (plan?.nodes ?? []).map { position -> MLNPointFeature in
+            let feature = MLNPointFeature()
+            feature.coordinate = position.clCoordinate
+            return feature
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
+
+    /// Each gate as its own two-point polyline (left → right endpoint).
+    static func planGatesShape(_ plan: PlanOverlay?) -> MLNShape {
+        let features = (plan?.gates ?? []).map { gate -> MLNPolylineFeature in
+            var coordinates = [gate.left.clCoordinate, gate.right.clCoordinate]
+            return MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
 }
 
 /// Pushes a `MapOverlayState` into the style's overlay shape sources.
@@ -216,6 +282,21 @@ enum MapOverlayShapes {
 @MainActor
 enum MapOverlayRenderer {
     static func apply(_ state: MapOverlayState, to style: MLNStyle) {
+        setShape(
+            MapOverlayShapes.planLineShape(state.plan),
+            sourceID: MapStyleIDs.planLineSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.planGatesShape(state.plan),
+            sourceID: MapStyleIDs.planGatesSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.planNodesShape(state.plan),
+            sourceID: MapStyleIDs.planNodesSource,
+            in: style
+        )
         setShape(
             MapOverlayShapes.distanceLineShape(state.distanceLine),
             sourceID: MapStyleIDs.distanceLineSource,

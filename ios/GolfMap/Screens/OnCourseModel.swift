@@ -56,6 +56,15 @@ final class OnCourseModel {
     /// Selected tee name (persisted); nil = per-hole default (lowest sortOrder).
     private(set) var activeTeeName: String?
 
+    /// The course's game plan (read-only, built on the web), loaded from the
+    /// GRDB cache by the screen; nil = no plan → no plan UI anywhere.
+    private(set) var plan: CoursePlan?
+
+    /// User-controllable plan-overlay switch (persisted per course, default
+    /// ON, like `activeTeeName`). Only affects the MAP overlay — the distance
+    /// card's plan row follows the plan itself.
+    private(set) var planVisible: Bool
+
     /// User-controllable GPS switch (persisted per course, default ON). When
     /// off, the screen is in *browse* mode: `userLocation` is ignored, origin
     /// is the active tee, and the distance line follows the full hole route.
@@ -114,6 +123,11 @@ final class OnCourseModel {
             }
 
         self.activeTeeName = defaults.string(forKey: Self.teeDefaultsKey(courseId: courseId))
+        if defaults.object(forKey: Self.planVisibleKey(courseId: courseId)) != nil {
+            self.planVisible = defaults.bool(forKey: Self.planVisibleKey(courseId: courseId))
+        } else {
+            self.planVisible = true
+        }
         if defaults.object(forKey: Self.gpsEnabledKey(courseId: courseId)) != nil {
             self.gpsEnabled = defaults.bool(forKey: Self.gpsEnabledKey(courseId: courseId))
         } else {
@@ -949,6 +963,160 @@ final class OnCourseModel {
         return [origin] + forwardAims + [center]
     }
 
+    // MARK: - Game plan (read-only viewer)
+
+    private static func planVisibleKey(courseId: String) -> String {
+        "onCourse.planVisible.\(courseId)"
+    }
+
+    /// Installs the course plan (nil clears all plan UI). Called by the
+    /// screen after reading the GRDB cache, and again when an online refresh
+    /// lands. Viewer only — nothing here writes back.
+    func setPlan(_ plan: CoursePlan?) {
+        self.plan = plan
+    }
+
+    /// True when the course has any renderable plan content — gates the plan
+    /// toggle's presence in the control stack.
+    var courseHasPlan: Bool { plan?.hasContent ?? false }
+
+    /// Flip the plan-overlay switch (persisted per course, like the tee).
+    func setPlanVisible(_ visible: Bool) {
+        guard visible != planVisible else { return }
+        planVisible = visible
+        defaults.set(visible, forKey: Self.planVisibleKey(courseId: courseId))
+    }
+
+    func togglePlanVisible() { setPlanVisible(!planVisible) }
+
+    /// The current hole's plan, or nil when the hole has no plan content.
+    var currentHolePlan: CoursePlan.HolePlan? {
+        guard let plan, let hole = currentHole else { return nil }
+        return plan.hole(number: hole.hole.number)
+    }
+
+    /// The tee the plan starts from on this hole: the plan's `teeId` when
+    /// that tee is placed here, else the active tee.
+    private func planTee(for hole: HoleData, plan holePlan: CoursePlan.HolePlan) -> TeeRecord? {
+        if let teeId = holePlan.teeId, let match = hole.tees.first(where: { $0.id == teeId }) {
+            return match
+        }
+        return activeTee(for: hole)
+    }
+
+    /// The planned route for the current hole: plan tee → planned landing
+    /// points (sortOrder) → green center. STORED positions throughout — the
+    /// plan is the server-side strategy; local Adjust overrides never move it.
+    var planRoute: [LatLon] {
+        guard let holePlan = currentHolePlan, let hole = currentHole else { return [] }
+        var route: [LatLon] = []
+        if let tee = planTee(for: hole, plan: holePlan) {
+            route.append(LatLon(lat: tee.lat, lon: tee.lon))
+        }
+        route.append(contentsOf: holePlan.shots.map(\.position))
+        if let green = hole.green {
+            route.append(LatLon(lat: green.centerLat, lon: green.centerLon))
+        }
+        return route
+    }
+
+    /// One row of the card's plan strip: leg N's planned club + label + the
+    /// leg's whole-meter planar length (plan geometry, EPSG:3006 like every
+    /// other figure). The final leg into the green has no shot entity —
+    /// `clubName`/`label` are nil and `toGreen` is true.
+    struct PlanLeg: Equatable, Identifiable {
+        /// 1-based stroke number, e.g. the "1" in "1 · Driver · 214 m".
+        let index: Int
+        let clubName: String?
+        let label: String?
+        let meters: Int
+        let toGreen: Bool
+        var id: Int { index }
+    }
+
+    /// Per-leg plan rows for the current hole (empty without a plan).
+    var planLegs: [PlanLeg] {
+        guard let holePlan = currentHolePlan, let hole = currentHole else { return [] }
+        var legs: [PlanLeg] = []
+        var previous = planTee(for: hole, plan: holePlan)
+            .map { LatLon(lat: $0.lat, lon: $0.lon) }
+        for shot in holePlan.shots {
+            if let from = previous {
+                legs.append(PlanLeg(
+                    index: legs.count + 1,
+                    clubName: shot.clubName,
+                    label: shot.label,
+                    meters: Int(Distance.planarMeters(from, shot.position).rounded()),
+                    toGreen: false
+                ))
+            }
+            previous = shot.position
+        }
+        if let green = hole.green, let from = previous {
+            let center = LatLon(lat: green.centerLat, lon: green.centerLon)
+            legs.append(PlanLeg(
+                index: legs.count + 1,
+                clubName: nil,
+                label: nil,
+                meters: Int(Distance.planarMeters(from, center).rounded()),
+                toGreen: true
+            ))
+        }
+        return legs
+    }
+
+    /// GPS mode: the next planned landing point ahead of the user — the FIRST
+    /// planned shot point not yet passed along the hole, where "not yet
+    /// passed" means the point is still closer to the green than the user is
+    /// (the same rule as `nextAimAhead`, without the routing threshold: the
+    /// plan row is informational, not a route switch). nil in browse mode,
+    /// without a plan, or once every planned landing is behind the user (the
+    /// green is then the target and the card's F/C/B already covers it).
+    var nextPlannedLanding: CoursePlan.Shot? {
+        guard
+            let user = effectiveUserLocation,
+            let holePlan = currentHolePlan,
+            let green = currentHole?.green
+        else { return nil }
+        let center = LatLon(lat: green.centerLat, lon: green.centerLon)
+        let userToGreen = Distance.planarMeters(user, center)
+        return holePlan.shots.first { shot in
+            Distance.planarMeters(shot.position, center) < userToGreen
+        }
+    }
+
+    /// The card's "to plan" row: whole-meter distance from the current origin
+    /// to the next planned landing point, with that landing's club/label.
+    struct PlanTargetDistance: Equatable {
+        let clubName: String?
+        let label: String?
+        let meters: Int
+    }
+
+    var planTargetDistance: PlanTargetDistance? {
+        guard let origin, let shot = nextPlannedLanding else { return nil }
+        return PlanTargetDistance(
+            clubName: shot.clubName,
+            label: shot.label,
+            meters: Int(Distance.planarMeters(origin, shot.position).rounded())
+        )
+    }
+
+    /// The map overlay for the current hole's plan, or nil when the toggle is
+    /// off or there is nothing to draw. Derived per hole, so hole navigation
+    /// swaps it automatically and it clears on plan-less holes/courses.
+    var planOverlay: PlanOverlay? {
+        guard planVisible, let holePlan = currentHolePlan else { return nil }
+        return PlanOverlay(
+            line: planRoute,
+            nodes: holePlan.shots.map(\.position),
+            gates: holePlan.gates.map { gate in
+                let endpoints = gate.endpoints
+                return PlanOverlay.GateLine(left: endpoints.left, right: endpoints.right)
+            }
+        )
+    }
+
     // MARK: - Derived: route-leg labels (immersive on-map distances)
 
     /// The active-mode route's legs as on-map label data: browse = the full
@@ -1004,7 +1172,8 @@ final class OnCourseModel {
             distanceLine: line,
             targets: markers,
             userLocation: isUsingGPS ? userLocation.map { UserLocationMarker(position: $0) } : nil,
-            routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : []
+            routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : [],
+            plan: planOverlay
         )
     }
 }

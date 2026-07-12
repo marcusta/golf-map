@@ -125,6 +125,66 @@ public struct AppDatabase: Sendable {
             }
         }
 
+        // v2: read-only game-plan viewer — locally cached game plans + club bag
+        // (fetched on course open, read offline). No server `version` columns:
+        // the device never edits these rows.
+        migrator.registerMigration("v2") { db in
+            try db.create(table: "club") { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull()
+                t.column("carryM", .double).notNull()
+                t.column("dispersionM", .double).notNull()
+                t.column("sortOrder", .integer).notNull()
+            }
+
+            try db.create(table: "gamePlan") { t in
+                t.primaryKey("id", .text)
+                // One plan per course; deleting the bundle wipes the plan.
+                t.column("courseId", .text).notNull().unique()
+                    .references("course", onDelete: .cascade)
+                t.column("windSpeedMps", .double)
+                t.column("windDirectionDeg", .double)
+            }
+
+            try db.create(table: "gamePlanHole") { t in
+                t.primaryKey("id", .text)
+                t.column("gamePlanId", .text).notNull().indexed()
+                    .references("gamePlan", onDelete: .cascade)
+                t.column("holeNumber", .integer).notNull()
+                t.column("teeId", .text)
+                t.column("preferredClubId", .text)
+                t.column("plannedDirectionDeg", .double)
+                t.column("windSpeedMps", .double)
+                t.column("windDirectionDeg", .double)
+                t.column("notes", .text)
+            }
+
+            try db.create(table: "planShot") { t in
+                t.primaryKey("id", .text)
+                t.column("gamePlanHoleId", .text).notNull().indexed()
+                    .references("gamePlanHole", onDelete: .cascade)
+                t.column("sortOrder", .integer).notNull()
+                t.column("lat", .double).notNull()
+                t.column("lon", .double).notNull()
+                t.column("elevation", .double)
+                t.column("clubId", .text)
+                t.column("label", .text)
+            }
+
+            try db.create(table: "planGate") { t in
+                t.primaryKey("id", .text)
+                t.column("gamePlanHoleId", .text).notNull().indexed()
+                    .references("gamePlanHole", onDelete: .cascade)
+                t.column("sortOrder", .integer).notNull()
+                t.column("lat", .double).notNull()
+                t.column("lon", .double).notNull()
+                t.column("directionDeg", .double).notNull()
+                t.column("halfWidthLeftM", .double).notNull()
+                t.column("halfWidthRightM", .double).notNull()
+                t.column("source", .text).notNull()
+            }
+        }
+
         return migrator
     }
 
@@ -250,6 +310,76 @@ public struct AppDatabase: Sendable {
     public func deleteCourse(id: String) async throws {
         _ = try await dbQueue.write { db in
             try CourseRecord.deleteOne(db, key: id)
+        }
+    }
+
+    // MARK: - Game plan (read-only viewer cache)
+
+    /// The stored game plan for a course, or nil when none is cached. Holes
+    /// come back ordered by hole number, shots/gates by (hole, sortOrder).
+    public func gamePlan(courseId: String) async throws -> StoredGamePlan? {
+        try await dbQueue.read { db in
+            guard let plan = try GamePlanRecord
+                .filter(Column("courseId") == courseId)
+                .fetchOne(db)
+            else { return nil }
+
+            let holes = try GamePlanHoleRecord
+                .filter(Column("gamePlanId") == plan.id)
+                .order(Column("holeNumber"))
+                .fetchAll(db)
+            let holeIds = holes.map(\.id)
+            let shots = try PlanShotRecord
+                .filter(holeIds.contains(Column("gamePlanHoleId")))
+                .order(Column("gamePlanHoleId"), Column("sortOrder"))
+                .fetchAll(db)
+            let gates = try PlanGateRecord
+                .filter(holeIds.contains(Column("gamePlanHoleId")))
+                .order(Column("gamePlanHoleId"), Column("sortOrder"))
+                .fetchAll(db)
+
+            return StoredGamePlan(plan: plan, holes: holes, shots: shots, gates: gates)
+        }
+    }
+
+    /// Atomically replaces the stored plan for the plan's course (the delete
+    /// cascades wipe old holes/shots/gates). No-op merge semantics are not
+    /// needed — the server response is the whole plan tree.
+    public func saveGamePlan(_ stored: StoredGamePlan) async throws {
+        try await dbQueue.write { db in
+            try GamePlanRecord
+                .filter(Column("courseId") == stored.plan.courseId)
+                .deleteAll(db)
+            try stored.plan.insert(db)
+            for hole in stored.holes { try hole.insert(db) }
+            for shot in stored.shots { try shot.insert(db) }
+            for gate in stored.gates { try gate.insert(db) }
+        }
+    }
+
+    /// Removes the cached plan for a course (server said the plan is gone).
+    public func deleteGamePlan(courseId: String) async throws {
+        _ = try await dbQueue.write { db in
+            try GamePlanRecord
+                .filter(Column("courseId") == courseId)
+                .deleteAll(db)
+        }
+    }
+
+    // MARK: - Clubs (read-only viewer cache)
+
+    /// The cached club bag, ordered like the web bag (sortOrder).
+    public func allClubs() async throws -> [ClubRecord] {
+        try await dbQueue.read { db in
+            try ClubRecord.order(Column("sortOrder"), Column("name")).fetchAll(db)
+        }
+    }
+
+    /// Atomically replaces the cached club bag with the server's list.
+    public func saveClubs(_ clubs: [ClubRecord]) async throws {
+        try await dbQueue.write { db in
+            try ClubRecord.deleteAll(db)
+            for club in clubs { try club.insert(db) }
         }
     }
 }

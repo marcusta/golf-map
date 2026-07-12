@@ -108,6 +108,33 @@ struct CourseScreen: View {
             newModel.competitionMode = env.settings.competitionMode
             newModel.updateUserLocation(locationProvider.location)
 
+            // Game plan (read-only viewer): show whatever was cached last
+            // right away, then refresh from the server in the background.
+            // Online, the fresh plan (or its removal) replaces the cache;
+            // offline / any failure degrades silently to the cached plan.
+            if let cached = try? await GamePlanSync.loadCoursePlan(
+                database: env.database, courseId: courseId
+            ) {
+                newModel.setPlan(cached)
+            }
+            let planClient = env.client
+            let planDatabase = env.database
+            let planCourseId = courseId
+            Task {
+                do {
+                    try await GamePlanSync.refresh(
+                        client: planClient, database: planDatabase, courseId: planCourseId
+                    )
+                    let refreshed = try await GamePlanSync.loadCoursePlan(
+                        database: planDatabase, courseId: planCourseId
+                    )
+                    newModel.setPlan(refreshed)
+                } catch {
+                    // No network / server error: keep the cached plan. Log only.
+                    print("Game plan refresh skipped: \(error)")
+                }
+            }
+
             // Green view shares the bundle terrain pyramid with plays-like
             // sampling; green outlines come from features.geojson (greens'
             // boundaryJson is NULL in real bundles).
@@ -153,6 +180,12 @@ struct CourseScreen: View {
                     newModel.moveActiveTee(to: LatLon(lat: lat, lon: lon))
                 }
             }
+            // `-planDemo 1` installs a synthetic one-shot-per-hole game plan
+            // derived from the bundle furniture (no server round-trip), so
+            // the plan overlay + card rows can be live-verified headlessly.
+            if UserDefaults.standard.string(forKey: "planDemo") == "1" {
+                newModel.setPlan(Self.demoPlan(furniture: furniture))
+            }
             #endif
 
             mapInputs = MapInputs(
@@ -172,6 +205,57 @@ struct CourseScreen: View {
             loadError = "Failed to load the course bundle: \(error.localizedDescription)"
         }
     }
+
+    #if DEBUG
+    /// `-planDemo` support: builds a synthetic plan from the downloaded
+    /// furniture — on every hole with a tee and a green, one landing point at
+    /// the tee→green midpoint (club "Demo 7i") and one gate at 60% of the
+    /// hole, 15 m left / 20 m right of the line. Exercises the exact
+    /// `CoursePlan.make` pipeline the real cache path uses.
+    private static func demoPlan(furniture: CourseFurniture) -> CoursePlan {
+        let teesByHole = Dictionary(grouping: furniture.tees, by: \.holeId)
+        let greensByHole = Dictionary(
+            furniture.greens.map { ($0.holeId, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var holes: [GamePlanHoleRecord] = []
+        var shots: [PlanShotRecord] = []
+        var gates: [PlanGateRecord] = []
+        for hole in furniture.holes {
+            guard
+                let tee = teesByHole[hole.id]?.min(by: { $0.sortOrder < $1.sortOrder }),
+                let green = greensByHole[hole.id]
+            else { continue }
+            let holeRowId = "demo-plan-hole-\(hole.number)"
+            holes.append(GamePlanHoleRecord(
+                id: holeRowId, gamePlanId: "demo-plan",
+                holeNumber: hole.number, teeId: tee.id
+            ))
+            let teePos = LatLon(lat: tee.lat, lon: tee.lon)
+            let greenPos = LatLon(lat: green.centerLat, lon: green.centerLon)
+            shots.append(PlanShotRecord(
+                id: "\(holeRowId)-s1", gamePlanHoleId: holeRowId, sortOrder: 0,
+                lat: (teePos.lat + greenPos.lat) / 2,
+                lon: (teePos.lon + greenPos.lon) / 2,
+                clubId: "demo-club"
+            ))
+            gates.append(PlanGateRecord(
+                id: "\(holeRowId)-g1", gamePlanHoleId: holeRowId, sortOrder: 0,
+                lat: teePos.lat + (greenPos.lat - teePos.lat) * 0.6,
+                lon: teePos.lon + (greenPos.lon - teePos.lon) * 0.6,
+                directionDeg: Distance.bearingDegrees(teePos, greenPos),
+                halfWidthLeftM: 15, halfWidthRightM: 20, source: "manual"
+            ))
+        }
+        return CoursePlan.make(
+            stored: StoredGamePlan(
+                plan: GamePlanRecord(id: "demo-plan", courseId: furniture.course.id),
+                holes: holes, shots: shots, gates: gates
+            ),
+            clubs: [ClubRecord(id: "demo-club", name: "Demo 7i", carryM: 150, dispersionM: 12, sortOrder: 0)]
+        )
+    }
+    #endif
 }
 
 // MARK: - Content
@@ -664,14 +748,18 @@ private struct OnCourseContentView: View {
     }
     #endif
 
-    // Stacked bottom-right controls: green view / measure / adjust / profile /
-    // zoom in / zoom out / recenter.
+    // Stacked bottom-right controls: green view / level / measure / adjust /
+    // plan (only when the course has one) / profile / zoom in / zoom out /
+    // recenter.
     private var controlStack: some View {
         VStack(spacing: 10) {
             greenViewButton
             levelButton
             measureButton
             adjustButton
+            if model.courseHasPlan {
+                planButton
+            }
             profileButton
             circleButton(systemImage: "plus", label: "Zoom in") { model.zoomIn() }
             circleButton(systemImage: "minus", label: "Zoom out") { model.zoomOut() }
@@ -747,6 +835,23 @@ private struct OnCourseContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isAdjust ? "Exit adjust" : "Adjust positions")
+    }
+
+    /// Shows/hides the game-plan overlay (read-only strategy from the web
+    /// planner). Present only when the course has a plan; the visibility is
+    /// persisted per course. NOT a map tool — it coexists with every mode.
+    private var planButton: some View {
+        Button {
+            model.togglePlanVisible()
+        } label: {
+            Image(systemName: model.planVisible ? "signpost.right.fill" : "signpost.right")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(model.planVisible ? PlanStyle.violet : Color.primary)
+                .frame(width: 44, height: 44)
+                .mapControl()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.planVisible ? "Hide game plan" : "Show game plan")
     }
 
     /// Toggles the elevation-profile sheet (non-modal; the map stays live).
@@ -921,6 +1026,14 @@ private struct OnCourseContentView: View {
     }
 }
 
+// MARK: - Plan styling
+
+/// The game-plan violet, shared by the toggle button and the card rows.
+/// Matches the map overlay's `#a78bfa`.
+private enum PlanStyle {
+    static let violet = Color(red: 0.655, green: 0.545, blue: 0.98)
+}
+
 // MARK: - Adjust panel
 
 /// Bottom card while ADJUST mode is active (replaces the distance card):
@@ -1085,6 +1198,12 @@ private struct DistanceCardView: View {
             } else if let distances = model.distances, !distances.aims.isEmpty {
                 aimRow(distances.aims)
             }
+            if let planTarget = model.planTargetDistance {
+                toPlanRow(planTarget)
+            }
+            if !model.planLegs.isEmpty {
+                planRow(model.planLegs)
+            }
             bottomRow
         }
         .padding(.horizontal, Space.s4)
@@ -1161,6 +1280,53 @@ private struct DistanceCardView: View {
                 }
             }
         }
+    }
+
+    // GPS mode with a plan: distance from the origin to the NEXT planned
+    // landing point (the first plan shot not yet passed along the hole).
+    private func toPlanRow(_ target: OnCourseModel.PlanTargetDistance) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "signpost.right.fill")
+                .font(.caption)
+                .foregroundStyle(PlanStyle.violet)
+            OverlineLabel(
+                "To plan" + (target.clubName.map { " · \($0)" } ?? ""),
+                color: .secondary
+            )
+            Spacer()
+            MetricText("\(target.meters)", unit: "m", size: 16)
+        }
+    }
+
+    // The hole's planned legs: "1 · Driver · 214 m" capsules in stroke order;
+    // the last leg runs into the green. Follows the plan itself (not the
+    // overlay toggle) — the numbers stay useful with the map layer hidden.
+    private func planRow(_ legs: [OnCourseModel.PlanLeg]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Image(systemName: "signpost.right")
+                    .font(.caption2)
+                    .foregroundStyle(PlanStyle.violet)
+                ForEach(legs) { leg in
+                    HStack(spacing: 4) {
+                        Text("\(leg.index) · \(planLegTitle(leg))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        MetricText("\(leg.meters)", size: 12)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(PlanStyle.violet.opacity(0.16), in: Capsule())
+                }
+            }
+        }
+    }
+
+    /// "Driver", "Driver · Layup left", "Green" (final leg), or "Shot".
+    private func planLegTitle(_ leg: OnCourseModel.PlanLeg) -> String {
+        if leg.toGreen { return "Green" }
+        let parts = [leg.clubName, leg.label].compactMap { $0 }
+        return parts.isEmpty ? "Shot" : parts.joined(separator: " · ")
     }
 
     // GPS mode, user past the aim-routing threshold: emphasize distance to the

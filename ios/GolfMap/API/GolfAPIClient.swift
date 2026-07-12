@@ -126,6 +126,21 @@ public actor GolfAPIClient {
         try await request(path: "aim-points", query: ["holeId": holeId])
     }
 
+    // MARK: - Game plans (read-only viewer)
+
+    /// The player's game plan for a course, or nil when none exists (the
+    /// server returns JSON `null`).
+    public func gamePlan(courseId: String) async throws -> GamePlan? {
+        try await requestOptional(path: "game-plans/by-course", query: ["courseId": courseId])
+    }
+
+    // MARK: - Clubs
+
+    /// The player's club bag (id → name lookup for plan shots).
+    public func clubs() async throws -> [Club] {
+        try await request(path: "clubs")
+    }
+
     // MARK: - Assets
 
     public func assets(courseId: String) async throws -> [CourseAsset] {

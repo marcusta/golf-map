@@ -14,6 +14,18 @@ public enum MapStyleIDs {
 
     // Dynamic overlay sources start out as empty FeatureCollections in the
     // style; CourseMapView updates them at runtime via MLNShapeSource.shape.
+
+    // Game-plan strategy overlay (read-only viewer): dashed leg polyline,
+    // landing-point nodes, and gate cross-lines. Drawn UNDER the distance
+    // line — the plan is "the strategy", the white line is "where I am".
+    public static let planLineSource = "overlay-plan-line"
+    public static let planLineCasingLayer = "overlay-plan-line-casing"
+    public static let planLineLayer = "overlay-plan-line"
+    public static let planGatesSource = "overlay-plan-gates"
+    public static let planGatesLayer = "overlay-plan-gates"
+    public static let planNodesSource = "overlay-plan-nodes"
+    public static let planNodesLayer = "overlay-plan-nodes"
+
     public static let distanceLineSource = "overlay-distance-line"
     public static let distanceLineCasingLayer = "overlay-distance-line-casing"
     public static let distanceLineLayer = "overlay-distance-line"
@@ -77,6 +89,19 @@ public enum MapStyleBuilder {
     static let distanceLineWidth = 2.5
     static let distanceLineCasingColor = "#14281c"
     static let distanceLineCasingWidth = 5.0
+
+    // Game-plan overlay: violet strategy palette, clearly distinct from the
+    // white "where I am" distance line and the amber measure path. The leg
+    // line is DASHED (planned, not live); gates are solid cross-bars; nodes
+    // are small filled circles under the F/C/B markers.
+    static let planColor = "#a78bfa"
+    static let planLineWidth = 3.0
+    static let planLineDashArray = [2.0, 2.0]
+    static let planLineCasingColor = "#1e1433"
+    static let planLineCasingWidth = 5.5
+    static let planGateWidth = 3.5
+    static let planNodeRadius = 5.0
+    static let planNodeStrokeColor = "#ffffff"
 
     // Target marker colors by `kind` attribute (front/center/back follow the
     // red/white/blue flag-position convention; pin uses the web selection
@@ -175,6 +200,9 @@ public enum MapStyleBuilder {
         let sources: [String: Any] = [
             MapStyleIDs.orthoSource: orthoSource,
             MapStyleIDs.featuresSource: ["type": "geojson", "data": features],
+            MapStyleIDs.planLineSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.planGatesSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.planNodesSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.distanceLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.targetsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.routeLegLabelsSource: ["type": "geojson", "data": emptyCollection],
@@ -235,6 +263,52 @@ public enum MapStyleBuilder {
                 "paint": [
                     "line-color": FeaturePalette.typeColorExpression(outline: true),
                     "line-width": FeaturePalette.outlineWidth,
+                ],
+            ],
+            [
+                // Plan overlay under the live distance line: the strategy is
+                // context, the white line is the current shot.
+                "id": MapStyleIDs.planLineCasingLayer,
+                "type": "line",
+                "source": MapStyleIDs.planLineSource,
+                "layout": ["line-cap": "round", "line-join": "round"],
+                "paint": [
+                    "line-color": planLineCasingColor,
+                    "line-width": planLineCasingWidth,
+                    "line-opacity": 0.8,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.planLineLayer,
+                "type": "line",
+                // Butt caps so the dash gaps stay visible.
+                "source": MapStyleIDs.planLineSource,
+                "layout": ["line-join": "round"],
+                "paint": [
+                    "line-color": planColor,
+                    "line-width": planLineWidth,
+                    "line-dasharray": planLineDashArray,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.planGatesLayer,
+                "type": "line",
+                "source": MapStyleIDs.planGatesSource,
+                "layout": ["line-cap": "round"],
+                "paint": [
+                    "line-color": planColor,
+                    "line-width": planGateWidth,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.planNodesLayer,
+                "type": "circle",
+                "source": MapStyleIDs.planNodesSource,
+                "paint": [
+                    "circle-color": planColor,
+                    "circle-radius": planNodeRadius,
+                    "circle-stroke-color": planNodeStrokeColor,
+                    "circle-stroke-width": 1.5,
                 ],
             ],
             [

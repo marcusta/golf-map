@@ -1,0 +1,74 @@
+{
+    "id": "plan-1",
+    "courseId": "26D37361-D79C-41AA-AA49-92F2C2277222",
+    "userId": "user-1",
+    "windSpeedMps": 4.5,
+    "windDirectionDeg": 220,
+    "version": 7,
+    "holes": [
+        {
+            "id": "plan-1-h1",
+            "gamePlanId": "plan-1",
+            "holeNumber": 1,
+            "teeId": "tee-yellow-1",
+            "preferredClubId": "club-driver",
+            "plannedDirectionDeg": 341.5,
+            "windSpeedMps": null,
+            "windDirectionDeg": null,
+            "notes": "Favor the left half off the tee.",
+            "version": 3,
+            "shots": [
+                {
+                    "id": "shot-1b",
+                    "gamePlanHoleId": "plan-1-h1",
+                    "sortOrder": 1,
+                    "lat": 58.36299,
+                    "lon": 15.70841,
+                    "elevation": 76.2,
+                    "clubId": "club-7i",
+                    "label": "Layup short of bunker",
+                    "version": 1
+                },
+                {
+                    "id": "shot-1a",
+                    "gamePlanHoleId": "plan-1-h1",
+                    "sortOrder": 0,
+                    "lat": 58.36180,
+                    "lon": 15.70930,
+                    "elevation": 77.9,
+                    "clubId": "club-driver",
+                    "label": null,
+                    "version": 2
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-1a",
+                    "gamePlanHoleId": "plan-1-h1",
+                    "lat": 58.36150,
+                    "lon": 15.70955,
+                    "directionDeg": 341.5,
+                    "halfWidthLeftM": 18,
+                    "halfWidthRightM": 24,
+                    "source": "computed",
+                    "sortOrder": 0,
+                    "version": 1
+                }
+            ]
+        },
+        {
+            "id": "plan-1-h2",
+            "gamePlanId": "plan-1",
+            "holeNumber": 2,
+            "teeId": null,
+            "preferredClubId": null,
+            "plannedDirectionDeg": null,
+            "windSpeedMps": 6,
+            "windDirectionDeg": 180,
+            "notes": null,
+            "version": 1,
+            "shots": [],
+            "gates": []
+        }
+    ]
+}
