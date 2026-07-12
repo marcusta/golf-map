@@ -5,6 +5,7 @@ import type { Hole } from '../../../shared/api/holes.gen';
 import type { Tee } from '../../../shared/api/tees.gen';
 import type { Club } from '../../../shared/api/clubs.gen';
 import type { PlanGate, PlanShot } from '../../../shared/api/game-plans.gen';
+import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import {
     bearingToUnitVector,
     closestClub,
@@ -71,8 +72,9 @@ import maplibregl from 'maplibre-gl';
 import { AnalysisOverlayRenderer } from '../analysis/analysis-overlay';
 import { computeSlopeGrid, computeStats, type SlopeGrid, type AnalysisStats } from '../analysis/analysis-math';
 import type { AnalysisView } from '../analysis/analysis-tool.service';
-import type { SampleGrid } from '../../../shared/api/analysis.gen';
+import { createAnalysisClient, type AnalysisApi, type SampleGrid } from '../../../shared/api/analysis.gen';
 import { puttLabelDescriptors } from './putt-labels';
+import { summarizeGreenSlope, type GreenRefPoint } from './green-slope';
 
 /** Interaction-claim id for the planner's single tool. */
 export const PLANNER_TOOL_ID = 'planner';
@@ -135,6 +137,15 @@ const MIN_HALF_WIDTH_M = 1;
  */
 const NOMINAL_GREEN_DEPTH_M = 9;
 const DRAG_MOVE_THRESHOLD_PX = 2;
+/**
+ * DEM grid buffer for the green-slope caddy fetch (D10 seam) — the same
+ * margin as the putt-read grid (PUTT_GRID_BUFFER_M), the analysis minimum
+ * that still gives central-difference slope cells a little room near the
+ * green boundary.
+ */
+const GREEN_SLOPE_BUFFER_M = 10;
+/** DEM grid resolution for the green-slope fetch — the DEM's native 0.5 m. */
+const GREEN_SLOPE_RESOLUTION_M = 0.5;
 
 /**
  * The full v1 caddy rule set (feature-smart-caddy.md §5). The evaluator
@@ -235,6 +246,9 @@ export class PlannerToolService {
     private confirm = di.get(ConfirmService);
     /** Putt-read state (feature-putting-green-reading §5.1). Shared with the panel. */
     readonly puttRead = di.get(PuttReadService);
+
+    /** Injectable for tests (green-slope fetch, D10 seam) — real default hits `/api`. */
+    constructor(private analysisApi: AnalysisApi = createAnalysisClient('/api')) {}
 
     readonly mode = new Signal<PlannerMode>('select');
     readonly selection = new Signal<PlannerSelection>(null);
@@ -483,6 +497,103 @@ export class PlannerToolService {
     /** Feed the caddy a green-slope summary (or clear it with null). */
     setGreenSlopeSummary(summary: GreenSlopeSummary | null): void {
         this.greenSlopeSummary.set(summary);
+    }
+
+    /** Green-feature id `greenSlopeSummary` was last fetched for (or cleared
+     *  toward) — the dedupe key `attachGreenSlope` uses so unrelated re-renders
+     *  (feature edits elsewhere, unrelated signal churn) don't re-fetch. */
+    private greenSlopeFeatureId: string | null = null;
+    /** Bumped on every hole/green change; a resolved fetch checks it against
+     *  the current value to drop a response superseded by a newer selection. */
+    private greenSlopeSeq = 0;
+
+    /**
+     * Wire the green-slope caddy seam (D10, feature-smart-caddy.md §4.6): when
+     * the selected hole's green (course feature) changes — including on
+     * initial load — clear `greenSlopeSummary` IMMEDIATELY (synchronously, in
+     * this same effect run) so stale slope advice never shows, then fetch a
+     * fresh grid off a microtask and feed the derived summary back in once it
+     * settles. Dedupes on the green feature id so a burst of unrelated
+     * `features`/`selectedHole` recomputes (e.g. another feature edited
+     * elsewhere) is a no-op — exactly one fetch per hole/green selection,
+     * never per drag frame (nothing here is on the drag path at all: drags
+     * only touch `plan.shots`/`plan.gates`, not `features` or `selectedHole`).
+     *
+     * The microtask defer for the FETCH (not the clear) sidesteps the
+     * reactive-cascade gotcha (AGENTS.md): `originTee`, read inside the fetch
+     * to pick the front/back axis, is itself derived from `selectedHole` and
+     * could still be settling to the new hole's tee within the same
+     * synchronous signal-write cascade that changed `selectedHole` here.
+     */
+    private attachGreenSlope(track: (dispose: () => void) => void): void {
+        let disposed = false;
+        track(() => { disposed = true; });
+        track(effect(() => {
+            const hole = this.selectedHole.get();
+            const features = this.features.store.items.get();
+            const greenFeature = hole
+                ? features.find(f => f.type === 'green' && f.holeId === hole.id) ?? null
+                : null;
+            const featureId = greenFeature?.id ?? null;
+            if (featureId === this.greenSlopeFeatureId) return; // same green — keep the summary
+            this.greenSlopeFeatureId = featureId;
+            const seq = ++this.greenSlopeSeq; // invalidate any fetch in flight for the old green
+            this.setGreenSlopeSummary(null); // immediate — no stale advice while the new grid loads
+            if (!hole || !greenFeature) return; // no green mapped — stays cleared (degrades silently)
+            queueMicrotask(() => {
+                if (disposed || seq !== this.greenSlopeSeq) return;
+                void this.fetchGreenSlopeSummary(seq, hole, greenFeature);
+            });
+        }));
+    }
+
+    /**
+     * Fetch the green's DEM sample grid and derive the D10 summary
+     * (green-slope.ts), or leave the summary cleared on any failure (no
+     * furniture green row for a front/back axis, no green polygon mapped yet,
+     * a DEM fetch error, or an all-nodata/dead-flat grid) — the caddy simply
+     * won't fire, no error surfaced to the user (requirement: degrade
+     * silently). `seq` guards against a response for a since-superseded
+     * hole/green selection overwriting a newer one.
+     */
+    private async fetchGreenSlopeSummary(seq: number, hole: Hole, greenFeature: CourseFeature): Promise<void> {
+        const greenRow = this.furniture.greenForHole(hole.id);
+        if (!greenRow) return; // no furniture green row → no honest front/back axis
+
+        // Front/back axis for the summary's half-split: the green centre
+        // nudged either side of the tee→green bearing, the same nominal-depth
+        // convention `buildLegContext` uses per leg — here at hole
+        // granularity since this fetch runs once per selection, not per leg.
+        // Unused by the rule's fire decision (bearing + magnitude only), so a
+        // coarse stand-in is honest enough (green-slope.ts docstring).
+        const center = wgs84ToSweref99tm(greenRow.centerLat, greenRow.centerLon);
+        const tee = this.originTee.peek();
+        const axisBearingDeg = tee
+            ? planarBearingDeg(wgs84ToSweref99tm(tee.lat, tee.lon), center)
+            : 0;
+        const dir = bearingToUnitVector(axisBearingDeg);
+        const front: GreenRefPoint = {
+            e: center.x - dir.x * NOMINAL_GREEN_DEPTH_M,
+            n: center.y - dir.y * NOMINAL_GREEN_DEPTH_M,
+        };
+        const back: GreenRefPoint = {
+            e: center.x + dir.x * NOMINAL_GREEN_DEPTH_M,
+            n: center.y + dir.y * NOMINAL_GREEN_DEPTH_M,
+        };
+
+        let grid: SampleGrid;
+        try {
+            grid = await this.analysisApi.sampleGrid({
+                courseId: greenFeature.courseId,
+                featureId: greenFeature.id,
+                bufferM: GREEN_SLOPE_BUFFER_M,
+                resolutionM: GREEN_SLOPE_RESOLUTION_M,
+            });
+        } catch {
+            return; // DEM fetch error → degrade silently, summary stays cleared
+        }
+        if (seq !== this.greenSlopeSeq) return; // superseded by a newer hole/green selection
+        this.setGreenSlopeSummary(summarizeGreenSlope(grid, front, back));
     }
 
     /**
@@ -975,6 +1086,7 @@ export class PlannerToolService {
         track(() => this.puttRead.deactivate());
 
         this.attachHoleFraming(track);
+        this.attachGreenSlope(track);
 
         // Re-run DECADE enrichment when the strategy inputs change (hole,
         // clubs, wind, shot set) — but NOT on the per-frame drag path: the
