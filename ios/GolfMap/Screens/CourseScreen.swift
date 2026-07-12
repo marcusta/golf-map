@@ -117,6 +117,12 @@ struct CourseScreen: View {
             ) {
                 newModel.setPlan(cached)
             }
+            // Club bag (user-level) drives the distance card's club advice +
+            // the plan legs' suggested-club fallback; cached now, refreshed
+            // below alongside the plan.
+            if let cachedClubs = try? await env.database.allClubs() {
+                newModel.setClubs(cachedClubs)
+            }
             let planClient = env.client
             let planDatabase = env.database
             let planCourseId = courseId
@@ -129,6 +135,7 @@ struct CourseScreen: View {
                         database: planDatabase, courseId: planCourseId
                     )
                     newModel.setPlan(refreshed)
+                    newModel.setClubs(try await planDatabase.allClubs())
                 } catch {
                     // No network / server error: keep the cached plan. Log only.
                     print("Game plan refresh skipped: \(error)")
@@ -185,6 +192,7 @@ struct CourseScreen: View {
             // the plan overlay + card rows can be live-verified headlessly.
             if UserDefaults.standard.string(forKey: "planDemo") == "1" {
                 newModel.setPlan(Self.demoPlan(furniture: furniture))
+                newModel.setClubs(Self.demoClubs)
             }
             #endif
 
@@ -249,12 +257,25 @@ struct CourseScreen: View {
         }
         return CoursePlan.make(
             stored: StoredGamePlan(
-                plan: GamePlanRecord(id: "demo-plan", courseId: furniture.course.id),
+                plan: GamePlanRecord(
+                    id: "demo-plan", courseId: furniture.course.id,
+                    windSpeedMps: 5, windDirectionDeg: 45
+                ),
                 holes: holes, shots: shots, gates: gates
             ),
             clubs: [ClubRecord(id: "demo-club", name: "Demo 7i", carryM: 150, dispersionM: 12, sortOrder: 0)]
         )
     }
+
+    /// A representative demo bag (`-planDemo`) so the card's club advice + the
+    /// plan legs' suggested-club fallback render in headless live-verify.
+    private static let demoClubs: [ClubRecord] = [
+        ClubRecord(id: "d-dr", name: "Driver", carryM: 235, dispersionM: 60, sortOrder: 0),
+        ClubRecord(id: "d-5i", name: "5i", carryM: 175, dispersionM: 38, sortOrder: 1),
+        ClubRecord(id: "d-7i", name: "7i", carryM: 155, dispersionM: 32, sortOrder: 2),
+        ClubRecord(id: "d-9i", name: "9i", carryM: 127, dispersionM: 30, sortOrder: 3),
+        ClubRecord(id: "d-pw", name: "PW", carryM: 115, dispersionM: 27, sortOrder: 4),
+    ]
     #endif
 }
 
@@ -1187,6 +1208,12 @@ private struct DistanceCardView: View {
     var body: some View {
         VStack(spacing: 8) {
             frontCenterBack
+            if let clubs = model.distances?.centerClubs, clubs.hasAny {
+                clubAdviceRow(clubs)
+            }
+            if let wind = model.effectiveWind {
+                windRow(wind)
+            }
             if let routed = model.routedAimDistance {
                 toAimRow(routed)
             }
@@ -1231,10 +1258,60 @@ private struct DistanceCardView: View {
     }
 
     private var centerCaption: String {
-        if let playsLike = model.distances?.playsLikeCenter {
-            return "Center · PL \(playsLike)"
+        guard let playsLike = model.distances?.playsLikeCenter else { return "Center" }
+        if let wind = model.distances?.windPlaysLikeCenter {
+            return "Center · PL \(playsLike) → \(wind)"
         }
-        return "Center"
+        return "Center · PL \(playsLike)"
+    }
+
+    // Front/center/back club advice for the (wind-adjusted) plays-like to the
+    // green — clubAdvice's three slots. Slots absent at the extremes are
+    // dropped. Hidden in competition mode (advice is computed nil there).
+    private func clubAdviceRow(_ clubs: ClubAdviceLabels) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "bag.fill")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let front = clubs.front { clubChip("F", front, Self.frontColor) }
+            if let center = clubs.center { clubChip("C", center, .primary) }
+            if let back = clubs.back { clubChip("B", back, Self.backColor) }
+            Spacer()
+        }
+    }
+
+    private func clubChip(_ tag: String, _ name: String, _ color: Color) -> some View {
+        HStack(spacing: 3) {
+            if !tag.isEmpty {
+                Text(tag)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(color)
+            }
+            Text(name)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(tag.isEmpty ? color : .primary)
+        }
+    }
+
+    // Small wind indicator: speed (m/s) + an arrow pointing the way the wind
+    // blows (north-up). Only shown when the plan supplies a non-calm wind and
+    // competition mode is off (`model.effectiveWind` is nil in both cases).
+    private func windRow(_ wind: (speedMps: Double, directionDeg: Double)) -> some View {
+        let speed = Int(wind.speedMps.rounded())
+        return HStack(spacing: 6) {
+            Image(systemName: "location.north.fill")
+                .font(.caption2)
+                // directionDeg is where the wind comes FROM; +180 points the
+                // arrow the way the wind (and ball push) travels.
+                .rotationEffect(.degrees(wind.directionDeg + 180))
+                .foregroundStyle(.secondary)
+            Text("Wind \(speed) m/s")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Wind \(speed) meters per second from \(Int(wind.directionDeg.rounded())) degrees")
     }
 
     private func sideValue(label: String, value: Int?, color: Color) -> some View {
@@ -1253,9 +1330,16 @@ private struct DistanceCardView: View {
             Text("Pin\(model.targets.activePinName.map { " · \($0)" } ?? "")")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            if let club = distances.pinClub {
+                clubChip("", club, Self.pinColor)
+            }
             Spacer()
             if let playsLike = distances.playsLikePin {
-                MetricText("PL \(playsLike)", size: 12, weight: .regular, color: .secondary)
+                if let wind = distances.windPlaysLikePin {
+                    MetricText("PL \(playsLike) → \(wind)", size: 12, weight: .regular, color: .secondary)
+                } else {
+                    MetricText("PL \(playsLike)", size: 12, weight: .regular, color: .secondary)
+                }
             }
             MetricText(Self.format(distances.pin), unit: "m", size: 15)
         }
@@ -1322,10 +1406,14 @@ private struct DistanceCardView: View {
         }
     }
 
-    /// "Driver", "Driver · Layup left", "Green" (final leg), or "Shot".
+    /// "Driver", "Driver · Layup left", "Green" (final leg), or "Shot". A leg
+    /// with no planned club falls back to the suggested club, marked "~7i".
     private func planLegTitle(_ leg: OnCourseModel.PlanLeg) -> String {
-        if leg.toGreen { return "Green" }
-        let parts = [leg.clubName, leg.label].compactMap { $0 }
+        let club = leg.clubName ?? leg.suggestedClubName.map { "~\($0)" }
+        if leg.toGreen {
+            return club.map { "Green · \($0)" } ?? "Green"
+        }
+        let parts = [club, leg.label].compactMap { $0 }
         return parts.isEmpty ? "Shot" : parts.joined(separator: " · ")
     }
 

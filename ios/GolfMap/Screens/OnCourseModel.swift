@@ -60,6 +60,11 @@ final class OnCourseModel {
     /// GRDB cache by the screen; nil = no plan → no plan UI anywhere.
     private(set) var plan: CoursePlan?
 
+    /// The player's cached club bag (user-level, not per course), loaded from
+    /// GRDB by the screen alongside the plan. Drives the distance card's club
+    /// advice and the plan legs' suggested-club fallback. Empty = no advice.
+    private(set) var clubs: [ClubRecord] = []
+
     /// User-controllable plan-overlay switch (persisted per course, default
     /// ON, like `activeTeeName`). Only affects the MAP overlay — the distance
     /// card's plan row follows the plan itself.
@@ -810,7 +815,9 @@ final class OnCourseModel {
             from: origin,
             originElevation: originElevation,
             targets: targets,
-            competitionMode: competitionMode
+            competitionMode: competitionMode,
+            wind: effectiveWind,
+            clubs: clubs
         )
     }
 
@@ -976,6 +983,21 @@ final class OnCourseModel {
         self.plan = plan
     }
 
+    /// Installs the player's club bag (used for distance-card club advice and
+    /// the plan-leg suggested-club fallback). Called by the screen after
+    /// reading the GRDB cache, and again when an online refresh lands.
+    func setClubs(_ clubs: [ClubRecord]) {
+        self.clubs = clubs
+    }
+
+    /// The effective wind for the current hole: the plan hole's wind override,
+    /// else the plan-level default, else nil (calm / unknown). Hidden entirely
+    /// in competition mode — wind adjustment is advice.
+    var effectiveWind: (speedMps: Double, directionDeg: Double)? {
+        guard !competitionMode, let plan, let hole = currentHole else { return nil }
+        return plan.wind(holeNumber: hole.hole.number)
+    }
+
     /// True when the course has any renderable plan content — gates the plan
     /// toggle's presence in the control stack.
     var courseHasPlan: Bool { plan?.hasContent ?? false }
@@ -1031,6 +1053,11 @@ final class OnCourseModel {
         let label: String?
         let meters: Int
         let toGreen: Bool
+        /// Fallback club when the leg carries no planned club: the club whose
+        /// carry is nearest the leg's (wind-adjusted) plays-like distance.
+        /// Shown with a "~" suggested marker. Nil when the leg has a planned
+        /// club, in competition mode, or without a bag.
+        let suggestedClubName: String?
         var id: Int { index }
     }
 
@@ -1038,8 +1065,9 @@ final class OnCourseModel {
     var planLegs: [PlanLeg] {
         guard let holePlan = currentHolePlan, let hole = currentHole else { return [] }
         var legs: [PlanLeg] = []
-        var previous = planTee(for: hole, plan: holePlan)
-            .map { LatLon(lat: $0.lat, lon: $0.lon) }
+        let tee = planTee(for: hole, plan: holePlan)
+        var previous: LatLon? = tee.map { LatLon(lat: $0.lat, lon: $0.lon) }
+        var previousElevation: Double? = tee?.elevation
         for shot in holePlan.shots {
             if let from = previous {
                 legs.append(PlanLeg(
@@ -1047,10 +1075,15 @@ final class OnCourseModel {
                     clubName: shot.clubName,
                     label: shot.label,
                     meters: Int(Distance.planarMeters(from, shot.position).rounded()),
-                    toGreen: false
+                    toGreen: false,
+                    suggestedClubName: shot.clubName == nil
+                        ? suggestedClub(from: from, fromElevation: previousElevation,
+                                        to: shot.position, toElevation: shot.elevation)
+                        : nil
                 ))
             }
             previous = shot.position
+            previousElevation = shot.elevation
         }
         if let green = hole.green, let from = previous {
             let center = LatLon(lat: green.centerLat, lon: green.centerLon)
@@ -1059,10 +1092,37 @@ final class OnCourseModel {
                 clubName: nil,
                 label: nil,
                 meters: Int(Distance.planarMeters(from, center).rounded()),
-                toGreen: true
+                toGreen: true,
+                suggestedClubName: suggestedClub(from: from, fromElevation: previousElevation,
+                                                 to: center, toElevation: green.elevation)
             ))
         }
         return legs
+    }
+
+    /// Closest club to a leg's playing distance, or nil. Mirrors the card's
+    /// composition: plays-like (when both endpoints have elevation) else the
+    /// straight line, then the wind "plays as". Gated off in competition mode.
+    private func suggestedClub(
+        from: LatLon, fromElevation: Double?, to: LatLon, toElevation: Double?
+    ) -> String? {
+        guard !competitionMode, !clubs.isEmpty else { return nil }
+        let a = Sweref99TM.fromWGS84(from)
+        let b = Sweref99TM.fromWGS84(to)
+        var base = Distance.planarMeters(from, to)
+        if let fe = fromElevation, let te = toElevation {
+            let stats = PlaysLike.segmentStats(
+                PlaysLike.Point(e: a.x, n: a.y, elevation: fe),
+                PlaysLike.Point(e: b.x, n: b.y, elevation: te)
+            )
+            if let pl = stats.playsLikeSimple { base = pl }
+        }
+        if let wind = effectiveWind {
+            let deg = atan2(b.x - a.x, b.y - a.y) * 180 / .pi
+            let bearing = deg < 0 ? deg + 360 : deg
+            base = playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearing))
+        }
+        return closestClub(clubs, base)?.name
     }
 
     /// GPS mode: the next planned landing point ahead of the user — the FIRST
