@@ -16,6 +16,7 @@ struct CourseScreen: View {
 
     @State private var model: OnCourseModel?
     @State private var greenAnalysis: GreenAnalysisModel?
+    @State private var caddy: CaddyAdviceModel?
     @State private var puttRead: PuttReadModel?
     @State private var measure: MeasureModel?
     @State private var profile: ElevationProfileModel?
@@ -33,11 +34,12 @@ struct CourseScreen: View {
 
     var body: some View {
         Group {
-            if let model, let greenAnalysis, let puttRead, let measure, let profile,
+            if let model, let greenAnalysis, let caddy, let puttRead, let measure, let profile,
                let roundModel, let capture, let mapInputs {
                 OnCourseContentView(
                     model: model,
                     greenAnalysis: greenAnalysis,
+                    caddy: caddy,
                     puttRead: puttRead,
                     measure: measure,
                     profile: profile,
@@ -74,6 +76,10 @@ struct CourseScreen: View {
         .onChange(of: env.settings.competitionMode) { _, on in
             model?.competitionMode = on
             puttRead?.competitionMode = on
+            // Caddy advice is advice → withheld in competition; the content
+            // view recomputes it on the next Green-view activation / grid
+            // settle, so clearing here is enough to hide it immediately.
+            if on { caddy?.clear() }
         }
         .onAppear { locationProvider.start() }
         .onDisappear { locationProvider.stop() }
@@ -113,6 +119,12 @@ struct CourseScreen: View {
             newModel.elevationSampler = { await terrain.elevation(at: $0) }
             newModel.isLocationDenied = locationProvider.isDenied
             newModel.competitionMode = env.settings.competitionMode
+            // Course hazard rings (bunker/water/penalty) for the distance card's
+            // carry rows (Part A) + the caddy context. Parsed once from the same
+            // features.geojson the map and green outlines use.
+            if let hazardStore = try? HazardFeatureStore(featuresGeoJSON: featuresGeoJSON) {
+                newModel.setHazards(hazardStore.rings)
+            }
             newModel.updateUserLocation(locationProvider.location)
 
             // Game plan (read-only viewer): show whatever was cached last
@@ -226,6 +238,7 @@ struct CourseScreen: View {
             )
             model = newModel
             greenAnalysis = newGreenAnalysis
+            caddy = CaddyAdviceModel()
             puttRead = newPuttRead
             measure = newMeasure
             profile = newProfile
@@ -307,6 +320,7 @@ struct CourseScreen: View {
 private struct OnCourseContentView: View {
     let model: OnCourseModel
     let greenAnalysis: GreenAnalysisModel
+    let caddy: CaddyAdviceModel
     let puttRead: PuttReadModel
     let measure: MeasureModel
     let profile: ElevationProfileModel
@@ -496,6 +510,7 @@ private struct OnCourseContentView: View {
                     GreenViewPanel(
                         model: greenAnalysis,
                         putt: puttRead,
+                        caddy: caddy,
                         onLevel: { showLevel = true },
                         // Scan is only OFFERED where the hardware can deliver
                         // it (sceneDepth/LiDAR) — nil hides the affordance.
@@ -549,16 +564,20 @@ private struct OnCourseContentView: View {
                 greenAnalysis.deactivate()
                 puttRead.deactivate()
             }
+            caddy.clear()
             measure.clear()
             capture.end()
             refreshProfileIfShown()
         }
         // Hand the analysis grid to the putt read when the terrain sampling
         // settles (also on buffer-change re-samples). A failed/absent grid
-        // auto-offers the Manual tier.
+        // auto-offers the Manual tier. The caddy advice recomputes off the same
+        // settled grid (green-view only — the grid is not cheap to get on the
+        // hole-view card).
         .onChange(of: greenAnalysis.isLoading) { _, loading in
             guard !loading, isGreenView else { return }
             puttRead.installGrid(greenAnalysis.result?.grid)
+            recomputeCaddy()
         }
         // The profile follows whatever path is live: the measure path while
         // measuring (points change per tap), else the hole route (tee
@@ -1151,9 +1170,27 @@ private struct OnCourseContentView: View {
     private func exitGreenView() {
         greenAnalysis.deactivate()
         puttRead.deactivate()
+        caddy.clear()
         withAnimation(.easeInOut(duration: 0.28)) {
             model.exitTool()
         }
+    }
+
+    /// Recompute the caddy advice from the Green view's settled grid + the
+    /// hole's origin / green markers / hazards. Cheap pure math over already-
+    /// sampled data — never per frame (called on activation / grid settle /
+    /// competition toggle).
+    private func recomputeCaddy() {
+        guard let hole = model.currentHole else { caddy.clear(); return }
+        caddy.recompute(
+            grid: greenAnalysis.result?.grid,
+            origin: model.origin,
+            targets: model.targets,
+            hazards: model.courseHazardRings,
+            par: hole.hole.par,
+            strokeIndex: hole.hole.strokeIndex,
+            competition: model.competitionMode
+        )
     }
 
     // MARK: - Measure enter/exit
@@ -1588,6 +1625,10 @@ private struct DistanceCardView: View {
             } else if let distances = model.distances, !distances.aims.isEmpty {
                 aimRow(distances.aims)
             }
+            let hazards = model.hazardCarries
+            if !hazards.isEmpty {
+                hazardRow(hazards)
+            }
             if let planTarget = model.planTargetDistance {
                 toPlanRow(planTarget)
             }
@@ -1720,6 +1761,34 @@ private struct DistanceCardView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         MetricText("\(aim.meters)", size: 12)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(.white.opacity(0.08), in: Capsule())
+                }
+            }
+        }
+    }
+
+    // Carry hazards on the primary line (origin → routed aim / green center):
+    // "Bunker 182 / carry 195" capsules, nearest first. RAW line distances —
+    // shown in competition mode too (measurement, not advice).
+    private func hazardRow(_ hazards: [HazardCarry]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(Self.pinColor)
+                ForEach(hazards) { hazard in
+                    HStack(spacing: 4) {
+                        Text(hazard.label)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        MetricText("\(hazard.frontM)", size: 12)
+                        Text("/ carry")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        MetricText("\(hazard.carryM)", size: 12)
                     }
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)

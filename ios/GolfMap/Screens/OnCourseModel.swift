@@ -65,6 +65,12 @@ final class OnCourseModel {
     /// advice and the plan legs' suggested-club fallback. Empty = no advice.
     private(set) var clubs: [ClubRecord] = []
 
+    /// Course hazard rings (bunker / water / penalty), EPSG:3006, parsed once
+    /// from features.geojson by the screen. Feed the distance card's hazard
+    /// carry rows (Part A) and the caddy context. Course-level (not per-hole) —
+    /// the along-line query filters by geometry.
+    @ObservationIgnored private var hazardRings: [FlatRing] = []
+
     /// User-controllable plan-overlay switch (persisted per course, default
     /// ON, like `activeTeeName`). Only affects the MAP overlay — the distance
     /// card's plan row follows the plan itself.
@@ -828,6 +834,35 @@ final class OnCourseModel {
             competitionMode: competitionMode,
             wind: effectiveWind,
             clubs: clubs
+        )
+    }
+
+    /// Install the course hazard rings (from features.geojson). Called by the
+    /// screen after parsing the bundle.
+    func setHazards(_ rings: [FlatRing]) {
+        hazardRings = rings
+    }
+
+    /// The course hazard rings — exposed for the caddy composition on the
+    /// screen (same source as the card's carry rows).
+    var courseHazardRings: [FlatRing] { hazardRings }
+
+    /// Hazard front/carry rows along the primary distance line (Part A): from
+    /// the origin to the target the primary distance measures — the routed aim
+    /// ahead in GPS mode, else the green center. RAW line distances (no
+    /// plays-like / wind), sorted nearest-first and capped to the 3 ahead.
+    /// Straight measured distances, so NOT gated in competition mode. Recomputed
+    /// on origin / hole / target change, same cadence as `distances`.
+    var hazardCarries: [HazardCarry] {
+        guard let origin, !hazardRings.isEmpty else { return [] }
+        guard let targetLL = nextAimAhead?.position ?? targets.greenCenter else { return [] }
+        let o = Sweref99TM.fromWGS84(origin)
+        let t = Sweref99TM.fromWGS84(targetLL)
+        return HazardCarries.along(
+            origin: Vec2(x: o.x, y: o.y),
+            target: Vec2(x: t.x, y: t.y),
+            hazards: hazardRings,
+            cap: 3
         )
     }
 

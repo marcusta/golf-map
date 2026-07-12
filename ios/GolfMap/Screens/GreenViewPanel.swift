@@ -9,6 +9,9 @@ import SwiftUI
 struct GreenViewPanel: View {
     let model: GreenAnalysisModel
     let putt: PuttReadModel
+    /// Smart-caddy advice for this green (top recommendation). Nil in
+    /// competition mode (advice is withheld) or when nothing fires.
+    let caddy: CaddyAdviceModel
     /// Present the spot-level capture sheet (owned by the screen).
     let onLevel: () -> Void
     /// Present the LiDAR corridor-scan flow (task E1); nil = unsupported
@@ -19,6 +22,9 @@ struct GreenViewPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             header
+            if let advice = caddy.advice {
+                caddyAdvice(advice)
+            }
             modePicker
             legend
             if let stats = model.result?.stats {
@@ -71,6 +77,35 @@ struct GreenViewPanel: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Close green view")
         }
+    }
+
+    // MARK: - Caddy advice
+
+    /// The top smart-caddy recommendation for this green (e.g. "Favour the
+    /// short half…"). Advice, so it never shows in competition mode (the model
+    /// clears it there).
+    private func caddyAdvice(_ advice: CaddyAdvice) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "figure.golf")
+                .font(.footnote)
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(advice.headline)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.primary)
+                if let detail = advice.detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.green.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var modeHint: String {

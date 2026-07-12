@@ -106,6 +106,57 @@ final class CompetitionModeTests: XCTestCase {
         XCTAssertNotNil(model.distances?.center, "straight distance still shown")
     }
 
+    // MARK: - Part A: hazard carries are measured distances, NOT gated
+
+    private func makeSingleHoleFurniture() -> CourseFurniture {
+        let course = CourseRecord(
+            id: "c1", name: "T", status: "published",
+            revision: 1, downloadedRevision: 1, updatedAt: "2026-01-01T00:00:00Z",
+            bundleState: .complete
+        )
+        let holes = [HoleRecord(id: "h1", courseId: "c1", number: 1, par: 4, strokeIndex: 1)]
+        let tees = [TeeRecord(id: "t1", holeId: "h1", name: "default", lat: 58.3600, lon: 15.7100, elevation: 10, sortOrder: 0)]
+        let greens = [GreenRecord(id: "g1", holeId: "h1", centerLat: 58.3640, centerLon: 15.7080, elevation: 25)]
+        let manifest = TileManifestRecord(
+            courseId: "c1", west: 15.70, south: 58.35, east: 15.72, north: 58.37,
+            orthoMinZoom: 14, orthoMaxZoom: 20, terrainMinZoom: 12, terrainMaxZoom: 17,
+            elevMin: 0, elevMax: 100, generatedAt: "2026-01-01T00:00:00Z", versionParam: "v1"
+        )
+        return CourseFurniture(
+            course: course, holes: holes, tees: tees, greens: greens,
+            pins: [], aimPoints: [], manifest: manifest
+        )
+    }
+
+    func testHazardCarriesShownRegardlessOfMode() {
+        let model = OnCourseModel(furniture: makeSingleHoleFurniture(), defaults: defaults)
+        model.setGPSEnabled(false) // origin = tee, primary target = green center
+
+        // A bunker straddling the tee→green midpoint, so the primary line crosses it.
+        let tee = Sweref99TM.fromWGS84(LatLon(lat: 58.3600, lon: 15.7100))
+        let green = Sweref99TM.fromWGS84(LatLon(lat: 58.3640, lon: 15.7080))
+        let mid = Vec2(x: (tee.x + green.x) / 2, y: (tee.y + green.y) / 2)
+        let bunker = FlatRing(
+            points: [
+                Vec2(x: mid.x - 12, y: mid.y - 12),
+                Vec2(x: mid.x + 12, y: mid.y - 12),
+                Vec2(x: mid.x + 12, y: mid.y + 12),
+                Vec2(x: mid.x - 12, y: mid.y + 12),
+            ],
+            kind: "bunker"
+        )
+        model.setHazards([bunker])
+
+        model.competitionMode = false
+        XCTAssertFalse(model.hazardCarries.isEmpty, "hazard carries present in friendly mode")
+
+        model.competitionMode = true
+        XCTAssertFalse(
+            model.hazardCarries.isEmpty,
+            "hazard carries are RAW measured distances — allowed in competition mode"
+        )
+    }
+
     // MARK: - Setting persistence
 
     func testCompetitionModeDefaultsOff() {
