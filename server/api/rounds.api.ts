@@ -1,9 +1,15 @@
 import { Type, type Static } from '@sinclair/typebox';
 import { requireAuth, requireUser } from '@basics/core/server/auth';
 import type { Context } from 'hono';
-import type { RoundsService } from '../services/rounds.service';
+import { SHOT_TYPES, type RoundsService } from '../services/rounds.service';
 
 // --- Input schemas ---
+
+// shot_type enum + non-negative integer penalty: validated at the HTTP boundary
+// (400 "Validation failed") and again in the service (InvalidShotError) so the
+// invariant holds however the service is called.
+const ShotTypeSchema = Type.Union(SHOT_TYPES.map((t) => Type.Literal(t)));
+const PenaltyStrokesSchema = Type.Integer({ minimum: 0 });
 
 const ListRoundsInput = Type.Object({
     courseId: Type.String(),
@@ -43,10 +49,10 @@ const AddShotInput = Type.Object({
     lon: Type.Number(),
     clubId: Type.Optional(Type.String()),
     lie: Type.Optional(Type.String()),
-    shotType: Type.Optional(Type.String()),
+    shotType: Type.Optional(ShotTypeSchema),
     targetLat: Type.Optional(Type.Number()),
     targetLon: Type.Optional(Type.Number()),
-    penaltyStrokes: Type.Optional(Type.Number()),
+    penaltyStrokes: Type.Optional(PenaltyStrokesSchema),
     recordedAt: Type.Optional(Type.String()),
 });
 
@@ -58,10 +64,10 @@ const UpdateShotInput = Type.Object({
     lon: Type.Optional(Type.Number()),
     clubId: Type.Optional(Type.String()),
     lie: Type.Optional(Type.String()),
-    shotType: Type.Optional(Type.String()),
+    shotType: Type.Optional(ShotTypeSchema),
     targetLat: Type.Optional(Type.Number()),
     targetLon: Type.Optional(Type.Number()),
-    penaltyStrokes: Type.Optional(Type.Number()),
+    penaltyStrokes: Type.Optional(PenaltyStrokesSchema),
     recordedAt: Type.Optional(Type.String()),
 });
 

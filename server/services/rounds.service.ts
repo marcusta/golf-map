@@ -4,6 +4,35 @@ import type { Database, RoundsTable, ShotsTable } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { NotFoundError } from '@basics/core/server/auth';
 
+// --- Shot-type enum (feature-shot-capture.md §3) ---
+//
+// Only these four values are legal for `shots.shot_type`. `full` gates
+// dispersion fitting; the rest are SG-relevant but excluded from the ellipse.
+export const SHOT_TYPES = ['full', 'partial', 'putt', 'recovery'] as const;
+export type ShotType = (typeof SHOT_TYPES)[number];
+
+/** Thrown when a shot's `shot_type` or `penalty_strokes` fails validation. */
+export class InvalidShotError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'InvalidShotError';
+    }
+}
+
+function assertShotType(value: string): void {
+    if (!(SHOT_TYPES as readonly string[]).includes(value)) {
+        throw new InvalidShotError(
+            `Invalid shot_type: ${value} (expected one of ${SHOT_TYPES.join(', ')})`,
+        );
+    }
+}
+
+function assertPenaltyStrokes(value: number): void {
+    if (!Number.isInteger(value) || value < 0) {
+        throw new InvalidShotError(`Invalid penalty_strokes: ${value} (expected a non-negative integer)`);
+    }
+}
+
 // --- Output types ---
 
 export interface Shot {
@@ -252,6 +281,9 @@ export class RoundsService {
         penaltyStrokes?: number;
         recordedAt?: string;
     }): Promise<Shot> {
+        if (input.shotType !== undefined) assertShotType(input.shotType);
+        if (input.penaltyStrokes !== undefined) assertPenaltyStrokes(input.penaltyStrokes);
+
         const round = await this.roundById(roundId).executeTakeFirst();
         if (!round) throw new NotFoundError(`Round ${roundId} not found`);
 
@@ -291,6 +323,9 @@ export class RoundsService {
         penaltyStrokes?: number;
         recordedAt?: string;
     }): Promise<Shot> {
+        if (patch.shotType !== undefined) assertShotType(patch.shotType);
+        if (patch.penaltyStrokes !== undefined) assertPenaltyStrokes(patch.penaltyStrokes);
+
         const row = await this.shotById(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Shot ${id} not found`);
         if (row.version !== version) throw new VersionConflictError('shots', id);

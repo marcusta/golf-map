@@ -3,7 +3,7 @@ import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { seedUsers, TEST_USER_ID } from '../db/seeds/users';
 import { seedClubs, TEST_CLUB_DRIVER_ID, TEST_CLUB_PW_ID } from '../db/seeds/clubs';
-import { RoundsService } from './rounds.service';
+import { RoundsService, InvalidShotError } from './rounds.service';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { NotFoundError } from '@basics/core/server/auth';
 
@@ -286,4 +286,38 @@ test('updateShot round-trips shot_type, target_lat/lon, and penalty_strokes', as
     expect(updated.targetLon).toBe(3.5);
     expect(updated.penaltyStrokes).toBe(2);
     expect(updated.version).toBe(2);
+});
+
+test('addShot rejects an unknown shot_type', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    await expect(
+        svc.addShot(round.id, { holeNumber: 1, lat: 1, lon: 1, shotType: 'chip' }),
+    ).rejects.toBeInstanceOf(InvalidShotError);
+});
+
+test('updateShot rejects an unknown shot_type', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    const shot = await svc.addShot(round.id, { holeNumber: 1, lat: 1, lon: 1 });
+    await expect(
+        svc.updateShot(shot.id, 1, { shotType: 'lob' }),
+    ).rejects.toBeInstanceOf(InvalidShotError);
+});
+
+test('addShot rejects negative penalty_strokes', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    await expect(
+        svc.addShot(round.id, { holeNumber: 1, lat: 1, lon: 1, penaltyStrokes: -1 }),
+    ).rejects.toBeInstanceOf(InvalidShotError);
+});
+
+test('addShot accepts every valid shot_type', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    for (const shotType of ['full', 'partial', 'putt', 'recovery'] as const) {
+        const shot = await svc.addShot(round.id, { holeNumber: 1, lat: 1, lon: 1, shotType });
+        expect(shot.shotType).toBe(shotType);
+    }
 });
