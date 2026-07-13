@@ -10,7 +10,15 @@ import type { Feature, FeatureCollection, Position } from 'geojson';
 import type { MapService } from '../map/map.service';
 import { sweref99tmToWgs84 } from '../geo/transform';
 import { geometryToWgs84Rings } from '../draw/features.service';
-import { buildOverlayRgba, sampleFallLines, type FallLineArrow } from './analysis-math';
+import {
+    buildMeterGridLines,
+    buildOverlayRgba,
+    computeContours,
+    sampleFallLines,
+    type ContourLevel,
+    type FallLineArrow,
+    type Seg3006,
+} from './analysis-math';
 import type { AnalysisRenderer, AnalysisView } from './analysis-tool.service';
 import type { SampleGrid } from '../../../shared/api/analysis.gen';
 
@@ -18,6 +26,8 @@ const HEAT_SOURCE_ID = 'analysis-heat';
 const HEAT_LAYER_ID = 'analysis-heat';
 const BOUNDARY_OVERLAY_ID = 'analysis-boundary';
 const ARROWS_OVERLAY_ID = 'analysis-arrows';
+const GRID_OVERLAY_ID = 'analysis-meter-grid';
+const CONTOURS_OVERLAY_ID = 'analysis-contours';
 
 type Quad = [[number, number], [number, number], [number, number], [number, number]];
 
@@ -37,6 +47,35 @@ export function gridCornerCoordinates(grid: SampleGrid): Quad {
         corner(origin.e, south),
     ];
 }
+
+/** 1 m grid segments as one WGS84 MultiLineString feature. */
+export function gridLinesToGeojson(lines: Seg3006[]): FeatureCollection {
+    return {
+        type: 'FeatureCollection',
+        features: [{
+            type: 'Feature',
+            properties: {},
+            geometry: { type: 'MultiLineString', coordinates: lines.map(seg => seg.map(segToLngLat)) },
+        }],
+    };
+}
+
+/** Contour levels as WGS84 features — one MultiLineString per elevation level. */
+export function contoursToGeojson(levels: ContourLevel[]): FeatureCollection {
+    return {
+        type: 'FeatureCollection',
+        features: levels.map(l => ({
+            type: 'Feature',
+            properties: { level: l.level, index: l.index },
+            geometry: { type: 'MultiLineString', coordinates: l.segments.map(seg => seg.map(segToLngLat)) },
+        })),
+    };
+}
+
+const segToLngLat = ([e, n]: [number, number]): Position => {
+    const { lat, lon } = sweref99tmToWgs84(e, n);
+    return [lon, lat];
+};
 
 /** Fall-line arrows as WGS84 line features (shaft + head strokes). */
 export function arrowsToGeojson(arrows: FallLineArrow[], lengthM: number): FeatureCollection {
@@ -79,9 +118,13 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
     private heatAdded = false;
     private boundaryAdded = false;
     private arrowsAdded = false;
+    private gridAdded = false;
+    private contoursAdded = false;
     private labelMarkers: maplibregl.Marker[] = [];
     /** The grid/mode the current heat image was rendered from (skip redundant redraws). */
     private renderedFor: { grid: SampleGrid; mode: string } | null = null;
+    /** Grid-derived decoration GeoJSON, cached per grid object (toggles re-render cheaply). */
+    private decorCache: { grid: SampleGrid; gridLines: FeatureCollection; contours: FeatureCollection } | null = null;
 
     render(map: MapService, view: AnalysisView | null): void {
         if (!view) {
@@ -109,35 +152,76 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
                 this.heatAdded = true;
             }
             this.renderedFor = { grid: view.grid, mode: view.mode };
-
-            // 2. Boundary: bold double outline (white casing + dark core) —
-            // the unmistakable inside/outside line. Re-added after the heat
-            // layer so it always draws on top of it.
-            const boundary = this.boundaryGeojson(view);
-            if (this.boundaryAdded) map.removeOverlayLayer(BOUNDARY_OVERLAY_ID);
-            map.addOverlayLayer(BOUNDARY_OVERLAY_ID, boundary, [
-                {
-                    id: 'analysis-boundary-casing',
-                    type: 'line',
-                    paint: { 'line-color': '#ffffff', 'line-width': 5, 'line-opacity': 0.95 },
-                },
-                {
-                    id: 'analysis-boundary-core',
-                    type: 'line',
-                    paint: { 'line-color': '#14281c', 'line-width': 1.8 },
-                },
-            ]);
-            this.boundaryAdded = true;
         }
 
-        // 3. Fall-line arrows + labels (slope mode only).
+        // 2. Decoration stack — rebuilt every render in a fixed order so the
+        // z-order is always heat < contours < 1 m grid < boundary < arrows,
+        // whichever of grid/mode/toggles changed.
         this.removeArrows(map);
+        this.removeDecorations(map);
+
+        if (!this.decorCache || this.decorCache.grid !== view.grid) {
+            this.decorCache = {
+                grid: view.grid,
+                gridLines: gridLinesToGeojson(buildMeterGridLines(view.grid)),
+                contours: contoursToGeojson(computeContours(view.grid)),
+            };
+        }
+
+        // 2a. Elevation contours (2 cm interval, index lines every 10 cm).
+        if (view.showContours) {
+            map.addOverlayLayer(CONTOURS_OVERLAY_ID, this.decorCache.contours, [
+                {
+                    id: 'analysis-contours-line',
+                    type: 'line',
+                    paint: {
+                        'line-color': '#14281c',
+                        'line-width': ['case', ['get', 'index'], 1.5, 0.7],
+                        'line-opacity': ['case', ['get', 'index'], 0.7, 0.45],
+                    },
+                },
+            ]);
+            this.contoursAdded = true;
+        }
+
+        // 2b. 1×1 m white reference grid.
+        if (view.showGrid) {
+            map.addOverlayLayer(GRID_OVERLAY_ID, this.decorCache.gridLines, [
+                {
+                    id: 'analysis-meter-grid-line',
+                    type: 'line',
+                    paint: { 'line-color': '#ffffff', 'line-width': 0.8, 'line-opacity': 0.65 },
+                },
+            ]);
+            this.gridAdded = true;
+        }
+
+        // 2c. Boundary: bold double outline (white casing + dark core) —
+        // the unmistakable inside/outside line.
+        map.addOverlayLayer(BOUNDARY_OVERLAY_ID, this.boundaryGeojson(view), [
+            {
+                id: 'analysis-boundary-casing',
+                type: 'line',
+                paint: { 'line-color': '#ffffff', 'line-width': 5, 'line-opacity': 0.95 },
+            },
+            {
+                id: 'analysis-boundary-core',
+                type: 'line',
+                paint: { 'line-color': '#14281c', 'line-width': 1.8 },
+            },
+        ]);
+        this.boundaryAdded = true;
+
+        // 3. Fall-line arrows + labels (slope mode only).
         if (view.mode === 'slope') {
             const arrows = sampleFallLines(view.grid, view.slope);
             const widthM = view.grid.width * view.grid.resolution;
             const heightM = view.grid.height * view.grid.resolution;
-            const spacing = Math.max(2, Math.min(widthM, heightM) / 8);
-            const lengthM = Math.min(4, Math.max(1.5, spacing * 0.5));
+            // Mirrors sampleFallLines' spacing; arrows sized to ~45% of it so
+            // the denser field stays readable (smaller than the reference's
+            // 50%-of-8×8 sizing).
+            const spacing = Math.max(1.5, Math.min(widthM, heightM) / 10);
+            const lengthM = Math.min(3.5, Math.max(1.2, spacing * 0.45));
 
             map.addOverlayLayer(ARROWS_OVERLAY_ID, arrowsToGeojson(arrows, lengthM), [
                 {
@@ -182,14 +266,17 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
         this.heatAdded = false;
         this.boundaryAdded = false;
         this.arrowsAdded = false;
+        this.gridAdded = false;
+        this.contoursAdded = false;
         this.renderedFor = null;
+        this.decorCache = null;
     }
 
     clear(map: MapService): void {
         const raw = map.map.peek();
         if (raw) {
             if (this.arrowsAdded) map.removeOverlayLayer(ARROWS_OVERLAY_ID);
-            if (this.boundaryAdded) map.removeOverlayLayer(BOUNDARY_OVERLAY_ID);
+            this.removeDecorations(map);
             if (this.heatAdded) {
                 if (raw.getLayer(HEAT_LAYER_ID)) raw.removeLayer(HEAT_LAYER_ID);
                 if (raw.getSource(HEAT_SOURCE_ID)) raw.removeSource(HEAT_SOURCE_ID);
@@ -198,9 +285,9 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
         for (const m of this.labelMarkers) m.remove();
         this.labelMarkers = [];
         this.heatAdded = false;
-        this.boundaryAdded = false;
         this.arrowsAdded = false;
         this.renderedFor = null;
+        this.decorCache = null;
     }
 
     // ── Internals ─────────────────────────────────────────────────────────
@@ -226,6 +313,22 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
                 geometry: { type: 'LineString', coordinates: ring },
             })),
         };
+    }
+
+    /** Remove boundary + 1 m grid + contours (the layers above the heat image). */
+    private removeDecorations(map: MapService): void {
+        if (this.boundaryAdded) {
+            map.removeOverlayLayer(BOUNDARY_OVERLAY_ID);
+            this.boundaryAdded = false;
+        }
+        if (this.gridAdded) {
+            map.removeOverlayLayer(GRID_OVERLAY_ID);
+            this.gridAdded = false;
+        }
+        if (this.contoursAdded) {
+            map.removeOverlayLayer(CONTOURS_OVERLAY_ID);
+            this.contoursAdded = false;
+        }
     }
 
     private removeArrows(map: MapService): void {

@@ -230,6 +230,44 @@ describe('CourseFeaturesService.geojsonByCourse', () => {
         expect(fc.features).toHaveLength(1);
         expect(fc.features[0].properties.type).toBe('green');
     });
+
+    test('resolved mode clips lower surfaces out from under higher ones', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        // Same hole, overlapping squares: the bunker is created after the
+        // fairway so it sits higher in the stack and must win the overlap.
+        await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'fairway', geometry: squareGeometry(0, 0, 10) });
+        await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'bunker', geometry: squareGeometry(0, 0, 3) });
+
+        const raw = await svc.geojsonByCourse(TEST_COURSE_ID);
+        const resolved = await svc.geojsonByCourse(TEST_COURSE_ID, { resolved: true });
+        expect(resolved.features).toHaveLength(raw.features.length);
+
+        const ringArea = (ring: number[][]) => {
+            let area = 0;
+            for (let i = 0; i < ring.length - 1; i++) {
+                area += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+            }
+            return Math.abs(area) / 2;
+        };
+        const featureArea = (feature: (typeof raw.features)[number]) => {
+            const polygons = feature.geometry.type === 'Polygon'
+                ? [feature.geometry.coordinates]
+                : feature.geometry.coordinates;
+            // Outer rings minus holes.
+            return polygons.reduce(
+                (sum, rings) => sum + rings.reduce(
+                    (acc, ring, i) => acc + (i === 0 ? ringArea(ring) : -ringArea(ring)), 0), 0);
+        };
+
+        const rawFairway = raw.features.find(f => f.properties.type === 'fairway')!;
+        const resolvedFairway = resolved.features.find(f => f.properties.type === 'fairway')!;
+        const resolvedBunker = resolved.features.find(f => f.properties.type === 'bunker')!;
+        // The bunker keeps its full footprint; the fairway loses the overlap.
+        expect(featureArea(resolvedBunker)).toBeGreaterThan(0);
+        expect(featureArea(resolvedFairway)).toBeLessThan(featureArea(rawFairway));
+    });
 });
 
 describe('CourseFeaturesService.update', () => {

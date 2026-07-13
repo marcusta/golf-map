@@ -20,11 +20,18 @@
       },
       "devDependencies": {
         "@types/bun": "^1",
+        "@types/geojson": "^7946.0.14",
         "typescript": "^5.9.3",
       },
     },
     "shared": {
       "name": "shared",
+      "dependencies": {
+        "polygon-clipping": "^0.15.7",
+      },
+      "devDependencies": {
+        "@types/geojson": "^7946.0.14",
+      },
     },
     "web": {
       "name": "web",

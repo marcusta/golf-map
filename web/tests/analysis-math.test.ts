@@ -21,6 +21,10 @@ import {
     INSIDE_ALPHA,
     OUTSIDE_ALPHA,
     ARROW_MIN_SLOPE_PCT,
+    buildMeterGridLines,
+    computeContours,
+    CONTOUR_INTERVAL_M,
+    CONTOUR_INDEX_EVERY,
 } from '../src/analysis/analysis-math';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────
@@ -262,24 +266,25 @@ test('slope mode colors cells by the slope ramp', () => {
 
 // ─── Fall-line arrows ─────────────────────────────────────────────────────
 
-test('fall-line arrows: ~8×8 sampling, downhill direction, every 4th labeled', () => {
-    // 40×40 cells @ 0.5 m = 20×20 m → spacing max(2, 20/8) = 2.5 m → 8×8.
+test('fall-line arrows: ~10×10 sampling, downhill direction, every 3rd labeled', () => {
+    // 40×40 cells @ 0.5 m = 20×20 m → spacing max(1.5, 20/10) = 2 m → 10×10.
     const grid = makeGrid({
         width: 40,
         height: 40,
         z: (e, n) => 50 + 0.03 * (e - 1000) + 0.04 * (n - 1980),
     });
     const arrows = sampleFallLines(grid, computeSlopeGrid(grid));
-    expect(arrows.length).toBe(64);
+    expect(arrows.length).toBe(100);
     for (const a of arrows) {
         expect(a.slopePct).toBeCloseTo(5, 6);
         expect(a.dirE).toBeCloseTo(-0.6, 6);
         expect(a.dirN).toBeCloseTo(-0.8, 6);
         expect(a.slopePct).toBeGreaterThan(ARROW_MIN_SLOPE_PCT);
     }
-    expect(arrows.filter(a => a.labeled).length).toBe(16); // every 4th
+    expect(arrows.filter(a => a.labeled).length).toBe(34); // every 3rd (ARROW_LABEL_EVERY)
     expect(arrows[0].labeled).toBe(true);
     expect(arrows[1].labeled).toBe(false);
+    expect(arrows[3].labeled).toBe(true);
 });
 
 test('fall-line arrows skip near-flat cells', () => {
@@ -288,13 +293,117 @@ test('fall-line arrows skip near-flat cells', () => {
     expect(arrows).toHaveLength(0);
 });
 
-test('fall-line arrow spacing never drops below 2 m', () => {
-    // Tiny 4×4 m green: min(w,h)/8 = 0.5 → clamped to 2 m → 2×2 samples.
+test('fall-line arrow spacing never drops below 1.5 m', () => {
+    // Tiny 4×4 m green: min(w,h)/10 = 0.4 → clamped to 1.5 m → 3×3 samples.
     const grid = makeGrid({
         width: 8,
         height: 8,
         z: (e, n) => 50 + 0.05 * (e - 1000) + 0.05 * (n - 1996),
     });
     const arrows = sampleFallLines(grid, computeSlopeGrid(grid));
-    expect(arrows.length).toBe(4);
+    expect(arrows.length).toBe(9);
+});
+
+// ─── buildMeterGridLines ──────────────────────────────────────────────────
+
+test('1 m grid lines align to whole EPSG:3006 meters and span the sampled rect', () => {
+    // Extent: e 1000–1006, n 1995–2000 (12×10 cells @ 0.5 m).
+    const lines = buildMeterGridLines(planeGrid());
+    const vertical = lines.filter(([[e1], [e2]]) => e1 === e2);
+    const horizontal = lines.filter(([[, n1], [, n2]]) => n1 === n2);
+    expect(vertical.length).toBe(7); // e = 1000..1006
+    expect(horizontal.length).toBe(6); // n = 1995..2000
+    for (const [[e]] of vertical) expect(e % 1).toBe(0);
+    for (const [[, n]] of horizontal) expect(n % 1).toBe(0);
+    // Lines span the full rectangle.
+    for (const [[, n1], [, n2]] of vertical) {
+        expect(Math.max(n1, n2)).toBe(2000);
+        expect(Math.min(n1, n2)).toBe(1995);
+    }
+    for (const [[e1], [e2]] of horizontal) {
+        expect(Math.min(e1, e2)).toBe(1000);
+        expect(Math.max(e1, e2)).toBe(1006);
+    }
+});
+
+test('1 m grid lines snap inward from a fractional origin', () => {
+    const grid: SampleGrid = {
+        origin: { e: 1000.3, n: 2000.7 },
+        resolution: 0.5,
+        width: 4,
+        height: 4,
+        heights: new Array(16).fill(50),
+        insideMask: new Array(16).fill(1),
+    };
+    // Extent: e 1000.3–1002.3, n 1998.7–2000.7.
+    const lines = buildMeterGridLines(grid);
+    const vertical = lines.filter(([[e1], [e2]]) => e1 === e2).map(([[e]]) => e);
+    const horizontal = lines.filter(([[, n1], [, n2]]) => n1 === n2).map(([[, n]]) => n);
+    expect(vertical).toEqual([1001, 1002]);
+    expect(horizontal).toEqual([1999, 2000]);
+});
+
+// ─── computeContours ──────────────────────────────────────────────────────
+
+test('contours on an east-tilted plane are vertical lines at exact level positions', () => {
+    // z = 50 + 0.1·(e − 1000): contours are north–south lines, one per 2 cm,
+    // at e = 1000 + (level − 50) / 0.1.
+    const grid = makeGrid({ width: 12, height: 10, z: e => 50 + 0.1 * (e - 1000) });
+    const contours = computeContours(grid);
+    expect(contours.length).toBeGreaterThan(20);
+    for (const c of contours) {
+        // Level is a 2 cm multiple; index flag on 10 cm multiples.
+        const k = Math.round(c.level / CONTOUR_INTERVAL_M);
+        expect(c.level).toBeCloseTo(k * CONTOUR_INTERVAL_M, 9);
+        expect(c.index).toBe(k % CONTOUR_INDEX_EVERY === 0);
+        expect(c.segments.length).toBeGreaterThan(0);
+        const expectedE = 1000 + (c.level - 50) / 0.1;
+        for (const [[e1, n1], [e2, n2]] of c.segments) {
+            expect(e1).toBeCloseTo(expectedE, 6);
+            expect(e2).toBeCloseTo(expectedE, 6);
+            expect(n1).not.toBe(n2); // north–south segment
+        }
+    }
+    // Consecutive levels are exactly one interval apart (no gaps).
+    for (let i = 1; i < contours.length; i++) {
+        expect(contours[i].level - contours[i - 1].level).toBeCloseTo(CONTOUR_INTERVAL_M, 9);
+    }
+});
+
+test('contours skip nodata blocks and a flat grid yields none', () => {
+    expect(computeContours(makeGrid({ width: 8, height: 8, z: () => 50 }))).toHaveLength(0);
+    expect(computeContours(makeGrid({ width: 8, height: 8, z: () => null }))).toHaveLength(0);
+    // Half the grid nodata: contours exist only where data is.
+    const grid = makeGrid({
+        width: 12,
+        height: 10,
+        z: (e, n) => (n > 1997.5 ? null : 50 + 0.1 * (e - 1000)),
+    });
+    const contours = computeContours(grid);
+    expect(contours.length).toBeGreaterThan(0);
+    for (const c of contours) {
+        for (const seg of c.segments) {
+            for (const [, n] of seg) expect(n).toBeLessThanOrEqual(1997.5);
+        }
+    }
+});
+
+test('contour segments stay within the sampled node extent', () => {
+    const grid = makeGrid({
+        width: 12,
+        height: 10,
+        z: (e, n) => 50 + 0.06 * (e - 1000) + 0.04 * (n - 1990) + 0.05 * Math.sin(e) * Math.cos(n),
+    });
+    for (const c of computeContours(grid)) {
+        for (const [[e1, n1], [e2, n2]] of c.segments) {
+            for (const e of [e1, e2]) {
+                expect(e).toBeGreaterThanOrEqual(1000.25);
+                expect(e).toBeLessThanOrEqual(1005.75);
+            }
+            for (const n of [n1, n2]) {
+                expect(n).toBeGreaterThanOrEqual(1995.25);
+                expect(n).toBeLessThanOrEqual(1999.75);
+            }
+        }
+    }
 });

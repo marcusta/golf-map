@@ -296,22 +296,26 @@ public struct FallLineArrow: Equatable, Sendable {
     public var dirE: Double
     public var dirN: Double
     public var slopePct: Double
-    /// Every 4th arrow carries a slope% text label.
+    /// Every 3rd arrow carries a slope% text label (ARROW_LABEL_EVERY).
     public var labeled: Bool
 }
 
 /// Arrows below this slope are noise, not signal.
 public let ARROW_MIN_SLOPE_PCT = 0.5
 
+/// Every Nth emitted arrow carries a slope% label.
+public let ARROW_LABEL_EVERY = 3
+
 /// Sample fall-line arrows on a coarse grid over the analysis area:
-/// spacing = max(2 m, min(width, height) / 8) — roughly 8×8, never denser
-/// than 2 m. Skips nodata and near-flat cells; every 4th emitted arrow is
-/// labeled.
+/// spacing = max(1.5 m, min(width, height) / 10) — roughly 10×10, never
+/// denser than 1.5 m (the reference's 8×8 / 2 m heuristic, densified ~50%
+/// for readability on real greens). Skips nodata and near-flat cells; every
+/// 3rd emitted arrow is labeled.
 public func sampleFallLines(_ grid: SampleGrid, slope: SlopeGrid) -> [FallLineArrow] {
     let spec = grid.spec
     let widthM = Double(spec.width) * spec.resolution
     let heightM = Double(spec.height) * spec.resolution
-    let spacing = max(2, min(widthM, heightM) / 8)
+    let spacing = max(1.5, min(widthM, heightM) / 10)
 
     var arrows: [FallLineArrow] = []
     var emitted = 0
@@ -332,11 +336,161 @@ public func sampleFallLines(_ grid: SampleGrid, slope: SlopeGrid) -> [FallLineAr
                 dirE: slope.dirE[i],
                 dirN: slope.dirN[i],
                 slopePct: pct,
-                labeled: emitted % 4 == 0
+                labeled: emitted % ARROW_LABEL_EVERY == 0
             ))
             emitted += 1
         }
         n -= spacing
     }
     return arrows
+}
+
+// MARK: - 1 m reference grid
+
+/// A straight line segment, EPSG:3006 endpoints.
+public struct Seg3006: Equatable, Sendable {
+    public var e0: Double
+    public var n0: Double
+    public var e1: Double
+    public var n1: Double
+
+    public init(_ e0: Double, _ n0: Double, _ e1: Double, _ n1: Double) {
+        self.e0 = e0
+        self.n0 = n0
+        self.e1 = e1
+        self.n1 = n1
+    }
+}
+
+/// 1×1 m reference grid over the sampled area, aligned to whole EPSG:3006
+/// meters (a true world grid, stable across re-samples and buffer changes —
+/// not anchored to the sample origin). One segment per line, spanning the
+/// full sampled rectangle. Mirrors the web `buildMeterGridLines`.
+public func buildMeterGridLines(_ spec: AnalysisGridSpec) -> [Seg3006] {
+    let east = spec.originE + Double(spec.width) * spec.resolution
+    let south = spec.originN - Double(spec.height) * spec.resolution
+    var lines: [Seg3006] = []
+    var e = spec.originE.rounded(.up)
+    while e <= east {
+        lines.append(Seg3006(e, spec.originN, e, south))
+        e += 1
+    }
+    var n = south.rounded(.up)
+    while n <= spec.originN {
+        lines.append(Seg3006(spec.originE, n, east, n))
+        n += 1
+    }
+    return lines
+}
+
+// MARK: - Elevation contours (marching squares)
+
+/// Contour interval — one line every 2 cm of elevation.
+public let CONTOUR_INTERVAL_M = 0.02
+/// Every 5th level (10 cm multiples) is an index contour, drawn heavier.
+public let CONTOUR_INDEX_EVERY = 5
+
+public struct ContourLevel: Equatable, Sendable {
+    /// Absolute elevation of this contour, meters.
+    public var level: Double
+    /// Index contour (10 cm multiple) — style heavier.
+    public var index: Bool
+    /// Unordered segments tracing the isoline, EPSG:3006.
+    public var segments: [Seg3006]
+}
+
+/// Marching-squares elevation contours over the sample grid at `intervalM`
+/// spacing. Levels are absolute-elevation multiples of the interval (stable
+/// across re-samples). Grid nodes are cell centers; 2×2 blocks with any
+/// nodata corner are skipped, so contours stop cleanly at the data edge.
+/// Saddle blocks are disambiguated by the block's center average. Segments
+/// are emitted unjoined — the renderer draws them as one shape per level, so
+/// joining buys nothing. Mirrors the web `computeContours`.
+public func computeContours(
+    _ grid: SampleGrid,
+    intervalM: Double = CONTOUR_INTERVAL_M
+) -> [ContourLevel] {
+    let spec = grid.spec
+    let width = spec.width
+    let height = spec.height
+    let heights = grid.heights
+    var byLevel: [Int: [Seg3006]] = [:]
+
+    // Node (row, col) → cell-center coordinate.
+    func nodeE(_ col: Int) -> Double { spec.originE + (Double(col) + 0.5) * spec.resolution }
+    func nodeN(_ row: Int) -> Double { spec.originN - (Double(row) + 0.5) * spec.resolution }
+
+    for row in 0..<(height - 1) {
+        for col in 0..<(width - 1) {
+            let tl = heights[row * width + col]
+            let tr = heights[row * width + col + 1]
+            let bl = heights[(row + 1) * width + col]
+            let br = heights[(row + 1) * width + col + 1]
+            if tl.isNaN || tr.isNaN || bl.isNaN || br.isNaN { continue }
+
+            let lo = min(tl, tr, bl, br)
+            let hi = max(tl, tr, bl, br)
+            let first = Int((lo / intervalM).rounded(.up))
+            let last = Int((hi / intervalM).rounded(.down))
+            if first > last { continue }
+
+            let e0 = nodeE(col), e1 = nodeE(col + 1)
+            let n0 = nodeN(row), n1 = nodeN(row + 1)
+            let res = spec.resolution
+
+            for k in first...last {
+                let level = Double(k) * intervalM
+                // Edge crossings, linearly interpolated. Only evaluated on
+                // edges the case table selects, where the sign differs and
+                // the denominator is non-zero.
+                func top() -> (Double, Double) { (e0 + ((level - tl) / (tr - tl)) * res, n0) }
+                func bottom() -> (Double, Double) { (e0 + ((level - bl) / (br - bl)) * res, n1) }
+                func left() -> (Double, Double) { (e0, n0 - ((level - tl) / (bl - tl)) * res) }
+                func right() -> (Double, Double) { (e1, n0 - ((level - tr) / (br - tr)) * res) }
+                func seg(_ a: (Double, Double), _ b: (Double, Double)) -> Seg3006 {
+                    Seg3006(a.0, a.1, b.0, b.1)
+                }
+
+                let idx = (tl >= level ? 1 : 0) | (tr >= level ? 2 : 0)
+                    | (br >= level ? 4 : 0) | (bl >= level ? 8 : 0)
+                if idx == 0 || idx == 15 { continue }
+
+                var segs: [Seg3006] = []
+                switch idx {
+                case 1, 14: segs.append(seg(top(), left()))
+                case 2, 13: segs.append(seg(top(), right()))
+                case 3, 12: segs.append(seg(left(), right()))
+                case 4, 11: segs.append(seg(right(), bottom()))
+                case 6, 9: segs.append(seg(top(), bottom()))
+                case 7, 8: segs.append(seg(left(), bottom()))
+                case 5: // tl+br high — saddle
+                    if (tl + tr + bl + br) / 4 >= level {
+                        segs.append(seg(top(), right()))
+                        segs.append(seg(bottom(), left()))
+                    } else {
+                        segs.append(seg(top(), left()))
+                        segs.append(seg(right(), bottom()))
+                    }
+                case 10: // tr+bl high — saddle
+                    if (tl + tr + bl + br) / 4 >= level {
+                        segs.append(seg(top(), left()))
+                        segs.append(seg(right(), bottom()))
+                    } else {
+                        segs.append(seg(top(), right()))
+                        segs.append(seg(bottom(), left()))
+                    }
+                default: break
+                }
+                byLevel[k, default: []].append(contentsOf: segs)
+            }
+        }
+    }
+
+    return byLevel.keys.sorted().map { k in
+        ContourLevel(
+            level: Double(k) * intervalM,
+            index: k % CONTOUR_INDEX_EVERY == 0,
+            segments: byLevel[k] ?? []
+        )
+    }
 }

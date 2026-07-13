@@ -329,12 +329,40 @@ export function sweref99tmToWgs84(x: number, y: number): { lat: number; lon: num
 }
 
 // ============================================================================
+// Great-circle distance (WGS84 lat/lon)
+// ============================================================================
+
+/** Mean Earth radius (meters), per IUGG. */
+const EARTH_RADIUS_M = 6371000;
+
+/**
+ * Great-circle (haversine) distance in meters between two WGS84 lat/lon
+ * points. Accurate to well under 0.5% for course-scale distances (a
+ * spherical approximation is more than sufficient at this scale — no need
+ * for a full ellipsoidal geodesic).
+ */
+export function haversineMeters(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
+    const lat1 = deg2rad(a.lat);
+    const lat2 = deg2rad(b.lat);
+    const dLat = deg2rad(b.lat - a.lat);
+    const dLon = deg2rad(b.lon - a.lon);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(h));
+}
+
+// ============================================================================
 // GeoJSON derivation
 // ============================================================================
 
 export interface GeoJsonPolygon {
     type: 'Polygon';
     coordinates: number[][][]; // [ring][point][lon, lat]
+}
+
+/** Produced by surface-stack resolution (clipping can split a polygon). */
+export interface GeoJsonMultiPolygon {
+    type: 'MultiPolygon';
+    coordinates: number[][][][]; // [polygon][ring][point][lon, lat]
 }
 
 /**

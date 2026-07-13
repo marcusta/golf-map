@@ -89,7 +89,10 @@ export class MapService {
             fitBoundsOptions: { padding: 24 },
             minZoom: Math.min(manifest.layers.ortho.minzoom, manifest.layers.terrain.minzoom),
             maxZoom: EDITOR_MAX_ZOOM,
-            attributionControl: { compact: true },
+            // Attribution is rendered by the editor canvas's status pill
+            // (single bottom-right overlay) instead of MapLibre's control,
+            // which starts expanded and overlapped the cursor readout.
+            attributionControl: false,
         });
 
         map.on('error', e => {

@@ -31,6 +31,10 @@ export interface AnalysisView {
     geometry: FeatureGeometry;
     slope: SlopeGrid;
     stats: AnalysisStats;
+    /** Draw the 1×1 m white reference grid. */
+    showGrid: boolean;
+    /** Draw 2 cm elevation contours. */
+    showContours: boolean;
 }
 
 /**
@@ -59,6 +63,10 @@ export interface AnalysisRenderer {
 export class AnalysisToolService {
     /** Active overlay mode (panel toggle). */
     readonly mode = new Signal<AnalysisMode>('slope');
+    /** 1×1 m white reference grid (panel toggle). */
+    readonly gridVisible = new Signal(true);
+    /** 2 cm elevation contours (panel toggle). */
+    readonly contoursVisible = new Signal(true);
     /** Surrounds buffer in meters (panel slider, 10–30). */
     readonly bufferM = new Signal(DEFAULT_BUFFER);
     /** The green being analysed, or null. */
@@ -92,6 +100,8 @@ export class AnalysisToolService {
             geometry: feature.geometry,
             slope: this.derivedCache.slope,
             stats: this.derivedCache.stats,
+            showGrid: this.gridVisible.get(),
+            showContours: this.contoursVisible.get(),
         };
     });
 
@@ -167,6 +177,14 @@ export class AnalysisToolService {
 
     setMode(mode: AnalysisMode): void {
         this.mode.set(mode);
+    }
+
+    setGridVisible(visible: boolean): void {
+        this.gridVisible.set(visible);
+    }
+
+    setContoursVisible(visible: boolean): void {
+        this.contoursVisible.set(visible);
     }
 
     /** Drop the analysis (ESC / panel button / click off a green). */

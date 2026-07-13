@@ -272,6 +272,126 @@ export function buildOverlayRgba(
     return out;
 }
 
+// ─── 1 m reference grid ───────────────────────────────────────────────────
+
+/** A straight line segment, EPSG:3006 [[e, n], [e, n]]. */
+export type Seg3006 = [[number, number], [number, number]];
+
+/**
+ * 1×1 m reference grid over the sampled area, aligned to whole EPSG:3006
+ * meters (so the grid is a true world grid, stable across re-fetches and
+ * buffer changes — not anchored to the sample origin). One segment per
+ * line, spanning the full sampled rectangle.
+ */
+export function buildMeterGridLines(grid: SampleGrid): Seg3006[] {
+    const { origin, resolution, width, height } = grid;
+    const east = origin.e + width * resolution;
+    const south = origin.n - height * resolution;
+    const lines: Seg3006[] = [];
+    for (let e = Math.ceil(origin.e); e <= east; e += 1) {
+        lines.push([[e, origin.n], [e, south]]);
+    }
+    for (let n = Math.ceil(south); n <= origin.n; n += 1) {
+        lines.push([[origin.e, n], [east, n]]);
+    }
+    return lines;
+}
+
+// ─── Elevation contours (marching squares) ────────────────────────────────
+
+/** Contour interval — one line every 2 cm of elevation. */
+export const CONTOUR_INTERVAL_M = 0.02;
+/** Every 5th level (10 cm multiples) is an index contour, drawn heavier. */
+export const CONTOUR_INDEX_EVERY = 5;
+
+export interface ContourLevel {
+    /** Absolute elevation of this contour, meters. */
+    level: number;
+    /** Index contour (10 cm multiple) — style heavier. */
+    index: boolean;
+    /** Unordered segments tracing the isoline, EPSG:3006. */
+    segments: Seg3006[];
+}
+
+/**
+ * Marching-squares elevation contours over the sample grid at `intervalM`
+ * spacing. Levels are absolute-elevation multiples of the interval (stable
+ * across re-fetches). Grid nodes are cell centers; 2×2 blocks with any
+ * nodata corner are skipped, so contours stop cleanly at the data edge.
+ * Saddle blocks are disambiguated by the block's center average. Segments
+ * are emitted unjoined — the renderer draws them as one MultiLineString per
+ * level, so joining buys nothing.
+ */
+export function computeContours(grid: SampleGrid, intervalM: number = CONTOUR_INTERVAL_M): ContourLevel[] {
+    const { width, height, heights, resolution, origin } = grid;
+    const byLevel = new Map<number, Seg3006[]>();
+
+    // Node (row, col) → cell-center coordinate.
+    const nodeE = (col: number): number => origin.e + (col + 0.5) * resolution;
+    const nodeN = (row: number): number => origin.n - (row + 0.5) * resolution;
+
+    for (let row = 0; row < height - 1; row++) {
+        for (let col = 0; col < width - 1; col++) {
+            const tl = heights[row * width + col];
+            const tr = heights[row * width + col + 1];
+            const bl = heights[(row + 1) * width + col];
+            const br = heights[(row + 1) * width + col + 1];
+            if (tl === null || tr === null || bl === null || br === null) continue;
+
+            const min = Math.min(tl, tr, bl, br);
+            const max = Math.max(tl, tr, bl, br);
+            const first = Math.ceil(min / intervalM);
+            const last = Math.floor(max / intervalM);
+
+            const e0 = nodeE(col), e1 = nodeE(col + 1);
+            const n0 = nodeN(row), n1 = nodeN(row + 1);
+
+            for (let k = first; k <= last; k++) {
+                const L = k * intervalM;
+                // Edge crossings, linearly interpolated. Only evaluated on
+                // edges the case table selects, where the sign differs and
+                // the denominator is non-zero.
+                const top = (): [number, number] => [e0 + ((L - tl) / (tr - tl)) * resolution, n0];
+                const bottom = (): [number, number] => [e0 + ((L - bl) / (br - bl)) * resolution, n1];
+                const left = (): [number, number] => [e0, n0 - ((L - tl) / (bl - tl)) * resolution];
+                const right = (): [number, number] => [e1, n0 - ((L - tr) / (br - tr)) * resolution];
+
+                const idx = (tl >= L ? 1 : 0) | (tr >= L ? 2 : 0) | (br >= L ? 4 : 0) | (bl >= L ? 8 : 0);
+                if (idx === 0 || idx === 15) continue;
+
+                const segs: Seg3006[] = [];
+                switch (idx) {
+                    case 1: case 14: segs.push([top(), left()]); break;
+                    case 2: case 13: segs.push([top(), right()]); break;
+                    case 3: case 12: segs.push([left(), right()]); break;
+                    case 4: case 11: segs.push([right(), bottom()]); break;
+                    case 6: case 9: segs.push([top(), bottom()]); break;
+                    case 7: case 8: segs.push([left(), bottom()]); break;
+                    case 5: // tl+br high — saddle
+                        if ((tl + tr + bl + br) / 4 >= L) segs.push([top(), right()], [bottom(), left()]);
+                        else segs.push([top(), left()], [right(), bottom()]);
+                        break;
+                    case 10: // tr+bl high — saddle
+                        if ((tl + tr + bl + br) / 4 >= L) segs.push([top(), left()], [right(), bottom()]);
+                        else segs.push([top(), right()], [bottom(), left()]);
+                        break;
+                }
+                let bucket = byLevel.get(k);
+                if (!bucket) byLevel.set(k, bucket = []);
+                bucket.push(...segs);
+            }
+        }
+    }
+
+    return [...byLevel.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([k, segments]) => ({
+            level: k * intervalM,
+            index: k % CONTOUR_INDEX_EVERY === 0,
+            segments,
+        }));
+}
+
 // ─── Fall-line arrows (slope mode; reference §2.5 heuristic) ──────────────
 
 export interface FallLineArrow {
@@ -282,23 +402,27 @@ export interface FallLineArrow {
     dirE: number;
     dirN: number;
     slopePct: number;
-    /** Every 4th arrow carries a slope% text label. */
+    /** Every 3rd arrow carries a slope% text label (ARROW_LABEL_EVERY). */
     labeled: boolean;
 }
 
 /** Arrows below this slope are noise, not signal (reference: skip < 0.5%). */
 export const ARROW_MIN_SLOPE_PCT = 0.5;
 
+/** Every Nth emitted arrow carries a slope% label. */
+export const ARROW_LABEL_EVERY = 3;
+
 /**
  * Sample fall-line arrows on a coarse grid over the analysis area:
- * spacing = max(2 m, min(width, height) / 8) — roughly 8×8, never denser
- * than 2 m (reference heuristic). Skips nodata and near-flat cells; every
- * 4th emitted arrow is labeled.
+ * spacing = max(1.5 m, min(width, height) / 10) — roughly 10×10, never
+ * denser than 1.5 m (the reference's 8×8 / 2 m heuristic, densified ~50%
+ * for readability on real greens). Skips nodata and near-flat cells; every
+ * 3rd emitted arrow is labeled.
  */
 export function sampleFallLines(grid: SampleGrid, slope: SlopeGrid): FallLineArrow[] {
     const widthM = grid.width * grid.resolution;
     const heightM = grid.height * grid.resolution;
-    const spacing = Math.max(2, Math.min(widthM, heightM) / 8);
+    const spacing = Math.max(1.5, Math.min(widthM, heightM) / 10);
 
     const arrows: FallLineArrow[] = [];
     let emitted = 0;
@@ -316,7 +440,7 @@ export function sampleFallLines(grid: SampleGrid, slope: SlopeGrid): FallLineArr
                 dirE: slope.dirE[i],
                 dirN: slope.dirN[i],
                 slopePct: pct,
-                labeled: emitted % 4 === 0,
+                labeled: emitted % ARROW_LABEL_EVERY === 0,
             });
             emitted++;
         }

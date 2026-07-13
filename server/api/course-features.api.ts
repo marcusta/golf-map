@@ -37,6 +37,10 @@ const ListFeaturesByHoleInput = Type.Object({
 
 const GeojsonByCourseInput = Type.Object({
     courseId: Type.String(),
+    // Resolve the surface stack server-side (clip lower surfaces out from
+    // under higher ones) — for render-only consumers like the iOS bundle
+    // whose semi-transparent fills would otherwise compound at overlaps.
+    resolved: Type.Optional(Type.Boolean()),
 });
 
 const CreateFeatureInput = Type.Object({
@@ -87,7 +91,8 @@ export function createCourseFeaturesApi(svc: CourseFeaturesService) {
         geojsonByCourse: {
             method: 'GET' as const,
             path: '/features.geojson',
-            fn: (input: Static<typeof GeojsonByCourseInput>) => svc.geojsonByCourse(input.courseId),
+            fn: (input: Static<typeof GeojsonByCourseInput>) =>
+                svc.geojsonByCourse(input.courseId, { resolved: input.resolved ?? false }),
             schema: GeojsonByCourseInput,
             middleware: mw,
         },

@@ -3,7 +3,9 @@ import { sql } from 'kysely';
 import type { Database, CourseFeaturesTable } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { ConflictError } from '@basics/core/server/auth';
-import { toGeoJson, type FeatureGeometry, type GeoJsonPolygon } from './geo';
+import { toGeoJson, type FeatureGeometry, type GeoJsonPolygon, type GeoJsonMultiPolygon } from './geo';
+import { resolveSurfaceStack } from '../../shared/render/resolved-surface-stack';
+import type { FeatureCollection } from 'geojson';
 
 // --- Constants ---
 
@@ -91,7 +93,8 @@ export interface CourseFeatureGeoJsonFeature {
     type: 'Feature';
     id: string;
     properties: { courseId: string; holeId: string | null; type: string; sortOrder: number; stackKey: number };
-    geometry: GeoJsonPolygon;
+    /** MultiPolygon only in `resolved` output (clipping can split a polygon). */
+    geometry: GeoJsonPolygon | GeoJsonMultiPolygon;
 }
 
 export interface CourseFeatureFeatureCollection {
@@ -287,7 +290,10 @@ export class CourseFeaturesService {
      * hole groups ascending by hole number, each internally by sort_order.
      * `stackKey = groupRank * 4096 + sortOrder`, groupRank 0 = course-level.
      */
-    async geojsonByCourse(courseId: string): Promise<CourseFeatureFeatureCollection> {
+    async geojsonByCourse(
+        courseId: string,
+        opts: { resolved?: boolean } = {},
+    ): Promise<CourseFeatureFeatureCollection> {
         const rows = await this.db
             .selectFrom('course_features')
             .leftJoin('holes', 'holes.id', 'course_features.hole_id')
@@ -326,7 +332,15 @@ export class CourseFeaturesService {
                 geometry: geojson,
             });
         }
-        return { type: 'FeatureCollection', features };
+        const collection: CourseFeatureFeatureCollection = { type: 'FeatureCollection', features };
+        if (!opts.resolved) return collection;
+        // Render-only variant: clip lower surfaces out from under higher ones
+        // so semi-transparent fills blend with the ortho exactly once. NOT for
+        // analysis consumers — a green overlapped by a higher feature comes
+        // back clipped.
+        return resolveSurfaceStack(
+            collection as unknown as FeatureCollection,
+        ) as unknown as CourseFeatureFeatureCollection;
     }
 
     async create(input: {

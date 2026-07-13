@@ -337,8 +337,8 @@ public actor BundleDownloader {
     private static func mapFilesAreUsable(paths: BundlePaths, mapKey: String) -> Bool {
         let mapDirectory = paths.mapBundleDirectory(mapKey: mapKey)
         let fm = FileManager.default
-        return fm.fileExists(atPath: paths.layerTilesDirectory(in: mapDirectory, layer: .ortho).path())
-            && fm.fileExists(atPath: paths.layerTilesDirectory(in: mapDirectory, layer: .terrain).path())
+        return fm.fileExists(atPath: paths.layerTilesDirectory(in: mapDirectory, layer: .ortho).path(percentEncoded: false))
+            && fm.fileExists(atPath: paths.layerTilesDirectory(in: mapDirectory, layer: .terrain).path(percentEncoded: false))
     }
 
     /// Downloads one layer's archive to a temp file, unpacks it into the

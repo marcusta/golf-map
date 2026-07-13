@@ -11,6 +11,12 @@ public enum GreenAnalysisMapIDs {
     public static let boundarySource = "analysis-boundary"
     public static let boundaryCasingLayer = "analysis-boundary-casing"
     public static let boundaryCoreLayer = "analysis-boundary-core"
+    public static let contoursMinorSource = "analysis-contours-minor"
+    public static let contoursMinorLayer = "analysis-contours-minor"
+    public static let contoursIndexSource = "analysis-contours-index"
+    public static let contoursIndexLayer = "analysis-contours-index"
+    public static let meterGridSource = "analysis-meter-grid"
+    public static let meterGridLayer = "analysis-meter-grid"
     public static let arrowsSource = "analysis-arrows"
     public static let arrowsCasingLayer = "analysis-arrows-casing"
     public static let arrowsLineLayer = "analysis-arrows-line"
@@ -20,8 +26,9 @@ public enum GreenAnalysisMapIDs {
 }
 
 /// Renders one `GreenAnalysisMapState` onto the course map: heat-map image
-/// source (one pixel per grid cell) + raster layer, bold double green-
-/// boundary outline, fall-line arrows (slope mode) and slope% labels.
+/// source (one pixel per grid cell) + raster layer, 2 cm elevation contours,
+/// the 1×1 m white reference grid, bold double green-boundary outline,
+/// fall-line arrows (slope mode) and slope% labels.
 ///
 /// Port of the web `AnalysisOverlayRenderer` (analysis-overlay.ts) with two
 /// platform adaptations:
@@ -54,7 +61,12 @@ final class GreenAnalysisRenderer {
         clear(from: style)
         guard let state else { return }
 
+        // Insertion order fixes the z-order (each layer lands below the
+        // targets): heat < contours < 1 m grid < boundary < arrows < labels
+        // — the same stack as the web renderer.
         addHeatLayer(state, to: style)
+        addContours(state.result.contours, to: style)
+        addMeterGrid(state.result.grid.spec, to: style)
         addBoundary(state.result.boundaryRings, to: style)
         if state.mode == .slope {
             addArrows(state.result, to: style)
@@ -69,6 +81,9 @@ final class GreenAnalysisRenderer {
             GreenAnalysisMapIDs.arrowsCasingLayer,
             GreenAnalysisMapIDs.boundaryCoreLayer,
             GreenAnalysisMapIDs.boundaryCasingLayer,
+            GreenAnalysisMapIDs.meterGridLayer,
+            GreenAnalysisMapIDs.contoursIndexLayer,
+            GreenAnalysisMapIDs.contoursMinorLayer,
             GreenAnalysisMapIDs.heatLayer,
         ] {
             if let layer = style.layer(withIdentifier: layerID) {
@@ -79,6 +94,9 @@ final class GreenAnalysisRenderer {
             GreenAnalysisMapIDs.labelsSource,
             GreenAnalysisMapIDs.arrowsSource,
             GreenAnalysisMapIDs.boundarySource,
+            GreenAnalysisMapIDs.meterGridSource,
+            GreenAnalysisMapIDs.contoursIndexSource,
+            GreenAnalysisMapIDs.contoursMinorSource,
             GreenAnalysisMapIDs.heatSource,
         ] {
             if let source = style.source(withIdentifier: sourceID) {
@@ -147,6 +165,64 @@ final class GreenAnalysisRenderer {
             )
         else { return nil }
         return UIImage(cgImage: cgImage)
+    }
+
+    // MARK: - Elevation contours (2 cm interval, index lines every 10 cm)
+
+    /// Two shape sources (minor + index levels) with fixed per-layer styling
+    /// — the web renderer's data-driven width/opacity expressions, unrolled
+    /// (attribute-driven NSExpressions buy nothing for two static classes).
+    private func addContours(_ contours: [ContourLevel], to style: MLNStyle) {
+        let contourColor = UIColor(
+            red: 0x14 / 255.0, green: 0x28 / 255.0, blue: 0x1c / 255.0, alpha: 1
+        )
+        let classes: [(levels: [ContourLevel], source: String, layer: String, width: Double, opacity: Double)] = [
+            (contours.filter { !$0.index }, GreenAnalysisMapIDs.contoursMinorSource,
+             GreenAnalysisMapIDs.contoursMinorLayer, 0.7, 0.45),
+            (contours.filter(\.index), GreenAnalysisMapIDs.contoursIndexSource,
+             GreenAnalysisMapIDs.contoursIndexLayer, 1.5, 0.7),
+        ]
+        for cls in classes {
+            let features = cls.levels.flatMap { level in
+                AnalysisOverlayGeometry.contourLines(level).map { line -> MLNPolylineFeature in
+                    var coordinates = line.map(\.clCoordinate)
+                    return MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+                }
+            }
+            guard !features.isEmpty else { continue }
+            let source = MLNShapeSource(
+                identifier: cls.source,
+                shape: MLNShapeCollectionFeature(shapes: features)
+            )
+            style.addSource(source)
+
+            let layer = MLNLineStyleLayer(identifier: cls.layer, source: source)
+            layer.lineColor = NSExpression(forConstantValue: contourColor)
+            layer.lineWidth = NSExpression(forConstantValue: cls.width)
+            layer.lineOpacity = NSExpression(forConstantValue: cls.opacity)
+            insert(layer, into: style)
+        }
+    }
+
+    // MARK: - 1×1 m white reference grid
+
+    private func addMeterGrid(_ spec: AnalysisGridSpec, to style: MLNStyle) {
+        let features = AnalysisOverlayGeometry.meterGridLines(spec).map { line -> MLNPolylineFeature in
+            var coordinates = line.map(\.clCoordinate)
+            return MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+        }
+        guard !features.isEmpty else { return }
+        let source = MLNShapeSource(
+            identifier: GreenAnalysisMapIDs.meterGridSource,
+            shape: MLNShapeCollectionFeature(shapes: features)
+        )
+        style.addSource(source)
+
+        let layer = MLNLineStyleLayer(identifier: GreenAnalysisMapIDs.meterGridLayer, source: source)
+        layer.lineColor = NSExpression(forConstantValue: UIColor.white)
+        layer.lineWidth = NSExpression(forConstantValue: 0.8)
+        layer.lineOpacity = NSExpression(forConstantValue: 0.65)
+        insert(layer, into: style)
     }
 
     // MARK: - Boundary (bold double outline)

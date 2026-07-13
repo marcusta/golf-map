@@ -60,11 +60,15 @@ async function placeBallAt(page: Page, lon: number, lat: number): Promise<void> 
 // (Projects to ≈ EPSG:3006 (532956, 6473703); pin ≈ (532962, 6473706).)
 const BALL_LAT = 58.402873;
 const BALL_LON = 15.563897;
-// A SECOND on-green point, ~7 m from the first (projects to EPSG:3006
-// (532950, 6473700)) — a clearly distinct pixel so re-placing the ball is a
-// new putt signature (resets the quiz gate).
-const BALL2_LAT = 58.402848;
-const BALL2_LON = 15.563793;
+// A SECOND on-green point, ~17 m from the first (projects to EPSG:3006
+// (532941, 6473695)) — a clearly distinct pixel so re-placing the ball is a
+// new putt signature (resets the quiz gate). Kept WELL clear of the first
+// ball's position: the click must land on the MAP, not on the existing ball
+// marker (which would start a drag instead of placing), and marker size in
+// metres shrinks/grows with the hole-framing zoom (the right dock narrowing
+// the canvas zooms the frame out slightly).
+const BALL2_LAT = 58.402804;
+const BALL2_LON = 15.563638;
 
 const section = () => tid('planner-putt-section');
 

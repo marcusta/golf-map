@@ -4,8 +4,16 @@ import type { Database, CoursesTable } from '../db/schema';
 import type { Page } from '@basics/core/server/paginate';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { NotFoundError } from '@basics/core/server/auth';
+import { haversineMeters } from './geo';
 
 // --- Output types ---
+
+/** One hole's routing (tee -> green) for a schematic mini-map thumbnail. */
+export interface RoutingHole {
+    hole: number;
+    tee: [number, number]; // [lat, lon]
+    green: [number, number]; // [lat, lon]
+}
 
 export interface CourseSummary {
     id: string;
@@ -17,6 +25,11 @@ export interface CourseSummary {
     homeLon: number | null;
     holeCount: number;
     updatedAt: string;
+    parTotal: number;
+    lengthM: number;
+    mappedHoleCount: number;
+    siteName: string | null;
+    routing: RoutingHole[];
 }
 
 export interface Course {
@@ -38,7 +51,18 @@ export interface Course {
 // --- Row mapping ---
 
 type CourseRow = Selectable<CoursesTable>;
-type CourseSummaryRow = CourseRow & { hole_count: number | string | bigint };
+type CourseSummaryRow = CourseRow & {
+    hole_count: number | string | bigint;
+    par_total: number | string | bigint;
+    mapped_hole_count: number | string | bigint;
+    site_name: string | null;
+};
+
+/** Per-hole primary tee / green center, keyed by hole id, for length + routing assembly. */
+interface HoleGeometry {
+    lengthM: number;
+    routing: RoutingHole[];
+}
 
 function toCourse(row: CourseRow): Course {
     return {
@@ -58,7 +82,7 @@ function toCourse(row: CourseRow): Course {
     };
 }
 
-function toCourseSummary(row: CourseSummaryRow): CourseSummary {
+function toCourseSummary(row: CourseSummaryRow, geometry: HoleGeometry): CourseSummary {
     return {
         id: row.id,
         name: row.name,
@@ -69,6 +93,11 @@ function toCourseSummary(row: CourseSummaryRow): CourseSummary {
         homeLon: row.home_lon,
         holeCount: Number(row.hole_count),
         updatedAt: row.updated_at,
+        parTotal: Number(row.par_total),
+        lengthM: geometry.lengthM,
+        mappedHoleCount: Number(row.mapped_hole_count),
+        siteName: row.site_name,
+        routing: geometry.routing,
     };
 }
 
@@ -88,23 +117,92 @@ export class CoursesService {
     private summaries() {
         return this.db
             .selectFrom('courses')
-            .leftJoin('holes', 'holes.course_id', 'courses.id')
+            .leftJoin('sites', 'sites.id', 'courses.site_id')
             .select([
                 'courses.id', 'courses.name', 'courses.status', 'courses.revision',
                 'courses.crs', 'courses.georeference_json', 'courses.home_lat', 'courses.home_lon',
                 'courses.notes', 'courses.site_id', 'courses.version', 'courses.created_at', 'courses.updated_at',
-                (eb) => eb.fn.count('holes.id').as('hole_count'),
-            ])
-            .groupBy([
-                'courses.id', 'courses.name', 'courses.status', 'courses.revision',
-                'courses.crs', 'courses.georeference_json', 'courses.home_lat', 'courses.home_lon',
-                'courses.notes', 'courses.site_id', 'courses.version', 'courses.created_at', 'courses.updated_at',
+                'sites.name as site_name',
+                (eb) => eb
+                    .selectFrom('holes')
+                    .select((eb2) => eb2.fn.countAll().as('count'))
+                    .whereRef('holes.course_id', '=', 'courses.id')
+                    .as('hole_count'),
+                (eb) => eb
+                    .selectFrom('holes')
+                    .select((eb2) => eb2.fn.coalesce(eb2.fn.sum('holes.par'), eb2.val(0)).as('sum'))
+                    .whereRef('holes.course_id', '=', 'courses.id')
+                    .as('par_total'),
+                (eb) => eb
+                    .selectFrom('course_features')
+                    .select((eb2) => eb2.fn.count('course_features.hole_id').distinct().as('count'))
+                    .whereRef('course_features.course_id', '=', 'courses.id')
+                    .where('course_features.hole_id', 'is not', null)
+                    .as('mapped_hole_count'),
             ])
             .orderBy('courses.name');
     }
 
     private countAll() {
         return this.db.selectFrom('courses').select((eb) => eb.fn.countAll().as('count'));
+    }
+
+    /**
+     * Batch-loads, per course, the total tee->green length and per-hole
+     * routing (primary tee = lowest sort_order, tie-broken by id; primary
+     * green = first by id) for a page of course ids. Holes missing a tee
+     * or green contribute 0 to length and are omitted from routing.
+     */
+    private async loadHoleGeometry(courseIds: string[]): Promise<Map<string, HoleGeometry>> {
+        const result = new Map<string, HoleGeometry>();
+        for (const courseId of courseIds) result.set(courseId, { lengthM: 0, routing: [] });
+        if (courseIds.length === 0) return result;
+
+        const holes = await this.db
+            .selectFrom('holes')
+            .select(['id', 'course_id', 'number'])
+            .where('course_id', 'in', courseIds)
+            .orderBy('course_id')
+            .orderBy('number')
+            .execute();
+        if (holes.length === 0) return result;
+
+        const holeIds = holes.map((h) => h.id);
+        const [tees, greens] = await Promise.all([
+            this.db
+                .selectFrom('tees')
+                .select(['hole_id', 'lat', 'lon'])
+                .where('hole_id', 'in', holeIds)
+                .orderBy('hole_id')
+                .orderBy('sort_order')
+                .orderBy('id')
+                .execute(),
+            this.db
+                .selectFrom('greens')
+                .select(['hole_id', 'center_lat', 'center_lon'])
+                .where('hole_id', 'in', holeIds)
+                .orderBy('hole_id')
+                .orderBy('id')
+                .execute(),
+        ]);
+
+        const primaryTeeByHole = new Map<string, { lat: number; lon: number }>();
+        for (const t of tees) if (!primaryTeeByHole.has(t.hole_id)) primaryTeeByHole.set(t.hole_id, { lat: t.lat, lon: t.lon });
+
+        const primaryGreenByHole = new Map<string, { lat: number; lon: number }>();
+        for (const g of greens) if (!primaryGreenByHole.has(g.hole_id)) primaryGreenByHole.set(g.hole_id, { lat: g.center_lat, lon: g.center_lon });
+
+        for (const hole of holes) {
+            const tee = primaryTeeByHole.get(hole.id);
+            const green = primaryGreenByHole.get(hole.id);
+            if (!tee || !green) continue;
+            const entry = result.get(hole.course_id);
+            if (!entry) continue;
+            entry.lengthM += haversineMeters(tee, green);
+            entry.routing.push({ hole: hole.number, tee: [tee.lat, tee.lon], green: [green.lat, green.lon] });
+        }
+
+        return result;
     }
 
     // --- Queries (write) ---
@@ -132,7 +230,12 @@ export class CoursesService {
             this.summaries().offset(offset).limit(limit).execute(),
             this.countAll().executeTakeFirstOrThrow(),
         ]);
-        return { items: rows.map((r) => toCourseSummary(r as CourseSummaryRow)), total: Number(countRow.count) };
+        const geometryByCourse = await this.loadHoleGeometry(rows.map((r) => r.id));
+        const items = rows.map((r) => {
+            const row = r as CourseSummaryRow;
+            return toCourseSummary(row, geometryByCourse.get(row.id) ?? { lengthM: 0, routing: [] });
+        });
+        return { items, total: Number(countRow.count) };
     }
 
     async get(id: string): Promise<Course> {

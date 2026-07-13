@@ -26,13 +26,18 @@ export interface CourseFeatureGeoJsonFeature {
     type: 'Feature';
     id: string;
     properties: { courseId: string; holeId: null | string; type: string; sortOrder: number; stackKey: number };
-    geometry: GeoJsonPolygon;
+    geometry: GeoJsonPolygon | GeoJsonMultiPolygon;
+}
+
+export interface GeoJsonMultiPolygon {
+    type: 'MultiPolygon';
+    coordinates: number[][][][];
 }
 
 export interface CourseFeaturesApi {
     listByCourse(input: { courseId: string }): Promise<CourseFeature[]>;
     listByHole(input: { holeId: string }): Promise<CourseFeature[]>;
-    geojsonByCourse(input: { courseId: string }): Promise<CourseFeatureFeatureCollection>;
+    geojsonByCourse(input: { resolved?: boolean; courseId: string }): Promise<CourseFeatureFeatureCollection>;
     create(input: { holeId?: null | string; courseId: string; geometry: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; type: string }): Promise<CourseFeature>;
     update(input: { geometry?: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; holeId?: null | string; type?: string; id: string; version: number }): Promise<CourseFeature>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;

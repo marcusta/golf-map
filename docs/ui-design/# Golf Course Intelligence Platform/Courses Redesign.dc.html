@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta name="design_doc_mode" content="canvas">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #EDE4D2; font-family: 'Schibsted Grotesk', sans-serif; color: #211D14; -webkit-font-smoothing: antialiased; }
+  a { color: #A6572F; text-decoration: none; }
+  a:hover { color: #8F4A28; }
+  .mono { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+  ::selection { background: #E6C08A; color: #211D14; }
+</style>
+</helmet>
+
+<section style="padding: 44px 44px 80px;">
+
+  <!-- caption -->
+  <div style="margin-bottom: 26px;">
+    <div class="mono" style="font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #BF6A3E; margin-bottom: 10px;">Turn 3 · 2b hardened · interaction states</div>
+    <h1 style="font-size: 30px; font-weight: 800; letter-spacing: -0.025em; margin: 0 0 8px;">2b+ — frameless, but touchable</h1>
+    <p style="font-size: 15px; line-height: 1.55; color: #55503F; max-width: 840px; margin: 0; text-wrap: pretty;">Keeps <a href="#2b">2b</a>'s frameless calm at rest, then fixes the three drawbacks: a persistent right chevron so rows read as tappable (even without hover), the metric cluster pulled in next to the name so the eye never crosses empty space, and real <strong style="font-weight:700;">selected</strong> / <strong style="font-weight:700;">focus</strong> / hover states. In the demo, <strong style="font-weight:700;">Linkan</strong> is selected, <strong style="font-weight:700;">Landeryd Masters</strong> shows keyboard focus — hover any row.</p>
+  </div>
+
+  <div style="display: flex; gap: 44px; align-items: flex-start; flex-wrap: wrap;">
+    <div id="3a" style="width: 920px;">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+        <span class="mono" style="font-size: 12px; font-weight: 600; background: #1E2B22; color: #E6C08A; padding: 4px 10px; border-radius: 999px;">3a</span>
+        <span style="font-size: 15px; font-weight: 700;">Borderless card+</span>
+        <span style="font-size: 13px; color: #8B8471;">rest = frameless · chevron affordance · states designed in</span>
+      </div>
+
+      <div style="border-radius: 16px; overflow: hidden; border: 1px solid #C9B899; box-shadow: 0 30px 80px -44px rgba(40,36,26,0.55); background: #F6F1E7;">
+        <div style="height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: #1E2B22;">
+          <div style="display: flex; align-items: center; gap: 9px;"><span style="width: 22px; height: 22px; border-radius: 6px; background: #2A3B2E; display: flex; align-items: center; justify-content: center;"><span style="width: 7px; height: 10px; border: 1.5px solid #E6C08A; border-right: none; border-radius: 2px 0 0 2px;"></span></span><span style="color: #F1EADB; font-weight: 700; font-size: 15px;">Golf Map</span></div>
+          <div style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; color: #A9B4A2;"><span>Player</span><span style="color: #E7E0D0;">marcus</span><span>Log out</span></div>
+        </div>
+        <div style="padding: 26px 26px 30px;">
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px;">
+            <div style="display: flex; align-items: baseline; gap: 12px;"><h2 style="font-size: 27px; font-weight: 800; letter-spacing: -0.02em; margin: 0;">Courses</h2><span class="mono" style="font-size: 12px; color: #9C917A;">20 courses</span></div>
+            <button style="display: flex; align-items: center; gap: 7px; background: {{ accent }}; color: #FBF3E8; font-family: inherit; font-weight: 600; font-size: 13.5px; border: none; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(191,106,62,0.55);"><span style="font-size: 16px; line-height: 1; margin-top: -1px;">+</span>New course</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 26px;">
+            <div style="display: flex; align-items: center; gap: 9px; flex: 1; max-width: 340px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 12px;"><span style="position: relative; width: 14px; height: 14px; display: inline-block; flex: none;"><span style="position: absolute; width: 10px; height: 10px; border: 1.6px solid #9C917A; border-radius: 999px; top: 0; left: 0;"></span><span style="position: absolute; width: 5px; height: 1.6px; background: #9C917A; border-radius: 2px; bottom: 1px; right: -1px; transform: rotate(45deg);"></span></span><span style="font-size: 13.5px; color: #9C917A;">Search courses</span></div>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Sort · Name <span style="color: #9C917A;">▾</span></span>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #EFE7D6; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Group · Region <span style="color: #9C917A;">▾</span></span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 30px;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+              <div>
+                <div style="display: flex; align-items: center; gap: 12px; margin: 0 12px 8px;">
+                  <span class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #55503F; font-weight: 600;">{{ g.region }}</span>
+                  <span class="mono" style="font-size: 11px; color: #A69C86;">{{ g.count }}</span>
+                  <span style="flex: 1; height: 1px; background: #E5DBC8;"></span>
+                </div>
+                <div style="display: flex; flex-direction: column;">
+                  <sc-for list="{{ g.courses }}" as="c" hint-placeholder-count="4">
+                    <div style="display: flex; align-items: center; gap: 20px; padding: 14px 14px 14px 16px; border-radius: 12px; cursor: pointer; background: {{ c.rowBg }}; box-shadow: {{ c.boxShadow }}; transition: background .16s;" style-hover="background: rgba(120,105,80,0.09);">
+                      <sc-if value="{{ showThumbs }}" hint-placeholder-val="{{ true }}"><div style="width: 104px; height: 70px; flex: none; border-radius: 9px; background-color: #43562F; background-image: {{ c.thumb }}; background-size: cover; background-position: center; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);"></div></sc-if>
+                      <div style="flex: 0 1 292px; min-width: 0;"><div style="font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ c.name }}</div><div style="display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: #8B8471; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span>{{ c.region }}</span><span style="color: #C9B899;">·</span><span>{{ c.club }}</span><span style="color: #C9B899;">·</span><span class="mono" style="font-size: 11.5px;">{{ c.updated }}</span></div></div>
+                      <div style="display: flex; gap: 20px; align-items: center; flex: none;"><div style="text-align: right; min-width: 34px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">HOLES</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.holesLabel }}</div></div><div style="text-align: right; min-width: 30px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">PAR</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.parLabel }}</div></div><div style="text-align: right; min-width: 62px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">LENGTH</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.lenLabel }}</div></div></div>
+                      <div style="width: 138px; flex: none;"><div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px;"><span style="font-size: 11px; color: #8B8471;">{{ c.mappedLabel }}</span><span class="mono" style="font-size: 11px; font-weight: 600; color: #55503F;">{{ c.pctLabel }}</span></div><div style="height: 6px; background: #EAE0CC; border-radius: 999px; overflow: hidden;"><div style="height: 100%; width: {{ c.barWidth }}; background: #6E8A4E; border-radius: 999px;"></div></div></div>
+                      <span class="mono" style="flex: none; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; color: {{ c.stColor }}; background: {{ c.stBg }}; padding: 5px 10px; border-radius: 999px;">{{ c.stLabel }}</span>
+                      <span style="flex: 1;"></span>
+                      <span style="width: 8px; height: 8px; flex: none; border-top: 2px solid {{ c.chevColor }}; border-right: 2px solid {{ c.chevColor }}; transform: rotate(45deg); margin-right: 4px;"></span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="padding: 44px 44px 80px;">
+
+  <!-- caption -->
+  <div style="margin-bottom: 26px;">
+    <div class="mono" style="font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #BF6A3E; margin-bottom: 10px;">Turn 2 · borderless framings · three styles</div>
+    <h1 style="font-size: 30px; font-weight: 800; letter-spacing: -0.025em; margin: 0 0 8px;">Less box, more list</h1>
+    <p style="font-size: 15px; line-height: 1.55; color: #55503F; max-width: 820px; margin: 0; text-wrap: pretty;">Same roomy row content as <a href="#1a">1a</a> — the only thing changing is how rows are <em style="font-style:normal;font-weight:700;">framed</em>. <strong style="font-weight:700;">2a</strong> unifies everything into one subdued card; <strong style="font-weight:700;">2b</strong> drops all frames and groups by whitespace alone; <strong style="font-weight:700;">2c</strong> merges each region into a single zero-gap panel.</p>
+  </div>
+
+  <div style="display: flex; gap: 44px; align-items: flex-start; flex-wrap: wrap;">
+
+    <!-- ============================================================ 2a — SUBDUED CARD ============================================================ -->
+    <div id="2a" style="width: 880px;">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+        <span class="mono" style="font-size: 12px; font-weight: 600; background: #1E2B22; color: #E6C08A; padding: 4px 10px; border-radius: 999px;">2a</span>
+        <span style="font-size: 15px; font-weight: 700;">Subdued card</span>
+        <span style="font-size: 13px; color: #8B8471;">unified container · borderless rows, hairline dividers</span>
+      </div>
+
+      <div style="border-radius: 16px; overflow: hidden; border: 1px solid #C9B899; box-shadow: 0 30px 80px -44px rgba(40,36,26,0.55); background: #F6F1E7;">
+        <div style="height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: #1E2B22;">
+          <div style="display: flex; align-items: center; gap: 9px;"><span style="width: 22px; height: 22px; border-radius: 6px; background: #2A3B2E; display: flex; align-items: center; justify-content: center;"><span style="width: 7px; height: 10px; border: 1.5px solid #E6C08A; border-right: none; border-radius: 2px 0 0 2px;"></span></span><span style="color: #F1EADB; font-weight: 700; font-size: 15px;">Golf Map</span></div>
+          <div style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; color: #A9B4A2;"><span>Player</span><span style="color: #E7E0D0;">marcus</span><span>Log out</span></div>
+        </div>
+        <div style="padding: 26px 26px 30px;">
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px;">
+            <div style="display: flex; align-items: baseline; gap: 12px;"><h2 style="font-size: 27px; font-weight: 800; letter-spacing: -0.02em; margin: 0;">Courses</h2><span class="mono" style="font-size: 12px; color: #9C917A;">20 courses</span></div>
+            <button style="display: flex; align-items: center; gap: 7px; background: {{ accent }}; color: #FBF3E8; font-family: inherit; font-weight: 600; font-size: 13.5px; border: none; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(191,106,62,0.55);"><span style="font-size: 16px; line-height: 1; margin-top: -1px;">+</span>New course</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 22px;">
+            <div style="display: flex; align-items: center; gap: 9px; flex: 1; max-width: 340px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 12px;"><span style="position: relative; width: 14px; height: 14px; display: inline-block; flex: none;"><span style="position: absolute; width: 10px; height: 10px; border: 1.6px solid #9C917A; border-radius: 999px; top: 0; left: 0;"></span><span style="position: absolute; width: 5px; height: 1.6px; background: #9C917A; border-radius: 2px; bottom: 1px; right: -1px; transform: rotate(45deg);"></span></span><span style="font-size: 13.5px; color: #9C917A;">Search courses</span></div>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Sort · Name <span style="color: #9C917A;">▾</span></span>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #EFE7D6; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Group · Region <span style="color: #9C917A;">▾</span></span>
+          </div>
+
+          <div style="background: #FBF8F1; border: 1px solid #EAE1CF; border-radius: 16px; box-shadow: 0 1px 3px rgba(40,36,26,0.04); overflow: hidden;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+              <div style="display: flex; align-items: center; gap: 11px; padding: 15px 20px 9px; border-top: 1px solid {{ g.topDiv }};">
+                <span class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #55503F; font-weight: 600;">{{ g.region }}</span>
+                <span class="mono" style="font-size: 11px; color: #A69C86;">{{ g.count }}</span>
+              </div>
+              <sc-for list="{{ g.courses }}" as="c" hint-placeholder-count="4">
+                <div style="display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-top: 1px solid {{ c.topDiv }}; transition: background .16s;" style-hover="background: #F5EFE2;">
+                  <sc-if value="{{ showThumbs }}" hint-placeholder-val="{{ true }}"><div style="width: 104px; height: 70px; flex: none; border-radius: 9px; background-color: #43562F; background-image: {{ c.thumb }}; background-size: cover; background-position: center; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);"></div></sc-if>
+                  <div style="flex: 1; min-width: 0;"><div style="font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ c.name }}</div><div style="display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: #8B8471; margin-top: 3px;"><span>{{ c.region }}</span><span style="color: #C9B899;">·</span><span>{{ c.club }}</span><span style="color: #C9B899;">·</span><span class="mono" style="font-size: 11.5px;">{{ c.updated }}</span></div></div>
+                  <div style="display: flex; gap: 20px; align-items: center;"><div style="text-align: right; min-width: 34px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">HOLES</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.holesLabel }}</div></div><div style="text-align: right; min-width: 30px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">PAR</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.parLabel }}</div></div><div style="text-align: right; min-width: 62px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">LENGTH</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.lenLabel }}</div></div></div>
+                  <div style="width: 138px; flex: none;"><div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px;"><span style="font-size: 11px; color: #8B8471;">{{ c.mappedLabel }}</span><span class="mono" style="font-size: 11px; font-weight: 600; color: #55503F;">{{ c.pctLabel }}</span></div><div style="height: 6px; background: #EAE0CC; border-radius: 999px; overflow: hidden;"><div style="height: 100%; width: {{ c.barWidth }}; background: #6E8A4E; border-radius: 999px;"></div></div></div>
+                  <span class="mono" style="flex: none; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; color: {{ c.stColor }}; background: {{ c.stBg }}; padding: 5px 10px; border-radius: 999px;">{{ c.stLabel }}</span>
+                </div>
+              </sc-for>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================ 2b — BORDERLESS / FRAMELESS ============================================================ -->
+    <div id="2b" style="width: 880px;">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+        <span class="mono" style="font-size: 12px; font-weight: 600; background: #1E2B22; color: #E6C08A; padding: 4px 10px; border-radius: 999px;">2b</span>
+        <span style="font-size: 15px; font-weight: 700;">Borderless card</span>
+        <span style="font-size: 13px; color: #8B8471;">frameless · rows on the page, grouped by space</span>
+      </div>
+
+      <div style="border-radius: 16px; overflow: hidden; border: 1px solid #C9B899; box-shadow: 0 30px 80px -44px rgba(40,36,26,0.55); background: #F6F1E7;">
+        <div style="height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: #1E2B22;">
+          <div style="display: flex; align-items: center; gap: 9px;"><span style="width: 22px; height: 22px; border-radius: 6px; background: #2A3B2E; display: flex; align-items: center; justify-content: center;"><span style="width: 7px; height: 10px; border: 1.5px solid #E6C08A; border-right: none; border-radius: 2px 0 0 2px;"></span></span><span style="color: #F1EADB; font-weight: 700; font-size: 15px;">Golf Map</span></div>
+          <div style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; color: #A9B4A2;"><span>Player</span><span style="color: #E7E0D0;">marcus</span><span>Log out</span></div>
+        </div>
+        <div style="padding: 26px 26px 30px;">
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px;">
+            <div style="display: flex; align-items: baseline; gap: 12px;"><h2 style="font-size: 27px; font-weight: 800; letter-spacing: -0.02em; margin: 0;">Courses</h2><span class="mono" style="font-size: 12px; color: #9C917A;">20 courses</span></div>
+            <button style="display: flex; align-items: center; gap: 7px; background: {{ accent }}; color: #FBF3E8; font-family: inherit; font-weight: 600; font-size: 13.5px; border: none; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(191,106,62,0.55);"><span style="font-size: 16px; line-height: 1; margin-top: -1px;">+</span>New course</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 26px;">
+            <div style="display: flex; align-items: center; gap: 9px; flex: 1; max-width: 340px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 12px;"><span style="position: relative; width: 14px; height: 14px; display: inline-block; flex: none;"><span style="position: absolute; width: 10px; height: 10px; border: 1.6px solid #9C917A; border-radius: 999px; top: 0; left: 0;"></span><span style="position: absolute; width: 5px; height: 1.6px; background: #9C917A; border-radius: 2px; bottom: 1px; right: -1px; transform: rotate(45deg);"></span></span><span style="font-size: 13.5px; color: #9C917A;">Search courses</span></div>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Sort · Name <span style="color: #9C917A;">▾</span></span>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #EFE7D6; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Group · Region <span style="color: #9C917A;">▾</span></span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 30px;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+              <div>
+                <div style="display: flex; align-items: center; gap: 12px; margin: 0 12px 8px;">
+                  <span class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #55503F; font-weight: 600;">{{ g.region }}</span>
+                  <span class="mono" style="font-size: 11px; color: #A69C86;">{{ g.count }}</span>
+                  <span style="flex: 1; height: 1px; background: #E5DBC8;"></span>
+                </div>
+                <div style="display: flex; flex-direction: column;">
+                  <sc-for list="{{ g.courses }}" as="c" hint-placeholder-count="4">
+                    <div style="display: flex; align-items: center; gap: 16px; padding: 14px 12px; border-radius: 12px; transition: background .16s;" style-hover="background: rgba(255,255,255,0.55);">
+                      <sc-if value="{{ showThumbs }}" hint-placeholder-val="{{ true }}"><div style="width: 104px; height: 70px; flex: none; border-radius: 9px; background-color: #43562F; background-image: {{ c.thumb }}; background-size: cover; background-position: center; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);"></div></sc-if>
+                      <div style="flex: 1; min-width: 0;"><div style="font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ c.name }}</div><div style="display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: #8B8471; margin-top: 3px;"><span>{{ c.region }}</span><span style="color: #C9B899;">·</span><span>{{ c.club }}</span><span style="color: #C9B899;">·</span><span class="mono" style="font-size: 11.5px;">{{ c.updated }}</span></div></div>
+                      <div style="display: flex; gap: 20px; align-items: center;"><div style="text-align: right; min-width: 34px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">HOLES</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.holesLabel }}</div></div><div style="text-align: right; min-width: 30px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">PAR</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.parLabel }}</div></div><div style="text-align: right; min-width: 62px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">LENGTH</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.lenLabel }}</div></div></div>
+                      <div style="width: 138px; flex: none;"><div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px;"><span style="font-size: 11px; color: #8B8471;">{{ c.mappedLabel }}</span><span class="mono" style="font-size: 11px; font-weight: 600; color: #55503F;">{{ c.pctLabel }}</span></div><div style="height: 6px; background: #EAE0CC; border-radius: 999px; overflow: hidden;"><div style="height: 100%; width: {{ c.barWidth }}; background: #6E8A4E; border-radius: 999px;"></div></div></div>
+                      <span class="mono" style="flex: none; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; color: {{ c.stColor }}; background: {{ c.stBg }}; padding: 5px 10px; border-radius: 999px;">{{ c.stLabel }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================ 2c — MERGED STACK ============================================================ -->
+    <div id="2c" style="width: 880px;">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+        <span class="mono" style="font-size: 12px; font-weight: 600; background: #1E2B22; color: #E6C08A; padding: 4px 10px; border-radius: 999px;">2c</span>
+        <span style="font-size: 15px; font-weight: 700;">Merged card stack</span>
+        <span style="font-size: 13px; color: #8B8471;">zero-gap · one panel per region, shared dividers</span>
+      </div>
+
+      <div style="border-radius: 16px; overflow: hidden; border: 1px solid #C9B899; box-shadow: 0 30px 80px -44px rgba(40,36,26,0.55); background: #F6F1E7;">
+        <div style="height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: #1E2B22;">
+          <div style="display: flex; align-items: center; gap: 9px;"><span style="width: 22px; height: 22px; border-radius: 6px; background: #2A3B2E; display: flex; align-items: center; justify-content: center;"><span style="width: 7px; height: 10px; border: 1.5px solid #E6C08A; border-right: none; border-radius: 2px 0 0 2px;"></span></span><span style="color: #F1EADB; font-weight: 700; font-size: 15px;">Golf Map</span></div>
+          <div style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; color: #A9B4A2;"><span>Player</span><span style="color: #E7E0D0;">marcus</span><span>Log out</span></div>
+        </div>
+        <div style="padding: 26px 26px 30px;">
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px;">
+            <div style="display: flex; align-items: baseline; gap: 12px;"><h2 style="font-size: 27px; font-weight: 800; letter-spacing: -0.02em; margin: 0;">Courses</h2><span class="mono" style="font-size: 12px; color: #9C917A;">20 courses</span></div>
+            <button style="display: flex; align-items: center; gap: 7px; background: {{ accent }}; color: #FBF3E8; font-family: inherit; font-weight: 600; font-size: 13.5px; border: none; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(191,106,62,0.55);"><span style="font-size: 16px; line-height: 1; margin-top: -1px;">+</span>New course</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 22px;">
+            <div style="display: flex; align-items: center; gap: 9px; flex: 1; max-width: 340px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 12px;"><span style="position: relative; width: 14px; height: 14px; display: inline-block; flex: none;"><span style="position: absolute; width: 10px; height: 10px; border: 1.6px solid #9C917A; border-radius: 999px; top: 0; left: 0;"></span><span style="position: absolute; width: 5px; height: 1.6px; background: #9C917A; border-radius: 2px; bottom: 1px; right: -1px; transform: rotate(45deg);"></span></span><span style="font-size: 13.5px; color: #9C917A;">Search courses</span></div>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Sort · Name <span style="color: #9C917A;">▾</span></span>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #EFE7D6; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Group · Region <span style="color: #9C917A;">▾</span></span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 22px;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+              <div>
+                <div style="display: flex; align-items: center; gap: 11px; margin: 0 4px 10px;">
+                  <span class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #55503F; font-weight: 600;">{{ g.region }}</span>
+                  <span class="mono" style="font-size: 11px; color: #A69C86;">{{ g.count }}</span>
+                </div>
+                <div style="background: #FBF8F1; border: 1px solid #E4DAC6; border-radius: 14px; overflow: hidden; box-shadow: 0 1px 2px rgba(40,36,26,0.05);">
+                  <sc-for list="{{ g.courses }}" as="c" hint-placeholder-count="4">
+                    <div style="display: flex; align-items: center; gap: 16px; padding: 13px 18px; border-top: 1px solid {{ c.topDiv }}; transition: background .16s;" style-hover="background: #F5EFE2;">
+                      <sc-if value="{{ showThumbs }}" hint-placeholder-val="{{ true }}"><div style="width: 104px; height: 70px; flex: none; border-radius: 9px; background-color: #43562F; background-image: {{ c.thumb }}; background-size: cover; background-position: center; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);"></div></sc-if>
+                      <div style="flex: 1; min-width: 0;"><div style="font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ c.name }}</div><div style="display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: #8B8471; margin-top: 3px;"><span>{{ c.region }}</span><span style="color: #C9B899;">·</span><span>{{ c.club }}</span><span style="color: #C9B899;">·</span><span class="mono" style="font-size: 11.5px;">{{ c.updated }}</span></div></div>
+                      <div style="display: flex; gap: 20px; align-items: center;"><div style="text-align: right; min-width: 34px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">HOLES</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.holesLabel }}</div></div><div style="text-align: right; min-width: 30px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">PAR</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.parLabel }}</div></div><div style="text-align: right; min-width: 62px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">LENGTH</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.lenLabel }}</div></div></div>
+                      <div style="width: 138px; flex: none;"><div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px;"><span style="font-size: 11px; color: #8B8471;">{{ c.mappedLabel }}</span><span class="mono" style="font-size: 11px; font-weight: 600; color: #55503F;">{{ c.pctLabel }}</span></div><div style="height: 6px; background: #EAE0CC; border-radius: 999px; overflow: hidden;"><div style="height: 100%; width: {{ c.barWidth }}; background: #6E8A4E; border-radius: 999px;"></div></div></div>
+                      <span class="mono" style="flex: none; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; color: {{ c.stColor }}; background: {{ c.stBg }}; padding: 5px 10px; border-radius: 999px;">{{ c.stLabel }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section style="padding: 44px 44px 80px;">
+
+  <!-- caption -->
+  <div style="margin-bottom: 26px;">
+    <div class="mono" style="font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #BF6A3E; margin-bottom: 10px;">Turn 1 · Courses screen · two enhanced-row directions</div>
+    <h1 style="font-size: 30px; font-weight: 800; letter-spacing: -0.025em; margin: 0 0 8px;">Same rows, more life &amp; more signal</h1>
+    <p style="font-size: 15px; line-height: 1.55; color: #55503F; max-width: 780px; margin: 0; text-wrap: pretty;">Both keep the list-of-rows model but add a schematic mini-map per course (drawn from its routing data), region grouping, real metadata, a build-progress readout, and search + sort. <strong style="font-weight:700;">1a</strong> is roomy and map-forward; <strong style="font-weight:700;">1b</strong> is a dense, scannable data table.</p>
+  </div>
+
+  <div style="display: flex; gap: 44px; align-items: flex-start; flex-wrap: wrap;">
+
+    <!-- ============================================================ 1a ============================================================ -->
+    <div id="1a" style="width: 880px;">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+        <span class="mono" style="font-size: 12px; font-weight: 600; background: #1E2B22; color: #E6C08A; padding: 4px 10px; border-radius: 999px;">1a</span>
+        <span style="font-size: 15px; font-weight: 700;">Cartographic list</span>
+        <span style="font-size: 13px; color: #8B8471;">roomy · map thumbnail leads each row</span>
+      </div>
+
+      <div style="border-radius: 16px; overflow: hidden; border: 1px solid #C9B899; box-shadow: 0 30px 80px -44px rgba(40,36,26,0.55); background: #F6F1E7;">
+        <!-- top nav -->
+        <div style="height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: #1E2B22;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="width: 22px; height: 22px; border-radius: 6px; background: #2A3B2E; display: flex; align-items: center; justify-content: center;"><span style="width: 7px; height: 10px; border: 1.5px solid #E6C08A; border-right: none; border-radius: 2px 0 0 2px;"></span></span>
+            <span style="color: #F1EADB; font-weight: 700; font-size: 15px;">Golf Map</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; color: #A9B4A2;">
+            <span>Player</span><span style="color: #E7E0D0;">marcus</span><span>Log out</span>
+          </div>
+        </div>
+
+        <div style="padding: 26px 26px 30px;">
+          <!-- header -->
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px;">
+            <div style="display: flex; align-items: baseline; gap: 12px;">
+              <h2 style="font-size: 27px; font-weight: 800; letter-spacing: -0.02em; margin: 0;">Courses</h2>
+              <span class="mono" style="font-size: 12px; color: #9C917A;">20 courses</span>
+            </div>
+            <button style="display: flex; align-items: center; gap: 7px; background: {{ accent }}; color: #FBF3E8; font-family: inherit; font-weight: 600; font-size: 13.5px; border: none; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(191,106,62,0.55);"><span style="font-size: 16px; line-height: 1; margin-top: -1px;">+</span>New course</button>
+          </div>
+
+          <!-- toolbar -->
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
+            <div style="display: flex; align-items: center; gap: 9px; flex: 1; max-width: 340px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 12px;">
+              <span style="position: relative; width: 14px; height: 14px; display: inline-block; flex: none;"><span style="position: absolute; width: 10px; height: 10px; border: 1.6px solid #9C917A; border-radius: 999px; top: 0; left: 0;"></span><span style="position: absolute; width: 5px; height: 1.6px; background: #9C917A; border-radius: 2px; bottom: 1px; right: -1px; transform: rotate(45deg);"></span></span>
+              <span style="font-size: 13.5px; color: #9C917A;">Search courses</span>
+            </div>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Sort · Name <span style="color: #9C917A;">▾</span></span>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #EFE7D6; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Group · Region <span style="color: #9C917A;">▾</span></span>
+          </div>
+
+          <!-- groups -->
+          <div style="display: flex; flex-direction: column; gap: 26px;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+              <div>
+                <div style="display: flex; align-items: center; gap: 12px; margin: 0 2px 12px;">
+                  <span class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #55503F; font-weight: 600;">{{ g.region }}</span>
+                  <span class="mono" style="font-size: 11px; color: #A69C86;">{{ g.count }}</span>
+                  <span style="flex: 1; height: 1px; background: #E0D5C0;"></span>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                  <sc-for list="{{ g.courses }}" as="c" hint-placeholder-count="4">
+                    <div style="display: flex; align-items: center; gap: 16px; background: #FBF8F1; border: 1px solid #E8E0CF; border-radius: 13px; padding: 12px 16px; box-shadow: 0 1px 2px rgba(40,36,26,0.05); transition: box-shadow .16s, border-color .16s;" style-hover="border-color: #C9B899; box-shadow: 0 8px 20px -10px rgba(40,36,26,0.3);">
+                      <sc-if value="{{ showThumbs }}" hint-placeholder-val="{{ true }}">
+                        <div style="width: 104px; height: 70px; flex: none; border-radius: 9px; background-color: #43562F; background-image: {{ c.thumb }}; background-size: cover; background-position: center; border: 1px solid #D8CBAE; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);"></div>
+                      </sc-if>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ c.name }}</div>
+                        <div style="display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: #8B8471; margin-top: 3px;"><span>{{ c.region }}</span><span style="color: #C9B899;">·</span><span>{{ c.club }}</span><span style="color: #C9B899;">·</span><span class="mono" style="font-size: 11.5px;">{{ c.updated }}</span></div>
+                      </div>
+                      <div style="display: flex; gap: 20px; align-items: center;">
+                        <div style="text-align: right; min-width: 34px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">HOLES</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.holesLabel }}</div></div>
+                        <div style="text-align: right; min-width: 30px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">PAR</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.parLabel }}</div></div>
+                        <div style="text-align: right; min-width: 62px;"><div class="mono" style="font-size: 10px; letter-spacing: 0.1em; color: #A69C86;">LENGTH</div><div class="mono" style="font-size: 14px; font-weight: 600; color: #2C2519;">{{ c.lenLabel }}</div></div>
+                      </div>
+                      <div style="width: 138px; flex: none;">
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px;"><span style="font-size: 11px; color: #8B8471;">{{ c.mappedLabel }}</span><span class="mono" style="font-size: 11px; font-weight: 600; color: #55503F;">{{ c.pctLabel }}</span></div>
+                        <div style="height: 6px; background: #EAE0CC; border-radius: 999px; overflow: hidden;"><div style="height: 100%; width: {{ c.barWidth }}; background: #6E8A4E; border-radius: 999px;"></div></div>
+                      </div>
+                      <span class="mono" style="flex: none; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; color: {{ c.stColor }}; background: {{ c.stBg }}; padding: 5px 10px; border-radius: 999px;">{{ c.stLabel }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================ 1b ============================================================ -->
+    <div id="1b" style="width: 880px;">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+        <span class="mono" style="font-size: 12px; font-weight: 600; background: #1E2B22; color: #E6C08A; padding: 4px 10px; border-radius: 999px;">1b</span>
+        <span style="font-size: 15px; font-weight: 700;">Compact data rows</span>
+        <span style="font-size: 13px; color: #8B8471;">dense · sortable columns · scan 20+ fast</span>
+      </div>
+
+      <div style="border-radius: 16px; overflow: hidden; border: 1px solid #C9B899; box-shadow: 0 30px 80px -44px rgba(40,36,26,0.55); background: #F6F1E7;">
+        <!-- top nav -->
+        <div style="height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: #1E2B22;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="width: 22px; height: 22px; border-radius: 6px; background: #2A3B2E; display: flex; align-items: center; justify-content: center;"><span style="width: 7px; height: 10px; border: 1.5px solid #E6C08A; border-right: none; border-radius: 2px 0 0 2px;"></span></span>
+            <span style="color: #F1EADB; font-weight: 700; font-size: 15px;">Golf Map</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; color: #A9B4A2;">
+            <span>Player</span><span style="color: #E7E0D0;">marcus</span><span>Log out</span>
+          </div>
+        </div>
+
+        <div style="padding: 26px 26px 30px;">
+          <!-- header -->
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px;">
+            <div style="display: flex; align-items: baseline; gap: 12px;">
+              <h2 style="font-size: 27px; font-weight: 800; letter-spacing: -0.02em; margin: 0;">Courses</h2>
+              <span class="mono" style="font-size: 12px; color: #9C917A;">20 courses</span>
+            </div>
+            <button style="display: flex; align-items: center; gap: 7px; background: {{ accent }}; color: #FBF3E8; font-family: inherit; font-weight: 600; font-size: 13.5px; border: none; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(191,106,62,0.55);"><span style="font-size: 16px; line-height: 1; margin-top: -1px;">+</span>New course</button>
+          </div>
+
+          <!-- toolbar -->
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
+            <div style="display: flex; align-items: center; gap: 9px; flex: 1; max-width: 340px; background: #FFFFFF; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 12px;">
+              <span style="position: relative; width: 14px; height: 14px; display: inline-block; flex: none;"><span style="position: absolute; width: 10px; height: 10px; border: 1.6px solid #9C917A; border-radius: 999px; top: 0; left: 0;"></span><span style="position: absolute; width: 5px; height: 1.6px; background: #9C917A; border-radius: 2px; bottom: 1px; right: -1px; transform: rotate(45deg);"></span></span>
+              <span style="font-size: 13.5px; color: #9C917A;">Search courses</span>
+            </div>
+            <span class="mono" style="display: flex; align-items: center; gap: 6px; background: #EFE7D6; border: 1px solid #DDD0B4; border-radius: 10px; padding: 9px 13px; font-size: 12px; color: #55503F;">Group · Region <span style="color: #9C917A;">▾</span></span>
+          </div>
+
+          <!-- column header -->
+          <div style="display: grid; grid-template-columns: 44px minmax(0,1fr) 40px 38px 74px 138px 92px; align-items: center; gap: 14px; padding: 0 14px 10px; border-bottom: 1px solid #E0D5C0;">
+            <span></span>
+            <span class="mono" style="font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #BF6A3E; font-weight: 600;">Course ▾</span>
+            <span class="mono" style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #A69C86; text-align: right;">Hls</span>
+            <span class="mono" style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #A69C86; text-align: right;">Par</span>
+            <span class="mono" style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #A69C86; text-align: right;">Length</span>
+            <span class="mono" style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #A69C86;">Mapped</span>
+            <span class="mono" style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #A69C86;">Status</span>
+          </div>
+
+          <!-- groups -->
+          <div style="display: flex; flex-direction: column;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 16px 14px 8px;">
+                <span class="mono" style="font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #55503F; font-weight: 600;">{{ g.region }}</span>
+                <span class="mono" style="font-size: 11px; color: #A69C86;">{{ g.count }}</span>
+                <span style="flex: 1; height: 1px; background: #ECE3D2;"></span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <sc-for list="{{ g.courses }}" as="c" hint-placeholder-count="4">
+                  <div style="display: grid; grid-template-columns: 44px minmax(0,1fr) 40px 38px 74px 138px 92px; align-items: center; gap: 14px; background: #FBF8F1; border: 1px solid #EDE4D2; border-radius: 10px; padding: 8px 14px; transition: box-shadow .16s, border-color .16s;" style-hover="border-color: #C9B899; box-shadow: 0 6px 16px -9px rgba(40,36,26,0.28);">
+                    <sc-if value="{{ showThumbs }}" hint-placeholder-val="{{ true }}">
+                      <div style="width: 44px; height: 44px; flex: none; border-radius: 8px; background-color: #43562F; background-image: {{ c.thumb }}; background-size: cover; background-position: center; border: 1px solid #D8CBAE;"></div>
+                    </sc-if>
+                    <div style="min-width: 0;">
+                      <div style="font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ c.name }}</div>
+                      <div style="font-size: 11.5px; color: #9C917A; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ c.club }}</div>
+                    </div>
+                    <span class="mono" style="font-size: 13px; font-weight: 600; color: #2C2519; text-align: right;">{{ c.holesLabel }}</span>
+                    <span class="mono" style="font-size: 13px; color: #55503F; text-align: right;">{{ c.parLabel }}</span>
+                    <span class="mono" style="font-size: 13px; color: #55503F; text-align: right;">{{ c.lenLabel }}</span>
+                    <div style="display: flex; align-items: center; gap: 9px;">
+                      <div style="flex: 1; height: 5px; background: #EAE0CC; border-radius: 999px; overflow: hidden;"><div style="height: 100%; width: {{ c.barWidth }}; background: #6E8A4E; border-radius: 999px;"></div></div>
+                      <span class="mono" style="font-size: 11px; color: #8B8471; min-width: 34px; text-align: right;">{{ c.fracLabel }}</span>
+                    </div>
+                    <span style="display: flex; align-items: center; gap: 6px;"><span style="width: 7px; height: 7px; border-radius: 999px; background: {{ c.stColor }};"></span><span class="mono" style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; color: {{ c.stColor }};">{{ c.stLabel }}</span></span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1860,&quot;height&quot;:1200},&quot;accent&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#BF6A3E&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;#BF6A3E&quot;,&quot;#5C6B4A&quot;,&quot;#A6572F&quot;,&quot;#C68A2E&quot;]},&quot;showThumbs&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#BF6A3E';
+    const showThumbs = this.props.showThumbs ?? true;
+
+    const f = n => Math.round(n * 10) / 10;
+    const seed = s => { let h = 2166136261 >>> 0; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+    const mul = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+
+    const thumb = (name, holes) => {
+      const W = 120, H = 84, rnd = mul(seed(name));
+      const p = ["<rect width='" + W + "' height='" + H + "' fill='#43562F'/>"];
+      const nb = 2 + Math.floor(rnd() * 2);
+      for (let i = 0; i < nb; i++) { const cx = 15 + rnd() * 90, cy = 12 + rnd() * 60, rx = 16 + rnd() * 22, ry = 9 + rnd() * 12, r = Math.floor(rnd() * 180); p.push("<ellipse cx='" + f(cx) + "' cy='" + f(cy) + "' rx='" + f(rx) + "' ry='" + f(ry) + "' fill='#4C9256' opacity='0.92' transform='rotate(" + r + " " + f(cx) + " " + f(cy) + ")'/>"); }
+      if (rnd() < 0.45) { const cx = rnd() * W, cy = 44 + rnd() * 34; p.push("<ellipse cx='" + f(cx) + "' cy='" + f(cy) + "' rx='" + f(9 + rnd() * 13) + "' ry='" + f(6 + rnd() * 8) + "' fill='#4C8FBE' opacity='0.9'/>"); }
+      const nbk = 1 + Math.floor(rnd() * 2);
+      for (let i = 0; i < nbk; i++) { const cx = 12 + rnd() * 96, cy = 10 + rnd() * 64; p.push("<ellipse cx='" + f(cx) + "' cy='" + f(cy) + "' rx='" + f(3 + rnd() * 4) + "' ry='" + f(2 + rnd() * 3) + "' fill='#E1CC93' opacity='0.95'/>"); }
+      if (holes > 0) {
+        const n = holes >= 18 ? 5 : holes >= 9 ? 4 : 3, pts = [];
+        for (let i = 0; i < n; i++) pts.push([12 + (i / (n - 1)) * 96, 16 + rnd() * 52]);
+        const d = pts.map((q, i) => (i ? "L" : "M") + f(q[0]) + " " + f(q[1])).join(" ");
+        p.push("<path d='" + d + "' fill='none' stroke='#EAA94F' stroke-width='2.2' stroke-dasharray='3 2.3' stroke-linecap='round' stroke-linejoin='round'/>");
+        pts.forEach((q, i) => {
+          if (i === 0) p.push("<rect x='" + f(q[0] - 2) + "' y='" + f(q[1] - 2) + "' width='4' height='4' rx='1' fill='#6FC07E' stroke='#34734A' stroke-width='0.6'/>");
+          else p.push("<circle cx='" + f(q[0]) + "' cy='" + f(q[1]) + "' r='2.6' fill='#9FE0A6' stroke='#3F7A55' stroke-width='0.8'/>");
+        });
+      }
+      const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 " + W + " " + H + "' preserveAspectRatio='xMidYMid slice'>" + p.join("") + "</svg>";
+      return 'url("data:image/svg+xml,' + encodeURIComponent(svg) + '")';
+    };
+
+    const lenLabel = m => m ? (String(m).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " m") : "\u2014";
+
+    const raw = [
+      { region: "\u00d6sterg\u00f6tland", items: [
+        { name: "Linkan", club: "Parkland", holes: 18, par: 72, len: 5842, mapped: 18, status: "published", rev: "r1", updated: "2d ago", sel: true },
+        { name: "Landeryd Masters", club: "Championship", holes: 18, par: 73, len: 6120, mapped: 18, status: "published", rev: "r2", updated: "5d ago", foc: true },
+        { name: "Landeryd Classic", club: "Parkland", holes: 18, par: 71, len: 5610, mapped: 14, status: "published", rev: "r1", updated: "1w ago" },
+        { name: "Motala Park/Skog", club: "Woodland", holes: 18, par: 72, len: 5730, mapped: 11, status: "draft", rev: "r1", updated: "3w ago" },
+      ]},
+      { region: "Sm\u00e5land", items: [
+        { name: "J\u00f6nk\u00f6ping", club: "Heathland", holes: 18, par: 70, len: 5480, mapped: 18, status: "published", rev: "r1", updated: "4d ago" },
+        { name: "Hooks parkbana", club: "Parkland", holes: 18, par: 72, len: 5900, mapped: 16, status: "published", rev: "r1", updated: "6d ago" },
+        { name: "Katrineholm", club: "Woodland", holes: 18, par: 71, len: 5560, mapped: 9, status: "draft", rev: "r1", updated: "2w ago" },
+        { name: "A6 golfklubb", club: "Parkland", holes: 0, par: 0, len: 0, mapped: 0, status: "draft", rev: "r1", updated: "Just added" },
+      ]},
+      { region: "Sk\u00e5ne", items: [
+        { name: "Landskrona Erikstorp", club: "Links", holes: 18, par: 68, len: 5210, mapped: 18, status: "published", rev: "r1", updated: "1w ago" },
+      ]},
+      { region: "International", items: [
+        { name: "El Gouna Golf Club", club: "Desert", holes: 18, par: 72, len: 6340, mapped: 12, status: "draft", rev: "r1", updated: "1mo ago" },
+      ]},
+    ];
+
+    const proc = c => {
+      const pct = c.holes > 0 ? Math.round(c.mapped / c.holes * 100) : 0;
+      return {
+        name: c.name, region: "", club: c.club, updated: c.updated, rev: c.rev,
+        thumb: thumb(c.name, c.holes),
+        holesLabel: String(c.holes),
+        parLabel: c.par > 0 ? String(c.par) : "\u2014",
+        lenLabel: lenLabel(c.len),
+        pctLabel: c.holes > 0 ? pct + "%" : "\u2014",
+        barWidth: c.holes > 0 ? pct + "%" : "0%",
+        fracLabel: c.holes > 0 ? c.mapped + "/" + c.holes : "\u2014",
+        mappedLabel: c.holes > 0 ? (pct === 100 ? "Fully mapped" : c.mapped + " of " + c.holes + " mapped") : "Not started",
+        stColor: c.status === "published" ? "#4E7A46" : "#C68A2E",
+        stBg: c.status === "published" ? "rgba(78,122,70,0.12)" : "rgba(198,138,46,0.14)",
+        stLabel: c.status === "published" ? "PUBLISHED" : "DRAFT",
+        rowBg: c.sel ? "rgba(191,106,62,0.07)" : "transparent",
+        boxShadow: [c.sel ? "inset 3px 0 0 " + accent : null, c.foc ? "0 0 0 2px rgba(191,106,62,0.55)" : null].filter(Boolean).join(", ") || "none",
+        chevColor: c.sel ? accent : "#C2B79E",
+      };
+    };
+
+    const groups = raw.map((g, gi) => ({
+      region: g.region, count: g.items.length,
+      topDiv: gi > 0 ? "#EAE1CF" : "transparent",
+      courses: g.items.map((c, ci) => { const o = proc(c); o.region = g.region; o.topDiv = ci > 0 ? "#F2EBDB" : "transparent"; return o; }),
+    }));
+
+    return { accent, showThumbs, groups };
+  }
+}
+</script>
+</body>
+</html>

@@ -38,6 +38,8 @@ const tpl = template(`
             <h4 class="section-title">Overlay</h4>
             <div bind="modes" class="mode-row"></div>
             <div bind="modeHint" class="mode-hint"></div>
+            <label class="layer-toggle"><input bind="gridToggle" type="checkbox" /> 1 m grid</label>
+            <label class="layer-toggle"><input bind="contourToggle" type="checkbox" /> Contours (2 cm)</label>
         </div>
         <div class="analysis-panel__section">
             <label class="buffer-label">Surrounds buffer <span bind="bufferValue"></span></label>
@@ -132,6 +134,16 @@ export class AnalysisPanelComponent extends Component {
             & .mode-hint {
                 font-size: 0.68rem;
                 color: ${t('color-text-secondary')};
+            }
+
+            & .layer-toggle {
+                display: flex;
+                align-items: center;
+                gap: ${s('xs')};
+                font-size: 0.72rem;
+                color: ${t('color-text-secondary')};
+                cursor: pointer;
+                & input { accent-color: ${t('color-accent-primary')}; margin: 0; }
             }
 
             & .buffer-label {
@@ -234,6 +246,18 @@ export class AnalysisPanelComponent extends Component {
             }));
             modes.appendChild(button);
         }
+
+        // Layer toggles: 1 m grid + 2 cm contours.
+        const gridToggle = this.ref(frag, 'gridToggle') as HTMLInputElement;
+        gridToggle.addEventListener('change', () => this.tool.setGridVisible(gridToggle.checked));
+        this.track(effect(() => {
+            gridToggle.checked = this.tool.gridVisible.get();
+        }));
+        const contourToggle = this.ref(frag, 'contourToggle') as HTMLInputElement;
+        contourToggle.addEventListener('change', () => this.tool.setContoursVisible(contourToggle.checked));
+        this.track(effect(() => {
+            contourToggle.checked = this.tool.contoursVisible.get();
+        }));
 
         // Buffer slider → re-fetch on release (input events only move the label).
         const slider = this.ref(frag, 'bufferSlider') as HTMLInputElement;

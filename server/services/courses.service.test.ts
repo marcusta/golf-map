@@ -33,6 +33,96 @@ test('list returns seeded course with hole count', async () => {
     expect(summary.updatedAt).toBeTruthy();
 });
 
+test('list computes parTotal, lengthM, mappedHoleCount, siteName and routing for a fully seeded course', async () => {
+    const { db } = await createTestDb(seedUsers, seedCourse);
+    const svc = new CoursesService(db);
+
+    const page = await svc.list();
+    const summary = page.items[0];
+
+    // par: hole 1 = 4, hole 2 = 3
+    expect(summary.parTotal).toBe(7);
+
+    // one course_feature seeded, scoped to hole 1 only
+    expect(summary.mappedHoleCount).toBe(1);
+
+    // no site assigned in the base seed
+    expect(summary.siteName).toBeNull();
+
+    // sum of great-circle distance from each hole's primary (lowest
+    // sort_order) tee to its green center — independently computed from
+    // the seeded coordinates (see seeds/course.ts), not via the service's
+    // own haversine helper.
+    expect(summary.lengthM).toBeCloseTo(598.02, 1);
+
+    expect(summary.routing).toHaveLength(2);
+    expect(summary.routing[0].hole).toBe(1);
+    expect(summary.routing[0].tee[0]).toBeCloseTo(58.4022);
+    expect(summary.routing[0].tee[1]).toBeCloseTo(15.5688);
+    expect(summary.routing[0].green[0]).toBeCloseTo(58.403);
+    expect(summary.routing[0].green[1]).toBeCloseTo(15.5639);
+    expect(summary.routing[1].hole).toBe(2);
+});
+
+test('list reports siteName when the course is assigned to a site', async () => {
+    const { db } = await createTestDb(seedUsers, seedCourse);
+    const svc = new CoursesService(db);
+
+    await db
+        .insertInto('sites')
+        .values({ id: 'site-1', name: 'Linkoping Links', notes: null, version: 1 })
+        .execute();
+    await db.updateTable('courses').set({ site_id: 'site-1' }).where('id', '=', TEST_COURSE_ID).execute();
+
+    const page = await svc.list();
+    expect(page.items[0].siteName).toBe('Linkoping Links');
+});
+
+test('list zeroes parTotal/lengthM/mappedHoleCount and empties routing for a course with no holes', async () => {
+    const { db } = await createTestDb(seedUsers);
+    const svc = new CoursesService(db);
+
+    await svc.create({ name: 'Empty Course' });
+
+    const page = await svc.list();
+    expect(page.items).toHaveLength(1);
+    const summary = page.items[0];
+    expect(summary.holeCount).toBe(0);
+    expect(summary.parTotal).toBe(0);
+    expect(summary.lengthM).toBe(0);
+    expect(summary.mappedHoleCount).toBe(0);
+    expect(summary.routing).toEqual([]);
+});
+
+test('list excludes a hole missing a tee or green from lengthM/routing but still counts it in holeCount/parTotal', async () => {
+    const { db } = await createTestDb(seedUsers, seedCourse);
+    const svc = new CoursesService(db);
+
+    // hole-3: par counted, but no tee and no green seeded for it
+    await db
+        .insertInto('holes')
+        .values({
+            id: 'hole-3',
+            course_id: TEST_COURSE_ID,
+            number: 3,
+            par: 5,
+            notes: null,
+            saved_region_json: null,
+            version: 1,
+        })
+        .execute();
+
+    const page = await svc.list();
+    const summary = page.items[0];
+
+    expect(summary.holeCount).toBe(3);
+    expect(summary.parTotal).toBe(12); // 4 + 3 + 5
+    // unchanged from the fully-seeded case: hole 3 contributes nothing
+    expect(summary.lengthM).toBeCloseTo(598.02, 1);
+    expect(summary.routing).toHaveLength(2);
+    expect(summary.routing.some((r) => r.hole === 3)).toBe(false);
+});
+
 test('get returns full course row', async () => {
     const { db } = await createTestDb(seedUsers, seedCourse);
     const svc = new CoursesService(db);

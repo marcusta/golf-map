@@ -22,7 +22,7 @@ import { createAnalysisApi } from './api/analysis.api';
 import { createGreenCalibrationApi } from './api/green-calibration.api';
 import { createPuttEstimateApi } from './api/putt-estimate.api';
 import { createMapBuildApi } from './api/map-build.api';
-import { createTileRoutes } from './services/tiles';
+import { createTileRoutes, cachingTileKeyLookup } from './services/tiles';
 
 const { app, db, bootstrapAuth } = await createApp<Database>(path.join(import.meta.dir, 'db/migrations'));
 
@@ -77,7 +77,12 @@ mount(app, '/api', createMapBuildApi(mapBuildService));
 
 // Tile routes are deliberately unauthenticated (map clients fetch tiles
 // directly without session cookies) — mounted at the root, not under /api.
-app.route('/', createTileRoutes(assetsService));
+// Tiles are stored under the SITE id (the site owns the map); the lookup
+// resolves course-id URLs (iOS) to it, while site-id URLs (web) pass through.
+app.route('/', createTileRoutes(assetsService, cachingTileKeyLookup(async (id) => {
+    const course = await coursesService.get(id).catch(() => null);
+    return course?.siteId ?? null;
+})));
 
 Bun.serve({ port: config.port, fetch: app.fetch });
 

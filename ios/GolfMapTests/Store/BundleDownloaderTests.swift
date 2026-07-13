@@ -651,6 +651,39 @@ final class BundleDownloaderTests: XCTestCase {
         let terrain = paths.tileURLTemplate(courseId: "course-1", layer: .terrain)
         XCTAssertTrue(terrain.hasSuffix("course-1/tiles/terrain/{z}/{x}/{y}.png"), "got \(terrain)")
     }
+
+    // Regression: the production bundle root lives under "Application Support",
+    // whose space percent-encodes to %20 in `URL.path()`. Feeding that encoded
+    // string to `FileManager.fileExists(atPath:)` always failed, so the
+    // canonical `maps/<mapKey>` directory was never detected and resolution
+    // silently fell back to the legacy `<root>/<mapKey>` path. Every course
+    // with `mapKey == courseId` masked it (its legacy dir exists); the first
+    // course whose site id differs from its course id rendered no ortho tiles.
+    func testDirectoryResolutionHandlesSpaceInRootPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "Bundle Tests \(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let spacedPaths = BundlePaths(rootDirectory: root)
+
+        let mapKey = "site-id"
+        let canonicalMap = spacedPaths.canonicalMapBundleDirectory(mapKey: mapKey)
+        try FileManager.default.createDirectory(at: canonicalMap, withIntermediateDirectories: true)
+        XCTAssertEqual(
+            spacedPaths.mapBundleDirectory(mapKey: mapKey).path(percentEncoded: false),
+            canonicalMap.path(percentEncoded: false),
+            "canonical maps/<mapKey> must win over the legacy fallback even when the root path contains a space"
+        )
+
+        let courseId = "course-id"
+        let canonicalCourse = spacedPaths.canonicalCourseDataDirectory(courseId: courseId)
+        try FileManager.default.createDirectory(at: canonicalCourse, withIntermediateDirectories: true)
+        XCTAssertEqual(
+            spacedPaths.courseDataDirectory(courseId: courseId).path(percentEncoded: false),
+            canonicalCourse.path(percentEncoded: false),
+            "canonical courses/<courseId> must win over the legacy fallback even when the root path contains a space"
+        )
+    }
 }
 
 /// Lock-protected progress recorder usable from @Sendable callbacks.

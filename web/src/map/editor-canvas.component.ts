@@ -52,6 +52,10 @@ const tpl = template(`
             <span bind="cursorPos" class="status-pos"></span>
             <span class="status-elev"><span bind="cursorElevValue"></span><span class="metric__unit">m</span></span>
             <span bind="zoomLevel" class="status-zoom"></span>
+            <span bind="attribution" class="status-attribution">
+                <span bind="attributionCredit" class="status-attribution__credit"></span>
+                <button bind="attributionBtn" type="button" class="status-attribution__btn" aria-label="Map data attribution">i</button>
+            </span>
         </div>
     </div>
 `);
@@ -62,7 +66,7 @@ const tpl = template(`
  * ElevationService (terrain sampling), and renders the surrounding chrome —
  * loading/no-tiles states, a bottom-left Layers/Fit course control cluster
  * (with a glass popover for hillshade/exaggeration/imagery-vintage), and a
- * bottom-right cursor status bar (lat/lon, elevation, zoom).
+ * bottom-right cursor status bar (lat/lon, elevation, zoom, data attribution).
  *
  * Spawned by CourseDetailComponent into the `.editor-canvas` region; $swap
  * destroys/recreates it per navigation, so one instance == one courseId.
@@ -288,6 +292,51 @@ export class EditorCanvasComponent extends Component {
 
                 & .status-elev { min-width: 3.5rem; text-align: right; }
                 & .status-zoom { min-width: 3rem; text-align: right; }
+
+                /* Data attribution (CC BY): always-visible ⓘ in the pill;
+                   credit text appears on hover and pins on click/tap so
+                   touch devices can reach it too. Replaces MapLibre's
+                   attribution control (disabled in MapService.init). */
+                & .status-attribution {
+                    position: relative;
+                    display: none;
+                    pointer-events: auto;
+                    &.show { display: inline-flex; }
+
+                    & .status-attribution__btn {
+                        width: 16px;
+                        height: 16px;
+                        padding: 0;
+                        display: inline-flex;
+                        align-items: center;
+                        justify-content: center;
+                        border: 1px solid ${t('overlay-text-muted')};
+                        border-radius: 999px;
+                        background: transparent;
+                        color: ${t('overlay-text-muted')};
+                        font-family: var(--font-mono);
+                        font-size: 10px;
+                        font-weight: 600;
+                        line-height: 1;
+                        cursor: pointer;
+                        &:hover { color: ${t('overlay-text')}; border-color: ${t('overlay-text')}; }
+                    }
+                    &.open .status-attribution__btn {
+                        color: ${t('overlay-text')};
+                        border-color: ${t('overlay-text')};
+                    }
+
+                    & .status-attribution__credit {
+                        position: absolute;
+                        bottom: calc(100% + ${s('sm')});
+                        right: 0;
+                        display: none;
+                        white-space: nowrap;
+                        ${mapLabel()}
+                    }
+                    &:hover .status-attribution__credit,
+                    &.open .status-attribution__credit { display: block; }
+                }
             }
         }
     `;
@@ -309,6 +358,11 @@ export class EditorCanvasComponent extends Component {
 
     /** Whether the bottom-left "Layers" popover (hillshade/exaggeration/vintage) is open. */
     private layersOpen = new Signal(false);
+
+    /** Whether the attribution credit is pinned open (tapped, vs. hover). */
+    private attributionOpen = new Signal(false);
+    /** Data attribution from the tile manifest (e.g. "© Lantmäteriet, CC BY 4.0"). */
+    private attributionText = new Computed(() => this.tileset.manifest.get()?.attribution ?? null);
 
     /** Ortho vintages available to switch between (only shown when >1). */
     private vintages = new Computed<OrthoVintage[]>(() => this.tileset.manifest.get()?.orthoVintages ?? []);
@@ -355,6 +409,17 @@ export class EditorCanvasComponent extends Component {
                 return elevation === null ? '—' : elevation.toFixed(1);
             },
             zoomLevel: () => `z ${this.mapSvc.zoom.get().toFixed(1)}`,
+            attribution: {
+                className: () => {
+                    if (!this.attributionText.get()) return 'status-attribution';
+                    return this.attributionOpen.get() ? 'status-attribution show open' : 'status-attribution show';
+                },
+            },
+            attributionCredit: () => this.attributionText.get() ?? '',
+            attributionBtn: {
+                onclick: () => this.attributionOpen.set(!this.attributionOpen.get()),
+                'aria-expanded': () => String(this.attributionOpen.get()),
+            },
         });
 
         // Ortho vintage switcher — one button per available flight (by date).
@@ -391,9 +456,11 @@ export class EditorCanvasComponent extends Component {
     }
 
     onMount(): void {
-        // Escape closes the layers popover.
+        // Escape closes the layers popover and the pinned attribution credit.
         const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && this.layersOpen.peek()) this.layersOpen.set(false);
+            if (e.key !== 'Escape') return;
+            if (this.layersOpen.peek()) this.layersOpen.set(false);
+            if (this.attributionOpen.peek()) this.attributionOpen.set(false);
         };
         window.addEventListener('keydown', onKeyDown);
         this.track(() => window.removeEventListener('keydown', onKeyDown));

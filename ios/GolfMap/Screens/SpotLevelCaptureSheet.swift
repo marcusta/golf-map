@@ -55,6 +55,8 @@ struct SpotLevelCaptureSheet: View {
                 controls
             }
             .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.surfaceApp.ignoresSafeArea())
             .navigationTitle("Level")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

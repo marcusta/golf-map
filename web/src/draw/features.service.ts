@@ -10,7 +10,7 @@ import { sweref99tmToWgs84 } from '../geo/transform';
 import type { MapService } from '../map/map.service';
 import { DRAW_FILL_OPACITY, NICE_FILL_OPACITY, typeColorExpression, SELECTION_COLOR } from './feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
-import { resolveSurfaceStack } from './resolved-surface-stack';
+import { resolveSurfaceStack } from '../../../shared/render/resolved-surface-stack';
 
 /**
  * D24 global composition key: `groupRank * 4096 + sortOrder`, groupRank 0 =

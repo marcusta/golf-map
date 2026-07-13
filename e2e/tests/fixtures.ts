@@ -141,6 +141,9 @@ export async function openPlanner(page: Page, courseId: string, hole: number): P
     await page.goto(`/planner/${courseId}?hole=${hole}`);
     await expect(page.locator(tid('planner'))).toBeVisible();
     await waitForMapReady(page);
+    // The planner panel lives in the right contextual dock (shared with
+    // Create); asserting the dock catches a failure to mount it on /planner.
+    await expect(page.locator(tid('feature-dock'))).toBeVisible();
     await expect(page.locator(tid('planner-panel'))).toBeVisible();
 }
 

@@ -1,6 +1,6 @@
 import { Component, Signal, Computed, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, field, glassPanel, panelTitle, metric, selectedRow, primaryBtn } from '../css';
+import { s, btn, field, panelTitle, metric, selectedRow, primaryBtn } from '../css';
 import { clubAdvice, mpsToMph, type BreakSide } from '../../../shared/strategy';
 import type { PlanShot, PlanGate } from '../../../shared/api/game-plans.gen';
 import { FurnitureService } from '../furniture/furniture.service';
@@ -12,7 +12,10 @@ import { icon } from '../ui/icons';
 import { PuttReadService, DEFAULT_STIMP_FT, type PuttReadDisplay } from './putt-read.service';
 import { PuttEstimateService } from './putt-estimate.service';
 import { scoreEstimate, type PuttEstimate, type PuttEstimateScore } from './putt-estimate-score';
-import { gateLabel, legDriftLabel, legLight, type LegLight, type PlanLeg } from './plan-overlay';
+import { gateLabel, legDriftLabel, legLight, type LegLight, type PlanLeg, type PlanNode } from './plan-overlay';
+import { ElevationService } from '../map/elevation.service';
+import { ElevationProfileService } from '../profile/elevation-profile.service';
+import { ElevationProfileComponent } from '../profile/elevation-profile.component';
 
 /** localStorage key for the training-mode toggle (default ON per doc §5.1). */
 const TRAINING_MODE_KEY = 'golf-map.putt.trainingMode';
@@ -32,6 +35,23 @@ function saveTrainingMode(on: boolean): void {
     } catch {
         // Non-fatal — the toggle just won't persist across reloads.
     }
+}
+
+/**
+ * Drag frames rebuild `holePlan` per mouse-move; the profile re-samples the
+ * terrain only once the route geometry settles for this long.
+ */
+const PROFILE_DEBOUNCE_MS = 150;
+
+/** Profile marker labels paralleling the route nodes: Tee / S1… (or the shot's label) / Green. */
+function profileLabels(nodes: readonly PlanNode[]): string[] {
+    let shotIndex = 0;
+    return nodes.map(n => {
+        if (n.kind === 'tee') return 'Tee';
+        if (n.kind === 'green') return 'Green';
+        shotIndex++;
+        return n.shot?.label?.trim() || `S${shotIndex}`;
+    });
 }
 
 const tpl = template(`
@@ -114,6 +134,11 @@ const tpl = template(`
         <div bind="legsSection" class="plan-panel__section" data-testid="planner-legs-section">
             <h4 class="section-title">Legs</h4>
             <div bind="legsBody" class="legs-body" data-testid="planner-legs-body"></div>
+        </div>
+
+        <div class="plan-panel__section" data-testid="planner-profile-section">
+            <h4 class="section-title">Elevation profile</h4>
+            <div bind="profileHost"></div>
         </div>
 
         <div bind="caddySection" class="plan-panel__section" data-testid="planner-caddy-section">
@@ -201,11 +226,15 @@ const puttQuizTpl = template(`
 `);
 
 /**
- * The planner's control panel (sidebar, under the hole list): add-shot /
- * add-gate arming, tee + preferred-club selects, plan/hole wind with
- * inherit-aware override (m/s canonical, mph display-only), per-leg
- * readouts, shot rows (club/label/remove), gate rows, and hole notes.
- * Shares the PlannerToolService/PlanService DI singletons with the tool.
+ * The planner's control panel, hosted statically in the right contextual
+ * dock (ContextDockComponent, "Plan"): add-shot / add-gate arming, tee +
+ * preferred-club selects, plan/hole wind with inherit-aware override (m/s
+ * canonical, mph display-only), per-leg readouts, shot rows
+ * (club/label/remove), gate rows, and hole notes. Shares the
+ * PlannerToolService/PlanService DI singletons with the tool. Conforms to
+ * the dock hosting contract (see feature-dock.component.ts): flat column
+ * content, no glass wrapper, no fixed width, own section padding — the
+ * dock owns the surface, the 268px width and the scroll bound.
  */
 export class PlannerPanelComponent extends Component {
     static styles = `
@@ -214,16 +243,9 @@ export class PlannerPanelComponent extends Component {
             flex-direction: column;
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
-            overflow-y: auto;
-            /* Guide §01: floating glass card. Padding reset to 0 — each
-               section already carries its own rhythm and several children
-               (e.g. the putt-quiz grid) are tuned to the panel's fixed
-               dock width; the recipe's own padding would double up. */
-            ${glassPanel()}
-            padding: 0;
 
             & .plan-panel__section {
-                padding: ${s('sm')} ${s('md')};
+                padding: var(--space-3) var(--space-4);
                 border-bottom: 1px solid ${t('color-border-default')};
                 display: flex;
                 flex-direction: column;
@@ -472,7 +494,7 @@ export class PlannerPanelComponent extends Component {
             }
 
             & .plan-panel__status {
-                padding: ${s('xs')} ${s('md')};
+                padding: ${s('xs')} var(--space-4);
                 font-size: 0.72rem;
                 color: ${t('color-text-secondary')};
                 min-height: 1.4em;
@@ -480,7 +502,7 @@ export class PlannerPanelComponent extends Component {
             }
 
             & .plan-panel__hints {
-                padding: ${s('xs')} ${s('md')} ${s('sm')};
+                padding: ${s('xs')} var(--space-4) var(--space-3);
                 font-size: 0.68rem;
                 line-height: 1.5;
                 color: ${t('color-text-secondary')};
@@ -496,6 +518,8 @@ export class PlannerPanelComponent extends Component {
     private confirm = this.inject(ConfirmService);
     private putt = this.inject(PuttReadService);
     private puttEstimate = this.inject(PuttEstimateService);
+    private profile = this.inject(ElevationProfileService);
+    private elevation = this.inject(ElevationService);
 
     // ── Training-quiz state (doc §5.1) ─────────────────────────────────────
     /** Training mode on/off (persisted). Default ON — "first-class, not incidental". */
@@ -627,6 +651,25 @@ export class PlannerPanelComponent extends Component {
         // Caddy advice (green-slope-half + future rules), ranked highest first.
         const caddyBody = this.ref(frag, 'caddyBody');
         this.track(effect(() => { caddyBody.innerHTML = this.caddyHtml(); }));
+
+        // Elevation profile along the hole route (tee → shots → green) — the
+        // iOS profile sheet's web home. Sampled through the shared
+        // ElevationService; debounced so drag frames don't re-sample the
+        // terrain per mouse-move (stale batches are seq-dropped regardless).
+        this.spawn(ElevationProfileComponent, this.ref(frag, 'profileHost'));
+        this.profile.useSampler(p => this.elevation.elevationAt({ lng: p.lon, lat: p.lat }));
+        let profileTimer: ReturnType<typeof setTimeout> | undefined;
+        this.track(effect(() => {
+            const nodes = this.tool.holePlan.get()?.nodes ?? [];
+            clearTimeout(profileTimer);
+            profileTimer = setTimeout(() => {
+                void this.profile.update(
+                    nodes.map(n => ({ lat: n.lat, lon: n.lon })),
+                    profileLabels(nodes),
+                );
+            }, PROFILE_DEBOUNCE_MS);
+        }));
+        this.track(() => clearTimeout(profileTimer));
 
         this.buildShotRows(this.ref(frag, 'shotList'));
         this.buildGateRows(this.ref(frag, 'gateList'));

@@ -30,12 +30,49 @@ final class AnalysisOverlayGeometryTests: XCTestCase {
     }
 
     func testArrowLengthTracksSpacingWithClamps() {
-        // 20×20 m grid → spacing 2.5 → length 1.5 (clamped up from 1.25).
+        // 20×20 m grid → spacing 2 → length 1.2 (clamped up from 0.9).
         let small = AnalysisGridSpec(originE: 0, originN: 0, resolution: 0.5, width: 40, height: 40)
-        XCTAssertEqual(AnalysisOverlayGeometry.arrowLengthM(small), 1.5)
-        // 80×80 m grid → spacing 10 → length 4 (clamped down from 5).
+        XCTAssertEqual(AnalysisOverlayGeometry.arrowLengthM(small), 1.2)
+        // 80×80 m grid → spacing 8 → length 3.5 (clamped down from 3.6).
         let large = AnalysisGridSpec(originE: 0, originN: 0, resolution: 0.5, width: 160, height: 160)
-        XCTAssertEqual(AnalysisOverlayGeometry.arrowLengthM(large), 4)
+        XCTAssertEqual(AnalysisOverlayGeometry.arrowLengthM(large), 3.5)
+    }
+
+    func testMeterGridLinesConvertEndpointsToWGS84() {
+        let spec = AnalysisGridSpec(
+            originE: 540_000.3, originN: 6_470_000.7, resolution: 0.5, width: 8, height: 8
+        )
+        // Extent: e 540000.3–540004.3, n 6469996.7–6470000.7 → 4 vertical
+        // (540001–540004) + 4 horizontal (6469997–6470000) lines.
+        let lines = AnalysisOverlayGeometry.meterGridLines(spec)
+        XCTAssertEqual(lines.count, 8)
+        for line in lines {
+            XCTAssertEqual(line.count, 2)
+            let a = Sweref99TM.fromWGS84(line[0])
+            let b = Sweref99TM.fromWGS84(line[1])
+            // Each line is axis-aligned on a whole meter in EPSG:3006.
+            let isVertical = abs(a.x - b.x) < 0.01
+            let isHorizontal = abs(a.y - b.y) < 0.01
+            XCTAssertTrue(isVertical || isHorizontal)
+            let aligned = isVertical ? a.x : a.y
+            XCTAssertEqual(aligned.truncatingRemainder(dividingBy: 1), 0, accuracy: 0.01)
+        }
+    }
+
+    func testContourLinesConvertSegmentsToWGS84() {
+        let level = ContourLevel(
+            level: 50.02,
+            index: false,
+            segments: [Seg3006(540_000, 6_470_000, 540_001, 6_470_002)]
+        )
+        let lines = AnalysisOverlayGeometry.contourLines(level)
+        XCTAssertEqual(lines.count, 1)
+        let a = Sweref99TM.fromWGS84(lines[0][0])
+        let b = Sweref99TM.fromWGS84(lines[0][1])
+        XCTAssertEqual(a.x, 540_000, accuracy: 0.01)
+        XCTAssertEqual(a.y, 6_470_000, accuracy: 0.01)
+        XCTAssertEqual(b.x, 540_001, accuracy: 0.01)
+        XCTAssertEqual(b.y, 6_470_002, accuracy: 0.01)
     }
 
     func testArrowStrokesShaftAndHeadGeometry() {
@@ -106,6 +143,7 @@ final class AnalysisOverlayGeometryTests: XCTestCase {
         let result = GreenAnalysisResult(grid: grid, boundaryRings: [ring])
         XCTAssertEqual(result.stats.green.maxSlopePct, 5, accuracy: 1e-6)
         XCTAssertFalse(result.arrows.isEmpty)
+        XCTAssertFalse(result.contours.isEmpty) // 5% plane crosses many 2 cm levels
         let bounds = try! XCTUnwrap(result.boundaryBounds)
         XCTAssertEqual(bounds.west, 15.719)
         XCTAssertEqual(bounds.east, 15.721)

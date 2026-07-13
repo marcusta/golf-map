@@ -45,7 +45,7 @@ public struct BundlePaths: Sendable, Equatable {
     public func courseDataDirectory(courseId: String) -> URL {
         let canonical = rootDirectory.appending(path: "courses/\(courseId)", directoryHint: .isDirectory)
         let legacy = rootDirectory.appending(path: courseId, directoryHint: .isDirectory)
-        return FileManager.default.fileExists(atPath: canonical.path()) ? canonical : legacy
+        return FileManager.default.fileExists(atPath: canonical.path(percentEncoded: false)) ? canonical : legacy
     }
 
     public func canonicalCourseDataDirectory(courseId: String) -> URL {
@@ -59,7 +59,7 @@ public struct BundlePaths: Sendable, Equatable {
     public func mapBundleDirectory(mapKey: String) -> URL {
         let canonical = rootDirectory.appending(path: "maps/\(mapKey)", directoryHint: .isDirectory)
         let legacy = rootDirectory.appending(path: mapKey, directoryHint: .isDirectory)
-        return FileManager.default.fileExists(atPath: canonical.path()) ? canonical : legacy
+        return FileManager.default.fileExists(atPath: canonical.path(percentEncoded: false)) ? canonical : legacy
     }
 
     public func canonicalMapBundleDirectory(mapKey: String) -> URL {
@@ -163,11 +163,11 @@ public struct BundlePaths: Sendable, Equatable {
         guard courseId == mapKey else { return }
         let legacyDirectory = rootDirectory.appending(path: mapKey, directoryHint: .isDirectory)
         let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: legacyDirectory.path()) else { return }
+        guard fileManager.fileExists(atPath: legacyDirectory.path(percentEncoded: false)) else { return }
 
         let names = ["features.geojson", "features-resolved.geojson"]
         let existingNames = names.filter {
-            fileManager.fileExists(atPath: legacyDirectory.appending(path: $0).path())
+            fileManager.fileExists(atPath: legacyDirectory.appending(path: $0).path(percentEncoded: false))
         }
         guard !existingNames.isEmpty else { return }
 
@@ -175,7 +175,7 @@ public struct BundlePaths: Sendable, Equatable {
         try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         for name in existingNames {
             let destination = destinationDirectory.appending(path: name)
-            guard !fileManager.fileExists(atPath: destination.path()) else { continue }
+            guard !fileManager.fileExists(atPath: destination.path(percentEncoded: false)) else { continue }
             try fileManager.copyItem(
                 at: legacyDirectory.appending(path: name),
                 to: destination
@@ -191,7 +191,7 @@ public struct BundlePaths: Sendable, Equatable {
             canonicalMapBundleDirectory(mapKey: mapKey),
             temporaryMapBundleDirectory(mapKey: mapKey),
             rootDirectory.appending(path: mapKey, directoryHint: .isDirectory),
-        ] where fm.fileExists(atPath: directory.path()) {
+        ] where fm.fileExists(atPath: directory.path(percentEncoded: false)) {
             try fm.removeItem(at: directory)
         }
         // This is called only after GRDB proves the map has no references, so

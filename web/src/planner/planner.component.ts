@@ -11,6 +11,8 @@ import { PlanService } from './plan.service';
 import { PlannerToolService } from './planner-tool.service';
 import { PlannerPanelComponent } from './planner-panel.component';
 import { HoleSidebarComponent } from '../course-detail/hole-sidebar.component';
+import { HoleInfoPanelComponent } from '../course-detail/hole-info-panel.component';
+import { ContextDockComponent } from '../draw/feature-dock.component';
 import { CommandBarComponent } from '../app/command-bar.component';
 
 const tpl = template(`
@@ -25,6 +27,7 @@ const tpl = template(`
             <section class="planner__main">
                 <div bind="editorCanvas" class="editor-canvas"></div>
             </section>
+            <div bind="planDock"></div>
         </div>
     </div>
 `);
@@ -32,13 +35,14 @@ const tpl = template(`
 /**
  * Game-plan editor page (Phase 5). Route: /planner/:courseId?hole=N.
  * Shares the course-detail layout — command bar header, the collapsible
- * "Holes" dock (selection IS the URL, ?hole=), map canvas — but its dock
- * footer hosts the planner panel and there is no right feature dock. The
- * page hosts the single planner tool instead of the builder toolbar
- * (EditorCanvasComponent only spawns the toolbar on /course routes). Loads
- * course + holes, course features (rendered via the shared FeaturesService
- * overlay), furniture (tees/greens for the planning nodes), clubs and the
- * game plan; PlannerToolService drives the map.
+ * "Holes" dock (selection IS the URL, ?hole=; footer hosts the same hole
+ * info panel as Create), map canvas, and the right contextual dock, which
+ * here statically hosts the planner panel ("Plan"). The page hosts the
+ * single planner tool instead of the builder toolbar (EditorCanvasComponent
+ * only spawns the toolbar on /course routes). Loads course + holes, course
+ * features (rendered via the shared FeaturesService overlay), furniture
+ * (tees/greens for the planning nodes), clubs and the game plan;
+ * PlannerToolService drives the map.
  */
 export class PlannerComponent extends Component {
     static styles = `
@@ -64,11 +68,11 @@ export class PlannerComponent extends Component {
                 & button { padding: ${s('xs')} ${s('sm')}; font-size: 0.75rem; ${btn()} }
             }
 
-            /* The Holes dock sizes to content (264/58px); the map flexes. No
-               right dock in Plan mode. */
+            /* Docks size to content (264/58px left, 268/40px right); the map
+               column flexes to fill whatever is left. */
             & .planner__body {
                 display: grid;
-                grid-template-columns: auto 1fr;
+                grid-template-columns: auto 1fr auto;
                 /* Cap the single row to the body height so the dock scrolls
                    INSIDE its column instead of stretching the row (and the
                    map) past the viewport. */
@@ -118,14 +122,21 @@ export class PlannerComponent extends Component {
         this.spawn(CommandBarComponent, this.ref(frag, 'cmdbar'), { mode: 'plan' });
 
         // Left "Holes" dock — shared collapsible sidebar; its footer hosts the
-        // planner panel (footerGrows so the tall panel owns the scroll room).
+        // same hole info panel as Create (the hole sidebar is identical in
+        // all modes).
         this.spawn(HoleSidebarComponent, this.ref(frag, 'holeDock'), {
             routeBase: '/planner',
-            footer: PlannerPanelComponent,
-            footerGrows: true,
+            footer: HoleInfoPanelComponent,
         });
 
         this.spawn(EditorCanvasComponent, this.ref(frag, 'editorCanvas'));
+
+        // Right contextual dock — statically hosts the planner panel (Plan
+        // has no sub-mode concept; collapse state shared with Create's dock).
+        this.spawn(ContextDockComponent, this.ref(frag, 'planDock'), {
+            content: { label: 'Plan', panel: PlannerPanelComponent },
+        });
+
         return frag;
     }
 

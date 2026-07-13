@@ -241,21 +241,22 @@ final class AnalysisMathTests: XCTestCase {
     // MARK: - Fall-line arrows
 
     func testFallLineArrowsSamplingDirectionAndLabels() {
-        // 40×40 cells @ 0.5 m = 20×20 m → spacing max(2, 20/8) = 2.5 m → 8×8.
+        // 40×40 cells @ 0.5 m = 20×20 m → spacing max(1.5, 20/10) = 2 m → 10×10.
         let grid = makeGrid(width: 40, height: 40) { e, n in
             50 + 0.03 * (e - 1000) + 0.04 * (n - 1980)
         }
         let arrows = sampleFallLines(grid, slope: computeSlopeGrid(grid))
-        XCTAssertEqual(arrows.count, 64)
+        XCTAssertEqual(arrows.count, 100)
         for a in arrows {
             XCTAssertEqual(a.slopePct, 5, accuracy: 1e-6)
             XCTAssertEqual(a.dirE, -0.6, accuracy: 1e-6)
             XCTAssertEqual(a.dirN, -0.8, accuracy: 1e-6)
             XCTAssertGreaterThan(a.slopePct, ARROW_MIN_SLOPE_PCT)
         }
-        XCTAssertEqual(arrows.filter(\.labeled).count, 16) // every 4th
+        XCTAssertEqual(arrows.filter(\.labeled).count, 34) // every 3rd (ARROW_LABEL_EVERY)
         XCTAssertTrue(arrows[0].labeled)
         XCTAssertFalse(arrows[1].labeled)
+        XCTAssertTrue(arrows[3].labeled)
     }
 
     func testFallLineArrowsSkipNearFlatCells() {
@@ -264,12 +265,111 @@ final class AnalysisMathTests: XCTestCase {
         XCTAssertTrue(arrows.isEmpty)
     }
 
-    func testFallLineArrowSpacingNeverDropsBelowTwoMeters() {
-        // Tiny 4×4 m green: min(w,h)/8 = 0.5 → clamped to 2 m → 2×2 samples.
+    func testFallLineArrowSpacingNeverDropsBelowOnePointFiveMeters() {
+        // Tiny 4×4 m green: min(w,h)/10 = 0.4 → clamped to 1.5 m → 3×3 samples.
         let grid = makeGrid(width: 8, height: 8) { e, n in
             50 + 0.05 * (e - 1000) + 0.05 * (n - 1996)
         }
         let arrows = sampleFallLines(grid, slope: computeSlopeGrid(grid))
-        XCTAssertEqual(arrows.count, 4)
+        XCTAssertEqual(arrows.count, 9)
+    }
+
+    // MARK: - 1 m reference grid
+
+    func testMeterGridLinesAlignToWholeMetersAndSpanTheSampledRect() {
+        // Extent: e 1000–1006, n 1995–2000 (12×10 cells @ 0.5 m).
+        let lines = buildMeterGridLines(planeGrid().spec)
+        let vertical = lines.filter { $0.e0 == $0.e1 }
+        let horizontal = lines.filter { $0.n0 == $0.n1 }
+        XCTAssertEqual(vertical.count, 7) // e = 1000...1006
+        XCTAssertEqual(horizontal.count, 6) // n = 1995...2000
+        for line in vertical {
+            XCTAssertEqual(line.e0.truncatingRemainder(dividingBy: 1), 0)
+            XCTAssertEqual(max(line.n0, line.n1), 2000)
+            XCTAssertEqual(min(line.n0, line.n1), 1995)
+        }
+        for line in horizontal {
+            XCTAssertEqual(line.n0.truncatingRemainder(dividingBy: 1), 0)
+            XCTAssertEqual(min(line.e0, line.e1), 1000)
+            XCTAssertEqual(max(line.e0, line.e1), 1006)
+        }
+    }
+
+    func testMeterGridLinesSnapInwardFromAFractionalOrigin() {
+        // Extent: e 1000.3–1002.3, n 1998.7–2000.7.
+        let spec = AnalysisGridSpec(
+            originE: 1000.3, originN: 2000.7, resolution: 0.5, width: 4, height: 4
+        )
+        let lines = buildMeterGridLines(spec)
+        let vertical = lines.filter { $0.e0 == $0.e1 }.map(\.e0)
+        let horizontal = lines.filter { $0.n0 == $0.n1 }.map(\.n0)
+        XCTAssertEqual(vertical, [1001, 1002])
+        XCTAssertEqual(horizontal, [1999, 2000])
+    }
+
+    // MARK: - Elevation contours (marching squares)
+
+    func testContoursOnEastTiltedPlaneAreVerticalLinesAtExactLevelPositions() {
+        // z = 50 + 0.1·(e − 1000): contours are north–south lines, one per
+        // 2 cm, at e = 1000 + (level − 50) / 0.1.
+        let grid = makeGrid(width: 12, height: 10) { e, _ in 50 + 0.1 * (e - 1000) }
+        let contours = computeContours(grid)
+        XCTAssertGreaterThan(contours.count, 20)
+        for c in contours {
+            // Level is a 2 cm multiple; index flag on 10 cm multiples.
+            let k = Int((c.level / CONTOUR_INTERVAL_M).rounded())
+            XCTAssertEqual(c.level, Double(k) * CONTOUR_INTERVAL_M, accuracy: 1e-9)
+            XCTAssertEqual(c.index, k % CONTOUR_INDEX_EVERY == 0)
+            XCTAssertFalse(c.segments.isEmpty)
+            let expectedE = 1000 + (c.level - 50) / 0.1
+            for seg in c.segments {
+                XCTAssertEqual(seg.e0, expectedE, accuracy: 1e-6)
+                XCTAssertEqual(seg.e1, expectedE, accuracy: 1e-6)
+                XCTAssertNotEqual(seg.n0, seg.n1) // north–south segment
+            }
+        }
+        // Consecutive levels are exactly one interval apart (no gaps).
+        for i in 1..<contours.count {
+            XCTAssertEqual(
+                contours[i].level - contours[i - 1].level,
+                CONTOUR_INTERVAL_M,
+                accuracy: 1e-9
+            )
+        }
+    }
+
+    func testContoursSkipNodataBlocksAndFlatGridYieldsNone() {
+        XCTAssertTrue(computeContours(makeGrid(width: 8, height: 8) { _, _ in 50 }).isEmpty)
+        XCTAssertTrue(computeContours(makeGrid(width: 8, height: 8) { _, _ in .nan }).isEmpty)
+        // Half the grid nodata: contours exist only where data is.
+        let grid = makeGrid(width: 12, height: 10) { e, n in
+            n > 1997.5 ? .nan : 50 + 0.1 * (e - 1000)
+        }
+        let contours = computeContours(grid)
+        XCTAssertFalse(contours.isEmpty)
+        for c in contours {
+            for seg in c.segments {
+                XCTAssertLessThanOrEqual(seg.n0, 1997.5)
+                XCTAssertLessThanOrEqual(seg.n1, 1997.5)
+            }
+        }
+    }
+
+    func testContourSegmentsStayWithinTheSampledNodeExtent() {
+        let grid = makeGrid(width: 12, height: 10) { e, n in
+            50 + 0.06 * (e - 1000) + 0.04 * (n - 1990) + 0.05 * sin(e) * cos(n)
+        }
+        for c in computeContours(grid) {
+            for seg in c.segments {
+                for e in [seg.e0, seg.e1] {
+                    XCTAssertGreaterThanOrEqual(e, 1000.25)
+                    XCTAssertLessThanOrEqual(e, 1005.75)
+                }
+                for n in [seg.n0, seg.n1] {
+                    XCTAssertGreaterThanOrEqual(n, 1995.25)
+                    XCTAssertLessThanOrEqual(n, 1999.75)
+                }
+            }
+        }
     }
 }

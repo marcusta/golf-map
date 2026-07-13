@@ -32,6 +32,17 @@ export interface CourseSummary {
     homeLon: null | number;
     holeCount: number;
     updatedAt: string;
+    parTotal: number;
+    lengthM: number;
+    mappedHoleCount: number;
+    siteName: null | string;
+    routing: RoutingHole[];
+}
+
+export interface RoutingHole {
+    hole: number;
+    tee: [number, number];
+    green: [number, number];
 }
 
 export interface CoursesApi {

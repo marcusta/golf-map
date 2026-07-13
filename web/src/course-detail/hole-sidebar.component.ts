@@ -28,12 +28,6 @@ export type HoleSidebarProps = {
     routeBase: string;
     /** Component mounted in the expanded dock's footer (below the hole list). */
     footer: new () => Component<any>;
-    /**
-     * When true the footer is the primary scroll region and the hole list is
-     * capped (the planner's tall panel needs the room); default false makes
-     * the hole list the main scroller with a compact footer (course-detail).
-     */
-    footerGrows?: boolean;
 };
 
 const tpl = template(`
@@ -176,17 +170,6 @@ export class HoleSidebarComponent extends Component<HoleSidebarProps> {
                 min-height: 0;
             }
 
-            /* Planner's footer is tall: cap the hole list and let the footer
-               own the remaining space + its own scroll. */
-            &.hole-dock--footer-grows .hole-list {
-                flex: 0 0 auto;
-                max-height: 40%;
-            }
-            &.hole-dock--footer-grows .hole-dock__footer {
-                flex: 1 1 auto;
-                overflow-y: auto;
-            }
-
             /* ── collapsed rail ── */
             & .hole-dock__rail {
                 display: none;
@@ -253,10 +236,7 @@ export class HoleSidebarComponent extends Component<HoleSidebarProps> {
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
             root: {
-                className: () => {
-                    const base = this.props.footerGrows ? 'hole-dock hole-dock--footer-grows' : 'hole-dock';
-                    return this.collapsed.get() ? `${base} is-collapsed` : base;
-                },
+                className: () => this.collapsed.get() ? 'hole-dock is-collapsed' : 'hole-dock',
             },
             collapseBtn: { onclick: () => this.setCollapsed(true) },
             expandBtn: { onclick: () => this.setCollapsed(false) },

@@ -30,13 +30,35 @@ public enum AnalysisOverlayGeometry {
         public var labelPosition: LatLon
     }
 
-    /// Arrow length used by the web renderer: half the sampling spacing,
-    /// clamped to 1.5–4 m.
+    /// Arrow length used by the web renderer: 45% of the sampling spacing
+    /// (mirrors `sampleFallLines`' max(1.5, min/10)), clamped to 1.2–3.5 m —
+    /// sized down so the densified arrow field stays readable.
     public static func arrowLengthM(_ spec: AnalysisGridSpec) -> Double {
         let widthM = Double(spec.width) * spec.resolution
         let heightM = Double(spec.height) * spec.resolution
-        let spacing = max(2, min(widthM, heightM) / 8)
-        return min(4, max(1.5, spacing * 0.5))
+        let spacing = max(1.5, min(widthM, heightM) / 10)
+        return min(3.5, max(1.2, spacing * 0.45))
+    }
+
+    /// The 1 m reference grid as WGS84 two-point lines. Straight in
+    /// EPSG:3006; endpoint-only conversion is exact enough at green scale.
+    public static func meterGridLines(_ spec: AnalysisGridSpec) -> [[LatLon]] {
+        buildMeterGridLines(spec).map { seg in
+            [
+                Sweref99TM.toWGS84(x: seg.e0, y: seg.n0),
+                Sweref99TM.toWGS84(x: seg.e1, y: seg.n1),
+            ]
+        }
+    }
+
+    /// One contour level's segments as WGS84 two-point lines.
+    public static func contourLines(_ level: ContourLevel) -> [[LatLon]] {
+        level.segments.map { seg in
+            [
+                Sweref99TM.toWGS84(x: seg.e0, y: seg.n0),
+                Sweref99TM.toWGS84(x: seg.e1, y: seg.n1),
+            ]
+        }
     }
 
     /// Fall-line arrows as WGS84 strokes: a shaft centered on the anchor plus
@@ -92,6 +114,8 @@ public struct GreenAnalysisResult: Sendable {
     public var slope: SlopeGrid
     public var stats: AnalysisStats
     public var arrows: [FallLineArrow]
+    /// 2 cm elevation contours (index lines every 10 cm).
+    public var contours: [ContourLevel]
     /// Green outline in WGS84 (every ring), for the bold boundary line.
     public var boundaryRings: [[LatLon]]
 
@@ -100,6 +124,7 @@ public struct GreenAnalysisResult: Sendable {
         slope: SlopeGrid,
         stats: AnalysisStats,
         arrows: [FallLineArrow],
+        contours: [ContourLevel],
         boundaryRings: [[LatLon]]
     ) {
         self.identity = UUID()
@@ -107,10 +132,11 @@ public struct GreenAnalysisResult: Sendable {
         self.slope = slope
         self.stats = stats
         self.arrows = arrows
+        self.contours = contours
         self.boundaryRings = boundaryRings
     }
 
-    /// Compute slope/stats/arrows for an already-sampled grid.
+    /// Compute slope/stats/arrows/contours for an already-sampled grid.
     public init(grid: SampleGrid, boundaryRings: [[LatLon]]) {
         let slope = computeSlopeGrid(grid)
         self.init(
@@ -118,6 +144,7 @@ public struct GreenAnalysisResult: Sendable {
             slope: slope,
             stats: computeStats(grid, slope: slope),
             arrows: sampleFallLines(grid, slope: slope),
+            contours: computeContours(grid),
             boundaryRings: boundaryRings
         )
     }

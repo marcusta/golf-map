@@ -20,6 +20,11 @@ function summary(id: string, name: string): CourseSummary {
         homeLon: null,
         holeCount: 18,
         updatedAt: '2026-07-04T00:00:00Z',
+        parTotal: 72,
+        lengthM: 5800,
+        mappedHoleCount: 0,
+        siteName: null,
+        routing: [],
     };
 }
 

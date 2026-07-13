@@ -9,7 +9,8 @@ import { drawTool } from './draw-tool';
 import { SelectionPanelComponent } from './selection-panel.component';
 import { FeatureStackPanelComponent } from './feature-stack-panel.component';
 
-/** Independent of the left dock so each side remembers its own state. */
+/** Independent of the left dock so each side remembers its own state; shared
+ *  across Create ↔ Plan — one "right dock" concept, like the left key. */
 const RIGHT_DOCK_KEY = 'golf-map.featureDock.collapsed';
 
 function loadCollapsed(): boolean {
@@ -46,10 +47,23 @@ const tpl = template(`
     </div>
 `);
 
+export type ContextDockProps = {
+    /**
+     * Static-content variant (Plan mode): one fixed header/rail label and one
+     * panel hosted for the dock's whole life. Skips everything Create-specific
+     * — no sub-mode following, no rail count badge, no status footer, no
+     * auto-expand-on-selection (and the Create editor services are never
+     * injected). Absent → the Create behavior below.
+     */
+    content?: { label: string; panel: new () => Component<any> };
+};
+
 /**
- * The single contextual right dock for the /course builder (Builder redesign
- * v2), mounted in course-detail's layout across ALL Create sub-modes. Its body
- * follows the active editor sub-mode (EditorModeService):
+ * The single contextual right dock (Builder redesign v2), used by BOTH
+ * course-detail (Create) and planner (Plan — via the `content` prop, which
+ * hosts one static panel). On /course it is mounted across ALL Create
+ * sub-modes and its body follows the active editor sub-mode
+ * (EditorModeService):
  *
  *   • Draw   → the SelectionPanel (top, shown only while a selection exists)
  *              above the permanent FeatureStackPanel, plus a muted status
@@ -68,10 +82,11 @@ const tpl = template(`
  *   the tool (`Feature stack` for draw, else `tool.label`); the rail count badge
  *   is draw-only.
  *
- * Collapse state persists in localStorage (independent of the left dock); a
- * selection appearing while collapsed auto-expands the dock (never auto-collapses).
+ * Collapse state persists in localStorage (independent of the left dock,
+ * shared across Create ↔ Plan); a selection appearing while collapsed
+ * auto-expands the dock (never auto-collapses).
  */
-export class ContextDockComponent extends Component {
+export class ContextDockComponent extends Component<ContextDockProps> {
     static styles = `
         .ctx-dock {
             flex: none;
@@ -179,9 +194,15 @@ export class ContextDockComponent extends Component {
         }
     `;
 
-    private mode = this.inject(EditorModeService);
-    private features = this.inject(FeaturesService);
-    private tool = this.inject(DrawToolService);
+    // Create-only services, injected lazily so the static-content variant
+    // (Plan) never instantiates the editor's mode/draw machinery.
+    private _mode?: EditorModeService;
+    private get mode(): EditorModeService { return (this._mode ??= this.inject(EditorModeService)); }
+    private _features?: FeaturesService;
+    private get features(): FeaturesService { return (this._features ??= this.inject(FeaturesService)); }
+    private _tool?: DrawToolService;
+    private get tool(): DrawToolService { return (this._tool ??= this.inject(DrawToolService)); }
+
     private collapsed = new Signal(loadCollapsed());
 
     /** Current draw stack panel (draw sub-mode only) — publishes the rail badge count. */
@@ -203,16 +224,17 @@ export class ContextDockComponent extends Component {
             overline: { textContent: () => this.dockLabel() },
             railLabel: { textContent: () => this.dockLabel() },
             railCount: {
-                textContent: () => this.activeTool().id === DRAW_TOOL_ID
+                textContent: () => !this.props.content && this.activeTool().id === DRAW_TOOL_ID
                     ? String(this.stackPanel.get()?.scopeCount.get() ?? 0)
                     : '',
             },
             footer: {
                 className: () => {
-                    if (this.activeTool().id !== DRAW_TOOL_ID) return 'ctx-dock__footer';
+                    if (this.props.content || this.activeTool().id !== DRAW_TOOL_ID) return 'ctx-dock__footer';
                     return this.statusIsError() ? 'ctx-dock__footer show error' : 'ctx-dock__footer show';
                 },
-                textContent: () => this.activeTool().id === DRAW_TOOL_ID ? this.statusText() : '',
+                textContent: () => !this.props.content && this.activeTool().id === DRAW_TOOL_ID
+                    ? this.statusText() : '',
             },
             rail: {
                 onclick: () => this.setCollapsed(false),
@@ -230,6 +252,13 @@ export class ContextDockComponent extends Component {
     }
 
     onMount(): void {
+        // Static-content variant (Plan): one panel for the dock's whole life —
+        // none of the sub-mode/selection machinery below applies.
+        if (this.props.content) {
+            this.spawn(this.props.content.panel, this.body);
+            return;
+        }
+
         // Swap the dock body to the active sub-mode's content. Depends only on
         // the active tool id, so it re-runs on sub-mode switches — not on
         // selection changes (SelectionPanel toggles its own visibility).
@@ -274,6 +303,7 @@ export class ContextDockComponent extends Component {
     }
 
     private dockLabel(): string {
+        if (this.props.content) return this.props.content.label;
         const tool = this.activeTool();
         return tool.id === DRAW_TOOL_ID ? 'Feature stack' : tool.label;
     }

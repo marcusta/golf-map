@@ -1,5 +1,11 @@
 {
     "name": "shared",
     "private": true,
-    "type": "module"
+    "type": "module",
+    "dependencies": {
+        "polygon-clipping": "^0.15.7"
+    },
+    "devDependencies": {
+        "@types/geojson": "^7946.0.14"
+    }
 }

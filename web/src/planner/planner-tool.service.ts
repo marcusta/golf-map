@@ -877,6 +877,10 @@ export class PlannerToolService {
             geometry: ctx.geometry,
             slope: this.puttDerivedCache.slope,
             stats: this.puttDerivedCache.stats,
+            // Height reading gets the full green-book treatment: 1 m white
+            // grid + 2 cm contours. Slope mode keeps its arrows uncluttered.
+            showGrid: mode === 'height',
+            showContours: mode === 'height',
         };
     });
 
