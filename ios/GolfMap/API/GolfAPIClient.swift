@@ -134,11 +134,183 @@ public actor GolfAPIClient {
         try await requestOptional(path: "game-plans/by-course", query: ["courseId": courseId])
     }
 
+    // MARK: - Game plans (write — offline planner sync)
+
+    /// Lazily creates (or, with a `version`, updates) the plan for a course
+    /// (`POST /api/game-plans/upsert`). The planner sync calls this WITHOUT a
+    /// version on first edit — the server creates the plan when none exists; a
+    /// present-but-mismatched version returns 409 (re-sync the tree).
+    public func upsertGamePlan(
+        courseId: String,
+        version: Int? = nil,
+        windSpeedMps: Double? = nil,
+        windDirectionDeg: Double? = nil
+    ) async throws -> GamePlan {
+        try await postJSON(path: "game-plans/upsert", body: UpsertGamePlanRequest(
+            courseId: courseId,
+            version: version,
+            windSpeedMps: windSpeedMps,
+            windDirectionDeg: windDirectionDeg
+        ))
+    }
+
+    /// Creates (or, with a `version`, updates) a plan hole row
+    /// (`POST /api/game-plans/set-hole`). The planner sync calls this WITHOUT a
+    /// version to lazily create the hole so its shots can attach — hole-level
+    /// fields stay view-only in T3.
+    public func setPlanHole(
+        planId: String,
+        holeNumber: Int,
+        version: Int? = nil
+    ) async throws -> GamePlanHole {
+        try await postJSON(path: "game-plans/set-hole", body: SetPlanHoleRequest(
+            planId: planId, holeNumber: holeNumber, version: version
+        ))
+    }
+
+    /// Adds a plan shot (`POST /api/game-plans/shots/add`). The server assigns
+    /// `sortOrder` by insert order — the sync engine pushes adds in sortOrder.
+    public func addPlanShot(
+        gamePlanHoleId: String,
+        lat: Double,
+        lon: Double,
+        elevation: Double? = nil,
+        clubId: String? = nil,
+        label: String? = nil
+    ) async throws -> PlanShot {
+        try await postJSON(path: "game-plans/shots/add", body: AddPlanShotRequest(
+            gamePlanHoleId: gamePlanHoleId,
+            lat: lat, lon: lon, elevation: elevation, clubId: clubId, label: label
+        ))
+    }
+
+    /// Updates a plan shot (`POST /api/game-plans/shots/update`,
+    /// optimistic-locked). Nil fields are omitted (unchanged on the server).
+    public func updatePlanShot(
+        id: String,
+        version: Int,
+        lat: Double? = nil,
+        lon: Double? = nil,
+        elevation: Double? = nil,
+        clubId: String? = nil,
+        label: String? = nil
+    ) async throws -> PlanShot {
+        try await postJSON(path: "game-plans/shots/update", body: UpdatePlanShotRequest(
+            id: id, version: version,
+            lat: lat, lon: lon, elevation: elevation, clubId: clubId, label: label
+        ))
+    }
+
+    /// Removes a plan shot (`POST /api/game-plans/shots/remove`,
+    /// optimistic-locked).
+    @discardableResult
+    public func removePlanShot(id: String, version: Int) async throws -> OKResponse {
+        try await postJSON(path: "game-plans/shots/remove", body: RemovePlanShotRequest(id: id, version: version))
+    }
+
+    private struct UpsertGamePlanRequest: Encodable {
+        let courseId: String
+        let version: Int?
+        let windSpeedMps: Double?
+        let windDirectionDeg: Double?
+    }
+
+    private struct SetPlanHoleRequest: Encodable {
+        let planId: String
+        let holeNumber: Int
+        let version: Int?
+    }
+
+    private struct AddPlanShotRequest: Encodable {
+        let gamePlanHoleId: String
+        let lat: Double
+        let lon: Double
+        let elevation: Double?
+        let clubId: String?
+        let label: String?
+    }
+
+    private struct UpdatePlanShotRequest: Encodable {
+        let id: String
+        let version: Int
+        let lat: Double?
+        let lon: Double?
+        let elevation: Double?
+        let clubId: String?
+        let label: String?
+    }
+
+    private struct RemovePlanShotRequest: Encodable {
+        let id: String
+        let version: Int
+    }
+
     // MARK: - Clubs
 
     /// The player's club bag (id → name lookup for plan shots).
     public func clubs() async throws -> [Club] {
         try await request(path: "clubs")
+    }
+
+    // MARK: - Clubs (write — offline club-settings sync)
+
+    /// Creates a club (`POST /api/clubs/create`). `userId` is inferred
+    /// server-side from the session — the sync engine never sends it.
+    public func createClub(name: String, carryM: Double, dispersionM: Double) async throws -> Club {
+        try await postJSON(path: "clubs/create", body: CreateClubRequest(
+            name: name, carryM: carryM, dispersionM: dispersionM
+        ))
+    }
+
+    /// Updates a club (`POST /api/clubs/update`, optimistic-locked). Nil
+    /// fields are omitted (unchanged on the server).
+    public func updateClub(
+        id: String,
+        version: Int,
+        name: String? = nil,
+        carryM: Double? = nil,
+        dispersionM: Double? = nil
+    ) async throws -> Club {
+        try await postJSON(path: "clubs/update", body: UpdateClubRequest(
+            id: id, version: version, name: name, carryM: carryM, dispersionM: dispersionM
+        ))
+    }
+
+    /// Removes a club (`POST /api/clubs/remove`, optimistic-locked).
+    @discardableResult
+    public func removeClub(id: String, version: Int) async throws -> OKResponse {
+        try await postJSON(path: "clubs/remove", body: RemoveClubRequest(id: id, version: version))
+    }
+
+    /// Reassigns the whole bag's order (`POST /api/clubs/reorder`) — the
+    /// server reassigns `sortOrder` to match `orderedIds`'s index in a
+    /// transaction. Not optimistic-locked (no single row/version to check).
+    @discardableResult
+    public func reorderClubs(orderedIds: [String]) async throws -> OKResponse {
+        try await postJSON(path: "clubs/reorder", body: ReorderClubsRequest(orderedIds: orderedIds))
+    }
+
+    private struct CreateClubRequest: Encodable {
+        let name: String
+        let carryM: Double
+        let dispersionM: Double
+    }
+
+    private struct UpdateClubRequest: Encodable {
+        let id: String
+        let version: Int
+        let name: String?
+        let carryM: Double?
+        let dispersionM: Double?
+    }
+
+    private struct RemoveClubRequest: Encodable {
+        let id: String
+        let version: Int
+    }
+
+    private struct ReorderClubsRequest: Encodable {
+        let orderedIds: [String]
     }
 
     // MARK: - Assets
@@ -147,11 +319,23 @@ public actor GolfAPIClient {
         try await request(path: "assets/by-course", query: ["courseId": courseId])
     }
 
+    /// Assets owned by a shared site. Course bundles use this route whenever
+    /// the course has a `siteId`, because tile manifests belong to the shared
+    /// map rather than either individual course.
+    public func assets(siteId: String) async throws -> [CourseAsset] {
+        try await request(path: "assets/by-site", query: ["siteId": siteId])
+    }
+
     // MARK: - Course features
 
     /// Raw GeoJSON FeatureCollection bytes — hand straight to MapLibre.
-    public func featuresGeoJSONData(courseId: String) async throws -> Data {
-        try await requestData(path: "features.geojson", query: ["courseId": courseId]).0
+    /// `resolved` asks the server for the render-only surface-stack variant
+    /// (overlaps clipped so translucent fills don't compound); keep the raw
+    /// variant for analysis consumers (greens, hazards).
+    public func featuresGeoJSONData(courseId: String, resolved: Bool = false) async throws -> Data {
+        var query = ["courseId": courseId]
+        if resolved { query["resolved"] = "true" }
+        return try await requestData(path: "features.geojson", query: query).0
     }
 
     /// Decoded course features (type + polygon rings) for distance math.

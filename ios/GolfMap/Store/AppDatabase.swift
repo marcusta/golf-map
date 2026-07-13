@@ -139,7 +139,8 @@ public struct AppDatabase: Sendable {
 
             try db.create(table: "gamePlan") { t in
                 t.primaryKey("id", .text)
-                // One plan per course; deleting the bundle wipes the plan.
+                // One plan per course. Removing downloaded map data keeps the
+                // course row (and therefore the plan) intact.
                 t.column("courseId", .text).notNull().unique()
                     .references("course", onDelete: .cascade)
                 t.column("windSpeedMps", .double)
@@ -231,7 +232,8 @@ public struct AppDatabase: Sendable {
         // v4: read-only per-green calibration cache — the read side of the
         // green-scan round-trip (docs/feature-putting-green-reading.md §4.2).
         // Fetched on course open like the game plan, consumed offline by the
-        // putt read. FK to `course` so deleting a bundle wipes it. No server
+        // putt read. FK to `course`; removing downloaded map data deliberately
+        // retains both rows. No server
         // version column (the device never edits these rows).
         migrator.registerMigration("v4") { db in
             try db.create(table: "greenCalibration") { t in
@@ -244,6 +246,71 @@ public struct AppDatabase: Sendable {
                 t.column("biasTiltE", .double)
                 t.column("biasTiltN", .double)
             }
+        }
+
+        // v5: make the game-plan tree WRITABLE (task T3 — the on-course planner
+        // tool edits shots offline). Adds the dirty-flag sync machinery to the
+        // v2 plan/hole/shot/gate tables: a nullable `serverId` (server rows keep
+        // their server id as the local `id`; device-created rows mint a local
+        // UUID and fill `serverId` on push), the server optimistic-lock
+        // `serverVersion`, and a `syncState` driving `PlanSyncService`. Existing
+        // cached rows default to `synced` with a NULL `serverId` — the next
+        // online `GamePlanSync.refresh` backfills the server ids.
+        migrator.registerMigration("v5") { db in
+            for table in ["gamePlan", "gamePlanHole", "planShot", "planGate"] {
+                try db.alter(table: table) { t in
+                    t.add(column: "serverId", .text)
+                    t.add(column: "serverVersion", .integer)
+                    t.add(column: "syncState", .text).notNull()
+                        .defaults(to: RoundSyncState.synced.rawValue)
+                }
+            }
+        }
+
+        // v6: make the club bag WRITABLE (task T4 — the on-device club-settings
+        // screen edits the bag offline). Adds the same dirty-flag sync columns
+        // v5 added to the plan tree; existing cached rows default to `synced`
+        // with a NULL `serverId` (the next `GamePlanSync.refresh` backfills
+        // them). The bag's *order* is a separate concern from any one row's
+        // create/update/delete state — the server only accepts a full
+        // `orderedIds` reorder call, so a singleton `clubOrderState` row tracks
+        // whether the local order has drifted from the last pushed order.
+        migrator.registerMigration("v6") { db in
+            try db.alter(table: "club") { t in
+                t.add(column: "serverId", .text)
+                t.add(column: "serverVersion", .integer)
+                t.add(column: "syncState", .text).notNull()
+                    .defaults(to: RoundSyncState.synced.rawValue)
+            }
+
+            try db.create(table: "clubOrderState") { t in
+                t.primaryKey("id", .integer)
+                t.column("dirty", .boolean).notNull().defaults(to: false)
+            }
+        }
+
+        // v7: separate per-course download state from the physical map bundle.
+        // A site can contain several courses, all referencing one promoted set
+        // of tiles. Course-derived raw/resolved features stay per course.
+        // Existing bundles retain mapKey == id.
+        migrator.registerMigration("v7") { db in
+            try db.alter(table: "course") { t in
+                t.add(column: "siteId", .text)
+            }
+
+            try db.create(table: "mapBundle") { t in
+                t.primaryKey("mapKey", .text)
+                t.column("versionParam", .text).notNull()
+                t.column("generatedAt", .text).notNull()
+            }
+
+            try db.execute(sql: """
+                INSERT INTO mapBundle (mapKey, versionParam, generatedAt)
+                SELECT course.id, tileManifest.versionParam, tileManifest.generatedAt
+                FROM course
+                JOIN tileManifest ON tileManifest.courseId = course.id
+                WHERE course.downloadedRevision IS NOT NULL
+                """)
         }
 
         return migrator
@@ -260,6 +327,20 @@ public struct AppDatabase: Sendable {
     public func course(id: String) async throws -> CourseRecord? {
         try await dbQueue.read { db in
             try CourseRecord.fetchOne(db, key: id)
+        }
+    }
+
+    public func mapBundle(mapKey: String) async throws -> MapBundleRecord? {
+        try await dbQueue.read { db in
+            try MapBundleRecord.fetchOne(db, key: mapKey)
+        }
+    }
+
+    public func hasCurrentMapBundle(mapKey: String, versionParam: String) async throws -> Bool {
+        try await dbQueue.read { db in
+            try MapBundleRecord
+                .filter(Column("mapKey") == mapKey && Column("versionParam") == versionParam)
+                .fetchCount(db) > 0
         }
     }
 
@@ -328,6 +409,13 @@ public struct AppDatabase: Sendable {
             var row = course
             let existing = try CourseRecord.fetchOne(db, key: course.id)
             row.downloadedRevision = existing?.downloadedRevision
+            // Keep pointing at the currently usable map while an update is in
+            // flight. This matters for the first post-v7 update: the server
+            // supplies a shared siteId, but the old tiles still live under the
+            // legacy per-course map key until promotion succeeds.
+            if existing?.downloadedRevision != nil {
+                row.siteId = existing?.siteId
+            }
             row.bundleState = .downloading
             try row.save(db)
         }
@@ -346,7 +434,10 @@ public struct AppDatabase: Sendable {
     /// Atomically replaces all furniture for the course and marks the bundle
     /// complete (`downloadedRevision = course.revision`). Called by the
     /// downloader only after all files are in their final location.
-    public func saveCompletedBundle(_ furniture: CourseFurniture) async throws {
+    public func saveCompletedBundle(
+        _ furniture: CourseFurniture,
+        mapBundle: MapBundleRecord? = nil
+    ) async throws {
         try await dbQueue.write { db in
             var course = furniture.course
             course.downloadedRevision = course.revision
@@ -363,14 +454,53 @@ public struct AppDatabase: Sendable {
             for pin in furniture.pins { try pin.insert(db) }
             for aimPoint in furniture.aimPoints { try aimPoint.insert(db) }
             try furniture.manifest.insert(db)
+            if let mapBundle { try mapBundle.save(db) }
         }
     }
 
-    /// Deletes the course row (cascades to all children + manifest).
-    /// File cleanup is separate — see `BundleDownloader.deleteBundle`.
+    /// Permanently deletes the course row (cascades to all children +
+    /// manifest). This is not the user-facing downloaded-data removal path;
+    /// see `removeDownloadedCourseData(courseId:)` for that.
     public func deleteCourse(id: String) async throws {
         _ = try await dbQueue.write { db in
             try CourseRecord.deleteOne(db, key: id)
+        }
+    }
+
+    /// Marks one course as no longer downloaded, preserving its cheap cached
+    /// furniture and user data. Returns its map key only when no other course
+    /// with downloaded data still references that shared map. Map metadata is
+    /// removed in the same transaction, so the caller may then remove the
+    /// expensive ortho/terrain files.
+    public func removeDownloadedCourseData(courseId: String) async throws -> String? {
+        try await dbQueue.write { db in
+            guard var course = try CourseRecord.fetchOne(db, key: courseId) else { return nil }
+            let mapKey = course.mapKey
+            course.downloadedRevision = nil
+            course.bundleState = .none
+            try course.save(db)
+
+            let references = try CourseRecord
+                .filter(Column("downloadedRevision") != nil)
+                .filter(sql: "COALESCE(siteId, id) = ?", arguments: [mapKey])
+                .fetchCount(db)
+            guard references == 0 else { return nil }
+            try MapBundleRecord.deleteOne(db, key: mapKey)
+            return mapKey
+        }
+    }
+
+    /// Removes map metadata only when no downloaded course references it.
+    /// Used after a successful map-key transition to retire the former bundle.
+    public func removeMapBundleIfUnreferenced(mapKey: String) async throws -> Bool {
+        try await dbQueue.write { db in
+            let references = try CourseRecord
+                .filter(Column("downloadedRevision") != nil)
+                .filter(sql: "COALESCE(siteId, id) = ?", arguments: [mapKey])
+                .fetchCount(db)
+            guard references == 0 else { return false }
+            try MapBundleRecord.deleteOne(db, key: mapKey)
+            return true
         }
     }
 
@@ -427,16 +557,23 @@ public struct AppDatabase: Sendable {
         }
     }
 
-    // MARK: - Clubs (read-only viewer cache)
+    // MARK: - Clubs (viewer cache — see ClubEditStore.swift for the writable side)
 
-    /// The cached club bag, ordered like the web bag (sortOrder).
+    /// The cached club bag, ordered like the web bag (sortOrder). Tombstoned
+    /// (`.deleted`) rows are hidden — they're awaiting a sync push, not part
+    /// of the bag any more.
     public func allClubs() async throws -> [ClubRecord] {
         try await dbQueue.read { db in
-            try ClubRecord.order(Column("sortOrder"), Column("name")).fetchAll(db)
+            try ClubRecord
+                .filter(Column("syncState") != RoundSyncState.deleted.rawValue)
+                .order(Column("sortOrder"), Column("name"))
+                .fetchAll(db)
         }
     }
 
-    /// Atomically replaces the cached club bag with the server's list.
+    /// Atomically replaces the cached club bag with the server's list. Callers
+    /// must check `hasPendingClubEdits()` first — this unconditionally
+    /// clobbers local rows and is only safe when nothing is pending push.
     public func saveClubs(_ clubs: [ClubRecord]) async throws {
         try await dbQueue.write { db in
             try ClubRecord.deleteAll(db)

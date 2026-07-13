@@ -71,6 +71,20 @@ final class OnCourseModel {
     /// the along-line query filters by geometry.
     @ObservationIgnored private var hazardRings: [FlatRing] = []
 
+    /// Every course SURFACE ring (fairway/green/rough/bunker/water/…), EPSG:3006,
+    /// TOPMOST-FIRST, parsed once from features.geojson by the screen. Feeds the
+    /// shot-viz aim optimiser's lie classification (`PlanStrategy` → `optimizeAim`).
+    /// Wider than `hazardRings` (which is the carry-hazard subset for the card).
+    @ObservationIgnored private var surfaces: [FlatRing] = []
+
+    /// Memoised shot-viz geometry (dispersion ellipses / ghost aim / confidence
+    /// tints) + the input fingerprint it was built from. `optimizeAim` is too
+    /// heavy to run on the per-body reactive path, so `planOverlay` reuses this
+    /// unless the plan / hole / wind / bag / surfaces change (see
+    /// `strategyGeometryForCurrentHole`). Never touched on the pan/gesture path.
+    @ObservationIgnored private var strategyKey: StrategyKey?
+    @ObservationIgnored private var strategyGeometry: PlanStrategy.Geometry = .empty
+
     /// User-controllable plan-overlay switch (persisted per course, default
     /// ON, like `activeTeeName`). Only affects the MAP overlay — the distance
     /// card's plan row follows the plan itself.
@@ -221,6 +235,7 @@ final class OnCourseModel {
         toolMode = .none
         toolFocusBounds = nil
         draggingHandleID = nil
+        resetPlanEditingState()
         restoreCamera = nil
         cameraToken += 1
         refreshGreenElevationFallback()
@@ -247,6 +262,10 @@ final class OnCourseModel {
         /// Shot capture: the crosshair + optional target handle own the map
         /// touch (same drag plumbing as Adjust, without the gesture lock).
         case capture
+        /// Plan editing: the planned landing points become draggable handles;
+        /// a tap can place a new shot. Writes go through `planWriter` (GRDB
+        /// dirty row + `PlanSyncService`).
+        case plan
     }
 
     private(set) var toolMode: MapToolMode = .none
@@ -311,6 +330,7 @@ final class OnCourseModel {
         toolMode = .none
         toolFocusBounds = nil
         draggingHandleID = nil
+        resetPlanEditingState()
         if toolDidRefitCamera {
             restoreCamera = cameraBeforeRefitTool // nil → falls back to hole fit
             cameraToken += 1
@@ -847,6 +867,15 @@ final class OnCourseModel {
     /// screen (same source as the card's carry rows).
     var courseHazardRings: [FlatRing] { hazardRings }
 
+    /// Install the course surface stack (topmost-first, from
+    /// `SurfaceFeatureStore`). Called by the screen after parsing the bundle;
+    /// drives the shot-viz aim optimiser's lie classification. Invalidates the
+    /// strategy memo so the overlay picks the surfaces up.
+    func setSurfaces(_ rings: [FlatRing]) {
+        surfaces = rings
+        strategyKey = nil
+    }
+
     /// Hazard front/carry rows along the primary distance line (Part A): from
     /// the origin to the target the primary distance measures — the routed aim
     /// ahead in GPS mode, else the green center. RAW line distances (no
@@ -1035,6 +1064,264 @@ final class OnCourseModel {
         self.clubs = clubs
     }
 
+    // MARK: - Plan editing (planner tool — task T3)
+
+    /// Persistence sink for planner edits: the screen wires these to the GRDB
+    /// plan-edit store + `PlanSyncService`. Nil in tests that only exercise the
+    /// in-memory geometry path — the model updates its own `plan` regardless, so
+    /// the map reflects edits even without a writer.
+    struct PlanEditWriter: Sendable {
+        /// Append a shot on `holeNumber` with the model-minted `shotId`.
+        var addShot: @Sendable (_ holeNumber: Int, _ shotId: String, _ sortOrder: Int, _ lat: Double, _ lon: Double, _ elevation: Double?, _ clubId: String?) async -> Void
+        /// Persist a moved shot's coordinates (+ resampled elevation).
+        var moveShot: @Sendable (_ shotId: String, _ lat: Double, _ lon: Double, _ elevation: Double?) async -> Void
+        /// Persist a shot's club change.
+        var setShotClub: @Sendable (_ shotId: String, _ clubId: String?) async -> Void
+        /// Persist a shot removal.
+        var removeShot: @Sendable (_ shotId: String) async -> Void
+    }
+
+    @ObservationIgnored var planWriter: PlanEditWriter?
+
+    /// The selected plan shot (tap a handle), for the panel's row + delete.
+    private(set) var selectedPlanShotId: String?
+    /// True while the "add shot" affordance is armed — the next map tap places.
+    private(set) var isAddingPlanShot = false
+    /// Bumped on every plan edit (drop / add / remove / club) so the strategy
+    /// memo re-enriches on the SETTLED plan. Observed → drives the overlay.
+    private(set) var planEditToken = 0
+    /// True only between a plan-shot grab and its drop — gates `planOverlay`
+    /// onto the cheap ellipses-only path. `@ObservationIgnored`: the drag frames
+    /// mutate `plan` (observed) which already re-renders; toggling this alone
+    /// must not.
+    @ObservationIgnored private var planDragActive = false
+    @ObservationIgnored private var draggingPlanShotID: String?
+    /// The dragged shot's position at grab — a drop that didn't move (a tap to
+    /// select the handle) skips the redundant persist.
+    @ObservationIgnored private var planDragStart: LatLon?
+
+    /// Stable planner-tool handle id for one plan shot.
+    static func planShotHandleID(_ shotId: String) -> String { "plan-shot.\(shotId)" }
+    static func planShotID(fromHandle handleID: String) -> String? {
+        let prefix = "plan-shot."
+        return handleID.hasPrefix(prefix) ? String(handleID.dropFirst(prefix.count)) : nil
+    }
+
+    /// The current hole's plan shots in sortOrder (empty without a plan/hole).
+    var planEditShots: [CoursePlan.Shot] {
+        guard let hole = currentHole else { return [] }
+        return (plan?.shots(holeNumber: hole.hole.number) ?? [])
+            .sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    /// One row of the planner panel: a plan shot with its 1-based index, club,
+    /// and the whole-metre length of the leg REACHING it (from the plan tee or
+    /// the previous landing point).
+    struct PlanEditRow: Identifiable, Equatable {
+        let shotId: String
+        let index: Int
+        let clubId: String?
+        let clubName: String?
+        let meters: Int
+        var id: String { shotId }
+    }
+
+    /// The planner panel's rows for the current hole (tee→green order).
+    var planEditRows: [PlanEditRow] {
+        guard let hole = currentHole else { return [] }
+        let shots = planEditShots
+        var previous: LatLon? = {
+            if let holePlan = currentHolePlan ?? plan?.hole(number: hole.hole.number),
+               let tee = planTee(for: hole, plan: holePlan) {
+                return LatLon(lat: tee.lat, lon: tee.lon)
+            }
+            return activeTee(for: hole).map { LatLon(lat: $0.lat, lon: $0.lon) }
+        }()
+        return shots.enumerated().map { index, shot in
+            let meters = previous.map { Int(Distance.planarMeters($0, shot.position).rounded()) } ?? 0
+            previous = shot.position
+            return PlanEditRow(
+                shotId: shot.id, index: index + 1,
+                clubId: shot.clubId, clubName: shot.clubName, meters: meters
+            )
+        }
+    }
+
+    /// Draggable handles for the plan shots (planner tool). `P1`, `P2`, … in
+    /// tee→green order.
+    var planEditHandles: [AdjustHandle] {
+        planEditShots.enumerated().map { index, shot in
+            AdjustHandle(
+                id: Self.planShotHandleID(shot.id),
+                kind: .planShot,
+                label: "P\(index + 1)",
+                position: shot.position
+            )
+        }
+    }
+
+    /// Ensure `plan` is a mutable value to edit into (synthesise an empty plan
+    /// for a course that has none cached yet).
+    private func beginPlanEditingIfNeeded() {
+        if plan == nil {
+            plan = CoursePlan.empty(courseId: courseId)
+        }
+    }
+
+    /// Select a plan shot by handle id (tap), or clear with nil.
+    func selectPlanShot(handleID: String?) {
+        selectedPlanShotId = handleID.flatMap(Self.planShotID(fromHandle:))
+    }
+
+    /// Arm / disarm "add shot": the next map tap places a landing point.
+    func setAddingPlanShot(_ armed: Bool) { isAddingPlanShot = armed }
+
+    // MARK: Plan-shot drag (cheap per frame, persist on drop)
+
+    /// Grab a plan-shot handle (selects it, starts the cheap drag path).
+    func beginPlanShotDrag(handleID: String) {
+        guard toolMode == .plan, let shotId = Self.planShotID(fromHandle: handleID),
+              let hole = currentHole else { return }
+        draggingPlanShotID = shotId
+        selectedPlanShotId = shotId
+        planDragActive = true
+        planDragStart = plan?.shots(holeNumber: hole.hole.number).first { $0.id == shotId }?.position
+    }
+
+    /// Per-frame drag: move the shot's coordinates in the local plan only.
+    /// Pure geometry — no network, no elevation sample, no aim optimisation.
+    func movePlanShot(handleID: String, to position: LatLon) {
+        guard let hole = currentHole,
+              let shotId = Self.planShotID(fromHandle: handleID)
+        else { return }
+        plan = plan?.movingShot(
+            holeNumber: hole.hole.number, shotId: shotId, to: position, elevation: nil
+        )
+    }
+
+    /// Drop: end the cheap path, re-enrich (bump the memo token), and persist
+    /// the settled position — resampling the terrain elevation at the drop point.
+    func endPlanShotDrag(handleID: String) {
+        guard let shotId = Self.planShotID(fromHandle: handleID), let hole = currentHole else { return }
+        let start = planDragStart
+        draggingPlanShotID = nil
+        planDragStart = nil
+        planDragActive = false
+        planEditToken += 1
+        guard let shot = plan?.shots(holeNumber: hole.hole.number).first(where: { $0.id == shotId }) else { return }
+        let position = shot.position
+        // A tap that selected the handle without moving it: nothing to persist.
+        if let start, start == position { return }
+        let holeNumber = hole.hole.number
+        Task { [weak self] in
+            let elevation = await self?.elevationSampler?(position) ?? nil
+            guard let self else { return }
+            // Fold the sampled elevation into the local plan so plays-like math
+            // uses it, then persist.
+            self.plan = self.plan?.movingShot(
+                holeNumber: holeNumber, shotId: shotId, to: position, elevation: elevation
+            )
+            self.planEditToken += 1
+            await self.planWriter?.moveShot(shotId, position.lat, position.lon, elevation)
+        }
+    }
+
+    // MARK: Add / remove / club
+
+    /// Place a new plan shot at `position` (armed "add shot" → map tap). Appends
+    /// in sortOrder with an auto-selected club (closest to the new leg's
+    /// wind-adjusted plays-like distance), selects it, and persists (sampling
+    /// elevation). No-op unless the planner tool is active + armed.
+    func placePlanShot(at position: LatLon) {
+        guard toolMode == .plan, isAddingPlanShot, let hole = currentHole else { return }
+        beginPlanEditingIfNeeded()
+        let holeNumber = hole.hole.number
+        let existing = plan?.shots(holeNumber: holeNumber) ?? []
+        let sortOrder = (existing.map(\.sortOrder).max() ?? -1) + 1
+        let shotId = UUID().uuidString
+        let club = autoClubForNewShot(at: position, existing: existing, hole: hole)
+        let shot = CoursePlan.Shot(
+            id: shotId, position: position, elevation: nil,
+            clubId: club?.id, clubName: club?.name, label: nil, sortOrder: sortOrder
+        )
+        plan = plan?.addingShot(holeNumber: holeNumber, shot)
+        selectedPlanShotId = shotId
+        isAddingPlanShot = false
+        planEditToken += 1
+        Task { [weak self] in
+            let elevation = await self?.elevationSampler?(position) ?? nil
+            guard let self else { return }
+            self.plan = self.plan?.movingShot(
+                holeNumber: holeNumber, shotId: shotId, to: position, elevation: elevation
+            )
+            self.planEditToken += 1
+            await self.planWriter?.addShot(
+                holeNumber, shotId, sortOrder, position.lat, position.lon, elevation, club?.id
+            )
+        }
+    }
+
+    /// The auto club for a newly placed shot: the bag's closest to the new
+    /// leg's (wind-adjusted, plays-like) distance from the previous landing
+    /// point (or the plan tee). Mirrors the web planner's `autoClubForShot`.
+    private func autoClubForNewShot(
+        at position: LatLon, existing: [CoursePlan.Shot], hole: HoleData
+    ) -> ClubRecord? {
+        let previous = existing.sorted { $0.sortOrder < $1.sortOrder }.last
+        let from: LatLon
+        let fromElevation: Double?
+        if let previous {
+            from = previous.position
+            fromElevation = previous.elevation
+        } else if let holePlan = currentHolePlan ?? plan?.hole(number: hole.hole.number),
+                  let tee = planTee(for: hole, plan: holePlan) {
+            from = LatLon(lat: tee.lat, lon: tee.lon)
+            fromElevation = tee.elevation
+        } else if let tee = activeTee(for: hole) {
+            from = LatLon(lat: tee.lat, lon: tee.lon)
+            fromElevation = tee.elevation
+        } else {
+            return nil
+        }
+        return suggestedClubRecord(
+            from: from, fromElevation: fromElevation, to: position, toElevation: nil
+        )
+    }
+
+    /// Remove a plan shot (local + persist).
+    func removePlanShot(id shotId: String) {
+        guard let hole = currentHole else { return }
+        plan = plan?.removingShot(holeNumber: hole.hole.number, shotId: shotId)
+        if selectedPlanShotId == shotId { selectedPlanShotId = nil }
+        planEditToken += 1
+        Task { [weak self] in await self?.planWriter?.removeShot(shotId) }
+    }
+
+    /// Remove the selected plan shot, if any.
+    func removeSelectedPlanShot() {
+        guard let id = selectedPlanShotId else { return }
+        removePlanShot(id: id)
+    }
+
+    /// Set a plan shot's club (local + persist). Passing nil clears the club.
+    func setPlanShotClub(shotId: String, clubId: String?) {
+        guard let hole = currentHole else { return }
+        let name = clubId.flatMap { id in clubs.first(where: { $0.id == id })?.name }
+        plan = plan?.settingClub(
+            holeNumber: hole.hole.number, shotId: shotId, clubId: clubId, clubName: name
+        )
+        planEditToken += 1
+        Task { [weak self] in await self?.planWriter?.setShotClub(shotId, clubId) }
+    }
+
+    /// Clears the transient planner-tool selection/arming (hole nav / tool exit).
+    private func resetPlanEditingState() {
+        selectedPlanShotId = nil
+        isAddingPlanShot = false
+        planDragActive = false
+        draggingPlanShotID = nil
+    }
+
     /// The effective wind for the current hole: the plan hole's wind override,
     /// else the plan-level default, else nil (calm / unknown). Hidden entirely
     /// in competition mode — wind adjustment is advice.
@@ -1151,7 +1438,20 @@ final class OnCourseModel {
     private func suggestedClub(
         from: LatLon, fromElevation: Double?, to: LatLon, toElevation: Double?
     ) -> String? {
-        guard !competitionMode, !clubs.isEmpty else { return nil }
+        guard !competitionMode else { return nil }
+        return suggestedClubRecord(
+            from: from, fromElevation: fromElevation, to: to, toElevation: toElevation
+        )?.name
+    }
+
+    /// The bag's closest club to a leg's (plays-like + wind-adjusted) playing
+    /// distance, as a record. Backs both the card's suggested-club label and the
+    /// planner tool's auto-club on shot placement. NOT competition-gated (the
+    /// planner picks a club to WRITE, not display advice).
+    private func suggestedClubRecord(
+        from: LatLon, fromElevation: Double?, to: LatLon, toElevation: Double?
+    ) -> ClubRecord? {
+        guard !clubs.isEmpty else { return nil }
         let a = Sweref99TM.fromWGS84(from)
         let b = Sweref99TM.fromWGS84(to)
         var base = Distance.planarMeters(from, to)
@@ -1167,7 +1467,7 @@ final class OnCourseModel {
             let bearing = deg < 0 ? deg + 360 : deg
             base = playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearing))
         }
-        return closestClub(clubs, base)?.name
+        return closestClub(clubs, base)
     }
 
     /// GPS mode: the next planned landing point ahead of the user — the FIRST
@@ -1210,16 +1510,126 @@ final class OnCourseModel {
     /// The map overlay for the current hole's plan, or nil when the toggle is
     /// off or there is nothing to draw. Derived per hole, so hole navigation
     /// swaps it automatically and it clears on plan-less holes/courses.
+    ///
+    /// The shot-viz extras (dispersion ellipses, ghost aim, confidence tints)
+    /// ride ALONGSIDE the base line/nodes/gates and are hidden in competition
+    /// mode (DMD rule: they are advice) — the base plan geometry still shows.
     var planOverlay: PlanOverlay? {
-        guard planVisible, let holePlan = currentHolePlan else { return nil }
+        // The plan overlay shows when the toggle is on OR while the planner
+        // tool is active (editing must always see what it edits, even with the
+        // toggle off).
+        guard planVisible || toolMode == .plan, let holePlan = currentHolePlan else { return nil }
+        // Competition mode hides all shot-viz advice. While a plan shot is
+        // being dragged, only the cheap ellipses follow the finger — the
+        // optimizeAim-backed ghost/tints freeze until release re-enriches
+        // (task T3 drag cadence, mirroring the web planner).
+        let strategy: PlanStrategy.Geometry
+        if competitionMode {
+            strategy = .empty
+        } else if planDragActive {
+            strategy = cheapStrategyForCurrentHole()
+        } else {
+            strategy = strategyGeometryForCurrentHole()
+        }
         return PlanOverlay(
             line: planRoute,
             nodes: holePlan.shots.map(\.position),
             gates: holePlan.gates.map { gate in
                 let endpoints = gate.endpoints
                 return PlanOverlay.GateLine(left: endpoints.left, right: endpoints.right)
-            }
+            },
+            ellipses: strategy.ellipses,
+            ghosts: strategy.ghosts,
+            legTints: strategy.legTints
         )
+    }
+
+    /// Fingerprint of every input the shot-viz geometry depends on. When it is
+    /// unchanged the memoised `strategyGeometry` is reused, so `optimizeAim`
+    /// runs only on a real plan/hole/wind/bag/surface change — never per frame.
+    private struct StrategyKey: Equatable {
+        var holeNumber: Int
+        var windSpeed: Double?
+        var windDir: Double?
+        var teeName: String?
+        var clubs: [String]
+        var holePlan: CoursePlan.HolePlan
+        var surfaceCount: Int
+        /// Bumped on every plan edit-drop so a release re-enriches even when the
+        /// dropped position rounds to the same `holePlan` (task T3 cadence).
+        var editToken: Int
+    }
+
+    /// Count of FULL shot-viz recomputes (cache misses of the aim-enrichment
+    /// pass). The drag path never bumps this — a burst of drag frames leaves it
+    /// flat, and a drop bumps it exactly once. Behaviour-neutral instrumentation
+    /// the cadence tests assert on (mirrors the web planner's `enrichCount`).
+    /// `@ObservationIgnored` because it is written inside the geometry getter
+    /// that the view reads — an observed write there would trip SwiftUI.
+    @ObservationIgnored private(set) var strategyEnrichCount = 0
+
+    /// The current hole's plan nodes (tee → landing shots → green), or empty.
+    private func planNodesForCurrentHole() -> [PlanStrategy.Node] {
+        guard let holePlan = currentHolePlan, let hole = currentHole else { return [] }
+        var nodes: [PlanStrategy.Node] = []
+        if let tee = planTee(for: hole, plan: holePlan) {
+            nodes.append(PlanStrategy.Node(
+                latLon: LatLon(lat: tee.lat, lon: tee.lon),
+                elevation: tee.elevation, kind: .tee
+            ))
+        }
+        for shot in holePlan.shots {
+            nodes.append(PlanStrategy.Node(
+                latLon: shot.position, elevation: shot.elevation,
+                kind: .shot, clubId: shot.clubId
+            ))
+        }
+        if let green = hole.green {
+            nodes.append(PlanStrategy.Node(
+                latLon: LatLon(lat: green.centerLat, lon: green.centerLon),
+                elevation: green.elevation, kind: .green
+            ))
+        }
+        return nodes
+    }
+
+    /// The CHEAP per-frame drag slice: dispersion ellipses only (no aim sweep).
+    /// Recomputed fresh each frame (cheap) and deliberately NOT memoised.
+    private func cheapStrategyForCurrentHole() -> PlanStrategy.Geometry {
+        let nodes = planNodesForCurrentHole()
+        guard !nodes.isEmpty else { return .empty }
+        return PlanStrategy.Geometry(
+            ellipses: PlanStrategy.ellipsesOnly(nodes: nodes, clubs: clubs, wind: effectiveWind),
+            ghosts: [], legTints: []
+        )
+    }
+
+    /// Memoised shot-viz overlay for the current hole (competition mode is
+    /// handled by the caller). Recomputes only when `StrategyKey` changes.
+    private func strategyGeometryForCurrentHole() -> PlanStrategy.Geometry {
+        guard let holePlan = currentHolePlan, let hole = currentHole else {
+            return .empty
+        }
+        let wind = effectiveWind
+        let key = StrategyKey(
+            holeNumber: hole.hole.number,
+            windSpeed: wind?.speedMps,
+            windDir: wind?.directionDeg,
+            teeName: resolvedTeeName,
+            clubs: clubs.map { "\($0.id):\($0.carryM):\($0.dispersionM)" },
+            holePlan: holePlan,
+            surfaceCount: surfaces.count,
+            editToken: planEditToken
+        )
+        if key == strategyKey { return strategyGeometry }
+
+        let geometry = PlanStrategy.compute(
+            nodes: planNodesForCurrentHole(), clubs: clubs, surfaces: surfaces, wind: wind
+        )
+        strategyKey = key
+        strategyGeometry = geometry
+        strategyEnrichCount += 1
+        return geometry
     }
 
     // MARK: - Derived: route-leg labels (immersive on-map distances)

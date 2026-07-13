@@ -72,6 +72,8 @@ public struct AdjustHandle: Equatable, Sendable, Identifiable {
         case shot
         /// Shot-capture intended target (optional secondary drag).
         case target
+        /// A planner-tool planned landing point (draggable while editing).
+        case planShot
     }
 
     /// Stable element id (model-owned scheme, e.g. "tee" / "aim.<id>" / "green").
@@ -137,11 +139,30 @@ public struct PlanOverlay: Equatable, Sendable {
     public var nodes: [LatLon]
     /// Target gate cross-lines.
     public var gates: [GateLine]
+    /// Per-leg dispersion ellipse polygons (shot-viz overlay). Empty in
+    /// competition mode / without a bag.
+    public var ellipses: [PlanStrategy.EllipseShape]
+    /// Recommended-aim ghost groups (aim marker + dashed pattern + finish dot
+    /// + drift connector). Empty in competition mode / without a bag.
+    public var ghosts: [PlanStrategy.GhostShape]
+    /// Approach-leg confidence tints (red/yellow/green). Empty in competition
+    /// mode / without a bag.
+    public var legTints: [PlanStrategy.LegTintShape]
 
-    public init(line: [LatLon] = [], nodes: [LatLon] = [], gates: [GateLine] = []) {
+    public init(
+        line: [LatLon] = [],
+        nodes: [LatLon] = [],
+        gates: [GateLine] = [],
+        ellipses: [PlanStrategy.EllipseShape] = [],
+        ghosts: [PlanStrategy.GhostShape] = [],
+        legTints: [PlanStrategy.LegTintShape] = []
+    ) {
         self.line = line
         self.nodes = nodes
         self.gates = gates
+        self.ellipses = ellipses
+        self.ghosts = ghosts
+        self.legTints = legTints
     }
 }
 
@@ -273,6 +294,60 @@ enum MapOverlayShapes {
         }
         return MLNShapeCollectionFeature(shapes: features)
     }
+
+    /// Per-leg dispersion ellipse polygons (fill + outline share the source).
+    static func planEllipsesShape(_ plan: PlanOverlay?) -> MLNShape {
+        let features = (plan?.ellipses ?? []).compactMap { ellipse -> MLNPolygonFeature? in
+            guard ellipse.polygon.count >= 3 else { return nil }
+            var coordinates = ellipse.polygon.map(\.clCoordinate)
+            return MLNPolygonFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
+
+    /// Approach-leg confidence-tint segments, tagged `light` (green/yellow/red)
+    /// for the data-driven line color.
+    static func planLegTintsShape(_ plan: PlanOverlay?) -> MLNShape {
+        let features = (plan?.legTints ?? []).compactMap { tint -> MLNPolylineFeature? in
+            guard tint.line.count >= 2 else { return nil }
+            var coordinates = tint.line.map(\.clCoordinate)
+            let feature = MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+            feature.attributes = ["light": tint.light.rawValue]
+            return feature
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
+
+    /// The ghost recommended-aim group as one mixed collection, each feature
+    /// tagged `role` (ghost-ellipse / ghost-drift lines, ghost-center /
+    /// ghost-aim points) so a single source backs role-filtered layers.
+    static func planGhostShape(_ plan: PlanOverlay?) -> MLNShape {
+        var features: [MLNShape] = []
+        for ghost in plan?.ghosts ?? [] {
+            if ghost.ellipse.count >= 2 {
+                var ring = ghost.ellipse.map(\.clCoordinate)
+                let line = MLNPolylineFeature(coordinates: &ring, count: UInt(ring.count))
+                line.attributes = ["role": "ghost-ellipse"]
+                features.append(line)
+            }
+            if let drift = ghost.driftLine, drift.count >= 2 {
+                var coordinates = drift.map(\.clCoordinate)
+                let line = MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+                line.attributes = ["role": "ghost-drift"]
+                features.append(line)
+            }
+            let center = MLNPointFeature()
+            center.coordinate = ghost.center.clCoordinate
+            center.attributes = ["role": "ghost-center"]
+            features.append(center)
+
+            let aim = MLNPointFeature()
+            aim.coordinate = ghost.aim.clCoordinate
+            aim.attributes = ["role": "ghost-aim"]
+            features.append(aim)
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
 }
 
 /// Pushes a `MapOverlayState` into the style's overlay shape sources.
@@ -299,6 +374,21 @@ enum MapOverlayRenderer {
         setShape(
             MapOverlayShapes.planNodesShape(state.plan),
             sourceID: MapStyleIDs.planNodesSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.planEllipsesShape(state.plan),
+            sourceID: MapStyleIDs.planEllipsesSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.planLegTintsShape(state.plan),
+            sourceID: MapStyleIDs.planLegTintsSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.planGhostShape(state.plan),
+            sourceID: MapStyleIDs.planGhostSource,
             in: style
         )
         setShape(

@@ -24,15 +24,20 @@ final class MockURLProtocol: URLProtocol {
         func next(for url: URL) -> Response? {
             lock.lock(); defer { lock.unlock() }
             requestedPaths.append(url.path)
-            for (key, responses) in scripts where url.path.contains(key) {
-                guard !responses.isEmpty else { return nil }
-                var remaining = responses
-                let head = remaining.removeFirst()
-                // Keep the last response sticky once the script is drained.
-                scripts[key] = remaining.isEmpty ? [head] : remaining
-                return head
-            }
-            return nil
+            // Prefer the MOST SPECIFIC (longest) matching key — e.g. a bare
+            // "/clubs" GET script must not accidentally answer a
+            // "/clubs/update" POST just because "contains" also matches the
+            // shorter key. Dictionary iteration order is otherwise
+            // unspecified, so without this a test registering both a general
+            // and a more specific key for overlapping paths would be flaky.
+            guard let key = scripts.keys.filter({ url.path.contains($0) }).max(by: { $0.count < $1.count })
+            else { return nil }
+            guard !scripts[key]!.isEmpty else { return nil }
+            var remaining = scripts[key]!
+            let head = remaining.removeFirst()
+            // Keep the last response sticky once the script is drained.
+            scripts[key] = remaining.isEmpty ? [head] : remaining
+            return head
         }
 
         func log() -> [String] {

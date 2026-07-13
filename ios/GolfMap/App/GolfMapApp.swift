@@ -15,8 +15,12 @@ struct GolfMapApp: App {
                 // failed flush just waits for the next trigger.
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     guard phase == .active else { return }
-                    let sync = appEnvironment.roundSync
-                    Task { await sync.flush() }
+                    let roundSync = appEnvironment.roundSync
+                    let planSync = appEnvironment.planSync
+                    let clubSync = appEnvironment.clubSync
+                    Task { await roundSync.flush() }
+                    Task { await planSync.flush() }
+                    Task { await clubSync.flush() }
                 }
         }
     }

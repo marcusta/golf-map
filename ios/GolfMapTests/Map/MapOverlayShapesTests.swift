@@ -104,6 +104,74 @@ final class MapOverlayShapesTests: XCTestCase {
         XCTAssertEqual(empty.shapes.count, 0)
     }
 
+    // MARK: - Shot-viz overlay shapes (T2)
+
+    private func ll(_ lat: Double, _ lon: Double) -> LatLon { LatLon(lat: lat, lon: lon) }
+
+    func testPlanEllipsesBecomePolygonFeatures() throws {
+        let ring = [ll(58.35, 15.70), ll(58.36, 15.70), ll(58.36, 15.71), ll(58.35, 15.70)]
+        let plan = PlanOverlay(ellipses: [PlanStrategy.EllipseShape(polygon: ring)])
+        let collection = try XCTUnwrap(
+            MapOverlayShapes.planEllipsesShape(plan) as? MLNShapeCollectionFeature
+        )
+        let polygons = try XCTUnwrap(collection.shapes as? [MLNPolygonFeature])
+        XCTAssertEqual(polygons.count, 1)
+        // A degenerate (<3 point) ring is dropped.
+        let degenerate = PlanOverlay(ellipses: [PlanStrategy.EllipseShape(polygon: [ll(58.35, 15.70)])])
+        let empty = try XCTUnwrap(
+            MapOverlayShapes.planEllipsesShape(degenerate) as? MLNShapeCollectionFeature
+        )
+        XCTAssertEqual(empty.shapes.count, 0)
+    }
+
+    func testPlanLegTintsCarryLightAttribute() throws {
+        let plan = PlanOverlay(legTints: [
+            PlanStrategy.LegTintShape(line: [ll(58.35, 15.70), ll(58.36, 15.71)], light: .red),
+        ])
+        let collection = try XCTUnwrap(
+            MapOverlayShapes.planLegTintsShape(plan) as? MLNShapeCollectionFeature
+        )
+        let lines = try XCTUnwrap(collection.shapes as? [MLNPolylineFeature])
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(lines[0].attributes["light"] as? String, "red")
+    }
+
+    func testPlanGhostShapeTagsEachFeatureWithRole() throws {
+        let ghost = PlanStrategy.GhostShape(
+            aim: ll(58.361, 15.706),
+            center: ll(58.3612, 15.7062),
+            ellipse: [ll(58.36, 15.705), ll(58.362, 15.705), ll(58.362, 15.707), ll(58.36, 15.705)],
+            driftLine: [ll(58.361, 15.706), ll(58.3612, 15.7062)]
+        )
+        let collection = try XCTUnwrap(
+            MapOverlayShapes.planGhostShape(PlanOverlay(ghosts: [ghost])) as? MLNShapeCollectionFeature
+        )
+        let roles = collection.shapes.compactMap { ($0 as? MLNFeature)?.attributes["role"] as? String }
+        XCTAssertEqual(Set(roles), ["ghost-ellipse", "ghost-drift", "ghost-center", "ghost-aim"])
+
+        // No drift line when the ghost carries none.
+        let noDrift = PlanStrategy.GhostShape(
+            aim: ghost.aim, center: ghost.center, ellipse: ghost.ellipse, driftLine: nil
+        )
+        let c2 = try XCTUnwrap(
+            MapOverlayShapes.planGhostShape(PlanOverlay(ghosts: [noDrift])) as? MLNShapeCollectionFeature
+        )
+        let roles2 = c2.shapes.compactMap { ($0 as? MLNFeature)?.attributes["role"] as? String }
+        XCTAssertFalse(roles2.contains("ghost-drift"))
+    }
+
+    func testShotVizShapesEmptyWhenNoStrategy() throws {
+        let plan = PlanOverlay(line: [ll(58.35, 15.70), ll(58.36, 15.71)])
+        for shape in [
+            MapOverlayShapes.planEllipsesShape(plan),
+            MapOverlayShapes.planLegTintsShape(plan),
+            MapOverlayShapes.planGhostShape(plan),
+        ] {
+            let collection = try XCTUnwrap(shape as? MLNShapeCollectionFeature)
+            XCTAssertEqual(collection.shapes.count, 0)
+        }
+    }
+
     /// Camera command equality drives when CourseMapView re-applies a move;
     /// the token is the escape hatch for re-issuing an identical move.
     func testCameraCommandEqualityAndToken() {

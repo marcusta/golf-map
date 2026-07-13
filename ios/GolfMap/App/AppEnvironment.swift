@@ -36,6 +36,12 @@ final class AppEnvironment {
     /// Pushes locally captured rounds/shots (dirty-flag queue). Flushed on
     /// app-start/foreground (`GolfMapApp`) and after every capture write.
     let roundSync: RoundSyncService
+    /// Pushes locally edited game-plan rows (dirty-flag queue). Flushed on
+    /// app-start/foreground and after every planner edit.
+    let planSync: PlanSyncService
+    /// Pushes locally edited club-bag rows (dirty-flag queue + order-dirty
+    /// flag). Flushed on app-start/foreground and after every bag edit.
+    let clubSync: ClubSyncService
     let keychain: Keychain
     /// App-wide user preferences (competition mode, …).
     let settings: AppSettings
@@ -70,6 +76,8 @@ final class AppEnvironment {
         self.downloader = downloader
         self.syncService = SyncService(client: client, downloader: downloader, serverOrigin: serverOrigin)
         self.roundSync = RoundSyncService(client: client, database: database)
+        self.planSync = PlanSyncService(client: client, database: database)
+        self.clubSync = ClubSyncService(client: client, database: database)
 
         // Wire the Keychain into the client's silent re-login hook.
         let kc = keychain

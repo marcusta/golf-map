@@ -111,6 +111,88 @@ struct CoursePlan: Equatable, Sendable {
         return (speed, direction)
     }
 
+    /// An empty editable plan for a course with none cached yet — the planner
+    /// tool synthesises this so the first shot has somewhere to land. The `id`
+    /// is a placeholder (the DB layer owns the real, lazily-created plan id).
+    static func empty(id: String = UUID().uuidString, courseId: String) -> CoursePlan {
+        CoursePlan(
+            id: id, courseId: courseId,
+            windSpeedMps: nil, windDirectionDeg: nil, holesByNumber: [:]
+        )
+    }
+
+    // MARK: - Editing (pure copy-on-write mutations for the planner tool)
+    //
+    // The planner tool rebuilds `OnCourseModel.plan` from these on every edit /
+    // drag frame, so all derived geometry (route, nodes, ellipses, strategy
+    // memo) recomputes reactively. Persistence to GRDB is a separate concern.
+
+    /// The row id of a hole's plan (for the DB write path), or nil.
+    func holeNumbers() -> [Int] { Array(holesByNumber.keys) }
+
+    /// The current shots on a hole (empty if the hole has no plan yet).
+    func shots(holeNumber: Int) -> [Shot] {
+        holesByNumber[holeNumber]?.shots ?? []
+    }
+
+    private func replacingShots(holeNumber: Int, with shots: [Shot]) -> CoursePlan {
+        var byNumber = holesByNumber
+        if let existing = byNumber[holeNumber] {
+            byNumber[holeNumber] = HolePlan(
+                holeNumber: existing.holeNumber, teeId: existing.teeId, notes: existing.notes,
+                windSpeedMps: existing.windSpeedMps, windDirectionDeg: existing.windDirectionDeg,
+                shots: shots, gates: existing.gates
+            )
+        } else {
+            byNumber[holeNumber] = HolePlan(
+                holeNumber: holeNumber, teeId: nil, notes: nil,
+                windSpeedMps: nil, windDirectionDeg: nil, shots: shots, gates: []
+            )
+        }
+        return CoursePlan(
+            id: id, courseId: courseId,
+            windSpeedMps: windSpeedMps, windDirectionDeg: windDirectionDeg,
+            holesByNumber: byNumber
+        )
+    }
+
+    /// Copy with a shot's position (and elevation) moved. No-op if absent.
+    func movingShot(holeNumber: Int, shotId: String, to position: LatLon, elevation: Double?) -> CoursePlan {
+        let shots = self.shots(holeNumber: holeNumber).map { shot -> Shot in
+            guard shot.id == shotId else { return shot }
+            return Shot(
+                id: shot.id, position: position, elevation: elevation,
+                clubId: shot.clubId, clubName: shot.clubName, label: shot.label, sortOrder: shot.sortOrder
+            )
+        }
+        return replacingShots(holeNumber: holeNumber, with: shots)
+    }
+
+    /// Copy with `shot` appended to a hole (creating the hole plan if needed).
+    func addingShot(holeNumber: Int, _ shot: Shot) -> CoursePlan {
+        replacingShots(holeNumber: holeNumber, with: shots(holeNumber: holeNumber) + [shot])
+    }
+
+    /// Copy with a shot removed from a hole. No-op if absent.
+    func removingShot(holeNumber: Int, shotId: String) -> CoursePlan {
+        replacingShots(
+            holeNumber: holeNumber,
+            with: shots(holeNumber: holeNumber).filter { $0.id != shotId }
+        )
+    }
+
+    /// Copy with a shot's club (id + resolved name) replaced. No-op if absent.
+    func settingClub(holeNumber: Int, shotId: String, clubId: String?, clubName: String?) -> CoursePlan {
+        let shots = self.shots(holeNumber: holeNumber).map { shot -> Shot in
+            guard shot.id == shotId else { return shot }
+            return Shot(
+                id: shot.id, position: shot.position, elevation: shot.elevation,
+                clubId: clubId, clubName: clubName, label: shot.label, sortOrder: shot.sortOrder
+            )
+        }
+        return replacingShots(holeNumber: holeNumber, with: shots)
+    }
+
     // MARK: - Assembly (pure adapter, GRDB records → display value)
 
     /// Joins the flat stored-plan records into per-hole plans and resolves

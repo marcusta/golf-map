@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { type CaddyAdvice, type CaddyContext, type CaddyRule } from './caddy/rule';
 import { runCaddy } from './caddy/run';
 import { greenSlopeHalfRule } from './caddy/rules/green-slope-half';
+import { type AimOptions, defaultSweepDeg, optimizeAim, standardNormalPairs } from './aim';
 import { hazardsAlongLine } from './carry';
 import {
     type ClubSpec,
@@ -30,11 +31,21 @@ import {
     suggestClubForHole,
 } from './club';
 import { type FlatRing } from './corridor';
-import { type Vec2 } from './ellipse';
+import {
+    GREEN_RING_PAR5_EXTRA_M,
+    GREEN_RING_RADII_M,
+    TEE_RING_RADII_M,
+    type Vec2,
+    dispersionEllipse,
+    greenRingRadiiM,
+    ringPolygon,
+} from './ellipse';
+import { HOLED_DISTANCE_M, shotsToHoleOut, strokesGained } from './expected-strokes';
 import { type DistanceTarget, featureDistances } from './feature-distances';
+import { type Lie, lieFromFeatureType } from './lie';
 import { type StrategyPoint } from './plays-like';
-import { MPS_TO_MPH } from './units';
-import { V1_CLUBS } from './fixtures/v1-clubs';
+import { MPS_TO_MPH, mphToMps } from './units';
+import { V1_CLUBS, v1Club } from './fixtures/v1-clubs';
 import {
     adjustedCarryM,
     crosswindDriftM,
@@ -560,6 +571,255 @@ const caddyGreenSlope = {
 const caddy = { run: caddyRun, greenSlope: caddyGreenSlope };
 
 // ---------------------------------------------------------------------------
+// Ellipse module — dispersionEllipse + distance rings
+// ---------------------------------------------------------------------------
+
+interface EllipseCase {
+    name: string;
+    origin: Vec2;
+    bearingDeg: number;
+    club: Required<ClubSpec>;
+    windSpeedMps?: number;
+    windDirectionDeg?: number;
+    groundSlope?: number;
+    samples?: number;
+}
+
+const ellipseCases: EllipseCase[] = [
+    { name: '7i @45, no wind', origin: { x: 0, y: 0 }, bearingDeg: 45, club: v1Club('7i') },
+    { name: 'PW @30, no wind', origin: { x: 10, y: -5 }, bearingDeg: 30, club: v1Club('PW') },
+    {
+        name: 'Driver @0, 10mph headwind',
+        origin: { x: 0, y: 0 }, bearingDeg: 0, club: v1Club('Driver'),
+        windSpeedMps: mphToMps(10), windDirectionDeg: 0,
+    },
+    {
+        name: 'Driver @0, 20mph tailwind (>18)',
+        origin: { x: 0, y: 0 }, bearingDeg: 0, club: v1Club('Driver'),
+        windSpeedMps: mphToMps(20), windDirectionDeg: 180,
+    },
+    {
+        name: 'Driver @0, 10mph crosswind from left',
+        origin: { x: 0, y: 0 }, bearingDeg: 0, club: v1Club('Driver'),
+        windSpeedMps: mphToMps(10), windDirectionDeg: 270,
+    },
+    {
+        name: 'Driver @0, 15mph quartering head',
+        origin: { x: 5, y: 5 }, bearingDeg: 0, club: v1Club('Driver'),
+        windSpeedMps: mphToMps(15), windDirectionDeg: 45,
+    },
+    {
+        name: '3w @120, 25mph quartering tail (>18 total, custom samples)',
+        origin: { x: -3, y: 8 }, bearingDeg: 120, club: v1Club('3w'),
+        windSpeedMps: mphToMps(25), windDirectionDeg: 300, samples: 16,
+    },
+    {
+        name: '7i @0, downhill slope -0.06',
+        origin: { x: 0, y: 0 }, bearingDeg: 0, club: v1Club('7i'), groundSlope: -0.06,
+    },
+    {
+        name: '7i @0, uphill slope +0.06',
+        origin: { x: 0, y: 0 }, bearingDeg: 0, club: v1Club('7i'), groundSlope: 0.06,
+    },
+    {
+        name: '7i @210, wind + slope + custom samples',
+        origin: { x: 100, y: 200 }, bearingDeg: 210, club: v1Club('7i'),
+        windSpeedMps: mphToMps(12), windDirectionDeg: 30, groundSlope: 0.03, samples: 8,
+    },
+];
+
+const ellipseFx = {
+    cases: ellipseCases.map((c) => {
+        const e = dispersionEllipse({
+            origin: c.origin, bearingDeg: c.bearingDeg,
+            club: { carryM: c.club.carryM, dispersionM: c.club.dispersionM },
+            windSpeedMps: c.windSpeedMps, windDirectionDeg: c.windDirectionDeg,
+            groundSlope: c.groundSlope, samples: c.samples,
+        });
+        return {
+            name: c.name,
+            origin: c.origin,
+            bearingDeg: c.bearingDeg,
+            club: { name: c.club.name, carryM: c.club.carryM, dispersionM: c.club.dispersionM },
+            windSpeedMps: c.windSpeedMps ?? null,
+            windDirectionDeg: c.windDirectionDeg ?? null,
+            groundSlope: c.groundSlope ?? null,
+            samples: c.samples ?? null,
+            center: e.center,
+            driftM: e.driftM,
+            semiLengthM: e.semiLengthM,
+            semiLateralM: e.semiLateralM,
+            resultBearingDeg: e.bearingDeg,
+            polygon: e.polygon,
+        };
+    }),
+};
+
+interface RingCase {
+    name: string;
+    center: Vec2;
+    radiusM: number;
+    samples?: number;
+}
+
+const ringCases: RingCase[] = [
+    { name: 'default samples', center: { x: 500, y: 1000 }, radiusM: 150 },
+    { name: 'custom 32 samples', center: { x: 500, y: 1000 }, radiusM: 150, samples: 32 },
+    { name: 'small radius offset center', center: { x: -20, y: 7.5 }, radiusM: 12, samples: 20 },
+];
+
+const rings = {
+    greenRingRadiiM: [3, 4, 5].map((par) => ({ par, radii: greenRingRadiiM(par) })),
+    constants: {
+        GREEN_RING_RADII_M: [...GREEN_RING_RADII_M],
+        GREEN_RING_PAR5_EXTRA_M,
+        TEE_RING_RADII_M: [...TEE_RING_RADII_M],
+    },
+    ringPolygon: ringCases.map((c) => ({
+        name: c.name,
+        center: c.center,
+        radiusM: c.radiusM,
+        samples: c.samples ?? null,
+        polygon: c.samples === undefined
+            ? ringPolygon(c.center, c.radiusM)
+            : ringPolygon(c.center, c.radiusM, c.samples),
+    })),
+};
+
+// ---------------------------------------------------------------------------
+// Lie module — lieFromFeatureType
+// ---------------------------------------------------------------------------
+
+const lieFeatureTypes = [
+    'tee', 'fairway', 'green', 'semi_rough', 'rough', 'deep_rough', 'trees',
+    'bunker', 'water', 'water_creek', 'penalty_yellow', 'penalty_red', 'oob',
+    'outside', 'path', 'unknown', 'totally_made_up', '',
+];
+
+const lie = {
+    lieFromFeatureType: lieFeatureTypes.map((featureType) => ({
+        featureType,
+        lie: lieFromFeatureType(featureType),
+    })),
+};
+
+// ---------------------------------------------------------------------------
+// ExpectedStrokes module — shotsToHoleOut + strokesGained
+// ---------------------------------------------------------------------------
+
+const ALL_LIES: Lie[] = ['tee', 'fairway', 'rough', 'sand', 'recovery', 'green', 'penalty'];
+
+// Distances (m) that exercise: holed, below-first-anchor clamp, interior
+// interpolation, exact anchors, and above-last extrapolation.
+const shotsDistances = [0, 0.049, 0.05, 1, 5, 10, 18.288, 50, 91.44, 100, 137.16, 200, 500, 548.64, 600, 700];
+
+const expectedStrokes = {
+    HOLED_DISTANCE_M,
+    shotsToHoleOut: ALL_LIES.flatMap((l) =>
+        shotsDistances.map((d) => ({ distanceM: d, lie: l, out: shotsToHoleOut(d, l) })),
+    ),
+    strokesGained: [
+        { fromM: 150, fromLie: 'tee' as Lie, toM: 20, toLie: 'fairway' as Lie },
+        { fromM: 137.16, fromLie: 'fairway' as Lie, toM: 3, toLie: 'green' as Lie },
+        { fromM: 100, fromLie: 'rough' as Lie, toM: 0.04, toLie: 'green' as Lie }, // holed
+        { fromM: 200, fromLie: 'sand' as Lie, toM: 50, toLie: 'penalty' as Lie },
+        { fromM: 300, fromLie: 'recovery' as Lie, toM: 700, toLie: 'rough' as Lie }, // extrapolation
+    ].map((c) => ({ ...c, out: strokesGained(c.fromM, c.fromLie, c.toM, c.toLie) })),
+};
+
+// ---------------------------------------------------------------------------
+// Aim module — optimizeAim + standardNormalPairs + defaultSweepDeg
+// ---------------------------------------------------------------------------
+
+const aimRect = (minX: number, maxX: number, minY: number, maxY: number, kind: string): FlatRing => ({
+    kind,
+    points: [
+        { x: minX, y: minY },
+        { x: maxX, y: minY },
+        { x: maxX, y: maxY },
+        { x: minX, y: maxY },
+    ],
+});
+
+interface AimCase {
+    name: string;
+    options: AimOptions;
+}
+
+const aimClub = { name: '7i', carryM: 150, dispersionM: 20 };
+const aimGreen = { x: 0, y: 150 };
+const aimBase = { origin: { x: 0, y: 0 }, club: aimClub, targetBearingDeg: 0, greenCenter: aimGreen };
+
+const aimCases: AimCase[] = [
+    {
+        name: 'water left, default sweep, 13 candidates',
+        options: { ...aimBase, surfaces: [aimRect(-25, -3, 135, 165, 'water')] },
+    },
+    {
+        name: 'no hazards, all rough',
+        options: { ...aimBase, surfaces: [] },
+    },
+    {
+        name: 'nested bunker topmost-first, single candidate',
+        options: {
+            ...aimBase, candidates: 1,
+            surfaces: [aimRect(-16, 16, 139, 161, 'bunker'), aimRect(-50, 50, 100, 200, 'fairway')],
+        },
+    },
+    {
+        name: 'wind + risk aversion, 5 candidates',
+        options: {
+            ...aimBase,
+            surfaces: [aimRect(3, 25, 135, 165, 'water'), aimRect(-50, 50, 100, 200, 'fairway')],
+            windSpeedMps: mphToMps(12), windDirectionDeg: 90,
+            candidates: 5, samples: 64, riskAversion: 1,
+        },
+    },
+];
+
+const aim = {
+    defaultSweepDeg: [
+        { name: 'mid iron', club: aimClub },
+        { name: 'clamp low', club: { name: 'D', carryM: 250, dispersionM: 5 } },
+        { name: 'clamp high', club: { name: 'W', carryM: 60, dispersionM: 60 } },
+    ].map((c) => ({ name: c.name, club: c.club, out: defaultSweepDeg(c.club) })),
+    standardNormalPairs: [1, 5, 13, 128].map((count) => ({
+        count,
+        pairs: standardNormalPairs(count).map(([z1, z2]) => [z1, z2]),
+    })),
+    cases: aimCases.map((c) => {
+        const r = optimizeAim(c.options);
+        const o = c.options;
+        return {
+            name: c.name,
+            origin: o.origin,
+            club: { name: o.club.name, carryM: o.club.carryM, dispersionM: o.club.dispersionM },
+            targetBearingDeg: o.targetBearingDeg,
+            greenCenter: o.greenCenter,
+            surfaces: o.surfaces,
+            windSpeedMps: o.windSpeedMps ?? null,
+            windDirectionDeg: o.windDirectionDeg ?? null,
+            groundSlope: o.groundSlope ?? null,
+            sweepDeg: o.sweepDeg ?? null,
+            candidates: o.candidates ?? null,
+            samples: o.samples ?? null,
+            sigmaScale: o.sigmaScale ?? null,
+            riskAversion: o.riskAversion ?? null,
+            fallbackLie: o.fallbackLie ?? null,
+            bestBearingDeg: r.bestBearingDeg,
+            breakdown: r.breakdown,
+            perCandidate: r.perCandidate.map((cand) => ({
+                bearingDeg: cand.bearingDeg,
+                expectedStrokes: cand.expectedStrokes,
+                tailStrokes: cand.tailStrokes,
+                score: cand.score,
+                breakdown: cand.breakdown,
+            })),
+        };
+    }),
+};
+
+// ---------------------------------------------------------------------------
 // Write
 // ---------------------------------------------------------------------------
 
@@ -575,6 +835,11 @@ const fixture = {
     carry,
     featureDistances: featureDistancesFx,
     caddy,
+    ellipse: ellipseFx,
+    rings,
+    lie,
+    expectedStrokes,
+    aim,
 };
 
 mkdirSync(dirname(OUT_PATH), { recursive: true });
@@ -583,5 +848,9 @@ console.log(
     `wrote ${OUT_PATH}: club ${club.clubAdvice.length} advice cases, ` +
         `wind ${wind.windEffect.length} cases, carry ${carry.cases.length} cases, ` +
         `featureDistances ${featureDistancesFx.cases.length} cases, ` +
-        `caddy ${caddy.run.cases.length} run + ${caddy.greenSlope.cases.length} green-slope cases`,
+        `caddy ${caddy.run.cases.length} run + ${caddy.greenSlope.cases.length} green-slope cases, ` +
+        `ellipse ${ellipseFx.cases.length} cases + ${rings.ringPolygon.length} ring cases, ` +
+        `lie ${lie.lieFromFeatureType.length} cases, ` +
+        `expectedStrokes ${expectedStrokes.shotsToHoleOut.length} shots + ${expectedStrokes.strokesGained.length} SG cases, ` +
+        `aim ${aim.cases.length} cases + ${aim.standardNormalPairs.length} normal-pair cases`,
 );

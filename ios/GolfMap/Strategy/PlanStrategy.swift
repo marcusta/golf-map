@@ -1,0 +1,331 @@
+import Foundation
+
+/// Shot-visualisation overlay geometry for the on-course plan viewer — the iOS
+/// port of the web planner's `plan-overlay.ts` render slice (`buildHolePlan` +
+/// `enrichPlanStrategy` + `ghostAimForLeg` + `legLight`). Pure value math: it
+/// takes the hole's plan nodes, the club bag and the classified surface stack
+/// and emits WGS84 geometry ready to drop onto `MLNShapeSource`s, with NO
+/// MapLibre / Observation dependency, so it is fully unit-testable.
+///
+/// Strategy math (dispersion ellipses, aim optimisation, lie classification)
+/// comes from the T1 port (`Ellipse.swift`, `Aim.swift`, `Lie.swift`, plus
+/// `Wind.swift`/`Club.swift`); this module only assembles legs and converts
+/// planar EPSG:3006 meters → WGS84 at the render boundary (`Sweref99TM`).
+///
+/// COMPUTE CADENCE (mirrors web decision DECADE §4.5): `optimizeAim` sweeps
+/// ~13 candidates × 128 samples × point-in-ring per clubbed leg — far too heavy
+/// for a per-frame path. `OnCourseModel` memoises the whole result and only
+/// recomputes it when the plan / hole / wind / bag / surfaces change, never
+/// during pan/gesture.
+public enum PlanStrategy {
+
+    // MARK: - Overlay geometry (WGS84, render-ready)
+
+    /// One dispersion ellipse polygon (closed WGS84 ring) for a clubbed leg.
+    public struct EllipseShape: Equatable, Sendable {
+        public var polygon: [LatLon]
+        public init(polygon: [LatLon]) { self.polygon = polygon }
+    }
+
+    /// The recommended-aim "ghost" group for one enriched leg: the hollow aim
+    /// marker (`aim`, "point here"), the dashed pattern that aim would produce
+    /// (`ellipse`), a dot at its drift-shifted finish (`center`), and the
+    /// aim→finish connector (`driftLine`, only once the drift is visible).
+    public struct GhostShape: Equatable, Sendable {
+        public var aim: LatLon
+        public var center: LatLon
+        public var ellipse: [LatLon]
+        /// [aim, center] when |drift| ≥ `driftLabelMinM`, else nil.
+        public var driftLine: [LatLon]?
+        public init(aim: LatLon, center: LatLon, ellipse: [LatLon], driftLine: [LatLon]?) {
+            self.aim = aim
+            self.center = center
+            self.ellipse = ellipse
+            self.driftLine = driftLine
+        }
+    }
+
+    /// A confidence-tinted APPROACH leg segment ([from, to]) with its light.
+    public struct LegTintShape: Equatable, Sendable {
+        public var line: [LatLon]
+        public var light: LegLight
+        public init(line: [LatLon], light: LegLight) {
+            self.line = line
+            self.light = light
+        }
+    }
+
+    /// The full shot-viz overlay for one hole.
+    public struct Geometry: Equatable, Sendable {
+        public var ellipses: [EllipseShape]
+        public var ghosts: [GhostShape]
+        public var legTints: [LegTintShape]
+
+        public static let empty = Geometry(ellipses: [], ghosts: [], legTints: [])
+        public var isEmpty: Bool { ellipses.isEmpty && ghosts.isEmpty && legTints.isEmpty }
+    }
+
+    // MARK: - Confidence light (mirror of plan-overlay.ts legLight)
+
+    public enum LegLight: String, Equatable, Sendable {
+        case green
+        case yellow
+        case red
+    }
+
+    /// Trouble share above this → at best yellow (a slice misses the short side).
+    static let lightTroubleYellow = 0.1
+    /// Trouble share ≥ this (or any penalty) → red (bail to the fat side).
+    static let lightTroubleRed = 0.25
+    /// Green-hit share below this → at best yellow (green rarely held).
+    static let lightGreenHeld = 0.6
+    /// Show the crosswind hold / drift connector once it matters on the ground.
+    static let driftLabelMinM = 3.0
+
+    /// Confidence light for an APPROACH leg from its aim `breakdown`. Nil when
+    /// the leg is not an approach (does not land on the green). Pure — mirror of
+    /// `plan-overlay.ts` `legLight`.
+    static func legLight(breakdown: [Lie: Double], isApproach: Bool) -> LegLight? {
+        guard isApproach else { return nil }
+        let penalty = breakdown[.penalty] ?? 0
+        let trouble = penalty + (breakdown[.sand] ?? 0) + (breakdown[.recovery] ?? 0)
+        let green = breakdown[.green] ?? 0
+        if penalty > 0 || trouble >= lightTroubleRed { return .red }
+        if trouble >= lightTroubleYellow || green < lightGreenHeld { return .yellow }
+        return .green
+    }
+
+    // MARK: - Plan node input
+
+    enum NodeKind: Equatable, Sendable { case tee, shot, green }
+
+    /// One node of the hole's planning sequence (tee → landing shots → green).
+    struct Node: Equatable, Sendable {
+        var latLon: LatLon
+        var elevation: Double?
+        var kind: NodeKind
+        /// The landing shot's club id (nil for tee/green nodes) — the leg
+        /// ENDING at this node adopts it.
+        var clubId: String?
+
+        init(latLon: LatLon, elevation: Double?, kind: NodeKind, clubId: String? = nil) {
+            self.latLon = latLon
+            self.elevation = elevation
+            self.kind = kind
+            self.clubId = clubId
+        }
+    }
+
+    // MARK: - Builder
+
+    /// Build the hole's shot-viz overlay. One dispersion ellipse + one aim
+    /// sweep per leg with a RESOLVED club (the landing shot's club, or — since
+    /// the iOS viewer has no per-hole preferred club — the bag's closest club
+    /// to the leg's wind-adjusted plays-like distance, matching the card's
+    /// suggested-club fallback). Legs with no resolvable club (empty bag) draw
+    /// nothing. Confidence tints only on approach legs (landing on the green).
+    ///
+    /// `wind` is the effective hole wind (already competition-gated by the
+    /// caller — this function is geometry only).
+    static func compute(
+        nodes: [Node],
+        clubs: [ClubRecord],
+        surfaces: [FlatRing],
+        wind: (speedMps: Double, directionDeg: Double)?
+    ) -> Geometry {
+        guard nodes.count >= 2 else { return .empty }
+
+        let clubById = Dictionary(clubs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let planar = nodes.map { node -> Vec2 in
+            let p = Sweref99TM.fromWGS84(node.latLon)
+            return Vec2(x: p.x, y: p.y)
+        }
+        // Terminal target for remaining-distance scoring (the green center).
+        let greenCenter = planar[nodes.count - 1]
+
+        var ellipses: [EllipseShape] = []
+        var ghosts: [GhostShape] = []
+        var legTints: [LegTintShape] = []
+
+        for i in 1..<nodes.count {
+            let from = planar[i - 1]
+            let to = planar[i]
+            let toNode = nodes[i]
+
+            let dx = to.x - from.x
+            let dy = to.y - from.y
+            let horizontal = (dx * dx + dy * dy).squareRoot()
+            guard horizontal > 0 else { continue }
+            let bearingDeg = Self.compassBearing(dx: dx, dy: dy)
+
+            // Leg slope (signed elevationΔ / horizontal run) — projects the
+            // club's air carry onto the ground, same as buildHolePlan.
+            let elevationDelta: Double? = {
+                guard let a = nodes[i - 1].elevation, let b = toNode.elevation else { return nil }
+                return b - a
+            }()
+            let groundSlope = elevationDelta.map { $0 / horizontal } ?? 0
+
+            // Resolve the leg's club: the landing shot's explicit club, else
+            // the bag's closest to the leg's plays-like (elevation + wind)
+            // distance — the same fallback the card's plan strip uses.
+            let club = toNode.clubId.flatMap { clubById[$0] }
+                ?? Self.suggestedClub(
+                    clubs: clubs, from: from, to: to,
+                    fromElevation: nodes[i - 1].elevation, toElevation: toNode.elevation,
+                    horizontal: horizontal, bearingDeg: bearingDeg, wind: wind
+                )
+            guard let club else { continue }
+
+            let ellipse = dispersionEllipse(DispersionEllipseOptions(
+                origin: from,
+                bearingDeg: bearingDeg,
+                club: club,
+                windSpeedMps: wind?.speedMps,
+                windDirectionDeg: wind?.directionDeg,
+                groundSlope: groundSlope
+            ))
+            ellipses.append(EllipseShape(polygon: ellipse.polygon.map(Self.wgs84)))
+
+            let aim = optimizeAim(AimOptions(
+                origin: from,
+                club: club,
+                targetBearingDeg: bearingDeg,
+                surfaces: surfaces,
+                greenCenter: greenCenter,
+                windSpeedMps: wind?.speedMps,
+                windDirectionDeg: wind?.directionDeg,
+                groundSlope: groundSlope
+            ))
+
+            // Confidence tint — approach legs only (landing on the green).
+            if let light = legLight(breakdown: aim.breakdown, isApproach: toNode.kind == .green) {
+                legTints.append(LegTintShape(
+                    line: [nodes[i - 1].latLon, toNode.latLon], light: light
+                ))
+            }
+
+            // Ghost recommended-aim group (mirror of ghostAimForLeg): project
+            // the leg's own wind-adjusted carry forward along the RECOMMENDED
+            // bearing, and draw the pattern that aim would produce.
+            let effect = wind.map { windEffect($0.speedMps, $0.directionDeg, bearingDeg) } ?? 0
+            let carryAir = adjustedCarryM(club.carryM, effect)
+            let carry = 1 + groundSlope > 0 ? carryAir / (1 + groundSlope) : carryAir
+            let unit = bearingToUnitVector(aim.bestBearingDeg)
+            let aimPoint = Vec2(x: from.x + unit.x * carry, y: from.y + unit.y * carry)
+
+            let recommended = dispersionEllipse(DispersionEllipseOptions(
+                origin: from,
+                bearingDeg: aim.bestBearingDeg,
+                club: club,
+                windSpeedMps: wind?.speedMps,
+                windDirectionDeg: wind?.directionDeg,
+                groundSlope: groundSlope
+            ))
+            let driftLine: [LatLon]? = abs(recommended.driftM) >= driftLabelMinM
+                ? [Self.wgs84(aimPoint), Self.wgs84(recommended.center)]
+                : nil
+            ghosts.append(GhostShape(
+                aim: Self.wgs84(aimPoint),
+                center: Self.wgs84(recommended.center),
+                ellipse: recommended.polygon.map(Self.wgs84),
+                driftLine: driftLine
+            ))
+        }
+
+        return Geometry(ellipses: ellipses, ghosts: ghosts, legTints: legTints)
+    }
+
+    /// The CHEAP drag-frame slice of `compute`: per-leg dispersion ellipses
+    /// ONLY — no `optimizeAim` sweep, so no ghost aim and no confidence tints.
+    /// Runs the same club-resolution + dispersion math as `compute` but skips
+    /// the ~13-candidate aim optimisation, making it safe on the per-frame drag
+    /// path (task T3 drag cadence; mirrors the web planner's live-ellipse
+    /// behaviour where ghost/lights fall out mid-drag and re-enrich on release).
+    static func ellipsesOnly(
+        nodes: [Node],
+        clubs: [ClubRecord],
+        wind: (speedMps: Double, directionDeg: Double)?
+    ) -> [EllipseShape] {
+        guard nodes.count >= 2 else { return [] }
+        let clubById = Dictionary(clubs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let planar = nodes.map { node -> Vec2 in
+            let p = Sweref99TM.fromWGS84(node.latLon)
+            return Vec2(x: p.x, y: p.y)
+        }
+
+        var ellipses: [EllipseShape] = []
+        for i in 1..<nodes.count {
+            let from = planar[i - 1]
+            let to = planar[i]
+            let toNode = nodes[i]
+            let dx = to.x - from.x
+            let dy = to.y - from.y
+            let horizontal = (dx * dx + dy * dy).squareRoot()
+            guard horizontal > 0 else { continue }
+            let bearingDeg = Self.compassBearing(dx: dx, dy: dy)
+            let elevationDelta: Double? = {
+                guard let a = nodes[i - 1].elevation, let b = toNode.elevation else { return nil }
+                return b - a
+            }()
+            let groundSlope = elevationDelta.map { $0 / horizontal } ?? 0
+
+            let club = toNode.clubId.flatMap { clubById[$0] }
+                ?? Self.suggestedClub(
+                    clubs: clubs, from: from, to: to,
+                    fromElevation: nodes[i - 1].elevation, toElevation: toNode.elevation,
+                    horizontal: horizontal, bearingDeg: bearingDeg, wind: wind
+                )
+            guard let club else { continue }
+
+            let ellipse = dispersionEllipse(DispersionEllipseOptions(
+                origin: from,
+                bearingDeg: bearingDeg,
+                club: club,
+                windSpeedMps: wind?.speedMps,
+                windDirectionDeg: wind?.directionDeg,
+                groundSlope: groundSlope
+            ))
+            ellipses.append(EllipseShape(polygon: ellipse.polygon.map(Self.wgs84)))
+        }
+        return ellipses
+    }
+
+    // MARK: - Helpers
+
+    /// Planar initial bearing, compass degrees [0, 360): atan2(Δx, Δy).
+    static func compassBearing(dx: Double, dy: Double) -> Double {
+        let deg = atan2(dx, dy) * 180 / .pi
+        return deg < 0 ? deg + 360 : deg
+    }
+
+    private static func wgs84(_ p: Vec2) -> LatLon {
+        Sweref99TM.toWGS84(x: p.x, y: p.y)
+    }
+
+    /// Bag's closest club to the leg's playing distance (plays-like when both
+    /// endpoints have elevation, then wind "plays as") — the same composition
+    /// as `OnCourseModel.suggestedClub`, so an ellipse's club matches the
+    /// card's suggested club.
+    private static func suggestedClub(
+        clubs: [ClubRecord],
+        from: Vec2, to: Vec2,
+        fromElevation: Double?, toElevation: Double?,
+        horizontal: Double, bearingDeg: Double,
+        wind: (speedMps: Double, directionDeg: Double)?
+    ) -> ClubRecord? {
+        guard !clubs.isEmpty else { return nil }
+        var base = horizontal
+        if let fe = fromElevation, let te = toElevation {
+            let stats = PlaysLike.segmentStats(
+                PlaysLike.Point(e: from.x, n: from.y, elevation: fe),
+                PlaysLike.Point(e: to.x, n: to.y, elevation: te)
+            )
+            if let pl = stats.playsLikeSimple { base = pl }
+        }
+        if let wind {
+            base = playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearingDeg))
+        }
+        return closestClub(clubs, base)
+    }
+}

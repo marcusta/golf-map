@@ -70,7 +70,10 @@ struct CourseScreen: View {
         }
         .navigationTitle(courseName)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        // Once the map is up, the hole header carries its own back button —
+        // the system bar would stack on top of it over the map. Loading and
+        // error states keep the bar (it is their only way back).
+        .toolbar(model == nil ? .visible : .hidden, for: .navigationBar)
         .task { await load() }
         .onChange(of: locationProvider.location) { _, fix in
             model?.updateUserLocation(fix)
@@ -115,8 +118,20 @@ struct CourseScreen: View {
                 loadError = "This course's bundle is not downloaded yet."
                 return
             }
-            let bundleDirectory = env.bundlePaths.courseDirectory(courseId: courseId)
-            let featuresGeoJSON = try Data(contentsOf: env.bundlePaths.featuresURL(courseId: courseId))
+            let mapKey = furniture.course.mapKey
+            let bundleDirectory = env.bundlePaths.mapBundleDirectory(mapKey: mapKey)
+            let featuresGeoJSON = try Data(
+                contentsOf: env.bundlePaths.courseFeaturesURL(courseId: courseId)
+            )
+            // The map renders the resolved variant (surface stack clipped
+            // server-side so translucent fills don't compound at overlaps);
+            // analysis consumers (hazards, green outlines) keep the raw
+            // geometry. Older bundles have no resolved file — fall back.
+            let renderFeaturesGeoJSON =
+                (try? Data(
+                    contentsOf: env.bundlePaths.courseResolvedFeaturesURL(courseId: courseId)
+                ))
+                ?? featuresGeoJSON
 
             let newModel = OnCourseModel(furniture: furniture)
             let terrain = TerrainElevationService(
@@ -132,7 +147,19 @@ struct CourseScreen: View {
             if let hazardStore = try? HazardFeatureStore(featuresGeoJSON: featuresGeoJSON) {
                 newModel.setHazards(hazardStore.rings)
             }
+            // The full surface stack (topmost-first) for the shot-viz aim
+            // optimiser's lie classification — parsed from the SAME raw
+            // features.geojson (the aim sweep classifies unclipped rings).
+            if let surfaceStore = try? SurfaceFeatureStore(featuresGeoJSON: featuresGeoJSON) {
+                newModel.setSurfaces(surfaceStore.surfaces)
+            }
             newModel.updateUserLocation(locationProvider.location)
+
+            // Planner tool write path (task T3): edits persist as GRDB dirty
+            // rows and push through PlanSyncService, offline-first.
+            newModel.planWriter = PlanEditStore(
+                database: env.database, planSync: env.planSync, courseId: courseId
+            ).writer()
 
             // Game plan (read-only viewer): show whatever was cached last
             // right away, then refresh from the server in the background.
@@ -267,7 +294,7 @@ struct CourseScreen: View {
                     manifest: furniture.manifest,
                     attribution: "© Lantmäteriet, CC BY 4.0"
                 ),
-                featuresGeoJSON: featuresGeoJSON
+                featuresGeoJSON: renderFeaturesGeoJSON
             )
             model = newModel
             greenAnalysis = newGreenAnalysis
@@ -387,10 +414,18 @@ private struct OnCourseContentView: View {
     /// any mode.
     @State private var showScorecard = false
 
+    /// Pops back to the course list — the system navigation bar is hidden on
+    /// this screen (it collided with the hole header), so the header row
+    /// carries its own back button.
+    @Environment(\.dismiss) private var dismiss
+
     private var isGreenView: Bool { model.toolMode == .greenView }
     private var isMeasure: Bool { model.toolMode == .measure }
     private var isAdjust: Bool { model.toolMode == .adjust }
     private var isCapture: Bool { model.toolMode == .capture }
+    private var isPlan: Bool { model.toolMode == .plan }
+    /// The planner tool is armed to place a shot on the next map tap.
+    private var isPlacingPlanShot: Bool { isPlan && model.isAddingPlanShot }
 
     /// The putt read's Surface tier is live: green view up, surface installed,
     /// not competition-gated. Gates the tap-to-place and marker-drag inputs.
@@ -424,6 +459,9 @@ private struct OnCourseContentView: View {
         }
         if isCapture {
             overlays.adjustHandles = captureHandles
+        }
+        if isPlan {
+            overlays.adjustHandles = model.planEditHandles
         }
         return overlays
     }
@@ -463,10 +501,12 @@ private struct OnCourseContentView: View {
                 // The single-tap recognizer is shared: measure places a point;
                 // the green view's putt read places the ball (or hole,
                 // per the panel's tap target).
-                measureTapEnabled: isMeasure || isPuttSurfaceActive,
+                measureTapEnabled: isMeasure || isPuttSurfaceActive || isPlacingPlanShot,
                 onMeasureTap: { position in
                     if isMeasure {
                         measure.place(position)
+                    } else if isPlacingPlanShot {
+                        model.placePlanShot(at: position)
                     } else {
                         puttRead.handleTap(puttPoint(position))
                     }
@@ -476,9 +516,13 @@ private struct OnCourseContentView: View {
                 // ball/hole markers; shot capture drags the crosshair/target
                 // (ids routed below). Only Adjust locks the map's gesture
                 // zoom for the whole mode.
-                adjustEnabled: isAdjust || isPuttSurfaceActive || isCapture,
+                adjustEnabled: isAdjust || isPuttSurfaceActive || isCapture || isPlan,
                 adjustLocksGestures: isAdjust,
                 onHandleGrab: { id in
+                    if id.hasPrefix("plan-shot.") {
+                        model.beginPlanShotDrag(handleID: id)
+                        return
+                    }
                     guard !id.hasPrefix("putt-"), !id.hasPrefix("capture-") else { return }
                     model.beginHandleDrag(id: id)
                 },
@@ -493,11 +537,17 @@ private struct OnCourseContentView: View {
                     case CaptureModel.targetHandleID:
                         capture.moveTarget(position)
                     default:
-                        model.moveHandle(id: id, to: position)
+                        if id.hasPrefix("plan-shot.") {
+                            model.movePlanShot(handleID: id, to: position)
+                        } else {
+                            model.moveHandle(id: id, to: position)
+                        }
                     }
                 },
                 onHandleDrop: { id in
-                    if id.hasPrefix("putt-") {
+                    if id.hasPrefix("plan-shot.") {
+                        model.endPlanShotDrag(handleID: id)
+                    } else if id.hasPrefix("putt-") {
                         puttRead.commitDrag()
                     } else if !id.hasPrefix("capture-") {
                         // Capture positions commit on Confirm, not on drop.
@@ -521,12 +571,15 @@ private struct OnCourseContentView: View {
 
             VStack(spacing: 0) {
                 if !immersive || isGreenView {
-                    HoleHeaderView(
-                        model: model,
-                        strokesOnHole: roundModel.hasActiveRound
-                            ? roundModel.strokeCount(holeNumber: model.currentHoleNumber)
-                            : nil
-                    )
+                    HStack(spacing: 8) {
+                        backButton
+                        HoleHeaderView(
+                            model: model,
+                            strokesOnHole: roundModel.hasActiveRound
+                                ? roundModel.strokeCount(holeNumber: model.currentHoleNumber)
+                                : nil
+                        )
+                    }
                     .padding(.horizontal, 12)
                     .transition(.move(edge: .top).combined(with: .opacity))
                 } else {
@@ -589,8 +642,13 @@ private struct OnCourseContentView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if isPlan {
+                    PlanPanel(model: model, onClose: { exitPlan() })
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if !immersive {
-                    DistanceCardView(model: model)
+                    DistanceCardView(model: model, onProfile: { showProfile.toggle() })
                         .padding(.horizontal, 12)
                         .padding(.bottom, 8)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -687,6 +745,17 @@ private struct OnCourseContentView: View {
             // settles; `-greenMode slope|height|relative` and `-greenBuffer N`
             // preset the overlay controls so all three modes + buffer changes
             // can be screenshotted headlessly.
+            // `-spotLevel 1` opens the spot-level capture sheet after the hole
+            // fit settles so its rendering can be screenshotted headlessly.
+            // One-shot: launch args persist for the process lifetime, and the
+            // sheet must not reopen on every subsequent course entry.
+            if UserDefaults.standard.string(forKey: "spotLevel") == "1", !Self.spotLevelHookFired {
+                Self.spotLevelHookFired = true
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    showLevel = true
+                }
+            }
             if UserDefaults.standard.string(forKey: "greenView") == "1" {
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -932,6 +1001,9 @@ private struct OnCourseContentView: View {
         }
     }
 
+    /// Guards the `-spotLevel 1` hook so it fires at most once per process.
+    private static var spotLevelHookFired = false
+
     /// Live-verify hook: dumps the putt-read display (status, read numbers,
     /// tour verbal) so a headless `-puttBall` run can check them against an
     /// independent readPutt over the same grid.
@@ -1000,23 +1072,46 @@ private struct OnCourseContentView: View {
     }
     #endif
 
+    /// Header-row back button; replaces the hidden system navigation bar.
+    private var backButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "chevron.backward")
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .mapControl()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Back to courses")
+    }
+
     // Stacked bottom-right controls: capture / scorecard / green view /
-    // level / measure / adjust / plan (only when the course has one) /
-    // profile / zoom in / zoom out / recenter.
+    // measure / adjust / recenter. While a tool is active the rail collapses
+    // to recenter alone — the tool's panel owns enter/exit, and the spare
+    // buttons only crowded the mode's own chrome. No zoom buttons (pinch /
+    // double-tap); level lives in the green panel, the elevation profile in
+    // the measure panel + distance card, the plan toggle on the distance card.
     private var controlStack: some View {
         VStack(spacing: 10) {
-            captureButton
-            scorecardButton
-            greenViewButton
-            levelButton
-            measureButton
-            adjustButton
-            if model.courseHasPlan {
+            if model.toolMode == .none {
+                // Effective-wind indicator (plan wind → direction + speed).
+                // `effectiveWind` is nil in competition mode, so the chip —
+                // like every shot-viz overlay — vanishes there automatically.
+                if let wind = model.effectiveWind {
+                    WindIndicatorChip(
+                        speedMps: wind.speedMps,
+                        directionDeg: wind.directionDeg,
+                        holeBearing: model.holeBearing
+                    )
+                }
+                captureButton
+                scorecardButton
+                greenViewButton
+                measureButton
+                adjustButton
                 planButton
             }
-            profileButton
-            circleButton(systemImage: "plus", label: "Zoom in") { model.zoomIn() }
-            circleButton(systemImage: "minus", label: "Zoom out") { model.zoomOut() }
             circleButton(systemImage: "scope", label: "Recenter on hole", size: 18) {
                 model.recenter()
             }
@@ -1065,25 +1160,6 @@ private struct OnCourseContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Scorecard")
-    }
-
-    /// Opens the spot-level capture sheet ("phone as level" — one IMU
-    /// calibration reading on the green). Disabled when the current hole has no
-    /// green (no `greenId` to attach the scan to). Available in competition
-    /// mode: capturing a level is measurement, not advice.
-    private var levelButton: some View {
-        Button {
-            showLevel = true
-        } label: {
-            Image(systemName: "level")
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .mapControl()
-        }
-        .buttonStyle(.plain)
-        .disabled(model.currentHole?.green == nil)
-        .opacity(model.currentHole?.green == nil ? 0.35 : 1)
-        .accessibilityLabel("Level the green")
     }
 
     /// Toggles the measure tool (tap-to-place point-to-point measurement).
@@ -1135,36 +1211,33 @@ private struct OnCourseContentView: View {
         .accessibilityLabel(isAdjust ? "Exit adjust" : "Adjust positions")
     }
 
-    /// Shows/hides the game-plan overlay (read-only strategy from the web
-    /// planner). Present only when the course has a plan; the visibility is
-    /// persisted per course. NOT a map tool — it coexists with every mode.
+    /// Toggles the planner tool (edit the course's game plan: drag/add/remove
+    /// landing points). Plan-violet while active; a dot badge marks a hole that
+    /// already has plan content.
     private var planButton: some View {
         Button {
-            model.togglePlanVisible()
+            if isPlan {
+                exitPlan()
+            } else {
+                enterPlan()
+            }
         } label: {
-            Image(systemName: model.planVisible ? "signpost.right.fill" : "signpost.right")
+            Image(systemName: isPlan ? "signpost.right.fill" : "signpost.right")
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(model.planVisible ? PlanStyle.violet : Color.primary)
+                .foregroundStyle(isPlan ? PlanPanel.violet : Color.primary)
                 .frame(width: 44, height: 44)
                 .mapControl()
+                .overlay(alignment: .topTrailing) {
+                    if !model.planEditShots.isEmpty {
+                        Circle()
+                            .fill(PlanPanel.violet)
+                            .frame(width: 8, height: 8)
+                            .offset(x: -3, y: 3)
+                    }
+                }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(model.planVisible ? "Hide game plan" : "Show game plan")
-    }
-
-    /// Toggles the elevation-profile sheet (non-modal; the map stays live).
-    private var profileButton: some View {
-        Button {
-            showProfile.toggle()
-        } label: {
-            Image(systemName: "chart.xyaxis.line")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(showProfile ? MeasurePanel.amber : Color.primary)
-                .frame(width: 44, height: 44)
-                .mapControl()
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(showProfile ? "Close elevation profile" : "Elevation profile")
+        .accessibilityLabel(isPlan ? "Exit plan editing" : "Edit game plan")
     }
 
     /// Toggles the transient Green view (green slope/height analysis). Filled
@@ -1282,6 +1355,29 @@ private struct OnCourseContentView: View {
     }
 
     private func exitAdjust() {
+        withAnimation(.easeInOut(duration: 0.28)) {
+            model.exitTool()
+        }
+    }
+
+    // MARK: - Plan editing enter/exit
+
+    /// Mutually exclusive with the other tools. Keeps the current framing (like
+    /// Adjust) so entering never yanks the view — handles are reachable by pan.
+    private func enterPlan() {
+        if greenAnalysis.isActive {
+            greenAnalysis.deactivate()
+            puttRead.deactivate()
+        }
+        measure.clear()
+        capture.end()
+        withAnimation(.easeInOut(duration: 0.28)) {
+            immersive = false
+            model.enterTool(.plan, refitCamera: false)
+        }
+    }
+
+    private func exitPlan() {
         withAnimation(.easeInOut(duration: 0.28)) {
             model.exitTool()
         }
@@ -1649,7 +1745,15 @@ private struct HoleHeaderView: View {
 
 private struct DistanceCardView: View {
     let model: OnCourseModel
+    /// Opens the elevation-profile sheet (owned by the content view — the
+    /// sheet is shared with the measure panel).
+    let onProfile: () -> Void
     @Environment(AppEnvironment.self) private var env
+
+    /// Compact by default: the numbers that matter over the ball (F/C/B,
+    /// clubs, routed aim, hazard carries). Everything else — wind, pin,
+    /// route/aim legs, plan — sits behind the expand chevron.
+    @State private var expanded = false
 
     // Match the map marker convention: front red / center white / back blue.
     private static let frontColor = Color(red: 0.88, green: 0.19, blue: 0.19)
@@ -1664,29 +1768,32 @@ private struct DistanceCardView: View {
             if let clubs = model.distances?.centerClubs, clubs.hasAny {
                 clubAdviceRow(clubs)
             }
-            if let wind = model.effectiveWind {
-                windRow(wind)
-            }
             if let routed = model.routedAimDistance {
                 toAimRow(routed)
-            }
-            if let distances = model.distances, distances.pin != nil {
-                pinRow(distances)
-            }
-            if model.isBrowseMode, !model.routeLegs.isEmpty {
-                routeRow
-            } else if let distances = model.distances, !distances.aims.isEmpty {
-                aimRow(distances.aims)
             }
             let hazards = model.hazardCarries
             if !hazards.isEmpty {
                 hazardRow(hazards)
             }
-            if let planTarget = model.planTargetDistance {
-                toPlanRow(planTarget)
-            }
-            if !model.planLegs.isEmpty {
-                planRow(model.planLegs)
+            if expanded {
+                if let wind = model.effectiveWind {
+                    windRow(wind)
+                }
+                if let distances = model.distances, distances.pin != nil {
+                    pinRow(distances)
+                }
+                if model.isBrowseMode, !model.routeLegs.isEmpty {
+                    routeRow
+                } else if let distances = model.distances, !distances.aims.isEmpty {
+                    aimRow(distances.aims)
+                }
+                if let planTarget = model.planTargetDistance {
+                    toPlanRow(planTarget)
+                }
+                if !model.planLegs.isEmpty {
+                    planRow(model.planLegs)
+                }
+                extrasRow
             }
             bottomRow
         }
@@ -1695,6 +1802,16 @@ private struct DistanceCardView: View {
         .padding(.bottom, Space.s2)
         .glassPanel()
         .holeSwipeGesture(model: model)
+        #if DEBUG
+        // Headless live-verify hook: `-cardExpanded 1` starts the card in the
+        // expanded state (taps aren't scriptable via simctl). Inert without
+        // the flag.
+        .onAppear {
+            if UserDefaults.standard.string(forKey: "cardExpanded") == "1" {
+                expanded = true
+            }
+        }
+        #endif
     }
 
     // Big F / C / B numbers; plays-like under center.
@@ -1953,8 +2070,77 @@ private struct DistanceCardView: View {
         HStack {
             teeMenu
             Spacer()
+            expandToggle
+            Spacer()
             locationToggle
         }
+    }
+
+    private var expandToggle: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+        } label: {
+            Image(systemName: expanded ? "chevron.down" : "chevron.up")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(expanded ? "Show fewer distances" : "Show all distances")
+    }
+
+    // Secondary toggles that used to live on the map's control rail — rare
+    // enough to sit behind the expand chevron.
+    private var extrasRow: some View {
+        HStack {
+            if model.courseHasPlan {
+                planChip
+            }
+            Spacer()
+            profileChip
+        }
+    }
+
+    /// Shows/hides the game-plan overlay (read-only strategy from the web
+    /// planner). Present only when the course has a plan; the visibility is
+    /// persisted per course.
+    private var planChip: some View {
+        Button {
+            model.togglePlanVisible()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: model.planVisible ? "signpost.right.fill" : "signpost.right")
+                    .font(.caption)
+                Text("Plan")
+                    .font(.caption)
+            }
+            .foregroundStyle(model.planVisible ? PlanStyle.violet : Color.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.white.opacity(0.08), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.planVisible ? "Hide game plan" : "Show game plan")
+    }
+
+    /// Opens the elevation-profile sheet for the hole route (non-modal; the
+    /// map stays live).
+    private var profileChip: some View {
+        Button(action: onProfile) {
+            HStack(spacing: 5) {
+                Image(systemName: "chart.xyaxis.line")
+                    .font(.caption)
+                Text("Elevation")
+                    .font(.caption)
+            }
+            .foregroundStyle(Color.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.white.opacity(0.08), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Elevation profile")
     }
 
     // "Black — 512 m" for a tee on this hole; "White — —" for a course-level
