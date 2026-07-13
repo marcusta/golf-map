@@ -48,10 +48,88 @@ public struct CourseSummary: Codable, Sendable, Equatable {
     public let name: String
     public let status: String
     public let revision: Int
+    public let siteId: String?
     public let homeLat: Double?
     public let homeLon: Double?
     public let holeCount: Int
     public let updatedAt: String
+    public let parTotal: Int
+    public let lengthM: Double
+    public let mappedHoleCount: Int
+    public let siteName: String?
+    public let routing: [RoutingHole]
+
+    public init(
+        id: String,
+        name: String,
+        status: String,
+        revision: Int,
+        siteId: String?,
+        homeLat: Double?,
+        homeLon: Double?,
+        holeCount: Int,
+        updatedAt: String,
+        parTotal: Int = 0,
+        lengthM: Double = 0,
+        mappedHoleCount: Int = 0,
+        siteName: String? = nil,
+        routing: [RoutingHole] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.status = status
+        self.revision = revision
+        self.siteId = siteId
+        self.homeLat = homeLat
+        self.homeLon = homeLon
+        self.holeCount = holeCount
+        self.updatedAt = updatedAt
+        self.parTotal = parTotal
+        self.lengthM = lengthM
+        self.mappedHoleCount = mappedHoleCount
+        self.siteName = siteName
+        self.routing = routing
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, status, revision, siteId, homeLat, homeLon, holeCount, updatedAt
+        case parTotal, lengthM, mappedHoleCount, siteName, routing
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        status = try values.decode(String.self, forKey: .status)
+        revision = try values.decode(Int.self, forKey: .revision)
+        siteId = try values.decodeIfPresent(String.self, forKey: .siteId)
+        homeLat = try values.decodeIfPresent(Double.self, forKey: .homeLat)
+        homeLon = try values.decodeIfPresent(Double.self, forKey: .homeLon)
+        holeCount = try values.decode(Int.self, forKey: .holeCount)
+        updatedAt = try values.decode(String.self, forKey: .updatedAt)
+        // Defaults preserve compatibility with bundles served during a rolling
+        // server upgrade; the current endpoint always includes these fields.
+        parTotal = try values.decodeIfPresent(Int.self, forKey: .parTotal) ?? 0
+        lengthM = try values.decodeIfPresent(Double.self, forKey: .lengthM) ?? 0
+        mappedHoleCount = try values.decodeIfPresent(Int.self, forKey: .mappedHoleCount) ?? 0
+        siteName = try values.decodeIfPresent(String.self, forKey: .siteName)
+        routing = try values.decodeIfPresent([RoutingHole].self, forKey: .routing) ?? []
+    }
+}
+
+/// One hole's primary tee-to-green line for the course-list mini map.
+public struct RoutingHole: Codable, Sendable, Equatable {
+    public let hole: Int
+    /// `[latitude, longitude]` from the API's fixed-size tuple.
+    public let tee: [Double]
+    /// `[latitude, longitude]` from the API's fixed-size tuple.
+    public let green: [Double]
+
+    public init(hole: Int, tee: [Double], green: [Double]) {
+        self.hole = hole
+        self.tee = tee
+        self.green = green
+    }
 }
 
 /// Full course record: `GET /api/courses/get`.
@@ -65,6 +143,7 @@ public struct Course: Codable, Sendable, Equatable {
     public let homeLat: Double?
     public let homeLon: Double?
     public let notes: String?
+    public let siteId: String?
     public let version: Int
     public let createdAt: String
     public let updatedAt: String

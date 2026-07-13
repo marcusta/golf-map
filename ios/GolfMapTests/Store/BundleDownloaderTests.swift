@@ -57,6 +57,28 @@ final class BundleDownloaderTests: XCTestCase {
         }
     }
 
+    private func installLegacyBundle(courseId: String = "legacy") async throws -> URL {
+        let furniture = StoreFixtures.furniture(courseId: courseId)
+        try await database.saveCompletedBundle(
+            furniture,
+            mapBundle: MapBundleRecord(
+                mapKey: courseId,
+                versionParam: furniture.manifest.versionParam,
+                generatedAt: furniture.manifest.generatedAt
+            )
+        )
+        let directory = paths.rootDirectory.appending(path: courseId, directoryHint: .isDirectory)
+        for layer in TileLayer.allCases {
+            let layerDirectory = paths.layerTilesDirectory(in: directory, layer: layer)
+            try FileManager.default.createDirectory(at: layerDirectory, withIntermediateDirectories: true)
+            try Data("legacy-\(layer.rawValue)".utf8)
+                .write(to: layerDirectory.appending(path: "sentinel"))
+        }
+        try Data("legacy-features".utf8)
+            .write(to: directory.appending(path: "features.geojson"))
+        return directory
+    }
+
     // MARK: - Happy path
 
     func testSuccessfulArchiveDownloadUnpacksBothLayers() async throws {
@@ -319,17 +341,289 @@ final class BundleDownloaderTests: XCTestCase {
 
     // MARK: - Delete
 
-    func testDeleteBundleRemovesFilesAndRows() async throws {
+    func testFailedFirstPostV7UpdateKeepsLegacyMapKeyAndFilesUsable() async throws {
+        let legacyDirectory = try await installLegacyBundle()
+        StoreMockURLProtocol.setHandler { request in
+            if request.url!.path().contains("/ortho/") {
+                return MockTileResponse(statusCode: 500, data: Data())
+            }
+            return MockTileResponse(
+                statusCode: 200,
+                data: makeTarArchive([("12/1/1.png", Data("terrain".utf8))])
+            )
+        }
+        let update = StoreFixtures.furniture(
+            courseId: "legacy",
+            siteId: "shared-site",
+            revision: 4,
+            versionParam: "ver2"
+        )
+
+        await XCTAssertThrowsErrorAsync(try await downloader.download(makeRequest(furniture: update)))
+
+        let fetched = try await database.course(id: "legacy")
+        let course = try XCTUnwrap(fetched)
+        XCTAssertNil(course.siteId)
+        XCTAssertEqual(course.mapKey, "legacy")
+        XCTAssertEqual(course.downloadedRevision, 3)
+        XCTAssertEqual(course.bundleState, .stale)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyDirectory.path()))
+        let legacyMap = try await database.mapBundle(mapKey: "legacy")
+        XCTAssertNotNil(legacyMap)
+    }
+
+    func testCancelledFirstPostV7UpdateKeepsLegacyMapKeyAndFilesUsable() async throws {
+        let legacyDirectory = try await installLegacyBundle()
+        let archive = makeTarArchive([("12/1/1.png", Data("tile".utf8))])
+        StoreMockURLProtocol.setHandler { _ in
+            MockTileResponse(statusCode: 200, data: archive, delay: 0.5)
+        }
+        let update = StoreFixtures.furniture(
+            courseId: "legacy",
+            siteId: "shared-site",
+            revision: 4,
+            versionParam: "ver2"
+        )
+
+        let handle = await downloader.startDownload(makeRequest(furniture: update))
+        try await Task.sleep(for: .milliseconds(100))
+        handle.cancel()
+        await XCTAssertThrowsErrorAsync(try await handle.result)
+
+        let fetched = try await database.course(id: "legacy")
+        let course = try XCTUnwrap(fetched)
+        XCTAssertNil(course.siteId)
+        XCTAssertEqual(course.mapKey, "legacy")
+        XCTAssertEqual(course.downloadedRevision, 3)
+        XCTAssertEqual(course.bundleState, .stale)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyDirectory.path()))
+    }
+
+    func testSuccessfulFirstPostV7UpdatePromotesSharedMapAndCleansLegacyTiles() async throws {
+        let legacyDirectory = try await installLegacyBundle()
+        serveArchives()
+        let update = StoreFixtures.furniture(
+            courseId: "legacy",
+            siteId: "shared-site",
+            revision: 4,
+            versionParam: "ver2"
+        )
+        let newFeatures = Data("new-features".utf8)
+
+        _ = try await downloader.download(makeRequest(furniture: update, features: newFeatures))
+
+        let fetched = try await database.course(id: "legacy")
+        let course = try XCTUnwrap(fetched)
+        XCTAssertEqual(course.siteId, "shared-site")
+        XCTAssertEqual(course.bundleState, .complete)
+        XCTAssertEqual(course.downloadedRevision, 4)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyDirectory.path()))
+        let legacyMap = try await database.mapBundle(mapKey: "legacy")
+        XCTAssertNil(legacyMap)
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: paths.canonicalMapBundleDirectory(mapKey: "shared-site").path()
+            )
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: paths.courseFeaturesURL(courseId: "legacy")),
+            newFeatures
+        )
+
+        _ = try await downloader.removeDownloadedData(courseId: "legacy")
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: paths.canonicalMapBundleDirectory(mapKey: "shared-site").path()
+            )
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: paths.courseFeaturesURL(courseId: "legacy")),
+            newFeatures
+        )
+    }
+
+    func testFilesystemFailureDoesNotCommitDownloadedDataRemoval() async throws {
         serveArchives()
         _ = try await downloader.download(makeRequest())
+        let mapsDirectory = paths.canonicalMapBundleDirectory(mapKey: "course-1")
+            .deletingLastPathComponent()
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: mapsDirectory.path()
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: mapsDirectory.path()
+            )
+        }
 
-        try await downloader.deleteBundle(courseId: "course-1")
+        await XCTAssertThrowsErrorAsync(
+            try await downloader.removeDownloadedData(courseId: "course-1")
+        )
 
+        let fetched = try await database.course(id: "course-1")
+        let course = try XCTUnwrap(fetched)
+        XCTAssertEqual(course.bundleState, .complete)
+        XCTAssertEqual(course.downloadedRevision, 3)
+        let mapBundle = try await database.mapBundle(mapKey: "course-1")
+        XCTAssertNotNil(mapBundle)
+    }
+
+    func testRemoveDownloadedDataDeletesOnlyMapAndPreservesCheapAndUserData() async throws {
+        serveArchives()
+        _ = try await downloader.download(makeRequest())
+        try await database.saveGamePlan(StoredGamePlan(
+            plan: GamePlanRecord(
+                id: "plan-1",
+                courseId: "course-1",
+                syncState: .dirty
+            ),
+            holes: [],
+            shots: [],
+            gates: []
+        ))
+        let round = RoundRecord(
+            id: "round-1",
+            courseId: "course-1",
+            startedAt: "2026-07-13T08:00:00Z"
+        )
+        try await database.saveRound(round)
+        try await database.saveShot(ShotRecord(
+            id: "shot-1",
+            roundId: round.id,
+            holeNumber: 1,
+            sortOrder: 0,
+            lat: 58.0,
+            lon: 15.0,
+            recordedAt: "2026-07-13T08:05:00Z"
+        ))
+        let featuresBeforeRemoval = try Data(contentsOf: paths.courseFeaturesURL(courseId: "course-1"))
+
+        let result = try await downloader.removeDownloadedData(courseId: "course-1")
+
+        XCTAssertTrue(result.removedMapBundle)
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: paths.courseDirectory(courseId: "course-1").path())
         )
-        let course = try await database.course(id: "course-1")
-        XCTAssertNil(course)
+        let fetchedCourse = try await database.course(id: "course-1")
+        let course = try XCTUnwrap(fetchedCourse)
+        let retainedFurniture = try await database.courseFurniture(courseId: "course-1")
+        let retainedPlan = try await database.gamePlan(courseId: "course-1")
+        let retainedRounds = try await database.rounds(courseId: "course-1")
+        let retainedShotIds = try await database.shots(roundId: round.id).map(\.id)
+        XCTAssertEqual(course.bundleState, .none)
+        XCTAssertNil(course.downloadedRevision)
+        XCTAssertNotNil(retainedFurniture)
+        XCTAssertNotNil(retainedPlan)
+        XCTAssertEqual(retainedRounds, [round])
+        XCTAssertEqual(retainedShotIds, ["shot-1"])
+        XCTAssertEqual(
+            try Data(contentsOf: paths.courseFeaturesURL(courseId: "course-1")),
+            featuresBeforeRemoval
+        )
+    }
+
+    func testSecondCourseAtSameSiteReusesSharedMapButStoresOwnFeatures() async throws {
+        serveArchives()
+        let first = StoreFixtures.furniture(courseId: "masters", siteId: "landeryd")
+        let second = StoreFixtures.furniture(courseId: "classic", siteId: "landeryd")
+        let mastersFeatures = Data("masters".utf8)
+        let classicFeatures = Data("classic".utf8)
+        let mastersResolved = Data("masters-resolved".utf8)
+        let classicResolved = Data("classic-resolved".utf8)
+
+        var mastersRequest = makeRequest(furniture: first, features: mastersFeatures)
+        mastersRequest.resolvedFeaturesGeoJSON = { mastersResolved }
+        _ = try await downloader.download(mastersRequest)
+        let requestCountAfterFirst = StoreMockURLProtocol.requestedURLs.count
+        var classicRequest = makeRequest(furniture: second, features: classicFeatures)
+        classicRequest.resolvedFeaturesGeoJSON = { classicResolved }
+        let reused = try await downloader.download(classicRequest)
+
+        XCTAssertEqual(reused.downloadedTiles, 0)
+        XCTAssertEqual(reused.totalBytes, 0)
+        XCTAssertEqual(StoreMockURLProtocol.requestedURLs.count, requestCountAfterFirst)
+        XCTAssertEqual(try Data(contentsOf: paths.courseFeaturesURL(courseId: "masters")), mastersFeatures)
+        XCTAssertEqual(try Data(contentsOf: paths.courseFeaturesURL(courseId: "classic")), classicFeatures)
+        XCTAssertEqual(
+            try Data(contentsOf: paths.courseResolvedFeaturesURL(courseId: "masters")),
+            mastersResolved
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: paths.courseResolvedFeaturesURL(courseId: "classic")),
+            classicResolved
+        )
+        let mapDirectory = paths.mapBundleDirectory(mapKey: "landeryd")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mapDirectory.path()))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: mapDirectory.appending(path: "features-resolved.geojson").path()
+            )
+        )
+        let classic = try await database.course(id: "classic")
+        XCTAssertEqual(classic?.bundleState, .complete)
+    }
+
+    func testDeletingOneSharedCourseKeepsMapUntilLastReferenceIsDeleted() async throws {
+        serveArchives()
+        let first = StoreFixtures.furniture(courseId: "masters", siteId: "landeryd")
+        let second = StoreFixtures.furniture(courseId: "classic", siteId: "landeryd")
+        _ = try await downloader.download(makeRequest(furniture: first))
+        _ = try await downloader.download(makeRequest(furniture: second))
+        let sharedDirectory = paths.mapBundleDirectory(mapKey: "landeryd")
+
+        let firstRemoval = try await downloader.removeDownloadedData(courseId: "classic")
+
+        XCTAssertFalse(firstRemoval.removedMapBundle)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sharedDirectory.path()))
+        let retainedMap = try await database.mapBundle(mapKey: "landeryd")
+        let retainedCourse = try await database.course(id: "masters")
+        let fetchedRemovedCourse = try await database.course(id: "classic")
+        let removedCourse = try XCTUnwrap(fetchedRemovedCourse)
+        XCTAssertNotNil(retainedMap)
+        XCTAssertNotNil(retainedCourse)
+        XCTAssertEqual(removedCourse.bundleState, .none)
+        XCTAssertNil(removedCourse.downloadedRevision)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: paths.courseFeaturesURL(courseId: "classic").path())
+        )
+
+        let lastRemoval = try await downloader.removeDownloadedData(courseId: "masters")
+
+        XCTAssertTrue(lastRemoval.removedMapBundle)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sharedDirectory.path()))
+        let deletedMap = try await database.mapBundle(mapKey: "landeryd")
+        XCTAssertNil(deletedMap)
+    }
+
+    func testDeletingLastReferenceCleansUpLegacyPreV7MapDirectory() async throws {
+        let furniture = StoreFixtures.furniture(courseId: "legacy")
+        let legacyDirectory = paths.rootDirectory.appending(path: "legacy", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        try Data("legacy-map".utf8).write(to: legacyDirectory.appending(path: "sentinel"))
+        let legacyFeatures = Data("legacy-features".utf8)
+        try legacyFeatures.write(to: legacyDirectory.appending(path: "features.geojson"))
+        try await database.saveCompletedBundle(
+            furniture,
+            mapBundle: MapBundleRecord(
+                mapKey: "legacy",
+                versionParam: furniture.manifest.versionParam,
+                generatedAt: furniture.manifest.generatedAt
+            )
+        )
+
+        try await downloader.deleteBundle(courseId: "legacy")
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyDirectory.path()))
+        XCTAssertEqual(
+            try Data(contentsOf: paths.canonicalCourseDataDirectory(courseId: "legacy")
+                .appending(path: "features.geojson")),
+            legacyFeatures
+        )
+        let retainedFurniture = try await database.courseFurniture(courseId: "legacy")
+        XCTAssertNotNil(retainedFurniture)
     }
 
     // MARK: - Archive request URL

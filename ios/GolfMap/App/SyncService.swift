@@ -43,12 +43,16 @@ struct SyncService: Sendable {
             furniture: furniture,
             featuresGeoJSON: { [client] in
                 try await client.featuresGeoJSONData(courseId: courseId)
+            },
+            resolvedFeaturesGeoJSON: { [client] in
+                try await client.featuresGeoJSONData(courseId: courseId, resolved: true)
             }
         )
         return await downloader.startDownload(request)
     }
 
-    /// Deletes a downloaded course bundle (files + database rows).
+    /// Releases expensive downloaded map data while retaining cheap cached
+    /// and user-authored course data.
     func deleteBundle(courseId: String) async throws {
         try await downloader.deleteBundle(courseId: courseId)
     }
@@ -60,12 +64,14 @@ struct SyncService: Sendable {
     /// per-course in one call and grouped by green. Throws
     /// `SyncError.noTileManifest` if the course has no `tile_manifest` asset.
     func fetchFurniture(courseId: String) async throws -> CourseFurniture {
-        async let courseTask = client.course(id: courseId)
+        // Asset ownership depends on the course's site identity, so resolve the
+        // course first. The remaining independent requests still run together.
+        let course = try await client.course(id: courseId)
         async let holesTask = client.holes(courseId: courseId)
         async let teesTask = client.tees(courseId: courseId)
         async let pinsTask = client.pins(courseId: courseId)
+        async let assetsTask = fetchAssets(for: course)
 
-        let course = try await courseTask
         let holes = try await holesTask
         let tees = try await teesTask
         let pinsByCourse = try await pinsTask
@@ -88,7 +94,7 @@ struct SyncService: Sendable {
             }
         }
 
-        let assets = try await client.assets(courseId: courseId)
+        let assets = try await assetsTask
         guard let manifest = Self.tileManifest(from: assets) else {
             throw SyncError.noTileManifest(courseId: courseId)
         }
@@ -102,6 +108,27 @@ struct SyncService: Sendable {
             aimPoints: aimPoints,
             manifest: manifest
         )
+    }
+
+    enum AssetScope: Equatable {
+        case site(String)
+        case course(String)
+    }
+
+    /// Pure selector kept separate so the site/legacy fallback contract is
+    /// testable without making a full furniture request graph.
+    static func assetScope(for course: Course) -> AssetScope {
+        if let siteId = course.siteId { return .site(siteId) }
+        return .course(course.id)
+    }
+
+    private func fetchAssets(for course: Course) async throws -> [CourseAsset] {
+        switch Self.assetScope(for: course) {
+        case let .site(siteId):
+            try await client.assets(siteId: siteId)
+        case let .course(courseId):
+            try await client.assets(courseId: courseId)
+        }
     }
 
     /// Extracts the tile pyramid manifest from a course's asset list.
@@ -142,6 +169,7 @@ struct SyncService: Sendable {
     static func courseRecord(_ c: Course) -> CourseRecord {
         CourseRecord(
             id: c.id,
+            siteId: c.siteId,
             name: c.name,
             status: c.status,
             revision: c.revision,

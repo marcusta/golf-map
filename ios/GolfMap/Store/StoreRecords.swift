@@ -24,6 +24,9 @@ public struct CourseRecord: Codable, Sendable, Equatable, FetchableRecord, Persi
     public static let databaseTableName = "course"
 
     public var id: String
+    /// Courses on the same physical site share one offline map bundle.
+    public var siteId: String?
+    public var mapKey: String { siteId ?? id }
     public var name: String
     /// Server status string, e.g. "published".
     public var status: String
@@ -39,6 +42,7 @@ public struct CourseRecord: Codable, Sendable, Equatable, FetchableRecord, Persi
 
     public init(
         id: String,
+        siteId: String? = nil,
         name: String,
         status: String,
         revision: Int,
@@ -49,6 +53,7 @@ public struct CourseRecord: Codable, Sendable, Equatable, FetchableRecord, Persi
         bundleState: BundleState = .none
     ) {
         self.id = id
+        self.siteId = siteId
         self.name = name
         self.status = status
         self.revision = revision
@@ -57,6 +62,36 @@ public struct CourseRecord: Codable, Sendable, Equatable, FetchableRecord, Persi
         self.homeLon = homeLon
         self.updatedAt = updatedAt
         self.bundleState = bundleState
+    }
+}
+
+/// Lifecycle metadata for tile files shared by downloaded courses at a site.
+/// Rows only exist for fully promoted map directories.
+public struct MapBundleRecord: Codable, Sendable, Equatable, FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "mapBundle"
+
+    public var mapKey: String
+    public var versionParam: String
+    public var generatedAt: String
+
+    public init(mapKey: String, versionParam: String, generatedAt: String) {
+        self.mapKey = mapKey
+        self.versionParam = versionParam
+        self.generatedAt = generatedAt
+    }
+}
+
+/// Two-phase removal plan: expensive files are removed first, then download
+/// state is committed so filesystem errors remain recoverable from the UI.
+public struct DownloadedCourseDataRemovalPlan: Sendable, Equatable {
+    public var courseId: String
+    public var mapKey: String
+    public var removesMapBundle: Bool
+
+    public init(courseId: String, mapKey: String, removesMapBundle: Bool) {
+        self.courseId = courseId
+        self.mapKey = mapKey
+        self.removesMapBundle = removesMapBundle
     }
 }
 

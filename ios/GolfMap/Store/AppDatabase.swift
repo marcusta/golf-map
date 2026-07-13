@@ -460,38 +460,65 @@ public struct AppDatabase: Sendable {
 
     /// Permanently deletes the course row (cascades to all children +
     /// manifest). This is not the user-facing downloaded-data removal path;
-    /// see `removeDownloadedCourseData(courseId:)` for that.
+    /// see `downloadedCourseDataRemovalPlan(courseId:)` and
+    /// `commitDownloadedCourseDataRemoval(_:)` for that.
     public func deleteCourse(id: String) async throws {
         _ = try await dbQueue.write { db in
             try CourseRecord.deleteOne(db, key: id)
         }
     }
 
-    /// Marks one course as no longer downloaded, preserving its cheap cached
-    /// furniture and user data. Returns its map key only when no other course
-    /// with downloaded data still references that shared map. Map metadata is
-    /// removed in the same transaction, so the caller may then remove the
-    /// expensive ortho/terrain files.
-    public func removeDownloadedCourseData(courseId: String) async throws -> String? {
-        try await dbQueue.write { db in
-            guard var course = try CourseRecord.fetchOne(db, key: courseId) else { return nil }
+    /// Describes the filesystem work needed before committing a removal. The
+    /// database is intentionally unchanged so a filesystem failure leaves the
+    /// removal affordance available for retry.
+    public func downloadedCourseDataRemovalPlan(
+        courseId: String
+    ) async throws -> DownloadedCourseDataRemovalPlan? {
+        try await dbQueue.read { db in
+            guard let course = try CourseRecord.fetchOne(db, key: courseId) else { return nil }
             let mapKey = course.mapKey
+            let otherReferences = try CourseRecord
+                .filter(Column("id") != courseId)
+                .filter(Column("downloadedRevision") != nil)
+                .filter(sql: "COALESCE(siteId, id) = ?", arguments: [mapKey])
+                .fetchCount(db)
+            return DownloadedCourseDataRemovalPlan(
+                courseId: courseId,
+                mapKey: mapKey,
+                removesMapBundle: otherReferences == 0
+            )
+        }
+    }
+
+    /// Commits a removal after its required filesystem cleanup succeeds.
+    public func commitDownloadedCourseDataRemoval(
+        _ plan: DownloadedCourseDataRemovalPlan
+    ) async throws {
+        try await dbQueue.write { db in
+            guard var course = try CourseRecord.fetchOne(db, key: plan.courseId) else { return }
             course.downloadedRevision = nil
             course.bundleState = .none
             try course.save(db)
 
-            let references = try CourseRecord
+            if plan.removesMapBundle {
+                try MapBundleRecord.deleteOne(db, key: plan.mapKey)
+            }
+        }
+    }
+
+    /// Checks whether a former map key is safe to retire after a successful
+    /// map-key transition.
+    public func mapBundleIsUnreferenced(mapKey: String) async throws -> Bool {
+        try await dbQueue.read { db in
+            try CourseRecord
                 .filter(Column("downloadedRevision") != nil)
                 .filter(sql: "COALESCE(siteId, id) = ?", arguments: [mapKey])
-                .fetchCount(db)
-            guard references == 0 else { return nil }
-            try MapBundleRecord.deleteOne(db, key: mapKey)
-            return mapKey
+                .fetchCount(db) == 0
         }
     }
 
     /// Removes map metadata only when no downloaded course references it.
-    /// Used after a successful map-key transition to retire the former bundle.
+    /// Used after successful filesystem cleanup of a former map key.
     public func removeMapBundleIfUnreferenced(mapKey: String) async throws -> Bool {
         try await dbQueue.write { db in
             let references = try CourseRecord

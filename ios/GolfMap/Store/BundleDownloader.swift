@@ -54,6 +54,18 @@ public struct BundleDownloadResult: Sendable, Equatable {
     }
 }
 
+/// Outcome of releasing a course's downloaded map data. `removedMapBundle`
+/// is false when another downloaded course still uses the same site map.
+public struct CourseDataRemovalResult: Sendable, Equatable {
+    public var courseId: String
+    public var removedMapBundle: Bool
+
+    public init(courseId: String, removedMapBundle: Bool) {
+        self.courseId = courseId
+        self.removedMapBundle = removedMapBundle
+    }
+}
+
 public enum BundleDownloadError: Error, Equatable {
     /// Non-404 HTTP error that persisted through the retry.
     case httpStatus(Int, URL)
@@ -104,8 +116,8 @@ public struct BundleDownloadHandle: Sendable {
 
 /// Downloads course bundles: one tar archive per layer (ortho capped at
 /// `orthoBundleMaxZoom`, terrain uncapped), streamed to disk and unpacked into
-/// the staging tile layout, plus `features.geojson` — all staged in
-/// `<courseId>.tmp/` and renamed into place. GRDB furniture rows are written
+/// a shared map staging layout. Raw and resolved features remain per course;
+/// only tiles are promoted once per `course.mapKey`. GRDB rows are written
 /// only after the files land, so `bundleState == .complete` implies a usable
 /// bundle on disk.
 public actor BundleDownloader {
@@ -154,100 +166,179 @@ public actor BundleDownloader {
         onProgress: @escaping @Sendable (BundleProgress) -> Void = { _ in }
     ) async throws -> BundleDownloadResult {
         let courseId = request.furniture.course.id
+        let mapKey = request.furniture.course.mapKey
         let manifest = request.furniture.manifest
+        let previousCourse = try await database.course(id: courseId)
+        let previousMapKey = previousCourse?.downloadedRevision == nil
+            ? nil
+            : previousCourse?.mapKey
 
         try await database.markDownloading(course: request.furniture.course)
 
         let fileManager = FileManager.default
-        let tmpDir = paths.temporaryCourseDirectory(courseId: courseId)
+        let courseTmpDir = paths.temporaryCourseDataDirectory(courseId: courseId)
+        let mapTmpDir = paths.temporaryMapBundleDirectory(mapKey: mapKey)
         // Clear any leftovers from a previous interrupted attempt.
-        try? fileManager.removeItem(at: tmpDir)
+        try? fileManager.removeItem(at: courseTmpDir)
+        try? fileManager.removeItem(at: mapTmpDir)
 
+        let result: BundleDownloadResult
         do {
-            try fileManager.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: courseTmpDir, withIntermediateDirectories: true)
 
-            // Features first: cheap, and fails fast before the tile storm.
+            // Raw features describe this course rather than the whole site.
             let features = try await request.featuresGeoJSON()
-            try features.write(to: tmpDir.appending(path: "features.geojson"))
+            try features.write(to: courseTmpDir.appending(path: "features.geojson"))
             if let resolvedFeatures = try await request.resolvedFeaturesGeoJSON?() {
-                try resolvedFeatures.write(to: tmpDir.appending(path: "features-resolved.geojson"))
+                try resolvedFeatures.write(to: courseTmpDir.appending(path: "features-resolved.geojson"))
             }
 
-            let aggregator = ByteProgressAggregator(onProgress: onProgress)
-            let session = self.session
-            let baseURL = request.tileBaseURL
-            let versionParam = manifest.versionParam
-            let bundlePaths = self.paths
-
-            // One archive per layer, downloaded concurrently. Ortho capped at
-            // z19; terrain uncapped.
-            let layerSpecs: [(layer: TileLayer, maxzoom: Int?)] = [
-                (.ortho, Self.orthoBundleMaxZoom),
-                (.terrain, nil),
-            ]
-
+            let canReuseMap = try await database.hasCurrentMapBundle(
+                mapKey: mapKey,
+                versionParam: manifest.versionParam
+            ) && Self.mapFilesAreUsable(paths: paths, mapKey: mapKey)
             var downloadedTiles = 0
-            try await withThrowingTaskGroup(of: Int.self) { group in
-                for spec in layerSpecs {
-                    group.addTask {
-                        try await Self.downloadLayerArchive(
-                            layer: spec.layer,
-                            maxzoom: spec.maxzoom,
-                            courseId: courseId,
-                            baseURL: baseURL,
-                            versionParam: versionParam,
-                            stagingDirectory: tmpDir,
-                            paths: bundlePaths,
-                            session: session,
-                            aggregator: aggregator
-                        )
+            var totalBytes: Int64 = 0
+            var completedMapBundle: MapBundleRecord?
+
+            if !canReuseMap {
+                try fileManager.createDirectory(at: mapTmpDir, withIntermediateDirectories: true)
+
+                let aggregator = ByteProgressAggregator(onProgress: onProgress)
+                let session = self.session
+                let baseURL = request.tileBaseURL
+                let bundlePaths = self.paths
+                let layerSpecs: [(layer: TileLayer, maxzoom: Int?)] = [
+                    (.ortho, Self.orthoBundleMaxZoom),
+                    (.terrain, nil),
+                ]
+                try await withThrowingTaskGroup(of: Int.self) { group in
+                    for spec in layerSpecs {
+                        group.addTask {
+                            try await Self.downloadLayerArchive(
+                                layer: spec.layer,
+                                maxzoom: spec.maxzoom,
+                                courseId: courseId,
+                                baseURL: baseURL,
+                                versionParam: manifest.versionParam,
+                                stagingDirectory: mapTmpDir,
+                                paths: bundlePaths,
+                                session: session,
+                                aggregator: aggregator
+                            )
+                        }
+                    }
+                    for try await tilesInLayer in group {
+                        downloadedTiles += tilesInLayer
                     }
                 }
-                for try await tilesInLayer in group {
-                    downloadedTiles += tilesInLayer
-                }
+                totalBytes = aggregator.totalBytes
+                completedMapBundle = MapBundleRecord(
+                    mapKey: mapKey,
+                    versionParam: manifest.versionParam,
+                    generatedAt: manifest.generatedAt
+                )
             }
 
             try Task.checkCancellation()
 
-            // Promote staging directory to its final location, replacing any
-            // previous bundle for this course.
-            let finalDir = paths.courseDirectory(courseId: courseId)
-            try? fileManager.removeItem(at: finalDir)
-            try fileManager.moveItem(at: tmpDir, to: finalDir)
+            if !canReuseMap {
+                let finalMapDir = paths.canonicalMapBundleDirectory(mapKey: mapKey)
+                try fileManager.createDirectory(
+                    at: finalMapDir.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try? fileManager.removeItem(at: finalMapDir)
+                try fileManager.moveItem(at: mapTmpDir, to: finalMapDir)
+            }
+
+            let finalCourseDir = paths.canonicalCourseDataDirectory(courseId: courseId)
+            try fileManager.createDirectory(
+                at: finalCourseDir.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? fileManager.removeItem(at: finalCourseDir)
+            try fileManager.moveItem(at: courseTmpDir, to: finalCourseDir)
 
             // Furniture + manifest + complete flag land only after the files.
-            try await database.saveCompletedBundle(request.furniture)
+            try await database.saveCompletedBundle(request.furniture, mapBundle: completedMapBundle)
 
-            return BundleDownloadResult(
+            result = BundleDownloadResult(
                 downloadedTiles: downloadedTiles,
-                totalBytes: aggregator.totalBytes
+                totalBytes: totalBytes
             )
         } catch {
-            await cleanUpAfterFailure(courseId: courseId, tmpDir: tmpDir)
+            await cleanUpAfterFailure(
+                courseId: courseId,
+                temporaryDirectories: [courseTmpDir, mapTmpDir]
+            )
             if error is CancellationError || Task.isCancelled {
                 throw CancellationError()
             }
             throw error
         }
+
+        // A successful first post-v7 update switches the course from its
+        // legacy per-course map key to the shared site key. Retire the old
+        // metadata and expensive files only after the new map + DB state are
+        // complete; failed/cancelled updates continue using the old key
+        // untouched. Cleanup errors must not run the download-failure rollback
+        // now that the newly promoted bundle is already authoritative.
+        if let previousMapKey, previousMapKey != mapKey,
+           try await database.mapBundleIsUnreferenced(mapKey: previousMapKey) {
+            try paths.preserveLegacyCourseData(courseId: courseId, mapKey: previousMapKey)
+            try paths.removeMapBundleFiles(mapKey: previousMapKey)
+            _ = try await database.removeMapBundleIfUnreferenced(mapKey: previousMapKey)
+        }
+
+        return result
     }
 
-    /// Removes a course's bundle files and its database rows.
+    /// Releases only the expensive ortho/terrain data for a course. Cheap
+    /// furniture, feature payloads, plans, calibrations, rounds, and shots are
+    /// retained. A shared site map is removed only after its last downloaded
+    /// course is released.
+    @discardableResult
+    public func removeDownloadedData(courseId: String) async throws -> CourseDataRemovalResult {
+        guard let plan = try await database.downloadedCourseDataRemovalPlan(courseId: courseId) else {
+            return CourseDataRemovalResult(courseId: courseId, removedMapBundle: false)
+        }
+        if plan.removesMapBundle {
+            try paths.preserveLegacyCourseData(courseId: courseId, mapKey: plan.mapKey)
+            try paths.removeMapBundleFiles(mapKey: plan.mapKey)
+        }
+        try await database.commitDownloadedCourseDataRemoval(plan)
+        return CourseDataRemovalResult(
+            courseId: courseId,
+            removedMapBundle: plan.removesMapBundle
+        )
+    }
+
+    /// Compatibility name used by existing wiring. This removes downloaded
+    /// data; it deliberately does not delete the course or its cheap data.
     public func deleteBundle(courseId: String) async throws {
-        paths.removeBundleFiles(courseId: courseId)
-        try await database.deleteCourse(id: courseId)
+        _ = try await removeDownloadedData(courseId: courseId)
     }
 
     // MARK: - Private
 
-    private func cleanUpAfterFailure(courseId: String, tmpDir: URL) async {
-        try? FileManager.default.removeItem(at: tmpDir)
+    private func cleanUpAfterFailure(courseId: String, temporaryDirectories: [URL]) async {
+        for directory in temporaryDirectories {
+            try? FileManager.default.removeItem(at: directory)
+        }
         // The enclosing task may already be cancelled, and GRDB async accesses
         // honor task cancellation — run the state reset in a fresh task.
         let database = self.database
         await Task.detached {
             try? await database.markDownloadFailed(courseId: courseId)
         }.value
+    }
+
+    private static func mapFilesAreUsable(paths: BundlePaths, mapKey: String) -> Bool {
+        let mapDirectory = paths.mapBundleDirectory(mapKey: mapKey)
+        let fm = FileManager.default
+        return fm.fileExists(atPath: paths.layerTilesDirectory(in: mapDirectory, layer: .ortho).path())
+            && fm.fileExists(atPath: paths.layerTilesDirectory(in: mapDirectory, layer: .terrain).path())
     }
 
     /// Downloads one layer's archive to a temp file, unpacks it into the

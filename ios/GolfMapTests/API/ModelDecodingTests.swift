@@ -38,8 +38,42 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNotNil(masters)
         XCTAssertEqual(masters?.holeCount, 18)
         XCTAssertEqual(masters?.revision, 2)
+        XCTAssertEqual(masters?.siteId, "26D37361-D79C-41AA-AA49-92F2C2277222")
+        // Both Landeryd courses resolve to the same shared map site.
+        let classic = page.items.first { $0.name == "Landeryd Classic" }
+        XCTAssertEqual(classic?.siteId, masters?.siteId)
         // A course with 0 holes exists (verifies Int decode of holeCount == 0).
         XCTAssertTrue(page.items.contains { $0.holeCount == 0 })
+    }
+
+    func testCourseSummaryDecodesListPresentationMetadata() throws {
+        let json = """
+        {
+          "id": "course-1",
+          "name": "Classic",
+          "status": "published",
+          "revision": 4,
+          "siteId": "site-1",
+          "homeLat": 58.35,
+          "homeLon": 15.71,
+          "holeCount": 18,
+          "updatedAt": "2026-07-13T10:00:00Z",
+          "parTotal": 72,
+          "lengthM": 5842.4,
+          "mappedHoleCount": 16,
+          "siteName": "Landeryd",
+          "routing": [{"hole": 1, "tee": [58.35, 15.71], "green": [58.36, 15.72]}]
+        }
+        """
+
+        let course = try decoder.decode(CourseSummary.self, from: Data(json.utf8))
+        XCTAssertEqual(course.parTotal, 72)
+        XCTAssertEqual(course.lengthM, 5842.4, accuracy: 0.001)
+        XCTAssertEqual(course.mappedHoleCount, 16)
+        XCTAssertEqual(course.siteName, "Landeryd")
+        XCTAssertEqual(course.routing.first, RoutingHole(
+            hole: 1, tee: [58.35, 15.71], green: [58.36, 15.72]
+        ))
     }
 
     func testCourseGet() throws {
@@ -49,9 +83,33 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(course.revision, 2)
         XCTAssertEqual(course.version, 5)
         XCTAssertEqual(course.crs, "EPSG:3006")
+        XCTAssertEqual(course.siteId, "26D37361-D79C-41AA-AA49-92F2C2277222")
         XCTAssertNil(course.notes)
         XCTAssertNotNil(course.georeferenceJson)
         XCTAssertEqual(course.homeLat ?? 0, 58.361893571209315, accuracy: 1e-9)
+    }
+
+    func testCourseSiteIdCanBeNull() throws {
+        let json = """
+        {
+          "id": "legacy-course",
+          "name": "Legacy course",
+          "status": "draft",
+          "revision": 1,
+          "crs": "EPSG:4326",
+          "georeferenceJson": null,
+          "homeLat": null,
+          "homeLon": null,
+          "notes": null,
+          "siteId": null,
+          "version": 1,
+          "createdAt": "2026-01-01T00:00:00Z",
+          "updatedAt": "2026-01-01T00:00:00Z"
+        }
+        """
+
+        let course = try decoder.decode(Course.self, from: Data(json.utf8))
+        XCTAssertNil(course.siteId)
     }
 
     func testHoles() throws {

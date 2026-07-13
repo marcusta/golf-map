@@ -78,6 +78,29 @@ final class AssetsAndFeaturesTests: XCTestCase {
         XCTAssertEqual(manifest.versionParam, "20260704T082859Z")
     }
 
+    func testAssetsBySiteRoutesSiteIdentity() async throws {
+        let client = try makeRoutingClient()
+
+        let assets = try await client.assets(siteId: "site shared/1")
+
+        XCTAssertEqual(assets.count, 3)
+        let url = try XCTUnwrap(AssetRoutingURLProtocol.state.lastURL)
+        XCTAssertEqual(url.path, "/api/assets/by-site")
+        XCTAssertEqual(queryValue("siteId", in: url), "site shared/1")
+        XCTAssertNil(queryValue("courseId", in: url))
+    }
+
+    func testAssetsByCourseKeepsLegacyRoute() async throws {
+        let client = try makeRoutingClient()
+
+        _ = try await client.assets(courseId: "legacy-course")
+
+        let url = try XCTUnwrap(AssetRoutingURLProtocol.state.lastURL)
+        XCTAssertEqual(url.path, "/api/assets/by-course")
+        XCTAssertEqual(queryValue("courseId", in: url), "legacy-course")
+        XCTAssertNil(queryValue("siteId", in: url))
+    }
+
     func testFeaturesGeoJSONDecode() throws {
         let data = try FixtureLoader.data("features.geojson")
         let collection = try decoder.decode(CourseFeatureCollection.self, from: data)
@@ -103,4 +126,72 @@ final class AssetsAndFeaturesTests: XCTestCase {
         XCTAssertEqual(v.lon, 15, accuracy: 1.0)
         XCTAssertEqual(v.lat, 58, accuracy: 1.0)
     }
+
+    private func makeRoutingClient() throws -> GolfAPIClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AssetRoutingURLProtocol.self]
+        AssetRoutingURLProtocol.state.reset(
+            responseBody: try FixtureLoader.data("assets-by-course.json")
+        )
+        return GolfAPIClient(
+            baseURL: URL(string: "http://assets.test")!,
+            session: URLSession(configuration: configuration)
+        )
+    }
+
+    private func queryValue(_ name: String, in url: URL) -> String? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first { $0.name == name }?
+            .value
+    }
+}
+
+private final class AssetRoutingURLProtocol: URLProtocol {
+    final class State: @unchecked Sendable {
+        private let lock = NSLock()
+        private var responseBody = Data("[]".utf8)
+        private var capturedURL: URL?
+
+        var lastURL: URL? {
+            lock.lock(); defer { lock.unlock() }
+            return capturedURL
+        }
+
+        func reset(responseBody: Data) {
+            lock.lock(); defer { lock.unlock() }
+            self.responseBody = responseBody
+            capturedURL = nil
+        }
+
+        func capture(_ url: URL) -> Data {
+            lock.lock(); defer { lock.unlock() }
+            capturedURL = url
+            return responseBody
+        }
+    }
+
+    nonisolated(unsafe) static let state = State()
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let body = Self.state.capture(url)
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

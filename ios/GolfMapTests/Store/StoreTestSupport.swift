@@ -11,11 +11,13 @@ enum StoreFixtures {
     ///   terrain z1: (1,0) (1,1)
     static func furniture(
         courseId: String = "course-1",
+        siteId: String? = nil,
         revision: Int = 3,
         versionParam: String = "ver1"
     ) -> CourseFurniture {
         let course = CourseRecord(
             id: courseId,
+            siteId: siteId,
             name: "Test Course",
             status: "published",
             revision: revision,

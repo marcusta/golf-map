@@ -18,6 +18,8 @@ final class SyncServiceMappingTests: XCTestCase {
         let record = SyncService.courseRecord(course)
 
         XCTAssertEqual(record.id, "26D37361-D79C-41AA-AA49-92F2C2277222")
+        XCTAssertEqual(record.siteId, "26D37361-D79C-41AA-AA49-92F2C2277222")
+        XCTAssertEqual(record.mapKey, record.siteId)
         XCTAssertEqual(record.name, "Landeryd Masters")
         XCTAssertEqual(record.status, "published")
         XCTAssertEqual(record.revision, 2)
@@ -27,6 +29,20 @@ final class SyncServiceMappingTests: XCTestCase {
         // Sync state is left to AppDatabase on save.
         XCTAssertNil(record.downloadedRevision)
         XCTAssertEqual(record.bundleState, .none)
+    }
+
+    func testAssetScopeUsesSiteForSharedCourse() throws {
+        let course = try decode(Course.self, "course-get.json")
+        XCTAssertEqual(
+            SyncService.assetScope(for: course),
+            .site("26D37361-D79C-41AA-AA49-92F2C2277222")
+        )
+    }
+
+    func testAssetScopeFallsBackToCourseForLegacyCourse() throws {
+        let json = #"{"id":"legacy","name":"Legacy","status":"published","revision":1,"crs":"EPSG:4326","georeferenceJson":null,"homeLat":null,"homeLon":null,"notes":null,"siteId":null,"version":1,"createdAt":"","updatedAt":""}"#
+        let course = try decoder.decode(Course.self, from: Data(json.utf8))
+        XCTAssertEqual(SyncService.assetScope(for: course), .course("legacy"))
     }
 
     func testHoleRecordMapping() throws {

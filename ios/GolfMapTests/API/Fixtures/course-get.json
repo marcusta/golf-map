@@ -1,1 +1,15 @@
-{"id":"26D37361-D79C-41AA-AA49-92F2C2277222","name":"Landeryd Masters","status":"published","revision":2,"crs":"EPSG:3006","georeferenceJson":"{\"crs\": \"EPSG:3006\", \"bbox\": [541110.0, 6467550.0, 543410.0, 6469850.0], \"wgs84Bbox\": [15.702305614420004, 58.346704063793496, 15.742027338869832, 58.367581638891856], \"source\": \"lantmateriet-stac\"}","homeLat":58.361893571209315,"homeLon":15.716457452277877,"notes":null,"version":5,"createdAt":"2026-07-03T15:52:32.904Z","updatedAt":"2026-07-04 13:59:26"}
+{
+  "id": "26D37361-D79C-41AA-AA49-92F2C2277222",
+  "name": "Landeryd Masters",
+  "status": "published",
+  "revision": 2,
+  "crs": "EPSG:3006",
+  "georeferenceJson": "{\"crs\": \"EPSG:3006\", \"bbox\": [541110.0, 6467550.0, 543410.0, 6469850.0], \"wgs84Bbox\": [15.702305614420004, 58.346704063793496, 15.742027338869832, 58.367581638891856], \"source\": \"lantmateriet-stac\"}",
+  "homeLat": 58.361893571209315,
+  "homeLon": 15.716457452277877,
+  "notes": null,
+  "siteId": "26D37361-D79C-41AA-AA49-92F2C2277222",
+  "version": 5,
+  "createdAt": "2026-07-03T15:52:32.904Z",
+  "updatedAt": "2026-07-04 13:59:26"
+}
