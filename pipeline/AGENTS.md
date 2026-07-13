@@ -22,4 +22,4 @@ pytest                  # tests — synthetic in-memory GeoTIFF fixtures, no moc
 
 - Areas: `--bbox` and `--aoi` are mutually exclusive. GeoJSON parsed with stdlib `json` (no fiona/pyshp); projected-CRS coords rejected.
 - DEM output stays in source CRS (SWEREF99 TM / RH2000); tiling reprojects to Web Mercator once.
-- Tile layers: `ortho` → `.jpg`, `terrain` → `.png` (matches server `assets.service.ts` `resolveTilePath`).
+- Tile layers: `ortho` → `.webp` (PIL WebP q80; use `reencode_webp` to convert legacy `.jpg` trees), `terrain` → `.png` (matches server `assets.service.ts` `resolveTilePath`).

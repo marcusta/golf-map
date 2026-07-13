@@ -87,6 +87,9 @@ struct MockTileResponse: Sendable {
     var data: Data
     /// Delay before the response is delivered (used by the cancellation test).
     var delay: TimeInterval = 0
+    /// When set, the request fails with this transport error instead of
+    /// producing a response (used by the retry test).
+    var networkError: URLError?
 }
 
 /// URLProtocol that answers from a registered handler and records every
@@ -149,11 +152,16 @@ final class StoreMockURLProtocol: URLProtocol {
             mock.stateLock.unlock()
             guard !isStopped, let url = mock.request.url, let client = mock.client else { return }
 
+            if let networkError = stub.networkError {
+                client.urlProtocol(mock, didFailWithError: networkError)
+                return
+            }
+
             let response = HTTPURLResponse(
                 url: url,
                 statusCode: stub.statusCode,
                 httpVersion: "HTTP/1.1",
-                headerFields: nil
+                headerFields: ["Content-Length": String(stub.data.count)]
             )!
             client.urlProtocol(mock, didReceive: response, cacheStoragePolicy: .notAllowed)
             client.urlProtocol(mock, didLoad: stub.data)
@@ -190,6 +198,54 @@ final class AttemptCounter: @unchecked Sendable {
         counts[key, default: 0] += 1
         return counts[key]!
     }
+}
+
+// MARK: - Tar fixture builder
+
+/// Builds an uncompressed POSIX ustar archive from `(name, data)` entries —
+/// regular files (typeflag '0'), correct octal size + checksum, terminated by
+/// two zero blocks. Matches the server contract the downloader parses.
+func makeTarArchive(_ entries: [(name: String, data: Data)]) -> Data {
+    var out = Data()
+    for (name, data) in entries {
+        out.append(tarHeader(name: name, size: data.count))
+        out.append(data)
+        let pad = (512 - (data.count % 512)) % 512
+        if pad > 0 { out.append(Data(count: pad)) }
+    }
+    // Two trailing zero blocks.
+    out.append(Data(count: 1024))
+    return out
+}
+
+private func tarHeader(name: String, size: Int) -> Data {
+    var header = [UInt8](repeating: 0, count: 512)
+
+    func write(_ string: String, at offset: Int, length: Int) {
+        let bytes = Array(string.utf8).prefix(length)
+        for (i, b) in bytes.enumerated() { header[offset + i] = b }
+    }
+
+    write(name, at: 0, length: 100)
+    // mode, uid, gid — "0000644\0", "0000000\0".
+    write("0000644", at: 100, length: 8)
+    write("0000000", at: 108, length: 8)
+    write("0000000", at: 116, length: 8)
+    // size: 11-octal-digit field + trailing space.
+    write(String(format: "%011o", size), at: 124, length: 12)
+    write("00000000000", at: 136, length: 12) // mtime
+    header[156] = UInt8(ascii: "0") // typeflag: regular file
+    write("ustar", at: 257, length: 6)
+    write("00", at: 263, length: 2)
+
+    // Checksum: sum of all bytes with the checksum field taken as spaces.
+    for i in 148..<156 { header[i] = UInt8(ascii: " ") }
+    let checksum = header.reduce(0) { $0 + Int($1) }
+    write(String(format: "%06o", checksum), at: 148, length: 7)
+    header[154] = 0
+    header[155] = UInt8(ascii: " ")
+
+    return Data(header)
 }
 
 // MARK: - Temp directory helper

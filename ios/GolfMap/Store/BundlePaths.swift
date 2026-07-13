@@ -56,6 +56,24 @@ public struct BundlePaths: Sendable, Equatable {
         courseDirectory(courseId: courseId).appending(path: "features.geojson")
     }
 
+    /// Render-only variant with the surface stack resolved server-side
+    /// (overlaps clipped so translucent fills don't compound). Absent in
+    /// bundles downloaded before the variant shipped — the map falls back to
+    /// `featuresURL`.
+    public func resolvedFeaturesURL(courseId: String) -> URL {
+        courseDirectory(courseId: courseId).appending(path: "features-resolved.geojson")
+    }
+
+    /// Directory holding one layer's tile pyramid inside the given bundle
+    /// directory (`<bundle>/tiles/<layer>`). The archive unpacker writes each
+    /// tar entry (`<z>/<x>/<y>.<ext>`) relative to this, preserving the
+    /// entry's own extension.
+    public func layerTilesDirectory(in bundleDirectory: URL, layer: TileLayer) -> URL {
+        bundleDirectory
+            .appending(path: "tiles", directoryHint: .isDirectory)
+            .appending(path: layer.rawValue, directoryHint: .isDirectory)
+    }
+
     /// Path of a single tile inside the given bundle directory. Exposed with
     /// an explicit base so the downloader can target the .tmp directory.
     public func tileURL(in bundleDirectory: URL, layer: TileLayer, z: Int, x: Int, y: Int) -> URL {

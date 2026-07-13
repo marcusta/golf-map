@@ -34,70 +34,80 @@ final class BundleDownloaderTests: XCTestCase {
         )
     }
 
-    // The fixture manifest (bounds 0..10, ortho z1-2, terrain z1) covers
-    // exactly these 6 tiles — see StoreFixtures and TileEnumeratorTests.
-    private let expectedTilePaths = [
-        "tiles/ortho/1/1/0.jpg",
-        "tiles/ortho/1/1/1.jpg",
-        "tiles/ortho/2/2/1.jpg",
-        "tiles/ortho/2/2/2.jpg",
-        "tiles/terrain/1/1/0.png",
-        "tiles/terrain/1/1/1.png",
+    // Fixture archives: ortho tiles are WebP, terrain tiles are PNG. The
+    // downloader preserves each entry's own extension on disk.
+    private let orthoEntries: [(name: String, data: Data)] = [
+        ("14/1/1.webp", Data("ortho-a".utf8)),
+        ("14/1/2.webp", Data("ortho-b".utf8)),
+        ("15/2/2.webp", Data("ortho-c".utf8)),
     ]
+    private let terrainEntries: [(name: String, data: Data)] = [
+        ("12/1/1.png", Data("terrain-a".utf8)),
+    ]
+
+    private func serveArchives() {
+        let ortho = makeTarArchive(orthoEntries)
+        let terrain = makeTarArchive(terrainEntries)
+        StoreMockURLProtocol.setHandler { request in
+            let path = request.url!.path()
+            if path.contains("/ortho/") {
+                return MockTileResponse(statusCode: 200, data: ortho)
+            }
+            return MockTileResponse(statusCode: 200, data: terrain)
+        }
+    }
 
     // MARK: - Happy path
 
-    func testSuccessfulDownloadWithOne404() async throws {
-        let tileBytes = Data("tile-bytes".utf8)
-        StoreMockURLProtocol.setHandler { request in
-            if request.url!.path().contains("terrain/1/1/0") {
-                return MockTileResponse(statusCode: 404, data: Data())
-            }
-            return MockTileResponse(statusCode: 200, data: tileBytes)
-        }
+    func testSuccessfulArchiveDownloadUnpacksBothLayers() async throws {
+        serveArchives()
 
         let collector = ProgressCollector()
         let result = try await downloader.download(makeRequest()) { collector.append($0) }
 
-        XCTAssertEqual(result, BundleDownloadResult(totalTiles: 6, downloadedTiles: 5, missingTiles: 1))
+        XCTAssertEqual(result.downloadedTiles, orthoEntries.count + terrainEntries.count)
+        XCTAssertGreaterThan(result.totalBytes, 0)
 
-        // Files landed in the final directory; the 404 tile has no file.
+        // Every entry landed in the final directory with its own extension.
         let courseDir = paths.courseDirectory(courseId: "course-1")
         let fm = FileManager.default
-        for tilePath in expectedTilePaths where tilePath != "tiles/terrain/1/1/0.png" {
-            XCTAssertTrue(
-                fm.fileExists(atPath: courseDir.appending(path: tilePath).path()),
-                "missing \(tilePath)"
-            )
+        for (name, data) in orthoEntries {
+            let url = courseDir.appending(path: "tiles/ortho/\(name)")
+            XCTAssertTrue(fm.fileExists(atPath: url.path()), "missing ortho \(name)")
+            XCTAssertEqual(try Data(contentsOf: url), data)
         }
-        XCTAssertFalse(fm.fileExists(atPath: courseDir.appending(path: "tiles/terrain/1/1/0.png").path()))
-        XCTAssertEqual(
-            try Data(contentsOf: courseDir.appending(path: "tiles/ortho/1/1/0.jpg")),
-            tileBytes
-        )
+        for (name, data) in terrainEntries {
+            let url = courseDir.appending(path: "tiles/terrain/\(name)")
+            XCTAssertTrue(fm.fileExists(atPath: url.path()), "missing terrain \(name)")
+            XCTAssertEqual(try Data(contentsOf: url), data)
+        }
+
         XCTAssertEqual(
             try Data(contentsOf: paths.featuresURL(courseId: "course-1")),
             Data(#"{"type":"FeatureCollection","features":[]}"#.utf8)
         )
 
-        // Staging directory is gone.
+        // Staging directory (including the temp .tar files) is gone.
         XCTAssertFalse(fm.fileExists(atPath: paths.temporaryCourseDirectory(courseId: "course-1").path()))
 
-        // Every tile request carried ?v=<versionParam>.
-        let tileURLs = StoreMockURLProtocol.requestedURLs
-        XCTAssertEqual(tileURLs.count, 6)
-        for url in tileURLs {
-            XCTAssertEqual(url.query(), "v=ver1", "missing version param on \(url)")
-        }
+        // Exactly one request per layer; ortho carries maxzoom=19, terrain none.
+        let urls = StoreMockURLProtocol.requestedURLs
+        XCTAssertEqual(urls.count, 2)
+        let ortho = try XCTUnwrap(urls.first { $0.path().contains("/ortho/") })
+        let terrain = try XCTUnwrap(urls.first { $0.path().contains("/terrain/") })
+        XCTAssertTrue(ortho.path().hasSuffix("/ortho/archive.tar"))
+        XCTAssertEqual(ortho.query(), "v=ver1&maxzoom=19")
+        XCTAssertTrue(terrain.path().hasSuffix("/terrain/archive.tar"))
+        XCTAssertEqual(terrain.query(), "v=ver1")
 
-        // Progress: one event per tile, ending at done == total.
-        let events = collector.events
-        XCTAssertEqual(events.count, 6)
-        XCTAssertEqual(events.last, BundleProgress(completedTiles: 6, totalTiles: 6, missingTiles: 1))
+        // Progress ends fully downloaded.
+        let last = try XCTUnwrap(collector.events.last)
+        XCTAssertGreaterThan(last.totalBytes, 0)
+        XCTAssertEqual(last.completedBytes, last.totalBytes)
 
         // Furniture landed with the complete flag.
-        let fetchedCourse = try await database.course(id: "course-1")
-        let course = try XCTUnwrap(fetchedCourse)
+        let fetched = try await database.course(id: "course-1")
+        let course = try XCTUnwrap(fetched)
         XCTAssertEqual(course.bundleState, .complete)
         XCTAssertEqual(course.downloadedRevision, 3)
         let furniture = try await database.courseFurniture(courseId: "course-1")
@@ -105,9 +115,7 @@ final class BundleDownloaderTests: XCTestCase {
     }
 
     func testStartDownloadStreamsProgressAndFinishes() async throws {
-        StoreMockURLProtocol.setHandler { _ in
-            MockTileResponse(statusCode: 200, data: Data("t".utf8))
-        }
+        serveArchives()
 
         let handle = await downloader.startDownload(makeRequest())
         var events: [BundleProgress] = []
@@ -116,39 +124,44 @@ final class BundleDownloaderTests: XCTestCase {
         }
         // The stream finished, so the download settled.
         let result = try await handle.result
-        XCTAssertEqual(result.totalTiles, 6)
-        XCTAssertEqual(events.count, 6)
-        XCTAssertEqual(events.last, BundleProgress(completedTiles: 6, totalTiles: 6, missingTiles: 0))
+        XCTAssertEqual(result.downloadedTiles, orthoEntries.count + terrainEntries.count)
+        XCTAssertFalse(events.isEmpty)
+        let last = try XCTUnwrap(events.last)
+        XCTAssertEqual(last.completedBytes, last.totalBytes)
     }
 
     // MARK: - Retry
 
-    func testTransient500IsRetriedOncePerTile() async throws {
+    func testTransportErrorIsRetriedOncePerLayer() async throws {
+        let ortho = makeTarArchive(orthoEntries)
+        let terrain = makeTarArchive(terrainEntries)
         let attempts = AttemptCounter()
         StoreMockURLProtocol.setHandler { request in
-            let key = request.url!.path()
-            if attempts.record(key) == 1, key.contains("ortho/2/2/1") {
-                return MockTileResponse(statusCode: 500, data: Data())
+            let path = request.url!.path()
+            if path.contains("/ortho/") {
+                if attempts.record("ortho") == 1 {
+                    return MockTileResponse(statusCode: 0, data: Data(), networkError: URLError(.networkConnectionLost))
+                }
+                return MockTileResponse(statusCode: 200, data: ortho)
             }
-            return MockTileResponse(statusCode: 200, data: Data("t".utf8))
+            return MockTileResponse(statusCode: 200, data: terrain)
         }
 
         let result = try await downloader.download(makeRequest())
-        XCTAssertEqual(result, BundleDownloadResult(totalTiles: 6, downloadedTiles: 6, missingTiles: 0))
+        XCTAssertEqual(result.downloadedTiles, orthoEntries.count + terrainEntries.count)
 
-        // The failing tile was requested exactly twice.
-        let retriedRequests = StoreMockURLProtocol.requestedURLs.filter { $0.path().contains("ortho/2/2/1") }
-        XCTAssertEqual(retriedRequests.count, 2)
+        let orthoRequests = StoreMockURLProtocol.requestedURLs.filter { $0.path().contains("/ortho/") }
+        XCTAssertEqual(orthoRequests.count, 2, "ortho archive fetched twice (one retry)")
     }
 
     // MARK: - Failure
 
-    func testPersistent500FailsCleanly() async throws {
+    func testPersistentHTTPErrorFailsCleanly() async throws {
         StoreMockURLProtocol.setHandler { request in
-            if request.url!.path().contains("ortho/1/1/1") {
+            if request.url!.path().contains("/ortho/") {
                 return MockTileResponse(statusCode: 500, data: Data())
             }
-            return MockTileResponse(statusCode: 200, data: Data("t".utf8))
+            return MockTileResponse(statusCode: 200, data: makeTarArchive([("12/1/1.png", Data("t".utf8))]))
         }
 
         do {
@@ -161,20 +174,44 @@ final class BundleDownloaderTests: XCTestCase {
             XCTAssertEqual(status, 500)
         }
 
+        // An HTTP status error is final — the ortho archive is fetched once.
+        let orthoRequests = StoreMockURLProtocol.requestedURLs.filter { $0.path().contains("/ortho/") }
+        XCTAssertEqual(orthoRequests.count, 1)
+
         let fm = FileManager.default
         XCTAssertFalse(fm.fileExists(atPath: paths.temporaryCourseDirectory(courseId: "course-1").path()))
         XCTAssertFalse(fm.fileExists(atPath: paths.courseDirectory(courseId: "course-1").path()))
 
-        let fetchedCourse = try await database.course(id: "course-1")
-        let course = try XCTUnwrap(fetchedCourse)
+        let fetched = try await database.course(id: "course-1")
+        let course = try XCTUnwrap(fetched)
         XCTAssertEqual(course.bundleState, BundleState.none)
         XCTAssertNil(course.downloadedRevision)
     }
 
-    func testFeaturesProviderFailureAborts() async throws {
-        StoreMockURLProtocol.setHandler { _ in
-            MockTileResponse(statusCode: 200, data: Data("t".utf8))
+    func testMalformedArchiveFails() async throws {
+        StoreMockURLProtocol.setHandler { request in
+            if request.url!.path().contains("/ortho/") {
+                return MockTileResponse(statusCode: 200, data: Data("this is not a tar".utf8))
+            }
+            return MockTileResponse(statusCode: 200, data: makeTarArchive([("12/1/1.png", Data("t".utf8))]))
         }
+
+        do {
+            _ = try await downloader.download(makeRequest())
+            XCTFail("expected malformedArchive")
+        } catch let error as BundleDownloadError {
+            guard case .malformedArchive(.ortho) = error else {
+                return XCTFail("unexpected error \(error)")
+            }
+        }
+
+        let fm = FileManager.default
+        XCTAssertFalse(fm.fileExists(atPath: paths.courseDirectory(courseId: "course-1").path()))
+        XCTAssertFalse(fm.fileExists(atPath: paths.temporaryCourseDirectory(courseId: "course-1").path()))
+    }
+
+    func testFeaturesProviderFailureAborts() async throws {
+        serveArchives()
         struct FeaturesUnavailable: Error {}
         let request = BundleDownloadRequest(
             tileBaseURL: URL(string: "http://localhost:3000/tiles")!,
@@ -183,7 +220,7 @@ final class BundleDownloaderTests: XCTestCase {
         )
 
         await XCTAssertThrowsErrorAsync(try await downloader.download(request))
-        XCTAssertTrue(StoreMockURLProtocol.requestedURLs.isEmpty, "no tiles should be fetched")
+        XCTAssertTrue(StoreMockURLProtocol.requestedURLs.isEmpty, "no archives should be fetched")
         XCTAssertFalse(
             FileManager.default.fileExists(
                 atPath: paths.temporaryCourseDirectory(courseId: "course-1").path()
@@ -191,12 +228,73 @@ final class BundleDownloaderTests: XCTestCase {
         )
     }
 
+    // MARK: - Layer has no tiles
+
+    func testLayer404FailsInsteadOfInstallingAnEmptyBundle() async throws {
+        // The server has no tiles for a layer at all (archive 404) — the
+        // download must fail, not record a complete bundle.
+        StoreMockURLProtocol.setHandler { _ in
+            MockTileResponse(statusCode: 404, data: Data())
+        }
+
+        do {
+            _ = try await downloader.download(makeRequest())
+            XCTFail("expected layerHasNoTiles")
+        } catch let error as BundleDownloadError {
+            guard case .layerHasNoTiles = error else {
+                return XCTFail("got \(error)")
+            }
+        }
+
+        let fm = FileManager.default
+        XCTAssertFalse(fm.fileExists(atPath: paths.courseDirectory(courseId: "course-1").path()))
+        XCTAssertFalse(fm.fileExists(atPath: paths.temporaryCourseDirectory(courseId: "course-1").path()))
+        let fetched = try await database.course(id: "course-1")
+        let course = try XCTUnwrap(fetched)
+        XCTAssertEqual(course.bundleState, BundleState.none)
+    }
+
+    func testEmptyArchiveIsTreatedAsNoTiles() async throws {
+        StoreMockURLProtocol.setHandler { request in
+            if request.url!.path().contains("/ortho/") {
+                return MockTileResponse(statusCode: 200, data: makeTarArchive([]))
+            }
+            return MockTileResponse(statusCode: 200, data: makeTarArchive([("12/1/1.png", Data("t".utf8))]))
+        }
+
+        do {
+            _ = try await downloader.download(makeRequest())
+            XCTFail("expected layerHasNoTiles")
+        } catch let error as BundleDownloadError {
+            guard case .layerHasNoTiles(.ortho) = error else {
+                return XCTFail("got \(error)")
+            }
+        }
+    }
+
+    func testResolvedFeaturesAreWrittenWhenProvided() async throws {
+        serveArchives()
+        let resolved = Data(#"{"type":"FeatureCollection","features":[],"resolved":true}"#.utf8)
+        var request = makeRequest()
+        request.resolvedFeaturesGeoJSON = { resolved }
+
+        _ = try await downloader.download(request)
+
+        XCTAssertEqual(
+            try Data(contentsOf: paths.resolvedFeaturesURL(courseId: "course-1")),
+            resolved
+        )
+    }
+
     // MARK: - Cancellation
 
     func testCancellationCleansUpStagingDirectory() async throws {
         // Slow responses so cancellation lands mid-flight.
-        StoreMockURLProtocol.setHandler { _ in
-            MockTileResponse(statusCode: 200, data: Data("t".utf8), delay: 0.5)
+        let ortho = makeTarArchive(orthoEntries)
+        let terrain = makeTarArchive(terrainEntries)
+        StoreMockURLProtocol.setHandler { request in
+            let data = request.url!.path().contains("/ortho/") ? ortho : terrain
+            return MockTileResponse(statusCode: 200, data: data, delay: 0.5)
         }
 
         let handle = await downloader.startDownload(makeRequest())
@@ -214,17 +312,15 @@ final class BundleDownloaderTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: paths.temporaryCourseDirectory(courseId: "course-1").path()))
         XCTAssertFalse(fm.fileExists(atPath: paths.courseDirectory(courseId: "course-1").path()))
 
-        let fetchedCourse = try await database.course(id: "course-1")
-        let course = try XCTUnwrap(fetchedCourse)
+        let fetched = try await database.course(id: "course-1")
+        let course = try XCTUnwrap(fetched)
         XCTAssertEqual(course.bundleState, BundleState.none)
     }
 
     // MARK: - Delete
 
     func testDeleteBundleRemovesFilesAndRows() async throws {
-        StoreMockURLProtocol.setHandler { _ in
-            MockTileResponse(statusCode: 200, data: Data("t".utf8))
-        }
+        serveArchives()
         _ = try await downloader.download(makeRequest())
 
         try await downloader.deleteBundle(courseId: "course-1")
@@ -236,7 +332,22 @@ final class BundleDownloaderTests: XCTestCase {
         XCTAssertNil(course)
     }
 
-    // MARK: - Path helpers
+    // MARK: - Archive request URL
+
+    func testArchiveRequestURLCarriesVersionAndOptionalMaxzoom() {
+        let base = URL(string: "http://localhost:3000/tiles")!
+        let orthoURL = BundleDownloader.archiveRequestURL(
+            baseURL: base, courseId: "c1", layer: .ortho, versionParam: "v9", maxzoom: 19
+        )
+        XCTAssertTrue(orthoURL.path().hasSuffix("/c1/ortho/archive.tar"))
+        XCTAssertEqual(orthoURL.query(), "v=v9&maxzoom=19")
+
+        let terrainURL = BundleDownloader.archiveRequestURL(
+            baseURL: base, courseId: "c1", layer: .terrain, versionParam: "v9", maxzoom: nil
+        )
+        XCTAssertTrue(terrainURL.path().hasSuffix("/c1/terrain/archive.tar"))
+        XCTAssertEqual(terrainURL.query(), "v=v9")
+    }
 
     func testTileURLTemplateKeepsPlaceholders() {
         let template = paths.tileURLTemplate(courseId: "course-1", layer: .ortho)

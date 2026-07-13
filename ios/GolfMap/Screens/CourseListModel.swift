@@ -43,14 +43,24 @@ struct CourseRow: Identifiable, Equatable {
     }
 }
 
-/// Live download progress for a single course row.
+/// Live download progress for a single course row (bytes across both layer
+/// archives).
 struct DownloadProgress: Equatable {
-    var completed: Int
-    var total: Int
-    var missing: Int
+    var completedBytes: Int64
+    var totalBytes: Int64
 
     var fraction: Double {
-        total > 0 ? Double(completed) / Double(total) : 0
+        totalBytes > 0 ? Double(completedBytes) / Double(totalBytes) : 0
+    }
+
+    /// e.g. "12.3 / 48.0 MB" (or just the downloaded size before a
+    /// Content-Length is known).
+    var label: String {
+        func mb(_ bytes: Int64) -> Double { Double(bytes) / 1_048_576 }
+        if totalBytes > 0 {
+            return String(format: "%.1f / %.1f MB", mb(completedBytes), mb(totalBytes))
+        }
+        return String(format: "%.1f MB", mb(completedBytes))
     }
 }
 
@@ -145,7 +155,7 @@ final class CourseListModel {
     /// stream into `progressByCourse` and refreshing the row on completion.
     func download(courseId: String) {
         guard handles[courseId] == nil else { return }
-        progressByCourse[courseId] = DownloadProgress(completed: 0, total: 0, missing: 0)
+        progressByCourse[courseId] = DownloadProgress(completedBytes: 0, totalBytes: 0)
 
         Task {
             do {
@@ -157,7 +167,7 @@ final class CourseListModel {
                 Task { @MainActor in
                     for await p in stream {
                         progressByCourse[courseId] = DownloadProgress(
-                            completed: p.completedTiles, total: p.totalTiles, missing: p.missingTiles
+                            completedBytes: p.completedBytes, totalBytes: p.totalBytes
                         )
                     }
                 }
@@ -182,5 +192,19 @@ final class CourseListModel {
     /// Cancels an in-flight download.
     func cancelDownload(courseId: String) {
         handles[courseId]?.cancel()
+    }
+
+    /// Deletes a downloaded bundle (files + database rows) and refreshes the
+    /// row back to its downloadable state.
+    func removeDownload(courseId: String) {
+        guard handles[courseId] == nil else { return }
+        Task {
+            do {
+                try await env.syncService.deleteBundle(courseId: courseId)
+            } catch {
+                loadError = "Remove failed: \(error.localizedDescription)"
+            }
+            await load()
+        }
     }
 }

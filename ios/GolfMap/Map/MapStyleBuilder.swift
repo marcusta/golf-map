@@ -10,7 +10,6 @@ public enum MapStyleIDs {
 
     public static let featuresSource = "course-features"
     public static let featuresFillLayer = "features-fill"
-    public static let featuresOutlineLayer = "features-outline"
 
     // Dynamic overlay sources start out as empty FeatureCollections in the
     // style; CourseMapView updates them at runtime via MLNShapeSource.shape.
@@ -25,6 +24,21 @@ public enum MapStyleIDs {
     public static let planGatesLayer = "overlay-plan-gates"
     public static let planNodesSource = "overlay-plan-nodes"
     public static let planNodesLayer = "overlay-plan-nodes"
+
+    // Shot-visualisation overlay (read-only viewer, port of the web planner's
+    // plan-overlay): per-leg dispersion ellipses (fill + outline), approach-leg
+    // confidence tints, and the recommended-aim "ghost" group. Competition mode
+    // clears their sources (the model emits empty geometry).
+    public static let planEllipsesSource = "overlay-plan-ellipses"
+    public static let planEllipsesFillLayer = "overlay-plan-ellipses-fill"
+    public static let planEllipsesOutlineLayer = "overlay-plan-ellipses-outline"
+    public static let planLegTintsSource = "overlay-plan-leg-tints"
+    public static let planLegTintsLayer = "overlay-plan-leg-tints"
+    public static let planGhostSource = "overlay-plan-ghost"
+    public static let planGhostEllipseLayer = "overlay-plan-ghost-ellipse"
+    public static let planGhostDriftLayer = "overlay-plan-ghost-drift"
+    public static let planGhostCenterLayer = "overlay-plan-ghost-center"
+    public static let planGhostAimLayer = "overlay-plan-ghost-aim"
 
     public static let distanceLineSource = "overlay-distance-line"
     public static let distanceLineCasingLayer = "overlay-distance-line-casing"
@@ -103,6 +117,28 @@ public enum MapStyleBuilder {
     static let planNodeRadius = 5.0
     static let planNodeStrokeColor = "#ffffff"
 
+    // Shot-viz overlay palette. Dispersion ellipses keep the violet plan
+    // identity (translucent fill, brighter outline); the recommended-aim ghost
+    // is a distinct rose so "where you'd aim" never reads as the plan line
+    // itself; approach-leg tints use the app's data-viz good/risk/bad ramp
+    // (matches the web LIGHT_* colors exactly).
+    static let planEllipseFillColor = "#a78bfa"
+    static let planEllipseFillOpacity = 0.16
+    static let planEllipseOutlineColor = "#c4b5fd"
+    static let planEllipseOutlineWidth = 1.2
+    static let planGhostColor = "#f472b6"
+    static let planGhostDashArray = [2.0, 2.0]
+    static let planGhostDriftDashArray = [1.0, 1.5]
+    static let planGhostCenterRadius = 3.5
+    static let planGhostAimRadius = 6.0
+    static let planLegTintWidth = 4.5
+    static let planLightColors: [(light: String, hex: String)] = [
+        ("green", "#4E7A46"),  // --data-good
+        ("yellow", "#C68A2E"), // --data-risk
+        ("red", "#B24A32"),    // --data-bad
+    ]
+    static let planLightFallbackColor = "#a78bfa"
+
     // Target marker colors by `kind` attribute (front/center/back follow the
     // red/white/blue flag-position convention; pin uses the web selection
     // yellow). Dark stroke ties them to the distance line casing.
@@ -155,6 +191,9 @@ public enum MapStyleBuilder {
         // stroke's FROM position) + pin-yellow intended target.
         ("shot", "#fb7185"),
         ("target", "#ffd43b"),
+        // Planner-tool planned landing points — the plan violet (matches the
+        // plan overlay's dashed-violet line + nodes).
+        ("planShot", "#a78bfa"),
     ]
     static let adjustHandleFallbackColor = "#ffffff"
     static let adjustHandleFillOpacity = 0.28
@@ -162,18 +201,55 @@ public enum MapStyleBuilder {
 
     /// file:// XYZ template for the bundle's ortho tiles, with literal
     /// {z}/{x}/{y} placeholders (string concatenation — URL APIs would
-    /// percent-encode the braces). Layout matches `BundlePaths`.
-    public static func orthoTileURLTemplate(bundleDirectory: URL) -> String {
+    /// percent-encode the braces). Layout matches `BundlePaths`. The extension
+    /// must match the tiles actually on disk (ortho moved from .jpg to .webp);
+    /// resolve it with `detectOrthoExtension`.
+    public static func orthoTileURLTemplate(
+        bundleDirectory: URL,
+        fileExtension: String = "jpg"
+    ) -> String {
         var base = bundleDirectory.absoluteString
         if !base.hasSuffix("/") { base += "/" }
-        return base + "tiles/ortho/{z}/{x}/{y}.jpg"
+        return base + "tiles/ortho/{z}/{x}/{y}.\(fileExtension)"
+    }
+
+    /// Probes a bundle's `tiles/ortho` directory for the extension its tiles
+    /// were downloaded with. Returns `"webp"` if the layer is WebP, else
+    /// `"jpg"`. A layer is homogeneous (one extension for the whole pyramid),
+    /// so the first tile file found decides — cheap and deterministic. The
+    /// `FileManager` is injectable for tests.
+    public static func detectOrthoExtension(
+        bundleDirectory: URL,
+        fileManager: FileManager = .default
+    ) -> String {
+        let orthoDir = bundleDirectory
+            .appending(path: "tiles", directoryHint: .isDirectory)
+            .appending(path: "ortho", directoryHint: .isDirectory)
+        guard let enumerator = fileManager.enumerator(
+            at: orthoDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return "jpg"
+        }
+        for case let url as URL in enumerator {
+            switch url.pathExtension.lowercased() {
+            case "webp": return "webp"
+            case "jpg", "jpeg": return "jpg"
+            default: continue // directories and stray files
+            }
+        }
+        return "jpg"
     }
 
     /// Full style as a JSON object. `featuresGeoJSON` is embedded inline as
-    /// the feature source's data. Throws if the GeoJSON is not parseable.
+    /// the feature source's data. `orthoTileExtension` must match the tiles on
+    /// disk (see `detectOrthoExtension`). Throws if the GeoJSON is not
+    /// parseable.
     public static func styleDictionary(
         configuration: CourseMapConfiguration,
-        featuresGeoJSON: Data
+        featuresGeoJSON: Data,
+        orthoTileExtension: String = "jpg"
     ) throws -> [String: Any] {
         guard
             let parsed = try? JSONSerialization.jsonObject(with: featuresGeoJSON),
@@ -188,12 +264,20 @@ public enum MapStyleBuilder {
             configuration.bounds.east,
             configuration.bounds.north,
         ]
+        // Cap the raster source's maxzoom at the offline ortho ceiling so
+        // MapLibre overzooms z19 tiles at deeper view zooms (source maxzoom is
+        // the highest level with real tiles). Bundles built before the cap
+        // still declare a higher manifest maxzoom — clamp it here too.
+        let orthoSourceMaxZoom = min(configuration.orthoMaxZoom, BundleDownloader.orthoBundleMaxZoom)
         var orthoSource: [String: Any] = [
             "type": "raster",
-            "tiles": [orthoTileURLTemplate(bundleDirectory: configuration.bundleDirectory)],
+            "tiles": [orthoTileURLTemplate(
+                bundleDirectory: configuration.bundleDirectory,
+                fileExtension: orthoTileExtension
+            )],
             "tileSize": 256,
             "minzoom": configuration.orthoMinZoom,
-            "maxzoom": configuration.orthoMaxZoom,
+            "maxzoom": orthoSourceMaxZoom,
             "bounds": boundsArray,
         ]
         if let attribution = configuration.attribution {
@@ -207,6 +291,9 @@ public enum MapStyleBuilder {
             MapStyleIDs.planLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.planGatesSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.planNodesSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.planEllipsesSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.planLegTintsSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.planGhostSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.distanceLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.targetsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.routeLegLabelsSource: ["type": "geojson", "data": emptyCollection],
@@ -238,6 +325,15 @@ public enum MapStyleBuilder {
         targetColorExpr.append(targetFallbackColor)
         let targetRadiusExpr: [Any] = ["match", ["get", "kind"], "pin", 7, 5]
 
+        // Approach-leg confidence tint: feature `light` (green/yellow/red) →
+        // the good/risk/bad ramp, falling back to the plan violet.
+        var planLightColorExpr: [Any] = ["match", ["get", "light"]]
+        for (light, hex) in planLightColors {
+            planLightColorExpr.append(light)
+            planLightColorExpr.append(hex)
+        }
+        planLightColorExpr.append(planLightFallbackColor)
+
         let layers: [[String: Any]] = [
             [
                 "id": MapStyleIDs.backgroundLayer,
@@ -250,6 +346,11 @@ public enum MapStyleBuilder {
                 "source": MapStyleIDs.orthoSource,
             ],
             [
+                // Nice-mode parity with the web (features.service.ts): fills
+                // only, NO per-feature boundary strokes — web nice mode
+                // renders its outline layers at line-opacity 0. With resolved
+                // geometry the clip edges would otherwise stroke as lines
+                // crossing every abutting surface.
                 "id": MapStyleIDs.featuresFillLayer,
                 "type": "fill",
                 "source": MapStyleIDs.featuresSource,
@@ -260,13 +361,24 @@ public enum MapStyleBuilder {
                 ],
             ],
             [
-                "id": MapStyleIDs.featuresOutlineLayer,
-                "type": "line",
-                "source": MapStyleIDs.featuresSource,
-                "layout": ["line-sort-key": FeaturePalette.stackSortKeyExpression()],
+                // Dispersion ellipses at the very bottom of the plan stack so
+                // the leg line, nodes and gates all read over them.
+                "id": MapStyleIDs.planEllipsesFillLayer,
+                "type": "fill",
+                "source": MapStyleIDs.planEllipsesSource,
                 "paint": [
-                    "line-color": FeaturePalette.typeColorExpression(outline: true),
-                    "line-width": FeaturePalette.outlineWidth,
+                    "fill-color": planEllipseFillColor,
+                    "fill-opacity": planEllipseFillOpacity,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.planEllipsesOutlineLayer,
+                "type": "line",
+                "source": MapStyleIDs.planEllipsesSource,
+                "paint": [
+                    "line-color": planEllipseOutlineColor,
+                    "line-width": planEllipseOutlineWidth,
+                    "line-opacity": 0.9,
                 ],
             ],
             [
@@ -295,6 +407,19 @@ public enum MapStyleBuilder {
                 ],
             ],
             [
+                // Approach-leg confidence tint over the dashed plan line — a
+                // solid good/risk/bad bar on the leg landing on the green.
+                "id": MapStyleIDs.planLegTintsLayer,
+                "type": "line",
+                "source": MapStyleIDs.planLegTintsSource,
+                "layout": ["line-cap": "round", "line-join": "round"],
+                "paint": [
+                    "line-color": planLightColorExpr,
+                    "line-width": planLegTintWidth,
+                    "line-opacity": 0.9,
+                ],
+            ],
+            [
                 "id": MapStyleIDs.planGatesLayer,
                 "type": "line",
                 "source": MapStyleIDs.planGatesSource,
@@ -302,6 +427,58 @@ public enum MapStyleBuilder {
                 "paint": [
                     "line-color": planColor,
                     "line-width": planGateWidth,
+                ],
+            ],
+            [
+                // Recommended-aim ghost group (role-filtered off one source):
+                // dashed pattern outline, drift connector, finish dot, hollow
+                // aim ring. Under the plan nodes so tee/shot/green stay legible.
+                "id": MapStyleIDs.planGhostEllipseLayer,
+                "type": "line",
+                "source": MapStyleIDs.planGhostSource,
+                "filter": ["==", ["get", "role"], "ghost-ellipse"],
+                "paint": [
+                    "line-color": planGhostColor,
+                    "line-width": 1.5,
+                    "line-opacity": 0.8,
+                    "line-dasharray": planGhostDashArray,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.planGhostDriftLayer,
+                "type": "line",
+                "source": MapStyleIDs.planGhostSource,
+                "filter": ["==", ["get", "role"], "ghost-drift"],
+                "paint": [
+                    "line-color": planGhostColor,
+                    "line-width": 1.5,
+                    "line-opacity": 0.9,
+                    "line-dasharray": planGhostDriftDashArray,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.planGhostCenterLayer,
+                "type": "circle",
+                "source": MapStyleIDs.planGhostSource,
+                "filter": ["==", ["get", "role"], "ghost-center"],
+                "paint": [
+                    "circle-radius": planGhostCenterRadius,
+                    "circle-color": planGhostColor,
+                    "circle-stroke-color": planNodeStrokeColor,
+                    "circle-stroke-width": 1.0,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.planGhostAimLayer,
+                "type": "circle",
+                "source": MapStyleIDs.planGhostSource,
+                "filter": ["==", ["get", "role"], "ghost-aim"],
+                "paint": [
+                    "circle-radius": planGhostAimRadius,
+                    "circle-color": "rgba(0,0,0,0)",
+                    "circle-stroke-color": planGhostColor,
+                    "circle-stroke-width": 2.0,
+                    "circle-stroke-opacity": 0.9,
                 ],
             ],
             [
@@ -449,11 +626,13 @@ public enum MapStyleBuilder {
     /// `MLNMapView.styleURL`.
     public static func styleJSONData(
         configuration: CourseMapConfiguration,
-        featuresGeoJSON: Data
+        featuresGeoJSON: Data,
+        orthoTileExtension: String = "jpg"
     ) throws -> Data {
         let dictionary = try styleDictionary(
             configuration: configuration,
-            featuresGeoJSON: featuresGeoJSON
+            featuresGeoJSON: featuresGeoJSON,
+            orthoTileExtension: orthoTileExtension
         )
         return try JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys])
     }

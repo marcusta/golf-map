@@ -50,9 +50,62 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         XCTAssertEqual(ortho["tileSize"] as? Int, 256)
         XCTAssertEqual(ortho["minzoom"] as? Int, 14)
-        XCTAssertEqual(ortho["maxzoom"] as? Int, 20)
+        // Manifest orthoMaxZoom is 20, but the offline ortho ceiling caps the
+        // raster source's maxzoom at 19 so MapLibre overzooms z19 past it.
+        XCTAssertEqual(ortho["maxzoom"] as? Int, 19)
         XCTAssertEqual(ortho["bounds"] as? [Double], [15.695, 58.343, 15.749, 58.371])
         XCTAssertEqual(ortho["attribution"] as? String, "© Lantmäteriet, CC BY 4.0")
+    }
+
+    func testOrthoSourceMaxZoomStaysBelowCeilingWhenManifestIsLower() throws {
+        var config = configuration
+        config.orthoMaxZoom = 17
+        let style = try MapStyleBuilder.styleDictionary(configuration: config, featuresGeoJSON: tinyGeoJSON)
+        let sources = try XCTUnwrap(style["sources"] as? [String: Any])
+        let ortho = try XCTUnwrap(sources[MapStyleIDs.orthoSource] as? [String: Any])
+        XCTAssertEqual(ortho["maxzoom"] as? Int, 17, "cap does not raise a lower manifest maxzoom")
+    }
+
+    func testOrthoSourceUsesInjectedExtension() throws {
+        let style = try MapStyleBuilder.styleDictionary(
+            configuration: configuration,
+            featuresGeoJSON: tinyGeoJSON,
+            orthoTileExtension: "webp"
+        )
+        let sources = try XCTUnwrap(style["sources"] as? [String: Any])
+        let ortho = try XCTUnwrap(sources[MapStyleIDs.orthoSource] as? [String: Any])
+        XCTAssertEqual(
+            ortho["tiles"] as? [String],
+            ["file:///tmp/bundles/COURSE-1/tiles/ortho/{z}/{x}/{y}.webp"]
+        )
+    }
+
+    // MARK: - Ortho extension probing
+
+    func testDetectOrthoExtensionFindsWebp() throws {
+        let dir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let tile = dir.appending(path: "tiles/ortho/19/12/34.webp")
+        try FileManager.default.createDirectory(at: tile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: tile)
+
+        XCTAssertEqual(MapStyleBuilder.detectOrthoExtension(bundleDirectory: dir), "webp")
+    }
+
+    func testDetectOrthoExtensionFindsJpg() throws {
+        let dir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let tile = dir.appending(path: "tiles/ortho/19/12/34.jpg")
+        try FileManager.default.createDirectory(at: tile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: tile)
+
+        XCTAssertEqual(MapStyleBuilder.detectOrthoExtension(bundleDirectory: dir), "jpg")
+    }
+
+    func testDetectOrthoExtensionDefaultsToJpgWhenMissing() throws {
+        let dir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertEqual(MapStyleBuilder.detectOrthoExtension(bundleDirectory: dir), "jpg")
     }
 
     func testAttributionOmittedWhenNil() throws {
@@ -78,6 +131,9 @@ final class MapStyleBuilderTests: XCTestCase {
             MapStyleIDs.planLineSource,
             MapStyleIDs.planGatesSource,
             MapStyleIDs.planNodesSource,
+            MapStyleIDs.planEllipsesSource,
+            MapStyleIDs.planLegTintsSource,
+            MapStyleIDs.planGhostSource,
             MapStyleIDs.distanceLineSource,
             MapStyleIDs.targetsSource,
             MapStyleIDs.routeLegLabelsSource,
@@ -102,12 +158,20 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.backgroundLayer,
                 MapStyleIDs.orthoLayer,
                 MapStyleIDs.featuresFillLayer,
-                MapStyleIDs.featuresOutlineLayer,
+                // Shot-viz dispersion ellipses sit at the bottom of the plan
+                // stack so the leg line / nodes / gates all read over them.
+                MapStyleIDs.planEllipsesFillLayer,
+                MapStyleIDs.planEllipsesOutlineLayer,
                 // Plan overlay UNDER the distance line: the strategy is
                 // context; the white "where I am" line stays on top.
                 MapStyleIDs.planLineCasingLayer,
                 MapStyleIDs.planLineLayer,
+                MapStyleIDs.planLegTintsLayer,
                 MapStyleIDs.planGatesLayer,
+                MapStyleIDs.planGhostEllipseLayer,
+                MapStyleIDs.planGhostDriftLayer,
+                MapStyleIDs.planGhostCenterLayer,
+                MapStyleIDs.planGhostAimLayer,
                 MapStyleIDs.planNodesLayer,
                 MapStyleIDs.distanceLineCasingLayer,
                 MapStyleIDs.distanceLineLayer,
@@ -222,29 +286,16 @@ final class MapStyleBuilderTests: XCTestCase {
         XCTAssertEqual(sortKey[1] as? [String], ["get", "stackKey"])
     }
 
-    /// D23/D24: fill and outline layers share the same stack sort-key
-    /// expression as each other (both read `stackKey`, not the fixed type
-    /// order) so overlap resolution is identical for fill and outline paint.
-    func testOutlineLayerUsesSameStackSortKeyAsFill() throws {
+    /// Nice-mode parity with the web: feature surfaces render as fills only.
+    /// Web nice mode hides its outline layers (line-opacity 0,
+    /// features.service.ts) — a boundary-stroke layer here would draw the
+    /// resolved geometry's clip edges as lines crossing every surface.
+    func testNoFeatureOutlineLayer() throws {
         let style = try buildStyle()
-        let fill = try layer(MapStyleIDs.featuresFillLayer, in: style)
-        let outline = try layer(MapStyleIDs.featuresOutlineLayer, in: style)
-        let fillLayout = try XCTUnwrap(fill["layout"] as? [String: Any])
-        let outlineLayout = try XCTUnwrap(outline["layout"] as? [String: Any])
-        let fillKey = try XCTUnwrap(fillLayout["fill-sort-key"] as? [Any])
-        let lineKey = try XCTUnwrap(outlineLayout["line-sort-key"] as? [Any])
-        XCTAssertEqual(fillKey.map { "\($0)" }, lineKey.map { "\($0)" })
-    }
-
-    func testFeatureOutlineLayerUsesOutlinePalette() throws {
-        let line = try layer(MapStyleIDs.featuresOutlineLayer, in: buildStyle())
-        XCTAssertEqual(line["type"] as? String, "line")
-        let paint = try XCTUnwrap(line["paint"] as? [String: Any])
-        XCTAssertEqual(paint["line-width"] as? Double, 1.5)
-        let colorExpr = try XCTUnwrap(paint["line-color"] as? [Any])
-        XCTAssertTrue(
-            colorExpr.contains { $0 as? String == CourseFeatureType.fairway.outlineHex },
-            "fairway outline present (palette is pinned to the web by FeaturePaletteTests)"
+        let layers = try XCTUnwrap(style["layers"] as? [[String: Any]])
+        XCTAssertFalse(
+            layers.contains { ($0["id"] as? String) == "features-outline" },
+            "feature boundaries must not be stroked (web nice-mode parity)"
         )
     }
 
@@ -294,6 +345,66 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 19)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 25)
+    }
+
+    // MARK: - Shot-visualisation overlay (T2)
+
+    /// Dispersion ellipses: a translucent violet fill under a brighter outline,
+    /// both off the shared ellipse source, drawn below the plan line.
+    func testEllipseLayersAreTranslucentFillPlusOutline() throws {
+        let style = try buildStyle()
+
+        let fill = try layer(MapStyleIDs.planEllipsesFillLayer, in: style)
+        XCTAssertEqual(fill["type"] as? String, "fill")
+        XCTAssertEqual(fill["source"] as? String, MapStyleIDs.planEllipsesSource)
+        let fillPaint = try XCTUnwrap(fill["paint"] as? [String: Any])
+        let opacity = try XCTUnwrap(fillPaint["fill-opacity"] as? Double)
+        XCTAssertGreaterThan(opacity, 0)
+        XCTAssertLessThan(opacity, 1, "ellipse fill is translucent so the ortho shows through")
+
+        let outline = try layer(MapStyleIDs.planEllipsesOutlineLayer, in: style)
+        XCTAssertEqual(outline["type"] as? String, "line")
+        XCTAssertEqual(outline["source"] as? String, MapStyleIDs.planEllipsesSource)
+    }
+
+    /// Approach-leg confidence tint: a data-driven `match` on the `light`
+    /// attribute mapping green/yellow/red to the good/risk/bad ramp.
+    func testLegTintLayerMapsConfidenceLightToRamp() throws {
+        let tint = try layer(MapStyleIDs.planLegTintsLayer, in: buildStyle())
+        XCTAssertEqual(tint["type"] as? String, "line")
+        XCTAssertEqual(tint["source"] as? String, MapStyleIDs.planLegTintsSource)
+        let paint = try XCTUnwrap(tint["paint"] as? [String: Any])
+        let colorExpr = try XCTUnwrap(paint["line-color"] as? [Any])
+        XCTAssertEqual(colorExpr.first as? String, "match")
+        let strings = colorExpr.compactMap { $0 as? String }
+        for branch in ["green", "yellow", "red", "#4E7A46", "#C68A2E", "#B24A32"] {
+            XCTAssertTrue(strings.contains(branch), "tint branch \(branch)")
+        }
+    }
+
+    /// The ghost group: four role-filtered layers (dashed pattern outline,
+    /// drift connector, finish dot, hollow aim ring) off one source, in a
+    /// distinct rose that is neither the plan violet nor a distance color.
+    func testGhostLayersAreRoleFilteredAndDistinctColor() throws {
+        let style = try buildStyle()
+        let expected: [(String, String, String)] = [
+            (MapStyleIDs.planGhostEllipseLayer, "line", "ghost-ellipse"),
+            (MapStyleIDs.planGhostDriftLayer, "line", "ghost-drift"),
+            (MapStyleIDs.planGhostCenterLayer, "circle", "ghost-center"),
+            (MapStyleIDs.planGhostAimLayer, "circle", "ghost-aim"),
+        ]
+        for (id, type, role) in expected {
+            let l = try layer(id, in: style)
+            XCTAssertEqual(l["type"] as? String, type, id)
+            XCTAssertEqual(l["source"] as? String, MapStyleIDs.planGhostSource, id)
+            let filter = try XCTUnwrap(l["filter"] as? [Any], id)
+            XCTAssertTrue(filter.description.contains(role), "\(id) filters on role \(role)")
+        }
+        // Ghost color is distinct from the plan violet and the white line.
+        let aimPaint = try XCTUnwrap(try layer(MapStyleIDs.planGhostAimLayer, in: style)["paint"] as? [String: Any])
+        let ghostColor = aimPaint["circle-stroke-color"] as? String
+        XCTAssertEqual(ghostColor, "#f472b6")
+        XCTAssertNotEqual(ghostColor, "#a78bfa", "ghost must not read as the plan line")
     }
 }

@@ -93,7 +93,7 @@ def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out:
     `collection` (e.g. from list-ortho-vintages) to fetch a specific vintage.
 
     Ortho items are RGBI (4-band); only the first 3 bands (RGB) are kept
-    since tile-ortho produces JPEG (no alpha/NIR).
+    since tile-ortho produces opaque WebP (no alpha/NIR).
     """
     items = stac.search_ortho(bbox)
     if not items:
@@ -124,7 +124,7 @@ def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out:
 
 def _drop_to_rgb_bands(path: Path) -> None:
     """If the raster has more than 3 bands (e.g. RGBI), rewrites it keeping
-    only the first 3 (RGB) so downstream JPEG tiling doesn't need to guess.
+    only the first 3 (RGB) so downstream WebP tiling doesn't need to guess.
     """
     with rasterio.open(path) as src:
         if src.count <= 3:
@@ -211,9 +211,9 @@ def cmd_grid_dem(
     return out_path
 
 
-def cmd_tile_ortho(input_path: Path, out_dir: Path, minzoom: int = DEFAULT_ORTHO_MINZOOM, maxzoom: int = DEFAULT_ORTHO_MAXZOOM, jpeg_quality: int = 85) -> int:
+def cmd_tile_ortho(input_path: Path, out_dir: Path, minzoom: int = DEFAULT_ORTHO_MINZOOM, maxzoom: int = DEFAULT_ORTHO_MAXZOOM, webp_quality: int = 80) -> int:
     """Reprojects input_path to EPSG:3857 (WarpedVRT), cuts 256px XYZ tiles,
-    saves JPEG at {out_dir}/{z}/{x}/{y}.jpg. Skips fully-nodata tiles.
+    saves WebP at {out_dir}/{z}/{x}/{y}.webp. Skips fully-nodata tiles.
     """
     bbox_wgs84 = raster_bounds_wgs84(input_path)
     pyramid_bounds = pyramid_bounds_3857(bbox_wgs84, minzoom, maxzoom)
@@ -239,10 +239,10 @@ def cmd_tile_ortho(input_path: Path, out_dir: Path, minzoom: int = DEFAULT_ORTHO
             from io import BytesIO
 
             buf = BytesIO()
-            img.save(buf, format="JPEG", quality=jpeg_quality)
+            img.save(buf, format="WEBP", quality=webp_quality)
             return buf.getvalue()
 
-        count = generate_tile_pyramid(vrt, bbox_wgs84, minzoom, maxzoom, out_dir, encode, "jpg")
+        count = generate_tile_pyramid(vrt, bbox_wgs84, minzoom, maxzoom, out_dir, encode, "webp")
     finally:
         vrt.close()
 

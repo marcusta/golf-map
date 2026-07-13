@@ -21,7 +21,7 @@ def test_tile_ortho_writes_expected_zxy(tmp_path: Path, synthetic_ortho: Path):
 
     found_any = False
     for tile in expected_tiles:
-        tile_path = out_dir / str(tile.z) / str(tile.x) / f"{tile.y}.jpg"
+        tile_path = out_dir / str(tile.z) / str(tile.x) / f"{tile.y}.webp"
         if tile_path.exists():
             found_any = True
             img = Image.open(tile_path)
@@ -29,15 +29,16 @@ def test_tile_ortho_writes_expected_zxy(tmp_path: Path, synthetic_ortho: Path):
     assert found_any, "expected at least one tile at a computed z/x/y path"
 
 
-def test_tile_ortho_jpeg_tiles_are_valid_images(tmp_path: Path, synthetic_ortho: Path):
+def test_tile_ortho_webp_tiles_are_valid_images(tmp_path: Path, synthetic_ortho: Path):
     out_dir = tmp_path / "ortho_tiles"
     cmd_tile_ortho(synthetic_ortho, out_dir, minzoom=16, maxzoom=16)
 
-    jpgs = list(out_dir.rglob("*.jpg"))
-    assert jpgs, "no jpg tiles were written"
-    for jpg in jpgs:
-        img = Image.open(jpg)
-        assert img.format == "JPEG"
+    webps = list(out_dir.rglob("*.webp"))
+    assert webps, "no webp tiles were written"
+    assert not list(out_dir.rglob("*.jpg")), "no jpg tiles should be written"
+    for webp in webps:
+        img = Image.open(webp)
+        assert img.format == "WEBP"
         img.load()  # fully decode, raises on corruption
 
 

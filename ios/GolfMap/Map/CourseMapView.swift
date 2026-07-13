@@ -157,6 +157,11 @@ public struct CourseMapView: UIViewRepresentable {
         mapView.delegate = coordinator
         mapView.maximumZoomLevel = MapStyleBuilder.mapMaxZoom
         mapView.logoView.isHidden = true
+        // Drop the compass below the floating hole header (it appears whenever
+        // the hole-fit camera has a bearing, and the default top-right slot is
+        // behind the header).
+        mapView.compassViewPosition = .topRight
+        mapView.compassViewMargins = CGPoint(x: 12, y: 80)
         // GPS dot is fed via MapOverlayState, never MapLibre's own tracking.
         mapView.showsUserLocation = false
         // Explicitly (re-)enable freeform gestures. MapLibre defaults these on,
@@ -510,7 +515,10 @@ public struct CourseMapView: UIViewRepresentable {
             do {
                 let data = try MapStyleBuilder.styleJSONData(
                     configuration: configuration,
-                    featuresGeoJSON: featuresGeoJSON
+                    featuresGeoJSON: featuresGeoJSON,
+                    orthoTileExtension: MapStyleBuilder.detectOrthoExtension(
+                        bundleDirectory: configuration.bundleDirectory
+                    )
                 )
                 let url = FileManager.default.temporaryDirectory
                     .appending(path: "course-map-style-\(UUID().uuidString).json")

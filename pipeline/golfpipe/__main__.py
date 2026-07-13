@@ -5,7 +5,7 @@ Commands:
   fetch-ortho       STAC search + download best-coverage ortho COG(s) -> ortho.tif
   fetch-lidar       STAC search + download classified lidar COPC point cloud(s)
   grid-dem          Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
-  tile-ortho        GeoTIFF -> JPEG XYZ tile pyramid
+  tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   manifest          Write manifest.json for a tiled course
   install           Copy tiles+manifest into data/tiles/{courseId}/...
@@ -78,12 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma-separated classification codes to use as terrain surface (default 2,9 = ground,water)",
     )
 
-    p = sub.add_parser("tile-ortho", help="Tile an orthophoto GeoTIFF into an XYZ JPEG pyramid")
+    p = sub.add_parser("tile-ortho", help="Tile an orthophoto GeoTIFF into an XYZ WebP pyramid")
     p.add_argument("--input", required=True, help="input orthophoto GeoTIFF (any CRS)")
     p.add_argument("--out", required=True, help="output tile directory")
     p.add_argument("--minzoom", type=int, default=commands.DEFAULT_ORTHO_MINZOOM)
     p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_ORTHO_MAXZOOM)
-    p.add_argument("--jpeg-quality", type=int, default=85)
+    p.add_argument("--webp-quality", type=int, default=80)
 
     p = sub.add_parser("tile-terrain", help="Tile a DEM GeoTIFF into a Terrain-RGB XYZ PNG pyramid")
     p.add_argument("--input", required=True, help="input DEM GeoTIFF (any CRS)")
@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "tile-ortho":
             commands.cmd_tile_ortho(
                 Path(args.input), Path(args.out),
-                minzoom=args.minzoom, maxzoom=args.maxzoom, jpeg_quality=args.jpeg_quality,
+                minzoom=args.minzoom, maxzoom=args.maxzoom, webp_quality=args.webp_quality,
             )
 
         elif args.command == "tile-terrain":

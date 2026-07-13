@@ -18,9 +18,22 @@ const TILE_EXTENSION_BY_LAYER: Record<TileLayer, 'jpg' | 'png'> = {
     terrain: 'png',
 };
 
+// Candidate extensions per layer, in resolution-preference order. Ortho tiles
+// are migrating from JPEG to WebP: a WebP tile is preferred when present, with
+// the legacy JPEG as fallback so existing on-disk trees keep serving. Terrain
+// is PNG only.
+const TILE_EXTENSIONS_BY_LAYER: Record<TileLayer, readonly string[]> = {
+    ortho: ['webp', 'jpg'],
+    terrain: ['png'],
+};
+
 // A "safe id" — used to validate courseId before it touches the filesystem.
 // Matches the shape of crypto.randomUUID() output as well as simple slugs.
 const SAFE_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+// Cache-key components (archive version + zoom key) that end up in a filename.
+// No path separators, so no traversal is possible via these.
+const SAFE_KEY_RE = /^[A-Za-z0-9._-]+$/;
 
 export interface CourseAsset {
     id: string;
@@ -177,6 +190,22 @@ export class AssetsService {
      * route) map that to a 400 response.
      */
     resolveTilePath(courseId: string, layer: TileLayer, z: number, x: number, y: number): string {
+        return this.tilePathForExt(courseId, layer, z, x, y, TILE_EXTENSION_BY_LAYER[layer]);
+    }
+
+    /**
+     * Returns the candidate filesystem paths for a tile, in preference order,
+     * with the same sanitization as `resolveTilePath`. The caller serves the
+     * first candidate that exists on disk. Ortho prefers `.webp` and falls back
+     * to the legacy `.jpg`; terrain has a single `.png` candidate.
+     */
+    resolveTilePathCandidates(courseId: string, layer: TileLayer, z: number, x: number, y: number): string[] {
+        return TILE_EXTENSIONS_BY_LAYER[layer].map((ext) =>
+            this.tilePathForExt(courseId, layer, z, x, y, ext),
+        );
+    }
+
+    private tilePathForExt(courseId: string, layer: TileLayer, z: number, x: number, y: number, ext: string): string {
         if (!SAFE_ID_RE.test(courseId)) {
             throw new Error(`Invalid courseId: ${courseId}`);
         }
@@ -187,7 +216,6 @@ export class AssetsService {
         assertTileCoordinate('x', x);
         assertTileCoordinate('y', y);
 
-        const ext = TILE_EXTENSION_BY_LAYER[layer];
         const filePath = path.join(this.dataDir, 'tiles', courseId, layer, String(z), String(x), `${y}.${ext}`);
 
         const tilesRoot = path.join(this.dataDir, 'tiles');
@@ -197,5 +225,53 @@ export class AssetsService {
         }
 
         return filePath;
+    }
+
+    /**
+     * Sanitized path to a site's tile directory for a layer:
+     * `<dataDir>/tiles/<courseId>/<layer>`. Used by the archive endpoint to
+     * enumerate every tile for a layer. Throws on any unsafe input.
+     */
+    resolveTileLayerDir(courseId: string, layer: TileLayer): string {
+        if (!SAFE_ID_RE.test(courseId)) {
+            throw new Error(`Invalid courseId: ${courseId}`);
+        }
+        if (!TILE_LAYERS.includes(layer)) {
+            throw new Error(`Invalid tile layer: ${layer}`);
+        }
+        const dir = path.join(this.dataDir, 'tiles', courseId, layer);
+        const tilesRoot = path.join(this.dataDir, 'tiles');
+        if (!dir.startsWith(tilesRoot + path.sep)) {
+            throw new Error('Resolved tile layer dir escapes tiles directory');
+        }
+        return dir;
+    }
+
+    /**
+     * Sanitized path to the on-disk cache file for a per-layer tile archive:
+     * `<dataDir>/tile-archives/<courseId>/<layer>-<versionKey>-z<zoomKey>.tar`.
+     * `versionKey`/`zoomKey` are cache-key components only and must contain no
+     * path separators. Throws on any unsafe input.
+     */
+    resolveTileArchivePath(courseId: string, layer: TileLayer, versionKey: string, zoomKey: string): string {
+        if (!SAFE_ID_RE.test(courseId)) {
+            throw new Error(`Invalid courseId: ${courseId}`);
+        }
+        if (!TILE_LAYERS.includes(layer)) {
+            throw new Error(`Invalid tile layer: ${layer}`);
+        }
+        if (!SAFE_KEY_RE.test(versionKey)) {
+            throw new Error(`Invalid archive version key: ${versionKey}`);
+        }
+        if (!SAFE_KEY_RE.test(zoomKey)) {
+            throw new Error(`Invalid archive zoom key: ${zoomKey}`);
+        }
+        const file = `${layer}-${versionKey}-z${zoomKey}.tar`;
+        const archivePath = path.join(this.dataDir, 'tile-archives', courseId, file);
+        const archivesRoot = path.join(this.dataDir, 'tile-archives');
+        if (!archivePath.startsWith(archivesRoot + path.sep)) {
+            throw new Error('Resolved archive path escapes tile-archives directory');
+        }
+        return archivePath;
     }
 }

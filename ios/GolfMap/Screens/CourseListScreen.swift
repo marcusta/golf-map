@@ -9,6 +9,7 @@ struct CourseListScreen: View {
     @State private var model: CourseListModel?
     @State private var path: [CourseDestination] = []
     @State private var showSettings = false
+    @State private var showClubs = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -23,6 +24,9 @@ struct CourseListScreen: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button("Clubs", systemImage: "bag") {
+                            showClubs = true
+                        }
                         Button("Settings", systemImage: "gearshape") {
                             showSettings = true
                         }
@@ -36,6 +40,9 @@ struct CourseListScreen: View {
             }
             .sheet(isPresented: $showSettings) {
                 SettingsScreen()
+            }
+            .sheet(isPresented: $showClubs) {
+                ClubsScreen()
             }
         }
         .task {
@@ -90,7 +97,8 @@ struct CourseListScreen: View {
                         progress: model.progressByCourse[row.id],
                         isDownloading: model.progressByCourse[row.id] != nil,
                         onDownload: { model.download(courseId: row.id) },
-                        onCancel: { model.cancelDownload(courseId: row.id) }
+                        onCancel: { model.cancelDownload(courseId: row.id) },
+                        onRemove: { model.removeDownload(courseId: row.id) }
                     )
                 }
             }
@@ -123,6 +131,7 @@ private struct CourseRowView: View {
     let isDownloading: Bool
     let onDownload: () -> Void
     let onCancel: () -> Void
+    let onRemove: () -> Void
 
     private var isReady: Bool {
         if case .downloaded = row.availability { return true }
@@ -149,7 +158,7 @@ private struct CourseRowView: View {
             if isDownloading, let progress {
                 VStack(alignment: .leading, spacing: 2) {
                     ProgressView(value: progress.fraction)
-                    Text("\(progress.completed) / \(progress.total) tiles")
+                    Text(progress.label)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -157,6 +166,22 @@ private struct CourseRowView: View {
             }
         }
         .padding(.vertical, 4)
+        // A current bundle shows no inline action — the context menu is the
+        // repair path (re-fetch after a broken download, free disk space).
+        .contextMenu {
+            if isReady, !isDownloading {
+                Button {
+                    onDownload()
+                } label: {
+                    Label("Re-download", systemImage: "arrow.clockwise")
+                }
+                Button(role: .destructive) {
+                    onRemove()
+                } label: {
+                    Label("Remove download", systemImage: "trash")
+                }
+            }
+        }
     }
 
     private var rowHeader: some View {
