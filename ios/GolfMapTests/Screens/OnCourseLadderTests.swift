@@ -42,6 +42,46 @@ final class OnCourseLadderTests: XCTestCase {
         XCTAssertNil(rows.first { $0.kind == .layup }?.position) // unlocatable → nil (not tappable)
     }
 
+    func testLayupRowCarriesStructuredRemainingAndApproach() {
+        // The layup row keeps carry as its sort/primary distance, exposes the
+        // distance left to the green and the approach club as structured fields
+        // (so the rail needn't parse `detail`), and still fills `detail` for the
+        // advice banner. Non-layup rows leave both structured fields nil.
+        let rows = LadderBuilder.build(
+            planShots: [LadderBuilder.PlanShot(index: 1, clubName: "3H", meters: 210, position: at(1, 1))],
+            hazards: [LadderBuilder.HazardItem(id: "b1", label: "Bunker", frontM: 240, carryM: 255, position: at(2, 2))],
+            aims: [],
+            layups: [LadderBuilder.LayupItem(clubName: "Driver", carryM: 235, remainingM: 65, approachClub: "7i", position: at(4, 4))],
+            green: LadderBuilder.Green(front: nil, center: 300, back: nil, pin: nil, pinName: nil,
+                                       centerPosition: at(5, 5), pinPosition: nil)
+        )
+        let layup = rows.first { $0.kind == .layup }
+        XCTAssertEqual(layup?.meters, 235)           // carry stays the sort key
+        XCTAssertEqual(layup?.remainingM, 65)        // structured distance to green
+        XCTAssertEqual(layup?.approachClub, "7i")    // structured approach club
+        XCTAssertEqual(layup?.detail, "65 m in · 7i") // banner string still populated
+        // Every other kind leaves the layup-only fields nil.
+        for row in rows where row.kind != .layup {
+            XCTAssertNil(row.remainingM, "\(row.kind) should not carry remainingM")
+            XCTAssertNil(row.approachClub, "\(row.kind) should not carry approachClub")
+        }
+    }
+
+    func testLayupRowWithoutApproachClubOmitsIt() {
+        // A layup the bag can't name an approach club for keeps a nil
+        // approachClub and a `detail` without the "· club" suffix.
+        let rows = LadderBuilder.build(
+            planShots: [], hazards: [], aims: [],
+            layups: [LadderBuilder.LayupItem(clubName: "Driver", carryM: 235, remainingM: 65, approachClub: nil, position: at(4, 4))],
+            green: LadderBuilder.Green(front: nil, center: 300, back: nil, pin: nil, pinName: nil,
+                                       centerPosition: at(5, 5), pinPosition: nil)
+        )
+        let layup = rows.first { $0.kind == .layup }
+        XCTAssertEqual(layup?.remainingM, 65)
+        XCTAssertNil(layup?.approachClub)
+        XCTAssertEqual(layup?.detail, "65 m in")
+    }
+
     func testHazardRowCarriesBothEdges() {
         let rows = LadderBuilder.build(
             planShots: [],
@@ -74,13 +114,13 @@ final class OnCourseLadderTests: XCTestCase {
 
     func testLadderLayupsEmptyWhenGreenReachable() {
         let bag = [club("Driver", 235), club("7i", 155)]
-        // Longest club (235) reaches a 150 m green → no layups.
-        XCTAssertTrue(LadderBuilder.ladderLayups(clubs: bag, rawCenterM: 150).isEmpty)
+        // Longest club (235) reaches a 150 m routed target → no layups.
+        XCTAssertTrue(LadderBuilder.ladderLayups(clubs: bag, routedTargetM: 150).isEmpty)
     }
 
     func testLadderLayupsOutOfRangeOneRowPerApproachCapped() {
         let bag = [club("Driver", 235), club("5i", 175), club("7i", 155), club("PW", 115), club("SW", 90)]
-        let layups = LadderBuilder.ladderLayups(clubs: bag, rawCenterM: 300, cap: 3)
+        let layups = LadderBuilder.ladderLayups(clubs: bag, routedTargetM: 300, cap: 3)
         // 5 distinct approach clubs → capped to the 3 longest carries.
         XCTAssertEqual(layups.count, 3)
         XCTAssertEqual(layups.map(\.club.name), ["Driver", "5i", "7i"])
@@ -90,9 +130,22 @@ final class OnCourseLadderTests: XCTestCase {
         // Two clubs (210, 200) both leave the 100 m club as the approach → the
         // longer carry wins that approach slot; the short club owns a different one.
         let bag = [club("long", 210), club("mid", 200), club("app", 100)]
-        let layups = LadderBuilder.ladderLayups(clubs: bag, rawCenterM: 300, cap: 5)
+        let layups = LadderBuilder.ladderLayups(clubs: bag, routedTargetM: 300, cap: 5)
         let byApproach = Dictionary(uniqueKeysWithValues: layups.map { ($0.approachClub!.name, $0.club.name) })
         XCTAssertEqual(byApproach["app"], "long") // 210 kept over 200 for the "app" approach
         XCTAssertEqual(layups.count, 2) // "app"→long and "mid"→app
+    }
+
+    func testLadderLayupsLieFilterDropsOptionBeforeCapFreeingASlot() {
+        // The lie filter runs BEFORE the dedupe-and-cap: reject the 5i landing
+        // (carry 175) as an unplayable lie and its slot is freed for PW, which
+        // the cap-3 would otherwise have excluded (full order is Driver, 5i, 7i,
+        // PW, SW). So the dropped rung genuinely lets a farther option surface.
+        let bag = [club("Driver", 235), club("5i", 175), club("7i", 155), club("PW", 115), club("SW", 90)]
+        let layups = LadderBuilder.ladderLayups(
+            clubs: bag, routedTargetM: 300,
+            landingAcceptable: { carry in carry != 175 }, cap: 3
+        )
+        XCTAssertEqual(layups.map(\.club.name), ["Driver", "7i", "PW"])
     }
 }

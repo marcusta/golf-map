@@ -6,9 +6,10 @@ import SwiftUI
 /// tick, a small label, and a big distance. Tapping a rung focuses the map on
 /// that feature (pan + cyan highlight) and marks the rung selected.
 ///
-/// Reads `model.ladderRows` (the merged near→far list) and drives
-/// `model.focusMap`. Club advice + the dispersion ellipse on tap land in a
-/// follow-up; this owns the layout + selection.
+/// Reads `model.ladderRows` (the merged near→far list), presents it far→near so
+/// distance increases up the rail, and drives `model.focusMap`. Club advice +
+/// the dispersion ellipse on tap land in a follow-up; this owns the layout +
+/// selection.
 struct LadderRailView: View {
     let model: OnCourseModel
     @Environment(AppEnvironment.self) private var env
@@ -28,7 +29,7 @@ struct LadderRailView: View {
     }
 
     var body: some View {
-        let rows = model.ladderRows
+        let rows = model.ladderRows.reversed()
         if !rows.isEmpty {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 6) {
@@ -38,7 +39,8 @@ struct LadderRailView: View {
                 }
                 .padding(.vertical, 2)
             }
-            .frame(width: 112)
+            .frame(width: 120)
+            .defaultScrollAnchor(.bottom)
             .scrollBounceBehavior(.basedOnSize)
         }
     }
@@ -50,6 +52,13 @@ struct LadderRailView: View {
         // number, the near edge a small sub-figure. Everything else is a single
         // distance from the ball.
         let big = row.carryM ?? row.meters
+        // Layups keep carry as the big number (the near→far sort key = distance
+        // from the ball) but earn a second line: the approach club appended to
+        // the label — what tells two "Lay up" rungs apart — and the distance
+        // still left to the green as the small sub-figure beside the carry.
+        let label = row.kind == .layup
+            ? row.label + (row.approachClub.map { " · \($0)" } ?? "")
+            : row.label
         Button {
             if let position = row.position {
                 model.focusMap(on: position, ladderId: row.id)
@@ -60,9 +69,9 @@ struct LadderRailView: View {
                     .fill(accent)
                     .frame(width: 3)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(row.label)
+                    Text(label)
                         .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(selected ? accent : accent.opacity(0.9))
+                        .foregroundStyle(selected ? Color.white : accent.opacity(0.9))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
@@ -71,31 +80,55 @@ struct LadderRailView: View {
                             Text(DistanceFormat.string(row.meters, unit: unit))
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
+                        } else if row.kind == .layup, let remaining = row.remainingM {
+                            // "235 · 65 in" — carry, then the distance left to the
+                            // green after the layup, mirroring the hazard sub-figure.
+                            Text(DistanceFormat.string(remaining, unit: unit) + " in")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                         }
                     }
                 }
                 Spacer(minLength: 0)
-                if selected {
-                    Image(systemName: "scope")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Self.highlight)
-                }
             }
             .padding(.vertical, 6)
             .padding(.horizontal, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                (selected ? Self.highlight.opacity(0.16) : Color.black.opacity(0.42)),
-                in: RoundedRectangle(cornerRadius: 10)
-            )
-            .overlay(
+            .background {
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(selected ? Self.highlight.opacity(0.6) : .clear, lineWidth: 1)
-            )
+                    .fill(Color.black.opacity(selected ? 0.58 : 0.42))
+                    .overlay {
+                        if selected {
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Self.highlight.opacity(0.12))
+                        }
+                    }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(
+                        selected ? Self.highlight.opacity(0.9) : .clear,
+                        lineWidth: 1.5
+                    )
+            }
         }
         .buttonStyle(.plain)
         .disabled(row.position == nil)
-        .accessibilityLabel("\(row.label), \(big) meters" + (row.position != nil ? ". Tap to show on map." : ""))
+        .accessibilityLabel(accessibilityLabel(row, big: big, label: label))
+    }
+
+    /// Spoken description of a rung. `label` already carries the approach club
+    /// for layups; the layup case also voices the remaining distance so a
+    /// "Lay up" rung announces the whole outcome ("carry, leaves X to the green")
+    /// rather than just its carry.
+    private func accessibilityLabel(_ row: OnCourseModel.LadderRow, big: Int, label: String) -> String {
+        var base = "\(label), \(big) meters"
+        if row.kind == .layup, let remaining = row.remainingM {
+            base += ", \(remaining) meters to the green"
+        }
+        return base + (row.position != nil ? ". Tap to show on map." : "")
     }
 
     /// Cyan focus color — matches the map highlight ring.

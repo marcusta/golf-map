@@ -671,4 +671,257 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertEqual(outCmd.token, 2, "token bumps each tap so identical deltas re-apply")
         XCTAssertEqual(model.cameraCommand, camBefore, "still no re-fit")
     }
+
+    // MARK: - Feature: terrain plays-as for aim + layup ladder rungs
+
+    /// A bag whose longest carry (220 m) falls well short of hole 1's ~445 m
+    /// green, so the ladder surfaces layup rungs.
+    private func layupClubs() -> [ClubRecord] {
+        [
+            ClubRecord(id: "dr", name: "Driver", carryM: 220, dispersionM: 25, sortOrder: 0),
+            ClubRecord(id: "3w", name: "3 Wood", carryM: 200, dispersionM: 22, sortOrder: 1),
+            ClubRecord(id: "5i", name: "5 Iron", carryM: 170, dispersionM: 18, sortOrder: 2),
+            ClubRecord(id: "7i", name: "7 Iron", carryM: 150, dispersionM: 16, sortOrder: 3),
+            ClubRecord(id: "pw", name: "PW",     carryM: 120, dispersionM: 14, sortOrder: 4),
+        ]
+    }
+
+    /// Focus the first ladder rung of `kind` and return its banner advice.
+    private func advice(
+        _ model: OnCourseModel, kind: OnCourseModel.LadderRow.Kind
+    ) -> OnCourseModel.TargetAdvice? {
+        guard let row = model.ladderRows.first(where: { $0.kind == kind }),
+              let pos = row.position else { return nil }
+        model.focusMap(on: pos, ladderId: row.id)
+        return model.selectedTargetAdvice
+    }
+
+    func testAimRungGetsPlaysAsFromTerrainSampleWhenElevationUnstored() async throws {
+        // The fixture's aims carry no stored elevation. With a terrain sampler
+        // injected, the sweep fills the offline-DEM elevation at the aim so its
+        // rung shows plays-as, not just the actual distance.
+        let model = makeModel()
+        model.elevationSampler = { _ in 40 } // 30 m above the default tee (elev 10)
+
+        // Before any sweep there is no cached sample → the rung stays actual.
+        XCTAssertNil(try XCTUnwrap(advice(model, kind: .aim)).playsAsM,
+                     "aim has no plays-as until the terrain sweep fills its elevation")
+
+        await model.refreshLadderElevationsAwaiting()
+        let after = try XCTUnwrap(advice(model, kind: .aim))
+        XCTAssertNotNil(after.playsAsM, "aim rung plays-as after the terrain sample")
+        XCTAssertEqual(after.elevationDeltaM, 30, "uphill: 40 − 10 m tee")
+    }
+
+    func testLayupRungGetsPlaysAsFromTerrainSample() async throws {
+        // Layups are projected points on the shot line with no stored elevation;
+        // the sweep samples the offline DEM at each landing point so they, too,
+        // get plays-as.
+        let model = makeModel()
+        model.setClubs(layupClubs())
+        model.elevationSampler = { _ in 40 }
+        XCTAssertNotNil(model.ladderRows.first { $0.kind == .layup },
+                        "green out of range → layup rungs present")
+
+        await model.refreshLadderElevationsAwaiting()
+        let layup = try XCTUnwrap(advice(model, kind: .layup))
+        XCTAssertNotNil(layup.playsAsM, "layup rung plays-as after the terrain sample")
+        XCTAssertEqual(layup.elevationDeltaM, 30, "uphill: 40 − 10 m tee")
+    }
+
+    func testCompetitionModeKeepsLadderRungsActualOnly() async throws {
+        // DMD competition rule: distance only. Even with a terrain sample the
+        // plays-as / elevation figures are gated off.
+        let model = makeModel()
+        model.competitionMode = true
+        model.elevationSampler = { _ in 40 }
+        await model.refreshLadderElevationsAwaiting()
+        let aim = try XCTUnwrap(advice(model, kind: .aim))
+        XCTAssertNil(aim.playsAsM, "competition mode: no plays-as")
+        XCTAssertNil(aim.elevationDeltaM, "competition mode: no elevation delta")
+    }
+
+    func testHazardRungStaysActualOnlyEvenWithTerrainSampler() async throws {
+        // Hazards are deliberately actual-only: their front/carry figures are
+        // shot-line projections while `position` is the centroid (off-line for
+        // side hazards), so a centroid plays-as would mismatch the rung.
+        let model = makeModel()
+        model.elevationSampler = { _ in 40 }
+        model.setHazards([hazardBox(58.3620, 15.7090)]) // on hole 1's tee→green line
+        XCTAssertNotNil(model.ladderRows.first { $0.kind == .hazard }, "hazard rung present")
+
+        await model.refreshLadderElevationsAwaiting()
+        let hazard = try XCTUnwrap(advice(model, kind: .hazard))
+        XCTAssertNil(hazard.playsAsM, "hazard rung stays actual-only")
+        XCTAssertNil(hazard.elevationDeltaM, "hazard rung stays actual-only")
+    }
+
+    // MARK: - Feature: sweep triggers + self-healing gate (bag loads late)
+
+    func testBagLoadingAfterFirstFixPrimesLayupPlaysAs() async throws {
+        // Reproduces the production ordering (CourseScreen): inject the sampler,
+        // take the FIRST GPS fix while the bag is still empty (no layup rungs to
+        // sample), THEN the cached bag lands. The late `setClubs` must force a
+        // sweep so the freshly-created layup rungs get their terrain sample —
+        // before the fix nothing re-swept when the bag loaded and a stationary
+        // user's next fix was blocked by the move gate, so layups stayed
+        // actual-only forever.
+        let model = makeModel()
+        model.elevationSampler = { _ in 40 }          // injected AFTER init (didSet primes)
+        let fix = LatLon(lat: 58.3600, lon: 15.7100)  // ~ default tee, elev 10
+        model.updateUserLocation(fix)                 // first fix, bag still empty
+
+        XCTAssertNil(model.ladderRows.first { $0.kind == .layup },
+                     "no layup rungs before the bag loads")
+
+        model.setClubs(layupClubs())                  // bag lands late (real trigger)
+        XCTAssertNotNil(model.ladderRows.first { $0.kind == .layup },
+                        "bag loaded → layup rungs present")
+
+        // Drain the fire-and-forget sweep setClubs kicked (same poll pattern as
+        // testUserElevationComesFromSampler); no explicit awaiting-seam call, so
+        // this only passes because setClubs itself triggered the sweep.
+        var layup: OnCourseModel.TargetAdvice?
+        for _ in 0..<100 {
+            layup = advice(model, kind: .layup)
+            if layup?.playsAsM != nil { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertNotNil(try XCTUnwrap(layup).playsAsM,
+                        "late-loaded bag's layup rung gets plays-as from the sweep setClubs triggered")
+    }
+
+    func testSelfHealingGateResamplesMissingCellsAtUnchangedOrigin() async throws {
+        // Clubs present, cache primed, then dropped with the origin UNCHANGED. A
+        // plain (non-forced) refresh — the same gate a stationary user's next
+        // GPS fix takes via updateUserLocation — must still refill the missing
+        // cells instead of short-circuiting on the >5 m move gate.
+        //
+        // Browse mode so the origin is the default tee (stored elevation 10):
+        // that isolates the layup-CELL self-healing from the orthogonal,
+        // separately-sampled user-position elevation.
+        let model = makeModel()
+        model.setGPSEnabled(false) // origin = default tee (stationary, stored elev)
+        model.setClubs(layupClubs())
+        model.elevationSampler = { _ in 40 }
+        await model.refreshLadderElevationsAwaiting()  // force-fill deterministically
+        XCTAssertNotNil(try XCTUnwrap(advice(model, kind: .layup)).playsAsM,
+                        "layup plays-as after the initial sweep")
+
+        // Drop every cached sample; the sweep origin stays put.
+        model.debugClearLadderElevationCache()
+        XCTAssertNil(advice(model, kind: .layup)?.playsAsM,
+                     "cache cleared → layup rung back to actual-only")
+
+        // The non-forced refresh (force: false) is the exact gate the
+        // updateUserLocation path uses for the SAME fix. It must self-heal:
+        // missing cells re-arm the sweep even though the origin has not moved.
+        let proceeded = await model.refreshLadderElevationsAwaiting(force: false)
+        XCTAssertTrue(proceeded,
+                      "missing cells re-arm the non-forced sweep at an unchanged origin")
+        XCTAssertNotNil(try XCTUnwrap(advice(model, kind: .layup)).playsAsM,
+                        "self-healing gate refilled the layup sample")
+    }
+
+    // MARK: - Feature: layups routed along the hole's play-line
+
+    /// A synthetic dogleg hole built from exact SWEREF 99 TM coordinates: the
+    /// tee→corner leg runs 200 m due north, the corner→green leg 200 m due east.
+    /// The ROUTED length is 400 m; the STRAIGHT tee→green line is only ~283 m, so
+    /// a layup placed along the route lands on a materially different point than
+    /// the old straight-line placement would.
+    private func doglegPlanar() -> (tee: Sweref99TM.Point, corner: Sweref99TM.Point, green: Sweref99TM.Point) {
+        (Sweref99TM.Point(x: 500_000, y: 6_470_000),
+         Sweref99TM.Point(x: 500_000, y: 6_470_200),
+         Sweref99TM.Point(x: 500_200, y: 6_470_200))
+    }
+
+    private func makeDoglegModel() -> OnCourseModel {
+        let p = doglegPlanar()
+        let tee = Sweref99TM.toWGS84(p.tee)
+        let corner = Sweref99TM.toWGS84(p.corner)
+        let green = Sweref99TM.toWGS84(p.green)
+        let course = CourseRecord(
+            id: "dl", name: "Dogleg GC", status: "published",
+            revision: 1, downloadedRevision: 1, updatedAt: "2026-01-01T00:00:00Z",
+            bundleState: .complete
+        )
+        let holes = [HoleRecord(id: "d1", courseId: "dl", number: 1, par: 5, strokeIndex: 1)]
+        let tees = [TeeRecord(id: "dt", holeId: "d1", name: "default", lat: tee.lat, lon: tee.lon, sortOrder: 0)]
+        let greens = [GreenRecord(id: "dg", holeId: "d1", centerLat: green.lat, centerLon: green.lon)]
+        let aims = [AimPointRecord(id: "da", holeId: "d1", sortOrder: 0, lat: corner.lat, lon: corner.lon, label: "Corner")]
+        let manifest = TileManifestRecord(
+            courseId: "dl", west: green.lon - 0.05, south: tee.lat - 0.05,
+            east: green.lon + 0.05, north: green.lat + 0.05,
+            orthoMinZoom: 14, orthoMaxZoom: 20, terrainMinZoom: 12, terrainMaxZoom: 17,
+            elevMin: 0, elevMax: 100, generatedAt: "2026-01-01T00:00:00Z", versionParam: "v1"
+        )
+        let furniture = CourseFurniture(
+            course: course, holes: holes, tees: tees, greens: greens,
+            pins: [], aimPoints: aims, manifest: manifest
+        )
+        let model = OnCourseModel(furniture: furniture, defaults: defaults)
+        model.setGPSEnabled(false) // browse mode: origin is the tee, no GPS fix
+        return model
+    }
+
+    /// Carries chosen so each leaves a DISTINCT approach club (100/150/250/300),
+    /// and the longest (300 m) is short of the 400 m routed target so the green
+    /// is out of range and the ladder surfaces layups.
+    private func doglegBag() -> [ClubRecord] {
+        [
+            ClubRecord(id: "c300", name: "300", carryM: 300, dispersionM: 20, sortOrder: 0),
+            ClubRecord(id: "c250", name: "250", carryM: 250, dispersionM: 20, sortOrder: 1),
+            ClubRecord(id: "c150", name: "150", carryM: 150, dispersionM: 20, sortOrder: 2),
+            ClubRecord(id: "c100", name: "100", carryM: 100, dispersionM: 20, sortOrder: 3),
+        ]
+    }
+
+    func testLayupOnDoglegSitsOnSecondLegWithRoutedRemaining() throws {
+        let model = makeDoglegModel()
+        model.setClubs(doglegBag())
+
+        let layups = model.ladderRows.filter { $0.kind == .layup }
+        XCTAssertFalse(layups.isEmpty, "green out of routed range → layups present in browse mode")
+
+        // A layup row's `meters` is its carry, so the 300 m club's rung is found
+        // by carry. Its carry (300) exceeds leg 1 (200 m), so it lands 100 m up
+        // the SECOND leg — 100 m east of the corner, still at the corner's full
+        // 200 m northing. On the straight tee→green line 300 m would overshoot
+        // the ~283 m green entirely; the routed placement proves the fix.
+        let long = try XCTUnwrap(layups.first { $0.meters == 300 })
+        let planar = Sweref99TM.fromWGS84(try XCTUnwrap(long.position))
+        XCTAssertEqual(planar.x, 500_100, accuracy: 0.1, "100 m east along leg 2")
+        XCTAssertEqual(planar.y, 6_470_200, accuracy: 0.1, "at the corner's northing (on leg 2)")
+        // remainingM is genuine path-distance left: routed 400 − carry 300 = 100.
+        XCTAssertEqual(long.remainingM, 100)
+    }
+
+    func testLayupLandingInWaterIsDroppedFreeingACapSlot() {
+        let model = makeDoglegModel()
+        model.setClubs(doglegBag())
+
+        // Baseline (no surfaces → every landing lies as rough, all accepted):
+        // four distinct approaches, cap 3 → the three longest carries.
+        XCTAssertEqual(
+            model.ladderRows.filter { $0.kind == .layup }.map(\.meters).sorted(by: >),
+            [300, 250, 150]
+        )
+
+        // Drop a water box precisely over the 300-club landing (100 m east of the
+        // corner, at 6 470 200 N). Only that rung's landing sits inside it.
+        let c = Sweref99TM.Point(x: 500_100, y: 6_470_200)
+        model.setSurfaces([FlatRing(points: [
+            Vec2(x: c.x - 15, y: c.y - 15), Vec2(x: c.x + 15, y: c.y - 15),
+            Vec2(x: c.x + 15, y: c.y + 15), Vec2(x: c.x - 15, y: c.y + 15),
+        ], kind: "water")])
+
+        // The 300 rung is dropped (penalty lie); filtering happens before the
+        // cap, so the freed slot surfaces the 100-carry rung the cap had excluded,
+        // and the cap is still respected (3 rungs).
+        XCTAssertEqual(
+            model.ladderRows.filter { $0.kind == .layup }.map(\.meters).sorted(by: >),
+            [250, 150, 100]
+        )
+    }
 }

@@ -126,14 +126,54 @@ final class OnCourseModel {
 
     /// Terrain elevation sampler (bundle terrain tiles); injected by the
     /// screen, stubbed in tests. Used for the user position and as a fallback
-    /// for greens without a stored elevation.
-    @ObservationIgnored var elevationSampler: (@Sendable (LatLon) async -> Double?)?
+    /// for greens without a stored elevation. Injection happens AFTER `init`
+    /// (where the sampler is still nil, so the constructor's sweep is a no-op),
+    /// so priming the ladder cache is deferred to here.
+    @ObservationIgnored var elevationSampler: (@Sendable (LatLon) async -> Double?)? {
+        // Injection after init always primes the ladder-elevation cache — init's
+        // own sweep ran while this was nil.
+        didSet { refreshLadderElevations(force: true) }
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var userElevationTask: Task<Void, Never>?
     /// Terrain fallback elevation for the current hole's green (only sampled
     /// when the green record has no stored elevation).
     private var greenTerrainElevation: Double?
+
+    /// A ~5 m planar (SWEREF99TM) grid cell — the quantisation key for
+    /// `ladderTerrainElevations`. Collapses GPS jitter and near-coincident
+    /// aim/layup points onto a single terrain sample.
+    private struct LadderCellKey: Hashable {
+        let gx: Int
+        let gy: Int
+        init(_ position: LatLon) {
+            let p = Sweref99TM.fromWGS84(position)
+            gx = Int((p.x / Self.gridM).rounded())
+            gy = Int((p.y / Self.gridM).rounded())
+        }
+        private static let gridM = 5.0
+    }
+
+    /// Terrain-sampled elevations for ladder targets that carry no stored one —
+    /// nil-elevation (moved / never-recorded) aim points and every layup
+    /// landing point — keyed by a ~5 m grid cell. Filled asynchronously by
+    /// `refreshLadderElevations`; writes here re-render the banner. Cleared on
+    /// hole change and capped at `ladderElevationCacheCap` (a small, transient
+    /// per-hole working set).
+    private var ladderTerrainElevations: [LadderCellKey: Double] = [:]
+    /// Cells with a sample in flight — dedupes concurrent samples for one cell.
+    @ObservationIgnored private var ladderElevationInFlight: Set<LadderCellKey> = []
+    /// Origin at the last ladder-elevation sweep; the move gate compares to it.
+    @ObservationIgnored private var lastLadderSweepOrigin: LatLon?
+
+    /// Safety cap on `ladderTerrainElevations`; the live working set is a
+    /// handful of aims + layups per hole, so this only bounds pathological
+    /// growth. Cleared wholesale (not LRU-evicted) when exceeded.
+    private static let ladderElevationCacheCap = 64
+    /// Planar origin move (m) that re-arms the ladder-elevation sweep. Under it,
+    /// GPS jitter reuses the cached samples instead of re-sampling every fix.
+    private static let ladderSweepMoveThresholdM = 5.0
 
     init(furniture: CourseFurniture, defaults: UserDefaults = .standard) {
         self.courseId = furniture.course.id
@@ -180,6 +220,7 @@ final class OnCourseModel {
         loadTeeOverrides()
         loadAdjustOverrides()
         refreshGreenElevationFallback()
+        refreshLadderElevations(force: true)
     }
 
     // MARK: - Hole navigation
@@ -267,6 +308,10 @@ final class OnCourseModel {
         restoreCamera = nil
         cameraToken += 1
         refreshGreenElevationFallback()
+        // The per-hole target set changes; drop the old samples and re-sweep.
+        ladderTerrainElevations.removeAll(keepingCapacity: true)
+        lastLadderSweepOrigin = nil
+        refreshLadderElevations(force: true)
     }
 
     // MARK: - Map tools (transient modes over the normal hole view)
@@ -465,6 +510,10 @@ final class OnCourseModel {
         guard enabled != gpsEnabled else { return }
         gpsEnabled = enabled
         defaults.set(enabled, forKey: Self.gpsEnabledKey(courseId: courseId))
+        // The origin flips between the GPS fix and the tee — force a sweep so
+        // the new origin's layup landing positions are sampled even when no
+        // further GPS fix arrives.
+        refreshLadderElevations(force: true)
     }
 
     func toggleGPS() { setGPSEnabled(!gpsEnabled) }
@@ -708,6 +757,9 @@ final class OnCourseModel {
                 Self.encodeLatLon(position),
                 forKey: Self.aimOverrideKey(courseId: courseId, holeId: hole.id, aimId: aim.id)
             )
+            // A moved aim degrades its stored elevation to nil, so its rung now
+            // depends on a terrain sample at the new point — force a re-sweep.
+            refreshLadderElevations(force: true)
         }
     }
 
@@ -770,6 +822,11 @@ final class OnCourseModel {
     /// the plays-like elevation.
     func updateUserLocation(_ location: LatLon?) {
         userLocation = location
+        // Re-sweep the ladder-target elevations. The sweep self-gates: it runs
+        // when the origin has moved meaningfully OR any current target cell is
+        // still uncached, so a stationary user whose bag/targets changed still
+        // gets sampled; pure GPS jitter with a full cache reuses it.
+        refreshLadderElevations()
         userElevationTask?.cancel()
         guard let location, let sampler = elevationSampler else {
             userElevation = nil
@@ -800,6 +857,123 @@ final class OnCourseModel {
             self?.greenTerrainElevation = elevation
         }
     }
+
+    /// Samples terrain elevation for the CURRENT ladder targets that need one —
+    /// aim points without a stored elevation, and every layup landing point —
+    /// so those rungs show plays-as (elevation + wind), not just the actual
+    /// distance. Fills `ladderTerrainElevations` (quantised to ~5 m) from
+    /// weak-self tasks; each cell is sampled at most once (skips cells already
+    /// cached or in flight).
+    ///
+    /// Self-healing gate: the sweep proceeds when `force` is set (hole change /
+    /// sampler injection / clubs load / GPS flip / adjust commit), OR the origin
+    /// moved > `ladderSweepMoveThresholdM` since the last sweep, OR any current
+    /// target cell is still missing (uncached and not in flight). The move gate
+    /// therefore short-circuits ONLY when a full cache means the sweep would do
+    /// nothing anyway — so a stationary user whose targets appeared LATER (the
+    /// bag loaded after the first fix) still gets those cells sampled, while
+    /// pure GPS jitter over a full cache reuses it. Cheap on the GPS path:
+    /// building the target list is a small walk over `ladderRows`.
+    private func refreshLadderElevations(force: Bool = false) {
+        guard let sampler = elevationSampler, let origin else { return }
+        let targets = ladderElevationSampleTargets()
+        guard ladderSweepShouldProceed(force: force, targets: targets, origin: origin) else { return }
+        lastLadderSweepOrigin = origin
+
+        // Bound pathological growth before this sweep's cells go in; the sweep
+        // immediately repopulates whatever the current hole needs.
+        if ladderTerrainElevations.count > Self.ladderElevationCacheCap {
+            ladderTerrainElevations.removeAll(keepingCapacity: true)
+        }
+
+        for position in targets {
+            let key = LadderCellKey(position)
+            guard ladderTerrainElevations[key] == nil,
+                  !ladderElevationInFlight.contains(key) else { continue }
+            ladderElevationInFlight.insert(key)
+            Task { [weak self] in
+                let elevation = await sampler(position)
+                guard let self else { return }
+                self.ladderElevationInFlight.remove(key)
+                if let elevation { self.ladderTerrainElevations[key] = elevation }
+            }
+        }
+    }
+
+    /// The self-healing sweep gate (see `refreshLadderElevations`): proceed when
+    /// forced, when a current target cell is still missing (uncached and not in
+    /// flight), or when the origin moved past the threshold since the last
+    /// sweep. Shared by the production sweep and the DEBUG awaiting seam so both
+    /// honor the identical gate.
+    private func ladderSweepShouldProceed(force: Bool, targets: [LatLon], origin: LatLon) -> Bool {
+        if force { return true }
+        let hasMissingCell = targets.contains { position in
+            let key = LadderCellKey(position)
+            return ladderTerrainElevations[key] == nil && !ladderElevationInFlight.contains(key)
+        }
+        if hasMissingCell { return true }
+        guard let last = lastLadderSweepOrigin else { return true }
+        return Distance.planarMeters(origin, last) > Self.ladderSweepMoveThresholdM
+    }
+
+    /// The ladder targets whose plays-as depends on a terrain sample this hole:
+    /// aim points without a stored elevation, then every layup landing point.
+    /// These are the exact positions `targetElevation` later looks up, so the
+    /// quantised cell keys line up between sampling and lookup.
+    private func ladderElevationSampleTargets() -> [LatLon] {
+        var positions: [LatLon] = []
+        for aim in targets.aimPoints where aim.elevation == nil {
+            positions.append(aim.position)
+        }
+        for row in ladderRows where row.kind == .layup {
+            if let p = row.position { positions.append(p) }
+        }
+        return positions
+    }
+
+    /// The terrain elevation cached for `position`'s ~5 m grid cell, if the
+    /// ladder-elevation sweep has filled it; nil until then.
+    private func ladderTerrainElevation(at position: LatLon) -> Double? {
+        ladderTerrainElevations[LadderCellKey(position)]
+    }
+
+    #if DEBUG
+    /// Test seam: run a ladder-elevation sweep and AWAIT every sample, so tests
+    /// assert on plays-as deterministically instead of polling the production
+    /// fire-and-forget tasks. Shares both the target selection AND the gate
+    /// (`ladderSweepShouldProceed`) with `refreshLadderElevations`, so a test
+    /// can exercise the self-healing gate on the non-forced path by passing
+    /// `force: false`. Returns whether the gate let the sweep proceed.
+    ///
+    /// Unlike production it does NOT skip in-flight cells (it awaits and writes
+    /// them directly, idempotently): a fire-and-forget sweep the production
+    /// triggers kicked may have already marked a cell in flight, and the test
+    /// must still resolve it synchronously.
+    @discardableResult
+    func refreshLadderElevationsAwaiting(force: Bool = true) async -> Bool {
+        guard let sampler = elevationSampler, let origin else { return false }
+        let targets = ladderElevationSampleTargets()
+        guard ladderSweepShouldProceed(force: force, targets: targets, origin: origin) else { return false }
+        lastLadderSweepOrigin = origin
+        if ladderTerrainElevations.count > Self.ladderElevationCacheCap {
+            ladderTerrainElevations.removeAll(keepingCapacity: true)
+        }
+        for position in targets where ladderTerrainElevations[LadderCellKey(position)] == nil {
+            if let elevation = await sampler(position) {
+                ladderTerrainElevations[LadderCellKey(position)] = elevation
+            }
+        }
+        return true
+    }
+
+    /// Test seam: drop the cached ladder terrain samples WITHOUT resetting the
+    /// sweep origin, so a test can prove the self-healing gate re-samples the
+    /// missing cells at an UNCHANGED origin (the move gate alone would block it).
+    func debugClearLadderElevationCache() {
+        ladderTerrainElevations.removeAll(keepingCapacity: true)
+        ladderElevationInFlight.removeAll()
+    }
+    #endif
 
     // MARK: - Derived: origin
 
@@ -1188,6 +1362,21 @@ final class OnCourseModel {
             return []
         }
         guard nextAimAhead != nil else { return [origin, center] }
+        return forwardRoute(from: origin)
+    }
+
+    /// The forward play-line from `origin`: `origin`, then every aim not yet
+    /// passed (still closer to the green than `origin`, in tee→green order), then
+    /// the green center. UNLIKE `gpsForwardRoute` this is NOT gated on the GPS
+    /// mode or the routing threshold — it always follows the hole's routing. In
+    /// browse mode `origin` is the tee, so it equals the drawn `holeRoute`; under
+    /// live GPS it is `gpsForwardRoute`'s body (which reuses it once routing is
+    /// active). It is the spine the layup ladder measures along and places rungs
+    /// on, so a layup on a dogleg lands on the routed leg rather than the straight
+    /// origin→green line. Collapses to `[origin]` when the green center is
+    /// unknown (no target to route toward).
+    private func forwardRoute(from origin: LatLon) -> [LatLon] {
+        guard let center = targets.greenCenter else { return [origin] }
         let originToGreen = Distance.planarMeters(origin, center)
         let forwardAims = targets.aimPoints
             .map(\.position)
@@ -1213,6 +1402,10 @@ final class OnCourseModel {
     /// reading the GRDB cache, and again when an online refresh lands.
     func setClubs(_ clubs: [ClubRecord]) {
         self.clubs = clubs
+        // Clubs define the layup rungs — force a sweep so the new landing
+        // points get sampled when the bag loads (asynchronously, from the GRDB
+        // cache / server) after the first location fix.
+        refreshLadderElevations(force: true)
     }
 
     // MARK: - Plan editing (planner tool — task T3)
@@ -1597,6 +1790,15 @@ final class OnCourseModel {
         let meters: Int
         /// Hazard far-edge (carry) distance, whole meters; nil for other kinds.
         let carryM: Int?
+        /// Layup only: distance still LEFT to the green center after this layup
+        /// lands, whole meters. Nil for every other kind. Structured so the rail
+        /// renders it directly instead of parsing `detail`; `detail` stays the
+        /// human-readable form the advice banner shows.
+        var remainingM: Int? = nil
+        /// Layup only: the club you'd play the approach with from where this
+        /// layup leaves you — what makes one "Lay up" rung distinct from the
+        /// next. Nil for every other kind (and nil when the bag can't name one).
+        var approachClub: String? = nil
         /// Where the feature sits on the map (WGS84), for tap-to-focus. Nil when
         /// the row has no single point (e.g. an unlocatable projected hazard).
         let position: LatLon?
@@ -1634,16 +1836,29 @@ final class OnCourseModel {
         }
 
         var layups: [LadderBuilder.LayupItem] = []
-        if !competitionMode, !clubs.isEmpty, let center = targets.greenCenter {
+        if !competitionMode, !clubs.isEmpty, targets.greenCenter != nil {
+            // Measure AND place layups along the hole's routed play-line (ball →
+            // forward aims → green), so a rung's distance-left and its map point
+            // agree and a dogleg layup lands on the second leg, not off in the
+            // trees on the straight origin→green line. The lie filter drops any
+            // option whose landing point sits in an unplayable lie.
+            let route = forwardRoute(from: origin)
+            let routedTargetM = HoleLength.pathMeters(route)
             layups = LadderBuilder.ladderLayups(
-                clubs: clubs, rawCenterM: Distance.planarMeters(origin, center)
+                clubs: clubs,
+                routedTargetM: routedTargetM,
+                landingAcceptable: { carry in
+                    guard let landing = HoleLength.pointAlong(route, meters: carry) else { return true }
+                    let p = Sweref99TM.fromWGS84(landing)
+                    return Self.isPlayableLayupLie(self.lieAt(Vec2(x: p.x, y: p.y)))
+                }
             ).map { opt in
                 LadderBuilder.LayupItem(
                     clubName: opt.club.name,
                     carryM: Int(opt.carryM.rounded()),
                     remainingM: Int(opt.remainingM.rounded()),
                     approachClub: opt.approachClub?.name,
-                    position: pointAlongPrimaryLine(opt.carryM)
+                    position: HoleLength.pointAlong(route, meters: opt.carryM)
                 )
             }
         }
@@ -1698,13 +1913,15 @@ final class OnCourseModel {
     var selectedTargetAdvice: TargetAdvice? {
         guard let row = selectedLadderRow else { return nil }
 
-        // Plays-as (plays-like + wind) + elevation delta for any target with a
-        // known elevation (green / pin / aim / plan). Layups and hazards are
-        // projected/ring points with no DEM sample, so they stay actual-only.
+        // Plays-as (plays-like + wind) + elevation delta for any target whose
+        // elevation is known — stored (green / pin / aim / plan) or sampled from
+        // the offline terrain DEM at the target (nil-elevation aims + layups).
+        // Only hazards stay actual-only (their centroid is off the shot line;
+        // see `targetElevation`).
         var playsAs: Int?
         var elevationDelta: Int?
         if let pos = row.position,
-           let pae = playsAsAndElevation(to: pos, elevation: targetElevation(rowId: row.id, kind: row.kind)) {
+           let pae = playsAsAndElevation(to: pos, elevation: targetElevation(for: row)) {
             playsAs = pae.playsAs
             elevationDelta = pae.elevationDelta
         }
@@ -1779,22 +1996,33 @@ final class OnCourseModel {
         return ellipse.polygon.map { Sweref99TM.toWGS84(x: $0.x, y: $0.y) }
     }
 
-    /// Known elevation of a ladder target (by row id + kind), for plays-as.
-    /// Green/pin share the green elevation; aim/plan carry their own; layups and
-    /// hazards have none. Parses the builder's row-id scheme ("aim-<i>",
-    /// "plan-<index>").
-    private func targetElevation(rowId id: String, kind: LadderRow.Kind) -> Double? {
-        switch kind {
+    /// Known elevation of a ladder target, for plays-as. Green/pin share the
+    /// green elevation; a plan rung carries its own. An aim uses its stored
+    /// elevation, else the terrain sample the sweep cached at its position (so a
+    /// moved / never-recorded aim still plays-as). A layup uses the terrain
+    /// sample at its landing point. Hazards stay nil — deliberately actual-only:
+    /// their ladder figures (front/carry) are projected onto the shot line while
+    /// `position` is the hazard CENTROID, which sits off-line for side hazards,
+    /// so a centroid plays-as would contradict the front/carry the rung shows.
+    /// Parses the builder's row-id scheme ("aim-<i>", "plan-<index>").
+    private func targetElevation(for row: LadderRow) -> Double? {
+        switch row.kind {
         case .green, .pin:
             return targets.greenElevation
         case .aim:
-            guard let i = Int(id.dropFirst("aim-".count)), targets.aimPoints.indices.contains(i) else { return nil }
-            return targets.aimPoints[i].elevation
+            guard let i = Int(row.id.dropFirst("aim-".count)),
+                  targets.aimPoints.indices.contains(i) else { return nil }
+            return targets.aimPoints[i].elevation ?? row.position.flatMap(ladderTerrainElevation)
         case .plan:
-            guard let n = Int(id.dropFirst("plan-".count)),
+            guard let n = Int(row.id.dropFirst("plan-".count)),
                   let shots = currentHolePlan?.shots, shots.indices.contains(n - 1) else { return nil }
             return shots[n - 1].elevation
-        case .layup, .hazard:
+        case .layup:
+            // First-order approximation: the true landing elevation is wherever
+            // the club actually stops, but we sample the NOMINAL carry point and
+            // do not iterate to the elevation-adjusted landing.
+            return row.position.flatMap(ladderTerrainElevation)
+        case .hazard:
             return nil
         }
     }
@@ -1819,18 +2047,17 @@ final class OnCourseModel {
         return (Int(result.rounded()), Int((elevation - originElevation).rounded()))
     }
 
-    /// Project a point `meters` along the primary shot line (origin → the aim
-    /// ahead, else green center), for placing hazard/layup ladder rows on the
-    /// map. Nil without an origin or a target, or on a degenerate zero line.
-    private func pointAlongPrimaryLine(_ meters: Double) -> LatLon? {
-        guard let origin, let target = nextAimAhead?.position ?? targets.greenCenter else { return nil }
-        let o = Sweref99TM.fromWGS84(origin)
-        let t = Sweref99TM.fromWGS84(target)
-        let dx = t.x - o.x
-        let dy = t.y - o.y
-        let len = hypot(dx, dy)
-        guard len > 0 else { return nil }
-        return Sweref99TM.toWGS84(x: o.x + dx / len * meters, y: o.y + dy / len * meters)
+    /// Layup landing-lie filter: a routed layup is dropped when its landing point
+    /// classifies as a lie you can't sensibly play the next shot from — penalty
+    /// (water / OOB), recovery (trees / deep rough), or sand. Fairway, rough,
+    /// green and tee are kept. Points in no surface ring lie as `.rough` (see
+    /// `lieAt`), so with no surface map every layup is accepted — the filter is a
+    /// refinement layered on top of the routing, never a hard gate on its own.
+    private static func isPlayableLayupLie(_ lie: Lie) -> Bool {
+        switch lie {
+        case .penalty, .recovery, .sand: return false
+        case .fairway, .rough, .green, .tee: return true
+        }
     }
 
     /// Closest club to a leg's playing distance, or nil. Mirrors the card's

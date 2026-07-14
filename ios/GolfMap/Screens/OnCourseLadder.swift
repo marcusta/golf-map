@@ -103,11 +103,16 @@ enum LadderBuilder {
         }
 
         for layup in layups {
+            // `detail` is the banner's human-readable form; `remainingM` /
+            // `approachClub` are the same facts kept structured so the rail can
+            // render them without re-parsing the string. Keep the two in sync.
             let detail = "\(layup.remainingM) m in" + (layup.approachClub.map { " · \($0)" } ?? "")
             rows.append(OnCourseModel.LadderRow(
                 id: "lay-\(layup.clubName)", kind: .layup,
                 label: "Lay up", detail: detail,
-                meters: layup.carryM, carryM: nil, position: layup.position
+                meters: layup.carryM, carryM: nil,
+                remainingM: layup.remainingM, approachClub: layup.approachClub,
+                position: layup.position
             ))
         }
 
@@ -142,18 +147,38 @@ enum LadderBuilder {
     }
 
     /// Ladder layup policy: layups are only meaningful when the green is out of
-    /// range (the longest club falls short of center) — otherwise you'd just
+    /// range (the longest club falls short of the target) — otherwise you'd just
     /// hit in. When it is, return one option per DISTINCT approach club (the
     /// longest carry that leaves that club, i.e. "lay up to leave your number"),
     /// nearest-first and capped so the list stays compact. Empty when the green
-    /// is reachable or the bag is empty. The caller positions each option along
-    /// the shot line by its carry.
-    static func ladderLayups(clubs: [ClubRecord], rawCenterM: Double, cap: Int = 3) -> [LayupOption<ClubRecord>] {
+    /// is reachable or the bag is empty. The caller positions each option at its
+    /// carry along the hole's routed play-line.
+    ///
+    /// `routedTargetM` is the PATH distance to the green along that route (tee /
+    /// ball → forward aims → center), not the straight line — so the reachability
+    /// gate and the remaining-distance math both reflect the way the hole is
+    /// actually played (straight-line ≤ routed, so layups surface in slightly
+    /// more situations).
+    ///
+    /// `landingAcceptable(carry)` is the lie filter: it answers whether the point
+    /// this club's carry lands at along the route is somewhere you can sensibly
+    /// play the next shot from (fairway / rough / green — NOT water/penalty,
+    /// recovery, or sand). It is applied BEFORE the dedupe-and-cap so a rung that
+    /// lands in trouble frees its slot for a farther/nearer playable option
+    /// rather than silently shrinking the list. The default accepts everything,
+    /// keeping the helper pure and lie-agnostic for callers without a surface map.
+    static func ladderLayups(
+        clubs: [ClubRecord],
+        routedTargetM: Double,
+        landingAcceptable: (Double) -> Bool = { _ in true },
+        cap: Int = 3
+    ) -> [LayupOption<ClubRecord>] {
         let longestCarry = clubs.map(\.carryM).max() ?? 0
-        guard longestCarry < rawCenterM else { return [] }
+        guard longestCarry < routedTargetM else { return [] }
 
         var byApproach: [String: LayupOption<ClubRecord>] = [:]
-        for opt in layupOptions(clubs, rawCenterM) where !opt.reaches && opt.remainingM > 0 {
+        for opt in layupOptions(clubs, routedTargetM)
+            where !opt.reaches && opt.remainingM > 0 && landingAcceptable(opt.carryM) {
             let key = opt.approachClub?.name ?? "—"
             if let existing = byApproach[key], existing.carryM >= opt.carryM { continue }
             byApproach[key] = opt
