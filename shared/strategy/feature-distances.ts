@@ -190,7 +190,7 @@ function finishRow(
 
     let windDeltaM: number | null = null;
     if (wind && playsLikeM !== null) {
-        const effect = windEffect(wind.speedMps, wind.directionDeg, bearingDeg);
+        const effect = windEffect(wind.speedMps, wind.directionDeg, bearingDeg, playsLikeM);
         windDeltaM = playsAsM(playsLikeM, effect) - playsLikeM;
     }
 

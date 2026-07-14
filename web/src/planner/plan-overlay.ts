@@ -356,8 +356,16 @@ export function buildHolePlan(input: HolePlanInput): HolePlan {
             ?? (index === 0 ? input.preferredClubId : null);
         const club = (clubId && clubById.get(clubId)) || null;
 
+        // Forward application (paired with adjustedCarryM below): key the
+        // effect on the club's nominal carry when a club is assigned; fall
+        // back to the leg's plays-like/horizontal distance otherwise.
         const effect = input.wind
-            ? windEffect(input.wind.speedMps, input.wind.directionDeg, bearingDeg)
+            ? windEffect(
+                  input.wind.speedMps,
+                  input.wind.directionDeg,
+                  bearingDeg,
+                  club?.carryM ?? stats[index].playsLikeSimpleM ?? stats[index].horizontalM,
+              )
             : 0;
         // Leg slope (signed elevationΔ / horizontal) so the ellipse projects
         // the club's air carry onto the ground — keeps the dispersion circle

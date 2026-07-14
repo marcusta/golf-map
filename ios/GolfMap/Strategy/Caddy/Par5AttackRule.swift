@@ -49,12 +49,13 @@ private func par5DistanceM(_ a: Vec2, _ b: Vec2) -> Double {
     hypot(b.x - a.x, b.y - a.y)
 }
 
-private func par5WindEffectFor<Club: ClubSpec>(_ ctx: CaddyContext<Club>, _ bearing: Double) -> Double {
-    ctx.wind.map { windEffect($0.speedMps, $0.directionDeg, bearing) } ?? 0
+// Forward application: the effect is keyed on the club's own nominal carry.
+private func par5WindEffectFor<Club: ClubSpec>(_ ctx: CaddyContext<Club>, _ bearing: Double, _ shotDistanceM: Double) -> Double {
+    ctx.wind.map { windEffect($0.speedMps, $0.directionDeg, bearing, shotDistanceM) } ?? 0
 }
 
 private func par5ClubMaxCarryM<Club: ClubSpec>(_ club: Club, _ ctx: CaddyContext<Club>, _ bearing: Double) -> Double {
-    maxCarryM(club.carryM, windEffect: par5WindEffectFor(ctx, bearing))
+    maxCarryM(club.carryM, windEffect: par5WindEffectFor(ctx, bearing, club.carryM))
 }
 
 private func par5ClubName<Club: ClubSpec>(_ club: Club) -> String {

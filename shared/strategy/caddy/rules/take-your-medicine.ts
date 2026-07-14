@@ -83,7 +83,10 @@ export const takeYourMedicineRule: CaddyRule = {
         if (!escape) return [];
 
         const bearing = bearingDeg(origin, center);
-        const effect = ctx.wind ? windEffect(ctx.wind.speedMps, ctx.wind.directionDeg, bearing) : 0;
+        // Forward application on the escape club's nominal carry.
+        const effect = ctx.wind
+            ? windEffect(ctx.wind.speedMps, ctx.wind.directionDeg, bearing, escape.carryM)
+            : 0;
 
         // MEDICINE: a controlled punch-out lands back in the fairway, having
         // advanced a modest fraction of the escape club's carry. Remaining is

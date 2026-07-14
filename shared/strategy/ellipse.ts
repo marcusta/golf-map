@@ -97,7 +97,7 @@ export function dispersionEllipse(options: DispersionEllipseOptions): Dispersion
 
     const hasWind = options.windSpeedMps !== undefined && options.windDirectionDeg !== undefined;
     const effect = hasWind
-        ? windEffect(options.windSpeedMps!, options.windDirectionDeg!, bearingDeg)
+        ? windEffect(options.windSpeedMps!, options.windDirectionDeg!, bearingDeg, club.carryM)
         : 0;
     const driftM = hasWind
         ? crosswindDriftM(

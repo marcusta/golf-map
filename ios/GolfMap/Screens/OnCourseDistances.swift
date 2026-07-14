@@ -195,7 +195,7 @@ struct OnCourseDistances: Equatable, Sendable {
         // over the (already elevation-adjusted) plays-like distance.
         func windAdjusted(_ distanceM: Double, to target: LatLon) -> Double {
             guard let wind else { return distanceM }
-            let effect = windEffect(wind.speedMps, wind.directionDeg, bearing(to: target))
+            let effect = windEffect(wind.speedMps, wind.directionDeg, bearing(to: target), distanceM)
             return playsAsM(distanceM, effect)
         }
 

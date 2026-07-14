@@ -176,8 +176,9 @@ describe('buildHolePlan', () => {
         expect(leg.ellipse?.semiLateralM).toBe(expected.semiLateralM);
         expect(leg.ellipse?.polygon).toEqual(expected.polygon);
 
-        // Wind-adjusted carry matches the shared wind curve exactly.
-        const effect = windEffect(wind.speedMps, wind.directionDeg, leg.bearingDeg);
+        // Wind-adjusted carry matches the shared wind model exactly. Forward
+        // application: the effect is keyed on the assigned club's nominal carry.
+        const effect = windEffect(wind.speedMps, wind.directionDeg, leg.bearingDeg, DRIVER.carryM);
         expect(effect).toBeLessThan(0); // headwind
         expect(leg.windEffect).toBe(effect);
         expect(leg.adjustedCarryM).toBe(adjustedCarryM(DRIVER.carryM, effect));

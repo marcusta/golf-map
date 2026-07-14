@@ -158,12 +158,17 @@ final class OnCourseDistancesTests: XCTestCase {
 
     func testWindHeadwindLengthensPlaysLikeAndShiftsClub() {
         // Dead headwind on a due-north shot (wind FROM 0°, bearing 0°) makes
-        // the target play LONGER (playsAsM divides by 1+e, e<0).
+        // the target play LONGER (playsAsM divides by 1+e, e<0). Plays-like
+        // center here is 172 m (160 + 12 uphill), which calm selects 5i for.
+        // The Ballnamic calibration grid is far gentler than the old flat
+        // 1%/mph curve, so a genuine club shift needs a stronger wind: ~22 mph
+        // (10 m/s) lengthens the target to ~209 m, into Driver range.
         let targets = HoleTargets(greenCenter: offset(base, east: 0, north: 160), greenElevation: 22)
         let calm = OnCourseDistances.compute(from: base, originElevation: 10, targets: targets, clubs: bag())
+        XCTAssertEqual(calm.centerClubs?.center, "5i")
         let windy = OnCourseDistances.compute(
             from: base, originElevation: 10, targets: targets,
-            wind: (speedMps: 8, directionDeg: 0), clubs: bag()
+            wind: (speedMps: 10, directionDeg: 0), clubs: bag()
         )
         XCTAssertNotNil(windy.windPlaysLikeCenter)
         XCTAssertGreaterThan(windy.windPlaysLikeCenter!, calm.playsLikeCenter!)

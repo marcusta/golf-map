@@ -1521,7 +1521,7 @@ export class PlannerToolService {
         const wind = this.effectiveWind.peek();
         if (wind) {
             const bearing = planarBearingDeg(a, b);
-            target = playsAsM(target, windEffect(wind.speedMps, wind.directionDeg, bearing));
+            target = playsAsM(target, windEffect(wind.speedMps, wind.directionDeg, bearing, target));
         }
         return closestClub(clubs, target)?.id ?? null;
     }

@@ -101,7 +101,7 @@ describe('dispersionEllipse — ground slope (plays-like projection)', () => {
 });
 
 describe('dispersionEllipse — wind', () => {
-    test('fixture A: Driver into 10 mph pure headwind → center at 218.7 m', () => {
+    test('fixture A: Driver into 10 mph pure headwind → center at 234.3 m', () => {
         const e = dispersionEllipse({
             origin: ORIGIN,
             bearingDeg: 0,
@@ -110,7 +110,9 @@ describe('dispersionEllipse — wind', () => {
             windDirectionDeg: 0,
         });
         expect(e.center.x).toBeCloseTo(0, 6);
-        expect(e.center.y).toBeCloseTo(218.7, 6);
+        // Calibration grid keyed on the Driver's 243 m carry (≈266 yd): a
+        // long club punches through wind far better than the old flat 10%.
+        expect(e.center.y).toBeCloseTo(234.29972002475645, 6);
         // Axes are wind-independent.
         expect(e.semiLengthM).toBeCloseTo(19.44 / 2, 12);
         expect(e.semiLateralM).toBeCloseTo(32.5, 12);
@@ -136,7 +138,7 @@ describe('dispersionEllipse — wind', () => {
             windSpeedMps: mphToMps(15),
             windDirectionDeg: 45,
         });
-        expect(e.center.y).toBeCloseTo(217.2259578, 6);
+        expect(e.center.y).toBeCloseTo(233.59728912801714, 6);
         // crosswind = −10.6066 mph → drift = 243 × −10.6066… × 0.005 (shot-left).
         expect(e.center.x).toBeCloseTo(243 * -10.606601717798213 * 0.005, 6);
     });

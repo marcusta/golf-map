@@ -56,7 +56,8 @@ public func takeYourMedicineRule<Club: ClubSpec>() -> CaddyRule<Club> {
             guard let escape = escapeClub(ctx.clubs) else { return [] }
 
             let bearing = medicineBearingDeg(origin, center)
-            let effect = ctx.wind.map { windEffect($0.speedMps, $0.directionDeg, bearing) } ?? 0
+            // Forward application on the escape club's nominal carry.
+            let effect = ctx.wind.map { windEffect($0.speedMps, $0.directionDeg, bearing, escape.carryM) } ?? 0
 
             // MEDICINE: a controlled punch-out lands back in the fairway.
             let escapeAdvanceM = min(

@@ -106,6 +106,7 @@ final class StrategyGoldenParityTests: XCTestCase {
         let speedMps: Double
         let directionDeg: Double
         let shotBearingDeg: Double
+        let shotDistanceM: Double
         let out: Double
     }
     private struct EffectPairCase: Decodable { let carryM: Double; let effect: Double; let out: Double }
@@ -274,8 +275,9 @@ final class StrategyGoldenParityTests: XCTestCase {
             XCTAssertEqual(r.crosswindMph, x.crosswindMph, accuracy: acc, "windComponents crosswind")
         }
         for x in w.windEffect {
-            XCTAssertEqual(windEffect(x.speedMps, x.directionDeg, x.shotBearingDeg), x.out, accuracy: acc,
-                           "windEffect(\(x.speedMps), \(x.directionDeg), \(x.shotBearingDeg))")
+            XCTAssertEqual(windEffect(x.speedMps, x.directionDeg, x.shotBearingDeg, x.shotDistanceM), x.out,
+                           accuracy: acc,
+                           "windEffect(\(x.speedMps), \(x.directionDeg), \(x.shotBearingDeg), \(x.shotDistanceM))")
         }
         for x in w.adjustedCarryM {
             XCTAssertEqual(adjustedCarryM(x.carryM, x.effect), x.out, accuracy: acc, "adjustedCarryM")

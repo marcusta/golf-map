@@ -2243,7 +2243,7 @@ final class OnCourseModel {
             guard let wind = effectiveWind else { return base }
             let deg = atan2(b.x - a.x, b.y - a.y) * 180 / .pi
             let bearing = deg < 0 ? deg + 360 : deg
-            return playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearing))
+            return playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearing, base))
         }
 
         if competitionMode {
@@ -2310,7 +2310,7 @@ final class OnCourseModel {
         if let wind = effectiveWind {
             let deg = atan2(b.x - a.x, b.y - a.y) * 180 / .pi
             let bearing = deg < 0 ? deg + 360 : deg
-            base = playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearing))
+            base = playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearing, base))
         }
         return closestClub(clubs, base)
     }

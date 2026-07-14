@@ -70,7 +70,7 @@ enum ShotCaptureDefaults {
         if let wind {
             let deg = atan2(b.x - a.x, b.y - a.y) * 180 / .pi
             let bearing = deg < 0 ? deg + 360 : deg
-            base = playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearing))
+            base = playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearing, base))
         }
         return base
     }

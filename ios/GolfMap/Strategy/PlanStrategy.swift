@@ -261,7 +261,7 @@ public enum PlanStrategy {
             // Ghost recommended-aim group (mirror of ghostAimForLeg): project
             // the leg's own wind-adjusted carry forward along the RECOMMENDED
             // bearing, and draw the pattern that aim would produce.
-            let effect = wind.map { windEffect($0.speedMps, $0.directionDeg, bearingDeg) } ?? 0
+            let effect = wind.map { windEffect($0.speedMps, $0.directionDeg, bearingDeg, club.carryM) } ?? 0
             let carryAir = adjustedCarryM(club.carryM, effect)
             let carry = 1 + groundSlope > 0 ? carryAir / (1 + groundSlope) : carryAir
             let unit = bearingToUnitVector(aim.bestBearingDeg)
@@ -390,7 +390,7 @@ public enum PlanStrategy {
             if let pl = stats.playsLikeSimple { base = pl }
         }
         if let wind {
-            base = playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearingDeg))
+            base = playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearingDeg, base))
         }
         return closestClub(clubs, base)
     }

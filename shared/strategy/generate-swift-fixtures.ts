@@ -165,22 +165,27 @@ interface WindTriple {
     speedMps: number;
     directionDeg: number;
     shotBearingDeg: number;
+    /** Shot distance the grid is keyed on, meters. */
+    shotDistanceM: number;
 }
 
+// yards → meters, so grid distances land on/near the calibration nodes.
+const yd = (y: number) => y * 0.9144;
+
 const windCases: WindTriple[] = [
-    { speedMps: mps(10), directionDeg: 0, shotBearingDeg: 0 }, // full head
-    { speedMps: mps(20), directionDeg: 180, shotBearingDeg: 0 }, // full tail, >18
-    { speedMps: mps(10), directionDeg: 270, shotBearingDeg: 0 }, // full cross from left
-    { speedMps: mps(10), directionDeg: 90, shotBearingDeg: 0 }, // full cross from right
-    { speedMps: mps(15), directionDeg: 45, shotBearingDeg: 0 }, // quartering head
-    { speedMps: mps(18), directionDeg: 0, shotBearingDeg: 0 }, // exactly 18 (not > 18)
-    { speedMps: mps(19), directionDeg: 0, shotBearingDeg: 0 }, // discontinuity
-    { speedMps: mps(18), directionDeg: 180, shotBearingDeg: 0 },
-    { speedMps: mps(19), directionDeg: 180, shotBearingDeg: 0 },
-    { speedMps: mps(20), directionDeg: 45, shotBearingDeg: 0 }, // total > 18, component < 18
-    { speedMps: mps(8), directionDeg: 0, shotBearingDeg: 0 },
-    { speedMps: mps(10), directionDeg: 10, shotBearingDeg: 350 }, // normalization
-    { speedMps: 0, directionDeg: 123, shotBearingDeg: 45 }, // calm
+    { speedMps: mps(10), directionDeg: 0, shotBearingDeg: 0, shotDistanceM: yd(285) }, // full head, long
+    { speedMps: mps(20), directionDeg: 180, shotBearingDeg: 0, shotDistanceM: yd(155) }, // full tail
+    { speedMps: mps(10), directionDeg: 270, shotBearingDeg: 0, shotDistanceM: yd(160) }, // full cross from left
+    { speedMps: mps(10), directionDeg: 90, shotBearingDeg: 0, shotDistanceM: yd(160) }, // full cross from right
+    { speedMps: mps(15), directionDeg: 45, shotBearingDeg: 0, shotDistanceM: yd(225) }, // quartering head
+    { speedMps: mps(18), directionDeg: 0, shotBearingDeg: 0, shotDistanceM: yd(140) }, // high head
+    { speedMps: mps(19), directionDeg: 0, shotBearingDeg: 0, shotDistanceM: yd(140) }, // >25 mph component cap
+    { speedMps: mps(18), directionDeg: 180, shotBearingDeg: 0, shotDistanceM: yd(187.5) },
+    { speedMps: mps(19), directionDeg: 180, shotBearingDeg: 0, shotDistanceM: yd(187.5) }, // helping clamp
+    { speedMps: mps(20), directionDeg: 45, shotBearingDeg: 0, shotDistanceM: yd(100) }, // below-115 clamp
+    { speedMps: mps(8), directionDeg: 0, shotBearingDeg: 0, shotDistanceM: yd(150) },
+    { speedMps: mps(10), directionDeg: 10, shotBearingDeg: 350, shotDistanceM: yd(300) }, // normalization, above-285 clamp
+    { speedMps: 0, directionDeg: 123, shotBearingDeg: 45, shotDistanceM: yd(160) }, // calm
 ];
 
 const wind = {
@@ -190,15 +195,15 @@ const wind = {
     }),
     windEffect: windCases.map((c) => ({
         ...c,
-        out: windEffect(c.speedMps, c.directionDeg, c.shotBearingDeg),
+        out: windEffect(c.speedMps, c.directionDeg, c.shotBearingDeg, c.shotDistanceM),
     })),
     adjustedCarryM: [
-        [243, windEffect(mps(10), 0, 0)],
-        [155, windEffect(mps(20), 180, 0)],
-        [243, windEffect(mps(15), 45, 0)],
+        [243, windEffect(mps(10), 0, 0, 243)],
+        [155, windEffect(mps(20), 180, 0, 155)],
+        [243, windEffect(mps(15), 45, 0, 243)],
     ].map(([carry, effect]) => ({ carryM: carry, effect, out: adjustedCarryM(carry, effect) })),
     playsAsM: [
-        [150, windEffect(mps(8), 0, 0)],
+        [150, windEffect(mps(8), 0, 0, 150)],
         [150, -0.08],
         [200, 0.05],
     ].map(([d, effect]) => ({ distanceM: d, effect, out: playsAsM(d, effect) })),

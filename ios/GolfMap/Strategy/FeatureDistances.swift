@@ -178,7 +178,7 @@ private func finishRow<Club: ClubSpec>(
 
     var windDeltaM: Double?
     if let wind, let playsLikeM {
-        let effect = windEffect(wind.speedMps, wind.directionDeg, bearingDeg)
+        let effect = windEffect(wind.speedMps, wind.directionDeg, bearingDeg, playsLikeM)
         windDeltaM = playsAsM(playsLikeM, effect) - playsLikeM
     }
 

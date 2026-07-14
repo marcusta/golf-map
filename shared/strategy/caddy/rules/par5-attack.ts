@@ -51,12 +51,13 @@ function distanceM(a: Vec2, b: Vec2): number {
     return Math.hypot(b.x - a.x, b.y - a.y);
 }
 
-function windEffectFor(ctx: CaddyContext, bearing: number): number {
-    return ctx.wind ? windEffect(ctx.wind.speedMps, ctx.wind.directionDeg, bearing) : 0;
+// Forward application: the effect is keyed on the club's own nominal carry.
+function windEffectFor(ctx: CaddyContext, bearing: number, shotDistanceM: number): number {
+    return ctx.wind ? windEffect(ctx.wind.speedMps, ctx.wind.directionDeg, bearing, shotDistanceM) : 0;
 }
 
 function clubMaxCarryM(club: ClubSpec, ctx: CaddyContext, bearing: number): number {
-    return maxCarryM(club.carryM, windEffectFor(ctx, bearing));
+    return maxCarryM(club.carryM, windEffectFor(ctx, bearing, club.carryM));
 }
 
 function clubName(club: ClubSpec): string {

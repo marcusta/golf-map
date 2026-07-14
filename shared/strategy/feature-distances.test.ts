@@ -87,9 +87,11 @@ describe('featureDistances — golden hole', () => {
         const center = rows.find((r) => r.kind === 'green_center')!;
         const back = rows.find((r) => r.kind === 'green_back')!;
 
-        expect(front.windDeltaM).toBeCloseTo(18.13422687307255, 6);
-        expect(center.windDeltaM).toBeCloseTo(19.519480314765588, 6);
-        expect(back.windDeltaM).toBeCloseTo(20.904733756458626, 6);
+        // Plays-as keyed on each row's own plays-like distance via the
+        // calibration grid (5 m/s ≈ 11.2 mph head; ~144–166 m ≈ 158–182 yd).
+        expect(front.windDeltaM).toBeCloseTo(14.295103779596786, 6);
+        expect(center.windDeltaM).toBeCloseTo(15.04437753108553, 6);
+        expect(back.windDeltaM).toBeCloseTo(15.480726544160433, 6);
 
         // Hazard rows still have no playsLikeM (missing elevation), so wind
         // cannot be projected onto them either — stays null even with wind.

@@ -80,7 +80,7 @@ public func dispersionEllipse<C: ClubSpec>(_ options: DispersionEllipseOptions<C
 
     let hasWind = options.windSpeedMps != nil && options.windDirectionDeg != nil
     let effect = hasWind
-        ? windEffect(options.windSpeedMps!, options.windDirectionDeg!, bearingDeg)
+        ? windEffect(options.windSpeedMps!, options.windDirectionDeg!, bearingDeg, club.carryM)
         : 0
     let driftM = hasWind
         ? crosswindDriftM(
