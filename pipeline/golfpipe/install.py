@@ -33,11 +33,13 @@ def install_course_tiles(
     data_dir: Path,
     ortho_dir: Path | None = None,
     terrain_dir: Path | None = None,
+    hillshade_dir: Path | None = None,
     manifest_path: Path | None = None,
 ) -> dict[str, Path]:
     """Copies ortho_dir -> data/tiles/{courseId}/ortho,
-    terrain_dir -> data/tiles/{courseId}/terrain, and manifest_path ->
-    data/tiles/{courseId}/manifest.json. Any of the three may be omitted.
+    terrain_dir -> data/tiles/{courseId}/terrain,
+    hillshade_dir -> data/tiles/{courseId}/hillshade, and manifest_path ->
+    data/tiles/{courseId}/manifest.json. Any of them may be omitted.
     Returns a dict of layer/kind -> installed path.
     """
     course_root = data_dir / "tiles" / course_id
@@ -52,6 +54,11 @@ def install_course_tiles(
         dst = course_root / "terrain"
         _copy_tree(terrain_dir, dst)
         installed["terrain"] = dst
+
+    if hillshade_dir is not None:
+        dst = course_root / "hillshade"
+        _copy_tree(hillshade_dir, dst)
+        installed["hillshade"] = dst
 
     if manifest_path is not None:
         dst = course_root / "manifest.json"

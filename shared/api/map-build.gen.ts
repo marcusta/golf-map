@@ -6,7 +6,7 @@ export interface MapBuildJob {
     courseId: string;
     siteId: null | string;
     status: 'pending' | 'running' | 'succeeded' | 'failed';
-    step: null | 'fetch-lidar' | 'grid-dem' | 'fetch-ortho' | 'tile-ortho' | 'tile-terrain' | 'manifest' | 'install' | 'register';
+    step: null | 'fetch-lidar' | 'grid-dem' | 'fetch-ortho' | 'tile-ortho' | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register';
     bbox: Bbox;
     log: string;
     error: null | string;
@@ -25,7 +25,7 @@ export interface MapBuildApi {
     start(input: { courseId: string; bbox: { west: number; south: number; east: number; north: number } }): Promise<MapBuildJob>;
     status(input: { jobId: string }): Promise<MapBuildJob>;
     latest(input: { courseId: string }): Promise<null | MapBuildJob>;
-    setOrtho(input: { courseId: string; collection: string }): Promise<MapBuildJob>;
+    ensureOrtho(input: { courseId: string; collection: string }): Promise<MapBuildJob>;
 }
 
 export function createMapBuildClient(baseUrl: string): MapBuildApi {
@@ -47,8 +47,8 @@ export function createMapBuildClient(baseUrl: string): MapBuildApi {
             const qs = params.toString();
             return apiFetch({ method: 'GET', url: `${baseUrl}/mapbuild/latest${qs ? '?' + qs : ''}` });
         },
-        async setOrtho(input) {
-            return apiFetch({ method: 'POST', url: `${baseUrl}/mapbuild/set-ortho`, body: input });
+        async ensureOrtho(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/mapbuild/ensure-ortho`, body: input });
         },
     };
 }

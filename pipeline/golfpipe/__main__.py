@@ -115,9 +115,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p = sub.add_parser("tile-hillshade", help="Render an opaque QGIS-style hillshade from a DEM and tile it (WebP)")
+    p.add_argument("--input", required=True, help="input DEM GeoTIFF (EPSG:3006)")
+    p.add_argument("--out", required=True, help="output tile directory")
+    p.add_argument("--minzoom", type=int, default=commands.DEFAULT_HILLSHADE_MINZOOM)
+    p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_HILLSHADE_MAXZOOM)
+    p.add_argument("--azimuth", type=float, default=315.0, help="light azimuth degrees (default 315, QGIS default)")
+    p.add_argument("--altitude", type=float, default=45.0, help="light altitude degrees (default 45)")
+    p.add_argument("--z-factor", dest="z_factor", type=float, default=1.0, help="vertical exaggeration (default 1)")
+
     p = sub.add_parser("manifest", help="Write manifest.json for a tiled course")
     p.add_argument("--course", required=True, help="course id")
-    p.add_argument("--tiles-dir", required=True, help="directory containing ortho/ and terrain/ subdirs")
+    p.add_argument("--tiles-dir", required=True, help="directory containing ortho/, terrain/ and hillshade/ subdirs")
     p.add_argument("--dem", help="path to dem.tif, used to compute elevation range and bounds")
     p.add_argument("--out", help="output manifest.json path (default: <tiles-dir>/manifest.json)")
 
@@ -125,6 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--course", required=True, help="course id")
     p.add_argument("--ortho", help="ortho tile directory to install")
     p.add_argument("--terrain", help="terrain tile directory to install")
+    p.add_argument("--hillshade", help="hillshade tile directory to install")
     p.add_argument("--manifest", help="manifest.json to install")
     p.add_argument("--data-dir", required=True, help="server data directory (contains tiles/)")
     p.add_argument("--api-url", help="optional: POST register payloads to this API base URL")
@@ -214,6 +224,13 @@ def main(argv: list[str] | None = None) -> int:
                 edge_pad_m=args.edge_pad_m,
             )
 
+        elif args.command == "tile-hillshade":
+            commands.cmd_tile_hillshade(
+                Path(args.input), Path(args.out),
+                minzoom=args.minzoom, maxzoom=args.maxzoom,
+                azimuth=args.azimuth, altitude=args.altitude, z=args.z_factor,
+            )
+
         elif args.command == "manifest":
             commands.cmd_manifest(
                 args.course, Path(args.tiles_dir),
@@ -226,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.course, Path(args.data_dir),
                 ortho_dir=Path(args.ortho) if args.ortho else None,
                 terrain_dir=Path(args.terrain) if args.terrain else None,
+                hillshade_dir=Path(args.hillshade) if args.hillshade else None,
                 manifest_path=Path(args.manifest) if args.manifest else None,
             )
             payloads = build_register_payloads(args.course, installed)

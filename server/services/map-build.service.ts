@@ -13,7 +13,7 @@ export type BuildStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 
 export type BuildStep =
     | 'fetch-lidar' | 'grid-dem' | 'fetch-ortho' | 'tile-ortho'
-    | 'tile-terrain' | 'manifest' | 'install' | 'register';
+    | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register';
 
 /**
  * Ordered pipeline steps the runner walks through. Also drives the web
@@ -22,7 +22,7 @@ export type BuildStep =
  * entitled to the laser + ortho products, not the DTM.
  */
 export const BUILD_STEPS: readonly BuildStep[] = [
-    'fetch-lidar', 'grid-dem', 'fetch-ortho', 'tile-ortho', 'tile-terrain', 'manifest', 'install', 'register',
+    'fetch-lidar', 'grid-dem', 'fetch-ortho', 'tile-ortho', 'tile-terrain', 'tile-hillshade', 'manifest', 'install', 'register',
 ];
 
 export interface Bbox {
@@ -288,7 +288,9 @@ export class MapBuildService {
 
             // Ortho: fetch the two newest vintages (often flown in different
             // seasons) so they can be compared/switched in-app. Persist both as
-            // GeoTIFFs; only the active (newest) one is tiled now.
+            // GeoTIFFs; the active (newest) one is tiled into the flat ortho
+            // tree below, the others into per-collection subdirs after install
+            // so the client can switch between them instantly (no re-tile).
             await this.setStep(jobId, 'fetch-ortho');
             const vintages = await this.listOrthoVintages(jobId, bboxArg, env);
             if (vintages === null) return; // failed
@@ -305,9 +307,22 @@ export class MapBuildService {
 
             if (!await this.exec(jobId, 'tile-ortho', gp('tile-ortho', '--input', path.join(sources, orthoSourceName(active)), '--out', path.join(tiles, 'ortho'), '--minzoom', '14', '--maxzoom', '20'), env)) return;
             if (!await this.exec(jobId, 'tile-terrain', gp('tile-terrain', '--input', demTif, '--out', path.join(tiles, 'terrain'), '--minzoom', '12', '--maxzoom', '16'), env)) return;
+            // Opaque QGIS-style grayscale hillshade (az 315 / alt 45 / z 1) as its
+            // own raster layer — the map's "Hillshade" toggle shows this image.
+            if (!await this.exec(jobId, 'tile-hillshade', gp('tile-hillshade', '--input', demTif, '--out', path.join(tiles, 'hillshade')), env)) return;
             // --course is the on-disk/tile-URL key = the site id (install writes data/tiles/{siteId}).
             if (!await this.exec(jobId, 'manifest', gp('manifest', '--course', siteId, '--tiles-dir', tiles, '--dem', demTif), env)) return;
-            if (!await this.exec(jobId, 'install', gp('install', '--course', siteId, '--ortho', path.join(tiles, 'ortho'), '--terrain', path.join(tiles, 'terrain'), '--manifest', path.join(tiles, 'manifest.json'), '--data-dir', this.dataDir), env)) return;
+            if (!await this.exec(jobId, 'install', gp('install', '--course', siteId, '--ortho', path.join(tiles, 'ortho'), '--terrain', path.join(tiles, 'terrain'), '--hillshade', path.join(tiles, 'hillshade'), '--manifest', path.join(tiles, 'manifest.json'), '--data-dir', this.dataDir), env)) return;
+
+            // Tile the non-active vintages into ortho/<collection>/ (served via
+            // ?c=<collection>). Runs AFTER install — install rmtree's/rewrites
+            // the flat ortho dir and would otherwise wipe these subdirs.
+            const installedOrtho = path.join(this.dataDir, 'tiles', siteId, 'ortho');
+            for (const v of chosen) {
+                if (v.collection === active) continue; // active lives in the flat tree
+                const dst = path.join(installedOrtho, v.collection);
+                if (!await this.exec(jobId, 'tile-ortho', gp('tile-ortho', '--input', path.join(sources, orthoSourceName(v.collection)), '--out', dst, '--minzoom', '14', '--maxzoom', '20'), env)) return;
+            }
 
             // register step is TS, not a subprocess: the server owns the DB.
             await this.setStep(jobId, 'register');
@@ -409,16 +424,27 @@ export class MapBuildService {
         return json;
     }
 
-    // --- Switch active ortho vintage ---
+    // --- On-demand ortho vintage tiling ---
 
     /**
-     * Re-tile a course's ortho from a previously-persisted vintage GeoTIFF (no
-     * re-download). Runs detached as a job the client polls, like a build.
+     * Ensure a vintage's ortho tiles exist under `ortho/<collection>/`, tiled
+     * from the persisted source GeoTIFF (no re-download). The client calls this
+     * the first time it switches to a not-yet-tiled vintage; the actual switch
+     * is a client-side layer toggle. Idempotent — returns an immediately
+     * succeeded job when the tiles already exist. Runs detached as a job the
+     * client polls, like a build. Does NOT touch the manifest (the flat active
+     * vintage and the served tile version are unchanged).
      */
-    async setActiveOrtho(courseId: string, collection: string): Promise<MapBuildJob> {
+    async ensureOrthoTiled(courseId: string, collection: string): Promise<MapBuildJob> {
+        if (!/^[A-Za-z0-9._-]+$/.test(collection)) {
+            throw new Error(`Invalid ortho collection: ${collection}`);
+        }
         const siteId = await this.resolveSiteId(courseId);
+        const outDir = path.join(this.dataDir, 'tiles', siteId, 'ortho', collection);
         const src = path.join(this.sourcesDir(siteId), orthoSourceName(collection));
-        if (!await Bun.file(src).exists()) {
+
+        const alreadyTiled = await this.dirHasEntries(outDir);
+        if (!alreadyTiled && !await Bun.file(src).exists()) {
             throw new NotFoundError(`No persisted ortho '${collection}' for this site`);
         }
         const running = await this.jobs()
@@ -434,23 +460,21 @@ export class MapBuildService {
             bbox_json: JSON.stringify(bbox), log: '', error: null,
         }).execute();
 
-        const promise = this.runSetOrtho(id, siteId, collection, src).finally(() => this.inflight.delete(id));
+        if (alreadyTiled) {
+            await this.setStatus(id, 'succeeded'); // nothing to tile — resolve at once
+            return this.get(id);
+        }
+        const promise = this.runEnsureOrtho(id, src, outDir).finally(() => this.inflight.delete(id));
         this.inflight.set(id, promise);
         promise.catch(() => {});
         return this.get(id);
     }
 
-    private async runSetOrtho(jobId: string, siteId: string, collection: string, src: string): Promise<void> {
+    private async runEnsureOrtho(jobId: string, src: string, outDir: string): Promise<void> {
         const env = { ...process.env };
-        const orthoTiles = path.join(this.dataDir, 'tiles', siteId, 'ortho');
         try {
             await this.setStatus(jobId, 'running');
-            // Replace the served ortho tiles in place from the persisted source.
-            await rm(orthoTiles, { recursive: true, force: true });
-            if (!await this.exec(jobId, 'tile-ortho', ['-m', 'golfpipe', 'tile-ortho', '--input', src, '--out', orthoTiles, '--minzoom', '14', '--maxzoom', '20'], env)) return;
-
-            await this.setStep(jobId, 'register');
-            await this.setActiveInManifest(siteId, collection);
+            if (!await this.exec(jobId, 'tile-ortho', ['-m', 'golfpipe', 'tile-ortho', '--input', src, '--out', outDir, '--minzoom', '14', '--maxzoom', '20'], env)) return;
             await this.setStatus(jobId, 'succeeded');
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -458,17 +482,13 @@ export class MapBuildService {
         }
     }
 
-    /** Set activeOrtho + bump generatedAt (cache-bust) in the manifest + asset. */
-    private async setActiveInManifest(siteId: string, collection: string): Promise<void> {
-        const manifestPath = path.join(this.dataDir, 'tiles', siteId, 'manifest.json');
-        const manifest = JSON.parse(await Bun.file(manifestPath).text());
-        manifest.activeOrtho = collection;
-        manifest.generatedAt = new Date().toISOString(); // changes tileVersion → client refetches tiles
-        const json = JSON.stringify(manifest);
-        await writeFile(manifestPath, json);
-
-        const tm = (await this.assets.listBySite(siteId)).find(a => a.kind === 'tile_manifest');
-        if (tm) await this.assets.update(tm.id, tm.version, { metaJson: json });
+    /** True when `dir` exists and is non-empty (used as a "vintage is tiled" check). */
+    private async dirHasEntries(dir: string): Promise<boolean> {
+        try {
+            return (await readdir(dir)).length > 0;
+        } catch {
+            return false;
+        }
     }
 
     /** Site map bounds from its manifest (fallback to zeros), for a job row's bbox. */

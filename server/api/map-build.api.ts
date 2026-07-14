@@ -24,7 +24,7 @@ const LatestForCourseInput = Type.Object({
     courseId: Type.String(),
 });
 
-const SetOrthoInput = Type.Object({
+const EnsureOrthoInput = Type.Object({
     courseId: Type.String(),
     collection: Type.String(),
 });
@@ -55,11 +55,11 @@ export function createMapBuildApi(svc: MapBuildService) {
             schema: LatestForCourseInput,
             middleware: mw,
         },
-        setOrtho: {
+        ensureOrtho: {
             method: 'POST' as const,
-            path: '/mapbuild/set-ortho',
-            fn: (input: Static<typeof SetOrthoInput>) => svc.setActiveOrtho(input.courseId, input.collection),
-            schema: SetOrthoInput,
+            path: '/mapbuild/ensure-ortho',
+            fn: (input: Static<typeof EnsureOrthoInput>) => svc.ensureOrthoTiled(input.courseId, input.collection),
+            schema: EnsureOrthoInput,
             middleware: mw,
         },
     };

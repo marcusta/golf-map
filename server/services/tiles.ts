@@ -24,7 +24,7 @@ const CONTENT_TYPE_BY_EXT: Record<string, string> = {
 // and never change in place; a new tile-generation run produces a new asset.
 const CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
-const VALID_LAYERS = new Set<TileLayer>(['ortho', 'terrain']);
+const VALID_LAYERS = new Set<TileLayer>(['ortho', 'terrain', 'hillshade']);
 
 function parseTileCoordinate(raw: string): number | null {
     if (!/^\d+$/.test(raw)) return null;
@@ -101,9 +101,13 @@ export function createTileRoutes(assetsService: AssetsService, tileKeyLookup?: T
 
         const tileKey = (tileKeyLookup && (await tileKeyLookup(courseId))) ?? courseId;
 
+        // `?c=<collection>` selects a non-active ortho vintage tiled under
+        // ortho/<collection>/. Absent → the flat (build-time active) ortho tree.
+        const collection = c.req.query('c') || undefined;
+
         let candidates: string[];
         try {
-            candidates = assetsService.resolveTilePathCandidates(tileKey, layer as TileLayer, zNum, xNum, y);
+            candidates = assetsService.resolveTilePathCandidates(tileKey, layer as TileLayer, zNum, xNum, y, collection);
         } catch {
             return c.json({ error: 'Invalid tile request' }, 400);
         }

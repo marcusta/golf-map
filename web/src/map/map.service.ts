@@ -8,7 +8,9 @@ import {
     boundsToArray,
     EDITOR_MAX_ZOOM,
     HILLSHADE_LAYER_ID,
+    ORTHO_LAYER_ID,
     TERRAIN_SOURCE_ID,
+    orthoLayerId,
 } from './map-style';
 import { InteractionClaims } from './interaction';
 
@@ -61,6 +63,15 @@ export class MapService {
     readonly exaggeration = new Signal(1.0);
     /** Hillshade layer visibility. */
     readonly hillshadeVisible = new Signal(false);
+    /**
+     * Ortho (photo) layer visibility. Turn off to inspect terrain/hillshade
+     * alone — useful when splining bunkers/water against relief.
+     */
+    readonly photoVisible = new Signal(true);
+    /** Which ortho vintage (collection) is shown, or null (single/no vintages). */
+    readonly activeOrtho = new Signal<string | null>(null);
+    /** collection → ortho layer id, in manifest order. Empty until init. */
+    private orthoLayers: Array<{ collection: string; layerId: string }> = [];
 
     private claims = new InteractionClaims();
     /** Current exclusive interaction mode (see interaction.ts contract). */
@@ -81,6 +92,14 @@ export class MapService {
     init(container: HTMLElement, mapKey: string, manifest: TileManifest, version: string): void {
         this.destroy();
         this.tiles = { manifest };
+
+        // Ortho vintages → layer ids (mirrors buildEditorStyle). >1 vintage
+        // means one layer per collection; otherwise the single flat ortho layer.
+        const vintages = manifest.orthoVintages ?? [];
+        this.orthoLayers = vintages.length > 1
+            ? vintages.map(v => ({ collection: v.collection, layerId: orthoLayerId(v.collection) }))
+            : [{ collection: manifest.activeOrtho ?? vintages[0]?.collection ?? '', layerId: ORTHO_LAYER_ID }];
+        this.activeOrtho.set(manifest.activeOrtho ?? vintages[0]?.collection ?? null);
 
         const map = new maplibregl.Map({
             container,
@@ -121,6 +140,19 @@ export class MapService {
             const visible = this.hillshadeVisible.get();
             if (!this.ready.get()) return;
             map.setLayoutProperty(HILLSHADE_LAYER_ID, 'visibility', visible ? 'visible' : 'none');
+        }));
+        // Ortho visibility: show only the active vintage's layer, and only when
+        // the photo layer is on (off → hillshade/terrain-only). Toggling
+        // visibility is instant — MapLibre keeps already-fetched tiles cached.
+        this.disposers.push(effect(() => {
+            const photo = this.photoVisible.get();
+            const active = this.activeOrtho.get();
+            if (!this.ready.get()) return;
+            const single = this.orthoLayers.length === 1;
+            for (const { collection, layerId } of this.orthoLayers) {
+                const show = photo && (single || collection === active);
+                map.setLayoutProperty(layerId, 'visibility', show ? 'visible' : 'none');
+            }
         }));
 
         // Size watchdog. MapLibre's own ResizeObserver only flushes during
@@ -246,6 +278,20 @@ export class MapService {
     /** Show/hide the hillshade layer. */
     setHillshade(visible: boolean): void {
         this.hillshadeVisible.set(visible);
+    }
+
+    /** Show/hide the ortho (photo) layer — off leaves terrain/hillshade alone. */
+    setPhoto(visible: boolean): void {
+        this.photoVisible.set(visible);
+    }
+
+    /**
+     * Switch the shown ortho vintage (client-side layer toggle — no server
+     * re-tile). No-op when the collection isn't one of the map's vintages.
+     */
+    setActiveOrtho(collection: string): void {
+        if (!this.orthoLayers.some(l => l.collection === collection)) return;
+        this.activeOrtho.set(collection);
     }
 
     // ── Event plumbing for tools ──────────────────────────────────────────

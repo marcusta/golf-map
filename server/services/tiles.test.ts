@@ -30,6 +30,12 @@ function writeFakeTile(courseId: string, layer: string, z: number, x: number, y:
     fs.writeFileSync(path.join(dir, `${y}.${ext}`), contents);
 }
 
+function writeFakeVintageTile(courseId: string, collection: string, z: number, x: number, y: number, ext: string, contents = 'vintage-tile-bytes') {
+    const dir = path.join(dataDir, 'tiles', courseId, 'ortho', collection, String(z), String(x));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${y}.${ext}`), contents);
+}
+
 test('GET returns 200 with the tile bytes, content-type, and long cache headers for ortho', async () => {
     const { app } = await setup();
     writeFakeTile(TEST_COURSE_ID, 'ortho', 14, 100, 200, 'jpg');
@@ -49,6 +55,42 @@ test('GET returns 200 with correct content-type for terrain (png)', async () => 
     const res = await app.request(`/tiles/${TEST_COURSE_ID}/terrain/14/100/200.png`);
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('image/png');
+});
+
+test('GET serves the baked hillshade layer as opaque webp', async () => {
+    const { app } = await setup();
+    writeFakeTile(TEST_COURSE_ID, 'hillshade', 14, 100, 200, 'webp');
+
+    const res = await app.request(`/tiles/${TEST_COURSE_ID}/hillshade/14/100/200.webp`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/webp');
+});
+
+test('GET ?c=<collection> serves the per-vintage ortho tile from ortho/<collection>/', async () => {
+    const { app } = await setup();
+    // Same coords in the flat tree and a vintage subdir → ?c must pick the subdir.
+    writeFakeTile(TEST_COURSE_ID, 'ortho', 14, 100, 200, 'jpg', 'active-flat');
+    writeFakeVintageTile(TEST_COURSE_ID, 'orto-l2-2023', 14, 100, 200, 'jpg', 'vintage-2023');
+
+    const flat = await app.request(`/tiles/${TEST_COURSE_ID}/ortho/14/100/200.jpg`);
+    expect(await flat.text()).toBe('active-flat');
+
+    const vintage = await app.request(`/tiles/${TEST_COURSE_ID}/ortho/14/100/200.jpg?c=orto-l2-2023`);
+    expect(vintage.status).toBe(200);
+    expect(await vintage.text()).toBe('vintage-2023');
+});
+
+test('GET ?c=<collection> returns 404 when that vintage has no such tile', async () => {
+    const { app } = await setup();
+    writeFakeTile(TEST_COURSE_ID, 'ortho', 14, 100, 200, 'jpg'); // flat exists, subdir does not
+    const res = await app.request(`/tiles/${TEST_COURSE_ID}/ortho/14/100/200.jpg?c=orto-l2-2023`);
+    expect(res.status).toBe(404);
+});
+
+test('GET ?c with an unsafe collection is rejected (400)', async () => {
+    const { app } = await setup();
+    const res = await app.request(`/tiles/${TEST_COURSE_ID}/ortho/14/100/200.jpg?c=..%2Fterrain`);
+    expect(res.status).toBe(400);
 });
 
 test('GET returns 404 when tile file does not exist', async () => {

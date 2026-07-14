@@ -6,7 +6,7 @@ import { TilesetService, type OrthoVintage } from './tileset.service';
 import { MapService } from './map.service';
 import { ElevationService } from './elevation.service';
 import { EditorToolbarComponent } from '../editor/toolbar.component';
-import { MapBuildClientService, isTerminal } from '../map-build/map-build.service';
+import { MapBuildClientService } from '../map-build/map-build.service';
 
 const vintageTpl = template(`<button bind="row" type="button" class="vintage-btn"></button>`);
 
@@ -23,6 +23,12 @@ const tpl = template(`
         <div bind="controls" class="map-canvas__controls">
             <div bind="layersPopover" class="map-canvas__layers-popover">
                 <div class="layers-popover__title">Map layers</div>
+                <div class="layers-popover__row">
+                    <span>Photo</span>
+                    <button bind="photoToggle" type="button" class="toggle-switch" role="switch" title="Toggle orthophoto layer (off = hillshade only)">
+                        <span class="toggle-switch__knob"></span>
+                    </button>
+                </div>
                 <div class="layers-popover__row">
                     <span>Hillshade</span>
                     <button bind="hillshadeToggle" type="button" class="toggle-switch" role="switch" title="Toggle hillshade layer">
@@ -366,11 +372,6 @@ export class EditorCanvasComponent extends Component {
 
     /** Ortho vintages available to switch between (only shown when >1). */
     private vintages = new Computed<OrthoVintage[]>(() => this.tileset.manifest.get()?.orthoVintages ?? []);
-    /** True while a vintage switch (server re-tile) is in flight. */
-    private switching(): boolean {
-        const job = this.mapBuild.job.get();
-        return this.mapBuild.starting.get() || (!!job && !isTerminal(job));
-    }
 
     render(): DocumentFragment {
         const showMessage = () => this.messageText() !== null;
@@ -392,6 +393,11 @@ export class EditorCanvasComponent extends Component {
             },
             layersPopover: {
                 className: () => this.layersOpen.get() ? 'map-canvas__layers-popover show' : 'map-canvas__layers-popover',
+            },
+            photoToggle: {
+                onclick: () => this.mapSvc.setPhoto(!this.mapSvc.photoVisible.get()),
+                className: () => this.mapSvc.photoVisible.get() ? 'toggle-switch active' : 'toggle-switch',
+                'aria-checked': () => String(this.mapSvc.photoVisible.get()),
             },
             hillshadeToggle: {
                 onclick: () => this.mapSvc.setHillshade(!this.mapSvc.hillshadeVisible.get()),
@@ -426,10 +432,10 @@ export class EditorCanvasComponent extends Component {
         this.$each(this.ref(frag, 'vintages'), this.vintages, (v, _i, track) =>
             this.wireEl(vintageTpl, {
                 row: {
-                    textContent: () => this.switching() && this.tileset.manifest.get()?.activeOrtho !== v.collection ? '…' : (v.dates[0] ?? v.collection),
+                    textContent: () => this.mapBuild.ensuringOrtho.get() === v.collection ? 'Preparing…' : (v.dates[0] ?? v.collection),
                     title: () => `${v.collection}${v.dates.length ? ` (${v.dates.join(', ')})` : ''}`,
-                    className: () => `vintage-btn${this.tileset.manifest.get()?.activeOrtho === v.collection ? ' active' : ''}`,
-                    disabled: () => this.switching(),
+                    className: () => `vintage-btn${this.mapSvc.activeOrtho.get() === v.collection ? ' active' : ''}`,
+                    disabled: () => this.mapBuild.ensuringOrtho.get() !== null,
                     onclick: () => void this.switchVintage(v.collection),
                 },
             }, track), v => v.collection);
@@ -529,12 +535,24 @@ export class EditorCanvasComponent extends Component {
         });
     }
 
-    /** Switch the served ortho to another persisted vintage (server re-tiles). */
+    /** Collections known to be tiled this session — the flat active vintage
+     *  never needs on-demand tiling, others are added after a successful ensure. */
+    private tiledOrthos = new Set<string>();
+
+    /**
+     * Switch the shown ortho vintage. The active (flat) vintage and any already
+     * tiled this session switch instantly (client-side layer toggle). A vintage
+     * not yet tiled on the server is tiled on-demand first (one-time wait), then
+     * shown. Failure leaves the current view untouched.
+     */
     private async switchVintage(collection: string): Promise<void> {
-        if (this.switching()) return;
-        if (this.tileset.manifest.peek()?.activeOrtho === collection) return;
-        await this.mapBuild.setOrtho(this.params.get().courseId, collection);
-        // On success, the job effect above reloads the tileset → map re-inits.
+        const flat = this.tileset.manifest.peek()?.activeOrtho;
+        if (collection !== flat && !this.tiledOrthos.has(collection)) {
+            const ok = await this.mapBuild.ensureOrtho(this.params.get().courseId, collection);
+            if (!ok) return;
+            this.tiledOrthos.add(collection);
+        }
+        this.mapSvc.setActiveOrtho(collection);
     }
 
     /** True when the map has been initialized for the current course. */

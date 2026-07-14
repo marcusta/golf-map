@@ -1,7 +1,7 @@
 // Pure MapLibre style assembly for the editor map. No maplibre-gl runtime
 // import (types only) so these functions are unit-testable under bun test —
 // MapLibre itself cannot run in happy-dom.
-import type { StyleSpecification } from 'maplibre-gl';
+import type { StyleSpecification, LayerSpecification, RasterSourceSpecification } from 'maplibre-gl';
 import type { TileBounds, TileManifest } from './tileset.service';
 
 /** Source/layer ids — stable public constants downstream tools may reference. */
@@ -17,22 +17,38 @@ export const HILLSHADE_SOURCE_ID = 'course-hillshade-dem';
 export const HILLSHADE_LAYER_ID = 'course-hillshade';
 export const BACKGROUND_LAYER_ID = 'editor-background';
 
+/** Base color outside tile coverage. */
+export const BACKGROUND_COLOR = '#0b0e11';
+
 /** Hard ceiling; ortho overzooms past its native maxzoom up to here. */
 export const EDITOR_MAX_ZOOM = 22;
+
+/** Per-vintage ortho source/layer ids (non-active vintages get a suffix). */
+export function orthoSourceId(collection: string): string {
+    return `${ORTHO_SOURCE_ID}-${collection}`;
+}
+export function orthoLayerId(collection: string): string {
+    return `${ORTHO_LAYER_ID}-${collection}`;
+}
 
 /**
  * XYZ tile URL template for a course layer. Same-origin (`/tiles` is proxied
  * to the API server by vite — see web/vite.config.ts). The `?v=` param is
  * mandatory: the server sends immutable cache headers on tile bytes.
+ *
+ * `collection` selects a non-active ortho vintage tiled under
+ * `ortho/<collection>/`; omit it for the flat (build-time active) ortho tree.
  */
 export function tileUrlTemplate(
     mapKey: string,
-    layer: 'ortho' | 'terrain',
-    ext: 'jpg' | 'png',
+    layer: 'ortho' | 'terrain' | 'hillshade',
+    ext: 'jpg' | 'png' | 'webp',
     version: string,
+    collection?: string,
 ): string {
     // mapKey = the site id (the shared map's on-disk/URL key), not the course id.
-    return `/tiles/${mapKey}/${layer}/{z}/{x}/{y}.${ext}?v=${version}`;
+    const query = collection ? `?v=${version}&c=${collection}` : `?v=${version}`;
+    return `/tiles/${mapKey}/${layer}/{z}/{x}/{y}.${ext}${query}`;
 }
 
 /** Manifest bounds → MapLibre `[west, south, east, north]` array. */
@@ -56,55 +72,108 @@ export function buildEditorStyle(
     version: string,
 ): StyleSpecification {
     const bounds = boundsToArray(manifest.bounds);
+    const orthoCommon = {
+        type: 'raster' as const,
+        tileSize: 256,
+        minzoom: manifest.layers.ortho.minzoom,
+        maxzoom: manifest.layers.ortho.maxzoom,
+        bounds,
+        ...(manifest.attribution ? { attribution: manifest.attribution } : {}),
+    };
+
+    // One ortho raster source+layer per persisted vintage so the client can
+    // switch between them by toggling layer visibility — no server re-tile.
+    // The active (build-time) vintage is served from the flat ortho tree; the
+    // others from ortho/<collection>/ (via ?c=). Only the active layer starts
+    // visible, so MapLibre only fetches a vintage's tiles once it's shown. When
+    // the manifest carries ≤1 vintage, fall back to a single flat ortho layer.
+    const vintages = manifest.orthoVintages ?? [];
+    const active = manifest.activeOrtho ?? vintages[0]?.collection;
+    const orthoSources: Record<string, RasterSourceSpecification> = {};
+    const orthoLayers: LayerSpecification[] = [];
+    if (vintages.length > 1) {
+        for (const v of vintages) {
+            const isActive = v.collection === active;
+            orthoSources[orthoSourceId(v.collection)] = {
+                ...orthoCommon,
+                tiles: [tileUrlTemplate(mapKey, 'ortho', 'jpg', version, isActive ? undefined : v.collection)],
+            };
+            orthoLayers.push({
+                id: orthoLayerId(v.collection),
+                type: 'raster',
+                source: orthoSourceId(v.collection),
+                layout: { visibility: isActive ? 'visible' : 'none' },
+            });
+        }
+    } else {
+        orthoSources[ORTHO_SOURCE_ID] = { ...orthoCommon, tiles: [tileUrlTemplate(mapKey, 'ortho', 'jpg', version)] };
+        orthoLayers.push({ id: ORTHO_LAYER_ID, type: 'raster', source: ORTHO_SOURCE_ID });
+    }
+
+    const sources: StyleSpecification['sources'] = {
+        ...orthoSources,
+        [TERRAIN_SOURCE_ID]: {
+            type: 'raster-dem',
+            tiles: [tileUrlTemplate(mapKey, 'terrain', 'png', version)],
+            tileSize: 256,
+            minzoom: manifest.layers.terrain.minzoom,
+            maxzoom: manifest.layers.terrain.maxzoom,
+            bounds,
+            encoding: 'mapbox',
+        },
+    };
+
+    // Hillshade layer. Prefer the pipeline-baked OPAQUE grayscale raster (a real
+    // image, every pixel valued — matches QGIS `gdaldem hillshade`). Fall back
+    // to MapLibre's translucent client-side hillshade for courses built before
+    // the baked layer existed (until they're rebuilt).
+    const bakedHillshade = manifest.layers.hillshade;
+    let hillshadeLayer: LayerSpecification;
+    if (bakedHillshade) {
+        sources[HILLSHADE_SOURCE_ID] = {
+            type: 'raster',
+            tiles: [tileUrlTemplate(mapKey, 'hillshade', 'webp', version)],
+            tileSize: 256,
+            minzoom: bakedHillshade.minzoom,
+            maxzoom: bakedHillshade.maxzoom,
+            bounds,
+        };
+        hillshadeLayer = {
+            id: HILLSHADE_LAYER_ID,
+            type: 'raster',
+            source: HILLSHADE_SOURCE_ID,
+            layout: { visibility: 'none' },
+        };
+    } else {
+        sources[HILLSHADE_SOURCE_ID] = {
+            type: 'raster-dem',
+            tiles: [tileUrlTemplate(mapKey, 'terrain', 'png', version)],
+            tileSize: 256,
+            minzoom: manifest.layers.terrain.minzoom,
+            maxzoom: manifest.layers.terrain.maxzoom,
+            bounds,
+            encoding: 'mapbox',
+        };
+        hillshadeLayer = {
+            id: HILLSHADE_LAYER_ID,
+            type: 'hillshade',
+            source: HILLSHADE_SOURCE_ID,
+            layout: { visibility: 'none' },
+            paint: { 'hillshade-exaggeration': 0.6 },
+        };
+    }
+
     return {
         version: 8,
-        sources: {
-            [ORTHO_SOURCE_ID]: {
-                type: 'raster',
-                tiles: [tileUrlTemplate(mapKey, 'ortho', 'jpg', version)],
-                tileSize: 256,
-                minzoom: manifest.layers.ortho.minzoom,
-                maxzoom: manifest.layers.ortho.maxzoom,
-                bounds,
-                ...(manifest.attribution ? { attribution: manifest.attribution } : {}),
-            },
-            [TERRAIN_SOURCE_ID]: {
-                type: 'raster-dem',
-                tiles: [tileUrlTemplate(mapKey, 'terrain', 'png', version)],
-                tileSize: 256,
-                minzoom: manifest.layers.terrain.minzoom,
-                maxzoom: manifest.layers.terrain.maxzoom,
-                bounds,
-                encoding: 'mapbox',
-            },
-            [HILLSHADE_SOURCE_ID]: {
-                type: 'raster-dem',
-                tiles: [tileUrlTemplate(mapKey, 'terrain', 'png', version)],
-                tileSize: 256,
-                minzoom: manifest.layers.terrain.minzoom,
-                maxzoom: manifest.layers.terrain.maxzoom,
-                bounds,
-                encoding: 'mapbox',
-            },
-        },
+        sources,
         layers: [
             {
                 id: BACKGROUND_LAYER_ID,
                 type: 'background',
-                paint: { 'background-color': '#0b0e11' },
+                paint: { 'background-color': BACKGROUND_COLOR },
             },
-            {
-                id: ORTHO_LAYER_ID,
-                type: 'raster',
-                source: ORTHO_SOURCE_ID,
-            },
-            {
-                id: HILLSHADE_LAYER_ID,
-                type: 'hillshade',
-                source: HILLSHADE_SOURCE_ID,
-                layout: { visibility: 'none' },
-                paint: { 'hillshade-exaggeration': 0.6 },
-            },
+            ...orthoLayers,
+            hillshadeLayer,
         ],
     };
 }

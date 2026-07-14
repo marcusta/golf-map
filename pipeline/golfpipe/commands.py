@@ -17,6 +17,7 @@ from rasterio.fill import fillnodata
 
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import stac
+from golfpipe.hillshade import write_hillshade_geotiff
 from golfpipe.manifest import build_manifest, write_manifest
 from golfpipe.raster import edge_pad_dem, mosaic_and_crop, open_warped_to_mercator
 from golfpipe.terrain_rgb import encode_terrain_rgb
@@ -26,6 +27,10 @@ DEFAULT_ORTHO_MINZOOM = 14
 DEFAULT_ORTHO_MAXZOOM = 20
 DEFAULT_TERRAIN_MINZOOM = 12
 DEFAULT_TERRAIN_MAXZOOM = 16
+# Hillshade is derived from the ~1 m DEM: tile to 19 (one below ortho's 20 —
+# overzooming further only blurs, the DEM has no more detail).
+DEFAULT_HILLSHADE_MINZOOM = 14
+DEFAULT_HILLSHADE_MAXZOOM = 19
 DEFAULT_FETCH_BUFFER_M = 250.0
 DEFAULT_TERRAIN_EDGE_PAD_M = 250.0
 
@@ -250,6 +255,29 @@ def cmd_tile_ortho(input_path: Path, out_dir: Path, minzoom: int = DEFAULT_ORTHO
     return count
 
 
+def cmd_tile_hillshade(
+    dem_path: Path,
+    out_dir: Path,
+    minzoom: int = DEFAULT_HILLSHADE_MINZOOM,
+    maxzoom: int = DEFAULT_HILLSHADE_MAXZOOM,
+    azimuth: float = 315.0,
+    altitude: float = 45.0,
+    z: float = 1.0,
+) -> int:
+    """Renders an opaque QGIS-style grayscale hillshade from the DEM (Horn,
+    default az 315° / alt 45° / z 1) and tiles it into an XYZ WebP pyramid at
+    out_dir. The intermediate hillshade GeoTIFF is temporary; the served tiles
+    are ordinary opaque raster tiles (tiled via the same encoder as ortho —
+    grayscale is replicated to RGB).
+    """
+    with tempfile.TemporaryDirectory(prefix="golfpipe-hs-") as tmp:
+        hillshade_tif = Path(tmp) / "hillshade.tif"
+        write_hillshade_geotiff(dem_path, hillshade_tif, azimuth=azimuth, altitude=altitude, z=z)
+        count = cmd_tile_ortho(hillshade_tif, out_dir, minzoom=minzoom, maxzoom=maxzoom)
+    print(f"Wrote {count} hillshade tiles to {out_dir}")
+    return count
+
+
 @contextmanager
 def _fill_interior_nodata(input_path: Path, max_search_distance: float = 100.0):
     """Yields a path to a DEM with interior nodata holes inpainted via
@@ -383,10 +411,12 @@ def _noop_path(input_path: Path):
 def cmd_manifest(course_id: str, tiles_dir: Path, dem_path: Path | None = None, out_path: Path | None = None) -> Path:
     ortho_dir = tiles_dir / "ortho"
     terrain_dir = tiles_dir / "terrain"
+    hillshade_dir = tiles_dir / "hillshade"
     manifest = build_manifest(
         course_id,
         ortho_tiles_dir=ortho_dir if ortho_dir.exists() else None,
         terrain_tiles_dir=terrain_dir if terrain_dir.exists() else None,
+        hillshade_tiles_dir=hillshade_dir if hillshade_dir.exists() else None,
         dem_path=dem_path,
     )
     target = out_path or (tiles_dir / "manifest.json")

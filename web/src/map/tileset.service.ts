@@ -27,6 +27,8 @@ export interface TileManifest {
     layers: {
         ortho: TileLayerConfig;
         terrain: TileLayerConfig;
+        /** Baked opaque hillshade raster (present once a course is (re)built with it). */
+        hillshade?: TileLayerConfig;
     };
     /** Course elevation range in meters (RH2000). */
     elevation: { min: number; max: number };
@@ -63,6 +65,7 @@ export function parseTileManifest(metaJson: string | null | undefined): TileMani
     const b = m.bounds;
     const ortho = m.layers?.ortho;
     const terrain = m.layers?.terrain;
+    const hillshade = m.layers?.hillshade;
     if (
         typeof b?.west !== 'number' || typeof b?.south !== 'number' ||
         typeof b?.east !== 'number' || typeof b?.north !== 'number' ||
@@ -75,6 +78,9 @@ export function parseTileManifest(metaJson: string | null | undefined): TileMani
         layers: {
             ortho: { minzoom: ortho.minzoom, maxzoom: ortho.maxzoom },
             terrain: { minzoom: terrain.minzoom, maxzoom: terrain.maxzoom },
+            ...(typeof hillshade?.minzoom === 'number' && typeof hillshade?.maxzoom === 'number'
+                ? { hillshade: { minzoom: hillshade.minzoom, maxzoom: hillshade.maxzoom } }
+                : {}),
         },
         elevation: {
             min: typeof m.elevation?.min === 'number' ? m.elevation.min : 0,

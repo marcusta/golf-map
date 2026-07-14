@@ -9,22 +9,24 @@ import { NotFoundError } from '@basics/core/server/auth';
 
 export type AssetKind = 'ortho_cog' | 'dem_cog' | 'svg_source' | 'tile_manifest';
 
-export type TileLayer = 'ortho' | 'terrain';
+export type TileLayer = 'ortho' | 'terrain' | 'hillshade';
 
-const TILE_LAYERS: readonly TileLayer[] = ['ortho', 'terrain'];
+const TILE_LAYERS: readonly TileLayer[] = ['ortho', 'terrain', 'hillshade'];
 
-const TILE_EXTENSION_BY_LAYER: Record<TileLayer, 'jpg' | 'png'> = {
+const TILE_EXTENSION_BY_LAYER: Record<TileLayer, 'jpg' | 'png' | 'webp'> = {
     ortho: 'jpg',
     terrain: 'png',
+    hillshade: 'webp',
 };
 
 // Candidate extensions per layer, in resolution-preference order. Ortho tiles
 // are migrating from JPEG to WebP: a WebP tile is preferred when present, with
 // the legacy JPEG as fallback so existing on-disk trees keep serving. Terrain
-// is PNG only.
+// is PNG only; hillshade is opaque WebP only (baked by the pipeline).
 const TILE_EXTENSIONS_BY_LAYER: Record<TileLayer, readonly string[]> = {
     ortho: ['webp', 'jpg'],
     terrain: ['png'],
+    hillshade: ['webp'],
 };
 
 // A "safe id" — used to validate courseId before it touches the filesystem.
@@ -198,25 +200,36 @@ export class AssetsService {
      * with the same sanitization as `resolveTilePath`. The caller serves the
      * first candidate that exists on disk. Ortho prefers `.webp` and falls back
      * to the legacy `.jpg`; terrain has a single `.png` candidate.
+     *
+     * `collection` selects a specific ortho vintage tiled under
+     * `<layer>/<collection>/…` (build-time active vintage lives in the flat
+     * `<layer>/…` tree, the others in per-collection subdirs). Ignored for
+     * non-ortho layers.
      */
-    resolveTilePathCandidates(courseId: string, layer: TileLayer, z: number, x: number, y: number): string[] {
+    resolveTilePathCandidates(courseId: string, layer: TileLayer, z: number, x: number, y: number, collection?: string): string[] {
         return TILE_EXTENSIONS_BY_LAYER[layer].map((ext) =>
-            this.tilePathForExt(courseId, layer, z, x, y, ext),
+            this.tilePathForExt(courseId, layer, z, x, y, ext, collection),
         );
     }
 
-    private tilePathForExt(courseId: string, layer: TileLayer, z: number, x: number, y: number, ext: string): string {
+    private tilePathForExt(courseId: string, layer: TileLayer, z: number, x: number, y: number, ext: string, collection?: string): string {
         if (!SAFE_ID_RE.test(courseId)) {
             throw new Error(`Invalid courseId: ${courseId}`);
         }
         if (!TILE_LAYERS.includes(layer)) {
             throw new Error(`Invalid tile layer: ${layer}`);
         }
+        if (collection !== undefined && (layer !== 'ortho' || !SAFE_ID_RE.test(collection))) {
+            throw new Error(`Invalid tile collection: ${collection}`);
+        }
         assertTileCoordinate('z', z);
         assertTileCoordinate('x', x);
         assertTileCoordinate('y', y);
 
-        const filePath = path.join(this.dataDir, 'tiles', courseId, layer, String(z), String(x), `${y}.${ext}`);
+        const segments = collection === undefined
+            ? [layer, String(z), String(x), `${y}.${ext}`]
+            : [layer, collection, String(z), String(x), `${y}.${ext}`];
+        const filePath = path.join(this.dataDir, 'tiles', courseId, ...segments);
 
         const tilesRoot = path.join(this.dataDir, 'tiles');
         if (!filePath.startsWith(tilesRoot + path.sep) && filePath !== tilesRoot) {

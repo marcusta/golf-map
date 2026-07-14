@@ -68,6 +68,12 @@ function fakeRunner(opts: { dataDir: string; calls: RunnerCall[]; failAt?: Build
             await mkdir(path.join(root, 'terrain'), { recursive: true });
             await writeFile(path.join(root, 'manifest.json'), JSON.stringify(MANIFEST));
         }
+        if (step === 'tile-ortho') {
+            // Materialize the output dir so "is this vintage tiled" checks see it.
+            const out = argValue(args, '--out')!;
+            await mkdir(out, { recursive: true });
+            await writeFile(path.join(out, '.tiled'), 'x');
+        }
         return { code: 0, stdout: `ok ${step}\n`, stderr: '' };
     };
 }
@@ -105,18 +111,26 @@ test('happy path: runs the lidar→dem→ortho chain in order and registers 3 ti
         const course = await ctx.coursesService.get(TEST_COURSE_ID);
         expect(course.siteId).toBe(siteId);
 
-        // Steps in order: lidar→DEM, then list vintages + fetch BOTH, tile active.
+        // Steps in order: lidar→DEM, then list vintages + fetch BOTH, tile
+        // active into the flat tree, terrain + baked hillshade, then
+        // (post-install) tile the older vintage into ortho/<collection>/ so the
+        // client can switch without a re-tile.
         expect(calls.map((c) => c.step)).toEqual([
             'fetch-lidar', 'reproject-bbox', 'grid-dem',
             'list-ortho-vintages', 'fetch-ortho', 'fetch-ortho',
-            'tile-ortho', 'tile-terrain', 'manifest', 'install',
+            'tile-ortho', 'tile-terrain', 'tile-hillshade', 'manifest', 'install', 'tile-ortho',
         ]);
 
-        // Both vintages fetched to persisted sources; the newest is the one tiled.
+        // Both vintages fetched to persisted sources; the newest is tiled flat.
         const orthoFetches = calls.filter((c) => c.step === 'fetch-ortho');
         expect(orthoFetches.map((c) => argValue(c.args, '--collection'))).toEqual(['orto-l2-2025', 'orto-l2-2023']);
-        const tileOrtho = calls.find((c) => c.step === 'tile-ortho')!;
-        expect(argValue(tileOrtho.args, '--input')!.endsWith('ortho-orto-l2-2025.tif')).toBe(true);
+        const tileOrthos = calls.filter((c) => c.step === 'tile-ortho');
+        // First tile-ortho = active vintage → flat ortho tree.
+        expect(argValue(tileOrthos[0].args, '--input')!.endsWith('ortho-orto-l2-2025.tif')).toBe(true);
+        expect(argValue(tileOrthos[0].args, '--out')!.endsWith(path.join('ortho'))).toBe(true);
+        // Second = the older vintage → ortho/<collection>/ subdir.
+        expect(argValue(tileOrthos[1].args, '--input')!.endsWith('ortho-orto-l2-2023.tif')).toBe(true);
+        expect(argValue(tileOrthos[1].args, '--out')!.endsWith(path.join('ortho', 'orto-l2-2023'))).toBe(true);
         // install/manifest are keyed by the SITE id.
         expect(argValue(calls.find((c) => c.step === 'install')!.args, '--course')).toBe(siteId);
 
@@ -146,42 +160,60 @@ test('happy path: runs the lidar→dem→ortho chain in order and registers 3 ti
     }
 });
 
-test('setActiveOrtho re-tiles from the persisted vintage and updates the manifest', async () => {
+test('ensureOrthoTiled is a no-op when the vintage is already tiled (fresh build)', async () => {
     const { svc, assets, calls, cleanup } = await setup();
     try {
-        // Build first so both vintage sources are persisted.
+        // A fresh build already tiles BOTH vintages (active flat + others per-collection).
         const build = await svc.start(TEST_COURSE_ID, BBOX);
         await svc.waitForJob(build.id);
         const siteId = (await svc.get(build.id)).siteId!;
-        calls.length = 0; // focus on the switch
-
         const before = JSON.parse((await assets.listBySite(siteId)).find((a) => a.kind === 'tile_manifest')!.metaJson!);
-        expect(before.activeOrtho).toBe('orto-l2-2025');
+        calls.length = 0; // focus on the ensure
 
-        const job = await svc.setActiveOrtho(TEST_COURSE_ID, 'orto-l2-2023');
+        const job = await svc.ensureOrthoTiled(TEST_COURSE_ID, 'orto-l2-2023');
         await svc.waitForJob(job.id);
-        const final = await svc.get(job.id);
-        expect(final.status).toBe('succeeded');
+        expect((await svc.get(job.id)).status).toBe('succeeded');
 
-        // Re-tiled from the 2023 source, no re-download (no fetch-* calls).
-        expect(calls.map((c) => c.step)).toEqual(['tile-ortho']);
-        expect(argValue(calls[0].args, '--input')!.endsWith('ortho-orto-l2-2023.tif')).toBe(true);
-
-        // Manifest now points at 2023 with a bumped generatedAt (cache-bust).
+        // Already tiled → no tile-ortho ran, and the manifest is untouched
+        // (the switch is client-side; active/generatedAt must not change).
+        expect(calls).toEqual([]);
         const after = JSON.parse((await assets.listBySite(siteId)).find((a) => a.kind === 'tile_manifest')!.metaJson!);
-        expect(after.activeOrtho).toBe('orto-l2-2023');
-        expect(after.generatedAt).not.toBe(before.generatedAt);
+        expect(after.activeOrtho).toBe(before.activeOrtho);
+        expect(after.generatedAt).toBe(before.generatedAt);
     } finally {
         await cleanup();
     }
 });
 
-test('setActiveOrtho rejects a vintage with no persisted source', async () => {
+test('ensureOrthoTiled tiles a missing vintage into ortho/<collection>/ on demand', async () => {
+    const { svc, calls, dataDir, cleanup } = await setup();
+    try {
+        const build = await svc.start(TEST_COURSE_ID, BBOX);
+        await svc.waitForJob(build.id);
+        const siteId = (await svc.get(build.id)).siteId!;
+        // Simulate a course built before per-vintage tiling: drop the subdir.
+        await rm(path.join(dataDir, 'tiles', siteId, 'ortho', 'orto-l2-2023'), { recursive: true, force: true });
+        calls.length = 0;
+
+        const job = await svc.ensureOrthoTiled(TEST_COURSE_ID, 'orto-l2-2023');
+        await svc.waitForJob(job.id);
+        expect((await svc.get(job.id)).status).toBe('succeeded');
+
+        // Tiled from the persisted 2023 source into the per-collection subdir.
+        expect(calls.map((c) => c.step)).toEqual(['tile-ortho']);
+        expect(argValue(calls[0].args, '--input')!.endsWith('ortho-orto-l2-2023.tif')).toBe(true);
+        expect(argValue(calls[0].args, '--out')!.endsWith(path.join('ortho', 'orto-l2-2023'))).toBe(true);
+    } finally {
+        await cleanup();
+    }
+});
+
+test('ensureOrthoTiled rejects a vintage with no persisted source or tiles', async () => {
     const { svc, cleanup } = await setup();
     try {
         const build = await svc.start(TEST_COURSE_ID, BBOX);
         await svc.waitForJob(build.id);
-        await expect(svc.setActiveOrtho(TEST_COURSE_ID, 'orto-l2-1999')).rejects.toThrow(/No persisted ortho/);
+        await expect(svc.ensureOrthoTiled(TEST_COURSE_ID, 'orto-l2-1999')).rejects.toThrow(/No persisted ortho/);
     } finally {
         await cleanup();
     }

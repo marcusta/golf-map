@@ -9,6 +9,8 @@ import {
     HILLSHADE_SOURCE_ID,
     HILLSHADE_LAYER_ID,
     BACKGROUND_LAYER_ID,
+    orthoSourceId,
+    orthoLayerId,
 } from '../src/map/map-style';
 import type { TileManifest } from '../src/map/tileset.service';
 
@@ -28,6 +30,42 @@ test('tileUrlTemplate produces proxied XYZ URLs with the version param', () => {
         .toBe('/tiles/C-1/ortho/{z}/{x}/{y}.jpg?v=V9');
     expect(tileUrlTemplate('C-1', 'terrain', 'png', 'V9'))
         .toBe('/tiles/C-1/terrain/{z}/{x}/{y}.png?v=V9');
+});
+
+test('tileUrlTemplate appends ?c=<collection> for a non-active ortho vintage', () => {
+    expect(tileUrlTemplate('C-1', 'ortho', 'jpg', 'V9', 'orto-l2-2023'))
+        .toBe('/tiles/C-1/ortho/{z}/{x}/{y}.jpg?v=V9&c=orto-l2-2023');
+});
+
+test('buildEditorStyle: >1 vintage → one ortho layer each, only the active visible', () => {
+    const manifest: TileManifest = {
+        ...MANIFEST,
+        orthoVintages: [
+            { collection: 'orto-l2-2025', dates: ['2025-06-21'] },
+            { collection: 'orto-l2-2023', dates: ['2023-04-21'] },
+        ],
+        activeOrtho: 'orto-l2-2025',
+    };
+    const style = buildEditorStyle('C-1', manifest, 'V9');
+
+    // Active vintage → flat tree (no ?c); the other → ortho/<collection>/ via ?c.
+    const active = style.sources[orthoSourceId('orto-l2-2025')] as any;
+    expect(active.tiles).toEqual(['/tiles/C-1/ortho/{z}/{x}/{y}.jpg?v=V9']);
+    const older = style.sources[orthoSourceId('orto-l2-2023')] as any;
+    expect(older.tiles).toEqual(['/tiles/C-1/ortho/{z}/{x}/{y}.jpg?v=V9&c=orto-l2-2023']);
+
+    // Both layers present, in manifest order, active shown / older hidden.
+    const ids = style.layers.map(l => l.id);
+    expect(ids).toEqual([
+        BACKGROUND_LAYER_ID,
+        orthoLayerId('orto-l2-2025'),
+        orthoLayerId('orto-l2-2023'),
+        HILLSHADE_LAYER_ID,
+    ]);
+    const activeLayer = style.layers.find(l => l.id === orthoLayerId('orto-l2-2025')) as any;
+    const olderLayer = style.layers.find(l => l.id === orthoLayerId('orto-l2-2023')) as any;
+    expect(activeLayer.layout?.visibility).toBe('visible');
+    expect(olderLayer.layout.visibility).toBe('none');
 });
 
 test('boundsToArray orders west, south, east, north', () => {
@@ -78,6 +116,31 @@ test('buildEditorStyle layers: dark background, ortho, hidden hillshade', () => 
     expect(hillshade.type).toBe('hillshade');
     expect(hillshade.source).toBe(HILLSHADE_SOURCE_ID);
     expect(hillshade.layout.visibility).toBe('none');
+});
+
+test('buildEditorStyle: baked hillshade layer → opaque raster from hillshade tiles', () => {
+    const manifest: TileManifest = {
+        ...MANIFEST,
+        layers: { ...MANIFEST.layers, hillshade: { minzoom: 14, maxzoom: 19 } },
+    };
+    const style = buildEditorStyle('C-1', manifest, 'V9');
+
+    // Opaque raster source pointing at the baked hillshade WebP tiles.
+    const src = style.sources[HILLSHADE_SOURCE_ID] as any;
+    expect(src.type).toBe('raster');
+    expect(src.tiles).toEqual(['/tiles/C-1/hillshade/{z}/{x}/{y}.webp?v=V9']);
+    expect(src.maxzoom).toBe(19);
+
+    const layer = style.layers.find(l => l.id === HILLSHADE_LAYER_ID) as any;
+    expect(layer.type).toBe('raster');
+    expect(layer.layout.visibility).toBe('none');
+});
+
+test('buildEditorStyle: no baked hillshade → falls back to client-side hillshade layer', () => {
+    const style = buildEditorStyle('C-1', MANIFEST, 'V9'); // MANIFEST has no layers.hillshade
+    const layer = style.layers.find(l => l.id === HILLSHADE_LAYER_ID) as any;
+    expect(layer.type).toBe('hillshade');
+    expect((style.sources[HILLSHADE_SOURCE_ID] as any).type).toBe('raster-dem');
 });
 
 test('buildEditorStyle omits attribution when the manifest has none', () => {

@@ -51,6 +51,7 @@ def build_manifest(
     course_id: str,
     ortho_tiles_dir: Path | None = None,
     terrain_tiles_dir: Path | None = None,
+    hillshade_tiles_dir: Path | None = None,
     dem_path: Path | None = None,
     bounds_wgs84: tuple[float, float, float, float] | None = None,
 ) -> dict:
@@ -73,6 +74,9 @@ def build_manifest(
     terrain_summary = _layer_summary(terrain_tiles_dir)
     if terrain_summary:
         layers["terrain"] = terrain_summary
+    hillshade_summary = _layer_summary(hillshade_tiles_dir)
+    if hillshade_summary:
+        layers["hillshade"] = hillshade_summary
 
     manifest = {
         "courseId": course_id,
