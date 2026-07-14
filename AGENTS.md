@@ -30,6 +30,10 @@ See [TESTING.md](TESTING.md) for the strategy. In short: integration-first, **no
 mocks**, unit tests only for hard algorithms, user journeys covered by the E2E
 harness. One service = one service test. No CI — run the suites before pushing.
 
+For iOS UI changes, a successful compile is not sufficient verification. After
+building, install the resulting `.app` on an iPhone Simulator and launch it so
+Marcus can visually verify the change.
+
 ## Git
 
 No `Co-Authored-By` lines in commits.
