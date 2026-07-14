@@ -77,4 +77,90 @@ final class HazardCarriesTests: XCTestCase {
         )
         XCTAssertTrue(rows.isEmpty)
     }
+
+    // MARK: - nearLine (corridor variant: off-line hazards get in, with a side)
+
+    func testNearLineCrossedRingIsOnLine() {
+        let rows = HazardCarries.nearLine(
+            origin: origin, target: target, hazards: [box(-5, 50, 5, 60, "water")]
+        )
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].side, .onLine)
+        XCTAssertEqual(rows[0].displayLabel, "Water")
+        XCTAssertEqual(rows[0].frontM, 50)
+        XCTAssertEqual(rows[0].carryM, 60)
+    }
+
+    func testNearLineOffsetBunkerIsIncludedWithSide() {
+        // A fairway bunker a bit EAST of the northbound line (10–25 m off) — the
+        // ray never crosses it, but it's within the corridor → included, right.
+        let rows = HazardCarries.nearLine(
+            origin: origin, target: target, hazards: [box(10, 40, 25, 55)]
+        )
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].side, .right)
+        XCTAssertEqual(rows[0].displayLabel, "R Bunker")
+        XCTAssertEqual(rows[0].frontM, 40) // near along-line edge
+        XCTAssertEqual(rows[0].carryM, 55) // far along-line edge
+        // Centroid focuses the actual bunker, not a point on the line.
+        XCTAssertEqual(rows[0].centroid.x, 17.5, accuracy: 1e-9)
+        XCTAssertEqual(rows[0].centroid.y, 47.5, accuracy: 1e-9)
+    }
+
+    func testNearLineWestBunkerIsLeft() {
+        let rows = HazardCarries.nearLine(
+            origin: origin, target: target, hazards: [box(-25, 40, -10, 55)]
+        )
+        XCTAssertEqual(rows.first?.side, .left)
+        XCTAssertEqual(rows.first?.displayLabel, "L Bunker")
+    }
+
+    func testNearLineBeyondCorridorIsExcluded() {
+        // 50 m off the line, corridor half-width 35 → dropped.
+        let rows = HazardCarries.nearLine(
+            origin: origin, target: target, hazards: [box(50, 40, 60, 55)],
+            corridorHalfWidthM: 35
+        )
+        XCTAssertTrue(rows.isEmpty)
+    }
+
+    func testNearLinePastTargetIsExcluded() {
+        let rows = HazardCarries.nearLine(
+            origin: origin, target: target, hazards: [box(10, 120, 25, 130)]
+        )
+        XCTAssertTrue(rows.isEmpty)
+    }
+
+    // MARK: - nearLines (two-line: routed dogleg + direct cut)
+
+    // Sharp dogleg east: routed bends through (60,50); direct is straight north.
+    private var directLine: [Vec2] { [Vec2(x: 0, y: 0), Vec2(x: 0, y: 100)] }
+    private var routedLine: [Vec2] { [Vec2(x: 0, y: 0), Vec2(x: 60, y: 50), Vec2(x: 0, y: 100)] }
+
+    func testNearLinesRoutedLineAddsDoglegHazard() {
+        let apex = box(54, 44, 66, 56) // centroid (60,50) — at the dogleg apex
+        XCTAssertTrue(HazardCarries.nearLines([directLine], hazards: [apex]).isEmpty,
+                      "60 m off the direct line")
+        XCTAssertEqual(HazardCarries.nearLines([routedLine, directLine], hazards: [apex]).count, 1,
+                       "but it sits on the routed line → in play")
+    }
+
+    func testNearLinesDirectLineAddsCornerCutHazard() {
+        let corner = box(-6, 44, 6, 56) // centroid (0,50) — on the straight cut
+        XCTAssertTrue(HazardCarries.nearLines([routedLine], hazards: [corner]).isEmpty,
+                      "~38 m off the routed line")
+        XCTAssertEqual(HazardCarries.nearLines([routedLine, directLine], hazards: [corner]).count, 1,
+                       "but it sits on the direct cut line → in play")
+    }
+
+    func testNearLineExtraAheadIncludesGreensideBunker() {
+        // A bunker just past the green centre (105–115 m vs a 100 m target) is
+        // dropped by default but caught with a margin — greenside bunkers sit
+        // around/behind the centre.
+        let box = box(-5, 105, 5, 115)
+        XCTAssertTrue(HazardCarries.nearLine(origin: origin, target: target, hazards: [box]).isEmpty)
+        let rows = HazardCarries.nearLine(origin: origin, target: target, hazards: [box], extraAheadM: 40)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].side, .onLine)
+    }
 }

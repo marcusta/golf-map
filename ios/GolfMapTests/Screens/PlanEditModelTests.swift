@@ -169,6 +169,68 @@ final class PlanEditModelTests: XCTestCase {
         XCTAssertEqual(spy.removes, 1)
     }
 
+    // MARK: - Smart caddy wiring
+
+    /// Places a shot far enough up the hole that the shot→green leg is an
+    /// approach, primes the aim memo, and returns the model + shot id.
+    private func modelWithApproachShot(spy: WriterSpy) async throws -> (OnCourseModel, String) {
+        let model = makeModel(spy: spy)
+        model.enterTool(.plan)
+        model.setAddingPlanShot(true)
+        let tee = LatLon(lat: 58.3600, lon: 15.7100)
+        let p = Sweref99TM.fromWGS84(tee)
+        model.placePlanShot(at: Sweref99TM.toWGS84(x: p.x, y: p.y + 150))
+        await drainTasks()
+        _ = model.planOverlay // prime the aim-enrichment memo (legPlans)
+        let shotId = try XCTUnwrap(model.planEditShots.first).id
+        return (model, shotId)
+    }
+
+    func testPlanCaddyAdviceFiresAndHidesInCompetition() async throws {
+        let spy = WriterSpy()
+        let (model, _) = try await modelWithApproachShot(spy: spy)
+
+        let advice = model.planCaddyAdvice
+        XCTAssertFalse(advice.isEmpty, "the approach leg to the green yields caddy advice")
+        XCTAssertTrue(advice.contains { $0.ruleId == "specific-target" },
+                      "specific-target commits the approach line")
+
+        model.competitionMode = true
+        XCTAssertTrue(model.planCaddyAdvice.isEmpty, "advice is withheld in competition mode")
+    }
+
+    func testAdvisedClubDiffersFromWrongClubAndApplies() async throws {
+        let spy = WriterSpy()
+        let (model, shotId) = try await modelWithApproachShot(spy: spy)
+
+        // Force a wrong club; the wind/plays-like advised club should differ.
+        model.setPlanShotClub(shotId: shotId, clubId: "dr")
+        let advised = try XCTUnwrap(model.advisedClub(forShotId: shotId))
+        XCTAssertEqual(advised.id, "7i", "a ~150 m leg → 7 iron is the plays-like fit")
+        XCTAssertNotEqual(advised.id, "dr")
+
+        // Applying the chip sets the shot's club.
+        model.setPlanShotClub(shotId: shotId, clubId: advised.id)
+        XCTAssertEqual(model.planEditShots.first?.clubId, "7i")
+    }
+
+    func testApplyRecommendedAimMovesTheSelectedShot() async throws {
+        let spy = WriterSpy()
+        let (model, shotId) = try await modelWithApproachShot(spy: spy)
+        let before = try XCTUnwrap(model.planEditShots.first).position
+
+        model.selectPlanShot(handleID: OnCourseModel.planShotHandleID(shotId))
+        XCTAssertTrue(model.selectedShotHasRecommendedAim,
+                      "the selected shot has a recommended aim line")
+
+        let movesBefore = spy.moves
+        model.applyRecommendedAimForSelectedShot()
+        let after = try XCTUnwrap(model.planEditShots.first).position
+        XCTAssertNotEqual(before, after, "the shot snaps onto the recommended aim landing point")
+        await drainTasks()
+        XCTAssertEqual(spy.moves, movesBefore + 1, "the snap persists once")
+    }
+
     func testSetPlanShotClubPersists() async throws {
         let spy = WriterSpy()
         let model = makeModel(spy: spy)

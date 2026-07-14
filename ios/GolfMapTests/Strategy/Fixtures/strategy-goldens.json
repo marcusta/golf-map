@@ -275,6 +275,513 @@
             "name": null
         }
     },
+    "layup": {
+        "cases": [
+            {
+                "targetM": 5,
+                "options": [
+                    {
+                        "club": "Driver",
+                        "carryM": 243,
+                        "remainingM": -238,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "3w",
+                        "carryM": 220,
+                        "remainingM": -215,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "3h",
+                        "carryM": 200,
+                        "remainingM": -195,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "4i",
+                        "carryM": 187,
+                        "remainingM": -182,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "5i",
+                        "carryM": 177,
+                        "remainingM": -172,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "6i",
+                        "carryM": 168,
+                        "remainingM": -163,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "7i",
+                        "carryM": 155,
+                        "remainingM": -150,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "8i",
+                        "carryM": 142,
+                        "remainingM": -137,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "9i",
+                        "carryM": 127,
+                        "remainingM": -122,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "PW",
+                        "carryM": 115,
+                        "remainingM": -110,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "50",
+                        "carryM": 100,
+                        "remainingM": -95,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "54",
+                        "carryM": 90,
+                        "remainingM": -85,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "LW",
+                        "carryM": 75,
+                        "remainingM": -70,
+                        "approachClub": null,
+                        "reaches": true
+                    }
+                ],
+                "longest": null
+            },
+            {
+                "targetM": 160,
+                "options": [
+                    {
+                        "club": "Driver",
+                        "carryM": 243,
+                        "remainingM": -83,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "3w",
+                        "carryM": 220,
+                        "remainingM": -60,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "3h",
+                        "carryM": 200,
+                        "remainingM": -40,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "4i",
+                        "carryM": 187,
+                        "remainingM": -27,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "5i",
+                        "carryM": 177,
+                        "remainingM": -17,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "6i",
+                        "carryM": 168,
+                        "remainingM": -8,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "7i",
+                        "carryM": 155,
+                        "remainingM": 5,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "8i",
+                        "carryM": 142,
+                        "remainingM": 18,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "9i",
+                        "carryM": 127,
+                        "remainingM": 33,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "PW",
+                        "carryM": 115,
+                        "remainingM": 45,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "50",
+                        "carryM": 100,
+                        "remainingM": 60,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "54",
+                        "carryM": 90,
+                        "remainingM": 70,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "LW",
+                        "carryM": 75,
+                        "remainingM": 85,
+                        "approachClub": "54",
+                        "reaches": false
+                    }
+                ],
+                "longest": {
+                    "club": "7i",
+                    "remainingM": 5,
+                    "approachClub": "LW"
+                }
+            },
+            {
+                "targetM": 243,
+                "options": [
+                    {
+                        "club": "Driver",
+                        "carryM": 243,
+                        "remainingM": 0,
+                        "approachClub": null,
+                        "reaches": true
+                    },
+                    {
+                        "club": "3w",
+                        "carryM": 220,
+                        "remainingM": 23,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "3h",
+                        "carryM": 200,
+                        "remainingM": 43,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "4i",
+                        "carryM": 187,
+                        "remainingM": 56,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "5i",
+                        "carryM": 177,
+                        "remainingM": 66,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "6i",
+                        "carryM": 168,
+                        "remainingM": 75,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "7i",
+                        "carryM": 155,
+                        "remainingM": 88,
+                        "approachClub": "54",
+                        "reaches": false
+                    },
+                    {
+                        "club": "8i",
+                        "carryM": 142,
+                        "remainingM": 101,
+                        "approachClub": "50",
+                        "reaches": false
+                    },
+                    {
+                        "club": "9i",
+                        "carryM": 127,
+                        "remainingM": 116,
+                        "approachClub": "PW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "PW",
+                        "carryM": 115,
+                        "remainingM": 128,
+                        "approachClub": "9i",
+                        "reaches": false
+                    },
+                    {
+                        "club": "50",
+                        "carryM": 100,
+                        "remainingM": 143,
+                        "approachClub": "8i",
+                        "reaches": false
+                    },
+                    {
+                        "club": "54",
+                        "carryM": 90,
+                        "remainingM": 153,
+                        "approachClub": "7i",
+                        "reaches": false
+                    },
+                    {
+                        "club": "LW",
+                        "carryM": 75,
+                        "remainingM": 168,
+                        "approachClub": "6i",
+                        "reaches": false
+                    }
+                ],
+                "longest": {
+                    "club": "3w",
+                    "remainingM": 23,
+                    "approachClub": "LW"
+                }
+            },
+            {
+                "targetM": 301,
+                "options": [
+                    {
+                        "club": "Driver",
+                        "carryM": 243,
+                        "remainingM": 58,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "3w",
+                        "carryM": 220,
+                        "remainingM": 81,
+                        "approachClub": "LW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "3h",
+                        "carryM": 200,
+                        "remainingM": 101,
+                        "approachClub": "50",
+                        "reaches": false
+                    },
+                    {
+                        "club": "4i",
+                        "carryM": 187,
+                        "remainingM": 114,
+                        "approachClub": "PW",
+                        "reaches": false
+                    },
+                    {
+                        "club": "5i",
+                        "carryM": 177,
+                        "remainingM": 124,
+                        "approachClub": "9i",
+                        "reaches": false
+                    },
+                    {
+                        "club": "6i",
+                        "carryM": 168,
+                        "remainingM": 133,
+                        "approachClub": "9i",
+                        "reaches": false
+                    },
+                    {
+                        "club": "7i",
+                        "carryM": 155,
+                        "remainingM": 146,
+                        "approachClub": "8i",
+                        "reaches": false
+                    },
+                    {
+                        "club": "8i",
+                        "carryM": 142,
+                        "remainingM": 159,
+                        "approachClub": "7i",
+                        "reaches": false
+                    },
+                    {
+                        "club": "9i",
+                        "carryM": 127,
+                        "remainingM": 174,
+                        "approachClub": "5i",
+                        "reaches": false
+                    },
+                    {
+                        "club": "PW",
+                        "carryM": 115,
+                        "remainingM": 186,
+                        "approachClub": "4i",
+                        "reaches": false
+                    },
+                    {
+                        "club": "50",
+                        "carryM": 100,
+                        "remainingM": 201,
+                        "approachClub": "3h",
+                        "reaches": false
+                    },
+                    {
+                        "club": "54",
+                        "carryM": 90,
+                        "remainingM": 211,
+                        "approachClub": "3w",
+                        "reaches": false
+                    },
+                    {
+                        "club": "LW",
+                        "carryM": 75,
+                        "remainingM": 226,
+                        "approachClub": "3w",
+                        "reaches": false
+                    }
+                ],
+                "longest": {
+                    "club": "Driver",
+                    "remainingM": 58,
+                    "approachClub": "LW"
+                }
+            },
+            {
+                "targetM": 500,
+                "options": [
+                    {
+                        "club": "Driver",
+                        "carryM": 243,
+                        "remainingM": 257,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "3w",
+                        "carryM": 220,
+                        "remainingM": 280,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "3h",
+                        "carryM": 200,
+                        "remainingM": 300,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "4i",
+                        "carryM": 187,
+                        "remainingM": 313,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "5i",
+                        "carryM": 177,
+                        "remainingM": 323,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "6i",
+                        "carryM": 168,
+                        "remainingM": 332,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "7i",
+                        "carryM": 155,
+                        "remainingM": 345,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "8i",
+                        "carryM": 142,
+                        "remainingM": 358,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "9i",
+                        "carryM": 127,
+                        "remainingM": 373,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "PW",
+                        "carryM": 115,
+                        "remainingM": 385,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "50",
+                        "carryM": 100,
+                        "remainingM": 400,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "54",
+                        "carryM": 90,
+                        "remainingM": 410,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    },
+                    {
+                        "club": "LW",
+                        "carryM": 75,
+                        "remainingM": 425,
+                        "approachClub": "Driver",
+                        "reaches": false
+                    }
+                ],
+                "longest": {
+                    "club": "Driver",
+                    "remainingM": 257,
+                    "approachClub": "Driver"
+                }
+            }
+        ],
+        "emptyOptions": 0,
+        "emptyLongest": null
+    },
     "wind": {
         "windComponents": [
             {
@@ -1959,6 +2466,1827 @@
                     },
                     "greenSlope": null,
                     "hazards": [],
+                    "out": []
+                }
+            ]
+        },
+        "medicine": {
+            "cases": [
+                {
+                    "name": "punch-out beats forcing it",
+                    "ctx": {
+                        "leg": "recovery",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 180
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 175
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 185
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "wedge",
+                                "carryM": 90,
+                                "dispersionM": 12
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "take-your-medicine",
+                            "kind": "layup",
+                            "priority": 4,
+                            "confidence": 0.9,
+                            "headline": "Take your medicine — punch out with the wedge and get back in play.",
+                            "detail": "Escaping to the fairway (~123 m left) prices at 3.89 strokes; forcing it and staying stuck prices at 4.80. Give yourself a clean next shot.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 56.699999999999996
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "headwind shortens the escape",
+                    "ctx": {
+                        "leg": "recovery",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 180
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 175
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 185
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "wedge",
+                                "carryM": 90,
+                                "dispersionM": 12
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": {
+                            "speedMps": 6,
+                            "directionDeg": 180
+                        },
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "take-your-medicine",
+                            "kind": "layup",
+                            "priority": 4,
+                            "confidence": 0.9,
+                            "headline": "Take your medicine — punch out with the wedge and get back in play.",
+                            "detail": "Escaping to the fairway (~119 m left) prices at 3.88 strokes; forcing it and staying stuck prices at 4.80. Give yourself a clean next shot.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 60.50503494
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "already at the green emits nothing",
+                    "ctx": {
+                        "leg": "recovery",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 0
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 0
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 0
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "wedge",
+                                "carryM": 90,
+                                "dispersionM": 12
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
+                    "out": []
+                },
+                {
+                    "name": "non-recovery leg no advice",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 180
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 175
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 185
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "wedge",
+                                "carryM": 90,
+                                "dispersionM": 12
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
+                    "out": []
+                },
+                {
+                    "name": "no clubs no advice",
+                    "ctx": {
+                        "leg": "recovery",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 180
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 175
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 185
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
+                    "out": []
+                }
+            ]
+        },
+        "noDoubles": {
+            "cases": [
+                {
+                    "name": "big tail warns",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3.8
+                            },
+                            "breakdown": {}
+                        },
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "no-doubles",
+                            "kind": "warning",
+                            "priority": 2.5999999999999996,
+                            "confidence": 0.7049999999999998,
+                            "headline": "Protect against the big number — take the safe line.",
+                            "detail": "The aggressive aim's bad-miss tail costs about 0.8 strokes more than its average — a bogey here is fine, a double is not. Favour the fat, trouble-free side.",
+                            "anchor": null
+                        }
+                    ]
+                },
+                {
+                    "name": "severe tail full strength",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 4.5
+                            },
+                            "breakdown": {}
+                        },
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "no-doubles",
+                            "kind": "warning",
+                            "priority": 4,
+                            "confidence": 0.95,
+                            "headline": "Protect against the big number — take the safe line.",
+                            "detail": "The aggressive aim's bad-miss tail costs about 1.5 strokes more than its average — a bogey here is fine, a double is not. Favour the fat, trouble-free side.",
+                            "anchor": null
+                        }
+                    ]
+                },
+                {
+                    "name": "shift invariance same gap",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 4,
+                                "tailStrokes": 4.8
+                            },
+                            "breakdown": {}
+                        },
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "no-doubles",
+                            "kind": "warning",
+                            "priority": 2.5999999999999996,
+                            "confidence": 0.7049999999999998,
+                            "headline": "Protect against the big number — take the safe line.",
+                            "detail": "The aggressive aim's bad-miss tail costs about 0.8 strokes more than its average — a bogey here is fine, a double is not. Favour the fat, trouble-free side.",
+                            "anchor": null
+                        }
+                    ]
+                },
+                {
+                    "name": "tight tail quiet",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3.3
+                            },
+                            "breakdown": {}
+                        },
+                        "hazards": []
+                    },
+                    "out": []
+                },
+                {
+                    "name": "recovery leg no advice",
+                    "ctx": {
+                        "leg": "recovery",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 4.5
+                            },
+                            "breakdown": {}
+                        },
+                        "hazards": []
+                    },
+                    "out": []
+                },
+                {
+                    "name": "no aim no advice",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
+                    "out": []
+                }
+            ]
+        },
+        "shortSide": {
+            "cases": [
+                {
+                    "name": "trouble over threshold fires",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.7,
+                                "sand": 0.3
+                            }
+                        },
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": 5,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 150
+                                    },
+                                    {
+                                        "x": 5,
+                                        "y": 150
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": [
+                        {
+                            "ruleId": "short-side-guard",
+                            "kind": "aim",
+                            "priority": 4,
+                            "confidence": 0.8999999999999999,
+                            "headline": "Aim to the fat side of the pin — don’t short-side yourself.",
+                            "detail": "About 30% of this shot's pattern finds sand, water, or a recovery lie around the green. Favour the side with the most green to work with, so the same miss still leaves a straightforward up-and-down.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 100
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "sand+water+recovery combine",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.85,
+                                "sand": 0.05,
+                                "penalty": 0.05,
+                                "recovery": 0.05
+                            }
+                        },
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": 5,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 150
+                                    },
+                                    {
+                                        "x": 5,
+                                        "y": 150
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": [
+                        {
+                            "ruleId": "short-side-guard",
+                            "kind": "aim",
+                            "priority": 3.11764705882353,
+                            "confidence": 0.7235294117647059,
+                            "headline": "Aim to the fat side of the pin — don’t short-side yourself.",
+                            "detail": "About 15% of this shot's pattern finds sand, water, or a recovery lie around the green. Favour the side with the most green to work with, so the same miss still leaves a straightforward up-and-down.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 100
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "below threshold quiet",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.97,
+                                "sand": 0.03
+                            }
+                        },
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": 5,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 150
+                                    },
+                                    {
+                                        "x": 5,
+                                        "y": 150
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": []
+                },
+                {
+                    "name": "no hazards no advice",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.6,
+                                "sand": 0.4
+                            }
+                        },
+                        "hazards": []
+                    },
+                    "out": []
+                },
+                {
+                    "name": "non-approach no advice",
+                    "ctx": {
+                        "leg": "tee",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.6,
+                                "sand": 0.4
+                            }
+                        },
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": 5,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 150
+                                    },
+                                    {
+                                        "x": 5,
+                                        "y": 150
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": []
+                },
+                {
+                    "name": "no aim no advice",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 100
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 95
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 105
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": 5,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 140
+                                    },
+                                    {
+                                        "x": 12,
+                                        "y": 150
+                                    },
+                                    {
+                                        "x": 5,
+                                        "y": 150
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": []
+                }
+            ]
+        },
+        "specificTarget": {
+            "cases": [
+                {
+                    "name": "names the centre club, north anchor",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "7 iron",
+                                "carryM": 150,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "6 iron",
+                                "carryM": 165,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "8 iron",
+                                "carryM": 138,
+                                "dispersionM": 15
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.9,
+                                "rough": 0.1
+                            }
+                        },
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "specific-target",
+                            "kind": "aim",
+                            "priority": 2,
+                            "confidence": 0.8600000000000001,
+                            "headline": "Commit to a target — aim your 7 iron at the recommended line.",
+                            "detail": "The aim optimiser likes a 0° line to about 150 m. The 7 iron is the number. Pick the target, then swing.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 150
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "brackets front/back when bag straddles",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 156
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 151
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 161
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "7 iron",
+                                "carryM": 150,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "6 iron",
+                                "carryM": 165,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "8 iron",
+                                "carryM": 138,
+                                "dispersionM": 15
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.9,
+                                "rough": 0.1
+                            }
+                        },
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "specific-target",
+                            "kind": "aim",
+                            "priority": 2,
+                            "confidence": 0.8600000000000001,
+                            "headline": "Commit to a target — aim your 7 iron at the recommended line.",
+                            "detail": "The aim optimiser likes a 0° line to about 156 m. The 7 iron is the number (7 iron back, 6 iron front). Pick the target, then swing.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 156
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "offset recommended bearing anchor",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "7 iron",
+                                "carryM": 150,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "6 iron",
+                                "carryM": 165,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "8 iron",
+                                "carryM": 138,
+                                "dispersionM": 15
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 8,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.8,
+                                "rough": 0.2
+                            }
+                        },
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "specific-target",
+                            "kind": "aim",
+                            "priority": 2,
+                            "confidence": 0.8200000000000001,
+                            "headline": "Commit to a target — aim your 7 iron at the recommended line.",
+                            "detail": "The aim optimiser likes a 8° line to about 150 m. The 7 iron is the number. Pick the target, then swing.",
+                            "anchor": {
+                                "x": 20.875965144009815,
+                                "y": 148.54021031123554
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "no clubs generic headline",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.75
+                            }
+                        },
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "specific-target",
+                            "kind": "aim",
+                            "priority": 2,
+                            "confidence": 0.8,
+                            "headline": "Commit to a target — aim at the recommended line and swing freely.",
+                            "detail": "The aim optimiser likes a 0° line to about 150 m.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 150
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "non-approach no advice",
+                    "ctx": {
+                        "leg": "tee",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "7 iron",
+                                "carryM": 150,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "6 iron",
+                                "carryM": 165,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "8 iron",
+                                "carryM": 138,
+                                "dispersionM": 15
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": {
+                            "bestBearingDeg": 0,
+                            "best": {
+                                "expectedStrokes": 3,
+                                "tailStrokes": 3
+                            },
+                            "breakdown": {
+                                "green": 0.9
+                            }
+                        },
+                        "hazards": []
+                    },
+                    "out": []
+                },
+                {
+                    "name": "no aim no advice",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "7 iron",
+                                "carryM": 150,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "6 iron",
+                                "carryM": 165,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "8 iron",
+                                "carryM": 138,
+                                "dispersionM": 15
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
+                    "out": []
+                }
+            ]
+        },
+        "par5": {
+            "cases": [
+                {
+                    "name": "awkward leftover loses to full wedge lay-up",
+                    "ctx": {
+                        "leg": "layup",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": [
+                                    {
+                                        "x": -15,
+                                        "y": 225
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 225
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 245
+                                    },
+                                    {
+                                        "x": -15,
+                                        "y": 245
+                                    }
+                                ]
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 235
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 225
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 245
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "full wedge lay-up club",
+                                "carryM": 135,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "pinch club",
+                                "carryM": 193,
+                                "dispersionM": 60
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 5,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": [
+                            {
+                                "kind": "water",
+                                "points": [
+                                    {
+                                        "x": -4,
+                                        "y": 203
+                                    },
+                                    {
+                                        "x": 4,
+                                        "y": 203
+                                    },
+                                    {
+                                        "x": 4,
+                                        "y": 212
+                                    },
+                                    {
+                                        "x": -4,
+                                        "y": 212
+                                    }
+                                ]
+                            },
+                            {
+                                "kind": "water",
+                                "points": [
+                                    {
+                                        "x": 7,
+                                        "y": 170
+                                    },
+                                    {
+                                        "x": 80,
+                                        "y": 170
+                                    },
+                                    {
+                                        "x": 80,
+                                        "y": 220
+                                    },
+                                    {
+                                        "x": 7,
+                                        "y": 220
+                                    }
+                                ]
+                            },
+                            {
+                                "kind": "water",
+                                "points": [
+                                    {
+                                        "x": -80,
+                                        "y": 170
+                                    },
+                                    {
+                                        "x": -7,
+                                        "y": 170
+                                    },
+                                    {
+                                        "x": -7,
+                                        "y": 220
+                                    },
+                                    {
+                                        "x": -80,
+                                        "y": 220
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": [
+                        {
+                            "ruleId": "par5-attack",
+                            "kind": "layup",
+                            "priority": 3,
+                            "confidence": 0.95,
+                            "headline": "Lay up to a full 100 m wedge — a 42 m leftover prices worse.",
+                            "detail": "full wedge lay-up club at 135 m prices at 2.82 expected strokes. Next best was lay-back-of-pinch at 3.41.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 135
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "go-in-2 fires when carry reaches and clears",
+                    "ctx": {
+                        "leg": "layup",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": [
+                                    {
+                                        "x": -18,
+                                        "y": 180
+                                    },
+                                    {
+                                        "x": 18,
+                                        "y": 180
+                                    },
+                                    {
+                                        "x": 18,
+                                        "y": 200
+                                    },
+                                    {
+                                        "x": -18,
+                                        "y": 200
+                                    }
+                                ]
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 190
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 180
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 200
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "3 wood",
+                                "carryM": 185,
+                                "dispersionM": 24
+                            },
+                            {
+                                "name": "lay-up wedge",
+                                "carryM": 90,
+                                "dispersionM": 12
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 5,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "par5-attack",
+                            "kind": "aim",
+                            "priority": 3,
+                            "confidence": 0.95,
+                            "headline": "Attack the green in two — 3 wood reaches and the carry is clear.",
+                            "detail": "3 wood at 190 m prices at 1.91 expected strokes. Next best was lay-up-to-full-number at 2.82.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 190
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "go-in-2 dropped when max carry short",
+                    "ctx": {
+                        "leg": "layup",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": [
+                                    {
+                                        "x": -18,
+                                        "y": 180
+                                    },
+                                    {
+                                        "x": 18,
+                                        "y": 180
+                                    },
+                                    {
+                                        "x": 18,
+                                        "y": 200
+                                    },
+                                    {
+                                        "x": -18,
+                                        "y": 200
+                                    }
+                                ]
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 190
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 180
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 200
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "short wood",
+                                "carryM": 170,
+                                "dispersionM": 24
+                            },
+                            {
+                                "name": "lay-up wedge",
+                                "carryM": 90,
+                                "dispersionM": 12
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 5,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
+                    "out": [
+                        {
+                            "ruleId": "par5-attack",
+                            "kind": "layup",
+                            "priority": 3,
+                            "confidence": 0.6,
+                            "headline": "Lay up to a full 100 m wedge.",
+                            "detail": "lay-up wedge at 90 m prices at 2.82 expected strokes.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 90
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "non-par-5 no advice",
+                    "ctx": {
+                        "leg": "layup",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": [
+                                    {
+                                        "x": -18,
+                                        "y": 180
+                                    },
+                                    {
+                                        "x": 18,
+                                        "y": 180
+                                    },
+                                    {
+                                        "x": 18,
+                                        "y": 200
+                                    },
+                                    {
+                                        "x": -18,
+                                        "y": 200
+                                    }
+                                ]
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 190
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 180
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 200
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "3 wood",
+                                "carryM": 185,
+                                "dispersionM": 24
+                            },
+                            {
+                                "name": "lay-up wedge",
+                                "carryM": 90,
+                                "dispersionM": 12
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": []
+                    },
                     "out": []
                 }
             ]

@@ -7,12 +7,17 @@ import Foundation
 /// no rule ever knows another rule exists. The two MUST stay behaviourally
 /// identical: ported tests + TS-generated golden fixtures pin the parity.
 ///
-/// Deviations from the TS shape, kept because the ported rule + evaluator never
-/// read them and the underlying types are not ported to Swift:
-///  - `aim?: AimResult` is DROPPED (aim.ts / the DECADE EV engine is not ported).
+/// Faithful to the TS shape including `aim?: AimResult` — the recommended
+/// aim's priced outcome (mean, CVaR₈₀ tail, per-lie breakdown). The
+/// EV/aim engine IS ported (`Aim.swift`); the plan editor supplies the
+/// per-leg `AimResult` it already computes for the map overlay, and the
+/// aim-reading rules (no-doubles, short-side-guard, specific-target) read it.
+/// A context without a clubbed leg leaves `aim` nil, exactly as the TS
+/// `buildLegContext` omits it for an unclubbed leg.
+///
+/// The one remaining deviation:
 ///  - `distances` / `clubs` are carried verbatim (typed to the Swift
-///    `FeatureDistance` / `ClubSpec` mirrors) so the context shape matches, but
-///    the green-slope rule ignores them.
+///    `FeatureDistance` / `ClubSpec` mirrors) so the context shape matches.
 ///
 /// Units mirror the whole strategy library: planar meters {x east, y north}
 /// (EPSG:3006), compass bearings (0 = north, clockwise). `CaddyContext` is
@@ -109,6 +114,9 @@ public struct CaddyContext<Club: ClubSpec> {
     public var target: CaddyGreenTarget<Club>
     /// Measured targets along the shot (◄ FeatureDistances).
     public var distances: [FeatureDistance<Club>]
+    /// The recommended aim's priced outcome for this leg (◄ optimizeAim), or
+    /// nil when the leg has no club to aim. Read by the aim-based rules.
+    public var aim: AimResult?
     /// Green slope summary (◄ summarizeGreenSlope adapter).
     public var greenSlope: GreenSlopeSummary?
     /// Flattened hazard rings for the hole, caller-filtered.
@@ -126,6 +134,7 @@ public struct CaddyContext<Club: ClubSpec> {
         origin: StrategyPoint,
         target: CaddyGreenTarget<Club>,
         distances: [FeatureDistance<Club>] = [],
+        aim: AimResult? = nil,
         greenSlope: GreenSlopeSummary? = nil,
         hazards: [FlatRing] = [],
         clubs: [Club] = [],
@@ -137,6 +146,7 @@ public struct CaddyContext<Club: ClubSpec> {
         self.origin = origin
         self.target = target
         self.distances = distances
+        self.aim = aim
         self.greenSlope = greenSlope
         self.hazards = hazards
         self.clubs = clubs

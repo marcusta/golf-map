@@ -55,14 +55,66 @@ public enum PlanStrategy {
         }
     }
 
+    /// Panel-facing per-leg strategy result — the scalar `optimizeAim` output
+    /// `compute` already produces for the map ghost, surfaced so the smart caddy
+    /// can reuse it WITHOUT a second aim sweep. One per clubbed leg (every leg
+    /// that draws an ellipse). `legIndex` is the 1-based leg index (the leg
+    /// ENDING at plan node `legIndex`); `landsOnGreen` marks the approach leg.
+    ///
+    /// INVARIANT (verify before editing `compute`): `greenCenterPlanar` is the
+    /// hole's terminal node for EVERY leg — the same target `optimizeAim` scored
+    /// against — so a caddy context built from this reproduces the web
+    /// `buildLegContext` numbers exactly. If a future plan ever terminates
+    /// somewhere other than the green centre, revisit this.
+    public struct LegPlan: Equatable, Sendable {
+        public var legIndex: Int
+        public var landsOnGreen: Bool
+        public var resolvedClubId: String
+        public var aim: AimResult
+        /// Recommended-aim landing point (the ghost marker) — where "apply
+        /// recommended aim" would move this leg's shot.
+        public var landingWGS84: LatLon
+        public var landingPlanar: Vec2
+        public var fromPlanar: Vec2
+        public var greenCenterPlanar: Vec2
+
+        public init(
+            legIndex: Int, landsOnGreen: Bool, resolvedClubId: String, aim: AimResult,
+            landingWGS84: LatLon, landingPlanar: Vec2, fromPlanar: Vec2, greenCenterPlanar: Vec2
+        ) {
+            self.legIndex = legIndex
+            self.landsOnGreen = landsOnGreen
+            self.resolvedClubId = resolvedClubId
+            self.aim = aim
+            self.landingWGS84 = landingWGS84
+            self.landingPlanar = landingPlanar
+            self.fromPlanar = fromPlanar
+            self.greenCenterPlanar = greenCenterPlanar
+        }
+    }
+
     /// The full shot-viz overlay for one hole.
     public struct Geometry: Equatable, Sendable {
         public var ellipses: [EllipseShape]
         public var ghosts: [GhostShape]
         public var legTints: [LegTintShape]
+        /// Per-leg aim results for the caddy (empty on the cheap drag path).
+        public var legPlans: [LegPlan]
 
-        public static let empty = Geometry(ellipses: [], ghosts: [], legTints: [])
-        public var isEmpty: Bool { ellipses.isEmpty && ghosts.isEmpty && legTints.isEmpty }
+        public init(
+            ellipses: [EllipseShape], ghosts: [GhostShape],
+            legTints: [LegTintShape], legPlans: [LegPlan] = []
+        ) {
+            self.ellipses = ellipses
+            self.ghosts = ghosts
+            self.legTints = legTints
+            self.legPlans = legPlans
+        }
+
+        public static let empty = Geometry(ellipses: [], ghosts: [], legTints: [], legPlans: [])
+        public var isEmpty: Bool {
+            ellipses.isEmpty && ghosts.isEmpty && legTints.isEmpty && legPlans.isEmpty
+        }
     }
 
     // MARK: - Confidence light (mirror of plan-overlay.ts legLight)
@@ -146,6 +198,7 @@ public enum PlanStrategy {
         var ellipses: [EllipseShape] = []
         var ghosts: [GhostShape] = []
         var legTints: [LegTintShape] = []
+        var legPlans: [LegPlan] = []
 
         for i in 1..<nodes.count {
             let from = planar[i - 1]
@@ -231,9 +284,22 @@ public enum PlanStrategy {
                 ellipse: recommended.polygon.map(Self.wgs84),
                 driftLine: driftLine
             ))
+
+            // Surface the leg's aim result for the caddy — the SAME `aim` /
+            // `aimPoint` the ghost above used, so no second optimizeAim sweep.
+            legPlans.append(LegPlan(
+                legIndex: i,
+                landsOnGreen: toNode.kind == .green,
+                resolvedClubId: club.id,
+                aim: aim,
+                landingWGS84: Self.wgs84(aimPoint),
+                landingPlanar: aimPoint,
+                fromPlanar: from,
+                greenCenterPlanar: greenCenter
+            ))
         }
 
-        return Geometry(ellipses: ellipses, ghosts: ghosts, legTints: legTints)
+        return Geometry(ellipses: ellipses, ghosts: ghosts, legTints: legTints, legPlans: legPlans)
     }
 
     /// The CHEAP drag-frame slice of `compute`: per-leg dispersion ellipses

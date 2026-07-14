@@ -23,6 +23,20 @@ public protocol ClubSpec {
     var carryM: Double { get }
     /// Lateral dispersion, meters — FULL width, not a semi-axis.
     var dispersionM: Double { get }
+    /// Display name, when the concrete club carries one. Mirror of the TS
+    /// `ClubSpec.name?` — the caddy rules speak "7 Iron" when present and fall
+    /// back to a "<carry> m club" phrasing when nil. Named `clubName` (not
+    /// `name`) deliberately: `ClubRecord` already stores a non-optional
+    /// `name: String`, and a `name: String?` requirement would NOT be
+    /// witnessed by that stored property, so a default-nil extension would
+    /// silently shadow it. `clubName` sidesteps the collision.
+    var clubName: String? { get }
+}
+
+/// Default: an anonymous club has no display name. Concrete types that carry
+/// one (e.g. `ClubRecord`) override this.
+public extension ClubSpec {
+    var clubName: String? { nil }
 }
 
 /// Derived length (depth) dispersion, meters — FULL extent. Tiered

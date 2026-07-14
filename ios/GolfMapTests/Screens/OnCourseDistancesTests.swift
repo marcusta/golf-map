@@ -135,6 +135,27 @@ final class OnCourseDistancesTests: XCTestCase {
         XCTAssertNil(d.windPlaysLikeCenter, "no wind → no wind-adjusted number")
     }
 
+    func testLayupLineWhenGreenBeyondLongestClub() {
+        // Green center 300 m out; the longest club (Driver 235) can't reach, so
+        // the F/C/B chips would collapse onto "Driver" and misread as reachable.
+        // Instead we surface the honest layup: Driver 235 · 65 m in · 7i.
+        let targets = HoleTargets(greenCenter: offset(base, east: 0, north: 300), greenElevation: 10)
+        let d = OnCourseDistances.compute(from: base, originElevation: 10, targets: targets, clubs: bag())
+        XCTAssertNil(d.centerClubs, "out-of-range green shows the layup, not F/C/B chips")
+        XCTAssertEqual(d.layup?.club, "Driver")
+        XCTAssertEqual(d.layup?.carryM, 235)
+        XCTAssertEqual(d.layup?.remainingM, 65) // 300 − 235
+        XCTAssertEqual(d.layup?.approachClub, "7i") // closest carry to 65
+    }
+
+    func testInRangeGreenKeepsChipsNotLayup() {
+        // Reachable green keeps the F/C/B chips and emits no layup line.
+        let targets = HoleTargets(greenCenter: offset(base, east: 0, north: 160), greenElevation: 22)
+        let d = OnCourseDistances.compute(from: base, originElevation: 10, targets: targets, clubs: bag())
+        XCTAssertNotNil(d.centerClubs)
+        XCTAssertNil(d.layup)
+    }
+
     func testWindHeadwindLengthensPlaysLikeAndShiftsClub() {
         // Dead headwind on a due-north shot (wind FROM 0°, bearing 0°) makes
         // the target play LONGER (playsAsM divides by 1+e, e<0).

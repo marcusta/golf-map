@@ -32,7 +32,11 @@ struct PlanPanel: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
+                caddySection
                 shotList(rows)
+                if model.selectedShotHasRecommendedAim {
+                    applyAimButton
+                }
                 Text("Drag a P-handle on the map to move a shot. Edits save on this device and sync when online.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -43,6 +47,60 @@ struct PlanPanel: View {
         .padding(.top, Space.s3)
         .padding(.bottom, Space.s3)
         .glassPanel()
+    }
+
+    /// Ranked smart-caddy advice for the plan (top items). Hidden when there is
+    /// none (competition mode, or no rule fired). Mirrors the Green view's caddy
+    /// hint styling.
+    @ViewBuilder private var caddySection: some View {
+        let advice = model.planCaddyAdvice
+        if !advice.isEmpty {
+            VStack(spacing: 6) {
+                ForEach(Array(advice.prefix(2).enumerated()), id: \.offset) { pair in
+                    caddyAdviceRow(pair.element)
+                }
+            }
+        }
+    }
+
+    private func caddyAdviceRow(_ advice: CaddyAdvice) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "figure.golf")
+                .font(.footnote)
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(advice.headline)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.primary)
+                if let detail = advice.detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.green.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Snap the selected shot onto the caddy's recommended aim line.
+    private var applyAimButton: some View {
+        Button {
+            model.applyRecommendedAimForSelectedShot()
+        } label: {
+            Label("Apply recommended aim", systemImage: "scope")
+                .font(.footnote.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background(Self.violet.opacity(0.2), in: Capsule())
+                .foregroundStyle(Self.violet)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Apply the caddy's recommended aim to the selected shot")
     }
 
     private var header: some View {
@@ -97,6 +155,7 @@ struct PlanPanel: View {
                 .foregroundStyle(Self.violet)
                 .frame(width: 26)
             clubMenu(row)
+            advisedClubChip(row)
             Spacer()
             MetricText(DistanceFormat.string(row.meters, unit: unit), unit: unit.abbreviation, size: 14)
             Button {
@@ -119,6 +178,31 @@ struct PlanPanel: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { model.selectPlanShot(handleID: OnCourseModel.planShotHandleID(row.shotId)) }
+    }
+
+    /// One-tap "use advised club" chip — shown only when the wind + plays-like
+    /// fit for this shot's reaching leg differs from its current club. Applying
+    /// it sets the shot's club (and redraws the dispersion ellipse).
+    @ViewBuilder private func advisedClubChip(_ row: OnCourseModel.PlanEditRow) -> some View {
+        if let advised = model.advisedClub(forShotId: row.shotId), advised.id != row.clubId {
+            Button {
+                model.setPlanShotClub(shotId: row.shotId, clubId: advised.id)
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 9))
+                    Text(advised.name)
+                        .font(.caption2.weight(.semibold))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 5)
+                .background(.green.opacity(0.18), in: Capsule())
+                .foregroundStyle(.green)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Use advised club \(advised.name) for shot P\(row.index)")
+        }
     }
 
     private func clubMenu(_ row: OnCourseModel.PlanEditRow) -> some View {

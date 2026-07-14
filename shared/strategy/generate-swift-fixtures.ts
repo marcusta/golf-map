@@ -17,7 +17,19 @@ import { dirname, join } from 'node:path';
 import { type CaddyAdvice, type CaddyContext, type CaddyRule } from './caddy/rule';
 import { runCaddy } from './caddy/run';
 import { greenSlopeHalfRule } from './caddy/rules/green-slope-half';
-import { type AimOptions, defaultSweepDeg, optimizeAim, standardNormalPairs } from './aim';
+import { par5AttackRule } from './caddy/rules/par5-attack';
+import { noDoublesRule } from './caddy/rules/no-doubles';
+import { shortSideGuardRule } from './caddy/rules/short-side-guard';
+import { specificTargetRule } from './caddy/rules/specific-target';
+import { takeYourMedicineRule } from './caddy/rules/take-your-medicine';
+import {
+    type AimCandidate,
+    type AimOptions,
+    type AimResult,
+    defaultSweepDeg,
+    optimizeAim,
+    standardNormalPairs,
+} from './aim';
 import { hazardsAlongLine } from './carry';
 import {
     type ClubSpec,
@@ -31,6 +43,7 @@ import {
     suggestClubForHole,
 } from './club';
 import { type FlatRing } from './corridor';
+import { layupOptions, longestLayup } from './layup';
 import {
     GREEN_RING_PAR5_EXTRA_M,
     GREEN_RING_RADII_M,
@@ -108,6 +121,38 @@ const club = {
         name: clubName(suggestClubForHole(V1_CLUBS, d)),
     })),
     suggestClubForHoleEmpty: { distanceM: 160, name: clubName(suggestClubForHole([], 160)) },
+};
+
+// ---------------------------------------------------------------------------
+// Layup module — per-club outcome toward a target + the max-advance layup
+// ---------------------------------------------------------------------------
+
+const layup = {
+    // Targets exercise: all-reach (5), mid with some reaching (160), boundary
+    // exactly on the longest carry (243), out-of-range green (301), far (500).
+    cases: [5, 160, 243, 301, 500].map((targetM) => {
+        const opts = layupOptions(V1_CLUBS, targetM);
+        const longest = longestLayup(V1_CLUBS, targetM);
+        return {
+            targetM,
+            options: opts.map((o) => ({
+                club: o.club.name,
+                carryM: o.carryM,
+                remainingM: o.remainingM,
+                approachClub: clubName(o.approachClub),
+                reaches: o.reaches,
+            })),
+            longest: longest
+                ? {
+                    club: longest.club.name,
+                    remainingM: longest.remainingM,
+                    approachClub: clubName(longest.approachClub),
+                }
+                : null,
+        };
+    }),
+    emptyOptions: layupOptions([], 150).length,
+    emptyLongest: longestLayup([], 150) === undefined ? null : 'unexpected',
 };
 
 // ---------------------------------------------------------------------------
@@ -568,7 +613,234 @@ const caddyGreenSlope = {
     }),
 };
 
-const caddy = { run: caddyRun, greenSlope: caddyGreenSlope };
+// --- Rules that turn AimResult / geometry into ranked advice ----------------
+//
+// Unified per-rule case shape: each case serializes the full CaddyContext the
+// rule reads plus the ranked advice runCaddy produces for [rule]. Swift rebuilds
+// the context and reruns the same single-rule evaluation. The aim-reading rules
+// (no-doubles, short-side-guard, specific-target) are fed a SYNTHETIC AimResult
+// so their thresholds pin exactly and stay decoupled from optimizeAim's sampling;
+// par5-attack runs the real optimizeAim internally (its numeric parity is already
+// proven at 1e-9 by the aim goldens).
+
+function synthAim(over: {
+    bestBearingDeg?: number;
+    expectedStrokes?: number;
+    tailStrokes?: number;
+    breakdown?: Partial<Record<Lie, number>>;
+}): AimResult {
+    const bestBearingDeg = over.bestBearingDeg ?? 0;
+    const expectedStrokes = over.expectedStrokes ?? 3;
+    const tailStrokes = over.tailStrokes ?? expectedStrokes;
+    const breakdown = over.breakdown ?? {};
+    const best: AimCandidate = {
+        bearingDeg: bestBearingDeg,
+        expectedStrokes,
+        tailStrokes,
+        score: expectedStrokes,
+        breakdown,
+    };
+    return { bestBearingDeg, best, perCandidate: [best], breakdown };
+}
+
+function serializeCtx(ctx: CaddyContext) {
+    return {
+        leg: ctx.leg,
+        origin: { x: ctx.origin.x, y: ctx.origin.y },
+        target: {
+            greenPoly: ctx.target.greenPoly,
+            center: ctx.target.center,
+            front: ctx.target.front,
+            back: ctx.target.back,
+        },
+        clubs: ctx.clubs.map((c) => ({
+            name: c.name ?? null,
+            carryM: c.carryM,
+            dispersionM: c.dispersionM,
+        })),
+        wind: ctx.wind ? { speedMps: ctx.wind.speedMps, directionDeg: ctx.wind.directionDeg } : null,
+        hole: { par: ctx.hole.par, index: ctx.hole.index },
+        risk: { riskAversion: ctx.risk.riskAversion },
+        aim: ctx.aim
+            ? {
+                bestBearingDeg: ctx.aim.bestBearingDeg,
+                best: {
+                    expectedStrokes: ctx.aim.best.expectedStrokes,
+                    tailStrokes: ctx.aim.best.tailStrokes,
+                },
+                breakdown: ctx.aim.breakdown,
+            }
+            : null,
+        hazards: ctx.hazards,
+    };
+}
+
+function serializeAdvice(a: CaddyAdvice) {
+    return {
+        ruleId: a.ruleId,
+        kind: a.kind,
+        priority: a.priority,
+        confidence: a.confidence,
+        headline: a.headline,
+        detail: a.detail ?? null,
+        anchor: a.anchor ?? null,
+    };
+}
+
+interface RuleCase {
+    name: string;
+    over: Partial<CaddyContext>;
+}
+
+function ruleFixture(rule: CaddyRule, cases: RuleCase[]) {
+    return {
+        cases: cases.map((c) => {
+            const ctx = caddyCtx(c.over);
+            const out = runCaddy(ctx, [rule]);
+            return { name: c.name, ctx: serializeCtx(ctx), out: out.map(serializeAdvice) };
+        }),
+    };
+}
+
+const fxClub = (name: string, carryM: number, dispersionM = 18): ClubSpec => ({ name, carryM, dispersionM });
+const fxBox = (kind: string, minX: number, minY: number, maxX: number, maxY: number): FlatRing => ({
+    kind,
+    points: [
+        { x: minX, y: minY },
+        { x: maxX, y: minY },
+        { x: maxX, y: maxY },
+        { x: minX, y: maxY },
+    ],
+});
+const stTarget = (y: number) => ({
+    greenPoly: { kind: 'green', points: [] as Vec2[] },
+    center: { x: 0, y },
+    front: { x: 0, y: y - 5 },
+    back: { x: 0, y: y + 5 },
+});
+const par5Target = (y: number) => ({
+    greenPoly: fxBox('green', -18, y - 10, 18, y + 10),
+    center: { x: 0, y },
+    front: { x: 0, y: y - 10 },
+    back: { x: 0, y: y + 10 },
+});
+
+// take-your-medicine — recovery-leg punch-out (mirrors take-your-medicine.test.ts).
+const medicineClubs = [fxClub('wedge', 90, 12), fxClub('9 iron', 120, 14)];
+const medicineTarget = {
+    greenPoly: { kind: 'green', points: [] as Vec2[] },
+    center: { x: 0, y: 180 },
+    front: { x: 0, y: 175 },
+    back: { x: 0, y: 185 },
+};
+const caddyMedicine = ruleFixture(takeYourMedicineRule, [
+    { name: 'punch-out beats forcing it', over: { leg: 'recovery', clubs: medicineClubs, target: medicineTarget } },
+    {
+        name: 'headwind shortens the escape',
+        over: { leg: 'recovery', clubs: medicineClubs, target: medicineTarget, wind: { speedMps: 6, directionDeg: 180 } },
+    },
+    {
+        name: 'already at the green emits nothing',
+        over: {
+            leg: 'recovery',
+            clubs: medicineClubs,
+            target: { greenPoly: { kind: 'green', points: [] as Vec2[] }, center: { x: 0, y: 0 }, front: { x: 0, y: 0 }, back: { x: 0, y: 0 } },
+        },
+    },
+    { name: 'non-recovery leg no advice', over: { leg: 'approach', clubs: medicineClubs, target: medicineTarget } },
+    { name: 'no clubs no advice', over: { leg: 'recovery', clubs: [], target: medicineTarget } },
+]);
+
+// no-doubles — reads the recommended aim's tail gap (mirrors no-doubles.test.ts).
+const caddyNoDoubles = ruleFixture(noDoublesRule, [
+    { name: 'big tail warns', over: { aim: synthAim({ expectedStrokes: 3.0, tailStrokes: 3.8 }) } },
+    { name: 'severe tail full strength', over: { aim: synthAim({ expectedStrokes: 3.0, tailStrokes: 4.5 }) } },
+    { name: 'shift invariance same gap', over: { aim: synthAim({ expectedStrokes: 4.0, tailStrokes: 4.8 }) } },
+    { name: 'tight tail quiet', over: { aim: synthAim({ expectedStrokes: 3.0, tailStrokes: 3.3 }) } },
+    { name: 'recovery leg no advice', over: { leg: 'recovery', aim: synthAim({ expectedStrokes: 3.0, tailStrokes: 4.5 }) } },
+    { name: 'no aim no advice', over: { aim: undefined } },
+]);
+
+// short-side-guard — reads the aim's trouble share (mirrors short-side-guard.test.ts).
+const ssHazards = [fxBox('bunker', 5, 140, 12, 150)];
+const caddyShortSide = ruleFixture(shortSideGuardRule, [
+    { name: 'trouble over threshold fires', over: { aim: synthAim({ breakdown: { green: 0.7, sand: 0.3 } }), hazards: ssHazards } },
+    {
+        name: 'sand+water+recovery combine',
+        over: { aim: synthAim({ breakdown: { green: 0.85, sand: 0.05, penalty: 0.05, recovery: 0.05 } }), hazards: ssHazards },
+    },
+    { name: 'below threshold quiet', over: { aim: synthAim({ breakdown: { green: 0.97, sand: 0.03 } }), hazards: ssHazards } },
+    { name: 'no hazards no advice', over: { aim: synthAim({ breakdown: { green: 0.6, sand: 0.4 } }), hazards: [] } },
+    { name: 'non-approach no advice', over: { leg: 'tee', aim: synthAim({ breakdown: { green: 0.6, sand: 0.4 } }), hazards: ssHazards } },
+    { name: 'no aim no advice', over: { aim: undefined, hazards: ssHazards } },
+]);
+
+// specific-target — names the club for the recommended aim (mirrors specific-target.test.ts).
+const stClubs = [fxClub('7 iron', 150, 16), fxClub('6 iron', 165, 18), fxClub('8 iron', 138, 15)];
+const caddySpecificTarget = ruleFixture(specificTargetRule, [
+    { name: 'names the centre club, north anchor', over: { aim: synthAim({ bestBearingDeg: 0, breakdown: { green: 0.9, rough: 0.1 } }), clubs: stClubs, target: stTarget(150) } },
+    { name: 'brackets front/back when bag straddles', over: { aim: synthAim({ bestBearingDeg: 0, breakdown: { green: 0.9, rough: 0.1 } }), clubs: stClubs, target: stTarget(156) } },
+    { name: 'offset recommended bearing anchor', over: { aim: synthAim({ bestBearingDeg: 8, breakdown: { green: 0.8, rough: 0.2 } }), clubs: stClubs, target: stTarget(150) } },
+    { name: 'no clubs generic headline', over: { aim: synthAim({ bestBearingDeg: 0, breakdown: { green: 0.75 } }), clubs: [], target: stTarget(150) } },
+    { name: 'non-approach no advice', over: { leg: 'tee', aim: synthAim({ bestBearingDeg: 0, breakdown: { green: 0.9 } }), clubs: stClubs, target: stTarget(150) } },
+    { name: 'no aim no advice', over: { aim: undefined, clubs: stClubs, target: stTarget(150) } },
+]);
+
+// par5-attack — real two-shot EV chain via optimizeAim (mirrors par5-attack.test.ts).
+const caddyPar5 = ruleFixture(par5AttackRule, [
+    {
+        name: 'awkward leftover loses to full wedge lay-up',
+        over: {
+            leg: 'layup',
+            hole: { par: 5, index: 1 },
+            target: {
+                greenPoly: fxBox('green', -15, 225, 15, 245),
+                center: { x: 0, y: 235 },
+                front: { x: 0, y: 225 },
+                back: { x: 0, y: 245 },
+            },
+            clubs: [fxClub('full wedge lay-up club', 135, 16), fxClub('pinch club', 193, 60)],
+            hazards: [fxBox('water', -4, 203, 4, 212), fxBox('water', 7, 170, 80, 220), fxBox('water', -80, 170, -7, 220)],
+        },
+    },
+    {
+        name: 'go-in-2 fires when carry reaches and clears',
+        over: {
+            leg: 'layup',
+            hole: { par: 5, index: 1 },
+            target: par5Target(190),
+            clubs: [fxClub('3 wood', 185, 24), fxClub('lay-up wedge', 90, 12)],
+        },
+    },
+    {
+        name: 'go-in-2 dropped when max carry short',
+        over: {
+            leg: 'layup',
+            hole: { par: 5, index: 1 },
+            target: par5Target(190),
+            clubs: [fxClub('short wood', 170, 24), fxClub('lay-up wedge', 90, 12)],
+        },
+    },
+    {
+        name: 'non-par-5 no advice',
+        over: {
+            leg: 'layup',
+            hole: { par: 4, index: 1 },
+            target: par5Target(190),
+            clubs: [fxClub('3 wood', 185, 24), fxClub('lay-up wedge', 90, 12)],
+        },
+    },
+]);
+
+const caddy = {
+    run: caddyRun,
+    greenSlope: caddyGreenSlope,
+    medicine: caddyMedicine,
+    noDoubles: caddyNoDoubles,
+    shortSide: caddyShortSide,
+    specificTarget: caddySpecificTarget,
+    par5: caddyPar5,
+};
 
 // ---------------------------------------------------------------------------
 // Ellipse module — dispersionEllipse + distance rings
@@ -831,6 +1103,7 @@ const fixture = {
     constants: { MPS_TO_MPH },
     clubs: CLUBS,
     club,
+    layup,
     wind,
     carry,
     featureDistances: featureDistancesFx,
@@ -846,6 +1119,7 @@ mkdirSync(dirname(OUT_PATH), { recursive: true });
 writeFileSync(OUT_PATH, `${JSON.stringify(fixture, null, 4)}\n`);
 console.log(
     `wrote ${OUT_PATH}: club ${club.clubAdvice.length} advice cases, ` +
+        `layup ${layup.cases.length} cases, ` +
         `wind ${wind.windEffect.length} cases, carry ${carry.cases.length} cases, ` +
         `featureDistances ${featureDistancesFx.cases.length} cases, ` +
         `caddy ${caddy.run.cases.length} run + ${caddy.greenSlope.cases.length} green-slope cases, ` +

@@ -50,6 +50,22 @@ final class PlanStrategyTests: XCTestCase {
         XCTAssertFalse(g.ghosts[0].ellipse.isEmpty)
     }
 
+    func testLegPlanSurfacesTheAimForTheCaddy() {
+        let g = PlanStrategy.compute(nodes: teeGreenNodes(), clubs: [club], surfaces: [], wind: nil)
+        XCTAssertEqual(g.legPlans.count, 1, "one leg plan per clubbed leg")
+        let lp = g.legPlans[0]
+        XCTAssertEqual(lp.legIndex, 1)
+        XCTAssertTrue(lp.landsOnGreen, "the single leg lands on the green")
+        XCTAssertEqual(lp.resolvedClubId, club.id)
+        // The surfaced landing point is the ghost recommended-aim marker.
+        XCTAssertEqual(lp.landingWGS84, g.ghosts[0].aim, "leg plan landing == ghost aim")
+        // The aim result carries the same breakdown that drove the leg tint.
+        XCTAssertEqual(
+            PlanStrategy.legLight(breakdown: lp.aim.breakdown, isApproach: true),
+            g.legTints.first?.light
+        )
+    }
+
     func testApproachLegYellowWhenGreenRarelyHeld() {
         // No surfaces → every sample classifies rough → green share 0 < 0.6.
         let g = PlanStrategy.compute(nodes: teeGreenNodes(), clubs: [club], surfaces: [], wind: nil)

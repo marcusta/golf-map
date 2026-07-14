@@ -68,6 +68,31 @@ final class StrategyGoldenParityTests: XCTestCase {
         let suggestClubForHoleEmpty: SuggestCase
     }
 
+    // Layup section
+
+    private struct LayupOptionFx: Decodable {
+        let club: String
+        let carryM: Double
+        let remainingM: Double
+        let approachClub: String?
+        let reaches: Bool
+    }
+    private struct LongestFx: Decodable {
+        let club: String
+        let remainingM: Double
+        let approachClub: String?
+    }
+    private struct LayupCase: Decodable {
+        let targetM: Double
+        let options: [LayupOptionFx]
+        let longest: LongestFx?
+    }
+    private struct LayupFx: Decodable {
+        let cases: [LayupCase]
+        let emptyOptions: Int
+        let emptyLongest: String?
+    }
+
     // Wind section
 
     private struct WindComponentsCase: Decodable {
@@ -150,6 +175,7 @@ final class StrategyGoldenParityTests: XCTestCase {
         let constants: Constants
         let clubs: [FxClub]
         let club: ClubFx
+        let layup: LayupFx
         let wind: WindFx
         let carry: CarryFx
         let featureDistances: FeatureFx
@@ -209,6 +235,33 @@ final class StrategyGoldenParityTests: XCTestCase {
         }
         XCTAssertEqual(suggestClubForHole([FxClub](), c.suggestClubForHoleEmpty.distanceM)?.name,
                        c.suggestClubForHoleEmpty.name, "suggestClubForHole(empty)")
+    }
+
+    // MARK: - Layup
+
+    func testLayupMatchesTS() throws {
+        let g = try loadGoldens()
+        let clubs = g.clubs
+        for c in g.layup.cases {
+            let opts = layupOptions(clubs, c.targetM)
+            XCTAssertEqual(opts.count, c.options.count, "layupOptions(\(c.targetM)) count")
+            for (o, x) in zip(opts, c.options) {
+                XCTAssertEqual(o.club.name, x.club, "layup(\(c.targetM)) club order")
+                XCTAssertEqual(o.carryM, x.carryM, accuracy: acc, "layup(\(c.targetM)) \(x.club) carryM")
+                XCTAssertEqual(o.remainingM, x.remainingM, accuracy: acc, "layup(\(c.targetM)) \(x.club) remainingM")
+                XCTAssertEqual(o.approachClub?.name, x.approachClub, "layup(\(c.targetM)) \(x.club) approachClub")
+                XCTAssertEqual(o.reaches, x.reaches, "layup(\(c.targetM)) \(x.club) reaches")
+            }
+            let longest = longestLayup(clubs, c.targetM)
+            XCTAssertEqual(longest?.club.name, c.longest?.club, "longestLayup(\(c.targetM)) club")
+            XCTAssertEqual(longest?.approachClub?.name, c.longest?.approachClub, "longestLayup(\(c.targetM)) approach")
+            if let l = longest, let x = c.longest {
+                XCTAssertEqual(l.remainingM, x.remainingM, accuracy: acc, "longestLayup(\(c.targetM)) remainingM")
+            }
+        }
+        XCTAssertEqual(layupOptions([FxClub](), 150).count, g.layup.emptyOptions, "layupOptions(empty)")
+        XCTAssertNil(longestLayup([FxClub](), 150), "longestLayup(empty)")
+        XCTAssertNil(g.layup.emptyLongest, "emptyLongest golden should be null")
     }
 
     // MARK: - Wind

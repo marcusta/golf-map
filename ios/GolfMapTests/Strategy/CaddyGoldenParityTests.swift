@@ -113,7 +113,109 @@ final class CaddyGoldenParityTests: XCTestCase {
     }
     private struct GsFx: Decodable { let constants: GsConstants; let cases: [GsCase] }
 
-    private struct CaddyFx: Decodable { let run: RunFx; let greenSlope: GsFx }
+    // MARK: - Per-rule fixture schema (medicine / no-doubles / short-side /
+    //          specific-target / par5). Each case serializes the full context
+    //          the rule reads plus runCaddy's advice for [rule].
+
+    /// A club carrying a name — the ported rules speak club names via `clubName`.
+    private struct FxClub: ClubSpec, Decodable {
+        let name: String?
+        let carryM: Double
+        let dispersionM: Double
+        var clubName: String? { name }
+    }
+
+    private struct WindFx: Decodable {
+        let speedMps: Double
+        let directionDeg: Double
+        var wind: FeatureWind { FeatureWind(speedMps: speedMps, directionDeg: directionDeg) }
+    }
+
+    private struct HoleFx: Decodable { let par: Int; let index: Int }
+    private struct RiskFx: Decodable { let riskAversion: Double }
+
+    private struct AimBestFx: Decodable {
+        let expectedStrokes: Double
+        let tailStrokes: Double
+    }
+    private struct AimFx: Decodable {
+        let bestBearingDeg: Double
+        let best: AimBestFx
+        let breakdown: [String: Double]
+        /// Rebuild the minimal AimResult the rules read (score unused → mean).
+        var aim: AimResult {
+            var b: [Lie: Double] = [:]
+            for (k, v) in breakdown { if let lie = Lie(rawValue: k) { b[lie] = v } }
+            let candidate = AimCandidate(
+                bearingDeg: bestBearingDeg,
+                expectedStrokes: best.expectedStrokes,
+                tailStrokes: best.tailStrokes,
+                score: best.expectedStrokes,
+                breakdown: b
+            )
+            return AimResult(
+                bestBearingDeg: bestBearingDeg,
+                best: candidate,
+                perCandidate: [candidate],
+                breakdown: b
+            )
+        }
+    }
+
+    private struct TargetFx: Decodable {
+        let greenPoly: RingFx
+        let center: XY
+        let front: XY
+        let back: XY
+    }
+
+    private struct CtxFx: Decodable {
+        let leg: String
+        let origin: XY
+        let target: TargetFx
+        let clubs: [FxClub]
+        let wind: WindFx?
+        let hole: HoleFx
+        let risk: RiskFx
+        let aim: AimFx?
+        let hazards: [RingFx]
+
+        var context: CaddyContext<FxClub> {
+            CaddyContext<FxClub>(
+                leg: CaddyLeg(rawValue: leg) ?? .approach,
+                origin: StrategyPoint(x: origin.x, y: origin.y),
+                target: CaddyGreenTarget(
+                    greenPoly: target.greenPoly.ring,
+                    center: target.center.vec,
+                    front: target.front.vec,
+                    back: target.back.vec
+                ),
+                aim: aim?.aim,
+                hazards: hazards.map(\.ring),
+                clubs: clubs,
+                wind: wind?.wind,
+                hole: CaddyHole(par: hole.par, index: hole.index),
+                risk: RiskProfile(riskAversion: risk.riskAversion)
+            )
+        }
+    }
+
+    private struct RuleCaseFx: Decodable {
+        let name: String
+        let ctx: CtxFx
+        let out: [AdviceOut]
+    }
+    private struct RuleFx: Decodable { let cases: [RuleCaseFx] }
+
+    private struct CaddyFx: Decodable {
+        let run: RunFx
+        let greenSlope: GsFx
+        let medicine: RuleFx
+        let noDoubles: RuleFx
+        let shortSide: RuleFx
+        let specificTarget: RuleFx
+        let par5: RuleFx
+    }
     private struct Goldens: Decodable { let caddy: CaddyFx }
 
     private func loadCaddy() throws -> CaddyFx {
@@ -177,18 +279,54 @@ final class CaddyGoldenParityTests: XCTestCase {
                 risk: RiskProfile(riskAversion: 0)
             )
             let out = runCaddy(ctx, [greenSlopeHalfRule()])
-            XCTAssertEqual(out.count, c.out.count, "green-slope: \(c.name): advice count")
-            guard out.count == c.out.count else { continue }
-            for (a, e) in zip(out, c.out) {
-                let tag = "green-slope: \(c.name)"
-                XCTAssertEqual(a.ruleId, e.ruleId, "\(tag) ruleId")
-                XCTAssertEqual(a.kind.rawValue, e.kind, "\(tag) kind")
-                XCTAssertEqual(a.priority, e.priority, accuracy: acc, "\(tag) priority")
-                XCTAssertEqual(a.confidence, e.confidence, accuracy: acc, "\(tag) confidence")
-                XCTAssertEqual(a.headline, e.headline, "\(tag) headline")
-                XCTAssertEqual(a.detail, e.detail, "\(tag) detail")
-                XCTAssertEqual(a.anchor, e.anchor?.vec, "\(tag) anchor")
-            }
+            assertAdvice(out, c.out, tag: "green-slope: \(c.name)")
+        }
+    }
+
+    // MARK: - The five aim/geometry rules
+
+    func testTakeYourMedicineMatchesTS() throws {
+        try assertRule(loadCaddy().medicine, takeYourMedicineRule(), label: "take-your-medicine")
+    }
+
+    func testNoDoublesMatchesTS() throws {
+        try assertRule(loadCaddy().noDoubles, noDoublesRule(), label: "no-doubles")
+    }
+
+    func testShortSideGuardMatchesTS() throws {
+        try assertRule(loadCaddy().shortSide, shortSideGuardRule(), label: "short-side-guard")
+    }
+
+    func testSpecificTargetMatchesTS() throws {
+        try assertRule(loadCaddy().specificTarget, specificTargetRule(), label: "specific-target")
+    }
+
+    func testPar5AttackMatchesTS() throws {
+        try assertRule(loadCaddy().par5, par5AttackRule(), label: "par5-attack")
+    }
+
+    // MARK: - Shared assertions
+
+    /// Replay every case of a per-rule fixture: rebuild the context, run the
+    /// single rule through `runCaddy`, and assert per-field parity.
+    private func assertRule(_ fx: RuleFx, _ rule: CaddyRule<FxClub>, label: String) {
+        for c in fx.cases {
+            let out = runCaddy(c.ctx.context, [rule])
+            assertAdvice(out, c.out, tag: "\(label): \(c.name)")
+        }
+    }
+
+    private func assertAdvice(_ out: [CaddyAdvice], _ expected: [AdviceOut], tag: String) {
+        XCTAssertEqual(out.count, expected.count, "\(tag): advice count")
+        guard out.count == expected.count else { return }
+        for (a, e) in zip(out, expected) {
+            XCTAssertEqual(a.ruleId, e.ruleId, "\(tag) ruleId")
+            XCTAssertEqual(a.kind.rawValue, e.kind, "\(tag) kind")
+            XCTAssertEqual(a.priority, e.priority, accuracy: acc, "\(tag) priority")
+            XCTAssertEqual(a.confidence, e.confidence, accuracy: acc, "\(tag) confidence")
+            XCTAssertEqual(a.headline, e.headline, "\(tag) headline")
+            XCTAssertEqual(a.detail, e.detail, "\(tag) detail")
+            XCTAssertEqual(a.anchor, e.anchor?.vec, "\(tag) anchor")
         }
     }
 }

@@ -65,9 +65,31 @@ struct ClubAdviceLabels: Equatable, Sendable {
     var hasAny: Bool { front != nil || center != nil || back != nil }
 }
 
+/// The honest "max-advance layup" line shown IN PLACE of the F/C/B club advice
+/// when the green center is beyond the longest club. In that regime the bag's
+/// longest carry can't reach, so the F/C/B advice degenerates (center + back
+/// both collapse onto the longest club, front nil) and reads as "Driver
+/// reaches the green" — misleading. This says the honest thing instead:
+/// "Driver 243 · 58 m in (LW)". RAW distances (no plays-like / wind) so
+/// `carryM + remainingM` reconciles with the card's big center figure.
+struct LayupLine: Equatable, Sendable {
+    /// The longest club that still falls short of the center.
+    var club: String
+    /// Its nominal carry, whole meters.
+    var carryM: Int
+    /// Straight distance still to the center after it lands, whole meters.
+    var remainingM: Int
+    /// Club to play for the remaining distance (closest carry); nil only if the
+    /// bag is empty (in which case there is no layup line at all).
+    var approachClub: String?
+}
+
 /// Stored ClubRecord is structurally a strategy ClubSpec — pass the cached
-/// bag straight into the club-selection math.
-extension ClubRecord: ClubSpec {}
+/// bag straight into the club-selection math. Its stored `name` witnesses the
+/// optional `clubName` requirement so the caddy rules can speak club names.
+extension ClubRecord: ClubSpec {
+    public var clubName: String? { name }
+}
 
 /// Pure distance snapshot for one origin (user GPS fix or the active tee)
 /// against one hole's targets. All horizontal distances are planar EPSG:3006
@@ -94,6 +116,10 @@ struct OnCourseDistances: Equatable, Sendable {
     /// Front/center/back club advice for the (wind-adjusted) plays-like
     /// distance to the green center. Nil in competition mode or without clubs.
     var centerClubs: ClubAdviceLabels?
+    /// Shown INSTEAD of `centerClubs` when the green center is beyond the
+    /// longest club (which is left nil in that case). Nil in competition mode,
+    /// without clubs, or when the green is reachable.
+    var layup: LayupLine?
     /// Closest club to the (wind-adjusted) plays-like distance to the pin.
     /// Nil in competition mode or without clubs.
     var pinClub: String?
@@ -175,19 +201,37 @@ struct OnCourseDistances: Equatable, Sendable {
 
         // Club + wind advice are gated off in competition mode (advice only).
         var centerClubs: ClubAdviceLabels?
+        var layup: LayupLine?
         var pinClub: String?
         var windPlaysLikeCenter: Int?
         var windPlaysLikePin: Int?
 
         if !competitionMode {
             if !clubs.isEmpty, let center = targets.greenCenter {
-                let advice = clubAdvice(clubs, clubTarget(to: center))
-                let labels = ClubAdviceLabels(
-                    front: advice.front?.name,
-                    center: advice.center?.name,
-                    back: advice.back?.name
-                )
-                centerClubs = labels.hasAny ? labels : nil
+                // RAW center distance (matches the card's big center figure).
+                let rawCenterM = Distance.planarMeters(origin, center)
+                let longestCarry = clubs.map(\.carryM).max() ?? 0
+                if longestCarry < rawCenterM {
+                    // Green out of range: the F/C/B advice would collapse onto
+                    // the longest club and misread as reachable. Replace it with
+                    // the honest max-advance layup (RAW distances).
+                    if let l = longestLayup(clubs, rawCenterM) {
+                        layup = LayupLine(
+                            club: l.club.name,
+                            carryM: Int(l.carryM.rounded()),
+                            remainingM: Int(l.remainingM.rounded()),
+                            approachClub: l.approachClub?.name
+                        )
+                    }
+                } else {
+                    let advice = clubAdvice(clubs, clubTarget(to: center))
+                    let labels = ClubAdviceLabels(
+                        front: advice.front?.name,
+                        center: advice.center?.name,
+                        back: advice.back?.name
+                    )
+                    centerClubs = labels.hasAny ? labels : nil
+                }
             }
             if !clubs.isEmpty, let pin = targets.activePin {
                 pinClub = closestClub(clubs, clubTarget(to: pin))?.name
@@ -214,6 +258,7 @@ struct OnCourseDistances: Equatable, Sendable {
             windPlaysLikeCenter: windPlaysLikeCenter,
             windPlaysLikePin: windPlaysLikePin,
             centerClubs: centerClubs,
+            layup: layup,
             pinClub: pinClub,
             aims: targets.aimPoints.map { aim in
                 AimDistance(

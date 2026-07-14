@@ -34,6 +34,14 @@ final class OnCourseModel {
     /// Bumped whenever the camera should re-apply (hole change, recenter).
     private(set) var cameraToken = 0
 
+    /// Distance-ladder tap focus: when set, `cameraCommand` centers here instead
+    /// of the hole fit, until the next `recenter()` or hole change. Reversible —
+    /// the user's own pan afterwards is left alone (the command applies once).
+    private(set) var mapFocus: LatLon?
+    /// The ladder-rail row currently selected (drives the rail's highlight);
+    /// cleared with `mapFocus`.
+    private(set) var focusedLadderId: String?
+
     /// Per-tap relative zoom step + token for the +/- zoom buttons. Drives
     /// `MapZoomCommand` imperatively (applied on top of the map's *current* zoom
     /// level) so a tap never triggers a hole re-fit. `token` forces re-apply so
@@ -70,12 +78,14 @@ final class OnCourseModel {
     /// carry rows (Part A) and the caddy context. Course-level (not per-hole) —
     /// the along-line query filters by geometry.
     @ObservationIgnored private var hazardRings: [FlatRing] = []
+    /// Owning hole id per `hazardRings` entry (parallel), nil = course-level.
+    @ObservationIgnored private var hazardHoleIds: [String?] = []
 
     /// Every course SURFACE ring (fairway/green/rough/bunker/water/…), EPSG:3006,
     /// TOPMOST-FIRST, parsed once from features.geojson by the screen. Feeds the
     /// shot-viz aim optimiser's lie classification (`PlanStrategy` → `optimizeAim`).
     /// Wider than `hazardRings` (which is the carry-hazard subset for the card).
-    @ObservationIgnored private var surfaces: [FlatRing] = []
+    @ObservationIgnored private(set) var surfaces: [FlatRing] = []
 
     /// Memoised shot-viz geometry (dispersion ellipses / ghost aim / confidence
     /// tints) + the input fingerprint it was built from. `optimizeAim` is too
@@ -84,6 +94,10 @@ final class OnCourseModel {
     /// `strategyGeometryForCurrentHole`). Never touched on the pan/gesture path.
     @ObservationIgnored private var strategyKey: StrategyKey?
     @ObservationIgnored private var strategyGeometry: PlanStrategy.Geometry = .empty
+    /// Smart-caddy advice memo, keyed on the strategy enrich count so it
+    /// recomputes only when the plan geometry does (never per SwiftUI render).
+    @ObservationIgnored private var caddyAdviceKey: Int?
+    @ObservationIgnored private var caddyAdviceCache: [CaddyAdvice] = []
 
     /// User-controllable plan-overlay switch (persisted per course, default
     /// ON, like `activeTeeName`). Only affects the MAP overlay — the distance
@@ -199,6 +213,18 @@ final class OnCourseModel {
 
     /// Re-issues the current hole's camera fit (recenter button).
     func recenter() {
+        mapFocus = nil
+        focusedLadderId = nil
+        restoreCamera = nil
+        cameraToken += 1
+    }
+
+    /// Center the map on a distance-ladder feature (tap-to-locate). Overrides the
+    /// hole fit until `recenter()` or a hole change. `ladderId` marks the rail
+    /// row that drove it (nil for a non-rail focus).
+    func focusMap(on position: LatLon, ladderId: String? = nil) {
+        mapFocus = position
+        focusedLadderId = ladderId
         restoreCamera = nil
         cameraToken += 1
     }
@@ -236,6 +262,8 @@ final class OnCourseModel {
         toolFocusBounds = nil
         draggingHandleID = nil
         resetPlanEditingState()
+        mapFocus = nil
+        focusedLadderId = nil
         restoreCamera = nil
         cameraToken += 1
         refreshGreenElevationFallback()
@@ -858,9 +886,12 @@ final class OnCourseModel {
     }
 
     /// Install the course hazard rings (from features.geojson). Called by the
-    /// screen after parsing the bundle.
-    func setHazards(_ rings: [FlatRing]) {
+    /// screen after parsing the bundle. `holeIds` (parallel to `rings`) scopes
+    /// each hazard to its hole; omit for untagged/course-level rings (they fall
+    /// back to geometric hole assignment).
+    func setHazards(_ rings: [FlatRing], holeIds: [String?]? = nil) {
         hazardRings = rings
+        hazardHoleIds = holeIds ?? Array(repeating: nil, count: rings.count)
     }
 
     /// The course hazard rings — exposed for the caddy composition on the
@@ -884,15 +915,130 @@ final class OnCourseModel {
     /// on origin / hole / target change, same cadence as `distances`.
     var hazardCarries: [HazardCarry] {
         guard let origin, !hazardRings.isEmpty else { return [] }
-        guard let targetLL = nextAimAhead?.position ?? targets.greenCenter else { return [] }
-        let o = Sweref99TM.fromWGS84(origin)
-        let t = Sweref99TM.fromWGS84(targetLL)
-        return HazardCarries.along(
-            origin: Vec2(x: o.x, y: o.y),
-            target: Vec2(x: t.x, y: t.y),
-            hazards: hazardRings,
-            cap: 3
+        // Scan the full tee/ball → green line so fairway hazards up to the green
+        // are caught, not only those before the next aim.
+        guard let targetLL = targets.greenCenter ?? nextAimAhead?.position else { return [] }
+
+        // Two play lines: the DIRECT line (ball → green, cutting a dogleg) and
+        // the ROUTED line (ball → aims → green, round the corner). A hazard in
+        // play on EITHER matters, and is measured along whichever it sits on.
+        let directLine = [origin, targetLL].map(Self.planar)
+        let routedLine = routedHazardLine(origin: origin, target: targetLL)
+        let lines = routedLine.count > 2 ? [routedLine, directLine] : [directLine]
+
+        let split = hazardsByOwnership()
+        // This hole's OWN hazards (by holeId, or nearest-route for untagged):
+        // always shown, wide corridor — a fairway bunker well off centre is
+        // still yours. Other holes' hazards: shown ONLY when they fall in the
+        // play corridor of one of the lines (in play despite belonging elsewhere).
+        let own = HazardCarries.nearLines(
+            lines, hazards: split.own, corridorHalfWidthM: 400, extraAheadM: 40, cap: 8
         )
+        let foreign = HazardCarries.nearLines(
+            lines, hazards: split.foreign, corridorHalfWidthM: 35, extraAheadM: 40, cap: 4
+        )
+        return (own + foreign)
+            .sorted { $0.frontM != $1.frontM ? $0.frontM < $1.frontM : $0.carryM < $1.carryM }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    /// The routed hazard line: ball → the current hole's aim points that lie
+    /// ahead of the ball (in order) → target. Returns just [ball, target] when
+    /// there is no intervening aim (a straight hole), which the caller collapses
+    /// to the single direct line.
+    private func routedHazardLine(origin: LatLon, target: LatLon) -> [Vec2] {
+        guard let hole = currentHole else { return [] }
+        let o = Self.planar(origin), g = Self.planar(target)
+        let dx = g.x - o.x, dy = g.y - o.y
+        let len = hypot(dx, dy)
+        guard len > 0 else { return [] }
+        let ux = dx / len, uy = dy / len
+        var pts: [Vec2] = [o]
+        for aim in hole.aimPoints {
+            let a = Self.planar(aimPosition(for: aim, in: hole))
+            let along = (a.x - o.x) * ux + (a.y - o.y) * uy
+            if along > 5, along < len - 5 { pts.append(a) } // ahead of the ball, before the green
+        }
+        pts.append(g)
+        return pts
+    }
+
+    /// Split course hazards into this hole's OWN (tagged to it by `holeId`, or —
+    /// when untagged — nearest to its routed play-line) vs the rest (other
+    /// holes' hazards + untagged-elsewhere). `holeId` is the primary signal;
+    /// geometry only assigns untagged rings. The caller then always shows `own`
+    /// and shows `foreign` only where it's genuinely in the play corridor.
+    private func hazardsByOwnership() -> (own: [FlatRing], foreign: [FlatRing]) {
+        guard let current = currentHole else { return (hazardRings, []) }
+        let ids = hazardHoleIds.count == hazardRings.count
+            ? hazardHoleIds
+            : Array(repeating: nil, count: hazardRings.count)
+        let currentId = current.hole.id
+        let routes: [(number: Int, pts: [Vec2])] = holes.compactMap { hole in
+            let pts = holeRoutePlanar(for: hole)
+            return pts.count >= 2 ? (hole.hole.number, pts) : nil
+        }
+
+        var own: [FlatRing] = []
+        var foreign: [FlatRing] = []
+        for (ring, holeId) in zip(hazardRings, ids) {
+            let mine: Bool
+            if let holeId {
+                mine = holeId == currentId
+            } else if routes.count > 1, ring.points.count >= 3 {
+                mine = nearestRouteNumber(Self.ringCentroid(ring), routes) == current.hole.number
+            } else {
+                mine = true // single hole / degenerate geometry → treat as own
+            }
+            if mine { own.append(ring) } else { foreign.append(ring) }
+        }
+        return (own, foreign)
+    }
+
+    private func nearestRouteNumber(_ c: Vec2, _ routes: [(number: Int, pts: [Vec2])]) -> Int? {
+        var bestD = Double.infinity
+        var best: Int?
+        for route in routes {
+            let d = Self.distancePointToPolyline(c, route.pts)
+            if d < bestD { bestD = d; best = route.number }
+        }
+        return best
+    }
+
+    /// A hole's routed play-line as planar (EPSG:3006) points: active tee →
+    /// aim points (in order) → green center. Override-aware.
+    private func holeRoutePlanar(for hole: HoleData) -> [Vec2] {
+        var pts: [LatLon] = []
+        if let tee = teePosition(for: hole) { pts.append(tee) }
+        pts.append(contentsOf: hole.aimPoints.map { aimPosition(for: $0, in: hole) })
+        if let green = greenCenterPosition(for: hole) { pts.append(green) }
+        return pts.map { let p = Sweref99TM.fromWGS84($0); return Vec2(x: p.x, y: p.y) }
+    }
+
+    private static func distancePointToPolyline(_ p: Vec2, _ pts: [Vec2]) -> Double {
+        guard pts.count >= 2 else { return .infinity }
+        var best = Double.infinity
+        for i in 0..<(pts.count - 1) {
+            best = min(best, distancePointToSegment(p, pts[i], pts[i + 1]))
+        }
+        return best
+    }
+
+    private static func ringCentroid(_ ring: FlatRing) -> Vec2 {
+        guard !ring.points.isEmpty else { return Vec2(x: 0, y: 0) }
+        var cx = 0.0, cy = 0.0
+        for p in ring.points { cx += p.x; cy += p.y }
+        let n = Double(ring.points.count)
+        return Vec2(x: cx / n, y: cy / n)
+    }
+
+    private static func distancePointToSegment(_ p: Vec2, _ a: Vec2, _ b: Vec2) -> Double {
+        let abx = b.x - a.x, aby = b.y - a.y
+        let apx = p.x - a.x, apy = p.y - a.y
+        let ab2 = abx * abx + aby * aby
+        let t = ab2 > 0 ? max(0, min(1, (apx * abx + apy * aby) / ab2)) : 0
+        return hypot(p.x - (a.x + t * abx), p.y - (a.y + t * aby))
     }
 
     /// Active-tee playing length of the current hole (tee → aims → green),
@@ -949,6 +1095,11 @@ final class OnCourseModel {
     /// is active (Green view), fits those bounds tightly instead; exiting such a
     /// tool restores the exact view the user had before it (`restoreCamera`).
     var cameraCommand: MapCameraCommand? {
+        if let mapFocus {
+            return .center(
+                mapFocus, zoom: 17, bearing: holeBearing, animated: true, token: cameraToken
+            )
+        }
         if let restoreCamera {
             return .center(
                 restoreCamera.center,
@@ -1432,6 +1583,256 @@ final class OnCourseModel {
         return legs
     }
 
+    /// One row of the unified distance ladder (see `LadderBuilder`). Every
+    /// feature/target ahead of the ball, tagged by `kind` for color + filter.
+    struct LadderRow: Identifiable, Equatable {
+        enum Kind: String, Equatable, CaseIterable { case plan, hazard, aim, layup, green, pin }
+        let id: String
+        let kind: Kind
+        /// Primary label, e.g. "Bunker", "Plan P1", "Green", "Aim".
+        let label: String
+        /// Secondary detail, e.g. club "3 Hybrid", "front / carry", "58 m in · LW".
+        let detail: String?
+        /// The sort / primary distance from the ball, whole meters.
+        let meters: Int
+        /// Hazard far-edge (carry) distance, whole meters; nil for other kinds.
+        let carryM: Int?
+        /// Where the feature sits on the map (WGS84), for tap-to-focus. Nil when
+        /// the row has no single point (e.g. an unlocatable projected hazard).
+        let position: LatLon?
+    }
+
+    /// The unified distance ladder for the current origin — plan landings,
+    /// hazard carries, aim points, layups, and the green/pin, merged near→far.
+    /// Backs the tall state of the distance card. Empty without an origin.
+    var ladderRows: [LadderRow] {
+        guard let origin, let distances else { return [] }
+
+        let planShots = (currentHolePlan?.shots ?? []).enumerated().map { i, shot in
+            LadderBuilder.PlanShot(
+                index: i + 1,
+                clubName: shot.clubName,
+                meters: Int(Distance.planarMeters(origin, shot.position).rounded()),
+                position: shot.position
+            )
+        }
+
+        // Hazards carry their real centroid, so a tapped row focuses the actual
+        // bunker/water (side hazards aren't on the line). Label is side-prefixed
+        // ("R Bunker").
+        let hazards = hazardCarries.map { hazard in
+            LadderBuilder.HazardItem(
+                id: hazard.id, label: hazard.displayLabel, frontM: hazard.frontM, carryM: hazard.carryM,
+                position: Sweref99TM.toWGS84(x: hazard.centroid.x, y: hazard.centroid.y)
+            )
+        }
+
+        // `distances.aims` is 1:1 with `targets.aimPoints` (same order) — zip to
+        // recover each aim's on-map point.
+        let aims = zip(distances.aims, targets.aimPoints).map { aim, target in
+            LadderBuilder.AimItem(label: aim.label, meters: aim.meters, position: target.position)
+        }
+
+        var layups: [LadderBuilder.LayupItem] = []
+        if !competitionMode, !clubs.isEmpty, let center = targets.greenCenter {
+            layups = LadderBuilder.ladderLayups(
+                clubs: clubs, rawCenterM: Distance.planarMeters(origin, center)
+            ).map { opt in
+                LadderBuilder.LayupItem(
+                    clubName: opt.club.name,
+                    carryM: Int(opt.carryM.rounded()),
+                    remainingM: Int(opt.remainingM.rounded()),
+                    approachClub: opt.approachClub?.name,
+                    position: pointAlongPrimaryLine(opt.carryM)
+                )
+            }
+        }
+
+        return LadderBuilder.build(
+            planShots: planShots,
+            hazards: hazards,
+            aims: aims,
+            layups: layups,
+            green: LadderBuilder.Green(
+                front: distances.front, center: distances.center, back: distances.back,
+                pin: distances.pin, pinName: targets.activePinName,
+                centerPosition: targets.greenCenter, pinPosition: targets.activePin
+            )
+        )
+    }
+
+    /// The "what do I do about this target" advice for the banner: club + the
+    /// plays-as distance for whichever ladder rung is selected (default = the
+    /// green). Targets get a reach club; hazards a carry club (or "lay up
+    /// short"); an out-of-range green the honest layup. Nil in competition mode
+    /// still shows the distance — only the club/plays-as advice is gated.
+    struct TargetAdvice: Equatable {
+        var title: String
+        var kind: LadderRow.Kind
+        /// The raw straight-line ("actual") distance, whole meters.
+        var distanceM: Int
+        /// Plays-like + wind ("plays as") distance — green/pin only; nil else.
+        var playsAsM: Int?
+        /// Signed elevation delta origin→target, whole meters (uphill positive);
+        /// green/pin only. nil when unknown.
+        var elevationDeltaM: Int?
+        /// Reach / carry / bomb club; nil in competition mode or without a bag.
+        var club: String?
+        /// Hazard far edge, whole meters; nil for non-hazards.
+        var carryM: Int?
+        /// Trailing context: "→ 58 m in · LW", "3 Wood carries", "Lay up short".
+        var note: String?
+    }
+
+    /// The ladder row the banner + map advice reflect: the focused rung, else
+    /// the green (default), else the pin, else the first row.
+    private var selectedLadderRow: LadderRow? {
+        let rows = ladderRows
+        guard !rows.isEmpty else { return nil }
+        return focusedLadderId.flatMap { id in rows.first { $0.id == id } }
+            ?? rows.first { $0.kind == .green }
+            ?? rows.first { $0.kind == .pin }
+            ?? rows.first
+    }
+
+    var selectedTargetAdvice: TargetAdvice? {
+        guard let row = selectedLadderRow else { return nil }
+
+        // Plays-as (plays-like + wind) + elevation delta for any target with a
+        // known elevation (green / pin / aim / plan). Layups and hazards are
+        // projected/ring points with no DEM sample, so they stay actual-only.
+        var playsAs: Int?
+        var elevationDelta: Int?
+        if let pos = row.position,
+           let pae = playsAsAndElevation(to: pos, elevation: targetElevation(rowId: row.id, kind: row.kind)) {
+            playsAs = pae.playsAs
+            elevationDelta = pae.elevationDelta
+        }
+
+        var club: String?
+        var note: String?
+        if !competitionMode, !clubs.isEmpty {
+            if row.kind == .hazard {
+                if let carry = row.carryM {
+                    let longest = clubs.map(\.carryM).max() ?? 0
+                    if Double(carry) <= longest {
+                        club = closestClub(clubs, Double(carry))?.name
+                        note = "carries"
+                    } else {
+                        note = "Lay up short"
+                    }
+                }
+            } else if row.kind == .green, let layup = distances?.layup {
+                // Green out of range → you're hitting a lay-up, not the green,
+                // so plays-as / elevation to the green are noise; drop them and
+                // let the "leaves" figure carry the row.
+                club = layup.club
+                note = "→ \(layup.remainingM) m in" + (layup.approachClub.map { " · \($0)" } ?? "")
+                playsAs = nil
+                elevationDelta = nil
+            } else {
+                // Club for what it actually plays (plays-as when known). The
+                // layup rung's detail ("58 m in · LW") is worth showing; a plan
+                // rung's detail is just its club, which the chip already covers.
+                club = closestClub(clubs, Double(playsAs ?? row.meters))?.name
+                if row.kind == .layup { note = row.detail }
+            }
+        }
+
+        return TargetAdvice(
+            title: row.label, kind: row.kind, distanceM: row.meters,
+            playsAsM: playsAs, elevationDeltaM: elevationDelta,
+            club: club, carryM: row.carryM, note: note
+        )
+    }
+
+    /// The recommended club's dispersion ellipse (closed WGS84 ring) for the
+    /// SELECTED target — "if you hit that club at this target, here's your
+    /// pattern". Lands on the target via the ground slope. Nil in competition
+    /// mode, for hazards, or without an origin/club.
+    var selectedTargetEllipse: [LatLon]? {
+        guard !competitionMode, let origin, let row = selectedLadderRow,
+              row.kind != .hazard, let position = row.position,
+              let advice = selectedTargetAdvice, let clubName = advice.club,
+              let club = clubs.first(where: { $0.name == clubName })
+        else { return nil }
+
+        let o = Sweref99TM.fromWGS84(origin)
+        let b = Sweref99TM.fromWGS84(position)
+        let dx = b.x - o.x, dy = b.y - o.y
+        let len = hypot(dx, dy)
+        guard len > 0 else { return nil }
+        let deg = atan2(dx, dy) * 180 / .pi
+        let bearing = deg < 0 ? deg + 360 : deg
+        // Ground slope (rise / run) lands the ellipse ON the target.
+        let slope = advice.elevationDeltaM.map { Double($0) / len }
+        let wind = effectiveWind
+
+        let ellipse = dispersionEllipse(DispersionEllipseOptions(
+            origin: Vec2(x: o.x, y: o.y),
+            bearingDeg: bearing,
+            club: club,
+            windSpeedMps: wind?.speedMps,
+            windDirectionDeg: wind?.directionDeg,
+            groundSlope: slope
+        ))
+        return ellipse.polygon.map { Sweref99TM.toWGS84(x: $0.x, y: $0.y) }
+    }
+
+    /// Known elevation of a ladder target (by row id + kind), for plays-as.
+    /// Green/pin share the green elevation; aim/plan carry their own; layups and
+    /// hazards have none. Parses the builder's row-id scheme ("aim-<i>",
+    /// "plan-<index>").
+    private func targetElevation(rowId id: String, kind: LadderRow.Kind) -> Double? {
+        switch kind {
+        case .green, .pin:
+            return targets.greenElevation
+        case .aim:
+            guard let i = Int(id.dropFirst("aim-".count)), targets.aimPoints.indices.contains(i) else { return nil }
+            return targets.aimPoints[i].elevation
+        case .plan:
+            guard let n = Int(id.dropFirst("plan-".count)),
+                  let shots = currentHolePlan?.shots, shots.indices.contains(n - 1) else { return nil }
+            return shots[n - 1].elevation
+        case .layup, .hazard:
+            return nil
+        }
+    }
+
+    /// Plays-as (plays-like + wind) and the signed elevation delta origin→target.
+    /// Nil in competition mode or when either endpoint elevation is unknown.
+    private func playsAsAndElevation(to target: LatLon, elevation: Double?) -> (playsAs: Int, elevationDelta: Int)? {
+        guard !competitionMode, let origin, let originElevation, let elevation else { return nil }
+        let a = Sweref99TM.fromWGS84(origin)
+        let b = Sweref99TM.fromWGS84(target)
+        let stats = PlaysLike.segmentStats(
+            PlaysLike.Point(e: a.x, n: a.y, elevation: originElevation),
+            PlaysLike.Point(e: b.x, n: b.y, elevation: elevation)
+        )
+        guard let playsLike = stats.playsLikeSimple else { return nil }
+        var result = playsLike
+        if let wind = effectiveWind {
+            let deg = atan2(b.x - a.x, b.y - a.y) * 180 / .pi
+            let bearing = deg < 0 ? deg + 360 : deg
+            result = playsAsM(playsLike, windEffect(wind.speedMps, wind.directionDeg, bearing))
+        }
+        return (Int(result.rounded()), Int((elevation - originElevation).rounded()))
+    }
+
+    /// Project a point `meters` along the primary shot line (origin → the aim
+    /// ahead, else green center), for placing hazard/layup ladder rows on the
+    /// map. Nil without an origin or a target, or on a degenerate zero line.
+    private func pointAlongPrimaryLine(_ meters: Double) -> LatLon? {
+        guard let origin, let target = nextAimAhead?.position ?? targets.greenCenter else { return nil }
+        let o = Sweref99TM.fromWGS84(origin)
+        let t = Sweref99TM.fromWGS84(target)
+        let dx = t.x - o.x
+        let dy = t.y - o.y
+        let len = hypot(dx, dy)
+        guard len > 0 else { return nil }
+        return Sweref99TM.toWGS84(x: o.x + dx / len * meters, y: o.y + dy / len * meters)
+    }
+
     /// Closest club to a leg's playing distance, or nil. Mirrors the card's
     /// composition: plays-like (when both endpoints have elevation) else the
     /// straight line, then the wind "plays as". Gated off in competition mode.
@@ -1632,6 +2033,188 @@ final class OnCourseModel {
         return geometry
     }
 
+    // MARK: - Smart caddy (plan editor)
+
+    /// Ranked smart-caddy advice for the current hole's plan — the iOS mirror of
+    /// the web planner's `computeCaddyAdvice`. Reuses the per-leg `AimResult`
+    /// the memoised strategy geometry already computed (so NO second
+    /// `optimizeAim` sweep for the aim-reading rules), builds a `CaddyContext`
+    /// per clubbed leg, and runs the full `caddyRules()` set over each — the
+    /// rules self-gate. Withheld in competition mode (advice, like plays-like).
+    /// Memoised on `strategyEnrichCount` so it recomputes only when the plan
+    /// geometry does — never on the per-frame drag path (advice freezes mid-drag
+    /// and re-computes on release, mirroring the web).
+    ///
+    /// NB: `green-slope-half` never fires here — it needs a `GreenSlopeSummary`,
+    /// which only the Green view samples (see `CaddyAdviceModel`). The other five
+    /// rules cover plan editing.
+    var planCaddyAdvice: [CaddyAdvice] {
+        guard !competitionMode else { return [] }
+        let geometry = strategyGeometryForCurrentHole()
+        if caddyAdviceKey == strategyEnrichCount { return caddyAdviceCache }
+        let advice = computePlanCaddyAdvice(geometry.legPlans)
+        caddyAdviceKey = strategyEnrichCount
+        caddyAdviceCache = advice
+        return advice
+    }
+
+    private func computePlanCaddyAdvice(_ legPlans: [PlanStrategy.LegPlan]) -> [CaddyAdvice] {
+        guard let hole = currentHole, !legPlans.isEmpty else { return [] }
+        let par = hole.hole.par
+        let index = hole.hole.strokeIndex ?? hole.hole.number
+        let hazards = courseHazardRings
+        let wind = effectiveWind.map { FeatureWind(speedMps: $0.speedMps, directionDeg: $0.directionDeg) }
+        // Green ref points: the terminal node is the hole green centre (shared by
+        // every leg — the aim scoring target). front/back are the hole's actual
+        // green edges when known (only green-slope reads them, and it is inert
+        // here), else the centre. The green polygon comes from the lie-map stack.
+        let center = legPlans[0].greenCenterPlanar
+        let front = targets.greenFront.map(Self.planar) ?? center
+        let back = targets.greenBack.map(Self.planar) ?? center
+        let greenPoly = greenRing(near: center)
+
+        var advice: [CaddyAdvice] = []
+        for lp in legPlans {
+            let originLie = lieAt(lp.fromPlanar)
+            let leg = Self.caddyLegKind(
+                originLie: originLie, landsOnGreen: lp.landsOnGreen,
+                index: lp.legIndex - 1, par: par
+            )
+            let ctx = CaddyContext<ClubRecord>(
+                leg: leg,
+                origin: StrategyPoint(x: lp.fromPlanar.x, y: lp.fromPlanar.y),
+                target: CaddyGreenTarget(
+                    greenPoly: greenPoly,
+                    center: lp.greenCenterPlanar,
+                    front: front,
+                    back: back
+                ),
+                aim: lp.aim,
+                hazards: hazards,
+                clubs: clubs,
+                wind: wind,
+                hole: CaddyHole(par: par, index: index),
+                risk: RiskProfile(riskAversion: 0)
+            )
+            advice.append(contentsOf: runCaddy(ctx, caddyRules()))
+        }
+        return advice
+    }
+
+    /// Leg-kind classification — faithful port of the web `caddyLegKind` (LOCKED
+    /// order): a recovery lie wins over everything; a leg into the green is an
+    /// approach; the tee shot (index 0) is a tee; a par-5 second shot is a layup;
+    /// anything else falls back to tee. `index` is the 0-based leg index.
+    static func caddyLegKind(originLie: Lie, landsOnGreen: Bool, index: Int, par: Int) -> CaddyLeg {
+        if originLie == .recovery { return .recovery }
+        if landsOnGreen { return .approach }
+        if index == 0 { return .tee }
+        if par == 5 && index == 1 { return .layup }
+        return .tee
+    }
+
+    /// Classify the lie at a planar point against the topmost-first surface
+    /// stack (first containing ring wins, D23) — the same rule `optimizeAim`
+    /// uses. Points in no ring lie as `.rough`.
+    private func lieAt(_ p: Vec2) -> Lie {
+        for ring in surfaces where ring.points.count >= 3 {
+            if pointInRing(p, ring.points) { return lieFromFeatureType(ring.kind) }
+        }
+        return .rough
+    }
+
+    /// The green polygon for par5-attack: the lie-map green ring containing the
+    /// green centre, else the nearest green ring by vertex, else an empty ring
+    /// (par5-attack then degrades to hazards-only, still correct).
+    private func greenRing(near center: Vec2) -> FlatRing {
+        let greens = surfaces.filter { $0.kind == "green" && $0.points.count >= 3 }
+        if let containing = greens.first(where: { pointInRing(center, $0.points) }) {
+            return containing
+        }
+        let nearest = greens.min { a, b in
+            Self.minVertexDistance(center, a.points) < Self.minVertexDistance(center, b.points)
+        }
+        return nearest ?? FlatRing(points: [], kind: "green")
+    }
+
+    private static func minVertexDistance(_ p: Vec2, _ points: [Vec2]) -> Double {
+        points.map { hypot($0.x - p.x, $0.y - p.y) }.min() ?? .infinity
+    }
+
+    private static func planar(_ ll: LatLon) -> Vec2 {
+        let p = Sweref99TM.fromWGS84(ll)
+        return Vec2(x: p.x, y: p.y)
+    }
+
+    // MARK: - Advised club + recommended aim (plan editor actions)
+
+    /// The wind + plays-like advised club for the plan shot's reaching leg (the
+    /// leg from the previous landing / plan tee to this shot), or nil without a
+    /// bag / hole. Backs the panel's one-tap "use advised club" chip.
+    func advisedClub(forShotId shotId: String) -> ClubRecord? {
+        guard let hole = currentHole else { return nil }
+        let shots = planEditShots
+        guard let idx = shots.firstIndex(where: { $0.id == shotId }) else { return nil }
+        let to = shots[idx]
+        let from: LatLon
+        let fromElevation: Double?
+        if idx > 0 {
+            from = shots[idx - 1].position
+            fromElevation = shots[idx - 1].elevation
+        } else if let holePlan = currentHolePlan ?? plan?.hole(number: hole.hole.number),
+                  let tee = planTee(for: hole, plan: holePlan) {
+            from = LatLon(lat: tee.lat, lon: tee.lon)
+            fromElevation = tee.elevation
+        } else if let tee = activeTee(for: hole) {
+            from = LatLon(lat: tee.lat, lon: tee.lon)
+            fromElevation = tee.elevation
+        } else {
+            return nil
+        }
+        return suggestedClubRecord(
+            from: from, fromElevation: fromElevation, to: to.position, toElevation: to.elevation
+        )
+    }
+
+    /// The recommended-aim landing point for a plan shot (the ghost marker its
+    /// leg draws), or nil when the shot has no enriched leg (mid-drag / no bag).
+    private func legPlan(forShotId shotId: String) -> PlanStrategy.LegPlan? {
+        guard let shot = planEditShots.first(where: { $0.id == shotId }) else { return nil }
+        let nodes = planNodesForCurrentHole()
+        guard let idx = nodes.firstIndex(where: { $0.kind == .shot && $0.latLon == shot.position })
+        else { return nil }
+        // Leg `idx` ends at node `idx` (leg indices are 1-based over the nodes).
+        return strategyGeometryForCurrentHole().legPlans.first { $0.legIndex == idx }
+    }
+
+    /// True when the selected shot has a caddy-recommended aim line to snap to.
+    var selectedShotHasRecommendedAim: Bool {
+        guard !competitionMode, let id = selectedPlanShotId else { return false }
+        return legPlan(forShotId: id) != nil
+    }
+
+    /// Snap the selected shot onto its leg's caddy-recommended aim line (the
+    /// ghost landing point) and persist — mirror of the web `applyRecommendedAim`.
+    /// Routes through the same move + resample-elevation + persist path as a
+    /// drag drop, bumping `planEditToken` so the overlay + advice re-enrich.
+    func applyRecommendedAimForSelectedShot() {
+        guard !competitionMode, let hole = currentHole, let shotId = selectedPlanShotId,
+              let lp = legPlan(forShotId: shotId) else { return }
+        let target = lp.landingWGS84
+        let holeNumber = hole.hole.number
+        plan = plan?.movingShot(holeNumber: holeNumber, shotId: shotId, to: target, elevation: nil)
+        planEditToken += 1
+        Task { [weak self] in
+            let elevation = await self?.elevationSampler?(target) ?? nil
+            guard let self else { return }
+            self.plan = self.plan?.movingShot(
+                holeNumber: holeNumber, shotId: shotId, to: target, elevation: elevation
+            )
+            self.planEditToken += 1
+            await self.planWriter?.moveShot(shotId, target.lat, target.lon, elevation)
+        }
+    }
+
     // MARK: - Derived: route-leg labels (immersive on-map distances)
 
     /// The active-mode route's legs as on-map label data: browse = the full
@@ -1688,7 +2271,9 @@ final class OnCourseModel {
             targets: markers,
             userLocation: isUsingGPS ? userLocation.map { UserLocationMarker(position: $0) } : nil,
             routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : [],
-            plan: planOverlay
+            plan: planOverlay,
+            highlight: mapFocus,
+            selectedEllipse: selectedTargetEllipse
         )
     }
 }

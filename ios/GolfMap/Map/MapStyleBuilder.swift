@@ -59,6 +59,19 @@ public enum MapStyleIDs {
     public static let userLocationHaloLayer = "overlay-user-location-halo"
     public static let userLocationDotLayer = "overlay-user-location-dot"
 
+    // Distance-ladder tap highlight: a cyan halo + hollow ring marking the
+    // feature a tapped ladder row focused (distinct from every other marker
+    // color). One point source; cleared when the focus clears.
+    public static let highlightSource = "overlay-highlight"
+    public static let highlightHaloLayer = "overlay-highlight-halo"
+    public static let highlightRingLayer = "overlay-highlight-ring"
+
+    // Selected-target dispersion ellipse: the recommended club's shot pattern
+    // at the tapped target (cyan, matching the highlight). One polygon source.
+    public static let selectedEllipseSource = "overlay-selected-ellipse"
+    public static let selectedEllipseFillLayer = "overlay-selected-ellipse-fill"
+    public static let selectedEllipseOutlineLayer = "overlay-selected-ellipse-outline"
+
     // Measure tool path (dedicated sources — the distance-line source is
     // rewritten every GPS fix and must never fight the measure overlay).
     public static let measureLineSource = "overlay-measure-line"
@@ -155,6 +168,21 @@ public enum MapStyleBuilder {
     // MLNMapView's own user-location tracking).
     static let userDotColor = "#3a7bd5"
     static let userHaloColor = "#ffffff"
+
+    // Selected-target dispersion ellipse: cyan (highlight family), translucent
+    // fill under a brighter outline — "your shot pattern at this target".
+    static let selectedEllipseFillColor = "#22d3ee"
+    static let selectedEllipseFillOpacity = 0.14
+    static let selectedEllipseOutlineColor = "#67e8f9"
+    static let selectedEllipseOutlineWidth = 1.4
+
+    // Ladder tap highlight: bright cyan, unused by any other marker, so the
+    // "you tapped this" ring is unmistakable over ortho + every overlay.
+    static let highlightColor = "#22d3ee"
+    static let highlightHaloRadius = 16.0
+    static let highlightHaloOpacity = 0.22
+    static let highlightRingRadius = 12.5
+    static let highlightRingStrokeWidth = 3.0
 
     // Route-leg label icons: nudged sideways (screen px) so the number sits
     // beside the route line rather than on it — the hole camera draws the
@@ -301,6 +329,8 @@ public enum MapStyleBuilder {
             MapStyleIDs.measureLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.measurePointsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.adjustHandlesSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.highlightSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.selectedEllipseSource: ["type": "geojson", "data": emptyCollection],
         ]
 
         var adjustHandleColorExpr: [Any] = ["match", ["get", "kind"]]
@@ -378,6 +408,28 @@ public enum MapStyleBuilder {
                 "paint": [
                     "line-color": planEllipseOutlineColor,
                     "line-width": planEllipseOutlineWidth,
+                    "line-opacity": 0.9,
+                ],
+            ],
+            [
+                // Selected-target shot-pattern ellipse — a translucent cyan
+                // area low in the stack (over surfaces, under the plan/line/
+                // markers) so it never hides the numbers on top of it.
+                "id": MapStyleIDs.selectedEllipseFillLayer,
+                "type": "fill",
+                "source": MapStyleIDs.selectedEllipseSource,
+                "paint": [
+                    "fill-color": selectedEllipseFillColor,
+                    "fill-opacity": selectedEllipseFillOpacity,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.selectedEllipseOutlineLayer,
+                "type": "line",
+                "source": MapStyleIDs.selectedEllipseSource,
+                "paint": [
+                    "line-color": selectedEllipseOutlineColor,
+                    "line-width": selectedEllipseOutlineWidth,
                     "line-opacity": 0.9,
                 ],
             ],
@@ -586,6 +638,31 @@ public enum MapStyleBuilder {
                 "paint": [
                     "circle-color": userDotColor,
                     "circle-radius": 6.5,
+                ],
+            ],
+            [
+                // Ladder tap highlight, above the markers/user dot so the
+                // selected feature's ring reads clearly; below the adjust
+                // handles so a drag affordance is never obscured.
+                "id": MapStyleIDs.highlightHaloLayer,
+                "type": "circle",
+                "source": MapStyleIDs.highlightSource,
+                "paint": [
+                    "circle-color": highlightColor,
+                    "circle-radius": highlightHaloRadius,
+                    "circle-opacity": highlightHaloOpacity,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.highlightRingLayer,
+                "type": "circle",
+                "source": MapStyleIDs.highlightSource,
+                "paint": [
+                    "circle-color": "rgba(0,0,0,0)",
+                    "circle-radius": highlightRingRadius,
+                    "circle-stroke-color": highlightColor,
+                    "circle-stroke-width": highlightRingStrokeWidth,
+                    "circle-stroke-opacity": 0.95,
                 ],
             ],
             [

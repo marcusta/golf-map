@@ -145,7 +145,7 @@ struct CourseScreen: View {
             // carry rows (Part A) + the caddy context. Parsed once from the same
             // features.geojson the map and green outlines use.
             if let hazardStore = try? HazardFeatureStore(featuresGeoJSON: featuresGeoJSON) {
-                newModel.setHazards(hazardStore.rings)
+                newModel.setHazards(hazardStore.rings, holeIds: hazardStore.holeIds)
             }
             // The full surface stack (topmost-first) for the shot-viz aim
             // optimiser's lie classification — parsed from the SAME raw
@@ -427,6 +427,14 @@ private struct OnCourseContentView: View {
     /// The planner tool is armed to place a shot on the next map tap.
     private var isPlacingPlanShot: Bool { isPlan && model.isAddingPlanShot }
 
+    /// The default distance mode (no tool panel active). The ladder rail + the
+    /// distance card belong to this mode only.
+    private var isDistanceMode: Bool {
+        !isGreenView && !isMeasure && !isAdjust && !isCapture && !isPlan
+    }
+    /// Show the left distance rail: distance mode, chrome up (not immersive).
+    private var showsLadderRail: Bool { isDistanceMode && !immersive }
+
     /// The putt read's Surface tier is live: green view up, surface installed,
     /// not competition-gated. Gates the tap-to-place and marker-drag inputs.
     private var isPuttSurfaceActive: Bool {
@@ -588,14 +596,21 @@ private struct OnCourseContentView: View {
                         .transition(.opacity)
                 }
 
-                Spacer()
-
-                HStack(alignment: .bottom) {
-                    Spacer()
+                HStack(spacing: 0) {
+                    if showsLadderRail {
+                        LadderRailView(model: model)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .padding(.leading, 10)
+                            .padding(.top, 4)
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                    }
+                    Spacer(minLength: 0)
                     controlStack
                         .padding(.trailing, 16)
                         .padding(.bottom, immersive && !isGreenView ? 24 : 10)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
                 }
+                .frame(maxHeight: .infinity)
 
                 if isGreenView {
                     GreenViewPanel(
@@ -650,7 +665,7 @@ private struct OnCourseContentView: View {
                 } else if !immersive {
                     DistanceCardView(model: model, onProfile: { showProfile.toggle() })
                         .padding(.horizontal, 12)
-                        .padding(.bottom, 8)
+                        .padding(.bottom, -2)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -1754,6 +1769,8 @@ private struct DistanceCardView: View {
     /// clubs, routed aim, hazard carries). Everything else — wind, pin,
     /// route/aim legs, plan — sits behind the expand chevron.
     @State private var expanded = false
+    /// Tapping the big distance toggles it between actual and plays-as.
+    @State private var showPlaysAs = false
 
     // Match the map marker convention: front red / center white / back blue.
     private static let frontColor = Color(red: 0.88, green: 0.19, blue: 0.19)
@@ -1763,55 +1780,100 @@ private struct DistanceCardView: View {
     private var unit: DistanceUnit { env.settings.distanceUnit }
 
     var body: some View {
-        VStack(spacing: 8) {
-            frontCenterBack
-            if let clubs = model.distances?.centerClubs, clubs.hasAny {
-                clubAdviceRow(clubs)
+        VStack(spacing: 10) {
+            if let advice = model.selectedTargetAdvice {
+                selectedTargetBanner(advice)
             }
-            if let routed = model.routedAimDistance {
-                toAimRow(routed)
-            }
-            let hazards = model.hazardCarries
-            if !hazards.isEmpty {
-                hazardRow(hazards)
-            }
-            if expanded {
-                if let wind = model.effectiveWind {
-                    windRow(wind)
-                }
-                if let distances = model.distances, distances.pin != nil {
-                    pinRow(distances)
-                }
-                if model.isBrowseMode, !model.routeLegs.isEmpty {
-                    routeRow
-                } else if let distances = model.distances, !distances.aims.isEmpty {
-                    aimRow(distances.aims)
-                }
-                if let planTarget = model.planTargetDistance {
-                    toPlanRow(planTarget)
-                }
-                if !model.planLegs.isEmpty {
-                    planRow(model.planLegs)
-                }
-                extrasRow
-            }
-            bottomRow
+            bottomStrip
         }
         .padding(.horizontal, Space.s4)
         .padding(.top, Space.s3)
         .padding(.bottom, Space.s2)
         .glassPanel()
         .holeSwipeGesture(model: model)
-        #if DEBUG
-        // Headless live-verify hook: `-cardExpanded 1` starts the card in the
-        // expanded state (taps aren't scriptable via simctl). Inert without
-        // the flag.
-        .onAppear {
-            if UserDefaults.standard.string(forKey: "cardExpanded") == "1" {
-                expanded = true
+    }
+
+    // The selected ladder target's "what do I do" line: its plays-as distance
+    // and club (reach / carry / lay-up), with the big distance on the right.
+    // Default target is the green; tapping a rail rung changes it.
+    private func selectedTargetBanner(_ advice: OnCourseModel.TargetAdvice) -> some View {
+        let isHazard = advice.kind == .hazard
+        let canToggle = !isHazard && advice.playsAsM != nil
+        let showingPlaysAs = canToggle && showPlaysAs
+        let accent = LadderRailView.color(advice.kind)
+
+        // Big number: carry for a hazard, else actual/plays-as per the toggle
+        // (the caption + tap convey which; no redundant second figure on the left).
+        let big = isHazard ? (advice.carryM ?? advice.distanceM)
+            : (showingPlaysAs ? advice.playsAsM! : advice.distanceM)
+
+        return HStack(alignment: .center, spacing: 12) {
+            Circle().fill(accent).frame(width: 9, height: 9)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(advice.title.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    if let club = advice.club {
+                        HStack(spacing: 3) {
+                            Image(systemName: "figure.golf")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.green)
+                            Text(club)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                    }
+                    if let delta = advice.elevationDeltaM, delta != 0 {
+                        HStack(spacing: 2) {
+                            Image(systemName: delta > 0 ? "arrow.up.right" : "arrow.down.right")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("\(abs(delta)) m")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                    }
+                    if let note = advice.note {
+                        Text(note)
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(note == "Lay up short" ? Self.pinColor : .primary)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
+                }
             }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 0) {
+                MetricText(DistanceFormat.string(big, unit: unit), unit: unit.abbreviation, size: 38)
+                    .minimumScaleFactor(0.7)
+                HStack(spacing: 3) {
+                    if canToggle {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text(isHazard
+                         ? "carry · front \(DistanceFormat.string(advice.distanceM, unit: unit))"
+                         : (showingPlaysAs ? "plays-as" : "actual"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { if canToggle { showPlaysAs.toggle() } }
         }
-        #endif
+    }
+
+    private var bottomStrip: some View {
+        HStack {
+            teeMenu
+            Spacer()
+            profileChip
+            locationToggle
+        }
     }
 
     // Big F / C / B numbers; plays-like under center.
@@ -1853,6 +1915,33 @@ private struct DistanceCardView: View {
             if let back = clubs.back { clubChip("B", back, Self.backColor) }
             Spacer()
         }
+    }
+
+    // Shown in place of the F/C/B chips when the green center is beyond the
+    // longest club: the honest max-advance layup ("Driver 243 · 58 m in · LW")
+    // instead of a misleading "Driver reaches the green".
+    private func layupRow(_ layup: LayupLine) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "figure.golf")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(layup.club)
+                .font(.caption.weight(.semibold))
+            MetricText(DistanceFormat.string(layup.carryM, unit: unit), unit: unit.abbreviation, size: 13)
+            Text("·")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            MetricText(DistanceFormat.string(layup.remainingM, unit: unit), unit: unit.abbreviation, size: 13)
+            Text(layup.approachClub.map { "in · \($0)" } ?? "in")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .accessibilityElement()
+        .accessibilityLabel(
+            "\(layup.club) leaves \(layup.remainingM) meters"
+                + (layup.approachClub.map { ", \($0) in" } ?? "")
+        )
     }
 
     private func clubChip(_ tag: String, _ name: String, _ color: Color) -> some View {
@@ -1897,50 +1986,6 @@ private struct DistanceCardView: View {
         }
     }
 
-    private func pinRow(_ distances: OnCourseDistances) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "flag.fill")
-                .font(.caption)
-                .foregroundStyle(Self.pinColor)
-            Text("Pin\(model.targets.activePinName.map { " · \($0)" } ?? "")")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            if let club = distances.pinClub {
-                clubChip("", club, Self.pinColor)
-            }
-            Spacer()
-            if let playsLike = distances.playsLikePin {
-                if let wind = distances.windPlaysLikePin {
-                    MetricText("PL \(DistanceFormat.string(playsLike, unit: unit)) → \(DistanceFormat.string(wind, unit: unit))", size: 12, weight: .regular, color: .secondary)
-                } else {
-                    MetricText("PL \(DistanceFormat.string(playsLike, unit: unit))", size: 12, weight: .regular, color: .secondary)
-                }
-            }
-            MetricText(DistanceFormat.string(distances.pin, unit: unit), unit: unit.abbreviation, size: 15)
-        }
-    }
-
-    private func aimRow(_ aims: [AimDistance]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Array(aims.enumerated()), id: \.offset) { _, aim in
-                    HStack(spacing: 4) {
-                        Image(systemName: "smallcircle.filled.circle")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(aim.label)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        MetricText(DistanceFormat.string(aim.meters, unit: unit), size: 12)
-                    }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(.white.opacity(0.08), in: Capsule())
-                }
-            }
-        }
-    }
-
     // Carry hazards on the primary line (origin → routed aim / green center):
     // "Bunker 182 / carry 195" capsules, nearest first. RAW line distances —
     // shown in competition mode too (measurement, not advice).
@@ -1952,7 +1997,7 @@ private struct DistanceCardView: View {
                     .foregroundStyle(Self.pinColor)
                 ForEach(hazards) { hazard in
                     HStack(spacing: 4) {
-                        Text(hazard.label)
+                        Text(hazard.displayLabel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         MetricText(DistanceFormat.string(hazard.frontM, unit: unit), size: 12)
@@ -1969,57 +2014,6 @@ private struct DistanceCardView: View {
         }
     }
 
-    // GPS mode with a plan: distance from the origin to the NEXT planned
-    // landing point (the first plan shot not yet passed along the hole).
-    private func toPlanRow(_ target: OnCourseModel.PlanTargetDistance) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "signpost.right.fill")
-                .font(.caption)
-                .foregroundStyle(PlanStyle.violet)
-            OverlineLabel(
-                "To plan" + (target.clubName.map { " · \($0)" } ?? ""),
-                color: .secondary
-            )
-            Spacer()
-            MetricText(DistanceFormat.string(target.meters, unit: unit), unit: unit.abbreviation, size: 16)
-        }
-    }
-
-    // The hole's planned legs: "1 · Driver · 214 m" capsules in stroke order;
-    // the last leg runs into the green. Follows the plan itself (not the
-    // overlay toggle) — the numbers stay useful with the map layer hidden.
-    private func planRow(_ legs: [OnCourseModel.PlanLeg]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Image(systemName: "signpost.right")
-                    .font(.caption2)
-                    .foregroundStyle(PlanStyle.violet)
-                ForEach(legs) { leg in
-                    HStack(spacing: 4) {
-                        Text("\(leg.index) · \(planLegTitle(leg))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        MetricText(DistanceFormat.string(leg.meters, unit: unit), size: 12)
-                    }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(PlanStyle.violet.opacity(0.16), in: Capsule())
-                }
-            }
-        }
-    }
-
-    /// "Driver", "Driver · Layup left", "Green" (final leg), or "Shot". A leg
-    /// with no planned club falls back to the suggested club, marked "~7i".
-    private func planLegTitle(_ leg: OnCourseModel.PlanLeg) -> String {
-        let club = leg.clubName ?? leg.suggestedClubName.map { "~\($0)" }
-        if leg.toGreen {
-            return club.map { "Green · \($0)" } ?? "Green"
-        }
-        let parts = [club, leg.label].compactMap { $0 }
-        return parts.isEmpty ? "Shot" : parts.joined(separator: " · ")
-    }
-
     // GPS mode, user past the aim-routing threshold: emphasize distance to the
     // aim the line now points at.
     private func toAimRow(_ aim: AimDistance) -> some View {
@@ -2031,39 +2025,6 @@ private struct DistanceCardView: View {
             Spacer()
             MetricText(DistanceFormat.string(aim.meters, unit: unit), unit: unit.abbreviation, size: 16)
         }
-    }
-
-    // Browse mode: per-leg route distances (tee→aim1, …, →green) + total.
-    private var routeRow: some View {
-        let legs = model.routeLegs
-        return VStack(spacing: 4) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Array(legs.enumerated()), id: \.offset) { index, meters in
-                        HStack(spacing: 4) {
-                            Text(legLabel(index: index, count: legs.count))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            MetricText(DistanceFormat.string(meters, unit: unit), size: 12)
-                        }
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(.white.opacity(0.08), in: Capsule())
-                    }
-                }
-            }
-            if let length = model.playingLength, let total = length.meters {
-                MetricText("Route \(length.approximate ? "~" : "")\(DistanceFormat.string(total, unit: unit))", unit: unit.abbreviation,
-                           size: 11, weight: .regular, color: .secondary)
-            }
-        }
-    }
-
-    // Leg labels: first from the tee, last into the green, aims in between.
-    private func legLabel(index: Int, count: Int) -> String {
-        let from = index == 0 ? "Tee" : "A\(index)"
-        let to = index == count - 1 ? "Green" : "A\(index + 1)"
-        return "\(from)→\(to)"
     }
 
     private var bottomRow: some View {

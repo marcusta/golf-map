@@ -141,6 +141,8 @@ final class MapStyleBuilderTests: XCTestCase {
             MapStyleIDs.measureLineSource,
             MapStyleIDs.measurePointsSource,
             MapStyleIDs.adjustHandlesSource,
+            MapStyleIDs.highlightSource,
+            MapStyleIDs.selectedEllipseSource,
         ] {
             let source = try XCTUnwrap(sources[id] as? [String: Any], id)
             XCTAssertEqual(source["type"] as? String, "geojson", id)
@@ -162,6 +164,8 @@ final class MapStyleBuilderTests: XCTestCase {
                 // stack so the leg line / nodes / gates all read over them.
                 MapStyleIDs.planEllipsesFillLayer,
                 MapStyleIDs.planEllipsesOutlineLayer,
+                MapStyleIDs.selectedEllipseFillLayer,
+                MapStyleIDs.selectedEllipseOutlineLayer,
                 // Plan overlay UNDER the distance line: the strategy is
                 // context; the white "where I am" line stays on top.
                 MapStyleIDs.planLineCasingLayer,
@@ -182,6 +186,8 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.measurePointsLayer,
                 MapStyleIDs.userLocationHaloLayer,
                 MapStyleIDs.userLocationDotLayer,
+                MapStyleIDs.highlightHaloLayer,
+                MapStyleIDs.highlightRingLayer,
                 MapStyleIDs.adjustHandlesCircleLayer,
                 MapStyleIDs.adjustHandlesLabelLayer,
             ]
@@ -345,7 +351,7 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 25)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 29)
     }
 
     // MARK: - Shot-visualisation overlay (T2)

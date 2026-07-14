@@ -126,6 +126,105 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertGreaterThan(model.cameraToken, afterHole)
     }
 
+    func testFocusMapCentersCameraAndRecenterClearsIt() {
+        let model = makeModel()
+        let point = LatLon(lat: 58.3641, lon: 15.7081)
+        model.focusMap(on: point)
+        // The command now centers on the tapped feature instead of fitting the hole.
+        guard case let .center(center, _)? = model.cameraCommand?.target else {
+            return XCTFail("focus should produce a .center camera command")
+        }
+        XCTAssertEqual(center.lat, point.lat, accuracy: 1e-9)
+        XCTAssertEqual(center.lon, point.lon, accuracy: 1e-9)
+        // Recenter drops the focus back to the hole fit (.bounds).
+        model.recenter()
+        if case .center = model.cameraCommand?.target {
+            XCTFail("recenter should clear the focus and restore the hole fit")
+        }
+    }
+
+    func testHoleChangeClearsMapFocus() {
+        let model = makeModel()
+        model.focusMap(on: LatLon(lat: 58.3641, lon: 15.7081))
+        model.nextHole()
+        if case .center = model.cameraCommand?.target {
+            XCTFail("changing holes should clear the ladder focus")
+        }
+    }
+
+    func testHazardCarriesScopesToCurrentHoleByNearestLine() {
+        let model = makeModel() // on hole 1
+        func box(around ll: LatLon, _ kind: String) -> FlatRing {
+            let c = Sweref99TM.fromWGS84(ll)
+            return FlatRing(points: [
+                Vec2(x: c.x - 5, y: c.y - 5), Vec2(x: c.x + 5, y: c.y - 5),
+                Vec2(x: c.x + 5, y: c.y + 5), Vec2(x: c.x - 5, y: c.y + 5),
+            ], kind: kind)
+        }
+        // A bunker on hole 1's tee→green line, and water on hole 2's line.
+        let onHole1 = box(around: LatLon(lat: 58.3620, lon: 15.7090), "bunker")
+        let onHole2 = box(around: LatLon(lat: 58.3665, lon: 15.7055), "water")
+        model.setHazards([onHole1, onHole2])
+
+        let kinds = model.hazardCarries.map(\.kind)
+        XCTAssertTrue(kinds.contains("bunker"), "this hole's bunker is included")
+        XCTAssertFalse(kinds.contains("water"), "the adjacent hole's hazard is excluded")
+    }
+
+    private func hazardBox(_ lat: Double, _ lon: Double) -> FlatRing {
+        let c = Sweref99TM.fromWGS84(LatLon(lat: lat, lon: lon))
+        return FlatRing(points: [
+            Vec2(x: c.x - 5, y: c.y - 5), Vec2(x: c.x + 5, y: c.y - 5),
+            Vec2(x: c.x + 5, y: c.y + 5), Vec2(x: c.x - 5, y: c.y + 5),
+        ], kind: "bunker")
+    }
+
+    func testOwnHazardShownEvenWellOffLine() {
+        let model = makeModel() // hole 1 = "h1"
+        // ~175 m off hole 1's line, but tagged to hole 1 → always shown.
+        model.setHazards([hazardBox(58.3620, 15.7120)], holeIds: ["h1"])
+        XCTAssertEqual(model.hazardCarries.count, 1)
+    }
+
+    func testForeignHazardOffLineExcluded() {
+        let model = makeModel()
+        // Same spot, but tagged to hole 2 and well off hole 1's line → not in play.
+        model.setHazards([hazardBox(58.3620, 15.7120)], holeIds: ["h2"])
+        XCTAssertTrue(model.hazardCarries.isEmpty)
+    }
+
+    func testForeignHazardInPlayIsShown() {
+        let model = makeModel()
+        // Belongs to hole 2, but sits on hole 1's line → in play, so shown.
+        model.setHazards([hazardBox(58.3620, 15.7090)], holeIds: ["h2"])
+        XCTAssertEqual(model.hazardCarries.count, 1)
+    }
+
+    func testLadderPopulatesFromTeeOriginWhenBrowsing() {
+        // No GPS fix → origin falls back to the active tee (browse mode). The
+        // ladder must still populate — it measures from any valid origin, not
+        // only a live fix. (Regression: the expanded card used to hide the
+        // ladder in browse mode entirely.)
+        let model = makeModel()
+        XCTAssertFalse(model.isUsingGPS, "fixture has no GPS fix → browse/tee origin")
+        let rows = model.ladderRows
+        XCTAssertFalse(rows.isEmpty, "ladder should populate from the tee origin")
+        XCTAssertTrue(rows.contains { $0.kind == .green }, "green row present")
+        XCTAssertTrue(rows.contains { $0.kind == .pin }, "pin row present")
+    }
+
+    func testFocusMapAddsHighlightMarkerClearedByRecenter() throws {
+        let model = makeModel()
+        XCTAssertNil(model.overlays.highlight)
+        let point = LatLon(lat: 58.3641, lon: 15.7081)
+        model.focusMap(on: point)
+        let highlight = try XCTUnwrap(model.overlays.highlight)
+        XCTAssertEqual(highlight.lat, point.lat, accuracy: 1e-9)
+        XCTAssertEqual(highlight.lon, point.lon, accuracy: 1e-9)
+        model.recenter()
+        XCTAssertNil(model.overlays.highlight, "recenter clears the highlight with the focus")
+    }
+
     // MARK: - Tee selection + persistence
 
     func testDefaultTeeIsLowestSortOrder() {

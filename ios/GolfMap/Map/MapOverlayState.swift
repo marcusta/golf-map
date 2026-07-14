@@ -189,6 +189,12 @@ public struct MapOverlayState: Equatable, Sendable {
     /// Game-plan strategy overlay for the active hole; nil hides it (course
     /// has no plan, hole has no plan content, or the plan toggle is off).
     public var plan: PlanOverlay?
+    /// The feature a tapped distance-ladder row focused (cyan ring); nil hides
+    /// it. Cleared with the camera focus (`recenter()` / hole change).
+    public var highlight: LatLon?
+    /// The selected target's recommended-club dispersion ellipse (closed WGS84
+    /// ring); nil hides it.
+    public var selectedEllipse: [LatLon]?
 
     public init(
         distanceLine: [LatLon] = [],
@@ -197,7 +203,9 @@ public struct MapOverlayState: Equatable, Sendable {
         measure: MeasureOverlay = .empty,
         routeLegLabels: [RouteLegLabel] = [],
         adjustHandles: [AdjustHandle] = [],
-        plan: PlanOverlay? = nil
+        plan: PlanOverlay? = nil,
+        highlight: LatLon? = nil,
+        selectedEllipse: [LatLon]? = nil
     ) {
         self.distanceLine = distanceLine
         self.targets = targets
@@ -206,6 +214,8 @@ public struct MapOverlayState: Equatable, Sendable {
         self.routeLegLabels = routeLegLabels
         self.adjustHandles = adjustHandles
         self.plan = plan
+        self.highlight = highlight
+        self.selectedEllipse = selectedEllipse
     }
 
     public static let empty = MapOverlayState()
@@ -243,6 +253,22 @@ enum MapOverlayShapes {
         let feature = MLNPointFeature()
         feature.coordinate = marker.position.clCoordinate
         return feature
+    }
+
+    /// The ladder tap-highlight point (empty collection hides the ring).
+    static func highlightShape(_ position: LatLon?) -> MLNShape {
+        guard let position else { return emptyShape() }
+        let feature = MLNPointFeature()
+        feature.coordinate = position.clCoordinate
+        return feature
+    }
+
+    /// The selected-target dispersion ellipse as a filled polygon (needs ≥ 3
+    /// points; empty collection hides it).
+    static func selectedEllipseShape(_ polygon: [LatLon]?) -> MLNShape {
+        guard let polygon, polygon.count >= 3 else { return emptyShape() }
+        var coordinates = polygon.map(\.clCoordinate)
+        return MLNPolygonFeature(coordinates: &coordinates, count: UInt(coordinates.count))
     }
 
     /// The measure path polyline (hidden below two points, like the distance
@@ -414,6 +440,16 @@ enum MapOverlayRenderer {
         setShape(
             MapOverlayShapes.measurePointsShape(state.measure),
             sourceID: MapStyleIDs.measurePointsSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.highlightShape(state.highlight),
+            sourceID: MapStyleIDs.highlightSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.selectedEllipseShape(state.selectedEllipse),
+            sourceID: MapStyleIDs.selectedEllipseSource,
             in: style
         )
     }
