@@ -172,6 +172,27 @@ final class MapOverlayShapesTests: XCTestCase {
         }
     }
 
+    func testSelectedWindHoldBuildsTaggedConnectorAndAimMarker() throws {
+        let hold = TargetWindHold(
+            aim: ll(58.361, 15.705),
+            target: ll(58.361, 15.706),
+            meters: 8,
+            side: .left
+        )
+        let collection = try XCTUnwrap(
+            MapOverlayShapes.selectedWindHoldShape(hold) as? MLNShapeCollectionFeature
+        )
+        let roles = collection.shapes.compactMap {
+            ($0 as? MLNFeature)?.attributes["role"] as? String
+        }
+        XCTAssertEqual(Set(roles), ["hold-line", "hold-aim"])
+
+        let empty = try XCTUnwrap(
+            MapOverlayShapes.selectedWindHoldShape(nil) as? MLNShapeCollectionFeature
+        )
+        XCTAssertTrue(empty.shapes.isEmpty)
+    }
+
     /// Camera command equality drives when CourseMapView re-applies a move;
     /// the token is the escape hatch for re-issuing an identical move.
     func testCameraCommandEqualityAndToken() {

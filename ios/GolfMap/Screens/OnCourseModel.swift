@@ -1997,6 +1997,10 @@ final class OnCourseModel {
         var carryM: Int?
         /// Trailing context: "→ 58 m in · LW", "3 Wood carries", "Lay up short".
         var note: String?
+        /// Crosswind compensation on the ground, hidden below the 3 m visual
+        /// threshold. The side is relative to the shot line, not map north.
+        var windHoldM: Int?
+        var windHoldSide: TargetWindHold.Side?
     }
 
     /// The ladder row the banner + map advice reflect: the focused rung, else
@@ -2056,44 +2060,134 @@ final class OnCourseModel {
             }
         }
 
+        let shotViz = club.flatMap { clubName in
+            selectedTargetVisualization(
+                for: row, clubName: clubName, elevationDeltaM: elevationDelta
+            )
+        }
         return TargetAdvice(
             title: row.label, kind: row.kind, distanceM: row.meters,
             playsAsM: playsAs, elevationDeltaM: elevationDelta,
-            club: club, carryM: row.carryM, note: note
+            club: club, carryM: row.carryM, note: note,
+            windHoldM: shotViz?.hold?.meters,
+            windHoldSide: shotViz?.hold?.side
         )
     }
 
-    /// The recommended club's dispersion ellipse (closed WGS84 ring) for the
-    /// SELECTED target — "if you hit that club at this target, here's your
-    /// pattern". Lands on the target via the ground slope. Nil in competition
-    /// mode, for hazards, or without an origin/club.
-    var selectedTargetEllipse: [LatLon]? {
-        guard !competitionMode, let origin, let row = selectedLadderRow,
-              row.kind != .hazard, let position = row.position,
-              let advice = selectedTargetAdvice, let clubName = advice.club,
+    private struct SelectedTargetVisualization {
+        var ellipse: [LatLon]
+        var hold: TargetWindHold?
+    }
+
+    /// Match the plan ghost's visibility threshold: below 3 m the connector is
+    /// map noise and the compact card figure rounds too aggressively to matter.
+    private static let selectedWindHoldMinM = 3.0
+
+    /// Build the selected target's shot pattern and, when crosswind matters, a
+    /// compensated aim. The correction iterates the bearing because moving the
+    /// hold point slightly changes the wind component relative to the shot.
+    /// Four passes converge well below map precision at golf-shot distances.
+    private func selectedTargetVisualization(
+        for row: LadderRow, clubName: String, elevationDeltaM: Int?
+    ) -> SelectedTargetVisualization? {
+        guard !competitionMode, row.kind != .hazard, let origin,
+              let targetPosition = row.position,
               let club = clubs.first(where: { $0.name == clubName })
         else { return nil }
 
         let o = Sweref99TM.fromWGS84(origin)
-        let b = Sweref99TM.fromWGS84(position)
-        let dx = b.x - o.x, dy = b.y - o.y
+        let t = Sweref99TM.fromWGS84(targetPosition)
+        let dx = t.x - o.x, dy = t.y - o.y
         let len = hypot(dx, dy)
         guard len > 0 else { return nil }
-        let deg = atan2(dx, dy) * 180 / .pi
-        let bearing = deg < 0 ? deg + 360 : deg
-        // Ground slope (rise / run) lands the ellipse ON the target.
-        let slope = advice.elevationDeltaM.map { Double($0) / len }
-        let wind = effectiveWind
 
+        func bearing(to point: Vec2) -> Double {
+            let deg = atan2(point.x - o.x, point.y - o.y) * 180 / .pi
+            return deg < 0 ? deg + 360 : deg
+        }
+
+        let target = Vec2(x: t.x, y: t.y)
+        var aimBearing = bearing(to: target)
+        var driftM = 0.0
+        if let wind = effectiveWind {
+            for _ in 0..<4 {
+                driftM = crosswindDriftM(
+                    club.carryM,
+                    windComponents(wind.speedMps, wind.directionDeg, aimBearing).crosswindMph
+                )
+                let along = bearingToUnitVector(aimBearing)
+                let right = Vec2(x: along.y, y: -along.x)
+                let holdPoint = Vec2(
+                    x: target.x - driftM * right.x,
+                    y: target.y - driftM * right.y
+                )
+                aimBearing = bearing(to: holdPoint)
+            }
+            // Pin the reported/visible amount to the final corrected bearing.
+            driftM = crosswindDriftM(
+                club.carryM,
+                windComponents(wind.speedMps, wind.directionDeg, aimBearing).crosswindMph
+            )
+        }
+
+        let slope = elevationDeltaM.map { Double($0) / len }
+        let wind = effectiveWind
         let ellipse = dispersionEllipse(DispersionEllipseOptions(
             origin: Vec2(x: o.x, y: o.y),
-            bearingDeg: bearing,
+            bearingDeg: aimBearing,
             club: club,
             windSpeedMps: wind?.speedMps,
             windDirectionDeg: wind?.directionDeg,
             groundSlope: slope
         ))
-        return ellipse.polygon.map { Sweref99TM.toWGS84(x: $0.x, y: $0.y) }
+
+        let hold: TargetWindHold?
+        if abs(driftM) >= Self.selectedWindHoldMinM {
+            let along = bearingToUnitVector(aimBearing)
+            let right = Vec2(x: along.y, y: -along.x)
+            let aim = Vec2(
+                x: target.x - driftM * right.x,
+                y: target.y - driftM * right.y
+            )
+            hold = TargetWindHold(
+                aim: Sweref99TM.toWGS84(x: aim.x, y: aim.y),
+                target: targetPosition,
+                meters: Int(abs(driftM).rounded()),
+                // Positive drift is shot-right, therefore hold left (and vice versa).
+                side: driftM > 0 ? .left : .right
+            )
+        } else {
+            hold = nil
+        }
+
+        return SelectedTargetVisualization(
+            ellipse: ellipse.polygon.map { Sweref99TM.toWGS84(x: $0.x, y: $0.y) },
+            hold: hold
+        )
+    }
+
+    /// The recommended club's wind-compensated dispersion ellipse for the
+    /// selected target. Nil in competition mode, for hazards, or without a
+    /// resolvable origin/club.
+    var selectedTargetEllipse: [LatLon]? {
+        guard let row = selectedLadderRow,
+              let advice = selectedTargetAdvice,
+              let clubName = advice.club
+        else { return nil }
+        return selectedTargetVisualization(
+            for: row, clubName: clubName, elevationDeltaM: advice.elevationDeltaM
+        )?.ellipse
+    }
+
+    /// The map's rose "hold here" marker/connector for the selected target.
+    var selectedTargetWindHold: TargetWindHold? {
+        guard let row = selectedLadderRow,
+              let advice = selectedTargetAdvice,
+              let clubName = advice.club
+        else { return nil }
+        return selectedTargetVisualization(
+            for: row, clubName: clubName, elevationDeltaM: advice.elevationDeltaM
+        )?.hold
     }
 
     /// Known elevation of a ladder target, for plays-as. Green/pin share the
@@ -2623,7 +2717,8 @@ final class OnCourseModel {
             routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : [],
             plan: planOverlay,
             highlight: mapFocus,
-            selectedEllipse: selectedTargetEllipse
+            selectedEllipse: selectedTargetEllipse,
+            selectedWindHold: selectedTargetWindHold
         )
     }
 }

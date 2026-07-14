@@ -1884,6 +1884,8 @@ private struct DistanceCardView: View {
     private static let frontColor = Color(red: 0.88, green: 0.19, blue: 0.19)
     private static let backColor = Color(red: 0.31, green: 0.56, blue: 0.82)
     private static let pinColor = Color(red: 1.0, green: 0.83, blue: 0.23)
+    /// Matches the selected-target rose hold marker on the map (#f472b6).
+    private static let windHoldColor = Color(red: 0.957, green: 0.447, blue: 0.714)
 
     private var unit: DistanceUnit { env.settings.distanceUnit }
 
@@ -1943,6 +1945,20 @@ private struct DistanceCardView: View {
                         }
                         .foregroundStyle(.secondary)
                         .fixedSize()
+                    }
+                    if let hold = advice.windHoldM, let side = advice.windHoldSide {
+                        HStack(spacing: 2) {
+                            Image(systemName: side == .left ? "arrow.left" : "arrow.right")
+                                .font(.system(size: 9, weight: .bold))
+                            Text("\(DistanceFormat.string(hold, unit: unit)) \(unit.abbreviation)")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .foregroundStyle(Self.windHoldColor)
+                        .fixedSize()
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(
+                            "Hold \(DistanceFormat.stringWithUnit(hold, unit: unit)) \(side.rawValue)"
+                        )
                     }
                     if let note = advice.note {
                         Text(note)

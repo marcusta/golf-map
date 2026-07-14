@@ -72,6 +72,12 @@ public enum MapStyleIDs {
     public static let selectedEllipseFillLayer = "overlay-selected-ellipse-fill"
     public static let selectedEllipseOutlineLayer = "overlay-selected-ellipse-outline"
 
+    // Selected-target crosswind compensation: rose dashed connector from the
+    // hold point to the intended landing, plus a hollow "aim here" marker.
+    public static let selectedWindHoldSource = "overlay-selected-wind-hold"
+    public static let selectedWindHoldLineLayer = "overlay-selected-wind-hold-line"
+    public static let selectedWindHoldAimLayer = "overlay-selected-wind-hold-aim"
+
     // Measure tool path (dedicated sources — the distance-line source is
     // rewritten every GPS fix and must never fight the measure overlay).
     public static let measureLineSource = "overlay-measure-line"
@@ -175,6 +181,10 @@ public enum MapStyleBuilder {
     static let selectedEllipseFillOpacity = 0.14
     static let selectedEllipseOutlineColor = "#67e8f9"
     static let selectedEllipseOutlineWidth = 1.4
+    static let selectedWindHoldColor = "#f472b6"
+    static let selectedWindHoldDashArray = [1.0, 1.5]
+    static let selectedWindHoldLineWidth = 2.0
+    static let selectedWindHoldAimRadius = 7.0
 
     // Ladder tap highlight: bright cyan, unused by any other marker, so the
     // "you tapped this" ring is unmistakable over ortho + every overlay.
@@ -331,6 +341,7 @@ public enum MapStyleBuilder {
             MapStyleIDs.adjustHandlesSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.highlightSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.selectedEllipseSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.selectedWindHoldSource: ["type": "geojson", "data": emptyCollection],
         ]
 
         var adjustHandleColorExpr: [Any] = ["match", ["get", "kind"]]
@@ -431,6 +442,32 @@ public enum MapStyleBuilder {
                     "line-color": selectedEllipseOutlineColor,
                     "line-width": selectedEllipseOutlineWidth,
                     "line-opacity": 0.9,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.selectedWindHoldLineLayer,
+                "type": "line",
+                "source": MapStyleIDs.selectedWindHoldSource,
+                "filter": ["==", ["get", "role"], "hold-line"],
+                "layout": ["line-cap": "round"],
+                "paint": [
+                    "line-color": selectedWindHoldColor,
+                    "line-width": selectedWindHoldLineWidth,
+                    "line-opacity": 0.95,
+                    "line-dasharray": selectedWindHoldDashArray,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.selectedWindHoldAimLayer,
+                "type": "circle",
+                "source": MapStyleIDs.selectedWindHoldSource,
+                "filter": ["==", ["get", "role"], "hold-aim"],
+                "paint": [
+                    "circle-radius": selectedWindHoldAimRadius,
+                    "circle-color": "rgba(0,0,0,0)",
+                    "circle-stroke-color": selectedWindHoldColor,
+                    "circle-stroke-width": 2.5,
+                    "circle-stroke-opacity": 0.95,
                 ],
             ],
             [

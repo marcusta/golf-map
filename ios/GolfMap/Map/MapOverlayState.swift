@@ -112,6 +112,28 @@ public struct MeasureOverlay: Equatable, Sendable {
     }
 }
 
+/// Crosswind compensation for the selected ladder target. `aim` is the hollow
+/// rose marker the player should hold over; `target` is the proposed landing
+/// point the wind-adjusted pattern is intended to finish on.
+public struct TargetWindHold: Equatable, Sendable {
+    public enum Side: String, Equatable, Sendable {
+        case left
+        case right
+    }
+
+    public var aim: LatLon
+    public var target: LatLon
+    public var meters: Int
+    public var side: Side
+
+    public init(aim: LatLon, target: LatLon, meters: Int, side: Side) {
+        self.aim = aim
+        self.target = target
+        self.meters = meters
+        self.side = side
+    }
+}
+
 /// The game-plan strategy overlay for the active hole (read-only viewer of
 /// plans built on the web): leg polyline tee → shot 1 → … → green center,
 /// the planned landing points as nodes, and the target gates as cross-lines
@@ -195,6 +217,9 @@ public struct MapOverlayState: Equatable, Sendable {
     /// The selected target's recommended-club dispersion ellipse (closed WGS84
     /// ring); nil hides it.
     public var selectedEllipse: [LatLon]?
+    /// Rose hold marker + connector for crosswind compensation at the selected
+    /// target. Nil for calm/negligible wind, hazards, or advice-hidden modes.
+    public var selectedWindHold: TargetWindHold?
 
     public init(
         distanceLine: [LatLon] = [],
@@ -205,7 +230,8 @@ public struct MapOverlayState: Equatable, Sendable {
         adjustHandles: [AdjustHandle] = [],
         plan: PlanOverlay? = nil,
         highlight: LatLon? = nil,
-        selectedEllipse: [LatLon]? = nil
+        selectedEllipse: [LatLon]? = nil,
+        selectedWindHold: TargetWindHold? = nil
     ) {
         self.distanceLine = distanceLine
         self.targets = targets
@@ -216,6 +242,7 @@ public struct MapOverlayState: Equatable, Sendable {
         self.plan = plan
         self.highlight = highlight
         self.selectedEllipse = selectedEllipse
+        self.selectedWindHold = selectedWindHold
     }
 
     public static let empty = MapOverlayState()
@@ -269,6 +296,20 @@ enum MapOverlayShapes {
         guard let polygon, polygon.count >= 3 else { return emptyShape() }
         var coordinates = polygon.map(\.clCoordinate)
         return MLNPolygonFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+    }
+
+    /// Selected-target wind hold: dashed aim→target connector plus a hollow
+    /// aim point, role-tagged for two layers backed by one mixed source.
+    static func selectedWindHoldShape(_ hold: TargetWindHold?) -> MLNShape {
+        guard let hold else { return emptyShape() }
+        var coordinates = [hold.aim.clCoordinate, hold.target.clCoordinate]
+        let line = MLNPolylineFeature(coordinates: &coordinates, count: 2)
+        line.attributes = ["role": "hold-line"]
+
+        let aim = MLNPointFeature()
+        aim.coordinate = hold.aim.clCoordinate
+        aim.attributes = ["role": "hold-aim"]
+        return MLNShapeCollectionFeature(shapes: [line, aim])
     }
 
     /// The measure path polyline (hidden below two points, like the distance
@@ -450,6 +491,11 @@ enum MapOverlayRenderer {
         setShape(
             MapOverlayShapes.selectedEllipseShape(state.selectedEllipse),
             sourceID: MapStyleIDs.selectedEllipseSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.selectedWindHoldShape(state.selectedWindHold),
+            sourceID: MapStyleIDs.selectedWindHoldSource,
             in: style
         )
     }

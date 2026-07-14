@@ -729,6 +729,48 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertEqual(layup.elevationDeltaM, 30, "uphill: 40 − 10 m tee")
     }
 
+    func testSelectedLayupShowsCrosswindHoldOppositeTheDrift() throws {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        model.setClubs(layupClubs())
+        // Hole 1 plays approximately north. Wind FROM the west pushes the ball
+        // shot-right/east, so the player must hold left of the proposed layup.
+        model.setPlanWind(speedMps: 8, directionDeg: 270)
+
+        let row = try XCTUnwrap(model.ladderRows.first { $0.kind == .layup })
+        let target = try XCTUnwrap(row.position)
+        model.focusMap(on: target, ladderId: row.id)
+        let layup = try XCTUnwrap(model.selectedTargetAdvice)
+        XCTAssertEqual(layup.windHoldSide, .left)
+        XCTAssertGreaterThan(layup.windHoldM ?? 0, 3)
+
+        let hold = try XCTUnwrap(model.selectedTargetWindHold)
+        XCTAssertEqual(hold.side, .left)
+        XCTAssertEqual(hold.meters, layup.windHoldM)
+        XCTAssertEqual(hold.target, target)
+
+        let origin = try XCTUnwrap(model.origin)
+        let o = Sweref99TM.fromWGS84(origin)
+        let a = Sweref99TM.fromWGS84(hold.aim)
+        let t = Sweref99TM.fromWGS84(hold.target)
+        let shotX = t.x - o.x, shotY = t.y - o.y
+        let aimX = a.x - t.x, aimY = a.y - t.y
+        // Positive 2-D cross product here is shot-left for compass geometry.
+        XCTAssertGreaterThan(shotX * aimY - shotY * aimX, 0,
+                             "the rose aim marker sits left of the target")
+    }
+
+    func testSelectedTargetHidesHoldWhenWindIsCalm() throws {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        model.setClubs(layupClubs())
+
+        let layup = try XCTUnwrap(advice(model, kind: .layup))
+        XCTAssertNil(layup.windHoldM)
+        XCTAssertNil(layup.windHoldSide)
+        XCTAssertNil(model.selectedTargetWindHold)
+    }
+
     func testCompetitionModeKeepsLadderRungsActualOnly() async throws {
         // DMD competition rule: distance only. Even with a terrain sample the
         // plays-as / elevation figures are gated off.
