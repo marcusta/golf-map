@@ -133,4 +133,88 @@ final class GamePlanEditStoreTests: XCTestCase {
         let remaining = try await database.dbQueue.read { try PlanShotRecord.fetchCount($0) }
         XCTAssertEqual(remaining, 0)
     }
+
+    // MARK: - Wind (on-course wind editor)
+
+    func testSetPlanWindOnANewCourseCreatesAPendingPlanRow() async throws {
+        let database = try await makeDatabaseWithCourse()
+
+        try await database.setPlanWind(courseId: "course-1", speedMps: 6, directionDeg: 200)
+
+        let plan = try await database.ensurePlanRow(courseId: "course-1")
+        XCTAssertEqual(plan.windSpeedMps, 6)
+        XCTAssertEqual(plan.windDirectionDeg, 200)
+        XCTAssertEqual(plan.syncState, .pending, "never pushed → stays pending; its create carries the wind")
+        let pending = try await database.hasPendingPlanEdits(courseId: "course-1")
+        XCTAssertTrue(pending)
+    }
+
+    func testSetPlanWindOnASyncedPlanFlagsItDirty() async throws {
+        let database = try await makeDatabaseWithCourse()
+        try await database.saveGamePlan(StoredGamePlan(
+            plan: GamePlanRecord(
+                id: "p1", courseId: "course-1",
+                serverId: "srv-p1", serverVersion: 2, syncState: .synced
+            ),
+            holes: [], shots: [], gates: []
+        ))
+
+        try await database.setPlanWind(courseId: "course-1", speedMps: 7.5, directionDeg: 15)
+
+        let plan = try await database.ensurePlanRow(courseId: "course-1")
+        XCTAssertEqual(plan.syncState, .dirty)
+        XCTAssertEqual(plan.serverVersion, 2, "the lock version is untouched until the push lands")
+        let queued = try await database.plansNeedingSync()
+        XCTAssertEqual(queued.map(\.id), ["p1"])
+    }
+
+    func testSetHoleWindLazilyCreatesTheHoleRowAndQueuesIt() async throws {
+        let database = try await makeDatabaseWithCourse()
+        try await database.saveGamePlan(StoredGamePlan(
+            plan: GamePlanRecord(
+                id: "p1", courseId: "course-1",
+                serverId: "srv-p1", serverVersion: 1, syncState: .synced
+            ),
+            holes: [], shots: [], gates: []
+        ))
+
+        try await database.setPlanHoleWind(
+            courseId: "course-1", holeNumber: 3, speedMps: 9, directionDeg: 270
+        )
+
+        let holes = try await database.planHolesNeedingSync(gamePlanId: "p1")
+        XCTAssertEqual(holes.count, 1)
+        XCTAssertEqual(holes[0].holeNumber, 3)
+        XCTAssertEqual(holes[0].windSpeedMps, 9)
+        XCTAssertEqual(holes[0].windDirectionDeg, 270)
+        XCTAssertEqual(holes[0].syncState, .pending, "the hole row is new — it creates, carrying the wind")
+    }
+
+    /// Clearing a hole override is a real edit (nil = "inherit the plan wind"),
+    /// so the row must go out DIRTY with nils — not be left alone.
+    func testClearingASyncedHoleWindOverrideFlagsItDirtyWithNils() async throws {
+        let database = try await makeDatabaseWithCourse()
+        try await database.saveGamePlan(StoredGamePlan(
+            plan: GamePlanRecord(
+                id: "p1", courseId: "course-1",
+                serverId: "srv-p1", serverVersion: 1, syncState: .synced
+            ),
+            holes: [GamePlanHoleRecord(
+                id: "h1", gamePlanId: "p1", holeNumber: 1,
+                windSpeedMps: 12, windDirectionDeg: 180,
+                serverId: "srv-h1", serverVersion: 4, syncState: .synced
+            )],
+            shots: [], gates: []
+        ))
+
+        try await database.setPlanHoleWind(
+            courseId: "course-1", holeNumber: 1, speedMps: nil, directionDeg: nil
+        )
+
+        let holes = try await database.planHolesNeedingSync(gamePlanId: "p1")
+        XCTAssertEqual(holes.count, 1)
+        XCTAssertNil(holes[0].windSpeedMps)
+        XCTAssertNil(holes[0].windDirectionDeg)
+        XCTAssertEqual(holes[0].syncState, .dirty)
+    }
 }

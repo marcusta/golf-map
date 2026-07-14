@@ -201,4 +201,131 @@ final class PlanSyncTests: XCTestCase {
         let leftover = try await database.plansNeedingSync()
         XCTAssertTrue(leftover.isEmpty)
     }
+
+    // MARK: - Wind (on-course wind editor)
+
+    /// A synced plan whose wind was edited on course: pushed as an
+    /// optimistic-locked upsert carrying the new wind.
+    func testDirtyPlanWindPushesUpsertWithTheWind() async throws {
+        let database = try await makeDatabaseWithCourse()
+        try await database.saveGamePlan(StoredGamePlan(
+            plan: GamePlanRecord(id: "p1", courseId: "course-1", serverId: "srv-p1", serverVersion: 3, syncState: .synced),
+            holes: [], shots: [], gates: []
+        ))
+        try await database.setPlanWind(courseId: "course-1", speedMps: 6.5, directionDeg: 210)
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: planBody(id: "srv-p1", version: 4))],
+            forPathContaining: "/game-plans/upsert"
+        )
+
+        await makeService(database: database).flush()
+
+        let saved = try await database.dbQueue.read { try GamePlanRecord.fetchOne($0, key: "p1") }
+        XCTAssertEqual(saved?.syncState, .synced)
+        XCTAssertEqual(saved?.serverVersion, 4, "the server's bumped version was stored")
+
+        let body = try XCTUnwrap(
+            MockURLProtocol.shared.jsonBodies(forPathContaining: "/game-plans/upsert").last
+        )
+        XCTAssertEqual(body["windSpeedMps"] as? Double, 6.5)
+        XCTAssertEqual(body["windDirectionDeg"] as? Double, 210)
+        XCTAssertEqual(body["version"] as? Int, 3, "optimistic lock uses the LAST known version")
+    }
+
+    /// Clearing the wind must reach the server as an explicit JSON null: the
+    /// server patches only the keys present in the body, so an omitted key —
+    /// what Swift's synthesized `Encodable` would produce for a nil — would
+    /// silently leave the old wind in place.
+    func testClearedPlanWindPushesExplicitNulls() async throws {
+        let database = try await makeDatabaseWithCourse()
+        try await database.saveGamePlan(StoredGamePlan(
+            plan: GamePlanRecord(
+                id: "p1", courseId: "course-1",
+                windSpeedMps: 8, windDirectionDeg: 90,
+                serverId: "srv-p1", serverVersion: 2, syncState: .synced
+            ),
+            holes: [], shots: [], gates: []
+        ))
+        try await database.setPlanWind(courseId: "course-1", speedMps: nil, directionDeg: nil)
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: planBody(id: "srv-p1", version: 3))],
+            forPathContaining: "/game-plans/upsert"
+        )
+
+        await makeService(database: database).flush()
+
+        let body = try XCTUnwrap(
+            MockURLProtocol.shared.jsonBodies(forPathContaining: "/game-plans/upsert").last
+        )
+        XCTAssertTrue(body.keys.contains("windSpeedMps"), "the key is SENT, as a null — not omitted")
+        XCTAssertTrue(body["windSpeedMps"] is NSNull)
+        XCTAssertTrue(body["windDirectionDeg"] is NSNull)
+        let saved = try await database.dbQueue.read { try GamePlanRecord.fetchOne($0, key: "p1") }
+        XCTAssertEqual(saved?.syncState, .synced)
+    }
+
+    /// A per-hole override edited on course: pushed through set-hole WITH the
+    /// hole's version (the create path posts no version).
+    func testDirtyHoleWindPushesSetHoleWithVersionAndWind() async throws {
+        let database = try await makeDatabaseWithCourse()
+        try await database.saveGamePlan(StoredGamePlan(
+            plan: GamePlanRecord(id: "p1", courseId: "course-1", serverId: "srv-p1", serverVersion: 1, syncState: .synced),
+            holes: [GamePlanHoleRecord(
+                id: "h1", gamePlanId: "p1", holeNumber: 1,
+                serverId: "srv-h1", serverVersion: 5, syncState: .synced
+            )],
+            shots: [], gates: []
+        ))
+        try await database.setPlanHoleWind(
+            courseId: "course-1", holeNumber: 1, speedMps: 11, directionDeg: 45
+        )
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: holeBody(id: "srv-h1", version: 6))],
+            forPathContaining: "/game-plans/set-hole"
+        )
+
+        await makeService(database: database).flush()
+
+        let saved = try await database.dbQueue.read { try GamePlanHoleRecord.fetchOne($0, key: "h1") }
+        XCTAssertEqual(saved?.syncState, .synced)
+        XCTAssertEqual(saved?.serverVersion, 6)
+
+        let body = try XCTUnwrap(
+            MockURLProtocol.shared.jsonBodies(forPathContaining: "/game-plans/set-hole").last
+        )
+        XCTAssertEqual(body["holeNumber"] as? Int, 1)
+        XCTAssertEqual(body["version"] as? Int, 5)
+        XCTAssertEqual(body["windSpeedMps"] as? Double, 11)
+        XCTAssertEqual(body["windDirectionDeg"] as? Double, 45)
+
+        let leftover = try await database.plansNeedingSync()
+        XCTAssertTrue(leftover.isEmpty, "everything pushed")
+    }
+
+    /// The first wind of the round on a course with NO server plan yet: the
+    /// lazily-created plan row must carry the wind out with its create, not
+    /// push an empty plan and drop it.
+    func testFirstWindOnAnUnpushedPlanCarriesTheWindOnCreate() async throws {
+        let database = try await makeDatabaseWithCourse()
+        try await database.setPlanWind(courseId: "course-1", speedMps: 5, directionDeg: 315)
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: planBody(id: "srv-p1", version: 1))],
+            forPathContaining: "/game-plans/upsert"
+        )
+
+        await makeService(database: database).flush()
+
+        let body = try XCTUnwrap(
+            MockURLProtocol.shared.jsonBodies(forPathContaining: "/game-plans/upsert").last
+        )
+        XCTAssertEqual(body["windSpeedMps"] as? Double, 5)
+        XCTAssertEqual(body["windDirectionDeg"] as? Double, 315)
+        XCTAssertNil(body["version"], "a create carries no version")
+        let leftover = try await database.plansNeedingSync()
+        XCTAssertTrue(leftover.isEmpty)
+    }
 }

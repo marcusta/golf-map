@@ -16,10 +16,19 @@ final class PlanEditModelTests: XCTestCase {
         private(set) var removes = 0
         private(set) var clubSets = 0
         private(set) var lastAddClubId: String?
+        /// Wind writes, in order: (holeNumber — nil for the plan-level wind,
+        /// speed, direction). A nil speed/direction pair is a clear.
+        private(set) var windWrites: [(holeNumber: Int?, speedMps: Double?, directionDeg: Double?)] = []
         func add(_ clubId: String?) { lock.lock(); adds += 1; lastAddClubId = clubId; lock.unlock() }
         func move() { lock.lock(); moves += 1; lock.unlock() }
         func remove() { lock.lock(); removes += 1; lock.unlock() }
         func setClub() { lock.lock(); clubSets += 1; lock.unlock() }
+        func wind(_ holeNumber: Int?, _ speedMps: Double?, _ directionDeg: Double?) {
+            lock.lock(); windWrites.append((holeNumber, speedMps, directionDeg)); lock.unlock()
+        }
+        func winds() -> [(holeNumber: Int?, speedMps: Double?, directionDeg: Double?)] {
+            lock.lock(); defer { lock.unlock() }; return windWrites
+        }
     }
 
     private var defaults: UserDefaults!
@@ -69,7 +78,9 @@ final class PlanEditModelTests: XCTestCase {
             addShot: { _, _, _, _, _, _, clubId in spy.add(clubId) },
             moveShot: { _, _, _, _ in spy.move() },
             setShotClub: { _, _ in spy.setClub() },
-            removeShot: { _ in spy.remove() }
+            removeShot: { _ in spy.remove() },
+            setPlanWind: { speed, direction in spy.wind(nil, speed, direction) },
+            setHoleWind: { hole, speed, direction in spy.wind(hole, speed, direction) }
         )
         return model
     }
@@ -247,5 +258,85 @@ final class PlanEditModelTests: XCTestCase {
         XCTAssertEqual(model.planEditShots.first?.clubName, "Driver")
         await drainTasks()
         XCTAssertEqual(spy.clubSets, 1)
+    }
+
+    // MARK: - Wind editing (on-course wind editor)
+
+    func testSetPlanWindOnACourseWithNoPlanCreatesOneAndPersists() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        XCTAssertNil(model.effectiveWind, "no plan cached → no wind")
+
+        model.setPlanWind(speedMps: 6, directionDeg: 200)
+
+        let wind = try XCTUnwrap(model.effectiveWind)
+        XCTAssertEqual(wind.speedMps, 6)
+        XCTAssertEqual(wind.directionDeg, 200)
+        XCTAssertNil(model.currentHoleWindOverride, "a plan-level edit sets no hole override")
+        await drainTasks()
+        let writes = spy.winds()
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertNil(writes[0].holeNumber, "written at the plan level")
+        XCTAssertEqual(writes[0].speedMps, 6)
+        XCTAssertEqual(writes[0].directionDeg, 200)
+    }
+
+    func testHoleWindOverrideWinsOverThePlanWindAndClearingRestoresIt() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.setPlanWind(speedMps: 4, directionDeg: 0)
+
+        model.setCurrentHoleWind(speedMps: 9, directionDeg: 180)
+        var wind = try XCTUnwrap(model.effectiveWind)
+        XCTAssertEqual(wind.speedMps, 9, "the hole override wins on this hole")
+        XCTAssertEqual(wind.directionDeg, 180)
+        XCTAssertEqual(model.planWind?.speedMps, 4, "the plan wind is untouched underneath")
+
+        model.setCurrentHoleWind(speedMps: nil, directionDeg: nil)
+        XCTAssertNil(model.currentHoleWindOverride)
+        wind = try XCTUnwrap(model.effectiveWind)
+        XCTAssertEqual(wind.speedMps, 4, "clearing the override falls back to the plan wind")
+
+        await drainTasks()
+        let writes = spy.winds()
+        XCTAssertEqual(writes.count, 3)
+        XCTAssertEqual(writes[1].holeNumber, 1)
+        XCTAssertEqual(writes[1].speedMps, 9)
+        XCTAssertEqual(writes[2].holeNumber, 1)
+        XCTAssertNil(writes[2].speedMps, "the clear pushes a nil pair, not an unchanged edit")
+        XCTAssertNil(writes[2].directionDeg)
+    }
+
+    func testWindStaysLiveInCompetitionMode() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.setPlanWind(speedMps: 8, directionDeg: 30)
+
+        model.competitionMode = true
+        let wind = try XCTUnwrap(
+            model.effectiveWind,
+            "wind survives competition mode — it is a weather report, not a device reading of the course"
+        )
+        XCTAssertEqual(wind.speedMps, 8)
+
+        // And it can still be EDITED there (the chip opens the sheet either way).
+        model.setPlanWind(speedMps: 3, directionDeg: 120)
+        XCTAssertEqual(model.effectiveWind?.speedMps, 3)
+    }
+
+    func testClearingThePlanWindLeavesTheHoleCalm() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.setPlanWind(speedMps: 7, directionDeg: 90)
+
+        model.setPlanWind(speedMps: nil, directionDeg: nil)
+
+        XCTAssertNil(model.effectiveWind)
+        XCTAssertNil(model.planWind)
+        await drainTasks()
+        let writes = spy.winds()
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertNil(writes[1].speedMps)
+        XCTAssertNil(writes[1].directionDeg)
     }
 }

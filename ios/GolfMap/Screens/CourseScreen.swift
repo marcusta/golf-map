@@ -413,6 +413,8 @@ private struct OnCourseContentView: View {
     /// Scorecard sheet — non-modal like the elevation profile, openable over
     /// any mode.
     @State private var showScorecard = false
+    /// Wind editor sheet (the wind chip in the control rail opens it).
+    @State private var showWind = false
 
     /// Pops back to the course list — the system navigation bar is hidden on
     /// this screen (it collided with the hole header), so the header row
@@ -715,6 +717,12 @@ private struct OnCourseContentView: View {
                 clubs: model.clubs,
                 onClose: { showScorecard = false }
             )
+        }
+        // The on-course wind editor: writes the plan wind (or this hole's
+        // override) straight into the plan the viewer already reads, offline-
+        // first through the same dirty-row → PlanSyncService path as shot edits.
+        .sheet(isPresented: $showWind) {
+            WindEditorSheet(model: model, onClose: { showWind = false })
         }
         .sheet(isPresented: $showLevel) {
             if let greenId = model.currentHole?.green?.id {
@@ -1110,16 +1118,15 @@ private struct OnCourseContentView: View {
     private var controlStack: some View {
         VStack(spacing: 10) {
             if model.toolMode == .none {
-                // Effective-wind indicator (plan wind → direction + speed).
-                // `effectiveWind` is nil in competition mode, so the chip —
-                // like every shot-viz overlay — vanishes there automatically.
-                if let wind = model.effectiveWind {
-                    WindIndicatorChip(
-                        speedMps: wind.speedMps,
-                        directionDeg: wind.directionDeg,
-                        holeBearing: model.holeBearing
-                    )
-                }
+                // Wind indicator + the way into the wind editor. Shows a calm
+                // state when no wind is set rather than hiding — it is the only
+                // entry point, so it must not disappear when there is nothing
+                // set yet. Live in competition mode too (weather-report wind).
+                WindIndicatorChip(
+                    wind: model.effectiveWind,
+                    holeBearing: model.holeBearing,
+                    action: { showWind = true }
+                )
                 captureButton
                 scorecardButton
                 greenViewButton
@@ -1894,12 +1901,21 @@ private struct DistanceCardView: View {
     }
 
     private var centerCaption: String {
-        guard let playsLike = model.distances?.playsLikeCenter else { return "Center" }
-        let plText = DistanceFormat.string(playsLike, unit: unit)
-        if let wind = model.distances?.windPlaysLikeCenter {
+        let playsLike = model.distances?.playsLikeCenter
+        let wind = model.distances?.windPlaysLikeCenter
+        switch (playsLike, wind) {
+        case let (playsLike?, wind?):
+            let plText = DistanceFormat.string(playsLike, unit: unit)
             return "Center · PL \(plText) → \(DistanceFormat.string(wind, unit: unit))"
+        case let (playsLike?, nil):
+            return "Center · PL \(DistanceFormat.string(playsLike, unit: unit))"
+        case let (nil, wind?):
+            // Competition mode: no slope figure to chain off, but the wind
+            // number stands on its own (straight distance + wind).
+            return "Center · wind \(DistanceFormat.string(wind, unit: unit))"
+        case (nil, nil):
+            return "Center"
         }
-        return "Center · PL \(plText)"
     }
 
     // Front/center/back club advice for the (wind-adjusted) plays-like to the
@@ -1958,8 +1974,9 @@ private struct DistanceCardView: View {
     }
 
     // Small wind indicator: speed (m/s) + an arrow pointing the way the wind
-    // blows (north-up). Only shown when the plan supplies a non-calm wind and
-    // competition mode is off (`model.effectiveWind` is nil in both cases).
+    // blows (north-up). Shown whenever the plan supplies a non-calm wind —
+    // including in competition mode (`model.effectiveWind` is nil only when
+    // the wind is calm / unset).
     private func windRow(_ wind: (speedMps: Double, directionDeg: Double)) -> some View {
         let speed = Int(wind.speedMps.rounded())
         return HStack(spacing: 6) {

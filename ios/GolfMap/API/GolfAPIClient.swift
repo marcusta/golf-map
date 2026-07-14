@@ -140,31 +140,36 @@ public actor GolfAPIClient {
     /// (`POST /api/game-plans/upsert`). The planner sync calls this WITHOUT a
     /// version on first edit — the server creates the plan when none exists; a
     /// present-but-mismatched version returns 409 (re-sync the tree).
+    ///
+    /// `wind` is a PATCH: nil leaves the server's wind untouched, a patch whose
+    /// values are nil clears it to calm (see `PlanWindPatch`).
     public func upsertGamePlan(
         courseId: String,
         version: Int? = nil,
-        windSpeedMps: Double? = nil,
-        windDirectionDeg: Double? = nil
+        wind: PlanWindPatch? = nil
     ) async throws -> GamePlan {
         try await postJSON(path: "game-plans/upsert", body: UpsertGamePlanRequest(
             courseId: courseId,
             version: version,
-            windSpeedMps: windSpeedMps,
-            windDirectionDeg: windDirectionDeg
+            wind: wind
         ))
     }
 
     /// Creates (or, with a `version`, updates) a plan hole row
     /// (`POST /api/game-plans/set-hole`). The planner sync calls this WITHOUT a
-    /// version to lazily create the hole so its shots can attach — hole-level
-    /// fields stay view-only in T3.
+    /// version to lazily create the hole so its shots can attach, and WITH one
+    /// to push an edited per-hole wind override.
+    ///
+    /// `wind` is a PATCH, as for `upsertGamePlan`: a patch of nils clears the
+    /// hole override so the hole inherits the plan-level wind again.
     public func setPlanHole(
         planId: String,
         holeNumber: Int,
-        version: Int? = nil
+        version: Int? = nil,
+        wind: PlanWindPatch? = nil
     ) async throws -> GamePlanHole {
         try await postJSON(path: "game-plans/set-hole", body: SetPlanHoleRequest(
-            planId: planId, holeNumber: holeNumber, version: version
+            planId: planId, holeNumber: holeNumber, version: version, wind: wind
         ))
     }
 
@@ -208,17 +213,47 @@ public actor GolfAPIClient {
         try await postJSON(path: "game-plans/shots/remove", body: RemovePlanShotRequest(id: id, version: version))
     }
 
+    // Both wind-carrying requests encode the wind keys BY HAND. The server
+    // patches only the keys present in the body (an absent key means "leave
+    // alone"), and Swift's synthesized `Encodable` omits nil optionals — so a
+    // synthesized encoder could never clear a wind back to calm/inherit. With
+    // a `wind` patch attached the keys are always written, as a number or an
+    // explicit JSON null; with no patch they stay absent.
+
     private struct UpsertGamePlanRequest: Encodable {
         let courseId: String
         let version: Int?
-        let windSpeedMps: Double?
-        let windDirectionDeg: Double?
+        let wind: PlanWindPatch?
+
+        enum CodingKeys: String, CodingKey {
+            case courseId, version, windSpeedMps, windDirectionDeg
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(courseId, forKey: .courseId)
+            try container.encodeIfPresent(version, forKey: .version)
+            try wind?.encode(into: &container, speed: .windSpeedMps, direction: .windDirectionDeg)
+        }
     }
 
     private struct SetPlanHoleRequest: Encodable {
         let planId: String
         let holeNumber: Int
         let version: Int?
+        let wind: PlanWindPatch?
+
+        enum CodingKeys: String, CodingKey {
+            case planId, holeNumber, version, windSpeedMps, windDirectionDeg
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(planId, forKey: .planId)
+            try container.encode(holeNumber, forKey: .holeNumber)
+            try container.encodeIfPresent(version, forKey: .version)
+            try wind?.encode(into: &container, speed: .windSpeedMps, direction: .windDirectionDeg)
+        }
     }
 
     private struct AddPlanShotRequest: Encodable {

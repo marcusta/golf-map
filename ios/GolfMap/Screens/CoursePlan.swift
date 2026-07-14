@@ -111,6 +111,24 @@ struct CoursePlan: Equatable, Sendable {
         return (speed, direction)
     }
 
+    /// The plan-level (course-wide) wind, ignoring any hole override.
+    var planWind: (speedMps: Double, directionDeg: Double)? {
+        guard let speed = windSpeedMps, let direction = windDirectionDeg else { return nil }
+        return (speed, direction)
+    }
+
+    /// A hole's OWN wind override, or nil when it inherits the plan wind. Both
+    /// halves must be present to count as an override — a half-filled pair
+    /// falls through to the plan wind in `wind(holeNumber:)`, so it is not one.
+    func windOverride(holeNumber: Int) -> (speedMps: Double, directionDeg: Double)? {
+        guard
+            let hole = holesByNumber[holeNumber],
+            let speed = hole.windSpeedMps,
+            let direction = hole.windDirectionDeg
+        else { return nil }
+        return (speed, direction)
+    }
+
     /// An empty editable plan for a course with none cached yet — the planner
     /// tool synthesises this so the first shot has somewhere to land. The `id`
     /// is a placeholder (the DB layer owns the real, lazily-created plan id).
@@ -178,6 +196,42 @@ struct CoursePlan: Equatable, Sendable {
         replacingShots(
             holeNumber: holeNumber,
             with: shots(holeNumber: holeNumber).filter { $0.id != shotId }
+        )
+    }
+
+    // MARK: Wind (on-course wind editor)
+
+    /// Copy with the plan-level (course-wide) wind replaced. A nil pair = calm.
+    func settingPlanWind(speedMps: Double?, directionDeg: Double?) -> CoursePlan {
+        CoursePlan(
+            id: id, courseId: courseId,
+            windSpeedMps: speedMps, windDirectionDeg: directionDeg,
+            holesByNumber: holesByNumber
+        )
+    }
+
+    /// Copy with one hole's wind override replaced (creating an otherwise-empty
+    /// hole plan if the hole has none). A nil pair clears the override, so the
+    /// hole inherits the plan wind again.
+    func settingHoleWind(holeNumber: Int, speedMps: Double?, directionDeg: Double?) -> CoursePlan {
+        var byNumber = holesByNumber
+        if let existing = byNumber[holeNumber] {
+            byNumber[holeNumber] = HolePlan(
+                holeNumber: existing.holeNumber, teeId: existing.teeId, notes: existing.notes,
+                windSpeedMps: speedMps, windDirectionDeg: directionDeg,
+                shots: existing.shots, gates: existing.gates
+            )
+        } else {
+            byNumber[holeNumber] = HolePlan(
+                holeNumber: holeNumber, teeId: nil, notes: nil,
+                windSpeedMps: speedMps, windDirectionDeg: directionDeg,
+                shots: [], gates: []
+            )
+        }
+        return CoursePlan(
+            id: id, courseId: courseId,
+            windSpeedMps: windSpeedMps, windDirectionDeg: windDirectionDeg,
+            holesByNumber: byNumber
         )
     }
 

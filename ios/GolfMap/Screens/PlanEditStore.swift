@@ -33,7 +33,15 @@ struct PlanEditStore: Sendable {
             setShotClub: { shotId, clubId in
                 await patchShot(id: shotId) { shot in shot.clubId = clubId }
             },
-            removeShot: { shotId in await removeShot(id: shotId) }
+            removeShot: { shotId in await removeShot(id: shotId) },
+            setPlanWind: { speedMps, directionDeg in
+                await setPlanWind(speedMps: speedMps, directionDeg: directionDeg)
+            },
+            setHoleWind: { holeNumber, speedMps, directionDeg in
+                await setHoleWind(
+                    holeNumber: holeNumber, speedMps: speedMps, directionDeg: directionDeg
+                )
+            }
         )
     }
 
@@ -70,6 +78,31 @@ struct PlanEditStore: Sendable {
             try await database.savePlanShot(shot)
         } catch {
             print("Plan edit update failed (kept in memory): \(error)")
+        }
+        await planSync.flush()
+    }
+
+    /// The on-course wind editor's two writes. Nil speed+direction is a real
+    /// edit, not "unchanged": calm on the plan, inherit-the-plan on a hole.
+    private func setPlanWind(speedMps: Double?, directionDeg: Double?) async {
+        do {
+            try await database.setPlanWind(
+                courseId: courseId, speedMps: speedMps, directionDeg: directionDeg
+            )
+        } catch {
+            print("Plan wind edit failed (kept in memory): \(error)")
+        }
+        await planSync.flush()
+    }
+
+    private func setHoleWind(holeNumber: Int, speedMps: Double?, directionDeg: Double?) async {
+        do {
+            try await database.setPlanHoleWind(
+                courseId: courseId, holeNumber: holeNumber,
+                speedMps: speedMps, directionDeg: directionDeg
+            )
+        } catch {
+            print("Hole wind edit failed (kept in memory): \(error)")
         }
         await planSync.flush()
     }

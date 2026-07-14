@@ -183,7 +183,7 @@ final class OnCourseDistancesTests: XCTestCase {
         XCTAssertEqual(d.pinClub, "7i")
     }
 
-    func testCompetitionModeHidesClubAndWindAdvice() {
+    func testCompetitionModeHidesClubAdviceAndSlopeButKeepsTheWindFigure() {
         let targets = HoleTargets(
             greenCenter: offset(base, east: 0, north: 160),
             greenElevation: 22,
@@ -196,9 +196,61 @@ final class OnCourseDistancesTests: XCTestCase {
         )
         XCTAssertNil(d.centerClubs)
         XCTAssertNil(d.pinClub)
+        XCTAssertNil(d.playsLikeCenter, "plays-like itself still gated in competition")
+        XCTAssertNil(d.playsLikePin)
+        // The wind correction is a weather-report figure, not a device reading
+        // of the course — it survives.
+        XCTAssertNotNil(d.windPlaysLikeCenter)
+        XCTAssertNotNil(d.windPlaysLikePin)
+    }
+
+    /// The competition-mode wind figure must ride on the STRAIGHT distance: if
+    /// it rode on plays-like, the 12 m of uphill here would leak back into the
+    /// numbers through the wind row — exactly what the mode withholds.
+    func testCompetitionWindFigureRidesOnStraightDistanceNotPlaysLike() throws {
+        let targets = HoleTargets(
+            greenCenter: offset(base, east: 0, north: 160),
+            greenElevation: 22, // 12 m uphill from originElevation 10
+            activePin: offset(base, east: 0, north: 155),
+            activePinName: "Middle"
+        )
+        let wind = (speedMps: 8.0, directionDeg: 0.0) // straight into the shot
+
+        let competition = try XCTUnwrap(
+            OnCourseDistances.compute(
+                from: base, originElevation: 10, targets: targets,
+                competitionMode: true, wind: wind, clubs: bag()
+            ).windPlaysLikeCenter
+        )
+        let open = try XCTUnwrap(
+            OnCourseDistances.compute(
+                from: base, originElevation: 10, targets: targets,
+                competitionMode: false, wind: wind, clubs: bag()
+            ).windPlaysLikeCenter
+        )
+        let straight = try XCTUnwrap(
+            OnCourseDistances.compute(from: base, originElevation: 10, targets: targets).center
+        )
+
+        XCTAssertGreaterThan(competition, straight, "a headwind still lengthens the straight distance")
+        XCTAssertLessThan(competition, open,
+                          "but it carries no uphill — the open-mode figure adds 12 m of slope on top")
+    }
+
+    /// No wind + competition = nothing to show; the mode adds no figure of its own.
+    func testCompetitionModeWithoutWindHasNoWindFigure() {
+        let targets = HoleTargets(
+            greenCenter: offset(base, east: 0, north: 160),
+            greenElevation: 22,
+            activePin: offset(base, east: 0, north: 155),
+            activePinName: "Middle"
+        )
+        let d = OnCourseDistances.compute(
+            from: base, originElevation: 10, targets: targets,
+            competitionMode: true, clubs: bag()
+        )
         XCTAssertNil(d.windPlaysLikeCenter)
         XCTAssertNil(d.windPlaysLikePin)
-        XCTAssertNil(d.playsLikeCenter, "plays-like itself still gated in competition")
     }
 
     func testNoClubsMeansNoClubAdvice() {

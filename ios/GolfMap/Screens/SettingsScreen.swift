@@ -22,7 +22,7 @@ struct SettingsScreen: View {
                     Toggle(isOn: $settings.competitionMode) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Competition mode — distances only")
-                            Text("Hides slope-adjusted (plays-like) numbers and live green reads. Straight distances stay, keeping the app legal under the distance-measuring-device local rule.")
+                            Text("Hides slope-adjusted (plays-like) numbers, club advice and live green reads. Straight distances stay, and so does the wind correction — wind comes off a weather report, not a reading of the course.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }

@@ -3,8 +3,49 @@ import Foundation
 // MARK: - Game plan API models
 //
 // Transcribed from `shared/api/game-plans.gen.ts` and `shared/api/clubs.gen.ts`
-// response shapes (camelCase JSON, no CodingKeys needed). The iOS app is a
-// READ-ONLY viewer of plans built on the web — only the GET shapes exist here.
+// response shapes (camelCase JSON, no CodingKeys needed). These are the RESPONSE
+// shapes; the write requests live in `GolfAPIClient` (the device edits shots and
+// wind on course — plan structure beyond that is still built on the web).
+
+/// A wind PATCH for the plan / plan-hole write endpoints.
+///
+/// The server patches only the wind keys present in the request body, so the
+/// three states are distinct and all reachable:
+///  - no patch at all (nil `PlanWindPatch`) — leave the server's wind alone;
+///  - a patch with values — set that wind;
+///  - a patch of nils (`.calm`) — write JSON null, i.e. clear the wind (calm
+///    on a plan, "inherit the plan wind" on a hole).
+public struct PlanWindPatch: Sendable, Equatable {
+    public let speedMps: Double?
+    public let directionDeg: Double?
+
+    public init(speedMps: Double?, directionDeg: Double?) {
+        self.speedMps = speedMps
+        self.directionDeg = directionDeg
+    }
+
+    /// Clear the wind (plan → calm, hole → inherit the plan's wind).
+    public static let calm = PlanWindPatch(speedMps: nil, directionDeg: nil)
+
+    /// Writes both wind keys into `container` — as numbers, or as explicit
+    /// JSON nulls when the patch clears the wind.
+    func encode<Key: CodingKey>(
+        into container: inout KeyedEncodingContainer<Key>,
+        speed speedKey: Key,
+        direction directionKey: Key
+    ) throws {
+        if let speedMps {
+            try container.encode(speedMps, forKey: speedKey)
+        } else {
+            try container.encodeNil(forKey: speedKey)
+        }
+        if let directionDeg {
+            try container.encode(directionDeg, forKey: directionKey)
+        } else {
+            try container.encodeNil(forKey: directionKey)
+        }
+    }
+}
 
 /// A player's full game plan for one course:
 /// `GET /api/game-plans/by-course` (returns the object or JSON `null`).

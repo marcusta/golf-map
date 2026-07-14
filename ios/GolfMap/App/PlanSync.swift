@@ -46,10 +46,17 @@ actor PlanSyncService {
     private func sync(plan: GamePlanRecord) async {
         var plan = plan
 
-        // 1. The plan row: lazy-create (pending) or update wind (dirty).
+        // 1. The plan row: lazy-create (pending) or update wind (dirty). Both
+        // carry the local wind — a plan first created BY a wind edit (no
+        // server row yet) must push that wind with its create, not lose it.
+        let planWind = PlanWindPatch(
+            speedMps: plan.windSpeedMps, directionDeg: plan.windDirectionDeg
+        )
         if plan.syncState == .pending {
             do {
-                let created = try await client.upsertGamePlan(courseId: plan.courseId)
+                let created = try await client.upsertGamePlan(
+                    courseId: plan.courseId, wind: planWind
+                )
                 plan.serverId = created.id
                 plan.serverVersion = created.version
                 plan.syncState = .synced
@@ -63,8 +70,7 @@ actor PlanSyncService {
                 let updated = try await client.upsertGamePlan(
                     courseId: plan.courseId,
                     version: plan.serverVersion ?? 1,
-                    windSpeedMps: plan.windSpeedMps,
-                    windDirectionDeg: plan.windDirectionDeg
+                    wind: planWind
                 )
                 plan.serverVersion = updated.version
                 plan.syncState = .synced
@@ -88,13 +94,35 @@ actor PlanSyncService {
     private func sync(hole: GamePlanHoleRecord, planServerId: String, courseId: String) async {
         var hole = hole
 
+        // The hole's own wind override — pushed on create AND on update. A nil
+        // pair is an explicit "clear the override" (the hole inherits the
+        // plan wind again), which is why it goes through `PlanWindPatch`
+        // rather than plain optional arguments.
+        let holeWind = PlanWindPatch(
+            speedMps: hole.windSpeedMps, directionDeg: hole.windDirectionDeg
+        )
         if hole.syncState == .pending {
             do {
                 let created = try await client.setPlanHole(
-                    planId: planServerId, holeNumber: hole.holeNumber
+                    planId: planServerId, holeNumber: hole.holeNumber, wind: holeWind
                 )
                 hole.serverId = created.id
                 hole.serverVersion = created.version
+                hole.syncState = .synced
+                guard (try? await database.savePlanHole(hole)) != nil else { return }
+            } catch {
+                await handle(error, courseId: courseId)
+                return
+            }
+        } else if hole.syncState == .dirty {
+            do {
+                let updated = try await client.setPlanHole(
+                    planId: planServerId,
+                    holeNumber: hole.holeNumber,
+                    version: hole.serverVersion ?? 1,
+                    wind: holeWind
+                )
+                hole.serverVersion = updated.version
                 hole.syncState = .synced
                 guard (try? await database.savePlanHole(hole)) != nil else { return }
             } catch {

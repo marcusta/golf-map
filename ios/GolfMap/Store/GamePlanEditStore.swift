@@ -69,6 +69,39 @@ extension AppDatabase {
         try await dbQueue.write { db in try record.save(db) }
     }
 
+    // MARK: - Wind edits (on-course wind editor)
+    //
+    // Same dirty-flag rule as `patchShot`: a still-`pending` row keeps
+    // `pending` (its create carries the new wind), a `synced` row becomes
+    // `dirty`. Clearing is a first-class edit — a nil speed+direction pair
+    // means calm on a plan, and "inherit the plan wind" on a hole — so these
+    // take optionals rather than treating nil as "unchanged".
+
+    /// Sets the course's plan-level wind (lazily creating the plan row) and
+    /// flags it for the server.
+    public func setPlanWind(
+        courseId: String, speedMps: Double?, directionDeg: Double?
+    ) async throws {
+        var plan = try await ensurePlanRow(courseId: courseId)
+        plan.windSpeedMps = speedMps
+        plan.windDirectionDeg = directionDeg
+        if plan.syncState == .synced { plan.syncState = .dirty }
+        try await savePlanRecord(plan)
+    }
+
+    /// Sets one hole's wind override (lazily creating the plan + hole rows) and
+    /// flags it for the server. A nil pair clears the override.
+    public func setPlanHoleWind(
+        courseId: String, holeNumber: Int, speedMps: Double?, directionDeg: Double?
+    ) async throws {
+        let plan = try await ensurePlanRow(courseId: courseId)
+        var hole = try await ensurePlanHoleRow(gamePlanId: plan.id, holeNumber: holeNumber)
+        hole.windSpeedMps = speedMps
+        hole.windDirectionDeg = directionDeg
+        if hole.syncState == .synced { hole.syncState = .dirty }
+        try await savePlanHole(hole)
+    }
+
     /// The next append sortOrder for a hole (max existing + 1, else 0).
     public func nextPlanShotSortOrder(gamePlanHoleId: String) async throws -> Int {
         try await dbQueue.read { db in

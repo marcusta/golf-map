@@ -242,4 +242,44 @@ final class GamePlanModelTests: XCTestCase {
         reloaded.setPlanVisible(true)
         XCTAssertNotNil(reloaded.planOverlay)
     }
+
+    // MARK: - Wind (pure `CoursePlan` value semantics)
+
+    /// A hole the plan never covered can still carry a wind override — the
+    /// on-course editor writes wind on whatever hole you happen to stand on,
+    /// which is usually one with no shots planned.
+    func testHoleWindOverrideOnAnUnplannedHoleIsHonouredWithoutFakingPlanContent() {
+        let plan = makePlan()
+            .settingPlanWind(speedMps: 3, directionDeg: 0)
+            .settingHoleWind(holeNumber: 2, speedMps: 10, directionDeg: 90)
+
+        XCTAssertEqual(plan.wind(holeNumber: 2)?.speedMps, 10, "the override wins on hole 2")
+        XCTAssertEqual(plan.wind(holeNumber: 1)?.speedMps, 3, "hole 1 still inherits the plan wind")
+        XCTAssertNil(plan.hole(number: 2), "a wind-only hole plan is not plan CONTENT — no overlay, no legs")
+        XCTAssertNotNil(plan.hole(number: 1), "hole 1's shots/gates are untouched")
+    }
+
+    func testClearingAHoleWindOverrideFallsBackToThePlanWind() {
+        let plan = makePlan()
+            .settingPlanWind(speedMps: 3, directionDeg: 0)
+            .settingHoleWind(holeNumber: 1, speedMps: 10, directionDeg: 90)
+        XCTAssertNotNil(plan.windOverride(holeNumber: 1))
+
+        let cleared = plan.settingHoleWind(holeNumber: 1, speedMps: nil, directionDeg: nil)
+
+        XCTAssertNil(cleared.windOverride(holeNumber: 1))
+        XCTAssertEqual(cleared.wind(holeNumber: 1)?.speedMps, 3)
+        XCTAssertEqual(cleared.hole(number: 1)?.shots.count, 2, "clearing wind keeps the hole's shots")
+    }
+
+    func testPlanWindEditPreservesHoleContentAndOverrides() {
+        let plan = makePlan()
+            .settingHoleWind(holeNumber: 1, speedMps: 10, directionDeg: 90)
+            .settingPlanWind(speedMps: 5, directionDeg: 180)
+
+        XCTAssertEqual(plan.planWind?.speedMps, 5)
+        XCTAssertEqual(plan.wind(holeNumber: 1)?.speedMps, 10, "the hole override still wins")
+        XCTAssertEqual(plan.wind(holeNumber: 2)?.directionDeg, 180, "other holes take the new plan wind")
+        XCTAssertEqual(plan.hole(number: 1)?.gates.count, 1)
+    }
 }

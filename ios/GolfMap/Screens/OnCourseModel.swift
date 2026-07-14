@@ -1423,6 +1423,10 @@ final class OnCourseModel {
         var setShotClub: @Sendable (_ shotId: String, _ clubId: String?) async -> Void
         /// Persist a shot removal.
         var removeShot: @Sendable (_ shotId: String) async -> Void
+        /// Persist the plan-level (course-wide) wind. A nil pair = calm.
+        var setPlanWind: @Sendable (_ speedMps: Double?, _ directionDeg: Double?) async -> Void
+        /// Persist one hole's wind override. A nil pair clears the override.
+        var setHoleWind: @Sendable (_ holeNumber: Int, _ speedMps: Double?, _ directionDeg: Double?) async -> Void
     }
 
     @ObservationIgnored var planWriter: PlanEditWriter?
@@ -1667,11 +1671,82 @@ final class OnCourseModel {
     }
 
     /// The effective wind for the current hole: the plan hole's wind override,
-    /// else the plan-level default, else nil (calm / unknown). Hidden entirely
-    /// in competition mode — wind adjustment is advice.
+    /// else the plan-level default, else nil (calm / unknown).
+    ///
+    /// NOT competition-gated. The wind comes off a weather report, not a device
+    /// reading of the course, so it stays live in competition — the chip, the
+    /// editor and the wind "plays as" distances all work there. What competition
+    /// mode still withholds is SLOPE and club advice, and every consumer that
+    /// surfaces those carries its own `competitionMode` guard (the strategy
+    /// overlay, caddy advice, dispersion ellipses, `OnCourseDistances`'
+    /// club block, and `playsAsAndElevation`'s elevation term).
     var effectiveWind: (speedMps: Double, directionDeg: Double)? {
-        guard !competitionMode, let plan, let hole = currentHole else { return nil }
+        guard let plan, let hole = currentHole else { return nil }
         return plan.wind(holeNumber: hole.hole.number)
+    }
+
+    // MARK: - Wind editing (on-course wind editor)
+
+    /// The plan-level (course-wide) wind, ignoring the current hole's override.
+    var planWind: (speedMps: Double, directionDeg: Double)? { plan?.planWind }
+
+    /// The current hole's OWN wind override, or nil when it inherits the plan's.
+    var currentHoleWindOverride: (speedMps: Double, directionDeg: Double)? {
+        guard let plan, let hole = currentHole else { return nil }
+        return plan.windOverride(holeNumber: hole.hole.number)
+    }
+
+    /// Tail of the serialized wind-write chain (see `enqueueWindWrite`).
+    @ObservationIgnored private var windWriteChain: Task<Void, Never>?
+
+    /// Wind writes MUST reach the store in the order they were made, so they run
+    /// as a chain rather than as independent unstructured tasks.
+    ///
+    /// Unlike the shot writers — which patch disjoint rows/fields, so a reorder
+    /// is harmless — every wind edit overwrites the SAME two columns. Two loose
+    /// `Task`s racing (a slider settle immediately followed by "clear", or the
+    /// scope picker's clear-then-set migration) can land in either order, and the
+    /// loser silently persists + syncs the stale wind while the model shows the
+    /// new one. Awaiting the previous task pins the order to the edit order.
+    private func enqueueWindWrite(
+        _ write: @escaping @Sendable (PlanEditWriter) async -> Void
+    ) {
+        guard let planWriter else { return }
+        let previous = windWriteChain
+        windWriteChain = Task {
+            await previous?.value
+            await write(planWriter)
+        }
+    }
+
+    /// Set the plan-level wind (applies to every hole without an override).
+    /// A nil pair = calm. Persists + syncs through `planWriter`.
+    func setPlanWind(speedMps: Double?, directionDeg: Double?) {
+        beginPlanEditingIfNeeded()
+        plan = plan?.settingPlanWind(speedMps: speedMps, directionDeg: directionDeg)
+        // Wind moves plays-as, aim and club advice — re-enrich on the settled
+        // plan, exactly as a shot edit does.
+        planEditToken += 1
+        refreshLadderElevations(force: true)
+        enqueueWindWrite { writer in
+            await writer.setPlanWind(speedMps, directionDeg)
+        }
+    }
+
+    /// Set the CURRENT hole's wind override; a nil pair clears it (the hole
+    /// falls back to the plan wind). Persists + syncs through `planWriter`.
+    func setCurrentHoleWind(speedMps: Double?, directionDeg: Double?) {
+        guard let hole = currentHole else { return }
+        let holeNumber = hole.hole.number
+        beginPlanEditingIfNeeded()
+        plan = plan?.settingHoleWind(
+            holeNumber: holeNumber, speedMps: speedMps, directionDeg: directionDeg
+        )
+        planEditToken += 1
+        refreshLadderElevations(force: true)
+        enqueueWindWrite { writer in
+            await writer.setHoleWind(holeNumber, speedMps, directionDeg)
+        }
     }
 
     /// True when the course has any renderable plan content — gates the plan
@@ -2027,24 +2102,47 @@ final class OnCourseModel {
         }
     }
 
-    /// Plays-as (plays-like + wind) and the signed elevation delta origin→target.
-    /// Nil in competition mode or when either endpoint elevation is unknown.
-    private func playsAsAndElevation(to target: LatLon, elevation: Double?) -> (playsAs: Int, elevationDelta: Int)? {
-        guard !competitionMode, let origin, let originElevation, let elevation else { return nil }
+    /// Plays-as and the signed elevation delta origin→target.
+    ///
+    /// Normally plays-as is plays-like (slope) THEN wind, with the elevation
+    /// delta alongside it; nil when either endpoint elevation is unknown.
+    ///
+    /// In competition mode slope is off limits but wind is not, so the pair
+    /// degrades rather than vanishing: plays-as becomes the STRAIGHT distance
+    /// put through the wind, and the elevation delta is nil (it IS the slope
+    /// information the mode withholds). With no wind either, there is nothing
+    /// left to say and the whole thing is nil.
+    private func playsAsAndElevation(
+        to target: LatLon, elevation: Double?
+    ) -> (playsAs: Int, elevationDelta: Int?)? {
+        guard let origin else { return nil }
         let a = Sweref99TM.fromWGS84(origin)
         let b = Sweref99TM.fromWGS84(target)
+
+        /// Wind "plays as" over a base distance, along the origin→target line.
+        func windAdjusted(_ base: Double) -> Double {
+            guard let wind = effectiveWind else { return base }
+            let deg = atan2(b.x - a.x, b.y - a.y) * 180 / .pi
+            let bearing = deg < 0 ? deg + 360 : deg
+            return playsAsM(base, windEffect(wind.speedMps, wind.directionDeg, bearing))
+        }
+
+        if competitionMode {
+            guard effectiveWind != nil else { return nil }
+            let straight = Distance.planarMeters(origin, target)
+            return (Int(windAdjusted(straight).rounded()), nil)
+        }
+
+        guard let originElevation, let elevation else { return nil }
         let stats = PlaysLike.segmentStats(
             PlaysLike.Point(e: a.x, n: a.y, elevation: originElevation),
             PlaysLike.Point(e: b.x, n: b.y, elevation: elevation)
         )
         guard let playsLike = stats.playsLikeSimple else { return nil }
-        var result = playsLike
-        if let wind = effectiveWind {
-            let deg = atan2(b.x - a.x, b.y - a.y) * 180 / .pi
-            let bearing = deg < 0 ? deg + 360 : deg
-            result = playsAsM(playsLike, windEffect(wind.speedMps, wind.directionDeg, bearing))
-        }
-        return (Int(result.rounded()), Int((elevation - originElevation).rounded()))
+        return (
+            Int(windAdjusted(playsLike).rounded()),
+            Int((elevation - originElevation).rounded())
+        )
     }
 
     /// Layup landing-lie filter: a routed layup is dropped when its landing point

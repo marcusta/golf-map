@@ -15,10 +15,30 @@ final class MockURLProtocol: URLProtocol {
         private let lock = NSLock()
         private var scripts: [String: [Response]] = [:]
         private(set) var requestedPaths: [String] = []
+        private var bodies: [(path: String, body: Data)] = []
 
         func setScript(_ responses: [Response], forPathContaining key: String) {
             lock.lock(); defer { lock.unlock() }
             scripts[key] = responses
+        }
+
+        /// Records a request's JSON body — the only way to assert on what was
+        /// actually SENT (e.g. that a cleared wind went out as an explicit
+        /// JSON null rather than an omitted key, which the server would read as
+        /// "leave the wind alone").
+        func record(path: String, body: Data) {
+            lock.lock(); defer { lock.unlock() }
+            bodies.append((path, body))
+        }
+
+        /// The decoded JSON bodies posted to paths containing `key`, in order.
+        /// Like the request log this is never reset between tests (process-wide
+        /// singleton) — assert on `.last`, or on the delta.
+        func jsonBodies(forPathContaining key: String) -> [[String: Any]] {
+            lock.lock(); defer { lock.unlock() }
+            return bodies
+                .filter { $0.path.contains(key) }
+                .compactMap { try? JSONSerialization.jsonObject(with: $0.body) as? [String: Any] }
         }
 
         func next(for url: URL) -> Response? {
@@ -56,6 +76,9 @@ final class MockURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
+        if let body = Self.body(of: request) {
+            Self.shared.record(path: url.path, body: body)
+        }
         let response = Self.shared.next(for: url)
             ?? Response(status: 500, body: Data(#"{"error":"no mock"}"#.utf8))
 
@@ -71,6 +94,24 @@ final class MockURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+
+    /// A request's body. `URLSession` hands `URLProtocol` the body as a STREAM
+    /// (`httpBody` is nil by the time it gets here), so drain the stream.
+    private static func body(of request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: bufferSize)
+            guard read > 0 else { break }
+            data.append(buffer, count: read)
+        }
+        return data.isEmpty ? nil : data
+    }
 }
 
 /// Thread-safe call counter usable from a `@Sendable` closure.

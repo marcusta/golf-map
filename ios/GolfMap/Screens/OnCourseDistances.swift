@@ -108,8 +108,11 @@ struct OnCourseDistances: Equatable, Sendable {
     /// Plays-like to the active pin (same green elevation), whole meters.
     var playsLikePin: Int?
     /// Wind "plays as" distance to center: the elevation-adjusted plays-like
-    /// put through `playsAsM` for the effective wind (whole meters). Nil in
-    /// competition mode, when wind is calm/unknown, or when plays-like is nil.
+    /// put through `playsAsM` for the effective wind (whole meters). Nil when
+    /// wind is calm/unknown, or when plays-like is nil.
+    ///
+    /// SHOWN in competition mode, unlike the slope figures — but computed over
+    /// the STRAIGHT distance there, so it carries wind only and no elevation.
     var windPlaysLikeCenter: Int?
     /// Wind "plays as" distance to the active pin, whole meters.
     var windPlaysLikePin: Int?
@@ -127,12 +130,16 @@ struct OnCourseDistances: Equatable, Sendable {
     var aims: [AimDistance]
 
     /// - Parameters:
-    ///   - competitionMode: when true, the slope-adjusted plays-like figures
-    ///     AND all club/wind advice are OMITTED (left nil) — the DMD local
-    ///     rule allows distance only. Straight distances are unaffected.
+    ///   - competitionMode: when true, the slope-adjusted plays-like figures AND
+    ///     all club advice are OMITTED (left nil) — the DMD local rule allows
+    ///     distance only. Straight distances are unaffected, and so is the WIND
+    ///     "plays as" figure (a weather-report correction, not a device reading
+    ///     of the course) — but in competition that figure rides on the straight
+    ///     distance, so no slope leaks in through it.
     ///     Gating here (rather than at the view) keeps one source of truth:
-    ///     NO consumer of `distances` can surface advice in competition, and
-    ///     the rule is unit-testable without a view. Default false.
+    ///     NO consumer of `distances` can surface club/slope advice in
+    ///     competition, and the rule is unit-testable without a view.
+    ///     Default false.
     ///   - wind: the effective wind for the active hole (plan hole wind ??
     ///     plan wind), or nil for calm/unknown. Applied to the plays-like
     ///     figures via `playsAsM(playsLike, windEffect(...))`, matching the
@@ -236,15 +243,29 @@ struct OnCourseDistances: Equatable, Sendable {
             if !clubs.isEmpty, let pin = targets.activePin {
                 pinClub = closestClub(clubs, clubTarget(to: pin))?.name
             }
-            // Wind "plays as" display numbers need both wind and a resolved
-            // plays-like (no elevation-free wind figure is shown).
-            if wind != nil {
-                if let center = targets.greenCenter, let pl = playsLikeMeters(to: center) {
-                    windPlaysLikeCenter = Int(windAdjusted(pl, to: center).rounded())
-                }
-                if let pin = targets.activePin, let pl = playsLikeMeters(to: pin) {
-                    windPlaysLikePin = Int(windAdjusted(pl, to: pin).rounded())
-                }
+        }
+
+        // The wind "plays as" figures are NOT competition-gated: the wind comes
+        // off a weather report, not a device reading of the course, so the
+        // correction is allowed where the slope one is not.
+        //
+        // What it rides on differs by mode. Normally it is the elevation-
+        // adjusted plays-like (and with no elevation there is no figure at all —
+        // wind alone is never shown over a straight distance). In competition
+        // slope is off limits, so the wind rides on the STRAIGHT distance
+        // instead: wind-only, never slope, and no elevation term can leak back
+        // in through the wind figure.
+        func windBaseMeters(to target: LatLon) -> Double? {
+            competitionMode
+                ? Distance.planarMeters(origin, target)
+                : playsLikeMeters(to: target)
+        }
+        if wind != nil {
+            if let center = targets.greenCenter, let base = windBaseMeters(to: center) {
+                windPlaysLikeCenter = Int(windAdjusted(base, to: center).rounded())
+            }
+            if let pin = targets.activePin, let base = windBaseMeters(to: pin) {
+                windPlaysLikePin = Int(windAdjusted(base, to: pin).rounded())
             }
         }
 
