@@ -157,6 +157,11 @@ public struct CourseMapView: UIViewRepresentable {
         mapView.delegate = coordinator
         mapView.maximumZoomLevel = MapStyleBuilder.mapMaxZoom
         mapView.logoView.isHidden = true
+        // The camera commands own `contentInset` (it is how a tool's chrome —
+        // hole header, bottom panel — is kept out of a bounds fit, see
+        // `applyCamera`). MapLibre's own safe-area adjustment would fight that,
+        // so it is off; the insets we pass already include the safe areas.
+        mapView.automaticallyAdjustsContentInset = false
         // Drop the compass below the floating hole header (it appears whenever
         // the hole-fit camera has a bearing, and the default top-right slot is
         // behind the header).
@@ -542,23 +547,37 @@ public struct CourseMapView: UIViewRepresentable {
         /// Applies a camera command. Exposed (internal) so tests can exercise
         /// the bbox-fit + bearing math against a real MLNMapView.
         static func applyCamera(_ command: MapCameraCommand, to mapView: MLNMapView) {
+            // The chrome covering the map (hole header, tool panel) is handled in
+            // two halves, because MapLibre splits the job:
+            //   * ZOOM — `cameraThatFitsShape`'s edge padding shrinks the box the
+            //     shape has to fit into, but it still CENTERS the shape on the
+            //     full viewport (half of it behind the panel).
+            //   * CENTER — `contentInset` moves the map's center point, so the
+            //     shape lands centered in the part of the map you can see.
+            // The fit is computed with the inset zeroed and the inset applied
+            // after, so the offset is applied exactly once. Commands with no
+            // insets reset it — exiting a tool restores full-viewport framing.
+            let inset = UIEdgeInsets(
+                top: CGFloat(command.insets.top),
+                left: CGFloat(command.insets.left),
+                bottom: CGFloat(command.insets.bottom),
+                right: CGFloat(command.insets.right)
+            )
             switch command.target {
             case .bounds(let bounds):
-                var corners = [
-                    CLLocationCoordinate2D(latitude: bounds.south, longitude: bounds.west),
-                    CLLocationCoordinate2D(latitude: bounds.south, longitude: bounds.east),
-                    CLLocationCoordinate2D(latitude: bounds.north, longitude: bounds.east),
-                    CLLocationCoordinate2D(latitude: bounds.north, longitude: bounds.west),
-                ]
-                let bbox = MLNPolygon(coordinates: &corners, count: UInt(corners.count))
-                let inset = CGFloat(command.padding)
-                let camera = mapView.cameraThatFitsShape(
-                    bbox,
-                    direction: command.bearing,
-                    edgePadding: UIEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
+                fit(
+                    [
+                        LatLon(lat: bounds.south, lon: bounds.west),
+                        LatLon(lat: bounds.south, lon: bounds.east),
+                        LatLon(lat: bounds.north, lon: bounds.east),
+                        LatLon(lat: bounds.north, lon: bounds.west),
+                    ],
+                    command: command, inset: inset, in: mapView
                 )
-                mapView.setCamera(camera, animated: command.animated)
+            case .shape(let ring):
+                fit(ring, command: command, inset: inset, in: mapView)
             case .center(let point, let zoom):
+                mapView.setContentInset(inset, animated: false, completionHandler: nil)
                 mapView.setCenter(
                     point.clCoordinate,
                     zoomLevel: zoom,
@@ -566,6 +585,35 @@ public struct CourseMapView: UIViewRepresentable {
                     animated: command.animated
                 )
             }
+        }
+
+        /// Frames a WGS84 ring: zoom from the fit (edge padding = the uniform
+        /// padding + the chrome insets), center from `contentInset`. The fit is
+        /// computed with the inset zeroed so the center offset is applied once,
+        /// not twice.
+        private static func fit(
+            _ ring: [LatLon],
+            command: MapCameraCommand,
+            inset: UIEdgeInsets,
+            in mapView: MLNMapView
+        ) {
+            guard ring.count >= 3 else { return }
+            var coordinates = ring.map(\.clCoordinate)
+            let shape = MLNPolygon(coordinates: &coordinates, count: UInt(coordinates.count))
+            let base = CGFloat(command.padding)
+            mapView.contentInset = .zero
+            let camera = mapView.cameraThatFitsShape(
+                shape,
+                direction: command.bearing,
+                edgePadding: UIEdgeInsets(
+                    top: base + inset.top,
+                    left: base + inset.left,
+                    bottom: base + inset.bottom,
+                    right: base + inset.right
+                )
+            )
+            mapView.setContentInset(inset, animated: false, completionHandler: nil)
+            mapView.setCamera(camera, animated: command.animated)
         }
 
         /// Applies a relative zoom: bumps the map's current zoom level by

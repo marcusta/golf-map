@@ -300,7 +300,8 @@ final class OnCourseModel {
         // (the screen observes `toolMode` and tears its tool UI down). An
         // in-flight Adjust drag is abandoned uncommitted.
         toolMode = .none
-        toolFocusBounds = nil
+        toolFocus = nil
+        toolCameraInsets = .zero
         draggingHandleID = nil
         resetPlanEditingState()
         mapFocus = nil
@@ -318,7 +319,7 @@ final class OnCourseModel {
 
     /// A transient map tool over the normal hole view. Exactly one tool can be
     /// active at a time (entering one exits the other — `toolMode` is a single
-    /// value); a tool may take over the camera via `focusBounds` (e.g. Green
+    /// value); a tool may take over the camera via `focus` (e.g. Green
     /// view zooms to the green). Hole navigation dismisses the active tool.
     ///
     /// `.measure` re-purposes the map tap: instead of toggling immersive
@@ -343,7 +344,11 @@ final class OnCourseModel {
 
     private(set) var toolMode: MapToolMode = .none
     /// Camera target while a tool is active; nil keeps the hole framing.
-    private var toolFocusBounds: MapCoordinateBounds?
+    private var toolFocus: MapCameraCommand.Target?
+    /// Chrome covering the map while the tool is active (hole header on top,
+    /// the tool's own panel at the bottom). The focus fit adds these to its
+    /// padding so the focused shape lands centered in the VISIBLE map.
+    private var toolCameraInsets: MapEdgeInsets = .zero
     /// Whether entering the current tool re-framed the camera. When false
     /// (Adjust mode), the user's current zoom/pan is preserved on entry AND on
     /// exit — so tapping the tool button never yanks the view.
@@ -369,14 +374,15 @@ final class OnCourseModel {
         lastObservedCamera = ObservedCamera(center: center, zoom: zoom, bearing: bearing)
     }
 
-    /// Enter a tool, optionally re-aiming the camera at `focusBounds`
-    /// (tight-fit, hole bearing kept so the view doesn't spin). Pass
-    /// `refitCamera: false` (Adjust mode) to leave the camera exactly where the
-    /// user has it — no token bump, so `cameraCommand` is unchanged and never
-    /// re-applied.
+    /// Enter a tool, optionally re-aiming the camera at `focus` (tight-fit, hole
+    /// bearing kept so the view doesn't spin) with `insets` describing the
+    /// chrome that covers the map. Pass `refitCamera: false` (Adjust mode) to
+    /// leave the camera exactly where the user has it — no token bump, so
+    /// `cameraCommand` is unchanged and never re-applied.
     func enterTool(
         _ mode: MapToolMode,
-        focusBounds: MapCoordinateBounds? = nil,
+        focus: MapCameraCommand.Target? = nil,
+        insets: MapEdgeInsets = .zero,
         refitCamera: Bool = true
     ) {
         guard mode != .none else {
@@ -384,7 +390,8 @@ final class OnCourseModel {
             return
         }
         toolMode = mode
-        toolFocusBounds = focusBounds
+        toolFocus = focus
+        toolCameraInsets = insets
         draggingHandleID = nil
         toolDidRefitCamera = refitCamera
         restoreCamera = nil
@@ -395,13 +402,28 @@ final class OnCourseModel {
         }
     }
 
+    /// Re-fit the active tool's focus bounds with updated chrome insets. The
+    /// panel's real height is only known once SwiftUI has laid it out, a frame
+    /// AFTER `enterTool` — the screen calls this then, so the fit accounts for
+    /// the panel that is actually covering the map. A no-op when the insets are
+    /// unchanged (or no focus fit is active), so it never re-frames the map out
+    /// from under the user.
+    func refitTool(insets: MapEdgeInsets) {
+        guard toolMode != .none, toolFocus != nil, toolDidRefitCamera else { return }
+        guard insets != toolCameraInsets else { return }
+        toolCameraInsets = insets
+        restoreCamera = nil
+        cameraToken += 1
+    }
+
     /// Leave the active tool. If entering re-framed the camera (Green view),
     /// return to the exact view the user had before entering; a no-refit tool
     /// (Adjust) leaves the view untouched. An in-flight Adjust drag is abandoned.
     func exitTool() {
         guard toolMode != .none else { return }
         toolMode = .none
-        toolFocusBounds = nil
+        toolFocus = nil
+        toolCameraInsets = .zero
         draggingHandleID = nil
         resetPlanEditingState()
         if toolDidRefitCamera {
@@ -1283,11 +1305,14 @@ final class OnCourseModel {
                 token: cameraToken
             )
         }
-        if let toolFocusBounds {
-            return .fitHole(
-                toolFocusBounds,
+        if let toolFocus {
+            // Small uniform padding — the real breathing room comes from the
+            // chrome insets, which keep the focused shape inside the visible map.
+            return MapCameraCommand(
+                target: toolFocus,
                 bearing: holeBearing,
-                padding: 40,
+                padding: 12,
+                insets: toolCameraInsets,
                 animated: true,
                 token: cameraToken
             )

@@ -378,6 +378,21 @@ struct CourseScreen: View {
 // MARK: - Content
 
 /// Map + chrome once the bundle is loaded. Split out so `model` is non-optional.
+private extension View {
+    /// Reports this view's frame in global (window) coordinates whenever it
+    /// changes. Used to work out which parts of the full-bleed map are covered
+    /// by chrome. iOS 17 has no `onGeometryChange`, hence the background reader.
+    func trackFrame(_ update: @escaping (CGRect) -> Void) -> some View {
+        background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { update(geo.frame(in: .global)) }
+                    .onChange(of: geo.frame(in: .global)) { _, frame in update(frame) }
+            }
+        )
+    }
+}
+
 private struct OnCourseContentView: View {
     let model: OnCourseModel
     let greenAnalysis: GreenAnalysisModel
@@ -415,6 +430,35 @@ private struct OnCourseContentView: View {
     @State private var showScorecard = false
     /// Wind editor sheet (the wind chip in the control rail opens it).
     @State private var showWind = false
+
+    // MARK: Chrome geometry (green-view camera fit)
+
+    /// The map's own frame (it ignores the safe area, so this is the full
+    /// window) and the frame of the chrome stack laid out inside the safe area.
+    /// Together with the measured header/panel heights they give the map's
+    /// covered edges — see `greenViewCameraInsets`.
+    @State private var mapFrame: CGRect = .zero
+    @State private var chromeFrame: CGRect = .zero
+    @State private var headerHeight: CGFloat = 0
+    /// Last measured Green-view panel height. Seeded with a plausible value so
+    /// the fit on the FIRST entry (before the panel has ever been laid out) is
+    /// already close; the post-layout `refitTool` corrects it.
+    @State private var greenPanelHeight: CGFloat = 240
+
+    /// Padding the Green-view camera fit must add on each edge so the green
+    /// lands centered between the hole header and the panel rather than in the
+    /// middle of the (partly covered) viewport.
+    private var greenViewCameraInsets: MapEdgeInsets {
+        guard mapFrame.height > 0, chromeFrame.height > 0 else { return .zero }
+        let safeTop = max(0, chromeFrame.minY - mapFrame.minY)
+        let safeBottom = max(0, mapFrame.maxY - chromeFrame.maxY)
+        return MapEdgeInsets(
+            top: Double(safeTop + headerHeight + 8),
+            left: 8,
+            bottom: Double(safeBottom + greenPanelHeight + 16),
+            right: 8
+        )
+    }
 
     /// Pops back to the course list — the system navigation bar is hidden on
     /// this screen (it collided with the hole header), so the header row
@@ -494,6 +538,114 @@ private struct OnCourseContentView: View {
         return handles
     }
 
+    /// Everything laid over the map, inside the safe area: the hole header (or
+    /// the immersive compact chip), the ladder rail + control stack, and the
+    /// active tool's bottom panel. Its frame tells the Green-view camera fit
+    /// which map edges are covered (`greenViewCameraInsets`).
+    private var chrome: some View {
+        VStack(spacing: 0) {
+            if !immersive || isGreenView {
+                HStack(spacing: 8) {
+                    backButton
+                    HoleHeaderView(
+                        model: model,
+                        strokesOnHole: roundModel.hasActiveRound
+                            ? roundModel.strokeCount(holeNumber: model.currentHoleNumber)
+                            : nil
+                    )
+                }
+                .padding(.horizontal, 12)
+                .trackFrame { headerHeight = $0.height }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            } else {
+                CompactChipView(model: model)
+                    .padding(.top, 4)
+                    .transition(.opacity)
+            }
+
+            HStack(spacing: 0) {
+                if showsLadderRail {
+                    LadderRailView(model: model)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .padding(.leading, 10)
+                        .padding(.top, 4)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+                Spacer(minLength: 0)
+                controlStack
+                    .padding(.trailing, 16)
+                    .padding(.bottom, immersive && !isGreenView ? 24 : 10)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+            }
+            .frame(maxHeight: .infinity)
+
+            bottomPanel
+        }
+        .trackFrame { chromeFrame = $0 }
+    }
+
+    /// The active tool's panel (or the distance card when no tool is up).
+    @ViewBuilder
+    private var bottomPanel: some View {
+        if isGreenView {
+            GreenViewPanel(
+                model: greenAnalysis,
+                putt: puttRead,
+                quiz: puttQuiz,
+                client: client,
+                greenId: model.currentHole?.green?.id,
+                caddy: caddy,
+                onLevel: { showLevel = true },
+                // Scan is only OFFERED where the hardware can deliver it
+                // (sceneDepth/LiDAR) — nil hides the affordance.
+                onScan: CorridorScanService.isSupported ? { showScan = true } : nil,
+                onClose: { exitGreenView() }
+            )
+            .trackFrame { greenPanelHeight = $0.height }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if isMeasure {
+            MeasurePanel(
+                model: measure,
+                onProfile: { showProfile.toggle() },
+                onClose: { exitMeasure() }
+            )
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if isAdjust {
+            AdjustPanel(model: model, onClose: { exitAdjust() })
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if isCapture {
+            CapturePanel(
+                capture: capture,
+                holeNumber: model.currentHoleNumber,
+                strokesSoFar: roundModel.strokeCount(holeNumber: model.currentHoleNumber),
+                onConfirm: { confirmStroke(holeOut: false) },
+                onHoleOut: { confirmStroke(holeOut: true) },
+                onPenalty: { addPenaltyToLastStroke() },
+                onNextStroke: { rearmCapture() },
+                onClose: { exitCapture() }
+            )
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if isPlan {
+            PlanPanel(model: model, onClose: { exitPlan() })
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if !immersive {
+            DistanceCardView(model: model, onProfile: { showProfile.toggle() })
+                .padding(.horizontal, 12)
+                .padding(.bottom, -2)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
     var body: some View {
         ZStack {
             CourseMapView(
@@ -565,6 +717,11 @@ private struct OnCourseContentView: View {
                     }
                 }
             )
+            // Tracked BEFORE `ignoresSafeArea` so the reader is expanded with the
+            // map and reports the full-bleed frame — read after, SwiftUI hands
+            // back the safe-area frame and the chrome insets lose the status-bar
+            // and home-indicator strips.
+            .trackFrame { mapFrame = $0 }
             .ignoresSafeArea()
             // Short tap toggles chrome. High minimumDistance drag-less tap so it
             // doesn't swallow the map's own pan. Inert while a tool is active:
@@ -579,97 +736,19 @@ private struct OnCourseContentView: View {
                 }
             )
 
-            VStack(spacing: 0) {
-                if !immersive || isGreenView {
-                    HStack(spacing: 8) {
-                        backButton
-                        HoleHeaderView(
-                            model: model,
-                            strokesOnHole: roundModel.hasActiveRound
-                                ? roundModel.strokeCount(holeNumber: model.currentHoleNumber)
-                                : nil
-                        )
-                    }
-                    .padding(.horizontal, 12)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                } else {
-                    CompactChipView(model: model)
-                        .padding(.top, 4)
-                        .transition(.opacity)
-                }
-
-                HStack(spacing: 0) {
-                    if showsLadderRail {
-                        LadderRailView(model: model)
-                            .frame(maxHeight: .infinity, alignment: .top)
-                            .padding(.leading, 10)
-                            .padding(.top, 4)
-                            .transition(.move(edge: .leading).combined(with: .opacity))
-                    }
-                    Spacer(minLength: 0)
-                    controlStack
-                        .padding(.trailing, 16)
-                        .padding(.bottom, immersive && !isGreenView ? 24 : 10)
-                        .frame(maxHeight: .infinity, alignment: .bottom)
-                }
-                .frame(maxHeight: .infinity)
-
-                if isGreenView {
-                    GreenViewPanel(
-                        model: greenAnalysis,
-                        putt: puttRead,
-                        quiz: puttQuiz,
-                        client: client,
-                        greenId: model.currentHole?.green?.id,
-                        caddy: caddy,
-                        onLevel: { showLevel = true },
-                        // Scan is only OFFERED where the hardware can deliver
-                        // it (sceneDepth/LiDAR) — nil hides the affordance.
-                        onScan: CorridorScanService.isSupported ? { showScan = true } : nil,
-                        onClose: { exitGreenView() }
-                    )
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else if isMeasure {
-                    MeasurePanel(
-                        model: measure,
-                        onProfile: { showProfile.toggle() },
-                        onClose: { exitMeasure() }
-                    )
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else if isAdjust {
-                    AdjustPanel(model: model, onClose: { exitAdjust() })
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 8)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else if isCapture {
-                    CapturePanel(
-                        capture: capture,
-                        holeNumber: model.currentHoleNumber,
-                        strokesSoFar: roundModel.strokeCount(holeNumber: model.currentHoleNumber),
-                        onConfirm: { confirmStroke(holeOut: false) },
-                        onHoleOut: { confirmStroke(holeOut: true) },
-                        onPenalty: { addPenaltyToLastStroke() },
-                        onNextStroke: { rearmCapture() },
-                        onClose: { exitCapture() }
-                    )
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else if isPlan {
-                    PlanPanel(model: model, onClose: { exitPlan() })
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 8)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else if !immersive {
-                    DistanceCardView(model: model, onProfile: { showProfile.toggle() })
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, -2)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+            chrome
+        }
+        // The Green view fits the camera to the green on entry, but the panel's
+        // real height is only known once SwiftUI has laid it out — and it keeps
+        // changing while the panel settles (the "Sampling terrain…" row goes,
+        // the caddy advice arrives). Re-fit on each of those, and STOP once the
+        // ball is down: from then on the panel grows with the read, and moving
+        // the map under the player's fingers would be worse than a slightly
+        // off-center green.
+        .onChange(of: greenPanelHeight) { _, _ in
+            guard isGreenView, puttRead.ball == nil else { return }
+            withAnimation(.easeInOut(duration: 0.28)) {
+                model.refitTool(insets: greenViewCameraInsets)
             }
         }
         // Hole navigation clears `toolMode` in the model; mirror it here by
@@ -755,12 +834,19 @@ private struct OnCourseContentView: View {
         // The chrome floats over a dark ortho map — force dark materials.
         .environment(\.colorScheme, .dark)
         #if DEBUG
-        // Headless live-verify hooks (same family as `-openHole`): `-immersive 1`
-        // starts in immersive mode so the hidden-chrome layout can be
-        // screenshotted; `-zoomTaps N` fires N zoom-in taps (negative = out)
-        // after appear so the imperative zoom path can be verified without a real
-        // button tap. DEBUG-only and inert without the flags.
-        .onAppear {
+        .onAppear { applyDebugLaunchHooks() }
+        #endif
+    }
+
+    #if DEBUG
+    /// Headless live-verify hooks (same family as `-openHole`): `-immersive 1`
+    /// starts in immersive mode so the hidden-chrome layout can be
+    /// screenshotted; `-zoomTaps N` fires N zoom-in taps (negative = out)
+    /// after appear so the imperative zoom path can be verified without a real
+    /// button tap. DEBUG-only and inert without the flags. Lives outside `body`
+    /// — inlined, it pushed the view's type-check past the compiler's budget.
+    private func applyDebugLaunchHooks() {
+        do {
             if UserDefaults.standard.string(forKey: "immersive") == "1" {
                 immersive = true
             }
@@ -931,8 +1017,8 @@ private struct OnCourseContentView: View {
                 }
             }
         }
-        #endif
     }
+    #endif
 
     #if DEBUG
     /// `-adjustMove` token → model handle id: "tee", "green", or "aimN"
@@ -1301,11 +1387,26 @@ private struct OnCourseContentView: View {
         // correction) before the terrain grid settles, so the surface is built
         // right the first time. Uncalibrated greens pass nil → no-op.
         puttRead.applyCalibration(hole.green.flatMap { greenCalibrations[$0.id] })
+        // Fit the green plus a margin of surrounds into the map left visible
+        // between the hole header and the panel. The panel isn't laid out yet,
+        // so this uses the last known height; the greenPanelHeight onChange
+        // re-fits as the real panel settles.
+        // Frame the green's own outline (+ margin) rather than its bbox — with
+        // the map turned to the hole bearing a bbox fit pulls in far more
+        // surrounds than asked for. Falls back to the bbox if the outline is
+        // somehow unusable.
+        let outline = greenAnalysis.greenOutline(expandedByMeters: Self.greenFitMarginM)
+        let focus: MapCameraCommand.Target = outline.count >= 3
+            ? .shape(outline)
+            : .bounds(bounds.expanded(byMeters: Self.greenFitMarginM))
         withAnimation(.easeInOut(duration: 0.28)) {
             immersive = false
-            model.enterTool(.greenView, focusBounds: bounds)
+            model.enterTool(.greenView, focus: focus, insets: greenViewCameraInsets)
         }
     }
+
+    /// Surrounds kept visible around the green when the Green view frames it.
+    private static let greenFitMarginM: Double = 5
 
     private func exitGreenView() {
         greenAnalysis.deactivate()

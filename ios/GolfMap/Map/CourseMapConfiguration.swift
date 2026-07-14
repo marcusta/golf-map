@@ -17,6 +17,24 @@ public struct MapCoordinateBounds: Equatable, Sendable {
     public var center: LatLon {
         LatLon(lat: (south + north) / 2, lon: (west + east) / 2)
     }
+
+    /// The bbox grown by `meters` on every side (spherical approximation — the
+    /// distances here are tens of meters, so the flat-earth conversion is exact
+    /// to well under a meter). Used to leave a margin of surrounds around a
+    /// green when fitting the camera to it.
+    public func expanded(byMeters meters: Double) -> MapCoordinateBounds {
+        guard meters > 0 else { return self }
+        let metersPerDegreeLat = 111_320.0
+        let dLat = meters / metersPerDegreeLat
+        let cosLat = max(cos((south + north) / 2 * .pi / 180), 0.01)
+        let dLon = meters / (metersPerDegreeLat * cosLat)
+        return MapCoordinateBounds(
+            west: west - dLon,
+            south: south - dLat,
+            east: east + dLon,
+            north: north + dLat
+        )
+    }
 }
 
 /// Everything `CourseMapView` needs to render one downloaded course bundle.

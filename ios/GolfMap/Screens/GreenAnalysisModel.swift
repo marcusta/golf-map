@@ -81,6 +81,30 @@ final class GreenAnalysisModel {
         return Self.bounds(of: polygon.wgs84Rings)
     }
 
+    /// The active green's outer outline in WGS84, grown by `meters` on every
+    /// side (each vertex pushed that far out along its ray from the centroid —
+    /// greens are convex enough for this to be the margin you asked for).
+    /// The Green view fits THIS, not the outline's bbox: with the camera turned
+    /// to the hole bearing, a north-up bbox has to cover the turned shape, and
+    /// that slack shows up as a lot more surrounds than intended.
+    /// Empty when no green is active.
+    func greenOutline(expandedByMeters meters: Double) -> [LatLon] {
+        guard let ring = activePolygon?.wgs84Rings.first, ring.count >= 3 else { return [] }
+        let points = ring.map(Sweref99TM.fromWGS84)
+        let centroidX = points.map(\.x).reduce(0, +) / Double(points.count)
+        let centroidY = points.map(\.y).reduce(0, +) / Double(points.count)
+        return points.map { point in
+            let dx = point.x - centroidX
+            let dy = point.y - centroidY
+            let length = (dx * dx + dy * dy).squareRoot()
+            guard length > 0.01 else { return Sweref99TM.toWGS84(point) }
+            let scale = (length + meters) / length
+            return Sweref99TM.toWGS84(
+                Sweref99TM.Point(x: centroidX + dx * scale, y: centroidY + dy * scale)
+            )
+        }
+    }
+
     /// WGS84 bbox of the green outline (camera fit target).
     private static func bounds(of rings: [[LatLon]]) -> MapCoordinateBounds? {
         let points = rings.flatMap { $0 }

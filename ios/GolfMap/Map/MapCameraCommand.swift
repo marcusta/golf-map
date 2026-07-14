@@ -1,5 +1,25 @@
 import Foundation
 
+/// Extra per-edge camera padding, in points, added ON TOP of a command's
+/// uniform `padding`. Lets a fit account for chrome that covers the map (the
+/// hole header at the top, a tool panel at the bottom) so the fitted shape
+/// lands centered in the VISIBLE part of the map, not the full viewport.
+public struct MapEdgeInsets: Equatable, Sendable {
+    public var top: Double
+    public var left: Double
+    public var bottom: Double
+    public var right: Double
+
+    public static let zero = MapEdgeInsets()
+
+    public init(top: Double = 0, left: Double = 0, bottom: Double = 0, right: Double = 0) {
+        self.top = top
+        self.left = left
+        self.bottom = bottom
+        self.right = right
+    }
+}
+
 /// A declarative camera move for `CourseMapView`. The map applies a command
 /// once when it changes (compared with `==`) and otherwise leaves the user's
 /// freeform pan/zoom alone. Re-issuing an identical move (e.g. re-tapping the
@@ -8,6 +28,11 @@ public struct MapCameraCommand: Equatable, Sendable {
     public enum Target: Equatable, Sendable {
         /// Fit a WGS84 bbox in the viewport (with `padding`).
         case bounds(MapCoordinateBounds)
+        /// Fit an arbitrary WGS84 ring (e.g. a green outline) in the viewport.
+        /// Tighter than `.bounds` whenever the camera is rotated: a north-up
+        /// bbox has to grow to cover the shape once the map is turned to the
+        /// hole bearing, and that slack is what you see as extra surrounds.
+        case shape([LatLon])
         /// Center on a point at a fixed zoom level.
         case center(LatLon, zoom: Double)
     }
@@ -18,6 +43,9 @@ public struct MapCameraCommand: Equatable, Sendable {
     public var bearing: Double
     /// Uniform edge padding in points (only used for `.bounds`).
     public var padding: Double
+    /// Extra per-edge padding on top of `padding` — the map chrome covering the
+    /// viewport (only used for `.bounds`).
+    public var insets: MapEdgeInsets
     public var animated: Bool
     /// Change detector escape hatch: bump to force re-applying an otherwise
     /// equal command.
@@ -27,12 +55,14 @@ public struct MapCameraCommand: Equatable, Sendable {
         target: Target,
         bearing: Double = 0,
         padding: Double = 40,
+        insets: MapEdgeInsets = .zero,
         animated: Bool = true,
         token: Int = 0
     ) {
         self.target = target
         self.bearing = bearing
         self.padding = padding
+        self.insets = insets
         self.animated = animated
         self.token = token
     }
@@ -42,6 +72,7 @@ public struct MapCameraCommand: Equatable, Sendable {
         _ bounds: MapCoordinateBounds,
         bearing: Double = 0,
         padding: Double = 40,
+        insets: MapEdgeInsets = .zero,
         animated: Bool = true,
         token: Int = 0
     ) -> MapCameraCommand {
@@ -49,6 +80,7 @@ public struct MapCameraCommand: Equatable, Sendable {
             target: .bounds(bounds),
             bearing: bearing,
             padding: padding,
+            insets: insets,
             animated: animated,
             token: token
         )

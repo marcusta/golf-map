@@ -298,7 +298,7 @@ final class AdjustModeTests: XCTestCase {
 
         // Green view still re-frames (token bumps → command changes).
         let greenBounds = MapCoordinateBounds(west: 15.7075, south: 58.3637, east: 15.7085, north: 58.3643)
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.greenView, focus: .bounds(greenBounds))
         XCTAssertNotEqual(model.cameraCommand, before, "green view still zooms to the green")
     }
 
@@ -332,7 +332,7 @@ final class AdjustModeTests: XCTestCase {
         model.noteMapCamera(center: preEntry, zoom: 18.5, bearing: 42)
 
         let greenBounds = MapCoordinateBounds(west: 15.7075, south: 58.3637, east: 15.7085, north: 58.3643)
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.greenView, focus: .bounds(greenBounds))
         guard case .bounds = model.cameraCommand?.target else {
             return XCTFail("green view fits the green bounds")
         }
@@ -356,7 +356,7 @@ final class AdjustModeTests: XCTestCase {
         let model = makeModel()
         let greenBounds = MapCoordinateBounds(west: 15.7075, south: 58.3637, east: 15.7085, north: 58.3643)
 
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.greenView, focus: .bounds(greenBounds))
         model.enterTool(.adjust)
         XCTAssertEqual(model.toolMode, .adjust, "entering adjust exits green view")
         // No focus bounds: adjust keeps the standard hole framing.

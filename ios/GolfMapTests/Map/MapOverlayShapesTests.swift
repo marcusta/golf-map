@@ -185,5 +185,39 @@ final class MapOverlayShapesTests: XCTestCase {
             a,
             MapCameraCommand.center(bounds.center, zoom: 16, bearing: 42)
         )
+        XCTAssertNotEqual(
+            a,
+            MapCameraCommand.fitHole(bounds, bearing: 42, insets: MapEdgeInsets(bottom: 200)),
+            "chrome insets are part of the fit"
+        )
+    }
+
+    /// The Green view frames the green plus a margin of surrounds — the margin
+    /// is metric, so it must survive the lat/lon conversion at this latitude.
+    func testBoundsExpandedByMetersGrowsEveryEdgeByThatDistance() {
+        let bounds = MapCoordinateBounds(west: 15.7, south: 58.35, east: 15.701, north: 58.351)
+        let grown = bounds.expanded(byMeters: 5)
+
+        let southWest = LatLon(lat: bounds.south, lon: bounds.west)
+        XCTAssertEqual(
+            Distance.planarMeters(southWest, LatLon(lat: grown.south, lon: bounds.west)),
+            5, accuracy: 0.1
+        )
+        XCTAssertEqual(
+            Distance.planarMeters(southWest, LatLon(lat: bounds.south, lon: grown.west)),
+            5, accuracy: 0.1
+        )
+
+        let northEast = LatLon(lat: bounds.north, lon: bounds.east)
+        XCTAssertEqual(
+            Distance.planarMeters(northEast, LatLon(lat: grown.north, lon: bounds.east)),
+            5, accuracy: 0.1
+        )
+        XCTAssertEqual(
+            Distance.planarMeters(northEast, LatLon(lat: bounds.north, lon: grown.east)),
+            5, accuracy: 0.1
+        )
+
+        XCTAssertEqual(bounds.expanded(byMeters: 0), bounds)
     }
 }

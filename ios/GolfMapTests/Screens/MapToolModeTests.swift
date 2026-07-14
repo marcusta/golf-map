@@ -66,18 +66,51 @@ final class MapToolModeTests: XCTestCase {
         let model = makeModel()
         let before = try XCTUnwrap(model.cameraCommand)
 
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        let chrome = MapEdgeInsets(top: 120, left: 8, bottom: 300, right: 8)
+        model.enterTool(.greenView, focus: .bounds(greenBounds), insets: chrome)
         XCTAssertEqual(model.toolMode, .greenView)
         let command = try XCTUnwrap(model.cameraCommand)
         XCTAssertEqual(command.target, .bounds(greenBounds))
-        XCTAssertEqual(command.padding, 40, "tool focus uses a tight fit")
+        XCTAssertEqual(command.padding, 12, "tool focus uses a tight fit")
+        XCTAssertEqual(
+            command.insets, chrome,
+            "the chrome covering the map is part of the fit — the green lands in the VISIBLE map"
+        )
         XCTAssertEqual(command.bearing, model.holeBearing, "keeps hole-direction-up")
         XCTAssertNotEqual(command.token, before.token, "token bump re-applies the camera")
     }
 
+    /// The tool panel's real height is only known after layout, so the screen
+    /// re-fits once with the measured chrome. An unchanged inset is a no-op —
+    /// the map must never be re-framed under the user for nothing.
+    func testRefitToolAppliesMeasuredChromeOnceAndIgnoresNoOpUpdates() throws {
+        let model = makeModel()
+        let estimate = MapEdgeInsets(top: 120, left: 8, bottom: 240, right: 8)
+        model.enterTool(.greenView, focus: .bounds(greenBounds), insets: estimate)
+        let onEntry = try XCTUnwrap(model.cameraCommand)
+
+        let measured = MapEdgeInsets(top: 120, left: 8, bottom: 296, right: 8)
+        model.refitTool(insets: measured)
+        let refitted = try XCTUnwrap(model.cameraCommand)
+        XCTAssertEqual(refitted.insets, measured)
+        XCTAssertNotEqual(refitted.token, onEntry.token, "re-fit re-applies the camera")
+
+        model.refitTool(insets: measured)
+        XCTAssertEqual(
+            model.cameraCommand?.token, refitted.token,
+            "same insets → no token bump, no camera churn"
+        )
+
+        // No focus fit is active → nothing to re-fit.
+        model.exitTool()
+        let afterExit = try XCTUnwrap(model.cameraCommand)
+        model.refitTool(insets: measured)
+        XCTAssertEqual(model.cameraCommand?.token, afterExit.token)
+    }
+
     func testExitToolRestoresHoleFramingWithFreshToken() throws {
         let model = makeModel()
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.greenView, focus: .bounds(greenBounds))
         let during = try XCTUnwrap(model.cameraCommand)
 
         model.exitTool()
@@ -95,7 +128,7 @@ final class MapToolModeTests: XCTestCase {
 
     func testHoleNavigationDismissesTheActiveTool() {
         let model = makeModel()
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.greenView, focus: .bounds(greenBounds))
         model.nextHole()
         XCTAssertEqual(model.toolMode, .none)
         XCTAssertEqual(model.cameraCommand?.padding, 70, "camera back on hole framing")
@@ -103,14 +136,14 @@ final class MapToolModeTests: XCTestCase {
 
     func testEnteringNoneIsExit() {
         let model = makeModel()
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.greenView, focus: .bounds(greenBounds))
         model.enterTool(.none)
         XCTAssertEqual(model.toolMode, .none)
     }
 
     func testRecenterWhileToolActiveReFitsTheToolBounds() throws {
         let model = makeModel()
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.greenView, focus: .bounds(greenBounds))
         let before = try XCTUnwrap(model.cameraCommand)
         model.recenter()
         let after = try XCTUnwrap(model.cameraCommand)
@@ -137,14 +170,14 @@ final class MapToolModeTests: XCTestCase {
 
     func testToolsAreMutuallyExclusive() {
         let model = makeModel()
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.greenView, focus: .bounds(greenBounds))
         model.enterTool(.measure)
         XCTAssertEqual(model.toolMode, .measure, "entering measure exits green view")
         XCTAssertEqual(model.cameraCommand?.padding, 70, "green-view focus bounds dropped")
 
-        model.enterTool(.greenView, focusBounds: greenBounds)
+        model.enterTool(.greenView, focus: .bounds(greenBounds))
         XCTAssertEqual(model.toolMode, .greenView, "entering green view exits measure")
-        XCTAssertEqual(model.cameraCommand?.padding, 40)
+        XCTAssertEqual(model.cameraCommand?.padding, 12)
     }
 
     func testHoleNavigationDismissesMeasure() {

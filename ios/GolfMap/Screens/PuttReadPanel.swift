@@ -3,10 +3,11 @@ import SwiftUI
 /// The putt-read section of the Green view panel (doc §5.1): Surface (Tier 2,
 /// terrain-tile DEM) / Manual (Tier 3, Tour Read arithmetic) segmented modes,
 /// the readout (plays-like, aim offset, and the Tour Read verbal ALWAYS
-/// alongside), a stimp control, the tap-target picker (Ball / Hole), the
-/// Manual estimate form, and the small "Level" affordance that presents the
-/// D2 spot-level capture sheet. All logic lives in `PuttReadModel` (headless);
-/// this view only renders `model.display`.
+/// alongside), the tap-target picker (Ball / Hole), the Manual estimate form,
+/// and the small "Level" affordance that presents the D2 spot-level capture
+/// sheet. Stimp lives in the Green view panel's (i) popover — it is set once
+/// per round, and the panel over the green has to stay short. All logic lives
+/// in `PuttReadModel` (headless); this view only renders `model.display`.
 ///
 /// Competition mode: the section collapses to a one-line "reads off" note —
 /// the green view itself (slope/height overlay) stays, and Level stays
@@ -62,7 +63,6 @@ struct PuttReadSection: View {
                         scoreBlock(result)
                     }
                 }
-                stimpRow
             }
         }
         // Ball/hole reposition or stimp change → the quiz resets to
@@ -77,28 +77,18 @@ struct PuttReadSection: View {
 
     // MARK: - Header (title + tier picker + level)
 
+    /// Tight row — the panel sits over the green, so the tier picker gets the
+    /// space and the two capture actions are icon-only. The quiz toggle lives in
+    /// the Green view's (i) popover (it is a training setting, not a per-putt
+    /// control).
     private func header(_ display: PuttReadModel.Display) -> some View {
         HStack(spacing: 8) {
             Label("Putt", systemImage: "scope")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.cyan)
-            Spacer()
-            if display.status != .competition {
-                // Quiz is advice-adjacent (it trains reading the same slope/
-                // break/aim/pace the read shows) — hidden entirely in
-                // competition mode, like the tier picker right next to it.
-                // The toggle itself is always tappable here; its EFFECT
-                // (withholding the read behind an estimate form) only
-                // engages once a live, un-softened-to-nothing read exists —
-                // see `quizActive(groundTruth:)`.
-                Toggle("Quiz", isOn: Binding(
-                    get: { quiz.enabled },
-                    set: { quiz.enabled = $0 }
-                ))
-                .toggleStyle(.switch)
-                .font(.caption2)
                 .fixedSize()
-                .accessibilityIdentifier("putt-quiz-toggle")
+            Spacer(minLength: 4)
+            if display.status != .competition {
                 Picker("Read tier", selection: Binding(
                     get: { model.mode },
                     set: { model.setMode($0) }
@@ -114,7 +104,7 @@ struct PuttReadSection: View {
                 Button(action: onScan) {
                     Label("Scan", systemImage: "dot.radiowaves.left.and.right")
                         .font(.caption.weight(.semibold))
-                        .labelStyle(.titleAndIcon)
+                        .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
@@ -124,7 +114,7 @@ struct PuttReadSection: View {
             Button(action: onLevel) {
                 Label("Level", systemImage: "level")
                     .font(.caption.weight(.semibold))
-                    .labelStyle(.titleAndIcon)
+                    .labelStyle(.iconOnly)
             }
             .buttonStyle(.bordered)
             .controlSize(.mini)
@@ -416,6 +406,15 @@ struct PuttReadSection: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         if display.read != nil || display.tour != nil {
+            if let profile = display.profile {
+                HStack(spacing: 10) {
+                    readoutRow(
+                        "Distance", String(format: "%.1f", profile.distanceM), unit: "m"
+                    )
+                    Divider().frame(height: 16)
+                    readoutRow("Elevation", elevationText(profile.elevationDeltaM))
+                }
+            }
             HStack(alignment: .top, spacing: 12) {
                 if let read = display.read {
                     // Exact tier (integrator).
@@ -429,7 +428,7 @@ struct PuttReadSection: View {
                 if let verbal = display.verbal {
                     // Tour Read verbal — always shown alongside.
                     VStack(alignment: .leading, spacing: 2) {
-                        readoutTitle("Tour read")
+                        readoutTitle("Tour estimate")
                         Text(verbal.aim)
                             .font(.caption.weight(.semibold))
                         Text(verbal.pace)
@@ -464,22 +463,10 @@ struct PuttReadSection: View {
         return String(format: "%.0f cm %@", cm, aimOffsetM > 0 ? "right" : "left")
     }
 
-    // MARK: - Stimp
-
-    private var stimpRow: some View {
-        HStack(spacing: 8) {
-            Text("Stimp")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Slider(
-                value: Binding(
-                    get: { model.stimpFt },
-                    set: { model.setStimp(($0 * 2).rounded() / 2) }
-                ),
-                in: PuttReadModel.stimpMinFt...PuttReadModel.stimpMaxFt
-            )
-            MetricText(String(format: "%.1f", model.stimpFt), size: 12)
-                .frame(width: 32, alignment: .trailing)
-        }
+    private func elevationText(_ deltaM: Double) -> String {
+        let cm = Int((abs(deltaM) * 100).rounded())
+        guard cm > 0 else { return "level" }
+        return "\(cm) cm \(deltaM > 0 ? "up" : "down")"
     }
+
 }

@@ -1,11 +1,14 @@
 import SwiftUI
 
 /// Bottom control panel for the on-course Green view: Slope/Height/Relative
-/// segmented toggle, the active ramp's legend, green + surrounds stats, the
-/// surrounds-buffer slider, and the putt-read section (`PuttReadSection`,
-/// doc feature-putting-green-reading §5.1). Compact port of the web editor's
-/// analysis side panel (analysis-panel.component.ts) styled like the
-/// on-course distance card (dark material over the map).
+/// segmented toggle, the active ramp's legend, and the putt-read section
+/// (`PuttReadSection`, doc feature-putting-green-reading §5.1). Compact port of
+/// the web editor's analysis side panel (analysis-panel.component.ts) styled
+/// like the on-course distance card (dark material over the map).
+///
+/// The panel covers the map, so it stays as short as it can: the reference
+/// numbers (green + surrounds stats) and the two rarely-touched settings
+/// (surrounds buffer, stimp) live behind the (i) button instead of on the card.
 struct GreenViewPanel: View {
     let model: GreenAnalysisModel
     let putt: PuttReadModel
@@ -27,6 +30,17 @@ struct GreenViewPanel: View {
     var onScan: (() -> Void)?
     let onClose: () -> Void
 
+    /// The (i) popover: stats + the surrounds/stimp settings. `-greenInfo 1`
+    /// opens it on launch so the headless live-verify pass can screenshot it
+    /// (a tap isn't scriptable through simctl).
+    @State private var showInfo = {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: "greenInfo") == "1"
+        #else
+        return false
+        #endif
+    }()
+
     var body: some View {
         VStack(spacing: 8) {
             header
@@ -35,9 +49,7 @@ struct GreenViewPanel: View {
             }
             modePicker
             legend
-            if let stats = model.result?.stats {
-                statsGrid(stats)
-            } else if model.isLoading {
+            if model.isLoading {
                 HStack(spacing: 8) {
                     ProgressView()
                     Text("Sampling terrain…")
@@ -51,7 +63,6 @@ struct GreenViewPanel: View {
                     .foregroundStyle(Color.statusNegative)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            bufferRow
             Divider()
                 .overlay(.white.opacity(0.15))
             PuttReadSection(
@@ -71,15 +82,35 @@ struct GreenViewPanel: View {
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 8) {
             Label("Green view", systemImage: "flag.circle.fill")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.green)
-            Spacer()
+            Spacer(minLength: 4)
             Text(modeHint)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            Button { showInfo = true } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Green details and settings")
+            .accessibilityIdentifier("green-view-info")
+            .popover(isPresented: $showInfo) {
+                infoPopover
+                    .presentationCompactAdaptation(.popover)
+                    // A popover is its own window — it inherits neither the
+                    // screen's forced-dark chrome nor an opaque backdrop, and
+                    // over the slope overlay a translucent one is unreadable.
+                    // The backdrop is resolved in the PRESENTATION environment,
+                    // which is light, so a dynamic token would come back white
+                    // under the (dark-scheme) white text — hence the literal.
+                    .environment(\.colorScheme, .dark)
+                    .presentationBackground(Color(hex: "#2C2519"))
+            }
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 20))
@@ -87,6 +118,71 @@ struct GreenViewPanel: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close green view")
+        }
+    }
+
+    // MARK: - Info popover (stats + settings)
+
+    /// Everything that was pushed off the card: the green/surrounds reference
+    /// numbers and the two sliders you set once and forget (surrounds buffer,
+    /// stimp). Off the map, so the panel over the green stays short.
+    private var infoPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let stats = model.result?.stats {
+                statsGrid(stats)
+            } else if model.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Sampling terrain…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text(model.errorText ?? "No terrain data for this green.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Divider()
+            bufferRow
+            stimpRow
+            quizToggle
+        }
+        .padding(14)
+        .frame(width: 300)
+    }
+
+    /// Putt-read training quiz (doc §5.1) — estimate the read before it is
+    /// revealed. A setting you flip between rounds, not per putt, and it is
+    /// advice-adjacent, so it is hidden in competition mode like the read
+    /// itself.
+    @ViewBuilder
+    private var quizToggle: some View {
+        if putt.display.status != .competition {
+            Toggle("Quiz — estimate first", isOn: Binding(
+                get: { quiz.enabled },
+                set: { quiz.enabled = $0 }
+            ))
+            .toggleStyle(.switch)
+            .font(.caption)
+            .accessibilityIdentifier("putt-quiz-toggle")
+        }
+    }
+
+    /// Green speed — drives the putt read's pace/break (`PuttReadModel`).
+    private var stimpRow: some View {
+        HStack(spacing: 8) {
+            Text("Stimp")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Slider(
+                value: Binding(
+                    get: { putt.stimpFt },
+                    set: { putt.setStimp(($0 * 2).rounded() / 2) }
+                ),
+                in: PuttReadModel.stimpMinFt...PuttReadModel.stimpMaxFt
+            )
+            MetricText(String(format: "%.1f", putt.stimpFt), size: 12)
+                .frame(width: 32, alignment: .trailing)
         }
     }
 
