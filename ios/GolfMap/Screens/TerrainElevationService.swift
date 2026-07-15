@@ -50,9 +50,24 @@ actor TerrainElevationService {
         })
     }
 
+    /// The Web Mercator latitude limit: beyond ±85.05° the projection blows
+    /// up (and past ±90° the mercator Y is NaN, which would TRAP in
+    /// `tilePixel`'s Int conversion). Any such coordinate is off the pyramid
+    /// by definition, so it degrades to a nil sample like a missing tile.
+    private static let mercatorLatLimit = 85.06
+
     /// Bilinearly sampled elevation (meters) at a WGS84 coordinate, or nil
-    /// when the containing tile is missing or fails to decode.
+    /// when the coordinate is invalid (non-finite / outside Web Mercator
+    /// range) or the containing tile is missing or fails to decode. Sampling
+    /// must DEGRADE, never crash: elevation is optional everywhere downstream
+    /// (plays-like just goes nil), so a garbage coordinate — whatever produced
+    /// it — must not take the app down (seen live: an out-of-range latitude
+    /// trapped `Int(floor(NaN))` in `WebMercatorTiles.tilePixel`).
     func elevation(at coordinate: LatLon) async -> Double? {
+        guard coordinate.lat.isFinite, coordinate.lon.isFinite,
+              abs(coordinate.lat) <= Self.mercatorLatLimit,
+              abs(coordinate.lon) <= 180
+        else { return nil }
         let tp = WebMercatorTiles.tilePixel(lon: coordinate.lon, lat: coordinate.lat, zoom: zoom)
         let key = WebMercatorTiles.Tile(z: zoom, x: tp.tileX, y: tp.tileY)
         guard let tile = await cachedTile(key) else { return nil }

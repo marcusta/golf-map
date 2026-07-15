@@ -114,6 +114,33 @@ final class TerrainElevationServiceTests: XCTestCase {
         XCTAssertEqual(count, 1, "known-missing tiles must not be re-read on every GPS fix")
     }
 
+    func testInvalidCoordinatesDegradeToNilInsteadOfTrapping() async {
+        // Regression: a live crash fed an out-of-Web-Mercator-range latitude
+        // (planar meters in a LatLon slot) into `elevation(at:)`; the mercator
+        // Y went NaN and `Int(floor(NaN))` trapped in tilePixel. Every invalid
+        // coordinate must degrade to a nil sample without touching the
+        // provider — same contract as a missing tile.
+        let counter = CallCounter()
+        let service = TerrainElevationService(zoom: Self.fixtureZ, capacity: 2) { z, x, y in
+            await counter.record(z, x, y)
+            return nil
+        }
+        let invalid: [LatLon] = [
+            LatLon(lat: 6_470_190, lon: 500_110),   // SWEREF planar meters as degrees
+            LatLon(lat: 90, lon: 15.7),             // mercator singularity
+            LatLon(lat: -90.5, lon: 15.7),          // beyond the pole
+            LatLon(lat: Double.nan, lon: 15.7),
+            LatLon(lat: 58.4, lon: Double.infinity),
+            LatLon(lat: 58.4, lon: 181),
+        ]
+        for coord in invalid {
+            let sample = await service.elevation(at: coord)
+            XCTAssertNil(sample, "invalid \(coord) must sample nil, not trap")
+        }
+        let count = await counter.count
+        XCTAssertEqual(count, 0, "invalid coordinates must not reach the tile provider")
+    }
+
     func testRequestsUseConfiguredZoom() async {
         let counter = CallCounter()
         let service = TerrainElevationService(zoom: 17, capacity: 2) { z, x, y in
