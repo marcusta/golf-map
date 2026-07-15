@@ -413,6 +413,112 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertNotNil(d.center)
     }
 
+    // MARK: - Today's-pin override (spec §5 / L3)
+
+    /// A synthetic 20 m (E) × 30 m (N) green ring centred on hole 1's green
+    /// centre, in EPSG:3006 — installed via `setSurfaces` so `currentGreenFrame`
+    /// can build. Built with a Sweref99TM round-trip like GreenFrameTests.
+    private func installHole1GreenRing(_ model: OnCourseModel) {
+        let c = Sweref99TM.fromWGS84(LatLon(lat: 58.3640, lon: 15.7080))
+        let ring = FlatRing(points: [
+            Vec2(x: c.x - 10, y: c.y - 15),
+            Vec2(x: c.x + 10, y: c.y - 15),
+            Vec2(x: c.x + 10, y: c.y + 15),
+            Vec2(x: c.x - 10, y: c.y + 15),
+        ], kind: "green")
+        model.setSurfaces([ring])
+    }
+
+    private let furniturePinH1 = LatLon(lat: 58.3639, lon: 15.7079)
+
+    func testPinOverrideWinsOverFurnitureAndClearFallsBack() {
+        let model = makeModel()
+        XCTAssertEqual(model.targets.activePin, furniturePinH1)
+        XCTAssertEqual(model.targets.activePinName, "Front-left")
+
+        let placed = LatLon(lat: 58.36405, lon: 15.70815)
+        model.setPinOverride(placed, source: .sheet, forHole: "h1")
+        XCTAssertEqual(model.targets.activePin, placed, "override wins")
+        XCTAssertEqual(model.targets.activePinName, "Sheet", "label becomes source tag")
+
+        model.clearPinOverride(forHole: "h1")
+        XCTAssertEqual(model.targets.activePin, furniturePinH1, "falls back to furniture pin")
+        XCTAssertEqual(model.targets.activePinName, "Front-left")
+    }
+
+    func testPinOverridePersistsAcrossReloadSameDay() {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        let placed = LatLon(lat: 58.36405, lon: 15.70815)
+        let model = OnCourseModel(furniture: makeFurniture(), defaults: defaults, now: { fixedNow })
+        model.setPinOverride(placed, source: .laser, forHole: "h1")
+
+        let reloaded = OnCourseModel(furniture: makeFurniture(), defaults: defaults, now: { fixedNow })
+        XCTAssertEqual(reloaded.pinOverrides["h1"]?.position, placed)
+        XCTAssertEqual(reloaded.pinOverrides["h1"]?.source, .laser)
+        XCTAssertEqual(reloaded.targets.activePin, placed, "override survives same-day reload")
+        XCTAssertEqual(reloaded.targets.activePinName, "Laser")
+    }
+
+    func testStalePinOverrideDroppedAndDefaultRemovedOnLoad() {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000) // 2023-11
+        // Write a persisted default stamped a different (past) day directly.
+        let key = "onCourse.pinOverride.course-1.h1"
+        defaults.set("58.36405,15.70815|laser|2000-01-01", forKey: key)
+
+        let model = OnCourseModel(furniture: makeFurniture(), defaults: defaults, now: { fixedNow })
+        XCTAssertNil(model.pinOverrides["h1"], "yesterday's pin dropped on load")
+        XCTAssertEqual(model.targets.activePin, furniturePinH1, "falls back to furniture pin")
+        XCTAssertNil(defaults.string(forKey: key), "stale persisted default removed")
+    }
+
+    func testResolvePinPhraseLaserSolvesDepthAndCommits() {
+        let model = makeModel()
+        installHole1GreenRing(model)
+        // GPS fix so the laser depth is measured from a known origin.
+        let originLL = LatLon(lat: 58.3630, lon: 15.7085)
+        model.updateUserLocation(originLL)
+
+        let frame = try! XCTUnwrap(model.currentGreenFrame)
+        // Laser distance = origin → a mid-green point, so depth resolves to the
+        // interior (not clamped to an edge).
+        let originPlanar = Sweref99TM.fromWGS84(originLL)
+        let target = frame.point(depthM: frame.depthM * 0.5, lateralFraction: 0.6)
+        let d = hypot(target.x - originPlanar.x, target.y - originPlanar.y)
+
+        let resolution = try! XCTUnwrap(model.resolvePinPhrase(.laser(distanceM: d, lateralFraction: 0.6)))
+        XCTAssertEqual(resolution.spec.source, .laser)
+        XCTAssertFalse(resolution.clamped, "in-range laser distance does not clamp")
+        XCTAssertEqual(resolution.spec.depthFromFrontM, frame.depthM * 0.5, accuracy: 0.1,
+                       "bisection recovers the seeded depth")
+
+        model.commitPin(resolution)
+        let expected = PinPlacementSolver.pinWGS84(spec: resolution.spec, frame: frame)
+        let pin = try! XCTUnwrap(model.targets.activePin)
+        XCTAssertEqual(Distance.planarMeters(pin, expected), 0, accuracy: 0.01,
+                       "committed pin within centimetres of the solved spec")
+        XCTAssertEqual(model.targets.activePinName, "Laser")
+    }
+
+    func testResolvePinPhraseNilWithoutGreenFrame() {
+        let model = makeModel()
+        // No surfaces installed → no green ring → no frame.
+        XCTAssertNil(model.currentGreenFrame)
+        XCTAssertNil(model.resolvePinPhrase(.laser(distanceM: 140, lateralFraction: 0.5)))
+    }
+
+    func testOverriddenPinDoesNotChangeFrontCentreBack() {
+        let model = makeModel()
+        let before = model.targets
+        model.commitPin(at: LatLon(lat: 58.3641, lon: 15.7082), source: .visual)
+        let after = model.targets
+        XCTAssertEqual(after.greenFront, before.greenFront)
+        XCTAssertEqual(after.greenCenter, before.greenCenter)
+        XCTAssertEqual(after.greenBack, before.greenBack)
+        XCTAssertEqual(after.greenElevation, before.greenElevation)
+        XCTAssertEqual(after.activePin, LatLon(lat: 58.3641, lon: 15.7082), "only the pin moved")
+        XCTAssertEqual(after.activePinName, "Visual")
+    }
+
     // MARK: - Playing length + camera
 
     func testPlayingLengthMatchesHoleLengthForActiveTee() {

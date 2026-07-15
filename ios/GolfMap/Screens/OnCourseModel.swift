@@ -288,6 +288,18 @@ final class OnCourseModel {
     /// green-analysis polygon keep their stored positions.
     private var greenOverrides: [String: LatLon] = [:]
 
+    /// Today's-pin override for one hole (spec §5 / L3): the placed pin plus the
+    /// input mode it came from. A pin is an ephemeral daily fact, so it persists
+    /// per course + hole stamped with the local calendar day and is dropped on
+    /// load once that day has passed (see `loadPinOverrides`).
+    struct PinOverride: Equatable, Sendable {
+        var position: LatLon
+        var source: PinSpec.Source
+    }
+    /// Per-hole today's-pin overrides, keyed by `hole.id`. Wins over the
+    /// furniture active pin in `targets`; loaded from `defaults` (today only).
+    private(set) var pinOverrides: [String: PinOverride] = [:]
+
     /// Terrain elevation sampler (bundle terrain tiles); injected by the
     /// screen, stubbed in tests. Used for the user position and as a fallback
     /// for greens without a stored elevation. Injection happens AFTER `init`
@@ -300,6 +312,9 @@ final class OnCourseModel {
     }
 
     @ObservationIgnored private let defaults: UserDefaults
+    /// Injectable clock — the ONLY source of "now" for the daily pin-override
+    /// expiry (spec L3). Defaults to the system clock; tests pin "today".
+    @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private var userElevationTask: Task<Void, Never>?
     @ObservationIgnored private var browseOriginElevationTask: Task<Void, Never>?
     @ObservationIgnored private var browseTargetElevationTask: Task<Void, Never>?
@@ -341,10 +356,15 @@ final class OnCourseModel {
     /// GPS jitter reuses the cached samples instead of re-sampling every fix.
     private static let ladderSweepMoveThresholdM = 5.0
 
-    init(furniture: CourseFurniture, defaults: UserDefaults = .standard) {
+    init(
+        furniture: CourseFurniture,
+        defaults: UserDefaults = .standard,
+        now: @escaping () -> Date = { Date() }
+    ) {
         self.courseId = furniture.course.id
         self.courseName = furniture.course.name
         self.defaults = defaults
+        self.now = now
 
         let teesByHole = Dictionary(grouping: furniture.tees, by: \.holeId)
         let greensByHole = Dictionary(
@@ -385,6 +405,7 @@ final class OnCourseModel {
         }
         loadTeeOverrides()
         loadAdjustOverrides()
+        loadPinOverrides()
         refreshGreenElevationFallback()
         refreshLadderElevations(force: true)
     }
@@ -940,6 +961,131 @@ final class OnCourseModel {
         return greenOverrides[hole.id] ?? LatLon(lat: green.centerLat, lon: green.centerLon)
     }
 
+    // MARK: - Today's-pin override (per hole, per day — spec §5 / L3)
+
+    private static func pinOverrideKey(courseId: String, holeId: String) -> String {
+        "onCourse.pinOverride.\(courseId).\(holeId)"
+    }
+
+    /// Local-calendar day formatter (`yyyy-MM-dd`, en_US_POSIX, LOCAL time
+    /// zone) — a pin day is a local-calendar day, so the stamp and the
+    /// today-comparison both go through here.
+    private static let pinDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+    private static func dayString(_ date: Date) -> String { pinDayFormatter.string(from: date) }
+
+    private static func encodePinOverride(_ o: PinOverride, day: String) -> String {
+        "\(o.position.lat),\(o.position.lon)|\(o.source.rawValue)|\(day)"
+    }
+
+    /// Decodes `"lat,lon|source|yyyy-MM-dd"`; nil on any malformed field.
+    private static func decodePinOverride(_ s: String) -> (override: PinOverride, day: String)? {
+        let parts = s.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return nil }
+        let coords = parts[0].split(separator: ",")
+        guard coords.count == 2, let lat = Double(coords[0]), let lon = Double(coords[1]),
+              let source = PinSpec.Source(rawValue: String(parts[1])) else { return nil }
+        return (PinOverride(position: LatLon(lat: lat, lon: lon), source: source), String(parts[2]))
+    }
+
+    /// Loads today's pin overrides from `defaults`. An entry stamped with any
+    /// day other than today (current calendar, local time zone) is a stale
+    /// daily fact: it is dropped from memory AND its persisted default removed,
+    /// so yesterday's pin never leaks into today's round (spec L3).
+    private func loadPinOverrides() {
+        pinOverrides = [:]
+        let today = Self.dayString(now())
+        for hole in holes {
+            let key = Self.pinOverrideKey(courseId: courseId, holeId: hole.id)
+            guard let encoded = defaults.string(forKey: key) else { continue }
+            guard let decoded = Self.decodePinOverride(encoded), decoded.day == today else {
+                defaults.removeObject(forKey: key)
+                continue
+            }
+            pinOverrides[hole.id] = decoded.override
+        }
+    }
+
+    /// Short source tag shown on the distance card's pin label when an override
+    /// wins (replaces the furniture pin's name).
+    static func pinSourceTag(_ source: PinSpec.Source) -> String {
+        switch source {
+        case .laser: return "Laser"
+        case .sheet: return "Sheet"
+        case .visual: return "Visual"
+        }
+    }
+
+    /// Place today's pin for `holeId` and persist it (stamped with today's local
+    /// day). Observable — `targets` picks it up on the next read.
+    func setPinOverride(_ position: LatLon, source: PinSpec.Source, forHole holeId: String) {
+        let override = PinOverride(position: position, source: source)
+        pinOverrides[holeId] = override
+        defaults.set(
+            Self.encodePinOverride(override, day: Self.dayString(now())),
+            forKey: Self.pinOverrideKey(courseId: courseId, holeId: holeId)
+        )
+    }
+
+    /// Clear today's pin for `holeId`; `targets` falls back to the furniture pin.
+    func clearPinOverride(forHole holeId: String) {
+        guard pinOverrides[holeId] != nil else { return }
+        pinOverrides[holeId] = nil
+        defaults.removeObject(forKey: Self.pinOverrideKey(courseId: courseId, holeId: holeId))
+    }
+
+    // MARK: - Pin placement orchestration (green frame + voice solve → override)
+
+    /// The current hole's green-local frame (spec §3), built from the lie-map
+    /// green ring, the active tee and the green centre (all EPSG:3006). Nil when
+    /// any piece is missing or degenerate (no tee / no green / ring < 3 pts).
+    var currentGreenFrame: GreenFrame? {
+        guard let hole = currentHole,
+              let center = greenCenterPosition(for: hole),
+              let tee = teePosition(for: hole) else { return nil }
+        let centerPlanar = Self.planar(center)
+        let ring = greenRing(near: centerPlanar)
+        guard ring.points.count >= 3 else { return nil }
+        return GreenFrame(
+            outerRing: ring.points,
+            teePlanar: Self.planar(tee),
+            greenCenterPlanar: centerPlanar
+        )
+    }
+
+    /// Resolve a parsed voice phrase against the current green frame, measuring
+    /// laser depth from the effective `origin` (GPS fix, else browse origin,
+    /// else tee) in planar coords. Nil when there is no frame; a `.laser` phrase
+    /// also needs an origin (the solver returns nil without one).
+    func resolvePinPhrase(_ phrase: PinPhrase) -> PinPlacementSolver.Resolution? {
+        guard let frame = currentGreenFrame else { return nil }
+        return PinPlacementSolver.resolve(
+            phrase: phrase,
+            frame: frame,
+            originPlanar: origin.map(Self.planar)
+        )
+    }
+
+    /// Commit a resolved phrase as the current hole's today's-pin override
+    /// (converts the spec back to WGS84 through the frame).
+    func commitPin(_ resolution: PinPlacementSolver.Resolution) {
+        guard let hole = currentHole, let frame = currentGreenFrame else { return }
+        let position = PinPlacementSolver.pinWGS84(spec: resolution.spec, frame: frame)
+        setPinOverride(position, source: resolution.spec.source, forHole: hole.id)
+    }
+
+    /// Direct commit of a drag-adjusted pin (position already WGS84) — the
+    /// confirm UI's one-tap path.
+    func commitPin(at position: LatLon, source: PinSpec.Source) {
+        guard let hole = currentHole else { return }
+        setPinOverride(position, source: source, forHole: hole.id)
+    }
+
     // MARK: - Adjust mode (draggable handles)
 
     /// The draggable handles for the current hole: active tee ("T"), each aim
@@ -1294,7 +1440,20 @@ final class OnCourseModel {
     var targets: HoleTargets {
         guard let hole = currentHole else { return HoleTargets() }
         let green = hole.green
-        let activePin = hole.pins.first(where: \.active)
+
+        // activePin resolution (spec §3.3 / §5): today's-pin override → furniture
+        // active pin → nil. When the override wins, the pin label becomes a short
+        // source tag ("Laser"/"Sheet"/"Visual"); nothing else is disturbed.
+        let furniturePin = hole.pins.first(where: \.active)
+        let resolvedPin: LatLon?
+        let resolvedPinName: String?
+        if let override = pinOverrides[hole.id] {
+            resolvedPin = override.position
+            resolvedPinName = Self.pinSourceTag(override.source)
+        } else {
+            resolvedPin = furniturePin.map { LatLon(lat: $0.lat, lon: $0.lon) }
+            resolvedPinName = furniturePin?.name
+        }
 
         func point(_ lat: Double?, _ lon: Double?) -> LatLon? {
             guard let lat, let lon else { return nil }
@@ -1313,8 +1472,8 @@ final class OnCourseModel {
             greenElevation: greenIsOverridden
                 ? greenTerrainElevation
                 : green?.elevation ?? greenTerrainElevation,
-            activePin: activePin.map { LatLon(lat: $0.lat, lon: $0.lon) },
-            activePinName: activePin?.name,
+            activePin: resolvedPin,
+            activePinName: resolvedPinName,
             aimPoints: hole.aimPoints.enumerated().map { index, aim in
                 let label = aim.label.flatMap { $0.isEmpty ? nil : $0 } ?? "Aim \(index + 1)"
                 let overridden = aimOverrides[hole.id]?[aim.id] != nil
