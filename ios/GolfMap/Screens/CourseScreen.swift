@@ -56,7 +56,13 @@ struct CourseScreen: View {
                     configuration: mapInputs.configuration,
                     featuresGeoJSON: mapInputs.featuresGeoJSON,
                     client: env.client,
-                    currentLocation: currentLocation
+                    currentLocation: currentLocation,
+                    liveLocation: { [locationProvider] in
+                        guard let fix = locationProvider.location,
+                              let accuracy = locationProvider.horizontalAccuracy
+                        else { return nil }
+                        return (fix, accuracy)
+                    }
                 )
             } else if let loadError {
                 ContentUnavailableView(
@@ -296,6 +302,55 @@ struct CourseScreen: View {
                 print("PIN-DEBUG \(outcome)")
                 UserDefaults.standard.set(outcome, forKey: "pinDebug.lastResult")
             }
+            // `-applyCalibration "<biasE>,<biasN>"` installs a synthetic anchor
+            // calibration (solvedNear = the raw fix, else the active tee; base
+            // confidence 1; method .anchor; solvedAt now) so a headless run can
+            // verify corrected distances without driving the capture UI. The
+            // outcome — including the origin's planar shift before → after —
+            // is ALSO persisted under `calibDebug.lastResult` (the pinDebug
+            // pattern: simctl console capture is unreliable). Note the
+            // correction only moves `origin` when GPS is on and a live fix
+            // exists (browse/tee origins are map-anchored, spec §6.1), so a
+            // fixless run reports shift 0 with the calibration still installed
+            // and `calibrationStatus` active. DEBUG-only and inert without the
+            // flag.
+            if let raw = UserDefaults.standard.string(forKey: "applyCalibration") {
+                let outcome: String
+                let parts = raw.split(separator: ",")
+                if parts.count == 2,
+                   let biasE = Double(parts[0].trimmingCharacters(in: .whitespaces)),
+                   let biasN = Double(parts[1].trimmingCharacters(in: .whitespaces)) {
+                    let solvedNear = newModel.userLocation
+                        ?? newModel.currentHole.flatMap { newModel.teePosition(for: $0) }
+                    if let solvedNear {
+                        let originBefore = newModel.origin
+                        newModel.applyCalibration(OriginCalibration(
+                            biasE: biasE,
+                            biasN: biasN,
+                            solvedAt: Date(),
+                            solvedNear: solvedNear,
+                            method: .anchor,
+                            baseConfidence: 1
+                        ))
+                        let originAfter = newModel.origin
+                        let shiftM: Double
+                        if let originBefore, let originAfter {
+                            shiftM = Distance.planarMeters(originBefore, originAfter)
+                        } else {
+                            shiftM = 0
+                        }
+                        outcome = "applied biasE=\(biasE) biasN=\(biasN) "
+                            + "originShiftM=\(shiftM) "
+                            + "status=\(String(describing: newModel.calibrationStatus))"
+                    } else {
+                        outcome = "no-anchor (no fix and no tee)"
+                    }
+                } else {
+                    outcome = "parse-failed raw=\(raw)"
+                }
+                print("CALIB-DEBUG \(outcome)")
+                UserDefaults.standard.set(outcome, forKey: "calibDebug.lastResult")
+            }
             // `-browseMode 1` starts in browse mode (GPS off), `-browseMode 0`
             // forces GPS on (overrides the persisted per-course setting so a
             // live-verify run is deterministic); `-moveTee <lat>,<lon>` moves
@@ -445,6 +500,11 @@ private struct OnCourseContentView: View {
     let featuresGeoJSON: Data
     let client: GolfAPIClient
     let currentLocation: (latLon: LatLon, horizontalAccuracyM: Double)?
+    /// LIVE location accessor for the calibration sheet's fix pump — unlike
+    /// the `currentLocation` snapshot above (re-made per render), a closure
+    /// over `LocationProvider` stays fresh inside a long-running Task.
+    /// MainActor-typed: it reads the provider's isolated properties.
+    let liveLocation: @MainActor () -> (latLon: LatLon, horizontalAccuracyM: Double)?
 
     /// Immersive mode: a short single-tap on the map hides the top hole bar and
     /// the bottom distances card, leaving the full-bleed hole, a small compact
@@ -466,6 +526,8 @@ private struct OnCourseContentView: View {
     @State private var showWind = false
     /// Pin-entry sheet (the pin button on the distance card opens it).
     @State private var showPinEntry = false
+    /// GPS calibration sheet (the calibrate button / status chip open it).
+    @State private var showCalibration = false
 
     // MARK: Chrome geometry (green-view camera fit)
 
@@ -847,6 +909,16 @@ private struct OnCourseContentView: View {
         // first through the same dirty-row → PlanSyncService path as shot edits.
         .sheet(isPresented: $showWind) {
             WindEditorSheet(model: model, onClose: { showWind = false })
+        }
+        // GPS origin calibration (spec §6.2 / §6.3): anchor "I am here" or
+        // laser trilateration; a solved bias installs via
+        // `model.applyCalibration` and every distance downstream inherits it.
+        .sheet(isPresented: $showCalibration) {
+            CalibrationSheet(
+                model: model,
+                liveLocation: liveLocation,
+                onClose: { showCalibration = false }
+            )
         }
         // Today's-pin entry (spec §4.1 / §5). Only openable when the hole has a
         // green frame; the guard also protects against a hole change racing the
@@ -1270,6 +1342,13 @@ private struct OnCourseContentView: View {
                     holeBearing: model.holeBearing,
                     action: { showWind = true }
                 )
+                // Calibration state badge (hidden while `.none`) + the way
+                // into the calibration sheet. The chip is a second tap target
+                // for the same sheet — a stale badge invites the fix directly.
+                CalibrationStatusChip(status: model.calibrationStatus) {
+                    showCalibration = true
+                }
+                calibrateButton
                 captureButton
                 scorecardButton
                 greenViewButton
@@ -1281,6 +1360,23 @@ private struct OnCourseContentView: View {
                 model.recenter()
             }
         }
+    }
+
+    /// Opens the GPS calibration sheet (anchor / laser trilateration, spec
+    /// §6.2 / §6.3). Always available in distance mode — calibrating is
+    /// measurement, not advice, so competition mode does not gate it.
+    private var calibrateButton: some View {
+        Button {
+            showCalibration = true
+        } label: {
+            Image(systemName: "location.viewfinder")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(showCalibration ? Color.statusPositive : Color.primary)
+                .frame(width: 44, height: 44)
+                .mapControl()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Calibrate GPS")
     }
 
     /// Toggles shot capture (records a stroke at the crosshair — available
