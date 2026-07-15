@@ -137,6 +137,7 @@ final class MapStyleBuilderTests: XCTestCase {
             MapStyleIDs.distanceLineSource,
             MapStyleIDs.targetsSource,
             MapStyleIDs.routeLegLabelsSource,
+            MapStyleIDs.ellipseLabelsSource,
             MapStyleIDs.userLocationSource,
             MapStyleIDs.measureLineSource,
             MapStyleIDs.measurePointsSource,
@@ -183,6 +184,7 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.distanceLineCasingLayer,
                 MapStyleIDs.distanceLineLayer,
                 MapStyleIDs.routeLegLabelsLayer,
+                MapStyleIDs.ellipseLabelsLayer,
                 MapStyleIDs.targetsLayer,
                 MapStyleIDs.measureLineCasingLayer,
                 MapStyleIDs.measureLineLayer,
@@ -354,7 +356,7 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 31)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 32)
     }
 
     // MARK: - Shot-visualisation overlay (T2)

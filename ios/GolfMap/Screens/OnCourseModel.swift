@@ -1455,25 +1455,19 @@ final class OnCourseModel {
             .map { $0 }
     }
 
-    /// The routed hazard line: ball → the current hole's aim points that lie
-    /// ahead of the ball (in order) → target. Returns just [ball, target] when
-    /// there is no intervening aim (a straight hole), which the caller collapses
-    /// to the single direct line.
+    /// The routed hazard line: ball → the current hole's aim points still
+    /// ahead of the ball → target, using the SAME shared forward-route filter
+    /// as the drawn distance line and the layup spine (ForwardRoute.swift), so
+    /// iOS has one notion of "aim already passed". Returns just [ball, target]
+    /// when there is no intervening aim (a straight hole), which the caller
+    /// collapses to the single direct line.
     private func routedHazardLine(origin: LatLon, target: LatLon) -> [Vec2] {
-        guard let hole = currentHole else { return [] }
+        guard currentHole != nil else { return [] }
         let o = Self.planar(origin), g = Self.planar(target)
-        let dx = g.x - o.x, dy = g.y - o.y
-        let len = hypot(dx, dy)
-        guard len > 0 else { return [] }
-        let ux = dx / len, uy = dy / len
-        var pts: [Vec2] = [o]
-        for aim in hole.aimPoints {
-            let a = Self.planar(aimPosition(for: aim, in: hole))
-            let along = (a.x - o.x) * ux + (a.y - o.y) * uy
-            if along > 5, along < len - 5 { pts.append(a) } // ahead of the ball, before the green
-        }
-        pts.append(g)
-        return pts
+        guard o.x != g.x || o.y != g.y else { return [] } // degenerate: caller uses the direct line
+        let aims = targets.aimPoints
+        let kept = keptForwardAimIndices(from: origin, toGreen: target)
+        return [o] + kept.map { Self.planar(aims[$0].position) } + [g]
     }
 
     /// Split course hazards into this hole's OWN (tagged to it by `holeId`, or —
@@ -1668,9 +1662,10 @@ final class OnCourseModel {
     }
 
     /// The next aim point ahead of the user in GPS mode, or nil. "Ahead" means
-    /// the aim is still closer to the green than the user is (not yet passed),
-    /// chosen in tee→green order, and only when the user is farther from the
-    /// green than `aimRoutingThresholdMeters`. Feature 3.
+    /// the first aim the shared forward-route filter keeps (the same filter the
+    /// drawn line uses, so the card's TO AIM row and the line always agree),
+    /// and only when the user is farther from the green than
+    /// `aimRoutingThresholdMeters`. Feature 3.
     var nextAimAhead: AimTarget? {
         guard
             let user = effectiveUserLocation,
@@ -1678,9 +1673,8 @@ final class OnCourseModel {
         else { return nil }
         let userToGreen = Distance.planarMeters(user, green)
         guard userToGreen > aimRoutingThresholdMeters else { return nil }
-        return targets.aimPoints.first { aim in
-            Distance.planarMeters(aim.position, green) < userToGreen
-        }
+        return keptForwardAimIndices(from: user, toGreen: green).first
+            .map { targets.aimPoints[$0] }
     }
 
     /// The routed aim's label + distance-from-origin (GPS mode) for the card's
@@ -1710,29 +1704,63 @@ final class OnCourseModel {
 
     /// Browse-mode route from the arbitrary transient origin through only the
     /// remaining forward aims to the green. At the default tee this equals the
-    /// full hole route.
+    /// full hole route. GATED like GPS mode (shared drawn-line policy, see
+    /// `gatedForwardRoutePoints` in ForwardRoute.swift): within the user's
+    /// `aimRoutingThresholdMeters` of the green the next shot targets the
+    /// green, so the line goes straight — an aim a few meters ahead (still
+    /// genuinely "ahead" by chainage) would only kink it. Beyond the
+    /// threshold, the chainage-filtered route applies. Browse and GPS now
+    /// draw the same line for the same origin.
     private var browseForwardRoute: [LatLon] {
         guard let origin else { return [] }
+        if let center = targets.greenCenter,
+           Distance.planarMeters(origin, center) <= aimRoutingThresholdMeters {
+            return [origin, center]
+        }
         return forwardRoute(from: origin)
     }
 
     /// The forward play-line from `origin`: `origin`, then every aim not yet
-    /// passed (still closer to the green than `origin`, in tee→green order), then
-    /// the green center. UNLIKE `gpsForwardRoute` this is NOT gated on the GPS
-    /// mode or the routing threshold — it always follows the hole's routing. In
-    /// browse mode `origin` is the tee, so it equals the drawn `holeRoute`; under
-    /// live GPS it is `gpsForwardRoute`'s body (which reuses it once routing is
-    /// active). It is the spine the layup ladder measures along and places rungs
-    /// on, so a layup on a dogleg lands on the routed leg rather than the straight
-    /// origin→green line. Collapses to `[origin]` when the green center is
-    /// unknown (no target to route toward).
+    /// passed (per the shared forward-route chainage filter, in tee→green
+    /// order), then the green center. UNLIKE the drawn-line properties
+    /// (`gpsForwardRoute` AND `browseForwardRoute`, both of which snap
+    /// straight to the green within `aimRoutingThresholdMeters`) this is NOT
+    /// gated — it always follows the hole's routing. It is the spine the
+    /// layup ladder measures along and places rungs on, so a layup on a
+    /// dogleg lands on the routed leg rather than the straight origin→green
+    /// line, and `routedHazardLine`'s scan still rounds the corner. Collapses
+    /// to `[origin]` when the green center is unknown (no target to route
+    /// toward).
     private func forwardRoute(from origin: LatLon) -> [LatLon] {
         guard let center = targets.greenCenter else { return [origin] }
-        let originToGreen = Distance.planarMeters(origin, center)
-        let forwardAims = targets.aimPoints
-            .map(\.position)
-            .filter { Distance.planarMeters($0, center) < originToGreen }
-        return [origin] + forwardAims + [center]
+        let aims = targets.aimPoints
+        let kept = keptForwardAimIndices(from: origin, toGreen: center)
+        return [origin] + kept.map { aims[$0].position } + [center]
+    }
+
+    /// Indices into `targets.aimPoints` still ahead of `origin` per the shared
+    /// forward-route filter (ForwardRoute.swift, the Swift mirror of
+    /// `shared/strategy/forward-route.ts`): project `origin` onto the full hole
+    /// route (tee → aims → `green`) and keep the aims whose chainage lies
+    /// beyond the projection. Route inputs are the same override-resolved
+    /// positions `holeRoute` uses (`teePosition(for:)` via the fingerprinted
+    /// overrides; `targets.aimPoints` / `green` are already resolved). Always
+    /// an in-order suffix. Replaces the v1 radial rule ("aim closer to the
+    /// green than the origin"), which kept a dogleg corner the player had
+    /// already passed laterally.
+    private func keptForwardAimIndices(from origin: LatLon, toGreen green: LatLon) -> [Int] {
+        let aims = targets.aimPoints
+        guard !aims.isEmpty else { return [] }
+        func sp(_ ll: LatLon) -> StrategyPoint {
+            let p = Sweref99TM.fromWGS84(ll)
+            return StrategyPoint(x: p.x, y: p.y)
+        }
+        return forwardAimIndices(ForwardAimsInput(
+            origin: sp(origin),
+            tee: currentHole.flatMap { teePosition(for: $0) }.map(sp),
+            aims: aims.map { sp($0.position) },
+            green: sp(green)
+        ))
     }
 
     // MARK: - Game plan (read-only viewer)
@@ -2298,6 +2326,11 @@ final class OnCourseModel {
             // agree and a dogleg layup lands on the second leg, not off in the
             // trees on the straight origin→green line. The lie filter drops any
             // option whose landing point sits in an unplayable lie.
+            // Deliberately UNGATED `forwardRoute` (unlike the drawn line, which
+            // `browseForwardRoute`/`gpsForwardRoute` snap straight within the
+            // aim-routing threshold): a layup exists precisely because the
+            // green is out of reach, so its landing points must follow the
+            // full routed line around the corner.
             let route = forwardRoute(from: origin)
             let routedTargetM = HoleLength.pathMeters(route)
             layups = LadderBuilder.ladderLayups(
@@ -2349,6 +2382,11 @@ final class OnCourseModel {
         var elevationDeltaM: Int?
         /// Reach / carry / bomb club; nil in competition mode or without a bag.
         var club: String?
+        /// The advised club's wind/slope-adjusted ground carry, whole meters —
+        /// the SAME figure the advice ellipse's geometry (and its on-map label)
+        /// uses. Nil whenever the shot visualization is (competition mode,
+        /// hazards, no club).
+        var clubCarryM: Int?
         /// Hazard far edge, whole meters; nil for non-hazards.
         var carryM: Int?
         /// Trailing context: "→ 58 m in · LW", "3 Wood carries", "Lay up short".
@@ -2439,7 +2477,7 @@ final class OnCourseModel {
         return TargetAdvice(
             title: row.label, kind: row.kind, distanceM: row.meters,
             playsAsM: playsAs, elevationDeltaM: elevationDelta,
-            club: club, carryM: row.carryM, note: note,
+            club: club, clubCarryM: shotViz?.carryM, carryM: row.carryM, note: note,
             windHoldM: shotViz?.hold?.meters,
             windHoldSide: shotViz?.hold?.side
         )
@@ -2448,6 +2486,14 @@ final class OnCourseModel {
     private struct SelectedTargetVisualization {
         var ellipse: [LatLon]
         var hold: TargetWindHold?
+        /// The ellipse's (drift-shifted) center — the on-map label anchor.
+        var center: LatLon
+        /// Planar distance origin → ellipse center, whole meters — the SAME
+        /// wind/slope-adjusted ground carry the ellipse geometry uses, so the
+        /// label/chip figure can never disagree with the drawn pattern.
+        var carryM: Int
+        /// The club the ellipse was built for (label text).
+        var clubName: String
     }
 
     /// Match the plan ghost's visibility threshold: below 3 m the connector is
@@ -2556,7 +2602,10 @@ final class OnCourseModel {
 
         return SelectedTargetVisualization(
             ellipse: ellipse.polygon.map { Sweref99TM.toWGS84(x: $0.x, y: $0.y) },
-            hold: hold
+            hold: hold,
+            center: Sweref99TM.toWGS84(x: ellipse.center.x, y: ellipse.center.y),
+            carryM: Int(hypot(ellipse.center.x - o.x, ellipse.center.y - o.y).rounded()),
+            clubName: club.name
         )
     }
 
@@ -2571,6 +2620,21 @@ final class OnCourseModel {
         return selectedTargetVisualization(
             for: row, clubName: clubName, elevationDeltaM: advice.elevationDeltaM
         )?.ellipse
+    }
+
+    /// The advice ellipse's on-map label: "<club> · <adjusted carry>", anchored
+    /// at the ellipse's center. The carry is the visualization's own
+    /// origin→center distance, so label and geometry can never disagree.
+    /// Present exactly when `selectedTargetEllipse` is.
+    var selectedTargetEllipseLabel: EllipseLabel? {
+        guard let row = selectedLadderRow,
+              let advice = selectedTargetAdvice,
+              let clubName = advice.club,
+              let viz = selectedTargetVisualization(
+                  for: row, clubName: clubName, elevationDeltaM: advice.elevationDeltaM
+              )
+        else { return nil }
+        return EllipseLabel(position: viz.center, text: "\(viz.clubName) · \(viz.carryM)")
     }
 
     /// The map's rose "hold here" marker/connector for the selected target.
@@ -2778,10 +2842,43 @@ final class OnCourseModel {
                 let endpoints = gate.endpoints
                 return PlanOverlay.GateLine(left: endpoints.left, right: endpoints.right)
             },
-            ellipses: strategy.ellipses,
+            ellipses: visiblePlanEllipses(strategy.ellipses),
             ghosts: strategy.ghosts,
             legTints: strategy.legTints
         )
+    }
+
+    /// On-course plan-ellipse visibility is SELECTION-driven: the per-leg
+    /// dispersion ellipses are anonymous clutter next to the cyan advice
+    /// ellipse, so they draw only when a ladder plan row is selected — and then
+    /// only that waypoint's INCOMING leg (landing on it) and OUTGOING leg
+    /// (departing it; the last shot's is the approach-to-green). Any other
+    /// selection (green/pin/hazard/aim/layup) or none → no plan ellipses; the
+    /// plan polyline/nodes/gates and the ghost/tint visuals are untouched.
+    /// While the planner TOOL is active every leg keeps its ellipse — editing
+    /// must always see what it edits (including the per-frame drag ellipses).
+    /// Matching by shot id, not position: the builders skip zero-length /
+    /// clubless legs, so ellipse order ≠ leg index.
+    private func visiblePlanEllipses(
+        _ ellipses: [PlanStrategy.EllipseShape]
+    ) -> [PlanStrategy.EllipseShape] {
+        if toolMode == .plan { return ellipses }
+        guard let row = selectedLadderRow, row.kind == .plan,
+              let shotId = planShotId(forLadderRowId: row.id)
+        else { return [] }
+        return ellipses.filter { $0.toShotId == shotId || $0.fromShotId == shotId }
+    }
+
+    /// The `CoursePlan.Shot` id behind a ladder plan row. Row ids are
+    /// "plan-<1-based index>" (`LadderBuilder`), indexing `currentHolePlan`'s
+    /// shots in order.
+    private func planShotId(forLadderRowId id: String) -> String? {
+        guard id.hasPrefix("plan-"),
+              let n = Int(id.dropFirst("plan-".count)),
+              let shots = currentHolePlan?.shots,
+              n >= 1, n <= shots.count
+        else { return nil }
+        return shots[n - 1].id
     }
 
     /// Fingerprint of every input the shot-viz geometry depends on. When it is
@@ -2821,7 +2918,7 @@ final class OnCourseModel {
         for shot in holePlan.shots {
             nodes.append(PlanStrategy.Node(
                 latLon: shot.position, elevation: shot.elevation,
-                kind: .shot, clubId: shot.clubId
+                kind: .shot, clubId: shot.clubId, shotId: shot.id
             ))
         }
         if let green = hole.green {
@@ -3109,15 +3206,29 @@ final class OnCourseModel {
 
         let line: [LatLon] = isBrowseMode ? browseForwardRoute : gpsForwardRoute
 
+        // Ellipse labels follow their ellipses' visibility (advice ellipse +
+        // the selection-scoped plan leg ellipses) — deliberately NOT behind
+        // `showRouteLabels`: they name a selected visualization, unlike the
+        // immersive-only route-leg figures.
+        let plan = planOverlay
+        var ellipseLabels: [EllipseLabel] = []
+        if let label = selectedTargetEllipseLabel { ellipseLabels.append(label) }
+        for ellipse in plan?.ellipses ?? [] {
+            let text = ellipse.clubName.map { "\($0) · \(ellipse.legMeters)" }
+                ?? "\(ellipse.legMeters)"
+            ellipseLabels.append(EllipseLabel(position: ellipse.center, text: text))
+        }
+
         return MapOverlayState(
             distanceLine: line,
             targets: markers,
             userLocation: isUsingGPS ? userLocation.map { UserLocationMarker(position: $0) } : nil,
             routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : [],
-            plan: planOverlay,
+            plan: plan,
             highlight: isBrowseMode ? browseTarget ?? mapFocus ?? browseOrigin : mapFocus,
             selectedEllipse: selectedTargetEllipse,
-            selectedWindHold: selectedTargetWindHold
+            selectedWindHold: selectedTargetWindHold,
+            ellipseLabels: ellipseLabels
         )
     }
 }

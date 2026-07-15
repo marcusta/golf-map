@@ -21,10 +21,40 @@ public enum PlanStrategy {
 
     // MARK: - Overlay geometry (WGS84, render-ready)
 
-    /// One dispersion ellipse polygon (closed WGS84 ring) for a clubbed leg.
+    /// One dispersion ellipse polygon (closed WGS84 ring) for a clubbed leg,
+    /// with the metadata the on-course overlay needs to label it and drive
+    /// selection-scoped visibility (labels anchor at `center`; a selected plan
+    /// waypoint shows only its incoming/outgoing legs via the shot ids —
+    /// ellipses are built per-leg with `continue` guards, so positional
+    /// zipping against the leg list is NOT safe).
     public struct EllipseShape: Equatable, Sendable {
         public var polygon: [LatLon]
-        public init(polygon: [LatLon]) { self.polygon = polygon }
+        /// Pattern center (drift-shifted expected landing) — the label anchor.
+        public var center: LatLon
+        /// Resolved leg club display name (nil: label falls back to meters only).
+        public var clubName: String?
+        /// The leg's ground length, whole meters (the label figure).
+        public var legMeters: Int
+        /// Shot id of the plan node this leg DEPARTS (nil: departs the tee).
+        public var fromShotId: String?
+        /// Shot id of the plan node this leg LANDS on (nil: lands on the green).
+        public var toShotId: String?
+
+        public init(
+            polygon: [LatLon],
+            center: LatLon,
+            clubName: String? = nil,
+            legMeters: Int = 0,
+            fromShotId: String? = nil,
+            toShotId: String? = nil
+        ) {
+            self.polygon = polygon
+            self.center = center
+            self.clubName = clubName
+            self.legMeters = legMeters
+            self.fromShotId = fromShotId
+            self.toShotId = toShotId
+        }
     }
 
     /// The recommended-aim "ghost" group for one enriched leg: the hollow aim
@@ -159,12 +189,19 @@ public enum PlanStrategy {
         /// The landing shot's club id (nil for tee/green nodes) — the leg
         /// ENDING at this node adopts it.
         var clubId: String?
+        /// The backing plan shot's id (nil for tee/green nodes) — stamped onto
+        /// the adjacent legs' `EllipseShape`s so selection can address them.
+        var shotId: String?
 
-        init(latLon: LatLon, elevation: Double?, kind: NodeKind, clubId: String? = nil) {
+        init(
+            latLon: LatLon, elevation: Double?, kind: NodeKind,
+            clubId: String? = nil, shotId: String? = nil
+        ) {
             self.latLon = latLon
             self.elevation = elevation
             self.kind = kind
             self.clubId = clubId
+            self.shotId = shotId
         }
     }
 
@@ -238,7 +275,10 @@ public enum PlanStrategy {
                 windDirectionDeg: wind?.directionDeg,
                 groundSlope: groundSlope
             ))
-            ellipses.append(EllipseShape(polygon: ellipse.polygon.map(Self.wgs84)))
+            ellipses.append(Self.ellipseShape(
+                ellipse, club: club, horizontal: horizontal,
+                fromNode: nodes[i - 1], toNode: toNode
+            ))
 
             let aim = optimizeAim(AimOptions(
                 origin: from,
@@ -352,12 +392,31 @@ public enum PlanStrategy {
                 windDirectionDeg: wind?.directionDeg,
                 groundSlope: groundSlope
             ))
-            ellipses.append(EllipseShape(polygon: ellipse.polygon.map(Self.wgs84)))
+            ellipses.append(Self.ellipseShape(
+                ellipse, club: club, horizontal: horizontal,
+                fromNode: nodes[i - 1], toNode: toNode
+            ))
         }
         return ellipses
     }
 
     // MARK: - Helpers
+
+    /// Shared `EllipseShape` assembly for `compute` and `ellipsesOnly` (the
+    /// drag path) — both MUST fill the same label/selection metadata.
+    private static func ellipseShape(
+        _ ellipse: DispersionEllipse, club: ClubRecord, horizontal: Double,
+        fromNode: Node, toNode: Node
+    ) -> EllipseShape {
+        EllipseShape(
+            polygon: ellipse.polygon.map(Self.wgs84),
+            center: Self.wgs84(ellipse.center),
+            clubName: club.name,
+            legMeters: Int(horizontal.rounded()),
+            fromShotId: fromNode.shotId,
+            toShotId: toNode.shotId
+        )
+    }
 
     /// Planar initial bearing, compass degrees [0, 360): atan2(Δx, Δy).
     static func compassBearing(dx: Double, dy: Double) -> Double {

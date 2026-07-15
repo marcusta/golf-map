@@ -1934,7 +1934,10 @@ private struct DistanceCardView: View {
                             Image(systemName: "figure.golf")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.green)
-                            Text(club)
+                            // Club + its adjusted carry ("54 · 88 m") — the
+                            // SAME figure the advice ellipse (and its on-map
+                            // label) is drawn with.
+                            Text(advice.clubCarryM.map { "\(club) · \($0) m" } ?? club)
                                 .font(.caption.weight(.semibold))
                                 .lineLimit(1)
                                 .fixedSize()

@@ -296,6 +296,7 @@ public struct CourseMapView: UIViewRepresentable {
         if coordinator.isStyleLoaded, let style = mapView.style {
             MapOverlayRenderer.apply(overlays, to: style)
             coordinator.routeLegLabelRenderer.apply(overlays.routeLegLabels, to: mapView)
+            coordinator.ellipseLabelRenderer.apply(overlays.ellipseLabels, to: style)
             coordinator.adjustHandleRenderer.apply(overlays.adjustHandles, to: style)
             coordinator.analysisRenderer.apply(analysis, to: style)
             // After analysis so the putt layers stack above the heat/arrows.
@@ -344,6 +345,7 @@ public struct CourseMapView: UIViewRepresentable {
         let analysisRenderer = GreenAnalysisRenderer()
         let puttRenderer = PuttOverlayRenderer()
         let routeLegLabelRenderer = RouteLegLabelRenderer()
+        let ellipseLabelRenderer = EllipseLabelRenderer()
         let adjustHandleRenderer = AdjustHandleRenderer()
         var lastCameraCommand: MapCameraCommand?
         var lastZoomCommand: MapZoomCommand?
@@ -637,6 +639,8 @@ public struct CourseMapView: UIViewRepresentable {
             // images and analysis layers.
             routeLegLabelRenderer.styleDidReload()
             routeLegLabelRenderer.apply(desiredOverlays.routeLegLabels, to: mapView)
+            ellipseLabelRenderer.styleDidReload()
+            ellipseLabelRenderer.apply(desiredOverlays.ellipseLabels, to: style)
             adjustHandleRenderer.styleDidReload()
             adjustHandleRenderer.apply(desiredOverlays.adjustHandles, to: style)
             analysisRenderer.styleDidReload()

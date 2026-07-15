@@ -110,14 +110,18 @@ final class MapOverlayShapesTests: XCTestCase {
 
     func testPlanEllipsesBecomePolygonFeatures() throws {
         let ring = [ll(58.35, 15.70), ll(58.36, 15.70), ll(58.36, 15.71), ll(58.35, 15.70)]
-        let plan = PlanOverlay(ellipses: [PlanStrategy.EllipseShape(polygon: ring)])
+        let plan = PlanOverlay(ellipses: [
+            PlanStrategy.EllipseShape(polygon: ring, center: ll(58.355, 15.705)),
+        ])
         let collection = try XCTUnwrap(
             MapOverlayShapes.planEllipsesShape(plan) as? MLNShapeCollectionFeature
         )
         let polygons = try XCTUnwrap(collection.shapes as? [MLNPolygonFeature])
         XCTAssertEqual(polygons.count, 1)
         // A degenerate (<3 point) ring is dropped.
-        let degenerate = PlanOverlay(ellipses: [PlanStrategy.EllipseShape(polygon: [ll(58.35, 15.70)])])
+        let degenerate = PlanOverlay(ellipses: [
+            PlanStrategy.EllipseShape(polygon: [ll(58.35, 15.70)], center: ll(58.35, 15.70)),
+        ])
         let empty = try XCTUnwrap(
             MapOverlayShapes.planEllipsesShape(degenerate) as? MLNShapeCollectionFeature
         )

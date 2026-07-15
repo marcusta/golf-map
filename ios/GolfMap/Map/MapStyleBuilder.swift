@@ -55,6 +55,12 @@ public enum MapStyleIDs {
     public static let routeLegLabelsSource = "overlay-route-leg-labels"
     public static let routeLegLabelsLayer = "overlay-route-leg-labels"
 
+    // Dispersion-ellipse labels ("54 · 88") at each visible ellipse's center —
+    // pre-rendered text images registered at runtime by EllipseLabelRenderer
+    // (no glyph PBFs in the offline style, same as the route-leg figures).
+    public static let ellipseLabelsSource = "overlay-ellipse-labels"
+    public static let ellipseLabelsLayer = "overlay-ellipse-labels"
+
     public static let userLocationSource = "overlay-user-location"
     public static let userLocationHaloLayer = "overlay-user-location-halo"
     public static let userLocationDotLayer = "overlay-user-location-dot"
@@ -335,6 +341,7 @@ public enum MapStyleBuilder {
             MapStyleIDs.distanceLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.targetsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.routeLegLabelsSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.ellipseLabelsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.userLocationSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.measureLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.measurePointsSource: ["type": "geojson", "data": emptyCollection],
@@ -613,6 +620,18 @@ public enum MapStyleBuilder {
                     "icon-allow-overlap": true,
                     "icon-ignore-placement": true,
                     "icon-offset": [routeLegLabelOffsetX, 0.0],
+                ],
+            ],
+            [
+                // Dispersion-ellipse labels at each visible ellipse's center —
+                // same stacking rationale as the route-leg figures.
+                "id": MapStyleIDs.ellipseLabelsLayer,
+                "type": "symbol",
+                "source": MapStyleIDs.ellipseLabelsSource,
+                "layout": [
+                    "icon-image": ["get", "labelImage"],
+                    "icon-allow-overlap": true,
+                    "icon-ignore-placement": true,
                 ],
             ],
             [

@@ -159,9 +159,16 @@ final class RouteLegLabelRenderer {
     /// so the figure reads on both pale bunkers and dark fairway ortho — no
     /// pill background (clean numbers on the line, matching the card values).
     static func labelImage(meters: Int) -> UIImage {
-        let text = "\(meters)" as NSString
         // 20% larger than the original 16 pt for on-course legibility.
-        let baseFont = UIFont.systemFont(ofSize: 19.2, weight: .bold)
+        textImage("\(meters)", fontSize: 19.2)
+    }
+
+    /// The shared white-on-stroke text rasterizer behind `labelImage` — also
+    /// used by `EllipseLabelRenderer` so every on-map text image (route-leg
+    /// figures, ellipse labels) shares one look.
+    static func textImage(_ string: String, fontSize: CGFloat) -> UIImage {
+        let text = string as NSString
+        let baseFont = UIFont.systemFont(ofSize: fontSize, weight: .bold)
         let font = baseFont.fontDescriptor.withDesign(.rounded)
             .map { UIFont(descriptor: $0, size: baseFont.pointSize) } ?? baseFont
 

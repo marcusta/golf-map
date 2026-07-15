@@ -88,10 +88,20 @@ final class ShotVizOverlayTests: XCTestCase {
     }
 
     func testOverlayCarriesEllipsesAndGhostsWithABag() throws {
-        let overlay = try XCTUnwrap(makeModel().planOverlay)
-        XCTAssertEqual(overlay.ellipses.count, 2, "one ellipse per clubbed leg (tee + approach)")
+        let model = makeModel()
+        let overlay = try XCTUnwrap(model.planOverlay)
+        // Plan leg ellipses are selection-driven on-course: none without a
+        // selected plan row (the default selection is the green row).
+        XCTAssertTrue(overlay.ellipses.isEmpty, "no plan-row selection → no leg ellipses")
         XCTAssertEqual(overlay.ghosts.count, 2)
         XCTAssertEqual(overlay.legTints.count, 1, "the approach leg carries a confidence tint")
+
+        // Selecting the plan row surfaces its incoming + outgoing leg ellipses
+        // (the single shot's are the tee leg and the approach — both legs).
+        let row = try XCTUnwrap(model.ladderRows.first { $0.kind == .plan })
+        model.focusMap(on: try XCTUnwrap(row.position), ladderId: row.id)
+        let selected = try XCTUnwrap(model.planOverlay)
+        XCTAssertEqual(selected.ellipses.count, 2, "one ellipse per adjacent clubbed leg")
     }
 
     func testNoBagKeepsBasePlanButNoShotViz() throws {
@@ -106,7 +116,12 @@ final class ShotVizOverlayTests: XCTestCase {
 
     func testCompetitionModeHidesAllShotVizButKeepsBasePlan() throws {
         let model = makeModel()
-        XCTAssertFalse(model.planOverlay?.ellipses.isEmpty ?? true, "shot-viz shown normally")
+        XCTAssertFalse(model.planOverlay?.ghosts.isEmpty ?? true, "shot-viz shown normally")
+        // Ellipses need a plan-row selection (selection-driven) — make one so
+        // the competition gate below is what hides them, not the selection.
+        let row = try XCTUnwrap(model.ladderRows.first { $0.kind == .plan })
+        model.focusMap(on: try XCTUnwrap(row.position), ladderId: row.id)
+        XCTAssertFalse(model.planOverlay?.ellipses.isEmpty ?? true, "selected → leg ellipses shown")
 
         model.competitionMode = true
         let overlay = try XCTUnwrap(model.planOverlay, "the base plan still shows in competition")

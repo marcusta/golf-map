@@ -57,6 +57,23 @@ public struct RouteLegLabel: Equatable, Sendable {
     }
 }
 
+/// One on-map dispersion-ellipse label ("54 · 88" — club · adjusted carry for
+/// the selected-target advice ellipse, club · leg meters for a plan leg
+/// ellipse), anchored at the ellipse's center. Rendered by
+/// `EllipseLabelRenderer` as a pre-rendered text image (the offline style has
+/// no glyph PBFs). Present whenever its ellipse is — NOT gated on immersive
+/// mode: it names a selected visualization, unlike the route-leg figures.
+public struct EllipseLabel: Equatable, Sendable {
+    /// The ellipse's (drift-shifted) center — the anchor point.
+    public var position: LatLon
+    public var text: String
+
+    public init(position: LatLon, text: String) {
+        self.position = position
+        self.text = text
+    }
+}
+
 /// One draggable Adjust-mode handle: the active tee, an aim point, or the
 /// green center. Rendered as a large kind-colored ring with a pre-rendered
 /// text label ("T", "A1", "G" — the offline style has no glyph PBFs, so the
@@ -139,9 +156,9 @@ public struct TargetWindHold: Equatable, Sendable {
 /// the planned landing points as nodes, and the target gates as cross-lines
 /// (endpoints precomputed in planar SWEREF 99 TM — see `CoursePlan.Gate`).
 /// Deliberately its OWN sources and a distinct dashed-violet style: the plan
-/// is "the strategy"; the white distance line is "where I am". No on-map
-/// text — clubs/labels/leg meters live in the distance card (the offline
-/// style has no glyph PBFs).
+/// is "the strategy"; the white distance line is "where I am". On-map text is
+/// limited to the ellipse labels (pre-rendered images — the offline style has
+/// no glyph PBFs); clubs/leg meters otherwise live in the distance card.
 public struct PlanOverlay: Equatable, Sendable {
     /// One gate cross-line, already resolved to its two endpoints.
     public struct GateLine: Equatable, Sendable {
@@ -161,8 +178,10 @@ public struct PlanOverlay: Equatable, Sendable {
     public var nodes: [LatLon]
     /// Target gate cross-lines.
     public var gates: [GateLine]
-    /// Per-leg dispersion ellipse polygons (shot-viz overlay). Empty in
-    /// competition mode / without a bag.
+    /// Dispersion ellipse polygons (shot-viz overlay) — on-course these are
+    /// SELECTION-scoped to the selected plan waypoint's incoming/outgoing legs
+    /// (`OnCourseModel.visiblePlanEllipses`); all legs only while the planner
+    /// tool edits. Empty in competition mode / without a bag / no selection.
     public var ellipses: [PlanStrategy.EllipseShape]
     /// Recommended-aim ghost groups (aim marker + dashed pattern + finish dot
     /// + drift connector). Empty in competition mode / without a bag.
@@ -220,6 +239,10 @@ public struct MapOverlayState: Equatable, Sendable {
     /// Rose hold marker + connector for crosswind compensation at the selected
     /// target. Nil for calm/negligible wind, hazards, or advice-hidden modes.
     public var selectedWindHold: TargetWindHold?
+    /// Labels for every VISIBLE dispersion ellipse (the selected-target advice
+    /// ellipse + the selection-scoped plan leg ellipses). Follows ellipse
+    /// visibility, never the immersive chrome flag.
+    public var ellipseLabels: [EllipseLabel]
 
     public init(
         distanceLine: [LatLon] = [],
@@ -231,7 +254,8 @@ public struct MapOverlayState: Equatable, Sendable {
         plan: PlanOverlay? = nil,
         highlight: LatLon? = nil,
         selectedEllipse: [LatLon]? = nil,
-        selectedWindHold: TargetWindHold? = nil
+        selectedWindHold: TargetWindHold? = nil,
+        ellipseLabels: [EllipseLabel] = []
     ) {
         self.distanceLine = distanceLine
         self.targets = targets
@@ -243,6 +267,7 @@ public struct MapOverlayState: Equatable, Sendable {
         self.highlight = highlight
         self.selectedEllipse = selectedEllipse
         self.selectedWindHold = selectedWindHold
+        self.ellipseLabels = ellipseLabels
     }
 
     public static let empty = MapOverlayState()
@@ -421,10 +446,10 @@ enum MapOverlayShapes {
 /// Reassigning `MLNShapeSource.shape` is MapLibre's cheap data-update path —
 /// no layer or style mutation.
 ///
-/// `routeLegLabels` and `adjustHandles` are NOT applied here: their label
-/// rendering needs stateful image caches (`RouteLegLabelRenderer` /
-/// `AdjustHandleRenderer`, owned by the coordinator), which the coordinator
-/// invokes right after this.
+/// `routeLegLabels`, `ellipseLabels` and `adjustHandles` are NOT applied here:
+/// their label rendering needs stateful image caches (`RouteLegLabelRenderer` /
+/// `EllipseLabelRenderer` / `AdjustHandleRenderer`, owned by the coordinator),
+/// which the coordinator invokes right after this.
 @MainActor
 enum MapOverlayRenderer {
     static func apply(_ state: MapOverlayState, to style: MLNStyle) {

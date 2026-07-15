@@ -1044,6 +1044,183 @@ final class OnCourseModelTests: XCTestCase {
         )
     }
 
+    // MARK: - Feature: forward-route chainage filter (shared with TS)
+
+    func testBrowsePastCornerCollapsesRouteToOriginGreen() throws {
+        let model = makeDoglegModel()
+        // 90 m short of the green along leg 2, nudged 10 m south off the leg:
+        // laterally past the corner, < 100 m out. The corner's chainage (200 m)
+        // is far behind the origin's projection (~310 m) — the route must not
+        // double back through the elbow. (The drawn-line gate agrees at 90 m;
+        // the layup-rung assertion below pins the UNGATED spine to the same
+        // straight answer, which only the chainage filter provides.)
+        let origin = Sweref99TM.toWGS84(Sweref99TM.Point(x: 500_110, y: 6_470_190))
+        let green = Sweref99TM.toWGS84(doglegPlanar().green)
+        model.setBrowseOrigin(origin)
+        XCTAssertLessThan(Distance.planarMeters(origin, green), 100)
+        XCTAssertEqual(model.overlays.distanceLine, [origin, green], "no corner detour")
+        XCTAssertEqual(model.routeLegLabels.count, 1, "single leg: origin → green")
+
+        // The layup spine follows the same collapsed route, so a rung's
+        // remaining distance is measured straight at the green.
+        model.setClubs([
+            ClubRecord(id: "c60", name: "60", carryM: 60, dispersionM: 10, sortOrder: 0),
+            ClubRecord(id: "c40", name: "40", carryM: 40, dispersionM: 10, sortOrder: 1),
+        ])
+        let straight = Distance.planarMeters(origin, green)
+        let rung = try XCTUnwrap(model.ladderRows.first { $0.kind == .layup && $0.meters == 60 })
+        XCTAssertEqual(rung.remainingM, Int((straight - 60).rounded()),
+                       "routed target equals the straight distance once the corner is dropped")
+    }
+
+    func testBrowseMidFirstLegOffsetIntoRoughKeepsCorner() {
+        let model = makeDoglegModel()
+        // Early on leg 1, 40 m into the right rough, ~241 m from the green
+        // (beyond the aim-routing threshold, so the drawn-line gate does not
+        // apply): the projection lands on leg 1 at chainage ~20 m, the corner
+        // (200 m) is still ahead → the routed line keeps the elbow.
+        let origin = Sweref99TM.toWGS84(Sweref99TM.Point(x: 500_040, y: 6_470_020))
+        let corner = Sweref99TM.toWGS84(doglegPlanar().corner)
+        let green = Sweref99TM.toWGS84(doglegPlanar().green)
+        model.setBrowseOrigin(origin)
+        XCTAssertEqual(model.overlays.distanceLine, [origin, corner, green],
+                       "off-line but not past: the corner stays on the route")
+        XCTAssertEqual(model.routeLegLabels.count, 2)
+    }
+
+    func testBrowseOriginExactlyAtCornerDropsIt() {
+        let model = makeDoglegModel()
+        // Standing exactly on the corner aim: its chainage equals the
+        // projection, which is not ahead by the 5 m margin → dropped. (The
+        // drawn-line threshold gate — 200 m out — agrees; both mechanisms
+        // yield the straight line.)
+        let corner = Sweref99TM.toWGS84(doglegPlanar().corner)
+        let green = Sweref99TM.toWGS84(doglegPlanar().green)
+        model.setBrowseOrigin(corner)
+        XCTAssertEqual(model.overlays.distanceLine, [corner, green])
+        XCTAssertEqual(model.routeLegLabels.count, 1)
+    }
+
+    func testGPSNextAimAheadNilPastCornerEvenWhenRadiallyCloser() {
+        let model = makeDoglegModel()
+        model.setGPSEnabled(true)
+        model.setAimRoutingThresholdMeters(100)
+        // Past the elbow, pushed 100 m long into the trees: RADIALLY the user is
+        // farther from the green (~215 m) than the corner (200 m), so the v1
+        // radial rule kept the corner and doubled the line back through it. By
+        // chainage (~205 m on leg 2) the corner is passed.
+        let user = Sweref99TM.toWGS84(Sweref99TM.Point(x: 500_010, y: 6_470_300))
+        let corner = Sweref99TM.toWGS84(doglegPlanar().corner)
+        let green = Sweref99TM.toWGS84(doglegPlanar().green)
+        model.updateUserLocation(user)
+        XCTAssertGreaterThan(Distance.planarMeters(user, green), Distance.planarMeters(corner, green),
+                             "precondition: the corner IS radially closer to the green")
+        XCTAssertGreaterThan(Distance.planarMeters(user, green), model.aimRoutingThresholdMeters,
+                             "precondition: beyond the routing threshold, so the gate is not what nils it")
+        XCTAssertNil(model.nextAimAhead, "chainage filter: the corner is passed → route to the green")
+        XCTAssertEqual(model.overlays.distanceLine, [user, green])
+    }
+
+    // MARK: - Feature: browse drawn-line gate (aim-routing threshold)
+
+    /// The residual-kink geometry from the on-device report (and the goldens'
+    /// `gatedCases`): tee at the planar origin, a near-collinear aim 21 m
+    /// ahead of the 90-m-out browse point, green 90 m away. The aim is
+    /// genuinely AHEAD by chainage — only the threshold gate straightens the
+    /// line.
+    private func gatedPlanar() -> (tee: Sweref99TM.Point, aim: Sweref99TM.Point, green: Sweref99TM.Point) {
+        (Sweref99TM.Point(x: 500_000, y: 6_470_000),
+         Sweref99TM.Point(x: 500_112, y: 6_470_191),
+         Sweref99TM.Point(x: 500_150, y: 6_470_250))
+    }
+
+    private func makeGatedModel() -> OnCourseModel {
+        let p = gatedPlanar()
+        let tee = Sweref99TM.toWGS84(p.tee)
+        let aim = Sweref99TM.toWGS84(p.aim)
+        let green = Sweref99TM.toWGS84(p.green)
+        let course = CourseRecord(
+            id: "gt", name: "Gate GC", status: "published",
+            revision: 1, downloadedRevision: 1, updatedAt: "2026-01-01T00:00:00Z",
+            bundleState: .complete
+        )
+        let holes = [HoleRecord(id: "g1", courseId: "gt", number: 1, par: 4, strokeIndex: 1)]
+        let tees = [TeeRecord(id: "gt1", holeId: "g1", name: "default", lat: tee.lat, lon: tee.lon, sortOrder: 0)]
+        let greens = [GreenRecord(id: "gg", holeId: "g1", centerLat: green.lat, centerLon: green.lon)]
+        let aims = [AimPointRecord(id: "ga", holeId: "g1", sortOrder: 0, lat: aim.lat, lon: aim.lon, label: "Kink")]
+        let manifest = TileManifestRecord(
+            courseId: "gt", west: green.lon - 0.05, south: tee.lat - 0.05,
+            east: green.lon + 0.05, north: green.lat + 0.05,
+            orthoMinZoom: 14, orthoMaxZoom: 20, terrainMinZoom: 12, terrainMaxZoom: 17,
+            elevMin: 0, elevMax: 100, generatedAt: "2026-01-01T00:00:00Z", versionParam: "v1"
+        )
+        let furniture = CourseFurniture(
+            course: course, holes: holes, tees: tees, greens: greens,
+            pins: [], aimPoints: aims, manifest: manifest
+        )
+        let model = OnCourseModel(furniture: furniture, defaults: defaults)
+        model.setGPSEnabled(false)
+        return model
+    }
+
+    func testBrowseLineGatedStraightNearGreenWhileLadderKeepsAimRow() {
+        let model = makeGatedModel()
+        // 90 m from the green with the aim 21 m ahead (kept by chainage): the
+        // next shot targets the GREEN, so the drawn line must not kink.
+        let origin = Sweref99TM.toWGS84(Sweref99TM.Point(x: 500_096, y: 6_470_178))
+        let green = Sweref99TM.toWGS84(gatedPlanar().green)
+        model.setBrowseOrigin(origin)
+        XCTAssertEqual(Distance.planarMeters(origin, green), 90, accuracy: 0.01)
+        XCTAssertEqual(model.overlays.distanceLine, [origin, green], "within threshold → straight line")
+        XCTAssertEqual(model.routeLegLabels.count, 1, "one leg: origin → green")
+        // The gate is a LINE policy only — the ladder still lists the aim row.
+        XCTAssertTrue(model.ladderRows.contains { $0.kind == .aim },
+                      "the aim row survives the drawn-line gate")
+    }
+
+    func testBrowseLineRoutedThroughAimBeyondThreshold() {
+        let model = makeGatedModel()
+        // Default browse origin = the tee, ~292 m out (beyond the 230 m
+        // threshold) → the chainage-filtered route applies, aim included.
+        let p = gatedPlanar()
+        let tee = Sweref99TM.toWGS84(p.tee)
+        let aim = Sweref99TM.toWGS84(p.aim)
+        let green = Sweref99TM.toWGS84(p.green)
+        XCTAssertGreaterThan(Distance.planarMeters(tee, green), model.aimRoutingThresholdMeters)
+        XCTAssertEqual(model.overlays.distanceLine, [tee, aim, green])
+        XCTAssertEqual(model.routeLegLabels.count, 2)
+    }
+
+    func testBrowseLineRespectsLoweredThresholdOverride() {
+        let model = makeGatedModel()
+        // The user-persisted threshold, not the shared constant, gates the
+        // browse line: lowered to 50 m, the 90-m-out origin routes through
+        // the aim again.
+        model.setAimRoutingThresholdMeters(50)
+        let origin = Sweref99TM.toWGS84(Sweref99TM.Point(x: 500_096, y: 6_470_178))
+        let aim = Sweref99TM.toWGS84(gatedPlanar().aim)
+        let green = Sweref99TM.toWGS84(gatedPlanar().green)
+        model.setBrowseOrigin(origin)
+        XCTAssertEqual(model.overlays.distanceLine, [origin, aim, green],
+                       "90 m out > lowered 50 m threshold → routed through the aim")
+        XCTAssertEqual(model.routeLegLabels.count, 2)
+    }
+
+    func testLayupSpineStaysRoutedInsideTheGate() throws {
+        let model = makeGatedModel()
+        // 90 m out (drawn line gated straight) with a 40 m club: the green is
+        // out of reach, so the layup spine must still follow the ROUTED line
+        // (origin → aim → green ≈ 90.79 m), not the gated straight 90 m —
+        // remaining = 90.79 − 40 → 51, where the straight line would give 50.
+        let origin = Sweref99TM.toWGS84(Sweref99TM.Point(x: 500_096, y: 6_470_178))
+        let green = Sweref99TM.toWGS84(gatedPlanar().green)
+        model.setBrowseOrigin(origin)
+        model.setClubs([ClubRecord(id: "c40", name: "40", carryM: 40, dispersionM: 10, sortOrder: 0)])
+        XCTAssertEqual(model.overlays.distanceLine, [origin, green], "the LINE is gated straight")
+        let rung = try XCTUnwrap(model.ladderRows.first { $0.kind == .layup && $0.meters == 40 })
+        XCTAssertEqual(rung.remainingM, 51, "the SPINE stays routed through the aim (90.79 − 40)")
+    }
+
     // MARK: - Feature: reactive-path memoisation (fingerprint-keyed)
 
     func testLadderRowsMemoHitAvoidsRebuild() {
