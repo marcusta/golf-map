@@ -23,6 +23,7 @@ import {
     type FeatureDistance,
     type FlatRing,
     type GreenSlopeSummary,
+    type StrategyPoint,
     type Vec2,
 } from '../../../shared/strategy';
 // The caddy rules are re-exported from the caddy barrel but not (yet) from the
@@ -68,6 +69,13 @@ import {
     buildPuttGeojson,
     puttLayers,
 } from './putt-overlay';
+import {
+    bearingBetween,
+    browseTargetActivation,
+    buildBrowseLadder,
+    type BrowseLadderRow,
+    type BrowsePointTarget,
+} from './browse-ladder';
 import maplibregl from 'maplibre-gl';
 import { AnalysisOverlayRenderer } from '../analysis/analysis-overlay';
 import { computeSlopeGrid, computeStats, type SlopeGrid, type AnalysisStats } from '../analysis/analysis-math';
@@ -81,6 +89,57 @@ export const PLANNER_TOOL_ID = 'planner';
 
 /** Overlay id for the caddy-advice markers (separate from the plan overlay). */
 export const CADDY_OVERLAY_ID = 'plan-caddy';
+
+/** Transient arbitrary-origin marker/line shown while browsing in Plan mode. */
+export const BROWSE_OVERLAY_ID = 'plan-browse';
+
+function browseLayers(): OverlayLayerSpec[] {
+    return [
+        {
+            id: `${BROWSE_OVERLAY_ID}-line`,
+            type: 'line',
+            filter: ['==', ['get', 'role'], 'line'] as never,
+            paint: {
+                'line-color': '#22d3ee',
+                'line-width': 2,
+                'line-opacity': 0.85,
+                'line-dasharray': [2, 2] as never,
+            },
+        },
+        {
+            id: `${BROWSE_OVERLAY_ID}-inspect-line`,
+            type: 'line',
+            filter: ['==', ['get', 'role'], 'inspect-line'] as never,
+            paint: {
+                'line-color': '#f5b301',
+                'line-width': 2,
+                'line-opacity': 0.9,
+            },
+        },
+        {
+            id: `${BROWSE_OVERLAY_ID}-origin`,
+            type: 'circle',
+            filter: ['==', ['get', 'role'], 'origin'] as never,
+            paint: {
+                'circle-radius': 8,
+                'circle-color': '#14281c',
+                'circle-stroke-color': '#22d3ee',
+                'circle-stroke-width': 3,
+            },
+        },
+        {
+            id: `${BROWSE_OVERLAY_ID}-target`,
+            type: 'circle',
+            filter: ['==', ['get', 'role'], 'target'] as never,
+            paint: {
+                'circle-radius': 6,
+                'circle-color': '#f5b301',
+                'circle-stroke-color': '#14281c',
+                'circle-stroke-width': 2,
+            },
+        },
+    ];
+}
 
 /** Marker + label layers for the caddy advice overlay. */
 /** Inline style for an on-graphics putt label marker, by kind. */
@@ -205,6 +264,18 @@ export type PlannerMode = 'select' | 'add-shot' | 'add-gate' | 'putt';
 
 export type PlannerSelection = { kind: 'shot' | 'gate'; id: string } | null;
 
+export interface BrowseOrigin {
+    holeId: string;
+    lat: number;
+    lon: number;
+    elevation: number | null;
+    isOverride: boolean;
+}
+
+type BrowseInspection =
+    | { source: 'ladder'; holeId: string; rowId: string }
+    | { source: 'map'; holeId: string; id: string; position: StrategyPoint };
+
 type DragTarget =
     | { kind: 'shot'; id: string }
     | { kind: 'gate-side'; id: string; side: 'left' | 'right' }
@@ -260,6 +331,9 @@ export class PlannerToolService {
     private overlayAdded = false;
     private caddyOverlayAdded = false;
     private puttOverlayAdded = false;
+    private browseOverlayAdded = false;
+    private browseSampleSeq = 0;
+    private browseInspectionSeq = 0;
 
     /** ?hole= carries the hole NUMBER; resolve to the Hole for the course. */
     private readonly selectedHoleNumber = this.router.query('hole');
@@ -312,6 +386,27 @@ export class PlannerToolService {
             if (byName) return byName;
         }
         return tees[0] ?? null;
+    });
+
+    /**
+     * Transient arbitrary browse origin. It is deliberately not persisted into
+     * the game plan: selecting another hole falls back to that hole's tee.
+     */
+    private readonly browseOverride = new Signal<BrowseOrigin | null>(null);
+    private readonly browseInspection = new Signal<BrowseInspection | null>(null);
+    readonly browseOrigin = new Computed<BrowseOrigin | null>(() => {
+        const hole = this.selectedHole.get();
+        if (!hole) return null;
+        const moved = this.browseOverride.get();
+        if (moved?.holeId === hole.id) return moved;
+        const tee = this.originTee.get();
+        return tee ? {
+            holeId: hole.id,
+            lat: tee.lat,
+            lon: tee.lon,
+            elevation: tee.elevation,
+            isOverride: false,
+        } : null;
     });
 
     /** The bag in sortOrder (shared player ClubsService store). */
@@ -376,6 +471,98 @@ export class PlannerToolService {
             this.features.store.items.get(),
             new Map(this.courseDetail.holes.get().map(h => [h.id, h.number])),
         ));
+
+    /** Sorted yardage ladder measured from the current transient browse origin. */
+    readonly browseRows = new Computed<BrowseLadderRow[]>(() => {
+        const hole = this.selectedHole.get();
+        const originWgs = this.browseOrigin.get();
+        if (!hole || !originWgs) return [];
+        const originProjected = wgs84ToSweref99tm(originWgs.lat, originWgs.lon);
+        const origin = { ...originProjected, elevation: originWgs.elevation };
+        const points: BrowsePointTarget[] = [];
+
+        this.holeShots.get().forEach((shot, index) => {
+            const p = wgs84ToSweref99tm(shot.lat, shot.lon);
+            points.push({
+                id: `plan-${shot.id}`,
+                label: shot.label?.trim() || `Plan ${index + 1}`,
+                role: 'layup',
+                point: { ...p, elevation: shot.elevation },
+            });
+        });
+
+        this.furniture.aimsForHole(hole.id).forEach((aim, index) => {
+            const p = wgs84ToSweref99tm(aim.lat, aim.lon);
+            points.push({
+                id: `aim-${aim.id}`,
+                label: aim.label?.trim() || `Aim ${index + 1}`,
+                role: 'aim',
+                point: { ...p, elevation: aim.elevation },
+            });
+        });
+
+        const green = this.furniture.greenForHole(hole.id);
+        let greenCenterPoint: BrowsePointTarget['point'] | null = null;
+        if (green) {
+            const addGreen = (
+                id: string, label: string, role: BrowsePointTarget['role'],
+                lat: number | null, lon: number | null, elevation: number | null = null,
+            ): void => {
+                if (lat === null || lon === null) return;
+                const p = wgs84ToSweref99tm(lat, lon);
+                const target = { id, label, role, point: { ...p, elevation } };
+                points.push(target);
+            };
+            addGreen('green-front', 'Green front', 'green_front', green.frontLat, green.frontLon);
+            greenCenterPoint = { ...wgs84ToSweref99tm(green.centerLat, green.centerLon), elevation: green.elevation };
+            points.push({ id: 'green-center', label: 'Green', role: 'green_center', point: greenCenterPoint });
+            addGreen('green-back', 'Green back', 'green_back', green.backLat, green.backLon);
+
+            const pin = this.furniture.pinsForHole(hole.id).find(p => p.active);
+            if (pin) addGreen(`pin-${pin.id}`, pin.name || 'Pin', 'pin', pin.lat, pin.lon);
+        }
+
+        const reference = greenCenterPoint ?? points.at(-1)?.point ?? origin;
+        const hazards = this.lieMap.get().hazardRings().map((ring, index) => ({
+            id: `hazard-${index}`,
+            label: ring.kind.charAt(0).toUpperCase() + ring.kind.slice(1),
+            ring,
+        }));
+        return buildBrowseLadder({
+            origin,
+            points,
+            hazards,
+            bearingDeg: bearingBetween(origin, reference),
+            wind: this.effectiveWind.get() ?? undefined,
+            clubs: this.orderedClubs.get(),
+        });
+    });
+
+    /** Target currently being inspected from the UNCHANGED browse origin. */
+    readonly inspectedBrowseRow = new Computed<BrowseLadderRow | null>(() => {
+        const inspection = this.browseInspection.get();
+        const hole = this.selectedHole.get();
+        if (!inspection || inspection.holeId !== hole?.id) return null;
+        if (inspection.source === 'ladder') {
+            return this.browseRows.get().find(row => row.id === inspection.rowId) ?? null;
+        }
+        const originWgs = this.browseOrigin.get();
+        if (!originWgs) return null;
+        const originProjected = wgs84ToSweref99tm(originWgs.lat, originWgs.lon);
+        const [row] = buildBrowseLadder({
+            origin: { ...originProjected, elevation: originWgs.elevation },
+            points: [{
+                id: inspection.id,
+                label: 'Selected point',
+                role: 'aim',
+                point: inspection.position,
+            }],
+            bearingDeg: bearingBetween(originProjected, inspection.position),
+            wind: this.effectiveWind.get() ?? undefined,
+            clubs: this.orderedClubs.get(),
+        });
+        return row ?? null;
+    });
 
     /** Green centre as EPSG:3006 Vec2 for the aim optimiser (null = no green). */
     private greenCenterVec(): Vec2 | null {
@@ -822,6 +1009,50 @@ export class PlannerToolService {
         });
     });
 
+    private readonly browseOverlayData = new Computed<FeatureCollection>(() => {
+        if (this.mode.get() === 'putt') return { type: 'FeatureCollection', features: [] };
+        const origin = this.browseOrigin.get();
+        if (!origin) return { type: 'FeatureCollection', features: [] };
+        const features: FeatureCollection['features'] = [];
+        if (origin.isOverride) {
+            features.push({
+                type: 'Feature',
+                properties: { role: 'origin' },
+                geometry: { type: 'Point', coordinates: [origin.lon, origin.lat] },
+            });
+            const hole = this.selectedHole.get();
+            const green = hole ? this.furniture.greenForHole(hole.id) : null;
+            if (green) {
+                features.push({
+                    type: 'Feature',
+                    properties: { role: 'line' },
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: [[origin.lon, origin.lat], [green.centerLon, green.centerLat]],
+                    },
+                });
+            }
+        }
+        const inspected = this.inspectedBrowseRow.get();
+        if (inspected) {
+            const target = sweref99tmToWgs84(inspected.position.x, inspected.position.y);
+            features.unshift({
+                type: 'Feature',
+                properties: { role: 'inspect-line' },
+                geometry: {
+                    type: 'LineString',
+                    coordinates: [[origin.lon, origin.lat], [target.lon, target.lat]],
+                },
+            });
+            features.push({
+                type: 'Feature',
+                properties: { role: 'target' },
+                geometry: { type: 'Point', coordinates: [target.lon, target.lat] },
+            });
+        }
+        return { type: 'FeatureCollection', features };
+    });
+
     /**
      * A tiny separate overlay for caddy advice: a labelled marker at each
      * advice `anchor` (green front for the slope rule). Kept independent of the
@@ -991,6 +1222,29 @@ export class PlannerToolService {
             }
         });
 
+        // Transient browse origin + its direct line to the green. Kept in a
+        // separate overlay so browsing never mutates or re-shapes the plan.
+        track(effect(() => {
+            const ready = this.map.ready.get();
+            const data = this.browseOverlayData.get();
+            if (!ready) {
+                this.browseOverlayAdded = false;
+                return;
+            }
+            if (!this.browseOverlayAdded) {
+                this.map.addOverlayLayer(BROWSE_OVERLAY_ID, data, browseLayers());
+                this.browseOverlayAdded = true;
+            } else {
+                this.map.updateOverlayData(BROWSE_OVERLAY_ID, data);
+            }
+        }));
+        track(() => {
+            if (this.browseOverlayAdded) {
+                this.map.removeOverlayLayer(BROWSE_OVERLAY_ID);
+                this.browseOverlayAdded = false;
+            }
+        });
+
         // Caddy advice overlay — its own source/layer so it never touches the
         // plan overlay's GeoJSON. Same ready-gated re-add lifecycle.
         track(effect(() => {
@@ -1122,6 +1376,8 @@ export class PlannerToolService {
             this.selection.set(null);
             this.notice.set(null);
             this.suppressClick = false;
+            this.browseOverride.set(null);
+            this.browseInspection.set(null);
         });
     }
 
@@ -1234,6 +1490,101 @@ export class PlannerToolService {
         }
         this.selection.set(null);
         this.mode.set(mode);
+    }
+
+    /** Return to the planner's browse/select mode without changing the origin. */
+    enterBrowseMode(): void {
+        this.notice.set(null);
+        this.selection.set(null);
+        this.mode.set('select');
+    }
+
+    /** Reset the transient origin to the selected tee. */
+    resetBrowseFrom(): void {
+        this.browseSampleSeq++;
+        this.browseInspectionSeq++;
+        this.browseOverride.set(null);
+        this.browseInspection.set(null);
+        this.enterBrowseMode();
+    }
+
+    /** Select a ladder rung for readout without changing the current origin. */
+    activateBrowseRow(row: BrowseLadderRow): void {
+        if (browseTargetActivation('ladder') === 'promote-origin') {
+            this.browseFromRow(row);
+            return;
+        }
+        const hole = this.selectedHole.peek();
+        if (!hole) return;
+        this.browseInspectionSeq++;
+        this.enterBrowseMode();
+        this.browseInspection.set({ source: 'ladder', holeId: hole.id, rowId: row.id });
+    }
+
+    /** Select an arbitrary map point for readout without changing the origin. */
+    async inspectBrowsePoint(position: { lng: number; lat: number }): Promise<void> {
+        const hole = this.selectedHole.peek();
+        if (!hole) return;
+        const seq = ++this.browseInspectionSeq;
+        const id = `map-${seq}`;
+        const projected = wgs84ToSweref99tm(position.lat, position.lng);
+        this.enterBrowseMode();
+        this.browseInspection.set({
+            source: 'map',
+            holeId: hole.id,
+            id,
+            position: { ...projected, elevation: null },
+        });
+        const elevation = await this.elevation.elevationAt(position);
+        if (seq !== this.browseInspectionSeq) return;
+        const current = this.browseInspection.peek();
+        if (current?.source !== 'map' || current.holeId !== hole.id || current.id !== id) return;
+        this.browseInspection.set({
+            ...current,
+            position: { ...current.position, elevation },
+        });
+    }
+
+    /** Explicitly make the inspected target the next browse origin. */
+    promoteInspectedBrowseTarget(): void {
+        const row = this.inspectedBrowseRow.peek();
+        if (row) this.browseFromRow(row);
+    }
+
+    /** Promote a ladder rung into the next arbitrary browse origin. */
+    browseFromRow(row: BrowseLadderRow): void {
+        const wgs = sweref99tmToWgs84(row.position.x, row.position.y);
+        void this.setBrowseFrom({ lng: wgs.lon, lat: wgs.lat }, row.position.elevation ?? null);
+    }
+
+    /**
+     * Move the transient browse origin immediately, then fill its terrain
+     * elevation asynchronously. A sequence token drops a late sample after a
+     * newer map/rung tap.
+     */
+    async setBrowseFrom(
+        position: { lng: number; lat: number },
+        knownElevation: number | null = null,
+    ): Promise<void> {
+        const hole = this.selectedHole.peek();
+        if (!hole) return;
+        const seq = ++this.browseSampleSeq;
+        this.browseInspectionSeq++;
+        this.enterBrowseMode();
+        this.browseInspection.set(null);
+        this.browseOverride.set({
+            holeId: hole.id,
+            lat: position.lat,
+            lon: position.lng,
+            elevation: knownElevation,
+            isOverride: true,
+        });
+        if (knownElevation !== null) return;
+        const elevation = await this.elevation.elevationAt(position);
+        if (seq !== this.browseSampleSeq) return;
+        const current = this.browseOverride.peek();
+        if (!current || current.holeId !== hole.id) return;
+        this.browseOverride.set({ ...current, elevation });
     }
 
     /**
@@ -1368,9 +1719,17 @@ export class PlannerToolService {
 
         const hit = this.hitTest(e.point);
         // Putt targets are unreachable here (select mode never offers them).
-        this.selection.set(hit && hit.kind !== 'putt-ball' && hit.kind !== 'putt-hole'
-            ? { kind: hit.kind === 'shot' ? 'shot' : 'gate', id: hit.id }
-            : null);
+        if (hit && hit.kind !== 'putt-ball' && hit.kind !== 'putt-hole') {
+            this.selection.set({ kind: hit.kind === 'shot' ? 'shot' : 'gate', id: hit.id });
+            return;
+        }
+        // Empty-map clicks inspect a target from the current origin. Moving the
+        // origin is a separate, explicit action in the distance readout.
+        if (browseTargetActivation('map') === 'inspect') {
+            void this.inspectBrowsePoint(e.lngLat);
+        } else {
+            void this.setBrowseFrom(e.lngLat);
+        }
     }
 
     private onMouseMove(e: MapPointerEvent): void {

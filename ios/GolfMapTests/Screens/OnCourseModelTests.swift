@@ -213,6 +213,83 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertTrue(rows.contains { $0.kind == .pin }, "pin row present")
     }
 
+    func testBrowseMapTapInspectsBeforeExplicitPromotion() throws {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        let teeOrigin = try XCTUnwrap(model.origin)
+        let point = LatLon(lat: 58.3626, lon: 15.7087)
+
+        model.inspectBrowsePoint(point)
+
+        XCTAssertEqual(model.origin, teeOrigin, "inspection must leave the browse origin at the tee")
+        XCTAssertEqual(model.overlays.distanceLine.first, teeOrigin)
+        XCTAssertEqual(model.overlays.highlight, point)
+        XCTAssertEqual(model.browseTarget, point)
+        XCTAssertEqual(model.selectedTargetAdvice?.title, "Selected point")
+        XCTAssertTrue(model.canPromoteInspectedBrowseTarget)
+
+        model.promoteInspectedBrowseTarget()
+
+        let origin = try XCTUnwrap(model.origin)
+        let lineOrigin = try XCTUnwrap(model.overlays.distanceLine.first)
+        let highlight = try XCTUnwrap(model.overlays.highlight)
+        XCTAssertEqual(origin.lat, point.lat, accuracy: 1e-9)
+        XCTAssertEqual(origin.lon, point.lon, accuracy: 1e-9)
+        XCTAssertEqual(lineOrigin.lat, point.lat, accuracy: 1e-9)
+        XCTAssertEqual(lineOrigin.lon, point.lon, accuracy: 1e-9)
+        XCTAssertEqual(highlight.lat, point.lat, accuracy: 1e-9)
+    }
+
+    func testBrowseLadderTapInspectsBeforeExplicitPromotion() throws {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        let teeOrigin = try XCTUnwrap(model.origin)
+        let row = try XCTUnwrap(model.ladderRows.first { $0.kind == .aim && $0.position != nil })
+        let point = try XCTUnwrap(row.position)
+
+        model.inspectBrowseLadder(row)
+
+        XCTAssertEqual(model.origin, teeOrigin, "ladder inspection must not rebuild from the rung")
+        XCTAssertEqual(model.overlays.distanceLine.first, teeOrigin)
+        XCTAssertEqual(model.focusedLadderId, row.id)
+        XCTAssertEqual(model.selectedTargetAdvice?.title, row.label)
+        XCTAssertTrue(model.canPromoteInspectedBrowseTarget)
+
+        model.promoteInspectedBrowseTarget()
+
+        let origin = try XCTUnwrap(model.origin)
+        XCTAssertEqual(origin.lat, point.lat, accuracy: 1e-9)
+        XCTAssertEqual(origin.lon, point.lon, accuracy: 1e-9)
+        XCTAssertNil(model.focusedLadderId, "the old rung id must not select a rebuilt ladder")
+    }
+
+    func testBrowseResetRestoresTeeOrigin() throws {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        let teeOrigin = try XCTUnwrap(model.origin)
+        model.setBrowseOrigin(LatLon(lat: 58.3626, lon: 15.7087))
+
+        model.resetBrowseOrigin()
+
+        XCTAssertNil(model.browseOrigin)
+        XCTAssertEqual(model.origin, teeOrigin)
+        XCTAssertFalse(model.canPromoteInspectedBrowseTarget)
+    }
+
+    func testBrowseOriginResetsOnHoleChange() throws {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        model.setBrowseOrigin(LatLon(lat: 58.3626, lon: 15.7087))
+
+        model.nextHole()
+
+        XCTAssertNil(model.browseOrigin)
+        let expectedTee = try XCTUnwrap(model.currentHole.flatMap { model.teePosition(for: $0) })
+        let origin = try XCTUnwrap(model.origin)
+        XCTAssertEqual(origin.lat, expectedTee.lat, accuracy: 1e-9)
+        XCTAssertEqual(origin.lon, expectedTee.lon, accuracy: 1e-9)
+    }
+
     func testFocusMapAddsHighlightMarkerClearedByRecenter() throws {
         let model = makeModel()
         XCTAssertNil(model.overlays.highlight)
@@ -965,5 +1042,175 @@ final class OnCourseModelTests: XCTestCase {
             model.ladderRows.filter { $0.kind == .layup }.map(\.meters).sorted(by: >),
             [250, 150, 100]
         )
+    }
+
+    // MARK: - Feature: reactive-path memoisation (fingerprint-keyed)
+
+    func testLadderRowsMemoHitAvoidsRebuild() {
+        // Two consecutive reads with unchanged inputs return equal rows and the
+        // second one does not recompute (the build counter stays flat).
+        let model = makeModel()
+        model.setClubs(layupClubs())
+        let first = model.ladderRows
+        let builds = model.ladderRowsBuildCount
+        XCTAssertGreaterThan(builds, 0, "first read builds the ladder")
+        let second = model.ladderRows
+        let third = model.ladderRows
+        XCTAssertEqual(model.ladderRowsBuildCount, builds, "unchanged inputs → cache hit, no rebuild")
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(second, third)
+    }
+
+    func testHazardCarriesMemoHitAvoidsRebuild() {
+        let model = makeModel()
+        model.setHazards([hazardBox(58.3620, 15.7090)])
+        let first = model.hazardCarries
+        let builds = model.hazardCarriesBuildCount
+        XCTAssertGreaterThan(builds, 0, "first read builds the carries")
+        _ = model.hazardCarries
+        _ = model.hazardCarries
+        XCTAssertEqual(model.hazardCarriesBuildCount, builds, "unchanged inputs → cache hit, no rebuild")
+        XCTAssertEqual(model.hazardCarries, first)
+    }
+
+    func testLadderMemoInvalidatesOnTeeChange() {
+        let model = makeModel() // browse mode: origin = active tee
+        let before = model.ladderRows.first { $0.kind == .green }?.meters
+        let builds = model.ladderRowsBuildCount
+        model.selectTee(named: "Blue") // farther tee → longer green distance
+        let after = model.ladderRows.first { $0.kind == .green }?.meters
+        XCTAssertGreaterThan(model.ladderRowsBuildCount, builds, "tee change invalidates the memo")
+        XCTAssertNotNil(before); XCTAssertNotNil(after)
+        XCTAssertNotEqual(before, after, "the ladder reflects the new tee origin")
+    }
+
+    func testLadderMemoInvalidatesOnClubsChange() {
+        let model = makeModel()
+        XCTAssertTrue(model.ladderRows.filter { $0.kind == .layup }.isEmpty, "no clubs → no layups")
+        model.setClubs(layupClubs())
+        XCTAssertFalse(model.ladderRows.filter { $0.kind == .layup }.isEmpty,
+                       "loading the bag invalidates the memo → layup rungs appear")
+    }
+
+    func testLadderMemoInvalidatesOnPlanShotAdd() {
+        let model = makeModel()
+        XCTAssertTrue(model.ladderRows.filter { $0.kind == .plan }.isEmpty, "no plan → no plan rungs")
+        model.enterTool(.plan)
+        model.setAddingPlanShot(true)
+        model.placePlanShot(at: LatLon(lat: 58.3618, lon: 15.7090))
+        XCTAssertFalse(model.ladderRows.filter { $0.kind == .plan }.isEmpty,
+                       "adding a plan shot invalidates the memo → a plan rung appears")
+    }
+
+    func testLadderMemoInvalidatesOnBrowseOriginSetAndReset() {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        let teeGreen = model.ladderRows.first { $0.kind == .green }?.meters
+        model.setBrowseOrigin(LatLon(lat: 58.3630, lon: 15.7085)) // partway up the hole
+        let movedGreen = model.ladderRows.first { $0.kind == .green }?.meters
+        XCTAssertNotEqual(teeGreen, movedGreen, "moving the browse origin invalidates the memo")
+        model.resetBrowseOrigin()
+        XCTAssertEqual(model.ladderRows.first { $0.kind == .green }?.meters, teeGreen,
+                       "reset restores the tee-origin distances (memo re-invalidated)")
+    }
+
+    func testLadderMemoInvalidatesOnHoleChange() {
+        let model = makeModel()
+        let h1 = model.ladderRows.first { $0.kind == .green }?.meters
+        model.nextHole()
+        let h2 = model.ladderRows.first { $0.kind == .green }?.meters
+        XCTAssertNotEqual(h1, h2, "changing holes invalidates the ladder memo")
+    }
+
+    func testLadderAndHazardMemoInvalidateOnHazardReinstall() {
+        let model = makeModel()
+        model.setHazards([hazardBox(58.3620, 15.7090)]) // on hole 1's line
+        XCTAssertEqual(model.hazardCarries.count, 1)
+        XCTAssertEqual(model.ladderRows.filter { $0.kind == .hazard }.count, 1)
+        model.setHazards([]) // re-install (version bump) invalidates both memos
+        XCTAssertEqual(model.hazardCarries.count, 0)
+        XCTAssertTrue(model.ladderRows.filter { $0.kind == .hazard }.isEmpty,
+                      "the ladder memo picks up the hazard re-install")
+    }
+
+    func testWindChangeReflectedInSelectedVisualization() {
+        // Wind does not change the ladder rows (their distances are actual), but
+        // the selected-target visualization keys on wind, so a wind edit must
+        // surface a crosswind hold that was absent when calm.
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        model.setClubs(layupClubs())
+        let row = model.ladderRows.first { $0.kind == .layup }!
+        model.focusMap(on: row.position!, ladderId: row.id)
+        XCTAssertNil(model.selectedTargetAdvice?.windHoldM, "calm → no hold")
+        XCTAssertNil(model.selectedTargetWindHold)
+        model.setPlanWind(speedMps: 8, directionDeg: 270) // from the west
+        XCTAssertNotNil(model.selectedTargetAdvice?.windHoldM,
+                        "wind change invalidates the visualization memo → a hold appears")
+        XCTAssertNotNil(model.selectedTargetWindHold)
+    }
+
+    // MARK: - Feature: selectedLadderRow browse-target path skips the ladder
+
+    func testBrowseTargetAdviceDoesNotBuildTheLadder() {
+        // A browse-mode inspect must not build the (course-wide) ladder: the
+        // advice comes straight from the tapped point. `selectedLadderRow`'s
+        // browse branch now precedes `let rows = ladderRows`.
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        model.inspectBrowsePoint(LatLon(lat: 58.3626, lon: 15.7087))
+        let builds = model.ladderRowsBuildCount // 0 — nothing has read the ladder
+        let advice = model.selectedTargetAdvice
+        XCTAssertEqual(advice?.title, "Selected point")
+        XCTAssertEqual(model.ladderRowsBuildCount, builds,
+                       "inspecting a tapped point must not build the ladder")
+    }
+
+    // MARK: - Feature: spatial pruning (bbox prefilter)
+
+    func testFarHazardIsPrunedAndDoesNotAlterNearResult() {
+        // A hazard far beyond every corridor must be pruned by the bbox
+        // prefilter — proven by the near-hazard result being identical with and
+        // without it present.
+        let model = makeModel()
+        let near = hazardBox(58.3620, 15.7090) // on hole 1's line
+        model.setHazards([near])
+        let onlyNear = model.hazardCarries
+        XCTAssertEqual(onlyNear.count, 1)
+
+        let far = hazardBox(58.9000, 16.5000) // tens of km away
+        model.setHazards([near, far])
+        XCTAssertEqual(model.hazardCarries, onlyNear,
+                       "the far hazard is pruned; the near carry is unchanged")
+    }
+
+    func testOwnHazardWellOffLineSurvivesPrefilter() {
+        // ~175 m off hole 1's line but tagged to it → inside the 400 m own
+        // corridor, so the prefilter (pad = 400 + 40 + 50) must keep it.
+        let model = makeModel()
+        model.setHazards([hazardBox(58.3620, 15.7120)], holeIds: ["h1"])
+        XCTAssertEqual(model.hazardCarries.count, 1, "an in-corridor own hazard is not pruned")
+    }
+
+    func testLieAtTopmostFirstPreservedUnderBBoxPruning() {
+        // Both rings' bboxes contain the 300-club landing; topmost-first must
+        // still decide (D23), and the bbox precheck must not reorder them.
+        let model = makeDoglegModel()
+        model.setClubs(doglegBag())
+        let c = Sweref99TM.Point(x: 500_100, y: 6_470_200) // the 300-club landing
+        func box(_ kind: String, half: Double) -> FlatRing {
+            FlatRing(points: [
+                Vec2(x: c.x - half, y: c.y - half), Vec2(x: c.x + half, y: c.y - half),
+                Vec2(x: c.x + half, y: c.y + half), Vec2(x: c.x - half, y: c.y + half),
+            ], kind: kind)
+        }
+        // Fairway (playable) TOPMOST over water beneath → fairway wins, rung kept.
+        model.setSurfaces([box("fairway", half: 20), box("water", half: 30)])
+        XCTAssertTrue(model.ladderRows.contains { $0.kind == .layup && $0.meters == 300 },
+                      "topmost fairway wins over the water beneath → 300 rung kept")
+        // Water TOPMOST over fairway → penalty lie wins → rung dropped.
+        model.setSurfaces([box("water", half: 30), box("fairway", half: 20)])
+        XCTAssertFalse(model.ladderRows.contains { $0.kind == .layup && $0.meters == 300 },
+                       "water topmost → penalty lie → 300 rung dropped")
     }
 }

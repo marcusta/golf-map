@@ -660,15 +660,18 @@ private struct OnCourseContentView: View {
                 // The browse-mode long-press "move tee" is RETIRED — it fired
                 // simultaneously with MapLibre's quick-zoom (moving the tee
                 // also zoomed the map). Adjust mode owns moves now.
-                // The single-tap recognizer is shared: measure places a point;
-                // the green view's putt read places the ball (or hole,
-                // per the panel's tap target).
-                measureTapEnabled: isMeasure || isPuttSurfaceActive || isPlacingPlanShot,
+                // The single-tap recognizer is shared: normal Browse inspects a
+                // target from the current origin; measure/plan/putt own it while
+                // their tool is active.
+                measureTapEnabled: (model.isBrowseMode && isDistanceMode)
+                    || isMeasure || isPuttSurfaceActive || isPlacingPlanShot,
                 onMeasureTap: { position in
                     if isMeasure {
                         measure.place(position)
                     } else if isPlacingPlanShot {
                         model.placePlanShot(at: position)
+                    } else if model.isBrowseMode && isDistanceMode {
+                        model.inspectBrowsePoint(position)
                     } else {
                         puttRead.handleTap(puttPoint(position))
                     }
@@ -731,7 +734,9 @@ private struct OnCourseContentView: View {
             // CourseMapView).
             .simultaneousGesture(
                 TapGesture().onEnded {
-                    guard model.toolMode == .none else { return }
+                    // In Browse, a short map tap inspects a distance target and
+                    // must not also hide/show the chrome.
+                    guard model.toolMode == .none, !model.isBrowseMode else { return }
                     withAnimation(.easeInOut(duration: 0.28)) { immersive.toggle() }
                 }
             )
@@ -1903,9 +1908,8 @@ private struct DistanceCardView: View {
         .holeSwipeGesture(model: model)
     }
 
-    // The selected ladder target's "what do I do" line: its plays-as distance
-    // and club (reach / carry / lay-up), with the big distance on the right.
-    // Default target is the green; tapping a rail rung changes it.
+    // The inspected map/ladder target's "what do I do" line: its plays-as
+    // distance and club, with the big distance on the right. Default is green.
     private func selectedTargetBanner(_ advice: OnCourseModel.TargetAdvice) -> some View {
         let isHazard = advice.kind == .hazard
         let canToggle = !isHazard && advice.playsAsM != nil
@@ -1968,6 +1972,17 @@ private struct DistanceCardView: View {
                             .fixedSize()
                     }
                 }
+                if model.canPromoteInspectedBrowseTarget {
+                    Button {
+                        model.promoteInspectedBrowseTarget()
+                    } label: {
+                        Label("Browse from here", systemImage: "arrow.turn.down.right")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityHint("Makes this target the new distance origin")
+                }
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 0) {
@@ -1996,6 +2011,20 @@ private struct DistanceCardView: View {
             teeMenu
             Spacer()
             profileChip
+            if model.isBrowseMode && model.browseOrigin != nil {
+                Button {
+                    model.resetBrowseOrigin()
+                } label: {
+                    Label("From tee", systemImage: "arrow.uturn.backward")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(.white.opacity(0.08), in: Capsule())
+                .accessibilityHint("Restores the selected tee as the distance origin")
+            }
             locationToggle
         }
     }

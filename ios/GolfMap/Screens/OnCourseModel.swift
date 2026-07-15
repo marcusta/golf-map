@@ -53,6 +53,16 @@ final class OnCourseModel {
     private(set) var userLocation: LatLon?
     /// Terrain-sampled elevation at `userLocation` (plays-like input).
     private(set) var userElevation: Double?
+    /// Transient arbitrary origin selected while GPS is off. Nil means the
+    /// active tee remains the browse origin. Never persisted into course data.
+    private(set) var browseOrigin: LatLon?
+    /// Terrain elevation sampled at `browseOrigin` for plays-like yardages.
+    private(set) var browseOriginElevation: Double?
+    /// Transient arbitrary point being inspected FROM the current browse
+    /// origin. It becomes the origin only after explicit promotion.
+    private(set) var browseTarget: LatLon?
+    /// Terrain elevation sampled at `browseTarget` for its advice readout.
+    private var browseTargetElevation: Double?
     /// Set from `LocationProvider.isDenied` so the UI can explain the fallback.
     var isLocationDenied = false
 
@@ -80,12 +90,28 @@ final class OnCourseModel {
     @ObservationIgnored private var hazardRings: [FlatRing] = []
     /// Owning hole id per `hazardRings` entry (parallel), nil = course-level.
     @ObservationIgnored private var hazardHoleIds: [String?] = []
+    /// Planar bbox per `hazardRings` entry (parallel), precomputed in `setHazards`
+    /// so the carry pipeline can reject rings nowhere near the shot lines before
+    /// the O(vertices) `nearLines`/ownership scans. `FlatRing` is parity-pinned
+    /// (mirrors shared TS + golden fixtures), so the bboxes live here, not on it.
+    @ObservationIgnored private var hazardBBoxes: [BBox] = []
+    /// Bumped on every `setHazards` install; keys the `hazardCarries` memo so a
+    /// re-install invalidates it without comparing the whole ring array.
+    @ObservationIgnored private var hazardsVersion = 0
 
     /// Every course SURFACE ring (fairway/green/rough/bunker/water/…), EPSG:3006,
     /// TOPMOST-FIRST, parsed once from features.geojson by the screen. Feeds the
     /// shot-viz aim optimiser's lie classification (`PlanStrategy` → `optimizeAim`).
     /// Wider than `hazardRings` (which is the carry-hazard subset for the card).
     @ObservationIgnored private(set) var surfaces: [FlatRing] = []
+    /// Planar bbox per `surfaces` entry (parallel), precomputed in `setSurfaces`
+    /// so `lieAt` can reject rings whose box excludes the query point before the
+    /// full `pointInRing` vertex walk — topmost-first order is preserved (the
+    /// box only skips rings that cannot contain the point, never reorders).
+    @ObservationIgnored private var surfaceBBoxes: [BBox] = []
+    /// Bumped on every `setSurfaces` install; keys the `ladderRows` memo's layup
+    /// lie filter without comparing the whole surface array.
+    @ObservationIgnored private var surfacesVersion = 0
 
     /// Memoised shot-viz geometry (dispersion ellipses / ghost aim / confidence
     /// tints) + the input fingerprint it was built from. `optimizeAim` is too
@@ -98,6 +124,144 @@ final class OnCourseModel {
     /// recomputes only when the plan geometry does (never per SwiftUI render).
     @ObservationIgnored private var caddyAdviceKey: Int?
     @ObservationIgnored private var caddyAdviceCache: [CaddyAdvice] = []
+
+    // MARK: - Reactive-path memos (per-tap render fan-out)
+    //
+    // A single map tap mutates observed state (`browseTarget` / `mapFocus`) and
+    // then, a beat later, `browseTargetElevation` — each re-renders the on-course
+    // view tree. `ladderRows` and `hazardCarries` are read several times per
+    // render (rail + banner + ellipse + wind-hold) and each does course-wide
+    // O(rings × holes) work, so without memoisation one tap ran that work a dozen
+    // times. Each memo below stores its result plus an Equatable fingerprint of
+    // every input it read; on access it rebuilds the fingerprint (cheap) and
+    // reuses the cache when it matches. The fingerprint is self-invalidating — it
+    // captures values (or an install-bumped version for the big ring arrays), so
+    // no mutation site has to remember to clear anything. Storage is
+    // `@ObservationIgnored` so writing the cache never trips SwiftUI observation.
+
+    /// An axis-aligned planar (EPSG:3006) bounding box for spatial prefiltering.
+    private struct BBox: Equatable {
+        var minX: Double
+        var minY: Double
+        var maxX: Double
+        var maxY: Double
+        func contains(_ p: Vec2) -> Bool {
+            p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
+        }
+        func intersects(_ other: BBox) -> Bool {
+            minX <= other.maxX && maxX >= other.minX && minY <= other.maxY && maxY >= other.minY
+        }
+    }
+
+    private static func bbox(_ points: [Vec2]) -> BBox {
+        guard let first = points.first else {
+            // Degenerate (empty) ring → inverted box: never contains/intersects.
+            return BBox(minX: .infinity, minY: .infinity, maxX: -.infinity, maxY: -.infinity)
+        }
+        var b = BBox(minX: first.x, minY: first.y, maxX: first.x, maxY: first.y)
+        for p in points.dropFirst() {
+            b.minX = min(b.minX, p.x); b.minY = min(b.minY, p.y)
+            b.maxX = max(b.maxX, p.x); b.maxY = max(b.maxY, p.y)
+        }
+        return b
+    }
+
+    private static func expanded(_ b: BBox, by pad: Double) -> BBox {
+        BBox(minX: b.minX - pad, minY: b.minY - pad, maxX: b.maxX + pad, maxY: b.maxY + pad)
+    }
+
+    /// Everything the all-holes routed geometry (`holeRoutePlanar`) reads: the
+    /// active tee name and every Adjust override, by value. Any tee/aim/green
+    /// move changes it, invalidating the route cache and the hazard memo without
+    /// a per-site dirty flag.
+    private struct RouteFingerprint: Equatable {
+        var activeTeeName: String?
+        var teeOverrides: [String: [String: LatLon]]
+        var aimOverrides: [String: [String: LatLon]]
+        var greenOverrides: [String: LatLon]
+    }
+
+    private func routeFingerprint() -> RouteFingerprint {
+        RouteFingerprint(
+            activeTeeName: activeTeeName,
+            teeOverrides: teeOverrides,
+            aimOverrides: aimOverrides,
+            greenOverrides: greenOverrides
+        )
+    }
+
+    /// Per-hole planar route cache, keyed by `RouteFingerprint`. `hazardsByOwnership`
+    /// projects every hole's route to classify untagged rings; those routes are
+    /// stable across taps / GPS fixes and only move when a tee/aim/green does.
+    @ObservationIgnored private var routeCacheFingerprint: RouteFingerprint?
+    @ObservationIgnored private var routeCache: [String: [Vec2]] = [:]
+
+    private func cachedHoleRoutePlanar(for hole: HoleData) -> [Vec2] {
+        let fp = routeFingerprint()
+        if fp != routeCacheFingerprint {
+            routeCache.removeAll(keepingCapacity: true)
+            routeCacheFingerprint = fp
+        }
+        if let cached = routeCache[hole.id] { return cached }
+        let pts = holeRoutePlanar(for: hole)
+        routeCache[hole.id] = pts
+        return pts
+    }
+
+    /// Fingerprint of every input `hazardCarries` reads.
+    private struct HazardKey: Equatable {
+        var origin: LatLon
+        var holeIndex: Int
+        var greenCenter: LatLon?
+        var nextAim: LatLon?
+        var route: RouteFingerprint
+        var hazardsVersion: Int
+    }
+    @ObservationIgnored private var hazardCarriesKey: HazardKey?
+    @ObservationIgnored private var hazardCarriesCache: [HazardCarry] = []
+    /// Count of full `hazardCarries` rebuilds (cache misses). Behaviour-neutral
+    /// instrumentation the memo tests assert on; `@ObservationIgnored`.
+    @ObservationIgnored private(set) var hazardCarriesBuildCount = 0
+
+    /// Fingerprint of every input `ladderRows` reads.
+    private struct LadderKey: Equatable {
+        var origin: LatLon
+        var distances: OnCourseDistances
+        var targets: HoleTargets
+        var planShots: [String]
+        var competitionMode: Bool
+        var clubs: [String]
+        var hazards: [HazardCarry]
+        var surfacesVersion: Int
+    }
+    @ObservationIgnored private var ladderRowsKey: LadderKey?
+    @ObservationIgnored private var ladderRowsCache: [LadderRow] = []
+    /// Count of full `ladderRows` rebuilds (cache misses). Behaviour-neutral
+    /// instrumentation the memo tests assert on; `@ObservationIgnored`.
+    @ObservationIgnored private(set) var ladderRowsBuildCount = 0
+
+    /// Fingerprint of every input `selectedTargetVisualization` reads (the club is
+    /// resolved from `clubName` to its carry/dispersion so a bag edit invalidates).
+    private struct VisualizationKey: Equatable {
+        var kind: LadderRow.Kind
+        var origin: LatLon
+        var target: LatLon
+        var clubName: String
+        var clubCarryM: Double
+        var clubDispersionM: Double
+        var elevationDeltaM: Int?
+        var windSpeed: Double?
+        var windDir: Double?
+        var competitionMode: Bool
+    }
+    @ObservationIgnored private var visualizationKey: VisualizationKey?
+    @ObservationIgnored private var visualizationCache: SelectedTargetVisualization?
+
+    /// The bag fingerprint the ladder / visualization memos key on (id + carry +
+    /// dispersion — the fields the layup, club naming and ellipse math read).
+    private func clubsFingerprint() -> [String] {
+        clubs.map { "\($0.id):\($0.carryM):\($0.dispersionM)" }
+    }
 
     /// User-controllable plan-overlay switch (persisted per course, default
     /// ON, like `activeTeeName`). Only affects the MAP overlay — the distance
@@ -137,6 +301,8 @@ final class OnCourseModel {
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var userElevationTask: Task<Void, Never>?
+    @ObservationIgnored private var browseOriginElevationTask: Task<Void, Never>?
+    @ObservationIgnored private var browseTargetElevationTask: Task<Void, Never>?
     /// Terrain fallback elevation for the current hole's green (only sampled
     /// when the green record has no stored elevation).
     private var greenTerrainElevation: Double?
@@ -256,6 +422,7 @@ final class OnCourseModel {
     func recenter() {
         mapFocus = nil
         focusedLadderId = nil
+        clearBrowseTarget()
         restoreCamera = nil
         cameraToken += 1
     }
@@ -264,6 +431,7 @@ final class OnCourseModel {
     /// hole fit until `recenter()` or a hole change. `ladderId` marks the rail
     /// row that drove it (nil for a non-rail focus).
     func focusMap(on position: LatLon, ladderId: String? = nil) {
+        clearBrowseTarget()
         mapFocus = position
         focusedLadderId = ladderId
         restoreCamera = nil
@@ -306,6 +474,12 @@ final class OnCourseModel {
         resetPlanEditingState()
         mapFocus = nil
         focusedLadderId = nil
+        browseOriginElevationTask?.cancel()
+        browseTargetElevationTask?.cancel()
+        browseOrigin = nil
+        browseOriginElevation = nil
+        browseTarget = nil
+        browseTargetElevation = nil
         restoreCamera = nil
         cameraToken += 1
         refreshGreenElevationFallback()
@@ -454,6 +628,8 @@ final class OnCourseModel {
     func selectTee(named name: String) {
         activeTeeName = name
         defaults.set(name, forKey: Self.teeDefaultsKey(courseId: courseId))
+        // A deliberate tee choice is also a deliberate browse-origin reset.
+        if isBrowseMode { resetBrowseOrigin() }
     }
 
     /// The tee used for this hole: the selected name when the hole has it,
@@ -532,6 +708,9 @@ final class OnCourseModel {
         guard enabled != gpsEnabled else { return }
         gpsEnabled = enabled
         defaults.set(enabled, forKey: Self.gpsEnabledKey(courseId: courseId))
+        // An inspected target belongs to the origin it was measured from. Do
+        // not carry it across the GPS/browse origin switch.
+        clearBrowseInspection()
         // The origin flips between the GPS fix and the tee — force a sweep so
         // the new origin's layup landing positions are sampled even when no
         // further GPS fix arrives.
@@ -542,6 +721,85 @@ final class OnCourseModel {
 
     /// In browse mode (`gpsEnabled == false`) the live fix is ignored entirely.
     var isBrowseMode: Bool { !gpsEnabled }
+
+    /// Explicitly move the transient browse origin. Map and ladder taps call
+    /// the inspect methods below first; only the confirmation action calls this.
+    func setBrowseOrigin(_ position: LatLon) {
+        guard isBrowseMode else { return }
+        clearBrowseInspection()
+        browseOrigin = position
+        browseOriginElevation = nil
+        mapFocus = nil
+        focusedLadderId = nil
+        refreshLadderElevations(force: true)
+
+        browseOriginElevationTask?.cancel()
+        guard let sampler = elevationSampler else { return }
+        browseOriginElevationTask = Task { [weak self] in
+            let elevation = await sampler(position)
+            guard !Task.isCancelled else { return }
+            self?.browseOriginElevation = elevation
+        }
+    }
+
+    /// Inspect an arbitrary map point FROM the unchanged browse origin. Does
+    /// not issue a camera command, so a tap at the end of a pan stays harmless.
+    func inspectBrowsePoint(_ position: LatLon) {
+        guard isBrowseMode else { return }
+        mapFocus = nil
+        focusedLadderId = nil
+        browseTargetElevationTask?.cancel()
+        browseTarget = position
+        browseTargetElevation = nil
+
+        guard let sampler = elevationSampler else { return }
+        browseTargetElevationTask = Task { [weak self] in
+            let elevation = await sampler(position)
+            guard !Task.isCancelled, self?.browseTarget == position else { return }
+            self?.browseTargetElevation = elevation
+        }
+    }
+
+    /// Inspect a ladder rung and retain the current browse origin. The existing
+    /// ladder focus drives its highlight, advice, and optional camera locate.
+    func inspectBrowseLadder(_ row: LadderRow) {
+        guard let position = row.position else { return }
+        focusMap(on: position, ladderId: row.id)
+    }
+
+    /// Make the currently inspected map point or ladder rung the next origin.
+    func promoteInspectedBrowseTarget() {
+        guard isBrowseMode else { return }
+        let position = browseTarget ?? selectedLadderRow?.position
+        guard let position else { return }
+        setBrowseOrigin(position)
+    }
+
+    /// Whether the card should offer the explicit promotion action.
+    var canPromoteInspectedBrowseTarget: Bool {
+        isBrowseMode && (browseTarget != nil || focusedLadderId != nil)
+    }
+
+    /// Restore the selected tee as the browse origin.
+    func resetBrowseOrigin() {
+        browseOriginElevationTask?.cancel()
+        browseOrigin = nil
+        browseOriginElevation = nil
+        clearBrowseInspection()
+        refreshLadderElevations(force: true)
+    }
+
+    private func clearBrowseTarget() {
+        browseTargetElevationTask?.cancel()
+        browseTarget = nil
+        browseTargetElevation = nil
+    }
+
+    private func clearBrowseInspection() {
+        mapFocus = nil
+        focusedLadderId = nil
+        clearBrowseTarget()
+    }
 
     /// Overridable for tests; the persisted default is 230 m.
     func setAimRoutingThresholdMeters(_ meters: Double) {
@@ -1008,11 +1266,10 @@ final class OnCourseModel {
     /// browse mode even with a live fix.
     var isUsingGPS: Bool { effectiveUserLocation != nil }
 
-    /// Where distances are measured from: the (gated) GPS fix, else the active
-    /// tee (useful on the tee before GPS locks, with location denied, or in
-    /// browse mode).
+    /// Where distances are measured from: the (gated) GPS fix, else the
+    /// transient browse point, else the active tee.
     var origin: LatLon? {
-        effectiveUserLocation ?? currentTeePosition
+        effectiveUserLocation ?? browseOrigin ?? currentTeePosition
     }
 
     /// Where the shot-capture crosshair drops: the live GPS fix, else (browse
@@ -1028,6 +1285,7 @@ final class OnCourseModel {
 
     private var originElevation: Double? {
         if effectiveUserLocation != nil { return userElevation }
+        if browseOrigin != nil { return browseOriginElevation }
         return currentHole.flatMap { teeElevation(for: $0) }
     }
 
@@ -1088,6 +1346,8 @@ final class OnCourseModel {
     func setHazards(_ rings: [FlatRing], holeIds: [String?]? = nil) {
         hazardRings = rings
         hazardHoleIds = holeIds ?? Array(repeating: nil, count: rings.count)
+        hazardBBoxes = rings.map { Self.bbox($0.points) }
+        hazardsVersion &+= 1
     }
 
     /// The course hazard rings — exposed for the caddy composition on the
@@ -1100,6 +1360,8 @@ final class OnCourseModel {
     /// strategy memo so the overlay picks the surfaces up.
     func setSurfaces(_ rings: [FlatRing]) {
         surfaces = rings
+        surfaceBBoxes = rings.map { Self.bbox($0.points) }
+        surfacesVersion &+= 1
         strategyKey = nil
     }
 
@@ -1115,6 +1377,38 @@ final class OnCourseModel {
         // are caught, not only those before the next aim.
         guard let targetLL = targets.greenCenter ?? nextAimAhead?.position else { return [] }
 
+        let key = HazardKey(
+            origin: origin,
+            holeIndex: currentHoleIndex,
+            greenCenter: targets.greenCenter,
+            nextAim: nextAimAhead?.position,
+            route: routeFingerprint(),
+            hazardsVersion: hazardsVersion
+        )
+        if key == hazardCarriesKey { return hazardCarriesCache }
+
+        let result = computeHazardCarries(origin: origin, targetLL: targetLL)
+        hazardCarriesKey = key
+        hazardCarriesCache = result
+        hazardCarriesBuildCount += 1
+        return result
+    }
+
+    /// Own-hazard play corridor half-width — this hole's fairway bunkers are
+    /// shown even well off centre. Also the padding basis for the bbox prefilter:
+    /// no ring farther than this (laterally) from a scan line can matter.
+    private static let ownHazardCorridorHalfWidthM = 400.0
+    /// Foreign-hazard corridor half-width — another hole's hazard shows only when
+    /// it's genuinely near a play line.
+    private static let foreignHazardCorridorHalfWidthM = 35.0
+    /// How far past a line's end a hazard still counts (greenside bunkers).
+    private static let hazardExtraAheadM = 40.0
+    /// Slack added to the prefilter box for a ring's own extent: `nearLines`
+    /// classifies a ring by its centroid but scans every vertex, so a ring whose
+    /// centroid sits at the corridor edge can reach a little further out.
+    private static let hazardScanBBoxMarginM = 50.0
+
+    private func computeHazardCarries(origin: LatLon, targetLL: LatLon) -> [HazardCarry] {
         // Two play lines: the DIRECT line (ball → green, cutting a dogleg) and
         // the ROUTED line (ball → aims → green, round the corner). A hazard in
         // play on EITHER matters, and is measured along whichever it sits on.
@@ -1122,16 +1416,38 @@ final class OnCourseModel {
         let routedLine = routedHazardLine(origin: origin, target: targetLL)
         let lines = routedLine.count > 2 ? [routedLine, directLine] : [directLine]
 
-        let split = hazardsByOwnership()
+        // Spatial prefilter: only rings whose bbox meets the padded scan-line box
+        // can land in a corridor; the rest cannot contribute a carry, so drop
+        // them before the O(vertices) ownership + `nearLines` scans. The pad is
+        // the WIDEST corridor (own) + the ahead extension + ring-extent slack, so
+        // it never prunes a ring the narrower foreign corridor would still catch.
+        let pad = Self.ownHazardCorridorHalfWidthM + Self.hazardExtraAheadM + Self.hazardScanBBoxMarginM
+        let scanBox = Self.expanded(Self.bbox(lines.flatMap { $0 }), by: pad)
+        let holeIds = hazardHoleIds.count == hazardRings.count
+            ? hazardHoleIds
+            : Array(repeating: nil, count: hazardRings.count)
+        var rings: [FlatRing] = []
+        var ids: [String?] = []
+        for i in hazardRings.indices where i < hazardBBoxes.count && hazardBBoxes[i].intersects(scanBox) {
+            rings.append(hazardRings[i])
+            ids.append(holeIds[i])
+        }
+        guard !rings.isEmpty else { return [] }
+
+        let split = hazardsByOwnership(rings: rings, ids: ids)
         // This hole's OWN hazards (by holeId, or nearest-route for untagged):
-        // always shown, wide corridor — a fairway bunker well off centre is
-        // still yours. Other holes' hazards: shown ONLY when they fall in the
-        // play corridor of one of the lines (in play despite belonging elsewhere).
+        // always shown, wide corridor. Other holes' hazards: shown ONLY when they
+        // fall in the play corridor of one of the lines (in play despite belonging
+        // elsewhere).
         let own = HazardCarries.nearLines(
-            lines, hazards: split.own, corridorHalfWidthM: 400, extraAheadM: 40, cap: 8
+            lines, hazards: split.own,
+            corridorHalfWidthM: Self.ownHazardCorridorHalfWidthM,
+            extraAheadM: Self.hazardExtraAheadM, cap: 8
         )
         let foreign = HazardCarries.nearLines(
-            lines, hazards: split.foreign, corridorHalfWidthM: 35, extraAheadM: 40, cap: 4
+            lines, hazards: split.foreign,
+            corridorHalfWidthM: Self.foreignHazardCorridorHalfWidthM,
+            extraAheadM: Self.hazardExtraAheadM, cap: 4
         )
         return (own + foreign)
             .sorted { $0.frontM != $1.frontM ? $0.frontM < $1.frontM : $0.carryM < $1.carryM }
@@ -1165,20 +1481,22 @@ final class OnCourseModel {
     /// holes' hazards + untagged-elsewhere). `holeId` is the primary signal;
     /// geometry only assigns untagged rings. The caller then always shows `own`
     /// and shows `foreign` only where it's genuinely in the play corridor.
-    private func hazardsByOwnership() -> (own: [FlatRing], foreign: [FlatRing]) {
-        guard let current = currentHole else { return (hazardRings, []) }
-        let ids = hazardHoleIds.count == hazardRings.count
-            ? hazardHoleIds
-            : Array(repeating: nil, count: hazardRings.count)
+    ///
+    /// Operates on the already-prefiltered ring subset (with its parallel
+    /// `ids`); classification is per-ring against every hole's route (untagged
+    /// rings only), so dropping far rings beforehand never changes a survivor's
+    /// verdict. All-hole routes come from `cachedHoleRoutePlanar`.
+    private func hazardsByOwnership(rings: [FlatRing], ids: [String?]) -> (own: [FlatRing], foreign: [FlatRing]) {
+        guard let current = currentHole else { return (rings, []) }
         let currentId = current.hole.id
         let routes: [(number: Int, pts: [Vec2])] = holes.compactMap { hole in
-            let pts = holeRoutePlanar(for: hole)
+            let pts = cachedHoleRoutePlanar(for: hole)
             return pts.count >= 2 ? (hole.hole.number, pts) : nil
         }
 
         var own: [FlatRing] = []
         var foreign: [FlatRing] = []
-        for (ring, holeId) in zip(hazardRings, ids) {
+        for (ring, holeId) in zip(rings, ids) {
             let mine: Bool
             if let holeId {
                 mine = holeId == currentId
@@ -1387,6 +1705,14 @@ final class OnCourseModel {
             return []
         }
         guard nextAimAhead != nil else { return [origin, center] }
+        return forwardRoute(from: origin)
+    }
+
+    /// Browse-mode route from the arbitrary transient origin through only the
+    /// remaining forward aims to the green. At the default tee this equals the
+    /// full hole route.
+    private var browseForwardRoute: [LatLon] {
+        guard let origin else { return [] }
         return forwardRoute(from: origin)
     }
 
@@ -1910,6 +2236,36 @@ final class OnCourseModel {
     var ladderRows: [LadderRow] {
         guard let origin, let distances else { return [] }
 
+        // Every input the build below reads, fingerprinted so the six per-render
+        // reads (rail + banner + ellipse + wind-hold) rebuild it at most once and
+        // the follow-up `browseTargetElevation` render reuses it (not an input).
+        // `hazards` is the memoised `hazardCarries` — evaluated once, feeding both
+        // the fingerprint and the build.
+        let hazardCarries = self.hazardCarries
+        let key = LadderKey(
+            origin: origin,
+            distances: distances,
+            targets: targets,
+            planShots: (currentHolePlan?.shots ?? []).map {
+                "\($0.clubName ?? "")|\($0.position.lat)|\($0.position.lon)"
+            },
+            competitionMode: competitionMode,
+            clubs: clubsFingerprint(),
+            hazards: hazardCarries,
+            surfacesVersion: surfacesVersion
+        )
+        if key == ladderRowsKey { return ladderRowsCache }
+
+        let rows = buildLadderRows(origin: origin, distances: distances, hazardCarries: hazardCarries)
+        ladderRowsKey = key
+        ladderRowsCache = rows
+        ladderRowsBuildCount += 1
+        return rows
+    }
+
+    private func buildLadderRows(
+        origin: LatLon, distances: OnCourseDistances, hazardCarries: [HazardCarry]
+    ) -> [LadderRow] {
         let planShots = (currentHolePlan?.shots ?? []).enumerated().map { i, shot in
             LadderBuilder.PlanShot(
                 index: i + 1,
@@ -2003,9 +2359,22 @@ final class OnCourseModel {
         var windHoldSide: TargetWindHold.Side?
     }
 
-    /// The ladder row the banner + map advice reflect: the focused rung, else
-    /// the green (default), else the pin, else the first row.
+    /// The target the banner + map advice reflect: an arbitrary inspected map
+    /// point, else the focused ladder rung, else the green/pin/default row.
     private var selectedLadderRow: LadderRow? {
+        // Inspecting an arbitrary tapped point needs no ladder — return early so a
+        // browse tap never builds the (course-wide) ladder it would not use.
+        if let browseTarget, let origin {
+            return LadderRow(
+                id: Self.browseTargetRowID,
+                kind: .aim,
+                label: "Selected point",
+                detail: nil,
+                meters: Int(Distance.planarMeters(origin, browseTarget).rounded()),
+                carryM: nil,
+                position: browseTarget
+            )
+        }
         let rows = ladderRows
         guard !rows.isEmpty else { return nil }
         return focusedLadderId.flatMap { id in rows.first { $0.id == id } }
@@ -2013,6 +2382,8 @@ final class OnCourseModel {
             ?? rows.first { $0.kind == .pin }
             ?? rows.first
     }
+
+    private static let browseTargetRowID = "browse-target"
 
     var selectedTargetAdvice: TargetAdvice? {
         guard let row = selectedLadderRow else { return nil }
@@ -2095,6 +2466,29 @@ final class OnCourseModel {
               let club = clubs.first(where: { $0.name == clubName })
         else { return nil }
 
+        // `selectedTargetAdvice`, `selectedTargetEllipse` and `selectedTargetWindHold`
+        // each drive this (up to five calls per render), so memoise on the resolved
+        // inputs — the dispersion ellipse + 4-pass crosswind solve then runs once.
+        let key = VisualizationKey(
+            kind: row.kind, origin: origin, target: targetPosition, clubName: clubName,
+            clubCarryM: club.carryM, clubDispersionM: club.dispersionM,
+            elevationDeltaM: elevationDeltaM,
+            windSpeed: effectiveWind?.speedMps, windDir: effectiveWind?.directionDeg,
+            competitionMode: competitionMode
+        )
+        if key == visualizationKey { return visualizationCache }
+
+        let result = computeSelectedTargetVisualization(
+            origin: origin, targetPosition: targetPosition, club: club, elevationDeltaM: elevationDeltaM
+        )
+        visualizationKey = key
+        visualizationCache = result
+        return result
+    }
+
+    private func computeSelectedTargetVisualization(
+        origin: LatLon, targetPosition: LatLon, club: ClubRecord, elevationDeltaM: Int?
+    ) -> SelectedTargetVisualization? {
         let o = Sweref99TM.fromWGS84(origin)
         let t = Sweref99TM.fromWGS84(targetPosition)
         let dx = t.x - o.x, dy = t.y - o.y
@@ -2200,6 +2594,7 @@ final class OnCourseModel {
     /// so a centroid plays-as would contradict the front/carry the rung shows.
     /// Parses the builder's row-id scheme ("aim-<i>", "plan-<index>").
     private func targetElevation(for row: LadderRow) -> Double? {
+        if row.id == Self.browseTargetRowID { return browseTargetElevation }
         switch row.kind {
         case .green, .pin:
             return targets.greenElevation
@@ -2561,7 +2956,11 @@ final class OnCourseModel {
     /// stack (first containing ring wins, D23) — the same rule `optimizeAim`
     /// uses. Points in no ring lie as `.rough`.
     private func lieAt(_ p: Vec2) -> Lie {
-        for ring in surfaces where ring.points.count >= 3 {
+        // Topmost-first: the first CONTAINING ring wins (D23). The bbox precheck
+        // only skips rings whose box excludes `p` (they cannot contain it), so it
+        // never reorders — a skipped ring could not have won anyway.
+        for (index, ring) in surfaces.enumerated() where ring.points.count >= 3 {
+            if index < surfaceBBoxes.count, !surfaceBBoxes[index].contains(p) { continue }
             if pointInRing(p, ring.points) { return lieFromFeatureType(ring.kind) }
         }
         return .rough
@@ -2667,7 +3066,7 @@ final class OnCourseModel {
     /// same planar-metre rounding as the card's leg capsules and TO AIM row,
     /// so the on-map figures always match the card.
     var routeLegLabels: [RouteLegLabel] {
-        Self.routeLegLabels(along: isBrowseMode ? holeRoute : gpsForwardRoute)
+        Self.routeLegLabels(along: isBrowseMode ? browseForwardRoute : gpsForwardRoute)
     }
 
     /// Pure leg decomposition: consecutive route vertices → (midpoint, whole
@@ -2708,7 +3107,7 @@ final class OnCourseModel {
         if let p = targets.greenBack { markers.append(TargetMarker(kind: .back, position: p)) }
         if let p = targets.activePin { markers.append(TargetMarker(kind: .pin, position: p)) }
 
-        let line: [LatLon] = isBrowseMode ? holeRoute : gpsForwardRoute
+        let line: [LatLon] = isBrowseMode ? browseForwardRoute : gpsForwardRoute
 
         return MapOverlayState(
             distanceLine: line,
@@ -2716,7 +3115,7 @@ final class OnCourseModel {
             userLocation: isUsingGPS ? userLocation.map { UserLocationMarker(position: $0) } : nil,
             routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : [],
             plan: planOverlay,
-            highlight: mapFocus,
+            highlight: isBrowseMode ? browseTarget ?? mapFocus ?? browseOrigin : mapFocus,
             selectedEllipse: selectedTargetEllipse,
             selectedWindHold: selectedTargetWindHold
         )

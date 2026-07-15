@@ -60,9 +60,7 @@ struct LadderRailView: View {
             ? row.label + (row.approachClub.map { " · \($0)" } ?? "")
             : row.label
         Button {
-            if let position = row.position {
-                model.focusMap(on: position, ladderId: row.id)
-            }
+            model.inspectBrowseLadder(row)
         } label: {
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 1.5)
@@ -128,7 +126,10 @@ struct LadderRailView: View {
         if row.kind == .layup, let remaining = row.remainingM {
             base += ", \(remaining) meters to the green"
         }
-        return base + (row.position != nil ? ". Tap to show on map." : "")
+        guard row.position != nil else { return base }
+        return base + (model.isBrowseMode
+            ? ". Tap to inspect from the current browse point."
+            : ". Tap to show on map.")
     }
 
     /// Cyan focus color — matches the map highlight ring.

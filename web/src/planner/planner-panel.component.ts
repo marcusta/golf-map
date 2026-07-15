@@ -15,7 +15,7 @@ import { scoreEstimate, type PuttEstimate, type PuttEstimateScore } from './putt
 import { gateLabel, legDriftLabel, legLight, type LegLight, type PlanLeg, type PlanNode } from './plan-overlay';
 import { ElevationService } from '../map/elevation.service';
 import { ElevationProfileService } from '../profile/elevation-profile.service';
-import { ElevationProfileComponent } from '../profile/elevation-profile.component';
+import { ElevationProfileComponent, signedMeters } from '../profile/elevation-profile.component';
 
 /** localStorage key for the training-mode toggle (default ON per doc §5.1). */
 const TRAINING_MODE_KEY = 'golf-map.putt.trainingMode';
@@ -59,11 +59,25 @@ const tpl = template(`
         <div class="plan-panel__section">
             <h4 class="section-title">Plan</h4>
             <div class="mode-row">
+                <button bind="browseMode" type="button" class="mode-btn" data-testid="planner-browse-mode">Browse</button>
                 <button bind="addShot" type="button" class="mode-btn" data-testid="planner-add-shot">+ Shot</button>
                 <button bind="addGate" type="button" class="mode-btn" data-testid="planner-add-gate">+ Gate</button>
                 <button bind="puttMode" type="button" class="mode-btn" data-testid="planner-putt-mode">Putt</button>
             </div>
             <div bind="hint" class="plan-hint"></div>
+        </div>
+
+        <div bind="browseSection" class="plan-panel__section" data-testid="planner-browse-section">
+            <div class="browse-head">
+                <h4 class="section-title">Distance ladder</h4>
+                <button bind="resetBrowse" type="button" class="mini-btn" data-testid="planner-browse-reset">From tee</button>
+            </div>
+            <div bind="browseFrom" class="browse-from"></div>
+            <div bind="browseDetail" class="browse-detail" data-testid="planner-browse-detail">
+                <div bind="browseDetailBody" class="browse-detail__body"></div>
+                <button bind="promoteBrowse" type="button" class="mini-btn browse-promote" data-testid="planner-browse-promote">Browse from here</button>
+            </div>
+            <div bind="browseRows" class="browse-rows" data-testid="planner-browse-rows"></div>
         </div>
 
         <div bind="puttSection" class="plan-panel__section" data-testid="planner-putt-section">
@@ -294,6 +308,86 @@ export class PlannerPanelComponent extends Component {
                 color: ${t('color-text-secondary')};
                 &.show { display: block; }
                 &.warn { color: ${t('color-status-negative')}; }
+            }
+
+            & .browse-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: ${s('sm')};
+            }
+            & .browse-from {
+                font-size: 0.7rem;
+                color: ${t('color-text-secondary')};
+            }
+            & .browse-detail {
+                display: none;
+                padding: 7px;
+                gap: ${s('xs')};
+                border: 1px solid ${t('color-border-focus')};
+                border-radius: ${t('radius-sm')};
+                background: ${t('color-surface-raised')};
+                &.show {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                }
+            }
+            & .browse-detail__body {
+                min-width: 0;
+                font-size: 0.7rem;
+                line-height: 1.4;
+                color: ${t('color-text-secondary')};
+                & b {
+                    display: block;
+                    overflow: hidden;
+                    color: ${t('color-text-primary')};
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+            }
+            & .browse-promote { flex: 0 0 auto; }
+            & .browse-rows { display: flex; flex-direction: column; gap: 3px; }
+            & .browse-row {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                gap: 2px ${s('xs')};
+                width: 100%;
+                padding: 5px 7px;
+                border: 1px solid transparent;
+                border-radius: ${t('radius-sm')};
+                background: ${t('color-surface-sunken')};
+                color: ${t('color-text-primary')};
+                text-align: left;
+                font-family: inherit;
+                cursor: pointer;
+                &:hover {
+                    border-color: ${t('color-border-focus')};
+                    background: ${t('color-surface-raised')};
+                }
+                &.selected {
+                    border-color: ${t('color-border-focus')};
+                    background: ${t('color-surface-raised')};
+                }
+            }
+            & .browse-row__label {
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-size: 0.73rem;
+                font-weight: 600;
+            }
+            & .browse-row__distance {
+                ${metric()}
+                font-size: 0.82rem;
+            }
+            & .browse-row__detail {
+                grid-column: 1 / -1;
+                font-size: 0.66rem;
+                color: ${t('color-text-secondary')};
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
             }
 
             & .plan-field { ${field()} min-width: 0; flex: 1; }
@@ -553,6 +647,10 @@ export class PlannerPanelComponent extends Component {
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
+            browseMode: {
+                onclick: () => this.tool.enterBrowseMode(),
+                className: () => this.tool.mode.get() === 'select' ? 'mode-btn active' : 'mode-btn',
+            },
             addShot: {
                 onclick: () => this.tool.setMode('add-shot'),
                 className: () => this.tool.mode.get() === 'add-shot' ? 'mode-btn active' : 'mode-btn',
@@ -566,6 +664,22 @@ export class PlannerPanelComponent extends Component {
                 className: () => this.tool.mode.get() === 'putt' ? 'mode-btn active' : 'mode-btn',
             },
             puttSection: { style: () => this.tool.mode.get() === 'putt' ? '' : 'display:none' },
+            browseSection: { style: () => this.tool.mode.get() === 'putt' ? 'display:none' : '' },
+            resetBrowse: {
+                onclick: () => this.tool.resetBrowseFrom(),
+                disabled: () => !this.tool.browseOrigin.get()?.isOverride,
+            },
+            browseFrom: () => this.tool.browseOrigin.get()?.isOverride
+                ? 'From selected map point · select a target to inspect it'
+                : 'From selected tee · select a target to inspect it',
+            browseDetail: {
+                className: () => this.tool.inspectedBrowseRow.get() ? 'browse-detail show' : 'browse-detail',
+            },
+            browseDetailBody: { textContent: () => '' },
+            promoteBrowse: {
+                onclick: () => this.tool.promoteInspectedBrowseTarget(),
+                disabled: () => !this.tool.inspectedBrowseRow.get(),
+            },
             hint: {
                 textContent: () => this.hintText() ?? '',
                 className: () => {
@@ -648,6 +762,19 @@ export class PlannerPanelComponent extends Component {
         const legsBody = this.ref(frag, 'legsBody');
         this.track(effect(() => { legsBody.innerHTML = this.legsHtml(); }));
 
+        const browseRows = this.ref(frag, 'browseRows');
+        this.track(effect(() => { browseRows.innerHTML = this.browseRowsHtml(); }));
+        const browseDetailBody = this.ref(frag, 'browseDetailBody');
+        this.track(effect(() => { browseDetailBody.innerHTML = this.browseDetailHtml(); }));
+        const onBrowseRow = (event: Event): void => {
+            const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-browse-row]');
+            if (!button) return;
+            const row = this.tool.browseRows.peek().find(candidate => candidate.id === button.dataset.browseRow);
+            if (row) this.tool.activateBrowseRow(row);
+        };
+        browseRows.addEventListener('click', onBrowseRow);
+        this.track(() => browseRows.removeEventListener('click', onBrowseRow));
+
         // Caddy advice (green-slope-half + future rules), ranked highest first.
         const caddyBody = this.ref(frag, 'caddyBody');
         this.track(effect(() => { caddyBody.innerHTML = this.caddyHtml(); }));
@@ -711,6 +838,7 @@ export class PlannerPanelComponent extends Component {
             // (holes without their own teeId anchor on this name).
             const tee = teeId ? this.furniture.teesForHole(hole.id).find(t => t.id === teeId) : null;
             this.tool.setActiveTeeName(tee ? tee.name : null);
+            this.tool.resetBrowseFrom();
         });
         this.track(effect(() => {
             const hole = this.tool.selectedHole.get();
@@ -1115,7 +1243,39 @@ export class PlannerPanelComponent extends Component {
         if (mode === 'add-shot') return 'Click the map to append shots — Esc to stop.';
         if (mode === 'add-gate') return 'Click near a leg to drop a corridor gate (Shift-click for several).';
         if (mode === 'putt') return 'Click the green to place the ball — drag ball/hole; the read updates on release.';
-        return null;
+        return 'Click open map space or a ladder rung to inspect it. Use “Browse from here” to move the origin.';
+    }
+
+    private browseRowsHtml(): string {
+        const rows = this.tool.browseRows.get();
+        const inspectedId = this.tool.inspectedBrowseRow.get()?.id ?? null;
+        if (rows.length === 0) return '<div class="empty-note show">No distance targets on this hole.</div>';
+        return rows.map(row => {
+            const detail: string[] = [];
+            if (row.playsAsM !== null && Math.round(row.playsAsM) !== Math.round(row.lineM)) {
+                detail.push(`plays ${Math.round(row.playsAsM)} m`);
+            }
+            if (row.clubName) detail.push(row.clubName);
+            const detailHtml = detail.length > 0
+                ? `<span class="browse-row__detail">${escapeHtml(detail.join(' · '))}</span>`
+                : '';
+            const selected = row.id === inspectedId ? ' selected' : '';
+            return `<button type="button" class="browse-row${selected}" data-browse-row="${escapeHtml(row.id)}" aria-pressed="${row.id === inspectedId}">`
+                + `<span class="browse-row__label">${escapeHtml(row.label)}</span>`
+                + `<span class="browse-row__distance">${Math.round(row.lineM)} <span class="metric__unit">m</span></span>`
+                + detailHtml + '</button>';
+        }).join('');
+    }
+
+    private browseDetailHtml(): string {
+        const row = this.tool.inspectedBrowseRow.get();
+        if (!row) return '';
+        const details = [`Actual ${Math.round(row.lineM)} m`];
+        if (row.playsAsM !== null) details.push(`plays ${Math.round(row.playsAsM)} m`);
+        if (row.elevationDeltaM !== null) details.push(`elevation ${signedMeters(row.elevationDeltaM)}`);
+        if (row.windDeltaM !== null) details.push(`wind ${signedMeters(row.windDeltaM)}`);
+        if (row.clubName) details.push(row.clubName);
+        return `<b>${escapeHtml(row.label)}</b>${escapeHtml(details.join(' · '))}`;
     }
 
     /** "1: Tee → ①" per-shot distance text from the leg landing on it. */
