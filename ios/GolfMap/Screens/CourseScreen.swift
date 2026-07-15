@@ -272,15 +272,29 @@ struct CourseScreen: View {
             if let utterance = UserDefaults.standard.string(forKey: "placePinPhrase") {
                 let locale: PinVoiceLocale =
                     UserDefaults.standard.string(forKey: "pinLocale") == "sv" ? .swedish : .english
-                if let phrase = PinPhraseParser.parse(utterance, locale: locale).first,
-                   let frame = newModel.currentGreenFrame,
-                   let resolution = newModel.resolvePinPhrase(phrase) {
-                    newModel.commitPin(resolution)
-                    let pin = PinPlacementSolver.pinWGS84(spec: resolution.spec, frame: frame)
-                    print("PIN-DEBUG source=\(resolution.spec.source.rawValue) "
-                        + "depth=\(resolution.spec.depthFromFrontM) frac=\(resolution.spec.lateralFraction) "
-                        + "clamped=\(resolution.clamped) lat=\(pin.lat) lon=\(pin.lon)")
+                // The outcome is ALSO persisted under `pinDebug.lastResult` so a
+                // headless run can read it from the container plist — simctl
+                // console capture is unreliable, and each guard below can fail.
+                let outcome: String
+                if let phrase = PinPhraseParser.parse(utterance, locale: locale).first {
+                    if let frame = newModel.currentGreenFrame {
+                        if let resolution = newModel.resolvePinPhrase(phrase) {
+                            newModel.commitPin(resolution)
+                            let pin = PinPlacementSolver.pinWGS84(spec: resolution.spec, frame: frame)
+                            outcome = "committed source=\(resolution.spec.source.rawValue) "
+                                + "depth=\(resolution.spec.depthFromFrontM) frac=\(resolution.spec.lateralFraction) "
+                                + "clamped=\(resolution.clamped) lat=\(pin.lat) lon=\(pin.lon)"
+                        } else {
+                            outcome = "no-resolution (origin missing?)"
+                        }
+                    } else {
+                        outcome = "no-green-frame"
+                    }
+                } else {
+                    outcome = "parse-failed utterance=\(utterance)"
                 }
+                print("PIN-DEBUG \(outcome)")
+                UserDefaults.standard.set(outcome, forKey: "pinDebug.lastResult")
             }
             // `-browseMode 1` starts in browse mode (GPS off), `-browseMode 0`
             // forces GPS on (overrides the persisted per-course setting so a
