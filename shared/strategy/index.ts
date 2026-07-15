@@ -70,6 +70,15 @@ export {
     type FeatureDistancesInput,
     featureDistances,
 } from './feature-distances';
+export {
+    type ForwardAimsInput,
+    type GatedForwardRouteInput,
+    AIM_ROUTING_THRESHOLD_M,
+    projectedRouteChainage,
+    forwardAims,
+    forwardRoutePoints,
+    gatedForwardRoutePoints,
+} from './forward-route';
 export { type Lie, lieFromFeatureType } from './lie';
 export {
     EXPECTED_STROKES_ANCHORS_M,

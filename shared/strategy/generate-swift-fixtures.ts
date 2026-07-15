@@ -55,6 +55,13 @@ import {
 } from './ellipse';
 import { HOLED_DISTANCE_M, shotsToHoleOut, strokesGained } from './expected-strokes';
 import { type DistanceTarget, featureDistances } from './feature-distances';
+import {
+    AIM_ROUTING_THRESHOLD_M,
+    forwardAims,
+    forwardRoutePoints,
+    gatedForwardRoutePoints,
+    projectedRouteChainage,
+} from './forward-route';
 import { type Lie, lieFromFeatureType } from './lie';
 import { type StrategyPoint } from './plays-like';
 import { MPS_TO_MPH, mphToMps } from './units';
@@ -385,6 +392,85 @@ const featureDistancesFx = {
                 windDeltaM: r.windDeltaM,
                 clubName: clubName(r.club),
             })),
+        };
+    }),
+};
+
+// ---------------------------------------------------------------------------
+// ForwardRoute module — route-chainage projection + forward aim filter
+// ---------------------------------------------------------------------------
+
+interface ForwardRouteCase {
+    name: string;
+    origin: StrategyPoint;
+    tee?: StrategyPoint;
+    aims: StrategyPoint[];
+    green: StrategyPoint;
+    marginM?: number;
+}
+
+const frTee: StrategyPoint = { x: 0, y: 0 };
+const frCorner: StrategyPoint = { x: 0, y: 250 };
+const frGreen: StrategyPoint = { x: 150, y: 250 };
+const frAim2: StrategyPoint = { x: 150, y: 250 };
+const frGreen2: StrategyPoint = { x: 150, y: 400 };
+
+const forwardRouteCases: ForwardRouteCase[] = [
+    { name: 'origin at the tee of a 90° dogleg keeps the corner', origin: frTee, tee: frTee, aims: [frCorner], green: frGreen },
+    { name: 'past the corner on the second leg drops it', origin: { x: 56, y: 248 }, tee: frTee, aims: [frCorner], green: frGreen },
+    { name: 'midway along the first leg, offset into the rough, keeps the corner', origin: { x: 25, y: 120 }, tee: frTee, aims: [frCorner], green: frGreen },
+    { name: 'origin exactly at an aim vertex drops it, later aims kept', origin: frCorner, tee: frTee, aims: [frCorner, frAim2], green: frGreen2 },
+    { name: 'double dogleg, past the first corner only', origin: { x: 60, y: 252 }, tee: frTee, aims: [frCorner, frAim2], green: frGreen2 },
+    { name: 'aim 3 m ahead of the projection drops at the default margin', origin: { x: 0, y: 97 }, tee: frTee, aims: [{ x: 0, y: 100 }], green: { x: 0, y: 200 } },
+    { name: 'aim 3 m ahead of the projection kept at marginM 2', origin: { x: 0, y: 97 }, tee: frTee, aims: [{ x: 0, y: 100 }], green: { x: 0, y: 200 }, marginM: 2 },
+    { name: 'no tee, origin behind the first aim: negative chainage, all aims kept', origin: { x: 0, y: 50 }, aims: [{ x: 0, y: 100 }, { x: 0, y: 150 }], green: { x: 0, y: 200 } },
+    { name: 'origin behind the tee: negative chainage, all aims kept', origin: { x: 0, y: -30 }, tee: frTee, aims: [frCorner], green: frGreen },
+    { name: 'duplicate aim vertices (zero-length legs) both kept', origin: { x: 0, y: 50 }, tee: frTee, aims: [{ x: 0, y: 100 }, { x: 0, y: 100 }], green: { x: 0, y: 200 } },
+    { name: 'elbow-interior tie resolves to the later leg, corner drops', origin: { x: 10, y: 90 }, tee: frTee, aims: [{ x: 0, y: 100 }], green: { x: 100, y: 100 } },
+    { name: 'empty aims', origin: { x: 3, y: 4 }, tee: frTee, aims: [], green: { x: 0, y: 200 } },
+];
+
+const forwardRoute = {
+    cases: forwardRouteCases.map((c) => {
+        const input = { origin: c.origin, tee: c.tee, aims: c.aims, green: c.green, marginM: c.marginM };
+        const kept = forwardAims(input);
+        const route = forwardRoutePoints(input);
+        // forwardAims returns an in-order SUFFIX of aims — recover the indices.
+        const keptAimIndices = kept.map((_, i) => c.aims.length - kept.length + i);
+        const chainageRoute = c.tee ? [c.tee, ...c.aims, c.green] : [...c.aims, c.green];
+        return {
+            name: c.name,
+            origin: c.origin,
+            tee: c.tee ?? null,
+            aims: c.aims,
+            green: c.green,
+            marginM: c.marginM ?? null,
+            projectedChainageM: projectedRouteChainage(chainageRoute, c.origin),
+            keptAimIndices,
+            routePoints: route,
+        };
+    }),
+    constants: { AIM_ROUTING_THRESHOLD_M },
+    // gatedForwardRoutePoints — the drawn-line gate (straight at the green
+    // within the routing threshold, routed beyond it).
+    gatedCases: ([
+        // The on-course report scenario: aim ~21 m ahead of a 90 m-out origin
+        // is KEPT by the chainage filter but gated out of the drawn line.
+        { name: '90 m out, aim 21 m ahead: gated straight', origin: { x: 96, y: 178 }, tee: frTee, aims: [{ x: 112, y: 191 }], green: { x: 150, y: 250 } },
+        { name: 'from the tee (beyond threshold): routed', origin: frTee, tee: frTee, aims: [frCorner], green: frGreen },
+        { name: 'custom thresholdM gates a tee-length hole straight', origin: frTee, tee: frTee, aims: [frCorner], green: frGreen, thresholdM: 300 },
+        { name: 'exactly at the threshold: gated straight (<=)', origin: { x: 0, y: 20 }, tee: frTee, aims: [frCorner], green: { x: 0, y: 250 } },
+    ] as (ForwardRouteCase & { thresholdM?: number })[]).map((c) => {
+        const input = { origin: c.origin, tee: c.tee, aims: c.aims, green: c.green, marginM: c.marginM, thresholdM: c.thresholdM };
+        return {
+            name: c.name,
+            origin: c.origin,
+            tee: c.tee ?? null,
+            aims: c.aims,
+            green: c.green,
+            marginM: c.marginM ?? null,
+            thresholdM: c.thresholdM ?? null,
+            routePoints: gatedForwardRoutePoints(input),
         };
     }),
 };
@@ -1112,6 +1198,7 @@ const fixture = {
     wind,
     carry,
     featureDistances: featureDistancesFx,
+    forwardRoute,
     caddy,
     ellipse: ellipseFx,
     rings,
@@ -1127,6 +1214,7 @@ console.log(
         `layup ${layup.cases.length} cases, ` +
         `wind ${wind.windEffect.length} cases, carry ${carry.cases.length} cases, ` +
         `featureDistances ${featureDistancesFx.cases.length} cases, ` +
+        `forwardRoute ${forwardRoute.cases.length} cases, ` +
         `caddy ${caddy.run.cases.length} run + ${caddy.greenSlope.cases.length} green-slope cases, ` +
         `ellipse ${ellipseFx.cases.length} cases + ${rings.ringPolygon.length} ring cases, ` +
         `lie ${lie.lieFromFeatureType.length} cases, ` +

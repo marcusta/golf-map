@@ -1769,6 +1769,625 @@
             }
         ]
     },
+    "forwardRoute": {
+        "cases": [
+            {
+                "name": "origin at the tee of a 90° dogleg keeps the corner",
+                "origin": {
+                    "x": 0,
+                    "y": 0
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    }
+                ],
+                "green": {
+                    "x": 150,
+                    "y": 250
+                },
+                "marginM": null,
+                "projectedChainageM": 0,
+                "keptAimIndices": [
+                    0
+                ],
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": 0
+                    },
+                    {
+                        "x": 0,
+                        "y": 250
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    }
+                ]
+            },
+            {
+                "name": "past the corner on the second leg drops it",
+                "origin": {
+                    "x": 56,
+                    "y": 248
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    }
+                ],
+                "green": {
+                    "x": 150,
+                    "y": 250
+                },
+                "marginM": null,
+                "projectedChainageM": 306,
+                "keptAimIndices": [],
+                "routePoints": [
+                    {
+                        "x": 56,
+                        "y": 248
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    }
+                ]
+            },
+            {
+                "name": "midway along the first leg, offset into the rough, keeps the corner",
+                "origin": {
+                    "x": 25,
+                    "y": 120
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    }
+                ],
+                "green": {
+                    "x": 150,
+                    "y": 250
+                },
+                "marginM": null,
+                "projectedChainageM": 120,
+                "keptAimIndices": [
+                    0
+                ],
+                "routePoints": [
+                    {
+                        "x": 25,
+                        "y": 120
+                    },
+                    {
+                        "x": 0,
+                        "y": 250
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    }
+                ]
+            },
+            {
+                "name": "origin exactly at an aim vertex drops it, later aims kept",
+                "origin": {
+                    "x": 0,
+                    "y": 250
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    }
+                ],
+                "green": {
+                    "x": 150,
+                    "y": 400
+                },
+                "marginM": null,
+                "projectedChainageM": 250,
+                "keptAimIndices": [
+                    1
+                ],
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    },
+                    {
+                        "x": 150,
+                        "y": 400
+                    }
+                ]
+            },
+            {
+                "name": "double dogleg, past the first corner only",
+                "origin": {
+                    "x": 60,
+                    "y": 252
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    }
+                ],
+                "green": {
+                    "x": 150,
+                    "y": 400
+                },
+                "marginM": null,
+                "projectedChainageM": 310,
+                "keptAimIndices": [
+                    1
+                ],
+                "routePoints": [
+                    {
+                        "x": 60,
+                        "y": 252
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    },
+                    {
+                        "x": 150,
+                        "y": 400
+                    }
+                ]
+            },
+            {
+                "name": "aim 3 m ahead of the projection drops at the default margin",
+                "origin": {
+                    "x": 0,
+                    "y": 97
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 100
+                    }
+                ],
+                "green": {
+                    "x": 0,
+                    "y": 200
+                },
+                "marginM": null,
+                "projectedChainageM": 97,
+                "keptAimIndices": [],
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": 97
+                    },
+                    {
+                        "x": 0,
+                        "y": 200
+                    }
+                ]
+            },
+            {
+                "name": "aim 3 m ahead of the projection kept at marginM 2",
+                "origin": {
+                    "x": 0,
+                    "y": 97
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 100
+                    }
+                ],
+                "green": {
+                    "x": 0,
+                    "y": 200
+                },
+                "marginM": 2,
+                "projectedChainageM": 97,
+                "keptAimIndices": [
+                    0
+                ],
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": 97
+                    },
+                    {
+                        "x": 0,
+                        "y": 100
+                    },
+                    {
+                        "x": 0,
+                        "y": 200
+                    }
+                ]
+            },
+            {
+                "name": "no tee, origin behind the first aim: negative chainage, all aims kept",
+                "origin": {
+                    "x": 0,
+                    "y": 50
+                },
+                "tee": null,
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 100
+                    },
+                    {
+                        "x": 0,
+                        "y": 150
+                    }
+                ],
+                "green": {
+                    "x": 0,
+                    "y": 200
+                },
+                "marginM": null,
+                "projectedChainageM": -50,
+                "keptAimIndices": [
+                    0,
+                    1
+                ],
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": 50
+                    },
+                    {
+                        "x": 0,
+                        "y": 100
+                    },
+                    {
+                        "x": 0,
+                        "y": 150
+                    },
+                    {
+                        "x": 0,
+                        "y": 200
+                    }
+                ]
+            },
+            {
+                "name": "origin behind the tee: negative chainage, all aims kept",
+                "origin": {
+                    "x": 0,
+                    "y": -30
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    }
+                ],
+                "green": {
+                    "x": 150,
+                    "y": 250
+                },
+                "marginM": null,
+                "projectedChainageM": -30,
+                "keptAimIndices": [
+                    0
+                ],
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": -30
+                    },
+                    {
+                        "x": 0,
+                        "y": 250
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    }
+                ]
+            },
+            {
+                "name": "duplicate aim vertices (zero-length legs) both kept",
+                "origin": {
+                    "x": 0,
+                    "y": 50
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 100
+                    },
+                    {
+                        "x": 0,
+                        "y": 100
+                    }
+                ],
+                "green": {
+                    "x": 0,
+                    "y": 200
+                },
+                "marginM": null,
+                "projectedChainageM": 50,
+                "keptAimIndices": [
+                    0,
+                    1
+                ],
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": 50
+                    },
+                    {
+                        "x": 0,
+                        "y": 100
+                    },
+                    {
+                        "x": 0,
+                        "y": 100
+                    },
+                    {
+                        "x": 0,
+                        "y": 200
+                    }
+                ]
+            },
+            {
+                "name": "elbow-interior tie resolves to the later leg, corner drops",
+                "origin": {
+                    "x": 10,
+                    "y": 90
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 100
+                    }
+                ],
+                "green": {
+                    "x": 100,
+                    "y": 100
+                },
+                "marginM": null,
+                "projectedChainageM": 110,
+                "keptAimIndices": [],
+                "routePoints": [
+                    {
+                        "x": 10,
+                        "y": 90
+                    },
+                    {
+                        "x": 100,
+                        "y": 100
+                    }
+                ]
+            },
+            {
+                "name": "empty aims",
+                "origin": {
+                    "x": 3,
+                    "y": 4
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [],
+                "green": {
+                    "x": 0,
+                    "y": 200
+                },
+                "marginM": null,
+                "projectedChainageM": 4,
+                "keptAimIndices": [],
+                "routePoints": [
+                    {
+                        "x": 3,
+                        "y": 4
+                    },
+                    {
+                        "x": 0,
+                        "y": 200
+                    }
+                ]
+            }
+        ],
+        "constants": {
+            "AIM_ROUTING_THRESHOLD_M": 230
+        },
+        "gatedCases": [
+            {
+                "name": "90 m out, aim 21 m ahead: gated straight",
+                "origin": {
+                    "x": 96,
+                    "y": 178
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 112,
+                        "y": 191
+                    }
+                ],
+                "green": {
+                    "x": 150,
+                    "y": 250
+                },
+                "marginM": null,
+                "thresholdM": null,
+                "routePoints": [
+                    {
+                        "x": 96,
+                        "y": 178
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    }
+                ]
+            },
+            {
+                "name": "from the tee (beyond threshold): routed",
+                "origin": {
+                    "x": 0,
+                    "y": 0
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    }
+                ],
+                "green": {
+                    "x": 150,
+                    "y": 250
+                },
+                "marginM": null,
+                "thresholdM": null,
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": 0
+                    },
+                    {
+                        "x": 0,
+                        "y": 250
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    }
+                ]
+            },
+            {
+                "name": "custom thresholdM gates a tee-length hole straight",
+                "origin": {
+                    "x": 0,
+                    "y": 0
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    }
+                ],
+                "green": {
+                    "x": 150,
+                    "y": 250
+                },
+                "marginM": null,
+                "thresholdM": 300,
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": 0
+                    },
+                    {
+                        "x": 150,
+                        "y": 250
+                    }
+                ]
+            },
+            {
+                "name": "exactly at the threshold: gated straight (<=)",
+                "origin": {
+                    "x": 0,
+                    "y": 20
+                },
+                "tee": {
+                    "x": 0,
+                    "y": 0
+                },
+                "aims": [
+                    {
+                        "x": 0,
+                        "y": 250
+                    }
+                ],
+                "green": {
+                    "x": 0,
+                    "y": 250
+                },
+                "marginM": null,
+                "thresholdM": null,
+                "routePoints": [
+                    {
+                        "x": 0,
+                        "y": 20
+                    },
+                    {
+                        "x": 0,
+                        "y": 250
+                    }
+                ]
+            }
+        ]
+    },
     "caddy": {
         "run": {
             "cases": [

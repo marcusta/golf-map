@@ -170,6 +170,36 @@ final class StrategyGoldenParityTests: XCTestCase {
     }
     private struct FeatureFx: Decodable { let clubs: [FxClub]; let cases: [FeatureCase] }
 
+    // ForwardRoute section
+
+    private struct ForwardRouteCase: Decodable {
+        let name: String
+        let origin: SP
+        let tee: SP?
+        let aims: [SP]
+        let green: SP
+        let marginM: Double?
+        let projectedChainageM: Double
+        let keptAimIndices: [Int]
+        let routePoints: [SP]
+    }
+    private struct GatedForwardRouteCase: Decodable {
+        let name: String
+        let origin: SP
+        let tee: SP?
+        let aims: [SP]
+        let green: SP
+        let marginM: Double?
+        let thresholdM: Double?
+        let routePoints: [SP]
+    }
+    private struct ForwardRouteConstants: Decodable { let AIM_ROUTING_THRESHOLD_M: Double }
+    private struct ForwardRouteFx: Decodable {
+        let cases: [ForwardRouteCase]
+        let constants: ForwardRouteConstants
+        let gatedCases: [GatedForwardRouteCase]
+    }
+
     private struct Constants: Decodable { let MPS_TO_MPH: Double }
 
     private struct Goldens: Decodable {
@@ -180,6 +210,7 @@ final class StrategyGoldenParityTests: XCTestCase {
         let wind: WindFx
         let carry: CarryFx
         let featureDistances: FeatureFx
+        let forwardRoute: ForwardRouteFx
     }
 
     private func loadGoldens() throws -> Goldens {
@@ -330,6 +361,71 @@ final class StrategyGoldenParityTests: XCTestCase {
                 assertOptional(a.playsLikeM, e.playsLikeM, "\(tag) playsLikeM")
                 assertOptional(a.windDeltaM, e.windDeltaM, "\(tag) windDeltaM")
                 XCTAssertEqual(a.club?.name, e.clubName, "\(tag) clubName")
+            }
+        }
+    }
+
+    // MARK: - ForwardRoute
+
+    func testForwardRouteMatchesTS() throws {
+        for c in try loadGoldens().forwardRoute.cases {
+            // The goldens compute projectedChainageM on the same chainage route
+            // forwardAims builds (tee? + aims + green), including the empty-aims
+            // case — mirror that construction exactly.
+            var chainageRoute: [StrategyPoint] = []
+            if let tee = c.tee { chainageRoute.append(tee.point) }
+            chainageRoute.append(contentsOf: c.aims.map(\.point))
+            chainageRoute.append(c.green.point)
+            XCTAssertEqual(
+                projectedRouteChainage(route: chainageRoute, point: c.origin.point),
+                c.projectedChainageM, accuracy: acc, "\(c.name): projectedChainageM"
+            )
+
+            let input = ForwardAimsInput(
+                origin: c.origin.point,
+                tee: c.tee?.point,
+                aims: c.aims.map(\.point),
+                green: c.green.point,
+                marginM: c.marginM ?? 5
+            )
+            XCTAssertEqual(forwardAimIndices(input), c.keptAimIndices, "\(c.name): keptAimIndices")
+
+            let route = forwardRoutePoints(input)
+            XCTAssertEqual(route.count, c.routePoints.count, "\(c.name): routePoints count")
+            guard route.count == c.routePoints.count else { continue }
+            for (i, (a, e)) in zip(route, c.routePoints).enumerated() {
+                XCTAssertEqual(a.x, e.x, accuracy: acc, "\(c.name): routePoints[\(i)].x")
+                XCTAssertEqual(a.y, e.y, accuracy: acc, "\(c.name): routePoints[\(i)].y")
+            }
+        }
+    }
+
+    // @MainActor: pins the OnCourseModel (main-actor) GPS default to the
+    // shared constant; the parity math itself is actor-free.
+    @MainActor
+    func testGatedForwardRouteMatchesTS() throws {
+        let fx = try loadGoldens().forwardRoute
+        XCTAssertEqual(AIM_ROUTING_THRESHOLD_M, fx.constants.AIM_ROUTING_THRESHOLD_M,
+                       accuracy: acc, "AIM_ROUTING_THRESHOLD_M")
+        // The GPS-mode TO AIM gate default and the shared drawn-line constant
+        // must never drift apart — browse and GPS gate at the same distance.
+        XCTAssertEqual(OnCourseModel.defaultAimRoutingThresholdMeters, AIM_ROUTING_THRESHOLD_M,
+                       accuracy: acc, "OnCourseModel default threshold == shared constant")
+
+        for c in fx.gatedCases {
+            let input = ForwardAimsInput(
+                origin: c.origin.point,
+                tee: c.tee?.point,
+                aims: c.aims.map(\.point),
+                green: c.green.point,
+                marginM: c.marginM ?? 5
+            )
+            let route = gatedForwardRoutePoints(input, thresholdM: c.thresholdM ?? AIM_ROUTING_THRESHOLD_M)
+            XCTAssertEqual(route.count, c.routePoints.count, "\(c.name): routePoints count")
+            guard route.count == c.routePoints.count else { continue }
+            for (i, (a, e)) in zip(route, c.routePoints).enumerated() {
+                XCTAssertEqual(a.x, e.x, accuracy: acc, "\(c.name): routePoints[\(i)].x")
+                XCTAssertEqual(a.y, e.y, accuracy: acc, "\(c.name): routePoints[\(i)].y")
             }
         }
     }

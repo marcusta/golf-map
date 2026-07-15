@@ -1,5 +1,6 @@
 import {
     featureDistances,
+    gatedForwardRoutePoints,
     type ClubSpec,
     type FlatRing,
     type PointRole,
@@ -92,6 +93,39 @@ export function buildBrowseLadder(input: BrowseLadderInput): BrowseLadderRow[] {
     }
 
     return rows.sort((a, b) => a.lineM - b.lineM || a.id.localeCompare(b.id));
+}
+
+/**
+ * The routed browse play-line — `[origin, ...forward aims, green]` — as
+ * projected points, mirroring iOS's `browseForwardRoute`. A thin adapter over
+ * the shared `gatedForwardRoutePoints`: within `AIM_ROUTING_THRESHOLD_M`
+ * (planar origin→green, default 230 m; override via `thresholdM`) the drawn
+ * line is gated STRAIGHT `[origin, green]` — near the green an aim a few
+ * meters ahead is not a shot target, so kinking the line through it is noise.
+ * Beyond the threshold the route-chainage aim filter applies: aims already
+ * passed relative to `origin` along the hole's routing (tee → aims → green)
+ * are dropped, so the line no longer doubles back through a dogleg corner the
+ * player is past. The result is `origin`, an in-order suffix of `aims`, then
+ * `green`, so `route.length - 2` is the count of aims kept — still correct in
+ * the gated case (0 kept) — and callers that need the source aim objects use
+ * `aims.slice(aims.length - kept)`.
+ */
+export function browseForwardRoute(
+    origin: StrategyPoint,
+    tee: StrategyPoint | undefined,
+    aims: readonly StrategyPoint[],
+    green: StrategyPoint,
+    marginM?: number,
+    thresholdM?: number,
+): StrategyPoint[] {
+    return gatedForwardRoutePoints({
+        origin,
+        aims,
+        green,
+        ...(tee ? { tee } : {}),
+        ...(marginM !== undefined ? { marginM } : {}),
+        ...(thresholdM !== undefined ? { thresholdM } : {}),
+    });
 }
 
 export function bearingBetween(from: StrategyPoint, to: StrategyPoint): number {

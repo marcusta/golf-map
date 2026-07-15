@@ -71,11 +71,13 @@ import {
 } from './putt-overlay';
 import {
     bearingBetween,
+    browseForwardRoute,
     browseTargetActivation,
     buildBrowseLadder,
     type BrowseLadderRow,
     type BrowsePointTarget,
 } from './browse-ladder';
+import type { AimPoint } from '../../../shared/api/aim-points.gen';
 import maplibregl from 'maplibre-gl';
 import { AnalysisOverlayRenderer } from '../analysis/analysis-overlay';
 import { computeSlopeGrid, computeStats, type SlopeGrid, type AnalysisStats } from '../analysis/analysis-math';
@@ -523,6 +525,15 @@ export class PlannerToolService {
         }
 
         const reference = greenCenterPoint ?? points.at(-1)?.point ?? origin;
+        // Hazard rays / wind hold reference bearing follows the FIRST LEG of the
+        // forward route (origin → first still-ahead aim), so a dogleg casts its
+        // carry/front rays down the played corner rather than straight at the
+        // green (parity with iOS). Within AIM_ROUTING_THRESHOLD_M of the green
+        // the route is gated straight, so route[1] IS the green and the rays go
+        // straight at it. Ladder point rows stay straight-line.
+        const bearingDeg = greenCenterPoint
+            ? bearingBetween(origin, this.browseFirstLegTarget(hole, origin, greenCenterPoint))
+            : bearingBetween(origin, reference);
         const hazards = this.lieMap.get().hazardRings().map((ring, index) => ({
             id: `hazard-${index}`,
             label: ring.kind.charAt(0).toUpperCase() + ring.kind.slice(1),
@@ -532,11 +543,41 @@ export class PlannerToolService {
             origin,
             points,
             hazards,
-            bearingDeg: bearingBetween(origin, reference),
+            bearingDeg,
             wind: this.effectiveWind.get() ?? undefined,
             clubs: this.orderedClubs.get(),
         });
     });
+
+    /**
+     * The projected forward play-line for a browse origin (origin → still-ahead
+     * aims → green via the shared route-chainage filter, gated STRAIGHT to
+     * [origin, green] within AIM_ROUTING_THRESHOLD_M of the green) plus the
+     * hole's aim rows in order. `route.length - 2` is the count of aims kept
+     * (0 when gated), so callers that need drift-free lat/lon vertices use
+     * `aims.slice(aims.length - kept)`. The tee (route's first vertex for the
+     * chainage projection) is the hole's resolved `originTee`, independent of
+     * where the browse origin sits.
+     */
+    private browseRoute(hole: Hole, origin: StrategyPoint, green: StrategyPoint): {
+        route: StrategyPoint[];
+        aims: AimPoint[];
+    } {
+        const aims = this.furniture.aimsForHole(hole.id);
+        const aimPoints = aims.map(a => ({ ...wgs84ToSweref99tm(a.lat, a.lon), elevation: a.elevation }));
+        const tee = this.originTee.get();
+        const teePoint = tee
+            ? { ...wgs84ToSweref99tm(tee.lat, tee.lon), elevation: tee.elevation }
+            : undefined;
+        return { route: browseForwardRoute(origin, teePoint, aimPoints, green), aims };
+    }
+
+    /** First-leg target of the forward route: the first still-ahead aim, else
+     *  the green center — the reference the hazard rays / wind hold cast toward.
+     *  Within the routing gate route[1] IS the green, so this goes straight. */
+    private browseFirstLegTarget(hole: Hole, origin: StrategyPoint, green: StrategyPoint): StrategyPoint {
+        return this.browseRoute(hole, origin, green).route[1] ?? green;
+    }
 
     /** Target currently being inspected from the UNCHANGED browse origin. */
     readonly inspectedBrowseRow = new Computed<BrowseLadderRow | null>(() => {
@@ -1022,14 +1063,33 @@ export class PlannerToolService {
             });
             const hole = this.selectedHole.get();
             const green = hole ? this.furniture.greenForHole(hole.id) : null;
-            if (green) {
+            if (hole && green) {
+                // Route the distance line origin → still-ahead aims → green so a
+                // dogleg follows its played corners instead of a straight cut
+                // (parity with iOS's browseForwardRoute) — except within
+                // AIM_ROUTING_THRESHOLD_M of the green, where the line is gated
+                // straight (an aim a few meters ahead is not a shot target).
+                // Aim vertices reuse the source rows' lat/lon (no projection
+                // round-trip drift).
+                const originProjected = wgs84ToSweref99tm(origin.lat, origin.lon);
+                const greenPoint = {
+                    ...wgs84ToSweref99tm(green.centerLat, green.centerLon),
+                    elevation: green.elevation,
+                };
+                const { route, aims } = this.browseRoute(
+                    hole, { ...originProjected, elevation: origin.elevation }, greenPoint,
+                );
+                const keptCount = Math.max(0, route.length - 2);
+                const keptAims = aims.slice(aims.length - keptCount);
+                const coordinates: [number, number][] = [
+                    [origin.lon, origin.lat],
+                    ...keptAims.map(a => [a.lon, a.lat] as [number, number]),
+                    [green.centerLon, green.centerLat],
+                ];
                 features.push({
                     type: 'Feature',
                     properties: { role: 'line' },
-                    geometry: {
-                        type: 'LineString',
-                        coordinates: [[origin.lon, origin.lat], [green.centerLon, green.centerLat]],
-                    },
+                    geometry: { type: 'LineString', coordinates },
                 });
             }
         }
