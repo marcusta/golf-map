@@ -97,22 +97,33 @@ describe('§3.4 plays-like putt length', () => {
 });
 
 describe('assembled tourRead', () => {
+    test('assembled read converts elevation delta to grade fraction for break', () => {
+        // Both putts climb at the same 2% grade, so their grade multiplier must
+        // be identical regardless of length. The assembled API receives Δh in
+        // meters and is responsible for dividing by distance.
+        const fiveMeters = tourRead(5, 0.1, 2, 10, true);
+        const tenMeters = tourRead(10, 0.2, 2, 10, true);
+        const expected = breakMultiplier(stimpToFriction(10), 0.02);
+        expect(fiveMeters.breakMultiplier).toBeCloseTo(expected, 12);
+        expect(tenMeters.breakMultiplier).toBeCloseTo(expected, 12);
+    });
+
     test('sign convention: break-right aims LEFT (negative offset)', () => {
         const r = tourRead(10, 0, 2, 10, true); // breaks left→right
-        expect(r.aimSide).toBe('right');
+        expect(r.breakSide).toBe('right');
         expect(r.aimOffsetMeters).toBeLessThan(0);
         expect(r.aimInches).toBeGreaterThan(0);
     });
 
     test('sign convention: break-left aims RIGHT (positive offset)', () => {
         const r = tourRead(10, 0, 2, 10, false); // breaks right→left
-        expect(r.aimSide).toBe('left');
+        expect(r.breakSide).toBe('left');
         expect(r.aimOffsetMeters).toBeGreaterThan(0);
     });
 
     test('flat cross-slope → straight, zero offset', () => {
         const r = tourRead(10, 0, 0, 10, true);
-        expect(r.aimSide).toBe('straight');
+        expect(r.breakSide).toBe('straight');
         expect(r.aimOffsetMeters).toBe(0);
         expect(r.aimInches).toBe(0);
     });
@@ -138,15 +149,25 @@ describe('assembled tourRead', () => {
 });
 
 describe('verbal formatter', () => {
+    test('verbal aim side follows the signed aim offset, not the break direction', () => {
+        const breaksRight = tourRead(10, 0, 2, 10, true);
+        expect(breaksRight.aimOffsetMeters).toBeLessThan(0);
+        expect(formatTourRead(breaksRight, 'metric').aim).toEndWith('left');
+
+        const breaksLeft = tourRead(10, 0, 2, 10, false);
+        expect(breaksLeft.aimOffsetMeters).toBeGreaterThan(0);
+        expect(formatTourRead(breaksLeft, 'metric').aim).toEndWith('right');
+    });
+
     test('imperial: "14 in left"', () => {
-        // ~4 paces (3.66 m), 2% break right→left → aim left, 14 in.
-        const r = tourReadFromPaces(4, 0, 2, 10, false);
+        // ~4 paces (3.66 m), 2% break left→right → aim left, 14 in.
+        const r = tourReadFromPaces(4, 0, 2, 10, true);
         const v = formatTourRead(r, 'imperial');
         expect(v.aim).toBe('14 in left');
     });
 
     test('metric: "aim 35 cm left"', () => {
-        const r = tourReadFromPaces(4, 0, 2, 10, false);
+        const r = tourReadFromPaces(4, 0, 2, 10, true);
         const v = formatTourRead(r, 'metric');
         expect(v.aim).toBe('aim 35 cm left'); // 14 in = 35.56 cm → 35
     });

@@ -157,7 +157,7 @@ function tourReadCase(name: string, input: TourReadCaseInput) {
         read: {
             aimOffsetMeters: r.aimOffsetMeters,
             aimInches: r.aimInches,
-            aimSide: r.aimSide,
+            breakSide: r.breakSide,
             playsLikeMeters: r.playsLikeMeters,
             breakMultiplier: num(r.breakMultiplier),
             canStop: r.canStop,

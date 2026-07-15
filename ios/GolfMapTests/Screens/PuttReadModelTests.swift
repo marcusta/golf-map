@@ -83,10 +83,17 @@ final class PuttReadModelTests: XCTestCase {
 
         // Tour Read verbal ALWAYS shown alongside the exact tier (doc §5.1).
         let tour = try XCTUnwrap(display.tour)
-        XCTAssertEqual(tour.aimSide, .right, "breaks right = aim side right")
+        XCTAssertEqual(tour.breakSide, .right, "surface falls right, so the putt breaks right")
         let verbal = try XCTUnwrap(display.verbal)
-        XCTAssertTrue(verbal.aim.contains("right"), "verbal names the break side")
+        XCTAssertTrue(verbal.aim.contains("left"), "verbal names the side to aim on")
         XCTAssertFalse(verbal.pace.isEmpty)
+
+        let profile = try XCTUnwrap(display.profile)
+        XCTAssertEqual(profile.distanceM, 6, accuracy: 1e-9)
+        XCTAssertEqual(profile.elevationDeltaM, 0, accuracy: 1e-9)
+        XCTAssertEqual(profile.stations.count, 1, "6 m is split into two equal sections")
+        XCTAssertEqual(profile.stations[0].slopePct, 2, accuracy: 1e-9)
+        XCTAssertEqual(model.overlay?.stations.count, 1)
     }
 
     func testFlatGridReadsStraight() throws {
@@ -95,7 +102,7 @@ final class PuttReadModelTests: XCTestCase {
         model.computeSurfaceReadNow()
         let read = try XCTUnwrap(model.display.read)
         XCTAssertEqual(read.aimOffsetM, 0, accuracy: 0.02)
-        XCTAssertEqual(model.display.tour?.aimSide, .straight)
+        XCTAssertEqual(model.display.tour?.breakSide, .straight)
     }
 
     func testStimpChangeRecomputesWithMoreBreakOnFasterGreen() throws {
@@ -197,7 +204,7 @@ final class PuttReadModelTests: XCTestCase {
         let read = try XCTUnwrap(display.read)
         XCTAssertEqual(truth.aimOffsetM, read.aimOffsetM)
         XCTAssertEqual(truth.playsLikeM, read.playsLikeM)
-        XCTAssertEqual(truth.breakSide, display.tour?.aimSide)
+        XCTAssertEqual(truth.breakSide, display.tour?.breakSide)
     }
 
     func testGroundTruthNilBeforeBallPlaced() throws {
@@ -370,7 +377,7 @@ final class PuttReadModelTests: XCTestCase {
             10, gradeDeltaM: 0, slopePct: 2, stimpFt: 10, breakToRight: false
         )
         XCTAssertEqual(model.display.tour!.aimInches, expected.aimInches, accuracy: 1e-9)
-        XCTAssertEqual(model.display.tour!.aimSide, .left)
+        XCTAssertEqual(model.display.tour!.breakSide, .left)
     }
 
     func testManualGradePercentConvertsToDeltaMeters() throws {
@@ -560,7 +567,7 @@ final class PuttReadModelTests: XCTestCase {
         model.placeBall(ball)
         model.computeSurfaceReadNow()
         XCTAssertLessThan(try XCTUnwrap(model.display.read).aimOffsetM, 0, "breaks right → aim left")
-        XCTAssertEqual(model.display.tour?.aimSide, .right)
+        XCTAssertEqual(model.display.tour?.breakSide, .right)
 
         // gradX = −0.02; a +0.04 east tilt → corrected gradX = +0.02, so the
         // surface now falls WEST and the ball breaks LEFT (aim right).
@@ -571,7 +578,7 @@ final class PuttReadModelTests: XCTestCase {
         model.computeSurfaceReadNow()
         let read = try XCTUnwrap(model.display.read)
         XCTAssertGreaterThan(read.aimOffsetM, 0, "bias flips the break to the other side")
-        XCTAssertEqual(model.display.tour?.aimSide, .left)
+        XCTAssertEqual(model.display.tour?.breakSide, .left)
     }
 
     /// No calibration (uncalibrated green) is a strict no-op: the read behaves

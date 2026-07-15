@@ -10,6 +10,12 @@ public enum PuttOverlayMapIDs {
     public static let pathSource = "putt-path"
     public static let pathCasingLayer = "putt-path-casing"
     public static let pathLayer = "putt-path"
+    public static let stationArrowsSource = "putt-station-arrows"
+    public static let stationArrowsCasingLayer = "putt-station-arrows-casing"
+    public static let stationArrowsLineLayer = "putt-station-arrows-line"
+    public static let stationLabelsSource = "putt-station-labels"
+    public static let stationLabelsLayer = "putt-station-labels"
+    static let stationLabelImagePrefix = "putt-station-label-"
     public static let pointsSource = "putt-points"
     public static let aimLayer = "putt-aim"
     public static let holeLayer = "putt-hole"
@@ -18,10 +24,10 @@ public enum PuttOverlayMapIDs {
 
 /// Renders one `PuttReadGeometry.PuttOverlay` onto the course map: the dashed
 /// straight ball→hole reference line, the simulated break-path polyline
-/// (white casing + blue core, amber when softened), the amber aim dot, and
-/// the hole/ball markers. Port of the web `putt-overlay.ts` `puttLayers()`
-/// styling (minus the fall-line arrow field, which the green-view analysis
-/// overlay underneath already renders).
+/// (white casing + blue core, amber when softened), local slope-% stations
+/// with downhill arrows, the amber aim dot, and the hole/ball markers. Port
+/// of the web `putt-overlay.ts` `puttLayers()` styling, extended with sparse
+/// path stations; the dense fall-line field remains in the analysis overlay.
 ///
 /// Unlike `GreenAnalysisRenderer` (wholesale rebuild — its states change
 /// rarely), this renderer creates its sources/layers once and then only
@@ -37,6 +43,7 @@ final class PuttOverlayRenderer {
     private var installed = false
     /// The overlay currently materialized (skip no-op re-applies).
     private var rendered: PuttReadGeometry.PuttOverlay?
+    private var stationLabelImageNames: [String] = []
 
     /// Web putt palette (`putt-overlay.ts`).
     private static let pathBlue = UIColor(
@@ -56,6 +63,7 @@ final class PuttOverlayRenderer {
     func styleDidReload() {
         installed = false
         rendered = nil
+        stationLabelImageNames = []
     }
 
     /// Bring the style in sync with `overlay` (nil clears the shapes; the
@@ -70,6 +78,12 @@ final class PuttOverlayRenderer {
 
         setShape(shapeForLine(overlay?.reference ?? []), sourceID: PuttOverlayMapIDs.refSource, in: style)
         setShape(shapeForLine(overlay?.path ?? []), sourceID: PuttOverlayMapIDs.pathSource, in: style)
+        setShape(
+            shapeForLines(overlay?.stations.flatMap(\.arrowStrokes) ?? []),
+            sourceID: PuttOverlayMapIDs.stationArrowsSource,
+            in: style
+        )
+        applyStationLabels(overlay?.stations ?? [], to: style)
         setShape(pointsShape(overlay), sourceID: PuttOverlayMapIDs.pointsSource, in: style)
 
         // Softened reads render the path amber instead of blue (web parity).
@@ -89,6 +103,41 @@ final class PuttOverlayRenderer {
         guard points.count >= 2 else { return MLNShapeCollectionFeature(shapes: []) }
         var coordinates = points.map(\.clCoordinate)
         return MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+    }
+
+    private func shapeForLines(_ lines: [[LatLon]]) -> MLNShape {
+        let features = lines.compactMap { line -> MLNPolylineFeature? in
+            guard line.count >= 2 else { return nil }
+            var coordinates = line.map(\.clCoordinate)
+            return MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
+
+    private func applyStationLabels(
+        _ stations: [PuttReadGeometry.PuttOverlay.Station],
+        to style: MLNStyle
+    ) {
+        let names = stations.indices.map { "\(PuttOverlayMapIDs.stationLabelImagePrefix)\($0)" }
+        for oldName in stationLabelImageNames where !names.contains(oldName) {
+            style.removeImage(forName: oldName)
+        }
+
+        let features = stations.enumerated().map { index, station -> MLNPointFeature in
+            let name = names[index]
+            let text = String(format: "%.1f%%", station.slopePct)
+            style.setImage(GreenAnalysisRenderer.labelImage(text: text), forName: name)
+            let feature = MLNPointFeature()
+            feature.coordinate = station.labelPosition.clCoordinate
+            feature.attributes = ["labelImage": name]
+            return feature
+        }
+        stationLabelImageNames = names
+        setShape(
+            MLNShapeCollectionFeature(shapes: features),
+            sourceID: PuttOverlayMapIDs.stationLabelsSource,
+            in: style
+        )
     }
 
     private func pointsShape(_ overlay: PuttReadGeometry.PuttOverlay?) -> MLNShape {
@@ -119,9 +168,17 @@ final class PuttOverlayRenderer {
         let empty = MLNShapeCollectionFeature(shapes: [])
         let refSource = MLNShapeSource(identifier: PuttOverlayMapIDs.refSource, shape: empty)
         let pathSource = MLNShapeSource(identifier: PuttOverlayMapIDs.pathSource, shape: empty)
+        let stationArrowsSource = MLNShapeSource(
+            identifier: PuttOverlayMapIDs.stationArrowsSource, shape: empty
+        )
+        let stationLabelsSource = MLNShapeSource(
+            identifier: PuttOverlayMapIDs.stationLabelsSource, shape: empty
+        )
         let pointsSource = MLNShapeSource(identifier: PuttOverlayMapIDs.pointsSource, shape: empty)
         style.addSource(refSource)
         style.addSource(pathSource)
+        style.addSource(stationArrowsSource)
+        style.addSource(stationLabelsSource)
         style.addSource(pointsSource)
 
         // Straight ball→hole reference — quiet dashed baseline for the break.
@@ -150,6 +207,41 @@ final class PuttOverlayRenderer {
         path.lineColor = NSExpression(forConstantValue: Self.pathBlue)
         path.lineWidth = NSExpression(forConstantValue: 2.2)
         insert(path, into: style)
+
+        // Local slope station: a one-meter fall-line arrow with a dark casing,
+        // plus a slope-% chip just uphill of the station anchor.
+        let stationCasing = MLNLineStyleLayer(
+            identifier: PuttOverlayMapIDs.stationArrowsCasingLayer,
+            source: stationArrowsSource
+        )
+        stationCasing.lineCap = NSExpression(forConstantValue: round)
+        stationCasing.lineJoin = NSExpression(
+            forConstantValue: NSValue(mlnLineJoin: .round)
+        )
+        stationCasing.lineColor = NSExpression(forConstantValue: Self.darkGreen)
+        stationCasing.lineWidth = NSExpression(forConstantValue: 4)
+        insert(stationCasing, into: style)
+
+        let stationLine = MLNLineStyleLayer(
+            identifier: PuttOverlayMapIDs.stationArrowsLineLayer,
+            source: stationArrowsSource
+        )
+        stationLine.lineCap = NSExpression(forConstantValue: round)
+        stationLine.lineJoin = NSExpression(
+            forConstantValue: NSValue(mlnLineJoin: .round)
+        )
+        stationLine.lineColor = NSExpression(forConstantValue: UIColor.white)
+        stationLine.lineWidth = NSExpression(forConstantValue: 2)
+        insert(stationLine, into: style)
+
+        let stationLabels = MLNSymbolStyleLayer(
+            identifier: PuttOverlayMapIDs.stationLabelsLayer,
+            source: stationLabelsSource
+        )
+        stationLabels.iconImageName = NSExpression(forKeyPath: "labelImage")
+        stationLabels.iconAllowsOverlap = NSExpression(forConstantValue: true)
+        stationLabels.iconIgnoresPlacement = NSExpression(forConstantValue: true)
+        insert(stationLabels, into: style)
 
         // Aim dot / hole / ball circles (web palette + sizes).
         insert(circleLayer(

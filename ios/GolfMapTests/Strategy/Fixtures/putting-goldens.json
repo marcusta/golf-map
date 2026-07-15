@@ -268,37 +268,7 @@
             "read": {
                 "aimOffsetMeters": -1.060311111111111,
                 "aimInches": 41.744531933508306,
-                "aimSide": "right",
-                "playsLikeMeters": 10,
-                "breakMultiplier": 1,
-                "canStop": true
-            },
-            "verbal": {
-                "metric": {
-                    "aim": "aim 105 cm right",
-                    "pace": "plays like 10.0 m",
-                    "combined": "aim 105 cm right · plays like 10.0 m"
-                },
-                "imperial": {
-                    "aim": "42 in right",
-                    "pace": "plays like 33 ft",
-                    "combined": "42 in right · plays like 33 ft"
-                }
-            }
-        },
-        {
-            "name": "break-left aims right",
-            "input": {
-                "distanceM": 10,
-                "gradeDeltaM": 0,
-                "slopePct": 2,
-                "stimpFt": 10,
-                "breakToRight": false
-            },
-            "read": {
-                "aimOffsetMeters": 1.060311111111111,
-                "aimInches": 41.744531933508306,
-                "aimSide": "left",
+                "breakSide": "right",
                 "playsLikeMeters": 10,
                 "breakMultiplier": 1,
                 "canStop": true
@@ -317,6 +287,36 @@
             }
         },
         {
+            "name": "break-left aims right",
+            "input": {
+                "distanceM": 10,
+                "gradeDeltaM": 0,
+                "slopePct": 2,
+                "stimpFt": 10,
+                "breakToRight": false
+            },
+            "read": {
+                "aimOffsetMeters": 1.060311111111111,
+                "aimInches": 41.744531933508306,
+                "breakSide": "left",
+                "playsLikeMeters": 10,
+                "breakMultiplier": 1,
+                "canStop": true
+            },
+            "verbal": {
+                "metric": {
+                    "aim": "aim 105 cm right",
+                    "pace": "plays like 10.0 m",
+                    "combined": "aim 105 cm right · plays like 10.0 m"
+                },
+                "imperial": {
+                    "aim": "42 in right",
+                    "pace": "plays like 33 ft",
+                    "combined": "42 in right · plays like 33 ft"
+                }
+            }
+        },
+        {
             "name": "flat cross-slope is straight",
             "input": {
                 "distanceM": 10,
@@ -328,7 +328,7 @@
             "read": {
                 "aimOffsetMeters": 0,
                 "aimInches": 0,
-                "aimSide": "straight",
+                "breakSide": "straight",
                 "playsLikeMeters": 10,
                 "breakMultiplier": 1,
                 "canStop": true
@@ -358,21 +358,21 @@
             "read": {
                 "aimOffsetMeters": 0.35559999999999997,
                 "aimInches": 14,
-                "aimSide": "left",
+                "breakSide": "left",
                 "playsLikeMeters": 3.6576000000000004,
                 "breakMultiplier": 1,
                 "canStop": true
             },
             "verbal": {
                 "metric": {
-                    "aim": "aim 35 cm left",
+                    "aim": "aim 35 cm right",
                     "pace": "plays like 3.7 m",
-                    "combined": "aim 35 cm left · plays like 3.7 m"
+                    "combined": "aim 35 cm right · plays like 3.7 m"
                 },
                 "imperial": {
-                    "aim": "14 in left",
+                    "aim": "14 in right",
                     "pace": "plays like 12 ft",
-                    "combined": "14 in left · plays like 12 ft"
+                    "combined": "14 in right · plays like 12 ft"
                 }
             }
         },
@@ -386,23 +386,23 @@
                 "breakToRight": true
             },
             "read": {
-                "aimOffsetMeters": -0.16693397156898968,
-                "aimInches": 6.572203605078334,
-                "aimSide": "right",
+                "aimOffsetMeters": -0.6906808472232919,
+                "aimInches": 27.192159339499685,
+                "breakSide": "right",
                 "playsLikeMeters": 15.35167965600645,
-                "breakMultiplier": 0.15743867042387008,
+                "breakMultiplier": 0.6513945199532243,
                 "canStop": true
             },
             "verbal": {
                 "metric": {
-                    "aim": "aim 15 cm right",
+                    "aim": "aim 70 cm left",
                     "pace": "plays like 15.4 m",
-                    "combined": "aim 15 cm right · plays like 15.4 m"
+                    "combined": "aim 70 cm left · plays like 15.4 m"
                 },
                 "imperial": {
-                    "aim": "7 in right",
+                    "aim": "27 in left",
                     "pace": "plays like 50 ft",
-                    "combined": "7 in right · plays like 50 ft"
+                    "combined": "27 in left · plays like 50 ft"
                 }
             }
         },
@@ -418,7 +418,7 @@
             "read": {
                 "aimOffsetMeters": 0,
                 "aimInches": 0,
-                "aimSide": "straight",
+                "breakSide": "straight",
                 "playsLikeMeters": -7.838932186688165,
                 "breakMultiplier": "Infinity",
                 "canStop": false
@@ -448,7 +448,7 @@
             "read": {
                 "aimOffsetMeters": 0,
                 "aimInches": 0,
-                "aimSide": "straight",
+                "breakSide": "straight",
                 "playsLikeMeters": 0.45720000000000005,
                 "breakMultiplier": 1,
                 "canStop": true
@@ -476,23 +476,23 @@
                 "breakToRight": true
             },
             "read": {
-                "aimOffsetMeters": -0.13204682357181996,
-                "aimInches": 5.198693841410235,
-                "aimSide": "right",
+                "aimOffsetMeters": -0.254579487325659,
+                "aimInches": 10.022814461640118,
+                "breakSide": "right",
                 "playsLikeMeters": 5.6198825405356985,
-                "breakMultiplier": 0.33757752216949577,
+                "breakMultiplier": 0.6508321078987089,
                 "canStop": true
             },
             "verbal": {
                 "metric": {
-                    "aim": "aim 15 cm right",
+                    "aim": "aim 25 cm left",
                     "pace": "plays like 5.6 m",
-                    "combined": "aim 15 cm right · plays like 5.6 m"
+                    "combined": "aim 25 cm left · plays like 5.6 m"
                 },
                 "imperial": {
-                    "aim": "5 in right",
+                    "aim": "10 in left",
                     "pace": "plays like 18 ft",
-                    "combined": "5 in right · plays like 18 ft"
+                    "combined": "10 in left · plays like 18 ft"
                 }
             }
         },
@@ -508,21 +508,21 @@
             "read": {
                 "aimOffsetMeters": 0.32004,
                 "aimInches": 12.6,
-                "aimSide": "left",
+                "breakSide": "left",
                 "playsLikeMeters": 3.6576000000000004,
                 "breakMultiplier": 1,
                 "canStop": true
             },
             "verbal": {
                 "metric": {
-                    "aim": "aim 30 cm left",
+                    "aim": "aim 30 cm right",
                     "pace": "plays like 3.7 m",
-                    "combined": "aim 30 cm left · plays like 3.7 m"
+                    "combined": "aim 30 cm right · plays like 3.7 m"
                 },
                 "imperial": {
-                    "aim": "13 in left",
+                    "aim": "13 in right",
                     "pace": "plays like 12 ft",
-                    "combined": "13 in left · plays like 12 ft"
+                    "combined": "13 in right · plays like 12 ft"
                 }
             }
         },
@@ -536,23 +536,23 @@
                 "breakToRight": false
             },
             "read": {
-                "aimOffsetMeters": 0,
-                "aimInches": 0,
-                "aimSide": "straight",
+                "aimOffsetMeters": 1.5759895645282016,
+                "aimInches": 62.0468332491418,
+                "breakSide": "left",
                 "playsLikeMeters": 8.78899220639613,
-                "breakMultiplier": "Infinity",
+                "breakMultiplier": 1.3653442531519233,
                 "canStop": true
             },
             "verbal": {
                 "metric": {
-                    "aim": "straight",
+                    "aim": "aim 160 cm right",
                     "pace": "plays like 8.8 m",
-                    "combined": "straight · plays like 8.8 m"
+                    "combined": "aim 160 cm right · plays like 8.8 m"
                 },
                 "imperial": {
-                    "aim": "straight",
+                    "aim": "62 in right",
                     "pace": "plays like 29 ft",
-                    "combined": "straight · plays like 29 ft"
+                    "combined": "62 in right · plays like 29 ft"
                 }
             }
         },
@@ -568,7 +568,7 @@
             "read": {
                 "aimOffsetMeters": 0,
                 "aimInches": 0,
-                "aimSide": "straight",
+                "breakSide": "straight",
                 "playsLikeMeters": 10,
                 "breakMultiplier": 1,
                 "canStop": true

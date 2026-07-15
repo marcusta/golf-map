@@ -22,15 +22,15 @@ import Foundation
 ///    imperial units are confined to this module and converted at the edges
 ///    with the named constants below. Imperial never leaks past the formatter.
 ///  - `slopePct` is the CROSS-slope percentage along the putt line (rise/run
-///    × 100), unsigned magnitude; `aimSide` carries which way it breaks.
+///    × 100), unsigned magnitude; `breakSide` carries which way it breaks.
 ///  - `stimpFt` is the stimpmeter reading in feet (the number greens are
 ///    quoted in). μ (friction) is derived from it via §3.1.
 ///  - Sign convention for aimOffsetMeters: POSITIVE = aim to the RIGHT of
 ///    the hole, NEGATIVE = aim to the LEFT, both from the ball's point of
 ///    view looking down the line. A putt that breaks left-to-right needs a
-///    left-of-hole aim → negative offset. `aimSide` (.left | .right) names
-///    the side the ball breaks TOWARD, i.e. the side you aim on: a right-
-///    breaking putt (ball curves right, high side on the left) is aimed LEFT.
+///    left-of-hole aim → negative offset. `breakSide` (.left | .right) names
+///    the side the ball breaks TOWARD. The aim side is the opposite and is
+///    derived from the signed offset by the formatter.
 ///  - grade (Δh along the line) is signed: positive = uphill (hole above
 ///    ball), negative = downhill. Used for the break multiplier and pace.
 
@@ -140,7 +140,7 @@ public func playsLikeLength(
 
 // MARK: - Assembled read
 
-/// Which side of the hole the putt breaks toward (= the side you aim).
+/// Which side of the hole the putt breaks toward.
 public enum BreakSide: String, Sendable {
     case left
     case right
@@ -153,8 +153,8 @@ public struct TourRead: Equatable, Sendable {
     public var aimOffsetMeters: Double
     /// Raw Tour Read aim magnitude in inches (native unit, pre-conversion).
     public var aimInches: Double
-    /// Side the ball breaks toward (= the side to aim on).
-    public var aimSide: BreakSide
+    /// Side the ball breaks toward. The player aims on the opposite side.
+    public var breakSide: BreakSide
     /// Slope-and-stimp-adjusted plays-like putt length, meters (§3.4).
     public var playsLikeMeters: Double
     /// Break multiplier applied for the grade along the line (§3.3).
@@ -184,20 +184,23 @@ public func tourRead(
     let paces = metersToPaces(distanceM)
 
     let baseInches = tourReadAimInches(paces, slopePct, stimpFt)
-    let mult = breakMultiplier(mu: mu, gradeFraction: gradeDeltaM)
+    // breakMultiplier expects the dimensionless along-line grade (rise/run),
+    // not the raw elevation delta in meters.
+    let gradeFraction = distanceM > 0 ? gradeDeltaM / distanceM : 0
+    let mult = breakMultiplier(mu: mu, gradeFraction: gradeFraction)
     // Diverging multiplier (can't-stop downhill) shouldn't blow the aim up to
     // infinity — the aim is meaningless when the ball won't stop; cap the
     // multiplier's contribution to a finite value there.
     let finiteMult = mult.isFinite ? mult : 0
     let aimInches = baseInches * finiteMult
 
-    let aimSide: BreakSide = slopePct == 0 || aimInches == 0
+    let breakSide: BreakSide = slopePct == 0 || aimInches == 0
         ? .straight
         : breakToRight
             ? .right
             : .left
-    // Aim toward the break side. Break-right → aim LEFT → negative offset.
-    let sign: Double = aimSide == .right ? -1 : aimSide == .left ? 1 : 0
+    // Aim opposite the break side. Break-right → aim LEFT → negative offset.
+    let sign: Double = breakSide == .right ? -1 : breakSide == .left ? 1 : 0
     let aimOffsetMeters = sign * inchesToMeters(aimInches)
 
     let (playsLikeMeters, canStop) = playsLikeLength(
@@ -207,7 +210,7 @@ public func tourRead(
     return TourRead(
         aimOffsetMeters: aimOffsetMeters,
         aimInches: aimInches,
-        aimSide: aimSide,
+        breakSide: breakSide,
         playsLikeMeters: playsLikeMeters,
         breakMultiplier: mult,
         canStop: canStop
@@ -273,14 +276,15 @@ public func formatTourRead(_ read: TourRead, units: UnitSystem = .metric) -> Tou
 }
 
 private func formatAim(_ read: TourRead, _ units: UnitSystem) -> String {
-    if read.aimSide == .straight || read.aimInches == 0 { return "straight" }
+    if read.breakSide == .straight || read.aimInches == 0 { return "straight" }
+    let aimSide = read.aimOffsetMeters > 0 ? BreakSide.right : BreakSide.left
     if units == .imperial {
         let inches = Int(jsRound(read.aimInches))
-        return "\(inches) in \(read.aimSide.rawValue)"
+        return "\(inches) in \(aimSide.rawValue)"
     }
     // Metric: centimeters, rounded to 5 cm (a read is never that precise).
     let cm = roundTo(abs(read.aimOffsetMeters) * 100, 5)
-    return "aim \(Int(cm)) cm \(read.aimSide.rawValue)"
+    return "aim \(Int(cm)) cm \(aimSide.rawValue)"
 }
 
 private func formatLength(_ meters: Double, _ units: UnitSystem) -> String {

@@ -96,6 +96,48 @@ final class PuttReadGeometryTests: XCTestCase {
         XCTAssertEqual(inputs.slopePct, 2, accuracy: 1e-9)
     }
 
+    // MARK: - Distance, elevation & slope stations
+
+    func testStationSpacingUsesMidpointThenEvenSectionsNoLongerThanThreeMeters() {
+        XCTAssertEqual(PuttReadGeometry.stationFractions(distanceM: 4), [0.5])
+        XCTAssertEqual(PuttReadGeometry.stationFractions(distanceM: 5), [0.5])
+        XCTAssertEqual(PuttReadGeometry.stationFractions(distanceM: 9), [1.0 / 3, 2.0 / 3])
+        XCTAssertEqual(PuttReadGeometry.stationFractions(distanceM: 10), [0.25, 0.5, 0.75])
+    }
+
+    func testProfileSamplesSlopeMagnitudeAndDownhillDirectionAlongPath() throws {
+        let surface = PlaneSurface(slopePct: 2, fallLineBearingDeg: 90)
+        let hole = Vec2(x: 0, y: 9)
+        let profile = try XCTUnwrap(PuttReadGeometry.deriveProfile(
+            surface: surface,
+            ball: ball,
+            hole: hole,
+            path: [ball, Vec2(x: 0, y: 4.5), hole]
+        ))
+        XCTAssertEqual(profile.distanceM, 9, accuracy: 1e-12)
+        XCTAssertEqual(profile.elevationDeltaM, 0, accuracy: 1e-12)
+        XCTAssertEqual(profile.stations.count, 2)
+        XCTAssertEqual(profile.stations[0].position.y, 3, accuracy: 1e-12)
+        XCTAssertEqual(profile.stations[1].position.y, 6, accuracy: 1e-12)
+        for station in profile.stations {
+            XCTAssertEqual(station.slopePct, 2, accuracy: 1e-12)
+            XCTAssertEqual(station.downhillE, 1, accuracy: 1e-12)
+            XCTAssertEqual(station.downhillN, 0, accuracy: 1e-12)
+        }
+    }
+
+    func testProfileReportsSignedEndpointElevationInMeters() throws {
+        // Fall line points south, so a due-north putt climbs 2%: +18 cm / 9 m.
+        let surface = PlaneSurface(slopePct: 2, fallLineBearingDeg: 180)
+        let profile = try XCTUnwrap(PuttReadGeometry.deriveProfile(
+            surface: surface,
+            ball: ball,
+            hole: Vec2(x: 0, y: 9),
+            path: []
+        ))
+        XCTAssertEqual(profile.elevationDeltaM, 0.18, accuracy: 1e-12)
+    }
+
     // MARK: - Overlay projection
 
     /// A minimal settled read for projection tests (internal memberwise init).
@@ -132,6 +174,28 @@ final class PuttReadGeometryTests: XCTestCase {
         XCTAssertNotNil(overlay.hole)
         XCTAssertNotNil(overlay.aim)
         XCTAssertTrue(overlay.soft)
+    }
+
+    func testOverlayProjectsSlopeStationArrowAndLabel() throws {
+        let station = PuttReadGeometry.SlopeStation(
+            position: Vec2(x: ballE.x, y: ballE.y + 5),
+            slopePct: 2.4,
+            downhillE: 1,
+            downhillN: 0
+        )
+        let profile = PuttReadGeometry.PuttProfile(
+            distanceM: 10, elevationDeltaM: 0.06, stations: [station]
+        )
+        let overlay = PuttReadGeometry.overlay(
+            ball: ballE,
+            hole: holeE,
+            read: syntheticRead(aimBearingDeg: 0),
+            profile: profile,
+            soft: true
+        )
+        let projected = try XCTUnwrap(overlay.stations.first)
+        XCTAssertEqual(projected.slopePct, 2.4, accuracy: 1e-12)
+        XCTAssertEqual(projected.arrowStrokes.count, 3, "shaft + two arrowhead strokes")
     }
 
     func testAimPointIsStartBearingCarriedToHoleRange() throws {

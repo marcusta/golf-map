@@ -125,6 +125,7 @@ final class PuttReadModel {
         var sig: String
         var read: PuttRead
         var tour: TourRead?
+        var profile: PuttReadGeometry.PuttProfile?
         /// Scoring ground truth for the putt quiz — nil unless the Surface
         /// read has both a settled integrator read AND a coverage-derived
         /// cross-slope (mirrors the web `PuttReadService.display`'s
@@ -396,6 +397,9 @@ final class PuttReadModel {
         /// pending/manual). The putt quiz's "is a live read available to
         /// train against" gate is simply `display.groundTruth != nil`.
         var groundTruth: PuttGroundTruth?
+        /// Straight distance, signed endpoint elevation and local slope
+        /// stations along the simulated path (Surface tier only).
+        var profile: PuttReadGeometry.PuttProfile? = nil
     }
 
     var display: Display {
@@ -462,7 +466,7 @@ final class PuttReadModel {
         return Display(
             status: status, mode: mode, message: message,
             read: read, tour: settled.tour, verbal: verbal, offerManual: true,
-            groundTruth: settled.groundTruth
+            groundTruth: settled.groundTruth, profile: settled.profile
         )
     }
 
@@ -511,7 +515,9 @@ final class PuttReadModel {
         }
         // Withheld reads still show the markers/reference (no path/aim —
         // PuttReadGeometry.overlay drops them for unavailable reads).
-        return PuttReadGeometry.overlay(ball: ball, hole: hole, read: read, soft: soft)
+        return PuttReadGeometry.overlay(
+            ball: ball, hole: hole, read: read, profile: settled?.profile, soft: soft
+        )
     }
 
     // MARK: - Compute
@@ -570,6 +576,11 @@ final class PuttReadModel {
             let derivedInputs = read.availability == .unavailable
                 ? nil
                 : PuttReadGeometry.deriveTourReadInputs(surface: surface, ball: ball, hole: hole)
+            let profile = read.availability == .unavailable
+                ? nil
+                : PuttReadGeometry.deriveProfile(
+                    surface: surface, ball: ball, hole: hole, path: read.path
+                )
             let tour = derivedInputs.map {
                 tourRead(
                     distanceM: $0.distanceM, gradeDeltaM: $0.gradeDeltaM, slopePct: $0.slopePct,
@@ -579,14 +590,17 @@ final class PuttReadModel {
             var groundTruth: PuttGroundTruth?
             if let derivedInputs, let tour {
                 groundTruth = PuttGroundTruth(
-                    slopePct: derivedInputs.slopePct, breakSide: tour.aimSide,
+                    slopePct: derivedInputs.slopePct, breakSide: tour.breakSide,
                     aimOffsetM: read.aimOffsetM, playsLikeM: read.playsLikeM
                 )
             }
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self, self.inputsSig() == sig else { return }
-                self.result = Settled(sig: sig, read: read, tour: tour, groundTruth: groundTruth)
+                self.result = Settled(
+                    sig: sig, read: read, tour: tour, profile: profile,
+                    groundTruth: groundTruth
+                )
                 self.resultToken &+= 1
             }
         }
@@ -609,6 +623,11 @@ final class PuttReadModel {
         let derivedInputs = read.availability == .unavailable
             ? nil
             : PuttReadGeometry.deriveTourReadInputs(surface: surface, ball: ball, hole: hole)
+        let profile = read.availability == .unavailable
+            ? nil
+            : PuttReadGeometry.deriveProfile(
+                surface: surface, ball: ball, hole: hole, path: read.path
+            )
         let tour = derivedInputs.map {
             tourRead(
                 distanceM: $0.distanceM, gradeDeltaM: $0.gradeDeltaM, slopePct: $0.slopePct,
@@ -618,11 +637,14 @@ final class PuttReadModel {
         var groundTruth: PuttGroundTruth?
         if let derivedInputs, let tour {
             groundTruth = PuttGroundTruth(
-                slopePct: derivedInputs.slopePct, breakSide: tour.aimSide,
+                slopePct: derivedInputs.slopePct, breakSide: tour.breakSide,
                 aimOffsetM: read.aimOffsetM, playsLikeM: read.playsLikeM
             )
         }
-        result = Settled(sig: sig, read: read, tour: tour, groundTruth: groundTruth)
+        result = Settled(
+            sig: sig, read: read, tour: tour, profile: profile,
+            groundTruth: groundTruth
+        )
         resultToken &+= 1
     }
     #endif

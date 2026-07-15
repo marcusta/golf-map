@@ -336,12 +336,12 @@ test('deriveTourRead reads distance, grade and cross-slope off the surface', () 
     // Putt due north: line grade 0, cross-slope = full 2% falling right.
     const north = deriveTourRead(surface, at(8, 14), at(8, 6), 10)!;
     expect(north.playsLikeMeters).toBeCloseTo(8, 2);
-    expect(north.aimSide).toBe('right'); // breaks toward the right (east)
+    expect(north.breakSide).toBe('right'); // breaks toward the right (east)
     expect(north.aimOffsetMeters).toBeLessThan(0); // → aim LEFT of the hole
 
     // Putt due east (straight downhill): no cross-slope, downhill grade.
     const east = deriveTourRead(surface, at(4, 10), at(12, 10), 10)!;
-    expect(east.aimSide).toBe('straight');
+    expect(east.breakSide).toBe('straight');
     // §3.4: plays-like = D + Δh/μ = 8 − 0.16/0.056 ≈ 5.1 m.
     expect(east.playsLikeMeters).toBeCloseTo(8 - 0.16 / (0.56 / 10), 0);
 

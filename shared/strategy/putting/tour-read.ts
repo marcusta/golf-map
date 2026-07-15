@@ -19,15 +19,15 @@
 //    imperial units are confined to this module and converted at the edges
 //    with the named constants below. Imperial never leaks past the formatter.
 //  - `slopePct` is the CROSS-slope percentage along the putt line (rise/run ×
-//    100), unsigned magnitude; `aimSide` carries which way it breaks.
+//    100), unsigned magnitude; `breakSide` carries which way it breaks.
 //  - `stimpFt` is the stimpmeter reading in feet (the number greens are
 //    quoted in). μ (friction) is derived from it via §3.1.
 //  - Sign convention for aimOffsetMeters: POSITIVE = aim to the RIGHT of the
 //    hole, NEGATIVE = aim to the LEFT, both from the ball's point of view
 //    looking down the line. A putt that breaks left-to-right needs a
-//    left-of-hole aim → negative offset. `aimSide` ('left' | 'right') names
-//    the side the ball breaks TOWARD, i.e. the side you aim on: a right-
-//    breaking putt (ball curves right, high side on the left) is aimed LEFT.
+//    left-of-hole aim → negative offset. `breakSide` ('left' | 'right') names
+//    the side the ball breaks TOWARD. The aim side is the opposite and is
+//    derived from the signed offset by the formatter.
 //  - grade (Δh along the line) is signed: positive = uphill (hole above
 //    ball), negative = downhill. Used for the break multiplier and pace.
 
@@ -148,7 +148,7 @@ export function playsLikeLength(
 
 // ── Assembled read ──────────────────────────────────────────────────────────
 
-/** Which side of the hole the putt breaks toward (= the side you aim). */
+/** Which side of the hole the putt breaks toward. */
 export type BreakSide = 'left' | 'right' | 'straight';
 
 export interface TourRead {
@@ -159,8 +159,8 @@ export interface TourRead {
     aimOffsetMeters: number;
     /** Raw Tour Read aim magnitude in inches (native unit, pre-conversion). */
     aimInches: number;
-    /** Side the ball breaks toward (= the side to aim on). */
-    aimSide: BreakSide;
+    /** Side the ball breaks toward. The player aims on the opposite side. */
+    breakSide: BreakSide;
     /** Slope-and-stimp-adjusted plays-like putt length, meters (§3.4). */
     playsLikeMeters: number;
     /** Break multiplier applied for the grade along the line (§3.3). */
@@ -191,20 +191,23 @@ export function tourRead(
     const paces = metersToPaces(distanceM);
 
     const baseInches = tourReadAimInches(paces, slopePct, stimpFt);
-    const mult = breakMultiplier(mu, gradeDeltaM);
+    // breakMultiplier expects the dimensionless along-line grade (rise/run),
+    // not the raw elevation delta in meters.
+    const gradeFraction = distanceM > 0 ? gradeDeltaM / distanceM : 0;
+    const mult = breakMultiplier(mu, gradeFraction);
     // Diverging multiplier (can't-stop downhill) shouldn't blow the aim up to
     // Infinity — the aim is meaningless when the ball won't stop; cap the
     // multiplier's contribution to a finite value there.
     const finiteMult = Number.isFinite(mult) ? mult : 0;
     const aimInches = baseInches * finiteMult;
 
-    const aimSide: BreakSide = slopePct === 0 || aimInches === 0
+    const breakSide: BreakSide = slopePct === 0 || aimInches === 0
         ? 'straight'
         : breakToRight
             ? 'right'
             : 'left';
-    // Aim toward the break side. Break-right → aim LEFT → negative offset.
-    const sign = aimSide === 'right' ? -1 : aimSide === 'left' ? 1 : 0;
+    // Aim opposite the break side. Break-right → aim LEFT → negative offset.
+    const sign = breakSide === 'right' ? -1 : breakSide === 'left' ? 1 : 0;
     const aimOffsetMeters = sign * inchesToMeters(aimInches);
 
     const { playsLikeMeters, canStop } = playsLikeLength(distanceM, gradeDeltaM, mu);
@@ -212,7 +215,7 @@ export function tourRead(
     return {
         aimOffsetMeters,
         aimInches,
-        aimSide,
+        breakSide,
         playsLikeMeters,
         breakMultiplier: mult,
         canStop,
@@ -267,14 +270,15 @@ export function formatTourRead(read: TourRead, units: UnitSystem = 'metric'): To
 }
 
 function formatAim(read: TourRead, units: UnitSystem): string {
-    if (read.aimSide === 'straight' || read.aimInches === 0) return 'straight';
+    if (read.breakSide === 'straight' || read.aimInches === 0) return 'straight';
+    const aimSide = read.aimOffsetMeters > 0 ? 'right' : 'left';
     if (units === 'imperial') {
         const inches = Math.round(read.aimInches);
-        return `${inches} in ${read.aimSide}`;
+        return `${inches} in ${aimSide}`;
     }
     // Metric: centimeters, rounded to 5 cm (a read is never that precise).
     const cm = roundTo(Math.abs(read.aimOffsetMeters) * 100, 5);
-    return `aim ${cm} cm ${read.aimSide}`;
+    return `aim ${cm} cm ${aimSide}`;
 }
 
 function formatLength(meters: number, units: UnitSystem): string {

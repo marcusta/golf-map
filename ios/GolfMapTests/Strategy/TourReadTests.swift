@@ -88,10 +88,22 @@ final class TourReadTests: XCTestCase {
 
     // MARK: - assembled tourRead
 
+    func testAssembledReadConvertsElevationDeltaToGradeFractionForBreak() {
+        let fiveMeters = tourRead(
+            distanceM: 5, gradeDeltaM: 0.1, slopePct: 2, stimpFt: 10, breakToRight: true
+        )
+        let tenMeters = tourRead(
+            distanceM: 10, gradeDeltaM: 0.2, slopePct: 2, stimpFt: 10, breakToRight: true
+        )
+        let expected = breakMultiplier(mu: mu10, gradeFraction: 0.02)
+        XCTAssertEqual(fiveMeters.breakMultiplier, expected, accuracy: 5e-13)
+        XCTAssertEqual(tenMeters.breakMultiplier, expected, accuracy: 5e-13)
+    }
+
     func testSignConventionBreakRightAimsLeftNegativeOffset() {
         let r = tourRead(distanceM: 10, gradeDeltaM: 0, slopePct: 2, stimpFt: 10,
                          breakToRight: true) // breaks left→right
-        XCTAssertEqual(r.aimSide, .right)
+        XCTAssertEqual(r.breakSide, .right)
         XCTAssertLessThan(r.aimOffsetMeters, 0)
         XCTAssertGreaterThan(r.aimInches, 0)
     }
@@ -99,14 +111,14 @@ final class TourReadTests: XCTestCase {
     func testSignConventionBreakLeftAimsRightPositiveOffset() {
         let r = tourRead(distanceM: 10, gradeDeltaM: 0, slopePct: 2, stimpFt: 10,
                          breakToRight: false) // breaks right→left
-        XCTAssertEqual(r.aimSide, .left)
+        XCTAssertEqual(r.breakSide, .left)
         XCTAssertGreaterThan(r.aimOffsetMeters, 0)
     }
 
     func testFlatCrossSlopeIsStraightWithZeroOffset() {
         let r = tourRead(distanceM: 10, gradeDeltaM: 0, slopePct: 0, stimpFt: 10,
                          breakToRight: true)
-        XCTAssertEqual(r.aimSide, .straight)
+        XCTAssertEqual(r.breakSide, .straight)
         XCTAssertEqual(r.aimOffsetMeters, 0)
         XCTAssertEqual(r.aimInches, 0)
     }
@@ -136,17 +148,31 @@ final class TourReadTests: XCTestCase {
 
     // MARK: - verbal formatter
 
+    func testVerbalAimSideFollowsSignedOffsetRatherThanBreakDirection() {
+        let breaksRight = tourRead(
+            distanceM: 10, gradeDeltaM: 0, slopePct: 2, stimpFt: 10, breakToRight: true
+        )
+        XCTAssertLessThan(breaksRight.aimOffsetMeters, 0)
+        XCTAssertTrue(formatTourRead(breaksRight, units: .metric).aim.hasSuffix("left"))
+
+        let breaksLeft = tourRead(
+            distanceM: 10, gradeDeltaM: 0, slopePct: 2, stimpFt: 10, breakToRight: false
+        )
+        XCTAssertGreaterThan(breaksLeft.aimOffsetMeters, 0)
+        XCTAssertTrue(formatTourRead(breaksLeft, units: .metric).aim.hasSuffix("right"))
+    }
+
     func testImperial14InLeft() {
-        // ~4 paces (3.66 m), 2% break right→left → aim left, 14 in.
+        // ~4 paces (3.66 m), 2% break left→right → aim left, 14 in.
         let r = tourReadFromPaces(4, gradeDeltaM: 0, slopePct: 2, stimpFt: 10,
-                                  breakToRight: false)
+                                  breakToRight: true)
         let v = formatTourRead(r, units: .imperial)
         XCTAssertEqual(v.aim, "14 in left")
     }
 
     func testMetricAim35CmLeft() {
         let r = tourReadFromPaces(4, gradeDeltaM: 0, slopePct: 2, stimpFt: 10,
-                                  breakToRight: false)
+                                  breakToRight: true)
         let v = formatTourRead(r, units: .metric)
         XCTAssertEqual(v.aim, "aim 35 cm left") // 14 in = 35.56 cm → 35
     }

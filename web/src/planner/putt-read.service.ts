@@ -560,7 +560,7 @@ export class PuttReadService {
             // pace from the integrator (the numbers the app would show).
             const groundTruth: PuttGroundTruth | null = derived === null ? null : {
                 slopePct: derived.slopePct,
-                breakSide: tour!.aimSide,
+                breakSide: tour!.breakSide,
                 aimOffsetM: read.aimOffsetM,
                 playsLikeM: read.playsLikeM,
             };

@@ -97,7 +97,7 @@ final class PuttingGoldenParityTests: XCTestCase {
     private struct TourReadOut: Decodable {
         let aimOffsetMeters: Double
         let aimInches: Double
-        let aimSide: String
+        let breakSide: String
         let playsLikeMeters: Double
         let breakMultiplier: DoubleOrInfinity
         let canStop: Bool
@@ -385,7 +385,7 @@ final class PuttingGoldenParityTests: XCTestCase {
                            accuracy: closedFormAccuracy, "\(c.name): aimOffsetMeters")
             XCTAssertEqual(r.aimInches, c.read.aimInches,
                            accuracy: closedFormAccuracy, "\(c.name): aimInches")
-            XCTAssertEqual(r.aimSide.rawValue, c.read.aimSide, "\(c.name): aimSide")
+            XCTAssertEqual(r.breakSide.rawValue, c.read.breakSide, "\(c.name): breakSide")
             XCTAssertEqual(r.playsLikeMeters, c.read.playsLikeMeters,
                            accuracy: closedFormAccuracy, "\(c.name): playsLikeMeters")
             if c.read.breakMultiplier.value.isInfinite {
