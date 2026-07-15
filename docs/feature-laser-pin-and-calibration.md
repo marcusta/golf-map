@@ -174,7 +174,8 @@ Touched:
 - `ios/GolfMap/Screens/OnCourseModel.swift` — `pinOverrides: [holeId: LatLon]`, persisted per
   course+date using the `teeOverrides` key pattern (a pin is valid for *today*; key includes a
   date stamp so yesterday's pin doesn't leak into today's round). `activePin` resolution order:
-  override → furniture pin → green centre.
+  override → furniture pin → nil (no green-centre fallback: the card already shows centre as its
+  own figure — a synthesized "pin" equal to centre would be a duplicate masquerading as data).
 - Card UI — a pin chip showing source (`sheet/laser/visual`) + a mic button; long-press pin to
   clear override.
 

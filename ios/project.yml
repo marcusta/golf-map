@@ -44,6 +44,10 @@ targets:
         # Spot-level green capture lays the phone flat and reads gravity-anchored
         # tilt from the motion sensors.
         NSMotionUsageDescription: Reads the phone's tilt when you lay it flat on the green to measure slope.
+        # Voice pin entry captures a short phrase from the mic and transcribes it
+        # with on-device speech recognition (audio never leaves the phone).
+        NSMicrophoneUsageDescription: Captures a short voice phrase to place today's pin (e.g. "4 from front, 5 from left").
+        NSSpeechRecognitionUsageDescription: Transcribes your pin phrase on-device — audio never leaves the phone.
         # Dev server runs on http://localhost:3000. Allow local networking ONLY —
         # do not widen to NSAllowsArbitraryLoads.
         NSAppTransportSecurity:
