@@ -262,6 +262,26 @@ struct CourseScreen: View {
             if let holeNumber = UserDefaults.standard.string(forKey: "openHole").flatMap(Int.init) {
                 newModel.goToHole(number: holeNumber)
             }
+            // `-placePinPhrase "<utterance>"` drives the pin-entry wiring
+            // headlessly (voice + drag-confirm aren't scriptable via simctl):
+            // parse the phrase with the default voice locale (`-pinLocale sv`
+            // forces Swedish, else English), take the first candidate, resolve
+            // it against the current hole's green frame + origin, and commit it
+            // as today's pin. Prints PIN-DEBUG so a live-verify run can check
+            // the placed lat/lon. DEBUG-only and inert without the flag.
+            if let utterance = UserDefaults.standard.string(forKey: "placePinPhrase") {
+                let locale: PinVoiceLocale =
+                    UserDefaults.standard.string(forKey: "pinLocale") == "sv" ? .swedish : .english
+                if let phrase = PinPhraseParser.parse(utterance, locale: locale).first,
+                   let frame = newModel.currentGreenFrame,
+                   let resolution = newModel.resolvePinPhrase(phrase) {
+                    newModel.commitPin(resolution)
+                    let pin = PinPlacementSolver.pinWGS84(spec: resolution.spec, frame: frame)
+                    print("PIN-DEBUG source=\(resolution.spec.source.rawValue) "
+                        + "depth=\(resolution.spec.depthFromFrontM) frac=\(resolution.spec.lateralFraction) "
+                        + "clamped=\(resolution.clamped) lat=\(pin.lat) lon=\(pin.lon)")
+                }
+            }
             // `-browseMode 1` starts in browse mode (GPS off), `-browseMode 0`
             // forces GPS on (overrides the persisted per-course setting so a
             // live-verify run is deterministic); `-moveTee <lat>,<lon>` moves
@@ -430,6 +450,8 @@ private struct OnCourseContentView: View {
     @State private var showScorecard = false
     /// Wind editor sheet (the wind chip in the control rail opens it).
     @State private var showWind = false
+    /// Pin-entry sheet (the pin button on the distance card opens it).
+    @State private var showPinEntry = false
 
     // MARK: Chrome geometry (green-view camera fit)
 
@@ -639,7 +661,11 @@ private struct OnCourseContentView: View {
                 .padding(.bottom, 8)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
         } else if !immersive {
-            DistanceCardView(model: model, onProfile: { showProfile.toggle() })
+            DistanceCardView(
+                model: model,
+                onProfile: { showProfile.toggle() },
+                onPinEntry: { showPinEntry = true }
+            )
                 .padding(.horizontal, 12)
                 .padding(.bottom, -2)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -807,6 +833,18 @@ private struct OnCourseContentView: View {
         // first through the same dirty-row → PlanSyncService path as shot edits.
         .sheet(isPresented: $showWind) {
             WindEditorSheet(model: model, onClose: { showWind = false })
+        }
+        // Today's-pin entry (spec §4.1 / §5). Only openable when the hole has a
+        // green frame; the guard also protects against a hole change racing the
+        // presentation.
+        .sheet(isPresented: $showPinEntry) {
+            if let frame = model.currentGreenFrame {
+                PinEntrySheet(
+                    model: model,
+                    frame: frame,
+                    onClose: { showPinEntry = false }
+                )
+            }
         }
         .sheet(isPresented: $showLevel) {
             if let greenId = model.currentHole?.green?.id {
@@ -1383,10 +1421,12 @@ private struct OnCourseContentView: View {
         guard let bounds = greenAnalysis.activate(holeId: hole.hole.id, greenCenter: center)
         else { return }
         // Arm the putt read: hole marker defaults to the active pin, else the
-        // green center. The terrain grid follows when the sampling settles
-        // (see the greenAnalysis.isLoading onChange).
-        let activePin = hole.pins.first(where: \.active)
-            .map { LatLon(lat: $0.lat, lon: $0.lon) }
+        // green center. `targets.activePin` resolves a placed today's-pin
+        // override first (spec §3.3), falling back to the furniture active pin —
+        // so a placed pin flows into the green view; identical when none exists.
+        // The terrain grid follows when the sampling settles (see the
+        // greenAnalysis.isLoading onChange).
+        let activePin = model.targets.activePin
         puttRead.activate(defaultHole: (activePin ?? center).map(puttPoint))
         // Apply the synced per-green calibration (confidence lift + bias
         // correction) before the terrain grid settles, so the surface is built
@@ -1876,6 +1916,9 @@ private struct DistanceCardView: View {
     /// Opens the elevation-profile sheet (owned by the content view — the
     /// sheet is shared with the measure panel).
     let onProfile: () -> Void
+    /// Opens the pin-entry sheet (owned by the content view — needs the current
+    /// green frame, which the button only offers when one exists).
+    let onPinEntry: () -> Void
     @Environment(AppEnvironment.self) private var env
 
     /// Compact by default: the numbers that matter over the ball (F/C/B,
@@ -1898,6 +1941,11 @@ private struct DistanceCardView: View {
         VStack(spacing: 10) {
             if let advice = model.selectedTargetAdvice {
                 selectedTargetBanner(advice)
+            }
+            // Today's-pin entry — only where the hole has a green frame to place
+            // a pin against (spec §5). A placed override adds a source chip.
+            if model.currentGreenFrame != nil {
+                pinRow
             }
             bottomStrip
         }
@@ -2007,6 +2055,57 @@ private struct DistanceCardView: View {
             .contentShape(Rectangle())
             .onTapGesture { if canToggle { showPlaysAs.toggle() } }
         }
+    }
+
+    // Today's-pin controls: a compact button into the pin-entry sheet, plus —
+    // when an override is placed — a source-tag chip ("Laser"/"Sheet"/"Visual")
+    // with an inline clear.
+    private var pinRow: some View {
+        HStack(spacing: 8) {
+            Button(action: onPinEntry) {
+                HStack(spacing: 5) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.caption)
+                    Text("Pin")
+                        .font(.caption)
+                }
+                .foregroundStyle(pinOverride != nil ? Self.pinColor : Color.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.white.opacity(0.08), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Place today's pin")
+
+            if let override = pinOverride {
+                HStack(spacing: 5) {
+                    Text(OnCourseModel.pinSourceTag(override.source))
+                        .font(.caption2.weight(.semibold))
+                    Button {
+                        if let id = model.currentHole?.id {
+                            model.clearPinOverride(forHole: id)
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear placed pin")
+                }
+                .foregroundStyle(Self.pinColor)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Self.pinColor.opacity(0.15), in: Capsule())
+            }
+            Spacer()
+        }
+    }
+
+    /// Today's-pin override for the current hole, keyed the way the model keys
+    /// `pinOverrides` (by `currentHole.id`).
+    private var pinOverride: OnCourseModel.PinOverride? {
+        guard let id = model.currentHole?.id else { return nil }
+        return model.pinOverrides[id]
     }
 
     private var bottomStrip: some View {

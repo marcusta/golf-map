@@ -69,6 +69,11 @@ struct GreenFrame: Equatable, Sendable {
         self.frameRing = raw.map { Vec2(x: $0.x - minDepth, y: $0.y) }
     }
 
+    /// The green outline in frame coordinates ({x: depth from front, y:
+    /// lateral}, metres) — ready for a schematic top-down rendering (depth up,
+    /// player's right to the right) without exposing planar internals.
+    var outlineFrameCoords: [Vec2] { frameRing }
+
     // MARK: - Cross-sections
 
     /// Lateral extent (left, right) of the polygon at `depth` metres from the

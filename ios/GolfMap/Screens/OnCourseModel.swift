@@ -66,6 +66,15 @@ final class OnCourseModel {
     /// Set from `LocationProvider.isDenied` so the UI can explain the fallback.
     var isLocationDenied = false
 
+    /// Active GPS-bias calibration (spec §6 / decision L4), applied additively
+    /// to the live fix in `effectiveUserLocation`. Nil = uncalibrated (raw GPS).
+    ///
+    /// NOT persisted across app restarts: a calibration captures the slow
+    /// common-mode GPS bias, which is only trustworthy for minutes (spec §6.4).
+    /// A calibration reloaded next session would be stale by definition, so it
+    /// lives only in memory — re-solve (anchor / trilateration) each session.
+    private(set) var originCalibration: OriginCalibration?
+
     /// App-level competition mode (DMD rule: distance only). Mirrored from
     /// `AppSettings` by the screen; when true, `distances` omits the slope-
     /// adjusted plays-like figures. Straight distances are unchanged.
@@ -1039,6 +1048,79 @@ final class OnCourseModel {
         defaults.removeObject(forKey: Self.pinOverrideKey(courseId: courseId, holeId: holeId))
     }
 
+    // MARK: - GPS origin calibration (spec §6 / L4)
+
+    /// Install a freshly solved GPS-bias calibration (anchor or trilateration).
+    /// Observable — `origin` and every distance downstream pick up the
+    /// correction on the next read. Not persisted (see `originCalibration`).
+    func applyCalibration(_ c: OriginCalibration) {
+        originCalibration = c
+    }
+
+    /// Drop the calibration entirely — distances revert to raw GPS.
+    func clearCalibration() {
+        originCalibration = nil
+    }
+
+    /// Feed one FIXED-feature laser residual (|laser − corrected-map distance|,
+    /// metres) through the decay gate (spec §6.4) and replace `originCalibration`
+    /// with the returned value. ≤ confirm refreshes it (solvedAt = now, base
+    /// confidence restored); ≥ reject marks it stale; between is inconclusive.
+    /// Returns the gate outcome (discardable). `.inconclusive` no-op when there
+    /// is no active calibration to validate.
+    @discardableResult
+    func registerLaserResidual(_ residualM: Double) -> OriginCalibration.ResidualOutcome {
+        guard let calibration = originCalibration else { return .inconclusive }
+        let (updated, outcome) = calibration.registeringResidual(residualM, now: now())
+        originCalibration = updated
+        return outcome
+    }
+
+    /// UI-facing calibration state for the distance card's badge.
+    enum CalibrationStatus: Equatable {
+        /// No calibration installed — raw GPS.
+        case none
+        /// Live and applied; `confidence` is the effective (age × distance) trust.
+        case active(confidence: Double)
+        /// Installed but not trusted (decayed below the floor, or invalidated by
+        /// a bad residual / GPS discontinuity) — raw GPS with an "uncalibrated"
+        /// badge.
+        case stale
+    }
+
+    /// The calibration state to show, evaluated at `now()` and the current raw
+    /// fix's distance-from-solve (falls back to 0 distance when there is no fix,
+    /// so age decay alone decides). `.active` iff the bias is actually being
+    /// applied (effective confidence ≥ floor); otherwise `.stale`.
+    var calibrationStatus: CalibrationStatus {
+        guard let c = originCalibration else { return .none }
+        let distanceFromSolveM = userLocation.map { Distance.planarMeters($0, c.solvedNear) } ?? 0
+        guard c.appliedBias(now: now(), distanceFromSolveM: distanceFromSolveM) != nil else {
+            return .stale
+        }
+        return .active(confidence: c.confidence(now: now(), distanceFromSolveM: distanceFromSolveM))
+    }
+
+    /// A between-fixes planar jump beyond this (metres) invalidates an active
+    /// calibration (spec §6.4): normal walking between ~1 Hz fixes is a few
+    /// metres, so a jump this large is canopy exit / signal reacquisition — a
+    /// GPS discontinuity that may have shifted the common-mode bias.
+    static let calibrationJumpInvalidationM = 50.0
+
+    /// Mark an active calibration stale when the fix jumps past
+    /// `calibrationJumpInvalidationM` between updates (spec §6.4 GPS
+    /// discontinuity). Kept-but-stale so the badge flips to "uncalibrated"
+    /// rather than silently trusting a bias solved before the discontinuity.
+    /// No-op without an active (non-stale) calibration or without both fixes.
+    private func invalidateCalibrationOnGPSJump(from previous: LatLon?, to next: LatLon?) {
+        guard var c = originCalibration, !c.stale,
+              let previous, let next,
+              Distance.planarMeters(previous, next) > Self.calibrationJumpInvalidationM
+        else { return }
+        c.stale = true
+        originCalibration = c
+    }
+
     // MARK: - Pin placement orchestration (green frame + voice solve → override)
 
     /// The current hole's green-local frame (spec §3), built from the lie-map
@@ -1247,6 +1329,9 @@ final class OnCourseModel {
     /// Feeds a GPS fix (or nil on loss) and kicks an async terrain sample for
     /// the plays-like elevation.
     func updateUserLocation(_ location: LatLon?) {
+        // Invalidate a calibration across a GPS discontinuity (spec §6.4) BEFORE
+        // the fix is overwritten — the check compares the previous fix to the new one.
+        invalidateCalibrationOnGPSJump(from: userLocation, to: location)
         userLocation = location
         // Re-sweep the ladder-target elevations. The sweep self-gates: it runs
         // when the origin has moved meaningfully OR any current target cell is
@@ -1403,9 +1488,20 @@ final class OnCourseModel {
 
     // MARK: - Derived: origin
 
-    /// The live fix, gated by the GPS switch: nil in browse mode.
+    /// The live fix, gated by the GPS switch and corrected by a live GPS-bias
+    /// calibration: nil in browse mode.
+    ///
+    /// Correction seam (spec §6.1 / L4): this is the SINGLE insertion point the
+    /// whole model inherits, because every distance derives from
+    /// `origin`/`effectiveUserLocation`. ONLY the live GPS fix is corrected —
+    /// browse origin and tee positions are map-anchored (not GPS), so `origin`'s
+    /// `?? browseOrigin ?? currentTeePosition` fallbacks stay raw. A dropped bias
+    /// (`appliedBias` nil: decayed / stale) yields the RAW fix, never a scaled
+    /// correction (spec §6.4). Correction never nils a non-nil fix, so
+    /// `isUsingGPS` and the `originElevation` presence checks are unaffected.
     private var effectiveUserLocation: LatLon? {
-        gpsEnabled ? userLocation : nil
+        guard gpsEnabled, let fix = userLocation else { return nil }
+        return Self.corrected(fix, with: originCalibration, now: now())
     }
 
     /// True when distances derive from live GPS rather than the tee. False in
@@ -3245,6 +3341,20 @@ final class OnCourseModel {
         return Vec2(x: p.x, y: p.y)
     }
 
+    /// Applies a live calibration's bias to a raw WGS84 fix in the EPSG:3006
+    /// planar frame, returning WGS84. Distance-from-solve (for the decay) is
+    /// planar from the raw fix to `solvedNear`. No calibration, or a dropped bias
+    /// (stale / below the confidence floor) → the raw fix unchanged (spec §6.4:
+    /// dropped, never scaled).
+    private static func corrected(_ fix: LatLon, with calibration: OriginCalibration?, now: Date) -> LatLon {
+        guard let calibration else { return fix }
+        let distanceFromSolveM = Distance.planarMeters(fix, calibration.solvedNear)
+        guard let bias = calibration.appliedBias(now: now, distanceFromSolveM: distanceFromSolveM)
+        else { return fix }
+        let p = Sweref99TM.fromWGS84(fix)
+        return Sweref99TM.toWGS84(x: p.x + bias.e, y: p.y + bias.n)
+    }
+
     // MARK: - Advised club + recommended aim (plan editor actions)
 
     /// The wind + plays-like advised club for the plan shot's reaching leg (the
@@ -3381,7 +3491,10 @@ final class OnCourseModel {
         return MapOverlayState(
             distanceLine: line,
             targets: markers,
-            userLocation: isUsingGPS ? userLocation.map { UserLocationMarker(position: $0) } : nil,
+            // The corrected fix, deliberately: with a calibration active the
+            // marker must sit where distances measure from — a raw-fix dot
+            // metres off the measuring origin reads as a bug on the ortho.
+            userLocation: isUsingGPS ? effectiveUserLocation.map { UserLocationMarker(position: $0) } : nil,
             routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : [],
             plan: plan,
             highlight: isBrowseMode ? browseTarget ?? mapFocus ?? browseOrigin : mapFocus,
