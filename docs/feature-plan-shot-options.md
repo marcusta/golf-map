@@ -1,7 +1,10 @@
 # Plan: Shot Options — alternative plan shots as variants of the same decision
 
-**Status:** designed 2026-07-17 (spec locked; delegation in
-[delegation-briefs-oncourse.md](delegation-briefs-oncourse.md), T28–T30 + T32)
+**Status:** built 2026-07-17 — T28 `0f2e5c44` (tree API), T29 `6cc5062e` (planner authoring),
+T30 `72d4c411` (chain EV + score chips), T32 `9c379e9c` (on-course consumption). Open per O4:
+no Swift `scoreOptionChain` — authored options are unpriced on device until an on-course
+consumer justifies the mirror. Briefs:
+[delegation-briefs-oncourse.md](delegation-briefs-oncourse.md); reports in `docs/reports/`.
 **Scope:** `server` (one additive migration + game-plans service/API), `shared/strategy` (option
 chain scoring), `web/src/planner` (authoring + overlay), `ios` (consumption — see the round-loop
 doc for the on-course UX).
