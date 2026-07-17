@@ -157,6 +157,47 @@ unchanged.
 **Done:** walk-on-green (simulated fix) shows putt-first card; lasered pin is the read's hole;
 stimp affects pace figures; tests green.
 
+### T37 · Close the option-tree loop (cross-task review follow-up) — **Fable**
+
+Added 2026-07-17 after the wave's cross-task integration review. Five findings, self-contained
+anchors below (line numbers at the post-T36 HEAD, `70620011`); fixes 1–3 are the substance,
+4–5 ride along.
+
+1. **R4 completion — authored options merge into decide.**
+   `ios/GolfMap/Screens/OnCourseModel.swift:2743` `authoredDecideCandidates(remainingM:)` is an
+   empty stub (T33 built the seam, T32 declined it). Implement it: enumerate the authored
+   sibling options surviving at the current decision point (club + landing), enter them AHEAD
+   of engine candidates, inheriting the existing pricing/ranking/vetoes/cap pipeline.
+   `DecideCandidate` today carries only club + distance-along-green-line — add a target
+   override so an authored option's own landing point becomes the working target when picked.
+   Fixture-test: an authored safe-line branch at a divergence position must appear in the
+   decide list, priced and ranked.
+2. **Capture prefill honours the active line.**
+   `ios/GolfMap/Screens/CourseScreen.swift:2141` and `:2217` (armCapture/rearmCapture) build
+   `planLandings` from `model.currentHolePlan?.shots` (primary-line projection). Prefer the
+   selected branch: `model.playingState?.activeLine` positions, falling back to the primary
+   line. Test: select a non-primary option, arm capture with no pin/working target → prefill
+   is the selected branch's landing.
+3. **`parentShotId` in the iOS add-shot push** — ONLY if `ios/GolfMap/API/GolfAPIClient.swift`
+   and `ios/GolfMap/App/PlanSync.swift` are clean in `git status` (another session is
+   threading stimp through the same files; if they are dirty, SKIP this item and note the
+   deferral in your report). `AddPlanShotRequest` cannot carry `parentShotId` though the T28
+   endpoint accepts it, so offline-added shots always append to the server primary tail —
+   under a concurrent web `setPrimary` (which bumps no versions) the shot lands on the wrong
+   branch. Thread `parentShotId` (parent's serverId) through the request and `push(add:)`.
+4. **`DecideKey` misses adjust-mode overrides.** `OnCourseModel.swift:2684` —
+   `buildDecideContent` reads green-centre/front/back through adjust-mode overrides but
+   `DecideKey` doesn't fingerprint them; fold the current hole's override values into the key.
+5. **LaserEntrySheet wrong message without a GPS fix.** The `.residualCheck` branch shows
+   "Residual is near the gate — re-shoot" when `recordLaserCarry` returned nil for lack of a
+   fix; distinguish a no-fix result (the `.calibrationShot` path already has a `.needsFix`
+   message) from a genuinely near-gate residual.
+
+**Done:** authored options priced in decide (R4 fully met); prefill follows the chosen line;
+findings 3–5 fixed or explicitly deferred with reason; full iOS suite green (baseline 1060,
+2 pre-existing skips); headless divergence scenario extended to cover an authored option
+appearing and being picked.
+
 ### T36 · One laser entry + opportunistic residual refresh — **GPT-5.6**
 
 Spec: round-loop R7, laser doc §6.4. Independent, but touches `OnCourseModel` — schedule in the
