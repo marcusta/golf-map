@@ -72,7 +72,7 @@ enum GamePlanSync {
                 syncState: .synced
             ),
             holes: plan.holes.map(holeRecord),
-            shots: plan.holes.flatMap { $0.shots.map(shotRecord) },
+            shots: plan.holes.flatMap { shotRecords($0.shots) },
             gates: plan.holes.flatMap { $0.gates.map(gateRecord) }
         )
     }
@@ -94,11 +94,37 @@ enum GamePlanSync {
         )
     }
 
-    static func shotRecord(_ s: PlanShot) -> PlanShotRecord {
+    /// Adapts one hole's shots. A pre-options response omitted
+    /// `parentShotId` on every row and used global sort order; upgrade that
+    /// shape to the locked tree representation exactly like server migration
+    /// 009 (first root, then a rank-0 child chain). Explicit nulls are roots
+    /// and therefore must never enter this legacy path.
+    static func shotRecords(_ shots: [PlanShot]) -> [PlanShotRecord] {
+        let legacyLinear = !shots.isEmpty && shots.allSatisfy { !$0.parentShotIdWasPresent }
+        guard legacyLinear else { return shots.map { shotRecord($0) } }
+
+        let ordered = shots.sorted {
+            $0.sortOrder != $1.sortOrder ? $0.sortOrder < $1.sortOrder : $0.id < $1.id
+        }
+        return ordered.enumerated().map { index, shot in
+            shotRecord(
+                shot,
+                parentShotId: index == 0 ? nil : ordered[index - 1].id,
+                sortOrder: 0
+            )
+        }
+    }
+
+    static func shotRecord(
+        _ s: PlanShot,
+        parentShotId: String? = nil,
+        sortOrder: Int? = nil
+    ) -> PlanShotRecord {
         PlanShotRecord(
             id: s.id,
             gamePlanHoleId: s.gamePlanHoleId,
-            sortOrder: s.sortOrder,
+            sortOrder: sortOrder ?? s.sortOrder,
+            parentShotId: s.parentShotIdWasPresent ? s.parentShotId : parentShotId,
             lat: s.lat,
             lon: s.lon,
             elevation: s.elevation,

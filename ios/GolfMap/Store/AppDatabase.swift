@@ -325,6 +325,34 @@ public struct AppDatabase: Sendable {
             }
         }
 
+        // v9 (T32): cache the server's option tree. Existing device rows use
+        // the old hole-global sortOrder, so backfill them into the same
+        // rank-0 parent chain as server migration 009. New explicit NULL
+        // parents remain tee-root sibling options.
+        migrator.registerMigration("v9") { db in
+            try db.alter(table: "planShot") { t in
+                t.add(column: "parentShotId", .text)
+            }
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, gamePlanHoleId
+                    FROM planShot
+                    ORDER BY gamePlanHoleId, sortOrder, id
+                    """
+            )
+            var previousByHole: [String: String] = [:]
+            for row in rows {
+                let id: String = row["id"]
+                let holeId: String = row["gamePlanHoleId"]
+                try db.execute(
+                    sql: "UPDATE planShot SET parentShotId = ?, sortOrder = 0 WHERE id = ?",
+                    arguments: [previousByHole[holeId], id]
+                )
+                previousByHole[holeId] = id
+            }
+        }
+
         return migrator
     }
 
@@ -561,7 +589,7 @@ public struct AppDatabase: Sendable {
             let holeIds = holes.map(\.id)
             let shots = try PlanShotRecord
                 .filter(holeIds.contains(Column("gamePlanHoleId")))
-                .order(Column("gamePlanHoleId"), Column("sortOrder"))
+                .order(Column("gamePlanHoleId"), Column("sortOrder"), Column("id"))
                 .fetchAll(db)
             let gates = try PlanGateRecord
                 .filter(holeIds.contains(Column("gamePlanHoleId")))

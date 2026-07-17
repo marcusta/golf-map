@@ -92,6 +92,65 @@ final class PlayingStateTests: XCTestCase {
         )
     }
 
+    private func makeOptionPlan(clubs: [ClubRecord]) -> CoursePlan {
+        let landingPoint = Sweref99TM.fromWGS84(landing)
+        let safe = Sweref99TM.toWGS84(x: landingPoint.x + 100, y: landingPoint.y)
+        let attackNext = LatLon(lat: 58.3630, lon: 15.7085)
+        let safePrimary = Sweref99TM.toWGS84(x: landingPoint.x + 70, y: landingPoint.y + 100)
+        let safeAlternative = Sweref99TM.toWGS84(x: landingPoint.x + 115, y: landingPoint.y + 90)
+        return CoursePlan.make(
+            stored: StoredGamePlan(
+                plan: GamePlanRecord(id: "option-plan", courseId: "course-1"),
+                holes: [GamePlanHoleRecord(
+                    id: "option-hole", gamePlanId: "option-plan", holeNumber: 1,
+                    notes: "Pick the line that fits today"
+                )],
+                shots: [
+                    PlanShotRecord(
+                        id: "attack", gamePlanHoleId: "option-hole", sortOrder: 0,
+                        lat: landing.lat, lon: landing.lon,
+                        clubId: "c-drv", label: "Attack"
+                    ),
+                    PlanShotRecord(
+                        id: "safe", gamePlanHoleId: "option-hole", sortOrder: 1,
+                        lat: safe.lat, lon: safe.lon,
+                        clubId: "c-5i", label: "Safe line"
+                    ),
+                    PlanShotRecord(
+                        id: "attack-next", gamePlanHoleId: "option-hole", sortOrder: 0,
+                        parentShotId: "attack", lat: attackNext.lat, lon: attackNext.lon,
+                        clubId: "c-pw", label: "Wedge in"
+                    ),
+                    PlanShotRecord(
+                        id: "safe-primary", gamePlanHoleId: "option-hole", sortOrder: 0,
+                        parentShotId: "safe", lat: safePrimary.lat, lon: safePrimary.lon,
+                        clubId: "c-7i", label: "Full approach"
+                    ),
+                    PlanShotRecord(
+                        id: "safe-bailout", gamePlanHoleId: "option-hole", sortOrder: 1,
+                        parentShotId: "safe", lat: safeAlternative.lat, lon: safeAlternative.lon,
+                        clubId: "c-pw", label: "Bail out"
+                    ),
+                ],
+                gates: []
+            ),
+            clubs: clubs
+        )
+    }
+
+    private func makeOptionModel() -> OnCourseModel {
+        let model = OnCourseModel(furniture: makeFurniture(), defaults: defaults)
+        let bag = [
+            ClubRecord(id: "c-drv", name: "Driver", carryM: 230, dispersionM: 40, sortOrder: 0),
+            ClubRecord(id: "c-5i", name: "5 iron", carryM: 175, dispersionM: 24, sortOrder: 1),
+            ClubRecord(id: "c-7i", name: "7 iron", carryM: 145, dispersionM: 20, sortOrder: 2),
+            ClubRecord(id: "c-pw", name: "PW", carryM: 110, dispersionM: 14, sortOrder: 3),
+        ]
+        model.setClubs(bag)
+        model.setPlan(makeOptionPlan(clubs: bag))
+        return model
+    }
+
     private func makeBag(driverDispersionM: Double = 40) -> [ClubRecord] {
         [ClubRecord(id: "c-drv", name: "Driver", carryM: 230, dispersionM: driverDispersionM, sortOrder: 0)]
     }
@@ -303,6 +362,64 @@ final class PlayingStateTests: XCTestCase {
         XCTAssertEqual(strip.firstLegMeters, expected)
         XCTAssertEqual(strip.notes, "Favor the left half off the tee")
         XCTAssertNil(strip.hazardLabel, "no hazards installed")
+    }
+
+    // MARK: - Authored options (T32, R2/R8)
+
+    func testTeeOptionChipsShowLabelAndClubAndSelectRoundScopedLine() throws {
+        let model = makeOptionModel()
+        model.setActiveRound(strokes: [])
+
+        XCTAssertEqual(model.planOptionChips.map(\.label), ["Attack", "Safe line"])
+        XCTAssertEqual(model.planOptionChips.map(\.clubName), ["Driver", "5 iron"])
+        XCTAssertEqual(model.planOptionChips.map(\.isSelected), [true, false])
+        XCTAssertEqual(try XCTUnwrap(model.currentHolePlan).shots.map(\.id), ["attack", "attack-next"])
+
+        model.selectPlanOption(shotId: "safe")
+
+        XCTAssertEqual(try XCTUnwrap(model.playingState).activeLine.map(\.id), ["safe", "safe-primary"])
+        XCTAssertEqual(model.planOptionChips.map(\.isSelected), [false, true])
+        XCTAssertEqual(try XCTUnwrap(model.teePreviewStrip).teeClubName, "5 iron")
+        XCTAssertEqual(try XCTUnwrap(model.teePreviewStrip).aimLabel, "Safe line")
+        XCTAssertEqual(
+            try XCTUnwrap(model.currentHolePlan).shots.map(\.id),
+            ["attack", "attack-next"],
+            "R8 selection must not mutate the authored primary plan"
+        )
+    }
+
+    func testSelectedLineDrivesDivergenceAndClearsWithRound() throws {
+        let model = makeOptionModel()
+        let safe = try XCTUnwrap(model.currentHolePlan?.children(of: nil).last?.position)
+        let strokes = [stroke(tee), stroke(safe)]
+
+        model.setActiveRound(strokes: [])
+        model.selectPlanOption(shotId: "safe")
+        model.setActiveRound(strokes: strokes)
+        XCTAssertEqual(try XCTUnwrap(model.playingState).currentLeg, 0)
+        XCTAssertEqual(model.roundCardMode, .plan(legIndex: 2))
+
+        model.setActiveRound(strokes: nil)
+        XCTAssertTrue(model.activeOptionShotIdByHole.isEmpty, "option choice is scoped to the round")
+        model.setActiveRound(strokes: strokes)
+        XCTAssertEqual(try XCTUnwrap(model.playingState).activeLine.map(\.id), ["attack", "attack-next"])
+        XCTAssertEqual(model.roundCardMode, .decide, "the same ball diverges from the primary line")
+    }
+
+    func testPlanLegCardShowsAndSwitchesChildOptionsAtMatchedLanding() throws {
+        let model = makeOptionModel()
+        let safe = try XCTUnwrap(model.currentHolePlan?.children(of: nil).last?.position)
+        model.setActiveRound(strokes: [])
+        model.selectPlanOption(shotId: "safe")
+        model.setActiveRound(strokes: [stroke(tee), stroke(safe)])
+
+        XCTAssertEqual(model.roundCardMode, .plan(legIndex: 2))
+        XCTAssertEqual(model.planOptionChips.map(\.label), ["Full approach", "Bail out"])
+        XCTAssertEqual(model.planOptionChips.map(\.clubName), ["7 iron", "PW"])
+
+        model.selectPlanOption(shotId: "safe-bailout")
+        XCTAssertEqual(try XCTUnwrap(model.playingState).activeLine.map(\.id), ["safe", "safe-bailout"])
+        XCTAssertEqual(try XCTUnwrap(model.roundLegCard(legIndex: 2)).aimLabel, "Bail out")
     }
 
     func testTeePreviewHazardIsTheFarthestCarryBeforeTheLanding() throws {

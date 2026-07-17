@@ -19,7 +19,7 @@ final class GamePlanEditStoreTests: XCTestCase {
         let columns = try await database.dbQueue.read { db in
             try Row.fetchAll(db, sql: "PRAGMA table_info(planShot)").map { $0["name"] as String }
         }
-        for expected in ["serverId", "serverVersion", "syncState"] {
+        for expected in ["serverId", "serverVersion", "syncState", "parentShotId"] {
             XCTAssertTrue(columns.contains(expected), "planShot missing \(expected)")
         }
     }

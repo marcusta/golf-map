@@ -160,13 +160,15 @@ public struct GamePlanHoleRecord: Codable, Sendable, Equatable, FetchableRecord,
     }
 }
 
-/// One planned landing point (tee→green order via `sortOrder`).
+/// One planned landing point in the option tree. `sortOrder` is sibling rank;
+/// `parentShotId == nil` is a tee-root option.
 public struct PlanShotRecord: Codable, Sendable, Equatable, FetchableRecord, PersistableRecord {
     public static let databaseTableName = "planShot"
 
     public var id: String
     public var gamePlanHoleId: String
     public var sortOrder: Int
+    public var parentShotId: String?
     public var lat: Double
     public var lon: Double
     public var elevation: Double?
@@ -180,6 +182,7 @@ public struct PlanShotRecord: Codable, Sendable, Equatable, FetchableRecord, Per
         id: String,
         gamePlanHoleId: String,
         sortOrder: Int,
+        parentShotId: String? = nil,
         lat: Double,
         lon: Double,
         elevation: Double? = nil,
@@ -192,6 +195,7 @@ public struct PlanShotRecord: Codable, Sendable, Equatable, FetchableRecord, Per
         self.id = id
         self.gamePlanHoleId = gamePlanHoleId
         self.sortOrder = sortOrder
+        self.parentShotId = parentShotId
         self.lat = lat
         self.lon = lon
         self.elevation = elevation

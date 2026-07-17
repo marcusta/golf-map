@@ -377,11 +377,12 @@ struct CourseScreen: View {
                     newModel.moveActiveTee(to: LatLon(lat: lat, lon: lon))
                 }
             }
-            // `-planDemo 1` installs a synthetic one-shot-per-hole game plan
-            // derived from the bundle furniture (no server round-trip), so
-            // the plan overlay + card rows can be live-verified headlessly.
-            if UserDefaults.standard.string(forKey: "planDemo") == "1" {
-                newModel.setPlan(Self.demoPlan(furniture: furniture))
+            // `-planDemo 1` installs a synthetic one-shot-per-hole game plan.
+            // `-planOptions 1` installs the same fixture as a driver-vs-safe
+            // tree with continuations for T32's headless option verification.
+            let optionDemo = UserDefaults.standard.string(forKey: "planOptions") == "1"
+            if UserDefaults.standard.string(forKey: "planDemo") == "1" || optionDemo {
+                newModel.setPlan(Self.demoPlan(furniture: furniture, withOptions: optionDemo))
                 newModel.setClubs(Self.demoClubs)
             }
             #endif
@@ -414,7 +415,10 @@ struct CourseScreen: View {
     /// the tee→green midpoint (club "Demo 7i") and one gate at 60% of the
     /// hole, 15 m left / 20 m right of the line. Exercises the exact
     /// `CoursePlan.make` pipeline the real cache path uses.
-    private static func demoPlan(furniture: CourseFurniture) -> CoursePlan {
+    private static func demoPlan(
+        furniture: CourseFurniture,
+        withOptions: Bool = false
+    ) -> CoursePlan {
         let teesByHole = Dictionary(grouping: furniture.tees, by: \.holeId)
         let greensByHole = Dictionary(
             furniture.greens.map { ($0.holeId, $0) },
@@ -435,12 +439,37 @@ struct CourseScreen: View {
             ))
             let teePos = LatLon(lat: tee.lat, lon: tee.lon)
             let greenPos = LatLon(lat: green.centerLat, lon: green.centerLon)
+            let primaryId = "\(holeRowId)-s1"
             shots.append(PlanShotRecord(
-                id: "\(holeRowId)-s1", gamePlanHoleId: holeRowId, sortOrder: 0,
+                id: primaryId, gamePlanHoleId: holeRowId, sortOrder: 0,
                 lat: (teePos.lat + greenPos.lat) / 2,
                 lon: (teePos.lon + greenPos.lon) / 2,
-                clubId: "demo-club"
+                clubId: withOptions ? "d-dr" : "demo-club",
+                label: withOptions ? "Attack" : nil
             ))
+            if withOptions {
+                shots.append(PlanShotRecord(
+                    id: "\(holeRowId)-s1-next", gamePlanHoleId: holeRowId,
+                    sortOrder: 0, parentShotId: primaryId,
+                    lat: teePos.lat + (greenPos.lat - teePos.lat) * 0.78,
+                    lon: teePos.lon + (greenPos.lon - teePos.lon) * 0.78,
+                    clubId: "d-9i", label: "Wedge in"
+                ))
+                let safeId = "\(holeRowId)-safe"
+                shots.append(PlanShotRecord(
+                    id: safeId, gamePlanHoleId: holeRowId, sortOrder: 1,
+                    lat: teePos.lat + (greenPos.lat - teePos.lat) * 0.34,
+                    lon: teePos.lon + (greenPos.lon - teePos.lon) * 0.34,
+                    clubId: "d-5i", label: "Safe line"
+                ))
+                shots.append(PlanShotRecord(
+                    id: "\(holeRowId)-safe-next", gamePlanHoleId: holeRowId,
+                    sortOrder: 0, parentShotId: safeId,
+                    lat: teePos.lat + (greenPos.lat - teePos.lat) * 0.68,
+                    lon: teePos.lon + (greenPos.lon - teePos.lon) * 0.68,
+                    clubId: "d-7i", label: "Full approach"
+                ))
+            }
             gates.append(PlanGateRecord(
                 id: "\(holeRowId)-g1", gamePlanHoleId: holeRowId, sortOrder: 0,
                 lat: teePos.lat + (greenPos.lat - teePos.lat) * 0.6,
@@ -457,7 +486,10 @@ struct CourseScreen: View {
                 ),
                 holes: holes, shots: shots, gates: gates
             ),
-            clubs: [ClubRecord(id: "demo-club", name: "Demo 7i", carryM: 150, dispersionM: 12, sortOrder: 0)]
+            clubs: [ClubRecord(
+                id: "demo-club", name: "Demo 7i", carryM: 150,
+                dispersionM: 12, sortOrder: 0
+            )] + demoClubs
         )
     }
 
@@ -1394,6 +1426,61 @@ private struct OnCourseContentView: View {
                     }
                     print("ROUND-DEBUG \(outcome)")
                     UserDefaults.standard.set(outcome, forKey: "roundDebug.lastResult")
+                }
+            }
+            // `-planOptions 1` installs the option-tree demo in `load()` and
+            // drives T32's full consumption seam without UI automation:
+            // roots visible on the tee, selecting the safe root changes the
+            // round-scoped line, and a ball at that landing stays on-plan only
+            // for the selected line. Finish back on the tee so a screenshot
+            // captures the selected option chips above MapLibre's black frame.
+            if UserDefaults.standard.string(forKey: "planOptions") == "1" {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    model.setActiveRound(strokes: [])
+                    let initial = model.planOptionChips
+                    guard let holePlan = model.currentHolePlan,
+                          let alternative = initial.last,
+                          let alternativeRoot = holePlan.children(of: nil).last,
+                          let tee = model.planRoute.first
+                    else {
+                        let outcome = "fixture-missing chips=\(initial.count)"
+                        print("OPTIONS-DEBUG \(outcome)")
+                        UserDefaults.standard.set(outcome, forKey: "optionsDebug.lastResult")
+                        return
+                    }
+
+                    model.selectPlanOption(shotId: alternative.id)
+                    let selectedLine = model.playingState?.activeLine.map(\.id) ?? []
+                    let selected = model.planOptionChips.first { $0.id == alternative.id }?.isSelected == true
+                    let atAlternative = [
+                        OnCourseModel.RoundStroke(holeNumber: model.currentHoleNumber, position: tee),
+                        OnCourseModel.RoundStroke(
+                            holeNumber: model.currentHoleNumber,
+                            position: alternativeRoot.position
+                        ),
+                    ]
+                    model.setActiveRound(strokes: atAlternative)
+                    let selectedMode = Self.roundModeDescription(model.roundCardMode)
+
+                    // Clear round state (R8 reset), then show the same ball
+                    // against the primary line for the divergence comparison.
+                    model.setActiveRound(strokes: nil)
+                    model.setActiveRound(strokes: atAlternative)
+                    let primaryMode = Self.roundModeDescription(model.roundCardMode)
+
+                    // Leave the app screenshot-ready on the tee with the
+                    // alternative selected and both label+club chips visible.
+                    model.setActiveRound(strokes: nil)
+                    let roundReset = model.activeOptionShotIdByHole.isEmpty
+                    model.setActiveRound(strokes: [])
+                    model.selectPlanOption(shotId: alternative.id)
+                    let outcome = "chips=\(initial.map { "\($0.label)|\($0.clubName)" }.joined(separator: ";")) "
+                        + "selected=\(selected) line=\(selectedLine.joined(separator: ">")) "
+                        + "selectedMode=\(selectedMode) primaryMode=\(primaryMode) "
+                        + "roundReset=\(roundReset)"
+                    print("OPTIONS-DEBUG \(outcome)")
+                    UserDefaults.standard.set(outcome, forKey: "optionsDebug.lastResult")
                 }
             }
             // `-zoomTaps N` fires N in-taps; `-zoomOutTaps N` fires N out-taps
@@ -2517,6 +2604,7 @@ private struct DistanceCardView: View {
                 }
                 Spacer()
             }
+            planOptionChips
             if let notes = strip.notes {
                 Text(notes)
                     .font(.footnote)
@@ -2525,7 +2613,7 @@ private struct DistanceCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 
     // Plan mode (R2): the leg the plan wants next — planned club, aim label,
@@ -2568,6 +2656,7 @@ private struct DistanceCardView: View {
                 }
                 Spacer()
             }
+            planOptionChips
             if let notes = card.notes {
                 Text(notes)
                     .font(.footnote)
@@ -2576,7 +2665,47 @@ private struct DistanceCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// Authored siblings at the current decision point. The chip deliberately
+    /// carries only label + club: plan sync has no cached EV and O4 defers the
+    /// Swift chain scorer, so inventing a score here would be misleading.
+    @ViewBuilder
+    private var planOptionChips: some View {
+        let chips = model.planOptionChips
+        if !chips.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(chips) { chip in
+                        Button {
+                            model.selectPlanOption(shotId: chip.id)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(chip.label)
+                                    .font(.caption2.weight(.semibold))
+                                Text(chip.clubName)
+                                    .font(.caption2)
+                                    .foregroundStyle(chip.isSelected ? Color.white.opacity(0.85) : .secondary)
+                            }
+                            .lineLimit(1)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .foregroundStyle(chip.isSelected ? Color.white : PlanStyle.violet)
+                            .background(
+                                Capsule().fill(chip.isSelected ? PlanStyle.violet : Color.clear)
+                            )
+                            .overlay(
+                                Capsule().stroke(PlanStyle.violet.opacity(chip.isSelected ? 0 : 0.55))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(chip.label), \(chip.clubName)")
+                        .accessibilityAddTraits(chip.isSelected ? [.isSelected] : [])
+                    }
+                }
+            }
+        }
     }
 
     // Decide card (R4): ≤3 ranked choices from the actual ball — engine

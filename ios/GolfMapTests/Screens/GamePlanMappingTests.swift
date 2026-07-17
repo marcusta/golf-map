@@ -27,6 +27,8 @@ final class GamePlanMappingTests: XCTestCase {
         XCTAssertEqual(hole1.teeId, "tee-yellow-1")
         XCTAssertNil(hole1.windSpeedMps, "JSON null decodes to nil")
         XCTAssertEqual(hole1.shots.count, 2)
+        XCTAssertFalse(hole1.shots[0].parentShotIdWasPresent)
+        XCTAssertNil(hole1.shots[0].parentShotId)
         XCTAssertEqual(hole1.gates.count, 1)
         XCTAssertEqual(hole1.gates[0].source, "computed")
     }
@@ -59,6 +61,9 @@ final class GamePlanMappingTests: XCTestCase {
         XCTAssertEqual(shot.clubId, "club-driver")
         XCTAssertEqual(shot.lat, 58.36180, accuracy: 1e-9)
         XCTAssertEqual(shot.elevation ?? 0, 77.9, accuracy: 1e-9)
+        let continuation = try XCTUnwrap(stored.shots.first { $0.id == "shot-1b" })
+        XCTAssertEqual(continuation.parentShotId, "shot-1a")
+        XCTAssertEqual(continuation.sortOrder, 0, "legacy order upgrades to rank-0 children")
 
         XCTAssertEqual(stored.gates.count, 1)
         let gate = stored.gates[0]
@@ -99,6 +104,51 @@ final class GamePlanMappingTests: XCTestCase {
         XCTAssertEqual(hole1.shots[1].label, "Layup short of bunker")
         XCTAssertEqual(hole1.gates.count, 1)
         XCTAssertEqual(hole1.teeId, "tee-yellow-1")
+    }
+
+    func testOptionTreeDecodeAndPrimaryLineMatchSharedSiblingRankSemantics() throws {
+        let data = Data("""
+        {
+          "id":"p","courseId":"c","userId":null,
+          "windSpeedMps":null,"windDirectionDeg":null,"version":1,
+          "holes":[{
+            "id":"h","gamePlanId":"p","holeNumber":1,"teeId":null,
+            "preferredClubId":null,"plannedDirectionDeg":null,
+            "windSpeedMps":null,"windDirectionDeg":null,"notes":null,"version":1,
+            "shots":[
+              {"id":"safe-next","gamePlanHoleId":"h","sortOrder":0,"parentShotId":"safe","lat":4,"lon":4,"elevation":null,"clubId":"7i","label":"Full approach","version":1},
+              {"id":"attack-alt","gamePlanHoleId":"h","sortOrder":1,"parentShotId":"attack","lat":3,"lon":3,"elevation":null,"clubId":"5i","label":"Lay back","version":1},
+              {"id":"safe","gamePlanHoleId":"h","sortOrder":1,"parentShotId":null,"lat":2,"lon":2,"elevation":null,"clubId":"5i","label":"Safe line","version":1},
+              {"id":"attack-next","gamePlanHoleId":"h","sortOrder":0,"parentShotId":"attack","lat":2.5,"lon":2.5,"elevation":null,"clubId":"pw","label":"Wedge in","version":1},
+              {"id":"attack","gamePlanHoleId":"h","sortOrder":0,"parentShotId":null,"lat":1,"lon":1,"elevation":null,"clubId":"dr","label":"Attack","version":1}
+            ],
+            "gates":[]
+          }]
+        }
+        """.utf8)
+        let decoded = try decoder.decode(GamePlan.self, from: data)
+        XCTAssertTrue(decoded.holes[0].shots.allSatisfy(\.parentShotIdWasPresent))
+
+        let stored = GamePlanSync.storedPlan(from: decoded)
+        XCTAssertEqual(stored.shots.first { $0.id == "safe" }?.parentShotId, nil)
+        XCTAssertEqual(stored.shots.first { $0.id == "attack-alt" }?.parentShotId, "attack")
+
+        let coursePlan = CoursePlan.make(
+            stored: stored,
+            clubs: [
+                ClubRecord(id: "dr", name: "Driver", carryM: 220, dispersionM: 40, sortOrder: 0),
+                ClubRecord(id: "5i", name: "5 iron", carryM: 170, dispersionM: 25, sortOrder: 1),
+                ClubRecord(id: "7i", name: "7 iron", carryM: 145, dispersionM: 20, sortOrder: 2),
+                ClubRecord(id: "pw", name: "PW", carryM: 110, dispersionM: 15, sortOrder: 3),
+            ]
+        )
+        let hole = try XCTUnwrap(coursePlan.hole(number: 1))
+        XCTAssertEqual(hole.allShots.count, 5)
+        XCTAssertEqual(hole.children(of: nil).map(\.id), ["attack", "safe"])
+        XCTAssertEqual(hole.children(of: "attack").map(\.id), ["attack-next", "attack-alt"])
+        XCTAssertEqual(hole.shots.map(\.id), ["attack", "attack-next"], "rank-0 traversal parity")
+        XCTAssertEqual(hole.line(selecting: "safe")?.map(\.id), ["safe", "safe-next"])
+        XCTAssertEqual(hole.line(selecting: "attack-alt")?.map(\.id), ["attack", "attack-alt"])
     }
 
     func testHoleWithoutContentIsHidden() throws {

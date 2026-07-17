@@ -17,9 +17,10 @@ struct PlanEditStore: Sendable {
     /// The `OnCourseModel.PlanEditWriter` backed by this store.
     func writer() -> OnCourseModel.PlanEditWriter {
         OnCourseModel.PlanEditWriter(
-            addShot: { holeNumber, shotId, sortOrder, lat, lon, elevation, clubId in
+            addShot: { holeNumber, shotId, sortOrder, parentShotId, lat, lon, elevation, clubId in
                 await addShot(
                     holeNumber: holeNumber, shotId: shotId, sortOrder: sortOrder,
+                    parentShotId: parentShotId,
                     lat: lat, lon: lon, elevation: elevation, clubId: clubId
                 )
             },
@@ -46,7 +47,7 @@ struct PlanEditStore: Sendable {
     }
 
     private func addShot(
-        holeNumber: Int, shotId: String, sortOrder: Int,
+        holeNumber: Int, shotId: String, sortOrder: Int, parentShotId: String?,
         lat: Double, lon: Double, elevation: Double?, clubId: String?
     ) async {
         do {
@@ -58,6 +59,7 @@ struct PlanEditStore: Sendable {
                 id: shotId,
                 gamePlanHoleId: hole.id,
                 sortOrder: sortOrder,
+                parentShotId: parentShotId,
                 lat: lat, lon: lon, elevation: elevation, clubId: clubId,
                 syncState: .pending
             ))

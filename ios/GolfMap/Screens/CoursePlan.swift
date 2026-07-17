@@ -1,14 +1,16 @@
 import Foundation
 
 /// The game plan for one course as the on-course screen consumes it: per
-/// hole, the ordered planned landing points (with resolved club NAMES) and
-/// the target gates. Assembled from the GRDB cache by `CoursePlan.make` —
+/// hole, the authored shot tree (with resolved club NAMES), its primary-line
+/// projection, and the target gates. Assembled from the GRDB cache by
+/// `CoursePlan.make` —
 /// pure values, no I/O, so the whole plan pipeline is unit-testable.
 ///
 /// Read-only: plans are built on the web planner; the phone just shows them.
 struct CoursePlan: Equatable, Sendable {
 
-    /// One planned landing point, in tee→green order.
+    /// One planned landing point. `sortOrder` ranks siblings; parent nil is a
+    /// tee-root option.
     struct Shot: Equatable, Sendable, Identifiable {
         let id: String
         let position: LatLon
@@ -19,6 +21,27 @@ struct CoursePlan: Equatable, Sendable {
         let clubName: String?
         let label: String?
         let sortOrder: Int
+        let parentShotId: String?
+
+        init(
+            id: String,
+            position: LatLon,
+            elevation: Double?,
+            clubId: String?,
+            clubName: String?,
+            label: String?,
+            sortOrder: Int,
+            parentShotId: String? = nil
+        ) {
+            self.id = id
+            self.position = position
+            self.elevation = elevation
+            self.clubId = clubId
+            self.clubName = clubName
+            self.label = label
+            self.sortOrder = sortOrder
+            self.parentShotId = parentShotId
+        }
     }
 
     /// One target gate: a cross-line at `position` perpendicular to
@@ -75,9 +98,84 @@ struct CoursePlan: Equatable, Sendable {
         /// Per-hole wind override; nil falls back to the plan-level wind.
         let windSpeedMps: Double?
         let windDirectionDeg: Double?
-        /// Ordered by `sortOrder` (tee→green).
+        /// Every authored node in the option tree.
+        let allShots: [Shot]
+        /// Compatibility projection used by existing plan consumers: follow
+        /// rank-0 roots/children from tee to the primary-line tail.
         let shots: [Shot]
         let gates: [Gate]
+
+        init(
+            holeNumber: Int,
+            teeId: String?,
+            notes: String?,
+            windSpeedMps: Double?,
+            windDirectionDeg: Double?,
+            shots: [Shot],
+            gates: [Gate]
+        ) {
+            self.holeNumber = holeNumber
+            self.teeId = teeId
+            self.notes = notes
+            self.windSpeedMps = windSpeedMps
+            self.windDirectionDeg = windDirectionDeg
+            allShots = shots
+            self.shots = Self.primaryLine(in: shots)
+            self.gates = gates
+        }
+
+        /// Ordered sibling choices at one decision point.
+        func children(of parentShotId: String?) -> [Shot] {
+            allShots
+                .filter { $0.parentShotId == parentShotId }
+                .sorted(by: Self.siblingOrder)
+        }
+
+        /// Full line containing `shotId`: ancestors from the tee, the chosen
+        /// sibling, then rank-0 descendants. Invalid/cyclic trees return nil
+        /// rather than hanging the on-course card.
+        func line(selecting shotId: String) -> [Shot]? {
+            let byId = Dictionary(
+                allShots.map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            guard var cursor = byId[shotId] else { return nil }
+            var reversed: [Shot] = []
+            var seen = Set<String>()
+            while true {
+                guard seen.insert(cursor.id).inserted else { return nil }
+                reversed.append(cursor)
+                guard let parent = cursor.parentShotId else { break }
+                guard let resolved = byId[parent] else { return nil }
+                cursor = resolved
+            }
+
+            var line = Array(reversed.reversed())
+            cursor = byId[shotId]!
+            while let child = children(of: cursor.id).first {
+                guard seen.insert(child.id).inserted else { return nil }
+                line.append(child)
+                cursor = child
+            }
+            return line
+        }
+
+        private static func primaryLine(in shots: [Shot]) -> [Shot] {
+            let grouped = Dictionary(grouping: shots, by: \.parentShotId)
+            var line: [Shot] = []
+            var seen = Set<String>()
+            var parent: String? = nil
+            while let shot = grouped[parent]?.sorted(by: siblingOrder).first {
+                guard seen.insert(shot.id).inserted else { break }
+                line.append(shot)
+                parent = shot.id
+            }
+            return line
+        }
+
+        private static func siblingOrder(_ lhs: Shot, _ rhs: Shot) -> Bool {
+            lhs.sortOrder != rhs.sortOrder ? lhs.sortOrder < rhs.sortOrder : lhs.id < rhs.id
+        }
 
         /// A hole plan with neither shots nor gates renders nothing.
         var hasContent: Bool { !shots.isEmpty || !gates.isEmpty }
@@ -176,11 +274,12 @@ struct CoursePlan: Equatable, Sendable {
 
     /// Copy with a shot's position (and elevation) moved. No-op if absent.
     func movingShot(holeNumber: Int, shotId: String, to position: LatLon, elevation: Double?) -> CoursePlan {
-        let shots = self.shots(holeNumber: holeNumber).map { shot -> Shot in
+        let shots = (holesByNumber[holeNumber]?.allShots ?? []).map { shot -> Shot in
             guard shot.id == shotId else { return shot }
             return Shot(
                 id: shot.id, position: position, elevation: elevation,
-                clubId: shot.clubId, clubName: shot.clubName, label: shot.label, sortOrder: shot.sortOrder
+                clubId: shot.clubId, clubName: shot.clubName, label: shot.label,
+                sortOrder: shot.sortOrder, parentShotId: shot.parentShotId
             )
         }
         return replacingShots(holeNumber: holeNumber, with: shots)
@@ -188,14 +287,17 @@ struct CoursePlan: Equatable, Sendable {
 
     /// Copy with `shot` appended to a hole (creating the hole plan if needed).
     func addingShot(holeNumber: Int, _ shot: Shot) -> CoursePlan {
-        replacingShots(holeNumber: holeNumber, with: shots(holeNumber: holeNumber) + [shot])
+        replacingShots(
+            holeNumber: holeNumber,
+            with: (holesByNumber[holeNumber]?.allShots ?? []) + [shot]
+        )
     }
 
     /// Copy with a shot removed from a hole. No-op if absent.
     func removingShot(holeNumber: Int, shotId: String) -> CoursePlan {
         replacingShots(
             holeNumber: holeNumber,
-            with: shots(holeNumber: holeNumber).filter { $0.id != shotId }
+            with: (holesByNumber[holeNumber]?.allShots ?? []).filter { $0.id != shotId }
         )
     }
 
@@ -237,11 +339,12 @@ struct CoursePlan: Equatable, Sendable {
 
     /// Copy with a shot's club (id + resolved name) replaced. No-op if absent.
     func settingClub(holeNumber: Int, shotId: String, clubId: String?, clubName: String?) -> CoursePlan {
-        let shots = self.shots(holeNumber: holeNumber).map { shot -> Shot in
+        let shots = (holesByNumber[holeNumber]?.allShots ?? []).map { shot -> Shot in
             guard shot.id == shotId else { return shot }
             return Shot(
                 id: shot.id, position: shot.position, elevation: shot.elevation,
-                clubId: clubId, clubName: clubName, label: shot.label, sortOrder: shot.sortOrder
+                clubId: clubId, clubName: clubName, label: shot.label,
+                sortOrder: shot.sortOrder, parentShotId: shot.parentShotId
             )
         }
         return replacingShots(holeNumber: holeNumber, with: shots)
@@ -269,7 +372,8 @@ struct CoursePlan: Equatable, Sendable {
                         clubId: shot.clubId,
                         clubName: shot.clubId.flatMap { clubNames[$0] },
                         label: shot.label.flatMap { $0.isEmpty ? nil : $0 },
-                        sortOrder: shot.sortOrder
+                        sortOrder: shot.sortOrder,
+                        parentShotId: shot.parentShotId
                     )
                 }
             let gates = (gatesByHole[hole.id] ?? [])

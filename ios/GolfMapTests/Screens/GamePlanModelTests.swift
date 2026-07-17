@@ -78,7 +78,8 @@ final class GamePlanModelTests: XCTestCase {
                 shots: [
                     PlanShotRecord(id: "s1", gamePlanHoleId: "ph1", sortOrder: 0,
                                    lat: shot1.lat, lon: shot1.lon, clubId: "club-driver"),
-                    PlanShotRecord(id: "s2", gamePlanHoleId: "ph1", sortOrder: 1,
+                    PlanShotRecord(id: "s2", gamePlanHoleId: "ph1", sortOrder: 0,
+                                   parentShotId: "s1",
                                    lat: shot2.lat, lon: shot2.lon,
                                    clubId: "club-7i", label: "Layup"),
                 ],

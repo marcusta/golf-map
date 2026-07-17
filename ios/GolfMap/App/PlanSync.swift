@@ -135,8 +135,10 @@ actor PlanSyncService {
               let shots = try? await database.planShotsNeedingSync(gamePlanHoleId: hole.id)
         else { return }
 
-        // Adds first (sortOrder), then updates, then removes (T3 push order).
-        for shot in shots where shot.syncState == .pending {
+        // Adds first in parent-before-child order, then updates, then removes.
+        // Tree sortOrder is sibling rank now, so a flat sort can no longer
+        // guarantee that an offline-created continuation follows its parent.
+        for shot in parentBeforeChild(shots.filter { $0.syncState == .pending }) {
             guard await push(add: shot, holeServerId: holeServerId, courseId: courseId) else { return }
         }
         for shot in shots where shot.syncState == .dirty {
@@ -145,6 +147,30 @@ actor PlanSyncService {
         for shot in shots where shot.syncState == .deleted {
             await push(delete: shot, courseId: courseId)
         }
+    }
+
+    private func parentBeforeChild(_ shots: [PlanShotRecord]) -> [PlanShotRecord] {
+        var remaining = shots.sorted {
+            $0.sortOrder != $1.sortOrder ? $0.sortOrder < $1.sortOrder : $0.id < $1.id
+        }
+        let pendingIds = Set(remaining.map(\.id))
+        var emitted = Set<String>()
+        var result: [PlanShotRecord] = []
+        while !remaining.isEmpty {
+            guard let index = remaining.firstIndex(where: { shot in
+                guard let parent = shot.parentShotId else { return true }
+                return !pendingIds.contains(parent) || emitted.contains(parent)
+            }) else {
+                // Malformed local cycle: preserve deterministic retry order;
+                // the server will reject rather than the sync loop hanging.
+                result.append(contentsOf: remaining)
+                break
+            }
+            let shot = remaining.remove(at: index)
+            result.append(shot)
+            emitted.insert(shot.id)
+        }
+        return result
     }
 
     /// Adds a pending shot; returns false on failure (stop this hole's adds so

@@ -40,6 +40,19 @@ final class GamePlanSyncTests: XCTestCase {
         Data("[\(entries.joined(separator: ","))]".utf8)
     }
 
+    private func optionPlanBody() -> Data {
+        Data("""
+        {"id":"server-plan","courseId":"course-1","userId":"u1",
+         "windSpeedMps":null,"windDirectionDeg":null,"version":2,
+         "holes":[{"id":"server-hole","gamePlanId":"server-plan","holeNumber":1,
+         "teeId":null,"preferredClubId":null,"plannedDirectionDeg":null,
+         "windSpeedMps":null,"windDirectionDeg":null,"notes":null,"version":1,
+         "shots":[{"id":"server-root","gamePlanHoleId":"server-hole","sortOrder":0,
+         "parentShotId":null,"lat":58.36,"lon":15.71,"elevation":null,
+         "clubId":null,"label":"Server option","version":1}],"gates":[]}]}
+        """.utf8)
+    }
+
     // MARK: - Tests
 
     func testRefreshSavesCleanClubBagFromServer() async throws {
@@ -119,5 +132,44 @@ final class GamePlanSyncTests: XCTestCase {
         let clubs = try await database.allClubs()
         XCTAssertEqual(clubs[0].carryM, 216, accuracy: 1e-9)
         XCTAssertEqual(clubs[0].syncState, .dirty)
+    }
+
+    func testRefreshOptionTreeDoesNotClobberPendingLocalPlanEdit() async throws {
+        let database = try await makeDatabaseWithCourse()
+        try await database.saveGamePlan(StoredGamePlan(
+            plan: GamePlanRecord(
+                id: "local-plan", courseId: "course-1",
+                serverId: "local-plan", serverVersion: 1, syncState: .synced
+            ),
+            holes: [GamePlanHoleRecord(
+                id: "local-hole", gamePlanId: "local-plan", holeNumber: 1,
+                serverId: "local-hole", serverVersion: 1, syncState: .synced
+            )],
+            shots: [PlanShotRecord(
+                id: "local-shot", gamePlanHoleId: "local-hole", sortOrder: 0,
+                parentShotId: nil, lat: 58.35, lon: 15.70, label: "Local edit",
+                serverId: "local-shot", serverVersion: 1, syncState: .dirty
+            )],
+            gates: []
+        ))
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: optionPlanBody())],
+            forPathContaining: "/game-plans/by-course"
+        )
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: clubListBody([]))],
+            forPathContaining: "/clubs"
+        )
+
+        try await GamePlanSync.refresh(
+            client: makeClient(), database: database, courseId: "course-1"
+        )
+
+        let fetched = try await database.gamePlan(courseId: "course-1")
+        let stored = try XCTUnwrap(fetched)
+        XCTAssertEqual(stored.plan.id, "local-plan")
+        XCTAssertEqual(stored.shots.map(\.id), ["local-shot"])
+        XCTAssertEqual(stored.shots[0].label, "Local edit")
+        XCTAssertEqual(stored.shots[0].syncState, .dirty)
     }
 }

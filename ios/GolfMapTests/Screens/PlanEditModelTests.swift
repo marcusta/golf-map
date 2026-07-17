@@ -75,7 +75,7 @@ final class PlanEditModelTests: XCTestCase {
         )
         model.setClubs(clubs)
         model.planWriter = OnCourseModel.PlanEditWriter(
-            addShot: { _, _, _, _, _, _, clubId in spy.add(clubId) },
+            addShot: { _, _, _, _, _, _, _, clubId in spy.add(clubId) },
             moveShot: { _, _, _, _ in spy.move() },
             setShotClub: { _, _ in spy.setClub() },
             removeShot: { _ in spy.remove() },

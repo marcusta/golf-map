@@ -2103,6 +2103,7 @@ final class OnCourseModel {
     /// lands. Viewer only — nothing here writes back.
     func setPlan(_ plan: CoursePlan?) {
         self.plan = plan
+        if plan == nil { activeOptionShotIdByHole.removeAll() }
     }
 
     /// Installs the player's club bag (used for distance-card club advice and
@@ -2138,6 +2139,11 @@ final class OnCourseModel {
     /// before the round loop existed — R1's zero-regression guarantee.
     private(set) var activeRoundStrokes: [RoundStroke]?
 
+    /// The day's authored-option choices, keyed by hole. This is transient
+    /// round state (R8): it is never sent through `planWriter` and is cleared
+    /// with the active round.
+    private(set) var activeOptionShotIdByHole: [Int: String] = [:]
+
     /// Install (or clear, with nil) the active round's strokes. Called by the
     /// screen on round load and after every capture / scorecard edit —
     /// capture-driven advancement (R1): this is the ONLY thing that moves the
@@ -2147,6 +2153,7 @@ final class OnCourseModel {
         // decide choices re-derive from the NEW ball position (R4).
         if strokes != activeRoundStrokes { workingTarget = nil }
         activeRoundStrokes = strokes
+        if strokes == nil { activeOptionShotIdByHole.removeAll() }
     }
 
     /// R3 divergence-rule constants — THE one place they live (tuned on
@@ -2182,9 +2189,8 @@ final class OnCourseModel {
         /// Lie classified from `ballPosition` against the surface stack
         /// (`.tee` for stroke 0).
         var lie: Lie
-        /// The plan line the state tracks — the hole plan's shots. T32 swaps
-        /// this for the round-scoped chosen option branch (R8); until then the
-        /// single stored chain IS the active line. Empty = no plan content.
+        /// The plan line this round tracks: primary by default, or the
+        /// round-scoped authored branch chosen on the card (R8).
         var activeLine: [CoursePlan.Shot]
         /// Index into `activeLine` of the planned landing the ball is AT
         /// (nearest landing within the R3 divergence radius); the leg after it
@@ -2214,7 +2220,14 @@ final class OnCourseModel {
     /// runs only when a capture / hole change / plan or bag change lands.
     var playingState: PlayingState? {
         guard let strokes = activeRoundStrokes, let hole = currentHole else { return nil }
-        let line = currentHolePlan?.shots ?? []
+        let line: [CoursePlan.Shot]
+        if let holePlan = currentHolePlan,
+           let chosen = activeOptionShotIdByHole[hole.hole.number],
+           let chosenLine = holePlan.line(selecting: chosen) {
+            line = chosenLine
+        } else {
+            line = currentHolePlan?.shots ?? []
+        }
         let key = PlayingKey(
             holeNumber: hole.hole.number,
             strokes: strokes,
@@ -2276,6 +2289,60 @@ final class OnCourseModel {
         case green
     }
 
+    /// One authored choice shown below the tee-preview / plan leg card. EV is
+    /// intentionally absent: the sync shape carries no cached chain score and
+    /// O4 forbids building a Swift `scoreOptionChain` mirror in T32.
+    struct PlanOptionChip: Equatable, Identifiable {
+        var id: String
+        var label: String
+        var clubName: String
+        var isSelected: Bool
+    }
+
+    /// Sibling choices at the card's CURRENT decision point: roots on the tee,
+    /// children of the landing the captured ball matched in plan mode.
+    var planOptionChips: [PlanOptionChip] {
+        guard activeRoundStrokes != nil,
+              let holePlan = currentHolePlan,
+              let state = playingState,
+              let mode = roundCardMode
+        else { return [] }
+
+        let parentShotId: String?
+        switch mode {
+        case .teePreview:
+            parentShotId = nil
+        case .plan(let legIndex):
+            let parentIndex = legIndex - 2
+            guard state.activeLine.indices.contains(parentIndex) else { return [] }
+            parentShotId = state.activeLine[parentIndex].id
+        default:
+            return []
+        }
+
+        let siblings = holePlan.children(of: parentShotId)
+        guard siblings.count > 1 else { return [] }
+        return siblings.enumerated().map { rank, shot in
+            PlanOptionChip(
+                id: shot.id,
+                label: shot.label ?? "Option \(rank + 1)",
+                clubName: shot.clubName ?? "Club open",
+                isSelected: state.activeLine.contains { $0.id == shot.id }
+            )
+        }
+    }
+
+    /// Pick an authored sibling for this round. Resolving the full line is a
+    /// pure `CoursePlan` read; critically, there is no plan-store/write call.
+    func selectPlanOption(shotId: String) {
+        guard let hole = currentHole,
+              planOptionChips.contains(where: { $0.id == shotId }),
+              currentHolePlan?.line(selecting: shotId) != nil
+        else { return }
+        activeOptionShotIdByHole[hole.hole.number] = shotId
+        workingTarget = nil
+    }
+
     /// The card mode for the active round, or nil when no round is active OR
     /// the hole has no planned line (the mode machine is a lens over the plan;
     /// without one the card behaves exactly as today — strokes still count).
@@ -2335,14 +2402,30 @@ final class OnCourseModel {
 
     /// Content for `.teePreview`, nil outside that mode.
     var teePreviewStrip: TeePreviewStrip? {
-        guard roundCardMode == .teePreview, let holePlan = currentHolePlan else { return nil }
-        let firstLeg = planLegs.first
-        let hazard = teeHazardThatMatters(firstLegMeters: firstLeg?.meters)
+        guard roundCardMode == .teePreview,
+              let hole = currentHole,
+              let holePlan = currentHolePlan,
+              let state = playingState,
+              let firstShot = state.activeLine.first
+        else { return nil }
+        let tee = planTee(for: hole, plan: holePlan)
+        let teePosition = tee.map { LatLon(lat: $0.lat, lon: $0.lon) }
+        let firstLegMeters = teePosition.map {
+            Int(Distance.planarMeters($0, firstShot.position).rounded())
+        }
+        let hazard = teeHazardThatMatters(firstLegMeters: firstLegMeters)
         return TeePreviewStrip(
-            teeClubName: firstLeg?.clubName,
-            suggestedClubName: firstLeg?.clubName == nil ? firstLeg?.suggestedClubName : nil,
-            aimLabel: holePlan.shots.first?.label,
-            firstLegMeters: firstLeg?.meters,
+            teeClubName: firstShot.clubName,
+            suggestedClubName: firstShot.clubName == nil
+                ? teePosition.flatMap {
+                    suggestedClub(
+                        from: $0, fromElevation: tee?.elevation,
+                        to: firstShot.position, toElevation: firstShot.elevation
+                    )
+                }
+                : nil,
+            aimLabel: firstShot.label,
+            firstLegMeters: firstLegMeters,
             hazardLabel: hazard?.displayLabel,
             hazardCarryM: hazard?.carryM,
             notes: holePlan.notes
@@ -2393,8 +2476,10 @@ final class OnCourseModel {
     /// Content for `.plan(legIndex:)`, nil when the leg is out of range or the
     /// hole has no plan.
     func roundLegCard(legIndex: Int) -> RoundLegCard? {
-        guard let hole = currentHole, let holePlan = currentHolePlan else { return nil }
-        let shots = holePlan.shots
+        guard let hole = currentHole,
+              let holePlan = currentHolePlan,
+              let shots = playingState?.activeLine
+        else { return nil }
         let legCount = shots.count + 1
         guard legIndex >= 1, legIndex <= legCount else { return nil }
         let toGreen = legIndex == legCount
@@ -2869,7 +2954,7 @@ final class OnCourseModel {
     /// the map reflects edits even without a writer.
     struct PlanEditWriter: Sendable {
         /// Append a shot on `holeNumber` with the model-minted `shotId`.
-        var addShot: @Sendable (_ holeNumber: Int, _ shotId: String, _ sortOrder: Int, _ lat: Double, _ lon: Double, _ elevation: Double?, _ clubId: String?) async -> Void
+        var addShot: @Sendable (_ holeNumber: Int, _ shotId: String, _ sortOrder: Int, _ parentShotId: String?, _ lat: Double, _ lon: Double, _ elevation: Double?, _ clubId: String?) async -> Void
         /// Persist a moved shot's coordinates (+ resampled elevation).
         var moveShot: @Sendable (_ shotId: String, _ lat: Double, _ lon: Double, _ elevation: Double?) async -> Void
         /// Persist a shot's club change.
@@ -3038,12 +3123,17 @@ final class OnCourseModel {
         beginPlanEditingIfNeeded()
         let holeNumber = hole.hole.number
         let existing = plan?.shots(holeNumber: holeNumber) ?? []
-        let sortOrder = (existing.map(\.sortOrder).max() ?? -1) + 1
+        let parentShotId = existing.last?.id
+        // The on-device editor still appends only to the primary line. In the
+        // tree model that new child is rank 0 under the former tail (or the
+        // sole rank-0 root when the hole was empty).
+        let sortOrder = 0
         let shotId = UUID().uuidString
         let club = autoClubForNewShot(at: position, existing: existing, hole: hole)
         let shot = CoursePlan.Shot(
             id: shotId, position: position, elevation: nil,
-            clubId: club?.id, clubName: club?.name, label: nil, sortOrder: sortOrder
+            clubId: club?.id, clubName: club?.name, label: nil,
+            sortOrder: sortOrder, parentShotId: parentShotId
         )
         plan = plan?.addingShot(holeNumber: holeNumber, shot)
         selectedPlanShotId = shotId
@@ -3057,7 +3147,8 @@ final class OnCourseModel {
             )
             self.planEditToken += 1
             await self.planWriter?.addShot(
-                holeNumber, shotId, sortOrder, position.lat, position.lon, elevation, club?.id
+                holeNumber, shotId, sortOrder, parentShotId,
+                position.lat, position.lon, elevation, club?.id
             )
         }
     }

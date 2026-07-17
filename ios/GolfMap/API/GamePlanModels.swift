@@ -77,11 +77,16 @@ public struct GamePlanHole: Codable, Sendable, Equatable {
     public let version: Int
 }
 
-/// One planned landing point (in tee→green order via `sortOrder`).
+/// One planned landing point in the option tree. `sortOrder` is the rank
+/// within one sibling group; rank 0 is the primary choice.
 public struct PlanShot: Codable, Sendable, Equatable {
     public let id: String
     public let gamePlanHoleId: String
     public let sortOrder: Int
+    /// Parent in the plan tree; nil is a tee-root option. Older servers omit
+    /// the field entirely, which `GamePlanSync` recognises via
+    /// `parentShotIdWasPresent` and upgrades as a legacy linear chain.
+    public let parentShotId: String?
     public let lat: Double
     public let lon: Double
     public let elevation: Double?
@@ -89,6 +94,46 @@ public struct PlanShot: Codable, Sendable, Equatable {
     public let clubId: String?
     public let label: String?
     public let version: Int
+
+    /// Decoding compatibility bit. An explicit JSON null is a real root;
+    /// absence means the whole old response used linear `sortOrder` semantics.
+    let parentShotIdWasPresent: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, gamePlanHoleId, sortOrder, parentShotId, lat, lon
+        case elevation, clubId, label, version
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        gamePlanHoleId = try values.decode(String.self, forKey: .gamePlanHoleId)
+        sortOrder = try values.decode(Int.self, forKey: .sortOrder)
+        parentShotIdWasPresent = values.contains(.parentShotId)
+        parentShotId = try values.decodeIfPresent(String.self, forKey: .parentShotId)
+        lat = try values.decode(Double.self, forKey: .lat)
+        lon = try values.decode(Double.self, forKey: .lon)
+        elevation = try values.decodeIfPresent(Double.self, forKey: .elevation)
+        clubId = try values.decodeIfPresent(String.self, forKey: .clubId)
+        label = try values.decodeIfPresent(String.self, forKey: .label)
+        version = try values.decode(Int.self, forKey: .version)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(gamePlanHoleId, forKey: .gamePlanHoleId)
+        try values.encode(sortOrder, forKey: .sortOrder)
+        if parentShotIdWasPresent {
+            try values.encode(parentShotId, forKey: .parentShotId)
+        }
+        try values.encode(lat, forKey: .lat)
+        try values.encode(lon, forKey: .lon)
+        try values.encodeIfPresent(elevation, forKey: .elevation)
+        try values.encodeIfPresent(clubId, forKey: .clubId)
+        try values.encodeIfPresent(label, forKey: .label)
+        try values.encode(version, forKey: .version)
+    }
 }
 
 /// One target gate: a corridor cross-line at (lat, lon), perpendicular to

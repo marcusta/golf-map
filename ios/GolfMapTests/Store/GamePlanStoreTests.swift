@@ -39,7 +39,8 @@ final class GamePlanStoreTests: XCTestCase {
             shots: [
                 // Out of sortOrder to exercise the ordered read.
                 PlanShotRecord(
-                    id: "\(planId)-s2", gamePlanHoleId: "\(planId)-h1", sortOrder: 1,
+                    id: "\(planId)-s2", gamePlanHoleId: "\(planId)-h1", sortOrder: 0,
+                    parentShotId: "\(planId)-s1",
                     lat: 58.3525, lon: 15.7222, elevation: 41, clubId: "club-7i", label: "layup"
                 ),
                 PlanShotRecord(
@@ -81,6 +82,7 @@ final class GamePlanStoreTests: XCTestCase {
         XCTAssertEqual(plan.holes.map(\.holeNumber), [1, 2], "holes ordered by number")
         XCTAssertEqual(plan.shots.map(\.id), ["plan-1-s1", "plan-1-s2"], "shots ordered by sortOrder")
         XCTAssertEqual(plan.shots[0].clubId, "club-driver")
+        XCTAssertEqual(plan.shots[1].parentShotId, "plan-1-s1")
         XCTAssertEqual(plan.gates.count, 1)
         XCTAssertEqual(plan.gates[0].halfWidthRightM, 20, accuracy: 1e-9)
 
