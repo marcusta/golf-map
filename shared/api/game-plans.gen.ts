@@ -29,6 +29,7 @@ export interface GamePlanHole {
 export interface PlanShot {
     id: string;
     gamePlanHoleId: string;
+    parentShotId: null | string;
     sortOrder: number;
     lat: number;
     lon: number;
@@ -56,10 +57,11 @@ export interface GamePlansApi {
     upsert(input: { userId?: string; version?: number; windSpeedMps?: null | number; windDirectionDeg?: null | number; courseId: string }): Promise<GamePlan>;
     remove(input: { userId?: string; courseId: string; version: number }): Promise<{ ok: boolean }>;
     setHole(input: { version?: number; notes?: null | string; windSpeedMps?: null | number; windDirectionDeg?: null | number; teeId?: null | string; preferredClubId?: null | string; plannedDirectionDeg?: null | number; planId: string; holeNumber: number }): Promise<GamePlanHole>;
-    addShot(input: { elevation?: null | number; clubId?: null | string; label?: null | string; lat: number; lon: number; gamePlanHoleId: string }): Promise<PlanShot>;
+    addShot(input: { elevation?: null | number; parentShotId?: null | string; clubId?: null | string; label?: null | string; lat: number; lon: number; gamePlanHoleId: string }): Promise<PlanShot>;
     updateShot(input: { lat?: number; lon?: number; elevation?: null | number; clubId?: null | string; label?: null | string; id: string; version: number }): Promise<PlanShot>;
-    removeShot(input: { id: string; version: number }): Promise<{ ok: boolean }>;
+    removeShot(input: { mode?: 'splice' | 'cascade'; id: string; version: number }): Promise<{ ok: boolean }>;
     reorderShots(input: { orderedIds: string[]; gamePlanHoleId: string }): Promise<{ ok: boolean }>;
+    setPrimary(input: { id: string }): Promise<{ ok: boolean }>;
     addGate(input: { source?: 'manual' | 'computed'; lat: number; lon: number; gamePlanHoleId: string; directionDeg: number; halfWidthLeftM: number; halfWidthRightM: number }): Promise<PlanGate>;
     updateGate(input: { lat?: number; lon?: number; directionDeg?: number; halfWidthLeftM?: number; halfWidthRightM?: number; source?: 'manual' | 'computed'; id: string; version: number }): Promise<PlanGate>;
     removeGate(input: { id: string; version: number }): Promise<{ ok: boolean }>;
@@ -94,6 +96,9 @@ export function createGamePlansClient(baseUrl: string): GamePlansApi {
         },
         async reorderShots(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/game-plans/shots/reorder`, body: input });
+        },
+        async setPrimary(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/game-plans/shots/set-primary`, body: input });
         },
         async addGate(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/game-plans/gates/add`, body: input });

@@ -207,6 +207,25 @@ test('importV1Export inserts expected counts', async () => {
     expect(result.counts.gamePlanHoles).toBe(3); // plan-1: 2 holes, plan-2: 1 hole
     expect(result.counts.planShots).toBe(2);
 
+    const importedShots = await db
+        .selectFrom('plan_shots')
+        .selectAll()
+        .where('game_plan_hole_id', '=', 'plan-1-hole-1')
+        .orderBy('id')
+        .execute();
+    expect(importedShots).toEqual([
+        expect.objectContaining({
+            id: 'plan-1-hole-1-loc-1',
+            parent_shot_id: null,
+            sort_order: 0,
+        }),
+        expect.objectContaining({
+            id: 'plan-1-hole-1-loc-2',
+            parent_shot_id: 'plan-1-hole-1-loc-1',
+            sort_order: 0,
+        }),
+    ]);
+
     await db.destroy();
 });
 

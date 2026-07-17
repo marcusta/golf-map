@@ -444,7 +444,8 @@ export async function importV1Export(
                         .values({
                             id: loc.id,
                             game_plan_hole_id: gph.id,
-                            sort_order: i,
+                            parent_shot_id: i === 0 ? null : gph.planLocations[i - 1].id,
+                            sort_order: 0,
                             lat: loc.coordinate.latitude,
                             lon: loc.coordinate.longitude,
                             elevation: loc.elevation ?? null,

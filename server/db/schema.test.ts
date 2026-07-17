@@ -186,6 +186,7 @@ test('migration 003 columns and plan_gates table exist on a fresh DB', async () 
         .values({
             id: 'plan-shot-1',
             game_plan_hole_id: 'plan-hole-1',
+            parent_shot_id: null,
             sort_order: 0,
             lat: 58.4,
             lon: 15.5,

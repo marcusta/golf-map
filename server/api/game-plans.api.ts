@@ -37,6 +37,7 @@ const SetHoleInput = Type.Object({
 
 const AddShotInput = Type.Object({
     gamePlanHoleId: Type.String(),
+    parentShotId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     lat: Type.Number(),
     lon: Type.Number(),
     elevation: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
@@ -57,11 +58,16 @@ const UpdateShotInput = Type.Object({
 const RemoveShotInput = Type.Object({
     id: Type.String(),
     version: Type.Number(),
+    mode: Type.Optional(Type.Union([Type.Literal('splice'), Type.Literal('cascade')])),
 });
 
 const ReorderShotsInput = Type.Object({
     gamePlanHoleId: Type.String(),
     orderedIds: Type.Array(Type.String()),
+});
+
+const SetPrimaryInput = Type.Object({
+    id: Type.String(),
 });
 
 const GateSourceSchema = Type.Union([Type.Literal('manual'), Type.Literal('computed')]);
@@ -101,10 +107,11 @@ export function createGamePlansApi(svc: GamePlansService) {
         upsert:       { method: 'POST' as const, path: '/game-plans/upsert',           fn: (input: Static<typeof UpsertGamePlanInput>) => svc.upsertByCourse(input.courseId, { userId: input.userId, version: input.version, windSpeedMps: input.windSpeedMps, windDirectionDeg: input.windDirectionDeg }), schema: UpsertGamePlanInput, middleware: mw },
         remove:       { method: 'POST' as const, path: '/game-plans/remove',           fn: (input: Static<typeof RemoveGamePlanInput>) => svc.removeByCourse(input.courseId, input.version, input.userId),                                                                    schema: RemoveGamePlanInput, middleware: mw },
         setHole:      { method: 'POST' as const, path: '/game-plans/set-hole',         fn: (input: Static<typeof SetHoleInput>)        => svc.setHole(input.planId, input.holeNumber, { version: input.version, teeId: input.teeId, preferredClubId: input.preferredClubId, plannedDirectionDeg: input.plannedDirectionDeg, windSpeedMps: input.windSpeedMps, windDirectionDeg: input.windDirectionDeg, notes: input.notes }), schema: SetHoleInput, middleware: mw },
-        addShot:      { method: 'POST' as const, path: '/game-plans/shots/add',        fn: (input: Static<typeof AddShotInput>)        => svc.addShot(input.gamePlanHoleId, { lat: input.lat, lon: input.lon, elevation: input.elevation, clubId: input.clubId, label: input.label }),                schema: AddShotInput,        middleware: mw },
+        addShot:      { method: 'POST' as const, path: '/game-plans/shots/add',        fn: (input: Static<typeof AddShotInput>)        => svc.addShot(input.gamePlanHoleId, { parentShotId: input.parentShotId, lat: input.lat, lon: input.lon, elevation: input.elevation, clubId: input.clubId, label: input.label }), schema: AddShotInput, middleware: mw },
         updateShot:   { method: 'POST' as const, path: '/game-plans/shots/update',     fn: (input: Static<typeof UpdateShotInput>)     => svc.updateShot(input.id, input.version, { lat: input.lat, lon: input.lon, elevation: input.elevation, clubId: input.clubId, label: input.label }),           schema: UpdateShotInput,     middleware: mw },
-        removeShot:   { method: 'POST' as const, path: '/game-plans/shots/remove',     fn: (input: Static<typeof RemoveShotInput>)     => svc.removeShot(input.id, input.version),                                                                                                schema: RemoveShotInput,     middleware: mw },
+        removeShot:   { method: 'POST' as const, path: '/game-plans/shots/remove',     fn: (input: Static<typeof RemoveShotInput>)     => svc.removeShot(input.id, input.version, input.mode),                                                                                    schema: RemoveShotInput,     middleware: mw },
         reorderShots: { method: 'POST' as const, path: '/game-plans/shots/reorder',    fn: (input: Static<typeof ReorderShotsInput>)   => svc.reorderShots(input.gamePlanHoleId, input.orderedIds),                                                                               schema: ReorderShotsInput,   middleware: mw },
+        setPrimary:   { method: 'POST' as const, path: '/game-plans/shots/set-primary', fn: (input: Static<typeof SetPrimaryInput>)     => svc.setPrimary(input.id),                                                                                                               schema: SetPrimaryInput,     middleware: mw },
         addGate:      { method: 'POST' as const, path: '/game-plans/gates/add',        fn: (input: Static<typeof AddGateInput>)        => svc.addGate(input.gamePlanHoleId, { lat: input.lat, lon: input.lon, directionDeg: input.directionDeg, halfWidthLeftM: input.halfWidthLeftM, halfWidthRightM: input.halfWidthRightM, source: input.source }), schema: AddGateInput, middleware: mw },
         updateGate:   { method: 'POST' as const, path: '/game-plans/gates/update',     fn: (input: Static<typeof UpdateGateInput>)     => svc.updateGate(input.id, input.version, { lat: input.lat, lon: input.lon, directionDeg: input.directionDeg, halfWidthLeftM: input.halfWidthLeftM, halfWidthRightM: input.halfWidthRightM, source: input.source }), schema: UpdateGateInput, middleware: mw },
         removeGate:   { method: 'POST' as const, path: '/game-plans/gates/remove',     fn: (input: Static<typeof RemoveGateInput>)     => svc.removeGate(input.id, input.version),                                                                                                schema: RemoveGateInput,     middleware: mw },

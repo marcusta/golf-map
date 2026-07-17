@@ -202,6 +202,7 @@ export interface GamePlanHolesTable {
 export interface PlanShotsTable {
     id: string;
     game_plan_hole_id: string;
+    parent_shot_id: string | null; // sibling group; null = tee-root options
     sort_order: number;
     lat: number;
     lon: number;

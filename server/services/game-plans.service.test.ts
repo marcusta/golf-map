@@ -126,7 +126,7 @@ test('setHole throws VersionConflictError on stale version', async () => {
     ).rejects.toBeInstanceOf(VersionConflictError);
 });
 
-test('addShot appends shots with increasing sort order', async () => {
+test('addShot without parentShotId appends to the primary-line tail', async () => {
     const { svc } = await setup();
     const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
     const hole = await svc.setHole(plan.id, 1, {});
@@ -135,7 +135,9 @@ test('addShot appends shots with increasing sort order', async () => {
     const shot2 = await svc.addShot(hole.id, { lat: 58.41, lon: 15.51, elevation: 12.5 });
 
     expect(shot1.sortOrder).toBe(0);
-    expect(shot2.sortOrder).toBe(1);
+    expect(shot1.parentShotId).toBeNull();
+    expect(shot2.sortOrder).toBe(0);
+    expect(shot2.parentShotId).toBe(shot1.id);
     expect(shot1.version).toBe(1);
     expect(shot2.elevation).toBe(12.5);
     expect(shot2.clubId).toBeNull();
@@ -185,13 +187,103 @@ test('removeShot throws VersionConflictError on stale version', async () => {
     await expect(svc.removeShot(shot.id, 99)).rejects.toBeInstanceOf(VersionConflictError);
 });
 
+test('addShot with parentShotId appends within that sibling group; explicit null adds a root option', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const root = await svc.addShot(hole.id, { lat: 1, lon: 1 });
+    const rootOption = await svc.addShot(hole.id, { parentShotId: null, lat: 2, lon: 2 });
+    const child = await svc.addShot(hole.id, { parentShotId: root.id, lat: 3, lon: 3 });
+    const childOption = await svc.addShot(hole.id, { parentShotId: root.id, lat: 4, lon: 4 });
+    const appended = await svc.addShot(hole.id, { lat: 5, lon: 5 });
+
+    expect(rootOption.parentShotId).toBeNull();
+    expect(rootOption.sortOrder).toBe(1);
+    expect(child.parentShotId).toBe(root.id);
+    expect(child.sortOrder).toBe(0);
+    expect(childOption.parentShotId).toBe(root.id);
+    expect(childOption.sortOrder).toBe(1);
+    expect(appended.parentShotId).toBe(child.id);
+    expect(appended.sortOrder).toBe(0);
+});
+
+test('removeShot splice re-parents children into the removed sibling slot and preserves descendants', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const removed = await svc.addShot(hole.id, { lat: 1, lon: 1 });
+    const rootSibling = await svc.addShot(hole.id, { parentShotId: null, lat: 2, lon: 2 });
+    const child = await svc.addShot(hole.id, { parentShotId: removed.id, lat: 3, lon: 3 });
+    const childOption = await svc.addShot(hole.id, { parentShotId: removed.id, lat: 4, lon: 4 });
+    const grandchild = await svc.addShot(hole.id, { parentShotId: child.id, lat: 5, lon: 5 });
+
+    await svc.removeShot(removed.id, removed.version);
+
+    const fetched = await svc.getByCourse(TEST_COURSE_ID, TEST_USER_ID);
+    const shots = fetched?.holes.find((candidate) => candidate.id === hole.id)?.shots ?? [];
+    expect(shots.some((shot) => shot.id === removed.id)).toBe(false);
+    expect(shots.find((shot) => shot.id === child.id)).toMatchObject({ parentShotId: null, sortOrder: 0 });
+    expect(shots.find((shot) => shot.id === childOption.id)).toMatchObject({ parentShotId: null, sortOrder: 1 });
+    expect(shots.find((shot) => shot.id === rootSibling.id)).toMatchObject({ parentShotId: null, sortOrder: 2 });
+    expect(shots.find((shot) => shot.id === grandchild.id)?.parentShotId).toBe(child.id);
+});
+
+test('removeShot cascade deletes the whole branch and compacts the surviving siblings', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const removed = await svc.addShot(hole.id, { lat: 1, lon: 1 });
+    const survivor = await svc.addShot(hole.id, { parentShotId: null, lat: 2, lon: 2 });
+    const child = await svc.addShot(hole.id, { parentShotId: removed.id, lat: 3, lon: 3 });
+    const grandchild = await svc.addShot(hole.id, { parentShotId: child.id, lat: 4, lon: 4 });
+
+    await svc.removeShot(removed.id, removed.version, 'cascade');
+
+    const fetched = await svc.getByCourse(TEST_COURSE_ID, TEST_USER_ID);
+    const shots = fetched?.holes.find((candidate) => candidate.id === hole.id)?.shots ?? [];
+    expect(shots.map((shot) => shot.id)).toEqual([survivor.id]);
+    expect(shots[0]).toMatchObject({ parentShotId: null, sortOrder: 0 });
+    expect(shots.some((shot) => shot.id === child.id || shot.id === grandchild.id)).toBe(false);
+});
+
+test('setPrimary promotes a sibling, preserves relative order, and is idempotent', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const first = await svc.addShot(hole.id, { parentShotId: null, lat: 1, lon: 1 });
+    const second = await svc.addShot(hole.id, { parentShotId: null, lat: 2, lon: 2 });
+    const third = await svc.addShot(hole.id, { parentShotId: null, lat: 3, lon: 3 });
+
+    await svc.setPrimary(third.id);
+    await svc.setPrimary(third.id);
+
+    const fetched = await svc.getByCourse(TEST_COURSE_ID, TEST_USER_ID);
+    const shots = fetched?.holes.find((candidate) => candidate.id === hole.id)?.shots ?? [];
+    expect(shots.map((shot) => shot.id)).toEqual([third.id, first.id, second.id]);
+    expect(shots.map((shot) => shot.sortOrder)).toEqual([0, 1, 2]);
+    expect(shots.map((shot) => shot.version)).toEqual([1, 1, 1]);
+});
+
+test('option shots retain optimistic version conflicts for update and remove', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    await svc.addShot(hole.id, { lat: 1, lon: 1 });
+    const option = await svc.addShot(hole.id, { parentShotId: null, lat: 2, lon: 2 });
+
+    await expect(svc.updateShot(option.id, 99, { label: 'stale' }))
+        .rejects.toBeInstanceOf(VersionConflictError);
+    await expect(svc.removeShot(option.id, 99, 'cascade'))
+        .rejects.toBeInstanceOf(VersionConflictError);
+});
+
 test('reorderShots persists new sort order', async () => {
     const { svc } = await setup();
     const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
     const hole = await svc.setHole(plan.id, 1, {});
-    const shot1 = await svc.addShot(hole.id, { lat: 1, lon: 1 });
-    const shot2 = await svc.addShot(hole.id, { lat: 2, lon: 2 });
-    const shot3 = await svc.addShot(hole.id, { lat: 3, lon: 3 });
+    const shot1 = await svc.addShot(hole.id, { parentShotId: null, lat: 1, lon: 1 });
+    const shot2 = await svc.addShot(hole.id, { parentShotId: null, lat: 2, lon: 2 });
+    const shot3 = await svc.addShot(hole.id, { parentShotId: null, lat: 3, lon: 3 });
 
     await svc.reorderShots(hole.id, [shot3.id, shot1.id, shot2.id]);
 
@@ -200,22 +292,25 @@ test('reorderShots persists new sort order', async () => {
     expect(fetchedHole?.shots.map((s) => s.id)).toEqual([shot3.id, shot1.id, shot2.id]);
 });
 
-test('getByCourse returns full plan tree ordered by hole number and shot sort order', async () => {
+test('getByCourse returns flat parent-linked shots ordered by hole number and primary traversal', async () => {
     const { svc } = await setup();
     const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID, windSpeedMps: 4 });
 
     const hole2 = await svc.setHole(plan.id, 2, { preferredClubId: TEST_CLUB_7I_ID });
     const hole1 = await svc.setHole(plan.id, 1, { preferredClubId: TEST_CLUB_DRIVER_ID });
 
-    await svc.addShot(hole1.id, { lat: 1, lon: 1 });
-    await svc.addShot(hole1.id, { lat: 2, lon: 2 });
+    const first = await svc.addShot(hole1.id, { lat: 1, lon: 1 });
+    const second = await svc.addShot(hole1.id, { lat: 2, lon: 2 });
     await svc.addShot(hole2.id, { lat: 3, lon: 3 });
 
     const tree = await svc.getByCourse(TEST_COURSE_ID, TEST_USER_ID);
     expect(tree).not.toBeNull();
     expect(tree!.windSpeedMps).toBe(4);
     expect(tree!.holes.map((h) => h.holeNumber)).toEqual([1, 2]);
-    expect(tree!.holes[0].shots).toHaveLength(2);
+    expect(tree!.holes[0].shots).toEqual([
+        expect.objectContaining({ id: first.id, parentShotId: null, sortOrder: 0 }),
+        expect.objectContaining({ id: second.id, parentShotId: first.id, sortOrder: 0 }),
+    ]);
     expect(tree!.holes[1].shots).toHaveLength(1);
 });
 
@@ -408,14 +503,14 @@ test('removeByCourse cascades plan -> holes -> gates', async () => {
     expect(remainingGates).toHaveLength(0);
 });
 
-// --- reorderShots id-set validation (Phase 5 tightening) ---
+// --- O3 sibling-scoped reorder validation ---
 
 test('reorderShots rejects an incomplete id set', async () => {
     const { svc } = await setup();
     const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
     const hole = await svc.setHole(plan.id, 1, {});
-    const shot1 = await svc.addShot(hole.id, { lat: 1, lon: 1 });
-    await svc.addShot(hole.id, { lat: 2, lon: 2 });
+    const shot1 = await svc.addShot(hole.id, { parentShotId: null, lat: 1, lon: 1 });
+    await svc.addShot(hole.id, { parentShotId: null, lat: 2, lon: 2 });
 
     await expect(svc.reorderShots(hole.id, [shot1.id])).rejects.toBeInstanceOf(ConflictError);
 });
@@ -436,6 +531,28 @@ test('reorderShots rejects ids foreign to the hole', async () => {
     expect(fetchedHole1?.shots.map((s) => s.id)).toEqual([shot1.id]);
 });
 
+test('reorderShots rejects ids spanning sibling groups in the same hole', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const root = await svc.addShot(hole.id, { lat: 1, lon: 1 });
+    const rootOption = await svc.addShot(hole.id, { parentShotId: null, lat: 2, lon: 2 });
+    const child = await svc.addShot(hole.id, { parentShotId: root.id, lat: 3, lon: 3 });
+
+    await expect(svc.reorderShots(hole.id, [root.id, rootOption.id, child.id]))
+        .rejects.toBeInstanceOf(ConflictError);
+});
+
+test('reorderShots rejects duplicate ids even when their set matches the sibling group', async () => {
+    const { svc } = await setup();
+    const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
+    const hole = await svc.setHole(plan.id, 1, {});
+    const shot = await svc.addShot(hole.id, { lat: 1, lon: 1 });
+
+    await expect(svc.reorderShots(hole.id, [shot.id, shot.id]))
+        .rejects.toBeInstanceOf(ConflictError);
+});
+
 test('reorderShots rejects unknown/nonexistent ids', async () => {
     const { svc } = await setup();
     const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
@@ -449,9 +566,9 @@ test('reorderShots still succeeds on a valid permutation', async () => {
     const { svc } = await setup();
     const plan = await svc.upsertByCourse(TEST_COURSE_ID, { userId: TEST_USER_ID });
     const hole = await svc.setHole(plan.id, 1, {});
-    const shot1 = await svc.addShot(hole.id, { lat: 1, lon: 1 });
-    const shot2 = await svc.addShot(hole.id, { lat: 2, lon: 2 });
-    const shot3 = await svc.addShot(hole.id, { lat: 3, lon: 3 });
+    const shot1 = await svc.addShot(hole.id, { parentShotId: null, lat: 1, lon: 1 });
+    const shot2 = await svc.addShot(hole.id, { parentShotId: null, lat: 2, lon: 2 });
+    const shot3 = await svc.addShot(hole.id, { parentShotId: null, lat: 3, lon: 3 });
 
     await svc.reorderShots(hole.id, [shot3.id, shot1.id, shot2.id]);
 
