@@ -71,6 +71,12 @@ public struct RoundRecord: Codable, Sendable, Equatable, FetchableRecord, Persis
     public var gamePlanId: String?
     public var windSpeedMps: Double?
     public var windDirectionDeg: Double?
+    /// Per-round green speed (stimp feet), snapshotted at round start like wind
+    /// (round-loop R6). Defaults from the previous round at the course; fed to
+    /// the putt read's tour/plays-like figures. LOCAL-ONLY: the server rounds
+    /// schema has no stimp column yet, so this never leaves the device and sync
+    /// degrades gracefully (dropped from `rounds/start`; see RoundSync).
+    public var stimpFt: Double?
     /// Server optimistic-lock version from the last sync response.
     public var serverVersion: Int?
     public var syncState: RoundSyncState
@@ -84,6 +90,7 @@ public struct RoundRecord: Codable, Sendable, Equatable, FetchableRecord, Persis
         gamePlanId: String? = nil,
         windSpeedMps: Double? = nil,
         windDirectionDeg: Double? = nil,
+        stimpFt: Double? = nil,
         serverVersion: Int? = nil,
         syncState: RoundSyncState = .pending
     ) {
@@ -95,6 +102,7 @@ public struct RoundRecord: Codable, Sendable, Equatable, FetchableRecord, Persis
         self.gamePlanId = gamePlanId
         self.windSpeedMps = windSpeedMps
         self.windDirectionDeg = windDirectionDeg
+        self.stimpFt = stimpFt
         self.serverVersion = serverVersion
         self.syncState = syncState
     }

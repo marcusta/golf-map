@@ -313,6 +313,18 @@ public struct AppDatabase: Sendable {
                 """)
         }
 
+        // v8: per-round green speed (stimp), the one round-start field of
+        // round-loop R6. Defaults from the previous round at the course and
+        // feeds the putt read's tour/plays-like figures, replacing the app
+        // default. LOCAL-ONLY — the server rounds schema has no stimp column
+        // yet, so the value never syncs (dropped from `rounds/start`); nullable
+        // so pre-v8 rounds read as "no recorded stimp".
+        migrator.registerMigration("v8") { db in
+            try db.alter(table: "round") { t in
+                t.add(column: "stimpFt", .double)
+            }
+        }
+
         return migrator
     }
 

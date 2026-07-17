@@ -2282,6 +2282,12 @@ final class OnCourseModel {
     var roundCardMode: RoundCardMode? {
         guard let state = playingState, !state.activeLine.isEmpty else { return nil }
         guard let ball = state.ballPosition, state.strokeIndex > 0 else { return .teePreview }
+        // R6 green handoff: the ball is on the green (point-in-ring — the same
+        // lie classification capture uses). This sits ABOVE the past-plan-count
+        // decide check so an approach that finds the green hands off to putting
+        // even once the stroke count has passed the plan (green precedence over
+        // divergence — T31 deferred this precedence to here).
+        if state.lie == .green { return .green }
         // "strokeIndex has passed the planned shot count" (R3): the planned
         // count is one stroke per landing + the approach into the green.
         if state.strokeIndex > state.activeLine.count + 1 { return .decide }
@@ -2445,6 +2451,43 @@ final class OnCourseModel {
         }
         guard let nearest else { return nil }
         return Int((nearest.halfWidthLeftM + nearest.halfWidthRightM).rounded())
+    }
+
+    // MARK: - Green handoff (R6 — T35)
+
+    /// Green-mode card content: the putt-first strip that leads once the ball
+    /// is on the green. `distanceM` (ball → hole) leads; a tap on the read
+    /// affordance opens the green view pre-placed at exactly these markers.
+    /// The hole is `targets.activePin` — the today's-pin override when placed,
+    /// else the furniture active pin (closing laser-doc open question 3: the
+    /// lasered pin becomes the putt read's hole position).
+    struct GreenCard: Equatable {
+        /// Ball → hole, whole meters; nil when there is no resolved hole.
+        var distanceM: Int?
+        /// The captured ball position (PlayingState.ballPosition) — the read's
+        /// ball marker on handoff.
+        var ballPosition: LatLon
+        /// today's-pin override ?? active pin — the read's hole marker; nil when
+        /// the green has no pin at all (the read defaults to the green center).
+        var holePosition: LatLon?
+        /// A short source tag for an override pin ("Laser"/"Sheet"/"Visual"),
+        /// else the furniture pin name — mirrors the pin block below the card.
+        var holeName: String?
+    }
+
+    /// Content for `.green`, nil outside that mode. Ball = the last captured
+    /// position; hole = the resolved active pin (override-first).
+    var greenCard: GreenCard? {
+        guard roundCardMode == .green,
+              let ball = playingState?.ballPosition
+        else { return nil }
+        let hole = targets.activePin
+        return GreenCard(
+            distanceM: hole.map { Int(Distance.planarMeters(ball, $0).rounded()) },
+            ballPosition: ball,
+            holePosition: hole,
+            holeName: targets.activePinName
+        )
     }
 
     // MARK: - Decide moment (R4 — T33)

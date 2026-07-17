@@ -261,6 +261,12 @@ struct CourseScreen: View {
             // Seed the playing state (round loop R1) from the resumed round;
             // OnCourseContentView keeps it in sync on every capture / edit.
             newModel.setActiveRound(strokes: roundLoopStrokes(of: newRoundModel))
+            // R6: a resumed round's stimp seeds the read (replacing the app
+            // default). The `.onChange(round?.id)` handler keeps it in sync from
+            // here on; this one covers the initial resume that predates it.
+            if let stimp = newRoundModel.round?.stimpFt {
+                newPuttRead.setStimp(stimp)
+            }
             greenPolygons = try? GreenPolygonStore(featuresGeoJSON: featuresGeoJSON)
 
             #if DEBUG
@@ -526,6 +532,9 @@ private struct OnCourseContentView: View {
     /// over `LocationProvider` stays fresh inside a long-running Task.
     /// MainActor-typed: it reads the provider's isolated properties.
     let liveLocation: @MainActor () -> (latLon: LatLon, horizontalAccuracyM: Double)?
+    /// App environment — the round-start stimp seed reads `settings.defaultStimpFt`
+    /// (round loop R6). Already in the view tree (DistanceCardView reads it too).
+    @Environment(AppEnvironment.self) private var env
 
     /// Immersive mode: a short single-tap on the map hides the top hole bar and
     /// the bottom distances card, leaving the full-bleed hole, a small compact
@@ -761,7 +770,8 @@ private struct OnCourseContentView: View {
             DistanceCardView(
                 model: model,
                 onProfile: { showProfile.toggle() },
-                onPinEntry: { showPinEntry = true }
+                onPinEntry: { showPinEntry = true },
+                onReadPutt: { readPuttFromGreenCard() }
             )
                 .padding(.horizontal, 12)
                 .padding(.bottom, -2)
@@ -909,9 +919,20 @@ private struct OnCourseContentView: View {
         // `setPlan`/`setClubs`; the model itself never reaches into RoundModel.
         .onChange(of: roundModel.round?.id) { _, _ in
             model.setActiveRound(strokes: roundLoopStrokes(of: roundModel))
+            // R6: a resumed/started round carries the per-round stimp — feed it
+            // to the read so its figures match the round's green speed.
+            applyRoundStimp()
         }
         .onChange(of: roundModel.shots) { _, _ in
             model.setActiveRound(strokes: roundLoopStrokes(of: roundModel))
+        }
+        // R6: the green view's stimp control writes through to the round record
+        // (the one per-round stimp field), so it persists and becomes the next
+        // round's default. `setStimp` no-ops an unchanged value, breaking the
+        // loop with `applyRoundStimp`.
+        .onChange(of: puttRead.stimpFt) { _, value in
+            guard roundModel.hasActiveRound else { return }
+            Task { await roundModel.setStimp(value) }
         }
         // The profile follows whatever path is live: the measure path while
         // measuring (points change per tap), else the hole route (tee
@@ -1285,13 +1306,22 @@ private struct OnCourseContentView: View {
                     model.setActiveRound(strokes: strokes)
                     var steps = [Self.roundModeDescription(model.roundCardMode)]
                     for part in raw.split(separator: ";") {
-                        let nums = part.split(separator: ",")
-                        guard nums.count == 2,
-                              let lat = Double(nums[0]), let lon = Double(nums[1])
-                        else { continue }
+                        // "green" resolves to the hole's real green centre (so a
+                        // live green-mode run needs no hardcoded coordinate);
+                        // otherwise "lat,lon".
+                        let position: LatLon
+                        if part.lowercased() == "green", let g = model.targets.greenCenter {
+                            position = g
+                        } else {
+                            let nums = part.split(separator: ",")
+                            guard nums.count == 2,
+                                  let lat = Double(nums[0]), let lon = Double(nums[1])
+                            else { continue }
+                            position = LatLon(lat: lat, lon: lon)
+                        }
                         strokes.append(OnCourseModel.RoundStroke(
                             holeNumber: model.currentHoleNumber,
-                            position: LatLon(lat: lat, lon: lon)
+                            position: position
                         ))
                         model.setActiveRound(strokes: strokes)
                         steps.append(Self.roundModeDescription(model.roundCardMode))
@@ -1334,6 +1364,32 @@ private struct OnCourseContentView: View {
                                     + " line=\(model.overlays.distanceLine.count)pts"
                                     + " prefillHitsWorking=\(prefill == wt.position)"
                             }
+                        }
+                    }
+                    // T35 (R6): in green mode dump the green card (distance to
+                    // hole + the resolved hole/ball). With `-greenPutt 1`, drive
+                    // the read handoff — pre-place the markers and prove (a) the
+                    // read's hole == the resolved active pin (override-first,
+                    // closing laser-doc Q3) and (b) a stimp change moves the
+                    // pace/break figure the read produces.
+                    if model.roundCardMode == .green, let card = model.greenCard {
+                        outcome += " green=[dist:\(card.distanceM.map(String.init) ?? "nil")"
+                            + ",hole:\(card.holePosition.map { "\($0.lat),\($0.lon)" } ?? "nil")"
+                            + ",ball:\(card.ballPosition.lat),\(card.ballPosition.lon)]"
+                        if UserDefaults.standard.string(forKey: "greenPutt") == "1" {
+                            puttRead.activate(defaultHole: card.holePosition.map(puttPoint))
+                            puttRead.placeBall(puttPoint(card.ballPosition))
+                            let readHole = puttRead.hole
+                            let holeMatches = card.holePosition
+                                .map { puttPoint($0) == readHole } ?? (readHole == nil)
+                            puttRead.setStimp(8)
+                            let low = puttRead.display.tour?.aimInches
+                            puttRead.setStimp(12)
+                            let high = puttRead.display.tour?.aimInches
+                            outcome += " readHoleMatchesPin=\(holeMatches)"
+                                + " stimp=\(puttRead.stimpFt)"
+                                + " aimAt8=\(low.map { String(format: "%.3f", $0) } ?? "nil")"
+                                + " aimAt12=\(high.map { String(format: "%.3f", $0) } ?? "nil")"
                         }
                     }
                     print("ROUND-DEBUG \(outcome)")
@@ -1754,7 +1810,14 @@ private struct OnCourseContentView: View {
 
     // MARK: - Green view enter/exit
 
-    private func enterGreenView() {
+    /// R6 green handoff: open the green view from the green card with the ball
+    /// pre-placed at the last captured position and the hole at the resolved
+    /// active pin — the putt read one tap away, exactly at the round's markers.
+    private func readPuttFromGreenCard() {
+        enterGreenView(preplaceBall: model.greenCard?.ballPosition)
+    }
+
+    private func enterGreenView(preplaceBall: LatLon? = nil) {
         guard let hole = model.currentHole else { return }
         let center = hole.green.map { LatLon(lat: $0.centerLat, lon: $0.centerLon) }
         guard let bounds = greenAnalysis.activate(holeId: hole.hole.id, greenCenter: center)
@@ -1767,6 +1830,11 @@ private struct OnCourseContentView: View {
         // greenAnalysis.isLoading onChange).
         let activePin = model.targets.activePin
         puttRead.activate(defaultHole: (activePin ?? center).map(puttPoint))
+        // R6: the green card hands off the captured ball position, so the read
+        // opens pre-placed (no tap needed). Hole stays the resolved active pin.
+        if let ball = preplaceBall {
+            puttRead.placeBall(puttPoint(ball))
+        }
         // Apply the synced per-green calibration (confidence lift + bias
         // correction) before the terrain grid settles, so the surface is built
         // right the first time. Uncalibrated greens pass nil → no-op.
@@ -1930,8 +1998,10 @@ private struct OnCourseContentView: View {
             if !roundModel.hasActiveRound {
                 await roundModel.startRound(
                     gamePlanId: model.plan?.id,
-                    wind: planWindSnapshot
+                    wind: planWindSnapshot,
+                    stimpFt: env.settings.defaultStimpFt
                 )
+                applyRoundStimp()
             }
             guard let position = model.captureStartPosition else { return }
             armCapture(at: position)
@@ -1950,6 +2020,16 @@ private struct OnCourseContentView: View {
         withAnimation(.easeInOut(duration: 0.28)) {
             model.exitTool()
         }
+    }
+
+    /// Round-loop R6: feed the active round's per-round stimp into the putt
+    /// read, so tour/plays-like figures use the round's green speed rather than
+    /// the app default. No round, or a round with no recorded stimp, leaves the
+    /// read's persisted value untouched. `setStimp` self-guards a no-op change,
+    /// so calling this and the `puttRead.stimpFt` write-back don't loop.
+    private func applyRoundStimp() {
+        guard let stimp = roundModel.round?.stimpFt else { return }
+        puttRead.setStimp(stimp)
     }
 
     /// Arms the capture draft: crosshair at `position`, target pre-filled
@@ -2278,6 +2358,9 @@ private struct DistanceCardView: View {
     /// Opens the pin-entry sheet (owned by the content view — needs the current
     /// green frame, which the button only offers when one exists).
     let onPinEntry: () -> Void
+    /// Opens the green view / putt read pre-placed from the green card (R6 —
+    /// ball = last captured position, hole = resolved active pin).
+    let onReadPutt: () -> Void
     @Environment(AppEnvironment.self) private var env
 
     /// Compact by default: the numbers that matter over the ball (F/C/B,
@@ -2347,9 +2430,55 @@ private struct DistanceCardView: View {
                 roundDecidePlaceholder
             }
         case .green:
-            // Derivation + putt-first content land in T35 (R6).
-            EmptyView()
+            if let card = model.greenCard {
+                roundGreenCard(card)
+            }
         }
+    }
+
+    // Green mode (R6): the ball is on the green — distance to the hole leads,
+    // the putt read is one tap away, pre-placed at ball = last capture and
+    // hole = resolved active pin (green tint = "you're putting now").
+    private func roundGreenCard(_ card: OnCourseModel.GreenCard) -> some View {
+        Button(action: onReadPutt) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Image(systemName: "flag.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Color.green)
+                    OverlineLabel("On the green · Read putt", color: .secondary)
+                    Spacer()
+                    if let distance = card.distanceM {
+                        MetricText(
+                            DistanceFormat.string(distance, unit: unit),
+                            unit: unit.abbreviation, size: 16
+                        )
+                    }
+                }
+                HStack(spacing: 10) {
+                    Text("→ \(card.holeName ?? "Hole")")
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                    Spacer()
+                    HStack(spacing: 3) {
+                        Text("Read")
+                            .font(.caption2.weight(.semibold))
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.green)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(
+            "On the green"
+                + (card.distanceM.map { ", \($0) meters to the hole" } ?? "")
+                + ". Read putt."
+        )
     }
 
     // Tee preview (R2): the hole's plan in one strip — tee club, first aim,

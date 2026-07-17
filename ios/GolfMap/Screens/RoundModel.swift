@@ -59,7 +59,8 @@ final class RoundModel {
     @discardableResult
     func startRound(
         gamePlanId: String? = nil,
-        wind: (speedMps: Double, directionDeg: Double)? = nil
+        wind: (speedMps: Double, directionDeg: Double)? = nil,
+        stimpFt: Double? = nil
     ) async -> RoundRecord? {
         if round == nil {
             // A round might exist from a previous session even if the screen
@@ -68,16 +69,43 @@ final class RoundModel {
         }
         if let round { return round }
 
+        // R6: default the round's green speed from the most recent round at
+        // this course that recorded one, else the caller's app-default seed
+        // (`AppSettings.defaultStimpFt`). One field on round start.
+        let previousStimp = (try? await database.rounds(courseId: courseId))?
+            .first { $0.stimpFt != nil }?.stimpFt
+
         let record = RoundRecord(
             courseId: courseId,
             startedAt: Self.timestamp(),
             gamePlanId: gamePlanId,
             windSpeedMps: wind?.speedMps,
-            windDirectionDeg: wind?.directionDeg
+            windDirectionDeg: wind?.directionDeg,
+            stimpFt: previousStimp ?? stimpFt
         )
         round = record
         shots = []
         await persistRound(record)
+        return record
+    }
+
+    /// Set the active round's green speed (round-loop R6 — the one per-round
+    /// stimp field, adjusted from the green view's stimp control). Persisted
+    /// with the local round record; no-op when unchanged or no round is active.
+    ///
+    /// The `syncState` is deliberately NOT flipped: stimp is device-local (no
+    /// server column yet), so a synced round stays synced and a stimp tweak
+    /// never queues a spurious push — the value degrades gracefully out of sync.
+    @discardableResult
+    func setStimp(_ value: Double) async -> RoundRecord? {
+        guard var record = round, record.stimpFt != value else { return round }
+        record.stimpFt = value
+        round = record
+        do {
+            try await database.saveRound(record)
+        } catch {
+            print("Round store stimp write failed (kept in memory): \(error)")
+        }
         return record
     }
 
