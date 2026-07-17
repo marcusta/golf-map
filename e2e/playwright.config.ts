@@ -5,7 +5,8 @@ import * as path from 'node:path';
  * T20 — the project's first E2E smoke harness. LOCAL only (no CI wiring this
  * round). `bun run e2e` from the repo root boots an ISOLATED, freshly-seeded
  * API + the web dev server, logs in as the seed user once (storageState), and
- * runs a small durable smoke suite against http://localhost:5273.
+ * runs a small durable smoke suite against http://localhost:5273. Set
+ * E2E_API_PORT/E2E_WEB_PORT to use the documented 3200/5474 fallback pair.
  *
  * Ports are deliberately OFF the dev defaults (API 3100 not 3000, web 5273 not
  * 5173) so a running dev environment doesn't collide with the harness. The web
@@ -13,8 +14,8 @@ import * as path from 'node:path';
  * (see web/vite.config.ts).
  */
 
-export const E2E_API_PORT = 3100;
-export const E2E_WEB_PORT = 5273;
+export const E2E_API_PORT = Number(process.env.E2E_API_PORT) || 3100;
+export const E2E_WEB_PORT = Number(process.env.E2E_WEB_PORT) || 5273;
 export const E2E_BASE_URL = `http://localhost:${E2E_WEB_PORT}`;
 
 const repoRoot = path.join(__dirname, '..');

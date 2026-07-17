@@ -1,4 +1,4 @@
-import { Signal, batch } from '@basics/core/client/core';
+import { Computed, Signal, batch } from '@basics/core/client/core';
 import { EntityStore } from '@basics/core/client/entity-store';
 import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
@@ -15,6 +15,11 @@ export type PlanHead = Omit<GamePlan, 'holes'>;
 
 /** A plan-hole row without its nested shots/gates (hole-level fields + version). */
 export type PlanHoleRow = Omit<GamePlanHole, 'shots' | 'gates'>;
+
+/** Stable key for one sibling group in the flat shot store. */
+function parentKey(gamePlanHoleId: string, parentShotId: string | null): string {
+    return `${gamePlanHoleId}\u0000${parentShotId ?? ''}`;
+}
 
 function stripHole(hole: GamePlanHole): PlanHoleRow {
     const { shots, gates, ...row } = hole;
@@ -58,6 +63,25 @@ export class PlanService {
     readonly holes = new EntityStore<PlanHoleRow>();
     readonly shots = new EntityStore<PlanShot>();
     readonly gates = new EntityStore<PlanGate>();
+
+    /**
+     * Parent index over the flat shot store. Each value is one sibling group,
+     * ordered by option rank (`sortOrder`). Roots are scoped by hole id so
+     * their shared null parent never mixes holes.
+     */
+    readonly shotsByParent = new Computed<ReadonlyMap<string, readonly PlanShot[]>>(() => {
+        const index = new Map<string, PlanShot[]>();
+        for (const shot of this.shots.items.get()) {
+            const key = parentKey(shot.gamePlanHoleId, shot.parentShotId);
+            const siblings = index.get(key) ?? [];
+            siblings.push(shot);
+            index.set(key, siblings);
+        }
+        for (const siblings of index.values()) {
+            siblings.sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));
+        }
+        return index;
+    });
 
     readonly loading = new Signal(false);
     readonly error = new Signal<RequestError | null>(null);
@@ -103,11 +127,41 @@ export class PlanService {
         return this.holes.items.get().find(h => h.holeNumber === holeNumber);
     }
 
-    /** A hole row's shots, sorted by sortOrder. */
+    /** One ordered sibling group (root options when `parentShotId` is null). */
+    childShots(gamePlanHoleId: string, parentShotId: string | null): readonly PlanShot[] {
+        return this.shotsByParent.get().get(parentKey(gamePlanHoleId, parentShotId)) ?? [];
+    }
+
+    /**
+     * A hole row's complete shot tree in display order: sibling rank first,
+     * then each option's continuation subtree. The source of truth remains the
+     * flat EntityStore; this is only a deterministic projection.
+     */
     shotsForHole(gamePlanHoleId: string): PlanShot[] {
-        return this.shots.items.get()
-            .filter(s => s.gamePlanHoleId === gamePlanHoleId)
-            .sort((a, b) => a.sortOrder - b.sortOrder);
+        // Subscribe once to the parent index, then traverse that settled map.
+        const index = this.shotsByParent.get();
+        const out: PlanShot[] = [];
+        const visit = (parentShotId: string | null): void => {
+            for (const shot of index.get(parentKey(gamePlanHoleId, parentShotId)) ?? []) {
+                out.push(shot);
+                visit(shot.id);
+            }
+        };
+        visit(null);
+        return out;
+    }
+
+    /** Primary line = follow rank-0 roots/children until the branch ends. */
+    primaryLineForHole(gamePlanHoleId: string): PlanShot[] {
+        const index = this.shotsByParent.get();
+        const out: PlanShot[] = [];
+        let parentShotId: string | null = null;
+        while (true) {
+            const primary: PlanShot | undefined = index.get(parentKey(gamePlanHoleId, parentShotId))?.[0];
+            if (!primary) return out;
+            out.push(primary);
+            parentShotId = primary.id;
+        }
     }
 
     /** A hole row's gates, sorted by sortOrder. */
@@ -194,6 +248,7 @@ export class PlanService {
         elevation?: number | null;
         clubId?: string | null;
         label?: string | null;
+        parentShotId?: string | null;
     }): Promise<PlanShot | undefined> {
         const hole = await this.ensureHole(holeNumber);
         if (!hole) return undefined;
@@ -229,17 +284,83 @@ export class PlanService {
         return result;
     }
 
-    /** Delete a shot (uses the store's current version). */
-    async removeShot(id: string): Promise<boolean> {
+    /**
+     * Delete a shot using O2 semantics: splice heals the chain by promoting
+     * direct children into the removed sibling slot; cascade removes the
+     * complete option branch.
+     */
+    async removeShot(id: string, mode: 'splice' | 'cascade' = 'splice'): Promise<boolean> {
         const current = this.shots.items.peek().find(s => s.id === id);
         if (!current) return false;
         const result = await request(this.saving, this.saveError, () =>
-            this.plansApi.removeShot({ id, version: current.version }));
+            this.plansApi.removeShot({ id, version: current.version, mode }));
         if (result === undefined) {
             void this.reload();
             return false;
         }
-        this.shots.remove(id);
+        const all = this.shots.items.peek();
+        if (mode === 'cascade') {
+            const removed = new Set<string>([id]);
+            let changed = true;
+            while (changed) {
+                changed = false;
+                for (const shot of all) {
+                    if (shot.parentShotId !== null && removed.has(shot.parentShotId) && !removed.has(shot.id)) {
+                        removed.add(shot.id);
+                        changed = true;
+                    }
+                }
+            }
+            this.shots.set(all.filter(shot => !removed.has(shot.id)));
+        } else {
+            const siblings = all
+                .filter(shot => shot.gamePlanHoleId === current.gamePlanHoleId
+                    && shot.parentShotId === current.parentShotId)
+                .sort((a, b) => a.sortOrder - b.sortOrder);
+            const slot = siblings.findIndex(shot => shot.id === id);
+            const children = all
+                .filter(shot => shot.parentShotId === id)
+                .sort((a, b) => a.sortOrder - b.sortOrder);
+            const replacementIds = new Set(children.map(shot => shot.id));
+            const nextSiblings = [
+                ...siblings.slice(0, slot),
+                ...children,
+                ...siblings.slice(slot + 1),
+            ];
+            const siblingRank = new Map(nextSiblings.map((shot, rank) => [shot.id, rank]));
+            this.shots.set(all
+                .filter(shot => shot.id !== id)
+                .map(shot => {
+                    if (replacementIds.has(shot.id)) {
+                        return { ...shot, parentShotId: current.parentShotId, sortOrder: siblingRank.get(shot.id)! };
+                    }
+                    const rank = siblingRank.get(shot.id);
+                    return rank === undefined ? shot : { ...shot, sortOrder: rank };
+                }));
+        }
+        return true;
+    }
+
+    /** Promote an option by moving it to rank 0 inside its sibling group. */
+    async setPrimary(id: string): Promise<boolean> {
+        const current = this.shots.items.peek().find(shot => shot.id === id);
+        if (!current) return false;
+        const result = await request(this.saving, this.saveError, () => this.plansApi.setPrimary({ id }));
+        if (result === undefined) {
+            void this.reload();
+            return false;
+        }
+        const siblings = this.shots.items.peek()
+            .filter(shot => shot.gamePlanHoleId === current.gamePlanHoleId
+                && shot.parentShotId === current.parentShotId)
+            .sort((a, b) => a.sortOrder - b.sortOrder);
+        const ranks = new Map(
+            [current, ...siblings.filter(shot => shot.id !== id)].map((shot, rank) => [shot.id, rank]),
+        );
+        this.shots.set(this.shots.items.peek().map(shot => {
+            const rank = ranks.get(shot.id);
+            return rank === undefined ? shot : { ...shot, sortOrder: rank };
+        }));
         return true;
     }
 

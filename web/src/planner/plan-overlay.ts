@@ -5,8 +5,8 @@
 // only assembles nodes/legs and converts geometry for rendering.
 //
 // Planning model (Phase 5 contract):
-//  - Node sequence: origin = selected tee, then plan shots in sort order
-//    (each shot's lat/lon = its landing point), terminal = green center.
+//  - The primary node sequence follows rank-0 children from the rank-0 root.
+//    All option nodes/legs are retained separately for the map overlay.
 //  - Leg N = node N → node N+1; leg bearing = planar initial bearing in
 //    EPSG:3006 (atan2(Δx, Δy), fine at course scale — consistent everywhere).
 //  - The ellipse for a leg anchors at its ORIGIN node and projects forward
@@ -30,12 +30,11 @@ import {
     corridorWidth,
     dispersionEllipse,
     optimizeAim,
-    pathSegmentStats,
+    segmentStats,
     windEffect,
     type DispersionEllipse,
     type FlatRing,
     type Lie,
-    type StrategyPoint,
     type Vec2,
 } from '../../../shared/strategy';
 import { sweref99tmToWgs84, wgs84ToSweref99tm } from '../geo/transform';
@@ -79,6 +78,10 @@ export interface PlanNode extends PlanNodePoint {
     kind: 'tee' | 'shot' | 'green';
     /** The backing shot row when kind === 'shot'. */
     shot?: PlanShot;
+    /** Depth in the option tree (tee = -1, first shot = 0, green = terminal). */
+    depth: number;
+    /** True when this node belongs to the rank-0 primary line. */
+    primary: boolean;
     /** EPSG:3006 easting/northing, meters. */
     x: number;
     y: number;
@@ -95,6 +98,8 @@ export interface HolePlanInput {
     tee: PlanNodePoint | null;
     /** The hole's plan shots, sorted by sortOrder. */
     shots: readonly PlanShot[];
+    /** Rank-0 traversal supplied by PlanService's primary-line selector. */
+    primaryShots?: readonly PlanShot[];
     /** Green center (terminal target). */
     green: PlanNodePoint | null;
     /** All clubs (for clubId lookups). */
@@ -107,6 +112,10 @@ export interface HolePlanInput {
 /** One leg of the plan with its full readout. */
 export interface PlanLeg {
     index: number;
+    /** Leg depth in the tree (0 = tee shot). */
+    depth: number;
+    /** Primary-line legs render solid; other option legs render dashed/dimmed. */
+    primary: boolean;
     from: PlanNode;
     to: PlanNode;
     /** Planar initial bearing from → to, compass degrees. */
@@ -226,7 +235,13 @@ export function enrichLegStrategy(leg: PlanLeg, ctx: LegStrategyContext): PlanLe
 
 /** Enrich every leg of a plan (shot-place / drag-release cadence — see above). */
 export function enrichPlanStrategy(plan: HolePlan, ctx: LegStrategyContext): HolePlan {
-    return { ...plan, legs: plan.legs.map(leg => enrichLegStrategy(leg, ctx)) };
+    const allLegs = plan.allLegs.map(leg => enrichLegStrategy(leg, ctx));
+    const byIndex = new Map(allLegs.map(leg => [leg.index, leg]));
+    return {
+        ...plan,
+        allLegs,
+        legs: plan.legs.map(leg => byIndex.get(leg.index)!),
+    };
 }
 
 // ── Pin lights (DECADE Phase D) ─────────────────────────────────────────────
@@ -311,8 +326,14 @@ export function ghostAimForLeg(leg: PlanLeg): GhostAim | null {
 }
 
 export interface HolePlan {
+    /** Primary route only: tee → rank-0 chain → green. */
     nodes: PlanNode[];
+    /** Primary route legs only (preserves existing panel/profile semantics). */
     legs: PlanLeg[];
+    /** Every unique tee/shot/green node, including option branches. */
+    allNodes: PlanNode[];
+    /** Every tree edge plus one terminal edge from each leaf to the green. */
+    allLegs: PlanLeg[];
     /** Sum of leg horizontals, meters. */
     totalHorizontalM: number;
     /** Sum of plays-like over legs that have it; undefined when none do. */
@@ -325,35 +346,82 @@ export function planarBearingDeg(a: Vec2, b: Vec2): number {
     return (deg + 360) % 360;
 }
 
-/** Build the hole's node sequence + legs with all per-leg readouts. */
+function orderedChildren(shots: readonly PlanShot[]): Map<string | null, PlanShot[]> {
+    const index = new Map<string | null, PlanShot[]>();
+    for (const shot of shots) {
+        const siblings = index.get(shot.parentShotId) ?? [];
+        siblings.push(shot);
+        index.set(shot.parentShotId, siblings);
+    }
+    for (const siblings of index.values()) {
+        siblings.sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));
+    }
+    return index;
+}
+
+function derivePrimaryShots(shots: readonly PlanShot[]): PlanShot[] {
+    const children = orderedChildren(shots);
+    const primary: PlanShot[] = [];
+    let parentShotId: string | null = null;
+    while (true) {
+        const shot: PlanShot | undefined = children.get(parentShotId)?.[0];
+        if (!shot) return primary;
+        primary.push(shot);
+        parentShotId = shot.id;
+    }
+}
+
+/** Build the primary route plus all option-tree overlay geometry. */
 export function buildHolePlan(input: HolePlanInput): HolePlan {
     const clubById = new Map(input.clubs.map(c => [c.id, c]));
+    const children = orderedChildren(input.shots);
+    const primaryShots = input.primaryShots ?? derivePrimaryShots(input.shots);
+    const primaryIds = new Set(primaryShots.map(shot => shot.id));
 
-    const nodes: PlanNode[] = [];
-    const push = (kind: PlanNode['kind'], p: PlanNodePoint, shot?: PlanShot) => {
+    const makeNode = (
+        kind: PlanNode['kind'],
+        p: PlanNodePoint,
+        depth: number,
+        primary: boolean,
+        shot?: PlanShot,
+    ): PlanNode => {
         const { x, y } = wgs84ToSweref99tm(p.lat, p.lon);
-        nodes.push({ kind, lat: p.lat, lon: p.lon, elevation: p.elevation, x, y, shot });
+        return { kind, lat: p.lat, lon: p.lon, elevation: p.elevation, x, y, shot, depth, primary };
     };
-    if (input.tee) push('tee', input.tee);
+    const tee = input.tee ? makeNode('tee', input.tee, -1, true) : null;
+    const green = input.green ? makeNode('green', input.green, primaryShots.length, true) : null;
+    const nodeByShotId = new Map<string, PlanNode>();
+    const depthByShotId = new Map<string, number>();
+    const depthFor = (shot: PlanShot): number => {
+        const cached = depthByShotId.get(shot.id);
+        if (cached !== undefined) return cached;
+        const parent = shot.parentShotId === null
+            ? null
+            : input.shots.find(candidate => candidate.id === shot.parentShotId) ?? null;
+        const depth = parent ? depthFor(parent) + 1 : 0;
+        depthByShotId.set(shot.id, depth);
+        return depth;
+    };
     for (const shot of input.shots) {
-        push('shot', { lat: shot.lat, lon: shot.lon, elevation: shot.elevation }, shot);
+        nodeByShotId.set(shot.id, makeNode(
+            'shot',
+            { lat: shot.lat, lon: shot.lon, elevation: shot.elevation },
+            depthFor(shot),
+            primaryIds.has(shot.id),
+            shot,
+        ));
     }
-    if (input.green) push('green', input.green);
 
-    const green = nodes.find(n => n.kind === 'green') ?? null;
-    const stats = pathSegmentStats(nodes satisfies StrategyPoint[]);
-
-    const legs: PlanLeg[] = [];
-    for (let i = 1; i < nodes.length; i++) {
-        const from = nodes[i - 1];
-        const to = nodes[i];
-        const index = i - 1;
+    const allLegs: PlanLeg[] = [];
+    const addLeg = (from: PlanNode, to: PlanNode, depth: number, primary: boolean): void => {
+        const index = allLegs.length;
         const bearingDeg = planarBearingDeg(from, to);
+        const stats = segmentStats(from, to);
 
         // Club: the landing shot's club; the tee leg (index 0) falls back to
         // the hole's preferred club (also covers the par-3 zero-shot leg).
         const clubId = (to.kind === 'shot' ? to.shot?.clubId : null)
-            ?? (index === 0 ? input.preferredClubId : null);
+            ?? (depth === 0 ? input.preferredClubId : null);
         const club = (clubId && clubById.get(clubId)) || null;
 
         // Forward application (paired with adjustedCarryM below): key the
@@ -364,15 +432,14 @@ export function buildHolePlan(input: HolePlanInput): HolePlan {
                   input.wind.speedMps,
                   input.wind.directionDeg,
                   bearingDeg,
-                  club?.carryM ?? stats[index].playsLikeSimpleM ?? stats[index].horizontalM,
+                  club?.carryM ?? stats.playsLikeSimpleM ?? stats.horizontalM,
               )
             : 0;
         // Leg slope (signed elevationΔ / horizontal) so the ellipse projects
         // the club's air carry onto the ground — keeps the dispersion circle
         // consistent with plays-like club selection (downhill reaches further).
-        const seg = stats[index];
-        const groundSlope = seg.elevationDeltaM !== undefined && seg.horizontalM > 0
-            ? seg.elevationDeltaM / seg.horizontalM
+        const groundSlope = stats.elevationDeltaM !== undefined && stats.horizontalM > 0
+            ? stats.elevationDeltaM / stats.horizontalM
             : 0;
         const ellipse = club
             ? dispersionEllipse({
@@ -386,20 +453,48 @@ export function buildHolePlan(input: HolePlanInput): HolePlan {
             })
             : undefined;
 
-        legs.push({
+        allLegs.push({
             index,
+            depth,
+            primary,
             from,
             to,
             bearingDeg,
             club,
-            horizontalM: stats[index].horizontalM,
-            playsLikeM: stats[index].playsLikeSimpleM,
+            horizontalM: stats.horizontalM,
+            playsLikeM: stats.playsLikeSimpleM,
             windEffect: effect,
             adjustedCarryM: club ? adjustedCarryM(club.carryM, effect) : undefined,
             ellipse,
             remainingToGreenM: green ? Math.hypot(green.x - to.x, green.y - to.y) : undefined,
         });
+    };
+
+    for (const shot of input.shots) {
+        const to = nodeByShotId.get(shot.id)!;
+        const from = shot.parentShotId === null ? tee : nodeByShotId.get(shot.parentShotId) ?? null;
+        if (from) addLeg(from, to, to.depth, primaryIds.has(shot.id));
     }
+    if (green) {
+        if (input.shots.length === 0) {
+            if (tee) addLeg(tee, green, 0, true);
+        } else {
+            const primaryTailId = primaryShots.at(-1)?.id ?? null;
+            for (const shot of input.shots) {
+                if ((children.get(shot.id)?.length ?? 0) > 0) continue;
+                const from = nodeByShotId.get(shot.id)!;
+                addLeg(from, green, from.depth + 1, shot.id === primaryTailId);
+            }
+        }
+    }
+
+    const primaryNodeRows = primaryShots
+        .map(shot => nodeByShotId.get(shot.id))
+        .filter((node): node is PlanNode => node !== undefined);
+    const nodes = [tee, ...primaryNodeRows, green].filter((node): node is PlanNode => node !== null);
+    const allNodes = [tee, ...input.shots.map(shot => nodeByShotId.get(shot.id)!), green]
+        .filter((node): node is PlanNode => node !== null);
+    const legs = allLegs.filter(leg => leg.primary);
 
     let totalHorizontalM = 0;
     let totalPlaysLikeM = 0;
@@ -415,6 +510,8 @@ export function buildHolePlan(input: HolePlanInput): HolePlan {
     return {
         nodes,
         legs,
+        allNodes,
+        allLegs,
         totalHorizontalM,
         totalPlaysLikeM: measured > 0 ? totalPlaysLikeM : undefined,
     };
@@ -593,12 +690,14 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
     const plan = input.plan;
 
     if (plan) {
-        for (const leg of plan.legs) {
+        for (const leg of plan.allLegs) {
             features.push({
                 type: 'Feature',
                 properties: {
                     role: 'leg',
                     index: leg.index,
+                    depth: leg.depth,
+                    primary: leg.primary,
                     label: legLabel(leg),
                     // Approach-leg confidence light (null on non-approach / un-enriched
                     // legs) → tints the leg line; see legLight().
@@ -615,7 +714,12 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
                     && leg.to.shot.id === input.selectedShotId;
                 features.push({
                     type: 'Feature',
-                    properties: { role: 'ellipse', legIndex: leg.index, selected },
+                    properties: {
+                        role: 'ellipse',
+                        legIndex: leg.index,
+                        primary: leg.primary,
+                        selected,
+                    },
                     geometry: { type: 'Polygon', coordinates: [leg.ellipse.polygon.map(toPosition)] },
                 });
             }
@@ -627,19 +731,19 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
         // and a connector between the two so the wind hold reads at a glance.
         // Only enriched legs (recommendedBearingDeg set) yield these — the
         // per-frame drag path never enriches, so none of it flickers mid-drag.
-        for (const leg of plan.legs) {
+        for (const leg of plan.allLegs) {
             const ghost = ghostAimForLeg(leg);
             if (!ghost) continue;
             const rec = leg.recommendedEllipse;
             if (rec) {
                 features.push({
                     type: 'Feature',
-                    properties: { role: 'ghost-ellipse', legIndex: ghost.legIndex },
+                    properties: { role: 'ghost-ellipse', legIndex: ghost.legIndex, primary: leg.primary },
                     geometry: { type: 'Polygon', coordinates: [rec.polygon.map(toPosition)] },
                 });
                 features.push({
                     type: 'Feature',
-                    properties: { role: 'ghost-center', legIndex: ghost.legIndex },
+                    properties: { role: 'ghost-center', legIndex: ghost.legIndex, primary: leg.primary },
                     geometry: { type: 'Point', coordinates: toPosition(rec.center) },
                 });
                 // Aim → finish connector: only worth drawing once the drift is
@@ -650,6 +754,7 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
                         properties: {
                             role: 'ghost-drift',
                             legIndex: ghost.legIndex,
+                            primary: leg.primary,
                             label: `drift ${Math.round(Math.abs(rec.driftM))} m ${rec.driftM > 0 ? 'R' : 'L'}`,
                         },
                         geometry: {
@@ -661,21 +766,29 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
             }
             features.push({
                 type: 'Feature',
-                properties: { role: 'ghost-aim', legIndex: ghost.legIndex },
+                properties: { role: 'ghost-aim', legIndex: ghost.legIndex, primary: leg.primary },
                 geometry: { type: 'Point', coordinates: [ghost.lon, ghost.lat] },
             });
         }
 
-        let shotNumber = 0;
-        for (const node of plan.nodes) {
-            if (node.kind === 'shot') shotNumber++;
+        for (const node of plan.allNodes) {
+            const siblings = node.shot
+                ? plan.allNodes.filter(candidate => candidate.shot?.parentShotId === node.shot?.parentShotId)
+                : [];
+            const optionIndex = node.shot
+                ? siblings.findIndex(candidate => candidate.shot?.id === node.shot?.id)
+                : -1;
+            const shotLabel = node.kind === 'shot'
+                ? `${node.depth + 1}${optionIndex > 0 ? String.fromCharCode(97 + optionIndex) : ''}`
+                : '';
             features.push({
                 type: 'Feature',
                 properties: {
                     role: 'node',
                     kind: node.kind,
                     id: node.shot?.id ?? null,
-                    label: node.kind === 'tee' ? 'T' : node.kind === 'green' ? 'G' : String(shotNumber),
+                    primary: node.primary,
+                    label: node.kind === 'tee' ? 'T' : node.kind === 'green' ? 'G' : shotLabel,
                     selected: node.kind === 'shot' && node.shot?.id === input.selectedShotId,
                 },
                 geometry: { type: 'Point', coordinates: [node.lon, node.lat] },
@@ -713,6 +826,9 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
 const role = (value: string): FilterSpecification =>
     ['==', ['get', 'role'], value] as FilterSpecification;
 
+const roleAndPrimary = (value: string, primary: boolean): FilterSpecification =>
+    ['all', role(value), ['==', ['get', 'primary'], primary]] as FilterSpecification;
+
 const LEG_COLOR = SHOT_LINE_COLOR; // '#E4A15A' — --map-shot-line (guide §03 shot lines)
 const ELLIPSE_COLOR = CAT.moss; // '#5C6B4A' — --data-cat-4, landing dispersion
 const GATE_COLOR = CAT.teal; // '#3E8EA0' — --data-cat-2
@@ -732,7 +848,12 @@ export function planLayers(): OverlayLayerSpec[] {
             filter: role('ellipse'),
             paint: {
                 'fill-color': ELLIPSE_COLOR,
-                'fill-opacity': ['case', ['==', ['get', 'selected'], true], 0.3, 0.15] as never,
+                'fill-opacity': [
+                    'case',
+                    ['==', ['get', 'selected'], true], ['case', ['get', 'primary'], 0.3, 0.18],
+                    ['get', 'primary'], 0.15,
+                    0.06,
+                ] as never,
             },
         },
         {
@@ -742,13 +863,31 @@ export function planLayers(): OverlayLayerSpec[] {
             paint: {
                 'line-color': ['case', ['==', ['get', 'selected'], true], PLAN_SELECTION_COLOR, ELLIPSE_COLOR] as never,
                 'line-width': ['case', ['==', ['get', 'selected'], true], 2.5, 1.2] as never,
-                'line-opacity': 0.9,
+                'line-opacity': ['case', ['get', 'primary'], 0.9, 0.4] as never,
+            },
+        },
+        {
+            id: `${PLAN_OVERLAY_ID}-leg-option`,
+            type: 'line',
+            filter: roleAndPrimary('leg', false),
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+                'line-color': [
+                    'match', ['get', 'light'],
+                    'green', LIGHT_GREEN_COLOR,
+                    'yellow', LIGHT_YELLOW_COLOR,
+                    'red', LIGHT_RED_COLOR,
+                    LEG_COLOR,
+                ] as never,
+                'line-width': SHOT_LINE_WIDTH,
+                'line-opacity': 0.48,
+                'line-dasharray': [2, 2] as never,
             },
         },
         {
             id: `${PLAN_OVERLAY_ID}-leg`,
             type: 'line',
-            filter: role('leg'),
+            filter: roleAndPrimary('leg', true),
             // Guide §03 shot lines: 3px with rounded ("pill") ends.
             layout: { 'line-cap': 'round', 'line-join': 'round' },
             paint: {
@@ -776,7 +915,12 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-allow-overlap': false,
             },
             // Scrim-equivalent for canvas text: overlay-text on a heavy pine halo.
-            paint: { 'text-color': OVERLAY_TEXT, 'text-halo-color': OVERLAY_TEXT_HALO, 'text-halo-width': 1.5 },
+            paint: {
+                'text-color': OVERLAY_TEXT,
+                'text-halo-color': OVERLAY_TEXT_HALO,
+                'text-halo-width': 1.5,
+                'text-opacity': ['case', ['get', 'primary'], 1, 0.55] as never,
+            },
         },
         {
             id: `${PLAN_OVERLAY_ID}-ghost-ellipse`,
@@ -785,7 +929,7 @@ export function planLayers(): OverlayLayerSpec[] {
             paint: {
                 'line-color': GHOST_COLOR,
                 'line-width': 1.5,
-                'line-opacity': 0.8,
+                'line-opacity': ['case', ['get', 'primary'], 0.8, 0.35] as never,
                 'line-dasharray': [2, 2] as never,
             },
         },
@@ -796,7 +940,7 @@ export function planLayers(): OverlayLayerSpec[] {
             paint: {
                 'line-color': GHOST_COLOR,
                 'line-width': 1.5,
-                'line-opacity': 0.9,
+                'line-opacity': ['case', ['get', 'primary'], 0.9, 0.4] as never,
                 'line-dasharray': [1, 1.5] as never,
             },
         },
@@ -822,6 +966,8 @@ export function planLayers(): OverlayLayerSpec[] {
                 'circle-color': GHOST_COLOR,
                 'circle-stroke-color': MARKER_RING, // '#FFFFFF' — --overlay-text
                 'circle-stroke-width': 1,
+                'circle-opacity': ['case', ['get', 'primary'], 1, 0.5] as never,
+                'circle-stroke-opacity': ['case', ['get', 'primary'], 1, 0.5] as never,
             },
         },
         {
@@ -833,7 +979,7 @@ export function planLayers(): OverlayLayerSpec[] {
                 'circle-color': 'transparent',
                 'circle-stroke-color': GHOST_COLOR,
                 'circle-stroke-width': 2,
-                'circle-stroke-opacity': 0.9,
+                'circle-stroke-opacity': ['case', ['get', 'primary'], 0.9, 0.4] as never,
             },
         },
         {
@@ -895,6 +1041,8 @@ export function planLayers(): OverlayLayerSpec[] {
                 ] as never,
                 'circle-stroke-color': MARKER_RING, // '#FFFFFF' — --overlay-text (bone)
                 'circle-stroke-width': MARKER_RING_WIDTH,
+                'circle-opacity': ['case', ['get', 'primary'], 1, 0.62] as never,
+                'circle-stroke-opacity': ['case', ['get', 'primary'], 1, 0.62] as never,
             },
         },
         {
@@ -912,6 +1060,7 @@ export function planLayers(): OverlayLayerSpec[] {
                 'text-color': ['match', ['get', 'kind'], 'green', MARKER_FILL, OVERLAY_TEXT] as never,
                 'text-halo-color': ['match', ['get', 'kind'], 'green', MAP_GREEN_FILL, MARKER_FILL] as never,
                 'text-halo-width': 1,
+                'text-opacity': ['case', ['get', 'primary'], 1, 0.62] as never,
             },
         },
     ];

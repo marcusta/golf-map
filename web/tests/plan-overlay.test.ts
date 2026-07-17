@@ -14,6 +14,7 @@ import {
     nearestLegFoot,
     perpendicularFoot,
     planarBearingDeg,
+    planLayers,
     type HolePlan,
     type HolePlanInput,
     type LegStrategyContext,
@@ -50,12 +51,14 @@ const IRON7 = club('c-7', '7 Iron', 150, 20, 1);
 
 function shot(id: string, pos: { lat: number; lon: number }, opts: {
     sortOrder?: number;
+    parentShotId?: string | null;
     clubId?: string | null;
     elevation?: number | null;
 } = {}): PlanShot {
     return {
         id,
         gamePlanHoleId: 'h1',
+        parentShotId: opts.parentShotId ?? null,
         sortOrder: opts.sortOrder ?? 0,
         lat: pos.lat,
         lon: pos.lon,
@@ -222,12 +225,35 @@ describe('buildHolePlan', () => {
             green: null,
             shots: [
                 shot('s1', at(0), { sortOrder: 0 }),
-                shot('s2', at(100), { sortOrder: 1 }),
+                shot('s2', at(100), { sortOrder: 0, parentShotId: 's1' }),
             ],
         }));
         expect(plan.nodes.map(n => n.kind)).toEqual(['shot', 'shot']);
         expect(plan.legs).toHaveLength(1);
         expect(plan.legs[0].remainingToGreenM).toBeUndefined();
+    });
+
+    test('option tree keeps primary route linear while retaining every branch leg', () => {
+        const driver = shot('driver', at(200, -15), { clubId: DRIVER.id, sortOrder: 0 });
+        const wedge = shot('wedge', at(320, -5), {
+            parentShotId: driver.id, clubId: IRON7.id, sortOrder: 0,
+        });
+        const iron = shot('iron', at(160, 20), { clubId: IRON7.id, sortOrder: 1 });
+        const seven = shot('seven', at(285, 10), {
+            parentShotId: iron.id, clubId: IRON7.id, sortOrder: 0,
+        });
+        const plan = buildHolePlan(northInput({ shots: [driver, wedge, iron, seven] }));
+
+        expect(plan.nodes.filter(n => n.kind === 'shot').map(n => n.shot?.id)).toEqual([
+            driver.id, wedge.id,
+        ]);
+        expect(plan.legs.map(leg => [leg.to.shot?.id ?? 'green', leg.primary])).toEqual([
+            [driver.id, true], [wedge.id, true], ['green', true],
+        ]);
+        expect(plan.allLegs.map(leg => leg.to.shot?.id ?? 'green')).toEqual([
+            driver.id, wedge.id, iron.id, seven.id, 'green', 'green',
+        ]);
+        expect(plan.allLegs.filter(leg => !leg.primary)).toHaveLength(3);
     });
 });
 
@@ -380,6 +406,22 @@ describe('buildPlanGeojson', () => {
     test('null plan renders gates only; empty everything renders nothing', () => {
         const fcEmpty = buildPlanGeojson({ plan: null, gates: [], selectedShotId: null, selectedGateId: null });
         expect(fcEmpty.features).toHaveLength(0);
+    });
+
+    test('branch features are marked non-primary for dashed/dimmed styling', () => {
+        const driver = shot('driver', at(200, -15), { clubId: DRIVER.id, sortOrder: 0 });
+        const iron = shot('iron', at(160, 20), { clubId: IRON7.id, sortOrder: 1 });
+        const plan = buildHolePlan(northInput({ shots: [driver, iron] }));
+        const fc = buildPlanGeojson({ plan, gates: [], selectedShotId: null, selectedGateId: null });
+        const legs = byRole(fc.features, 'leg');
+        const ellipses = byRole(fc.features, 'ellipse');
+
+        expect(legs.map(feature => (feature.properties as { primary: boolean }).primary))
+            .toEqual([true, false, true, false]);
+        expect(ellipses.map(feature => (feature.properties as { primary: boolean }).primary))
+            .toEqual([true, false]);
+        expect(planLayers().some(layer => layer.id === 'plan-leg-option'
+            && JSON.stringify(layer.paint).includes('line-dasharray'))).toBe(true);
     });
 });
 

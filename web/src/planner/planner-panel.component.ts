@@ -162,6 +162,7 @@ const tpl = template(`
 
         <div bind="shotsSection" class="plan-panel__section" data-testid="planner-shots-section">
             <h4 class="section-title">Shots</h4>
+            <button bind="addAlternative" type="button" class="mini-btn" data-testid="planner-add-alternative">+ Alternative to selected shot</button>
             <div bind="shotList" class="shot-list" data-testid="planner-shot-list"></div>
             <div bind="noShots" class="empty-note">No shots yet — arm “+ Shot” and click the map.</div>
             <button bind="applyAim" type="button" class="mini-btn" data-testid="planner-apply-aim">Apply recommended aim</button>
@@ -194,8 +195,12 @@ const shotRowTpl = template(`
     <div bind="row" class="shot-row">
         <span bind="idx" class="shot-idx"></span>
         <select bind="club" class="shot-club" title="Club for this shot"></select>
-        <input bind="label" class="shot-label" type="text" placeholder="label" />
-        <button bind="remove" class="row-remove" type="button" aria-label="Delete shot" title="Delete shot">${icon('x')}</button>
+        <input bind="label" class="shot-label" type="text" placeholder="option label" />
+        <div class="shot-actions">
+            <button bind="primary" class="option-action" type="button" data-testid="planner-set-primary">Set primary</button>
+            <button bind="removeOption" class="option-action danger" type="button" data-testid="planner-delete-option">Delete option</button>
+            <button bind="remove" class="row-remove" type="button" aria-label="Delete shot" title="Delete shot and splice its continuations">${icon('x')}</button>
+        </div>
         <span bind="dist" class="shot-dist"></span>
         <span bind="advice" class="shot-advice"></span>
     </div>
@@ -449,7 +454,7 @@ export class PlannerPanelComponent extends Component {
             & .metric-line { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
             & .shot-advice {
-                grid-column: 2 / span 3;
+                grid-column: 2 / span 2;
                 font-size: 0.68rem;
                 color: ${t('color-text-secondary')};
             }
@@ -517,16 +522,22 @@ export class PlannerPanelComponent extends Component {
 
             & .shot-row {
                 display: grid;
-                grid-template-columns: 1.4rem 1fr 1fr 1.4rem;
+                grid-template-columns: 2rem 1fr 1fr;
                 gap: ${s('xs')};
                 align-items: center;
                 padding: 2px ${s('xs')};
+                border-left: 2px solid transparent;
                 border-radius: ${t('radius-sm')};
                 cursor: pointer;
                 &:hover { background: ${t('color-surface-sunken')}; }
                 &.selected { ${selectedRow()} }
+                &.option-row { border-left-color: ${t('color-border-default')}; }
             }
-            & .shot-idx { font-weight: 600; }
+            & .shot-idx {
+                font-size: 0.68rem;
+                font-weight: 600;
+                color: ${t('color-text-secondary')};
+            }
             & .shot-club, & .shot-label {
                 min-width: 0;
                 font-size: 0.72rem;
@@ -538,11 +549,24 @@ export class PlannerPanelComponent extends Component {
                 color: ${t('color-text-primary')};
             }
             & .shot-dist {
-                grid-column: 2 / span 3;
+                grid-column: 2 / span 2;
                 font-size: 0.7rem;
                 color: ${t('color-text-secondary')};
                 font-family: var(--font-mono);
                 font-variant-numeric: tabular-nums;
+            }
+            & .shot-actions {
+                grid-column: 2 / span 2;
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                gap: 4px;
+            }
+            & .option-action {
+                padding: 2px 5px;
+                font-size: 0.66rem;
+                ${btn(t('radius-sm'))}
+                &.danger { color: ${t('color-status-negative')}; }
             }
 
             & .gate-row {
@@ -654,6 +678,13 @@ export class PlannerPanelComponent extends Component {
             addShot: {
                 onclick: () => this.tool.setMode('add-shot'),
                 className: () => this.tool.mode.get() === 'add-shot' ? 'mode-btn active' : 'mode-btn',
+            },
+            addAlternative: {
+                onclick: () => this.tool.setMode('add-alternative'),
+                disabled: () => !this.tool.selectedShot.get(),
+                textContent: () => this.tool.mode.get() === 'add-alternative'
+                    ? 'Click map to place the alternative'
+                    : '+ Alternative to selected shot',
             },
             addGate: {
                 onclick: () => this.tool.setMode('add-gate'),
@@ -1125,13 +1156,17 @@ export class PlannerPanelComponent extends Component {
                 const row = this.wireEl(shotRowTpl, {
                     row: {
                         onclick: () => this.tool.selection.set({ kind: 'shot', id: shot.id }),
-                        className: () => this.tool.selection.get()?.kind === 'shot'
-                            && this.tool.selection.get()?.id === shot.id
-                            ? 'shot-row selected' : 'shot-row',
+                        className: () => {
+                            const selected = this.tool.selection.get()?.kind === 'shot'
+                                && this.tool.selection.get()?.id === shot.id;
+                            const option = this.plan.childShots(shot.gamePlanHoleId, shot.parentShotId).length > 1;
+                            return `shot-row${selected ? ' selected' : ''}${option ? ' option-row' : ''}`;
+                        },
+                        style: () => `margin-left:${Math.min(3, this.shotDepth(live.get())) * 8}px`,
                     },
                     // Reactive index — keyed rows are reused, so a captured
                     // index would go stale after a mid-list delete.
-                    idx: () => String(this.tool.holeShots.get().findIndex(s => s.id === shot.id) + 1),
+                    idx: () => this.optionIndexLabel(live.get()),
                     dist: () => this.shotDistText(shot.id),
                     advice: () => this.shotAdviceText(shot.id),
                     remove: {
@@ -1144,7 +1179,20 @@ export class PlannerPanelComponent extends Component {
                                 tone: 'danger',
                                 layout: 'default',
                             });
-                            if (ok) void this.plan.removeShot(shot.id);
+                            if (ok) void this.plan.removeShot(shot.id, 'splice');
+                        },
+                    },
+                    primary: {
+                        onclick: (e: Event) => {
+                            e.stopPropagation();
+                            void this.tool.setPrimary(shot.id);
+                        },
+                        style: () => live.get().sortOrder === 0 ? 'display:none' : '',
+                    },
+                    removeOption: {
+                        onclick: (e: Event) => {
+                            e.stopPropagation();
+                            void this.tool.deleteOption(shot.id);
                         },
                     },
                 }, track);
@@ -1158,6 +1206,9 @@ export class PlannerPanelComponent extends Component {
                     const s = live.get();
                     row.dataset.lat = s.lat.toFixed(7);
                     row.dataset.lon = s.lon.toFixed(7);
+                    row.dataset.parentShotId = s.parentShotId ?? '';
+                    row.dataset.sortOrder = String(s.sortOrder);
+                    row.dataset.depth = String(this.shotDepth(s));
                 }));
 
                 const club = row.querySelector('.shot-club') as HTMLSelectElement;
@@ -1197,6 +1248,28 @@ export class PlannerPanelComponent extends Component {
             },
             shot => shot.id,
         );
+    }
+
+    /** Tree depth for panel indentation (roots = 0). */
+    private shotDepth(shot: PlanShot): number {
+        const byId = new Map(this.tool.holeShots.get().map(candidate => [candidate.id, candidate]));
+        let depth = 0;
+        let parentShotId = shot.parentShotId;
+        while (parentShotId !== null) {
+            const parent = byId.get(parentShotId);
+            if (!parent) break;
+            depth++;
+            parentShotId = parent.parentShotId;
+        }
+        return depth;
+    }
+
+    /** Compact leg/option label: 1A, 1B, 2A… within each decision point. */
+    private optionIndexLabel(shot: PlanShot): string {
+        const siblings = this.plan.childShots(shot.gamePlanHoleId, shot.parentShotId);
+        const rank = siblings.findIndex(candidate => candidate.id === shot.id);
+        const suffix = siblings.length > 1 ? String.fromCharCode(65 + Math.max(0, rank)) : '';
+        return `${this.shotDepth(shot) + 1}${suffix}`;
     }
 
     private buildGateRows(container: HTMLElement): void {
@@ -1241,6 +1314,7 @@ export class PlannerPanelComponent extends Component {
         if (!this.tool.selectedHole.get()) return 'Select a hole from the list to plan it.';
         const mode = this.tool.mode.get();
         if (mode === 'add-shot') return 'Click the map to append shots — Esc to stop.';
+        if (mode === 'add-alternative') return 'Click the map once to place a sibling option.';
         if (mode === 'add-gate') return 'Click near a leg to drop a corridor gate (Shift-click for several).';
         if (mode === 'putt') return 'Click the green to place the ball — drag ball/hole; the read updates on release.';
         return 'Click open map space or a ladder rung to inspect it. Use “Browse from here” to move the origin.';
@@ -1281,7 +1355,7 @@ export class PlannerPanelComponent extends Component {
     /** "1: Tee → ①" per-shot distance text from the leg landing on it. */
     private shotDistText(shotId: string): string {
         const plan = this.tool.overlayPlan.get();
-        const leg = plan?.legs.find(l => l.to.kind === 'shot' && l.to.shot?.id === shotId);
+        const leg = plan?.allLegs.find(l => l.to.kind === 'shot' && l.to.shot?.id === shotId);
         if (!leg) return '';
         const parts = [`${Math.round(leg.horizontalM)} m`];
         if (leg.playsLikeM !== undefined) parts.push(`plays ${Math.round(leg.playsLikeM)} m`);
@@ -1303,7 +1377,7 @@ export class PlannerPanelComponent extends Component {
      */
     private shotAdviceText(shotId: string): string {
         const plan = this.tool.overlayPlan.get();
-        const leg = plan?.legs.find(l => l.to.kind === 'shot' && l.to.shot?.id === shotId);
+        const leg = plan?.allLegs.find(l => l.to.kind === 'shot' && l.to.shot?.id === shotId);
         if (!leg) return '';
         const clubs = this.tool.orderedClubs.get();
         if (clubs.length === 0) return '';

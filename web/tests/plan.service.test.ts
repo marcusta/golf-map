@@ -41,6 +41,19 @@ function fakeApi() {
     let seq = 0;
     const calls = { getByCourse: 0, upsert: 0, setHole: 0, addShot: 0, updateShot: 0, addGate: 0 };
 
+    const primaryTail = (gamePlanHoleId: string): PlanShot | null => {
+        let parentShotId: string | null = null;
+        let tail: PlanShot | null = null;
+        while (true) {
+            const next = [...shots.values()]
+                .filter(s => s.gamePlanHoleId === gamePlanHoleId && s.parentShotId === parentShotId)
+                .sort((a, b) => a.sortOrder - b.sortOrder)[0];
+            if (!next) return tail;
+            tail = next;
+            parentShotId = next.id;
+        }
+    };
+
     const holeTree = (h: HoleRow): GamePlanHole => ({
         ...structuredClone(h),
         shots: [...shots.values()].filter(s => s.gamePlanHoleId === h.id)
@@ -128,10 +141,15 @@ function fakeApi() {
         },
         async addShot(input) {
             calls.addShot++;
-            const siblings = [...shots.values()].filter(s => s.gamePlanHoleId === input.gamePlanHoleId);
+            const parentShotId = input.parentShotId !== undefined
+                ? input.parentShotId
+                : primaryTail(input.gamePlanHoleId)?.id ?? null;
+            const siblings = [...shots.values()].filter(s =>
+                s.gamePlanHoleId === input.gamePlanHoleId && s.parentShotId === parentShotId);
             const row: PlanShot = {
                 id: `shot${++seq}`,
                 gamePlanHoleId: input.gamePlanHoleId,
+                parentShotId,
                 sortOrder: siblings.length === 0 ? 0 : Math.max(...siblings.map(s => s.sortOrder)) + 1,
                 lat: input.lat,
                 lon: input.lon,
@@ -158,10 +176,45 @@ function fakeApi() {
         async removeShot(input) {
             const row = shots.get(input.id);
             if (!row || row.version !== input.version) throw new ApiError(409, 'Version conflict');
-            shots.delete(input.id);
+            const mode = input.mode ?? 'splice';
+            if (mode === 'cascade') {
+                const removed = new Set([row.id]);
+                let changed = true;
+                while (changed) {
+                    changed = false;
+                    for (const shot of shots.values()) {
+                        if (shot.parentShotId !== null && removed.has(shot.parentShotId) && !removed.has(shot.id)) {
+                            removed.add(shot.id);
+                            changed = true;
+                        }
+                    }
+                }
+                for (const id of removed) shots.delete(id);
+            } else {
+                const siblings = [...shots.values()]
+                    .filter(s => s.gamePlanHoleId === row.gamePlanHoleId && s.parentShotId === row.parentShotId)
+                    .sort((a, b) => a.sortOrder - b.sortOrder);
+                const slot = siblings.findIndex(s => s.id === row.id);
+                const children = [...shots.values()]
+                    .filter(s => s.parentShotId === row.id)
+                    .sort((a, b) => a.sortOrder - b.sortOrder);
+                for (const child of children) child.parentShotId = row.parentShotId;
+                shots.delete(input.id);
+                [...siblings.slice(0, slot), ...children, ...siblings.slice(slot + 1)]
+                    .forEach((s, rank) => { s.sortOrder = rank; });
+            }
             return { ok: true };
         },
         reorderShots: () => Promise.reject(new Error('not under test')),
+        async setPrimary({ id }) {
+            const row = shots.get(id);
+            if (!row) throw new ApiError(404, 'Not found');
+            const siblings = [...shots.values()]
+                .filter(s => s.gamePlanHoleId === row.gamePlanHoleId && s.parentShotId === row.parentShotId)
+                .sort((a, b) => a.sortOrder - b.sortOrder);
+            [row, ...siblings.filter(s => s.id !== id)].forEach((s, rank) => { s.sortOrder = rank; });
+            return { ok: true };
+        },
         async addGate(input) {
             calls.addGate++;
             const siblings = [...gates.values()].filter(g => g.gamePlanHoleId === input.gamePlanHoleId);
@@ -246,7 +299,7 @@ describe('load', () => {
         expect(svc.plan.get()?.windSpeedMps).toBe(4);
         expect(svc.plan.get()?.version).toBe(1);
         expect(svc.holeRow(1)?.teeId).toBe('t1');
-        expect(svc.shotsForHole(hole.id).map(s => s.sortOrder)).toEqual([0, 1]);
+        expect(svc.shotsForHole(hole.id).map(s => s.sortOrder)).toEqual([0, 0]);
         expect(svc.gatesForHole(hole.id)).toHaveLength(1);
         // The head signal must not carry the nested tree.
         expect('holes' in (svc.plan.get() as object)).toBe(false);
@@ -276,7 +329,7 @@ describe('lazy plan/hole creation', () => {
 
         // Second shot reuses the created rows.
         const second = await svc.addShot(7, { lat: LAT, lon: LON + 0.001 });
-        expect(second?.sortOrder).toBe(1);
+        expect(second?.sortOrder).toBe(0);
         expect(calls.upsert).toBe(1);
         expect(calls.setHole).toBe(1);
         expect(svc.shots.items.get()).toHaveLength(2);
@@ -375,6 +428,76 @@ describe('shots', () => {
         expect(await svc.removeShot(shot.id)).toBe(true);
         expect(svc.shots.items.get()).toHaveLength(0);
         expect(shots.has(shot.id)).toBe(false);
+    });
+
+    test('indexes siblings and follows rank-0 children as the primary line', async () => {
+        const { api } = fakeApi();
+        const plan = await api.upsert({ courseId: 'c1' });
+        const hole = await api.setHole({ planId: plan.id, holeNumber: 1 });
+        const driver = await api.addShot({
+            gamePlanHoleId: hole.id, parentShotId: null, lat: LAT, lon: LON,
+        });
+        const wedge = await api.addShot({
+            gamePlanHoleId: hole.id, parentShotId: driver.id, lat: LAT + 0.001, lon: LON,
+        });
+        const iron = await api.addShot({
+            gamePlanHoleId: hole.id, parentShotId: null, lat: LAT, lon: LON + 0.001,
+        });
+        const sevenIron = await api.addShot({
+            gamePlanHoleId: hole.id, parentShotId: iron.id, lat: LAT + 0.001, lon: LON + 0.001,
+        });
+        const svc = new PlanService(api);
+        await svc.load('c1');
+
+        expect(svc.childShots(hole.id, null).map(s => s.id)).toEqual([driver.id, iron.id]);
+        expect(svc.shotsForHole(hole.id).map(s => s.id)).toEqual([
+            driver.id, wedge.id, iron.id, sevenIron.id,
+        ]);
+        expect(svc.primaryLineForHole(hole.id).map(s => s.id)).toEqual([driver.id, wedge.id]);
+    });
+
+    test('setPrimary reorders one sibling group and switches the primary continuation', async () => {
+        const { api } = fakeApi();
+        const plan = await api.upsert({ courseId: 'c1' });
+        const hole = await api.setHole({ planId: plan.id, holeNumber: 1 });
+        const driver = await api.addShot({ gamePlanHoleId: hole.id, parentShotId: null, lat: LAT, lon: LON });
+        await api.addShot({ gamePlanHoleId: hole.id, parentShotId: driver.id, lat: LAT + 0.001, lon: LON });
+        const iron = await api.addShot({ gamePlanHoleId: hole.id, parentShotId: null, lat: LAT, lon: LON + 0.001 });
+        const continuation = await api.addShot({
+            gamePlanHoleId: hole.id, parentShotId: iron.id, lat: LAT + 0.001, lon: LON + 0.001,
+        });
+        const svc = new PlanService(api);
+        await svc.load('c1');
+
+        expect(await svc.setPrimary(iron.id)).toBe(true);
+        expect(svc.childShots(hole.id, null).map(s => [s.id, s.sortOrder])).toEqual([
+            [iron.id, 0], [driver.id, 1],
+        ]);
+        expect(svc.primaryLineForHole(hole.id).map(s => s.id)).toEqual([iron.id, continuation.id]);
+    });
+
+    test('cascade deletes a complete option while splice promotes its continuations', async () => {
+        const { api, shots } = fakeApi();
+        const plan = await api.upsert({ courseId: 'c1' });
+        const hole = await api.setHole({ planId: plan.id, holeNumber: 1 });
+        const driver = await api.addShot({ gamePlanHoleId: hole.id, parentShotId: null, lat: LAT, lon: LON });
+        const wedge = await api.addShot({
+            gamePlanHoleId: hole.id, parentShotId: driver.id, lat: LAT + 0.001, lon: LON,
+        });
+        const iron = await api.addShot({ gamePlanHoleId: hole.id, parentShotId: null, lat: LAT, lon: LON + 0.001 });
+        const continuation = await api.addShot({
+            gamePlanHoleId: hole.id, parentShotId: iron.id, lat: LAT + 0.001, lon: LON + 0.001,
+        });
+        const svc = new PlanService(api);
+        await svc.load('c1');
+
+        expect(await svc.removeShot(driver.id, 'splice')).toBe(true);
+        expect(svc.childShots(hole.id, null).map(s => s.id)).toEqual([wedge.id, iron.id]);
+        expect(shots.get(wedge.id)?.parentShotId).toBeNull();
+
+        expect(await svc.removeShot(iron.id, 'cascade')).toBe(true);
+        expect(svc.shots.items.get().map(s => s.id)).toEqual([wedge.id]);
+        expect(shots.has(continuation.id)).toBe(false);
     });
 });
 

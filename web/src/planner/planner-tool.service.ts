@@ -262,7 +262,7 @@ export function caddyLegKind(input: CaddyLegKindInput): CaddyContext['leg'] {
     return 'tee';
 }
 
-export type PlannerMode = 'select' | 'add-shot' | 'add-gate' | 'putt';
+export type PlannerMode = 'select' | 'add-shot' | 'add-alternative' | 'add-gate' | 'putt';
 
 export type PlannerSelection = { kind: 'shot' | 'gate'; id: string } | null;
 
@@ -431,6 +431,12 @@ export class PlannerToolService {
         return ph ? this.plan.shotsForHole(ph.id) : [];
     });
 
+    /** Rank-0 traversal through the selected hole's option tree. */
+    readonly primaryShots = new Computed<PlanShot[]>(() => {
+        const ph = this.planHole.get();
+        return ph ? this.plan.primaryLineForHole(ph.id) : [];
+    });
+
     /** The selected hole's gates in sort order. */
     readonly holeGates = new Computed<PlanGate[]>(() => {
         const ph = this.planHole.get();
@@ -452,6 +458,7 @@ export class PlannerToolService {
         return buildHolePlan({
             tee: tee ? { lat: tee.lat, lon: tee.lon, elevation: tee.elevation } : null,
             shots: this.holeShots.get(),
+            primaryShots: this.primaryShots.get(),
             green: green
                 ? { lat: green.centerLat, lon: green.centerLon, elevation: green.elevation }
                 : null,
@@ -652,7 +659,9 @@ export class PlannerToolService {
         const preferred = this.planHole.get()?.preferredClubId ?? '';
         const wind = this.effectiveWind.get();
         const windSig = wind ? `${wind.speedMps}/${wind.directionDeg}` : 'calm';
-        const shots = this.holeShots.get().map(s => `${s.id}:${s.clubId ?? ''}`).join(',');
+        const shots = this.holeShots.get()
+            .map(s => `${s.id}:${s.parentShotId ?? 'root'}:${s.sortOrder}:${s.clubId ?? ''}`)
+            .join(',');
         const clubs = this.orderedClubs.get().map(c => c.id).join(',');
         return `${hole}|${tee}|${preferred}|${windSig}|${shots}|${clubs}`;
     });
@@ -913,7 +922,7 @@ export class PlannerToolService {
         const originLie = shared.surfaces.length > 0 ? shared.classify(origin) : 'rough';
         const toGreen = leg.to.kind === 'green';
         const legKind = caddyLegKind(
-            { index: leg.index, toKind: leg.to.kind, par: shared.par, originLie },
+            { index: leg.depth, toKind: leg.to.kind, par: shared.par, originLie },
         );
 
         // Green reference points: the plan model carries only the green centre,
@@ -1023,11 +1032,11 @@ export class PlannerToolService {
         { holeId: string; bounds: [number, number, number, number] } | null
     >(() => {
         const plan = this.holePlan.get();
-        if (!plan || plan.nodes.length === 0) return null;
+        if (!plan || plan.allNodes.length === 0) return null;
         const hole = this.selectedHole.peek();
         if (!hole) return null;
-        let w = plan.nodes[0]!.lon, e = w, s = plan.nodes[0]!.lat, n = s;
-        for (const p of plan.nodes) {
+        let w = plan.allNodes[0]!.lon, e = w, s = plan.allNodes[0]!.lat, n = s;
+        for (const p of plan.allNodes) {
             if (p.lon < w) w = p.lon;
             if (p.lon > e) e = p.lon;
             if (p.lat < s) s = p.lat;
@@ -1208,7 +1217,7 @@ export class PlannerToolService {
         const sel = this.selection.get();
         if (sel?.kind !== 'shot') return null;
         const plan = this.overlayPlan.get();
-        const leg = plan?.legs.find(l => l.to.kind === 'shot' && l.to.shot?.id === sel.id);
+        const leg = plan?.allLegs.find(l => l.to.kind === 'shot' && l.to.shot?.id === sel.id);
         return leg ? ghostAimForLeg(leg) : null;
     });
 
@@ -1260,20 +1269,34 @@ export class PlannerToolService {
             untrack(() => this.bindRawHandlers(map, track));
         }));
 
-        // Plan overlay — re-added whenever the map becomes ready.
+        // Plan overlay — re-added whenever the map becomes ready. The signals
+        // are eager/push-based, so one tree mutation can briefly expose mixed
+        // parent/primary projections. Subscribe synchronously but perform the
+        // MapLibre side effect once on a microtask from the settled geometry.
+        let planOverlayScheduled = false;
+        let planOverlayDisposed = false;
+        track(() => { planOverlayDisposed = true; });
         track(effect(() => {
-            const ready = this.map.ready.get();
-            const data = this.overlayData.get();
-            if (!ready) {
-                this.overlayAdded = false; // overlay died with the map
-                return;
-            }
-            if (!this.overlayAdded) {
-                this.map.addOverlayLayer(PLAN_OVERLAY_ID, data, planLayers());
-                this.overlayAdded = true;
-            } else {
-                this.map.updateOverlayData(PLAN_OVERLAY_ID, data);
-            }
+            this.map.ready.get();
+            this.overlayData.get();
+            if (planOverlayScheduled) return;
+            planOverlayScheduled = true;
+            queueMicrotask(() => {
+                planOverlayScheduled = false;
+                if (planOverlayDisposed) return;
+                const ready = this.map.ready.peek();
+                const data = this.overlayData.peek();
+                if (!ready) {
+                    this.overlayAdded = false; // overlay died with the map
+                    return;
+                }
+                if (!this.overlayAdded) {
+                    this.map.addOverlayLayer(PLAN_OVERLAY_ID, data, planLayers());
+                    this.overlayAdded = true;
+                } else {
+                    this.map.updateOverlayData(PLAN_OVERLAY_ID, data);
+                }
+            });
         }));
         track(() => {
             if (this.overlayAdded) {
@@ -1548,8 +1571,21 @@ export class PlannerToolService {
             this.mode.set('select');
             return;
         }
-        this.selection.set(null);
+        // Shot modes deliberately preserve a selected shot: ordinary add-shot
+        // makes it the continuation parent; add-alternative places a sibling.
+        if (mode !== 'add-shot' && mode !== 'add-alternative') this.selection.set(null);
+        if ((mode === 'add-shot' || mode === 'add-alternative')
+            && this.selection.peek()?.kind !== 'shot') this.selection.set(null);
+        if (mode === 'add-alternative' && !this.selectedShot.peek()) {
+            this.notice.set('Select a shot first, then add its alternative.');
+            return;
+        }
         this.mode.set(mode);
+    }
+
+    /** Promote a shot within its sibling option group. */
+    async setPrimary(id: string): Promise<void> {
+        if (await this.plan.setPrimary(id)) this.refreshStrategy();
     }
 
     /** Return to the planner's browse/select mode without changing the origin. */
@@ -1707,7 +1743,7 @@ export class PlannerToolService {
             this.notice.set('No legs to gate — the hole needs a tee/green (and optionally shots) first.');
             return 0;
         }
-        const gates = autoGatesForPlan(plan.legs, this.lieMap.peek().hazardRings());
+        const gates = autoGatesForPlan(plan.allLegs, this.lieMap.peek().hazardRings());
         if (gates.length === 0) {
             this.notice.set('No clubbed legs to compute gates for.');
             return 0;
@@ -1743,9 +1779,27 @@ export class PlannerToolService {
         });
         if (!confirmed) return;
         const ok = sel.kind === 'shot'
-            ? await this.plan.removeShot(sel.id)
+            ? await this.plan.removeShot(sel.id, 'splice')
             : await this.plan.removeGate(sel.id);
         if (ok && this.selection.peek() === sel) this.selection.set(null);
+    }
+
+    /** Cascade-delete one option and every continuation below it. */
+    async deleteOption(id: string): Promise<void> {
+        const shot = this.plan.shots.items.peek().find(candidate => candidate.id === id);
+        if (!shot) return;
+        const confirmed = await this.confirm.confirm({
+            title: 'Delete option?',
+            body: 'This option and all of its continuation shots will be removed.',
+            confirmLabel: 'Delete option',
+            tone: 'danger',
+            layout: 'default',
+        });
+        if (!confirmed) return;
+        const ok = await this.plan.removeShot(id, 'cascade');
+        if (ok && this.selection.peek()?.kind === 'shot' && this.selection.peek()?.id === id) {
+            this.selection.set(null);
+        }
     }
 
     // ── Event handling ──────────────────────────────────────────────────────
@@ -1759,7 +1813,7 @@ export class PlannerToolService {
         if (this.suppressClick) return;
 
         const mode = this.mode.peek();
-        if (mode === 'add-shot') {
+        if (mode === 'add-shot' || mode === 'add-alternative') {
             void this.placeShot(e.lngLat);
             return;
         }
@@ -1899,17 +1953,31 @@ export class PlannerToolService {
             this.notice.set('Select a hole first (pick one from the hole list).');
             return;
         }
+        const selected = this.selectedShot.peek();
+        const alternative = this.mode.peek() === 'add-alternative';
+        const parentShotId = alternative
+            ? selected?.parentShotId
+            : selected?.id;
+        const origin = alternative
+            ? this.nodePointForShot(selected?.parentShotId ?? null)
+            : selected
+                ? { lat: selected.lat, lon: selected.lon, elevation: selected.elevation }
+                : this.previousNodePoint();
         const elevation = await this.elevation.elevationAt(lngLat);
-        const clubId = this.autoClubForShot(lngLat, elevation);
+        const clubId = this.autoClubForShot(lngLat, elevation, origin);
         const created = await this.plan.addShot(hole.number, {
             lat: lngLat.lat,
             lon: lngLat.lng,
             elevation,
+            ...(parentShotId !== undefined ? { parentShotId } : {}),
             ...(clubId ? { clubId } : {}),
         });
         if (created) {
             this.notice.set(null);
             this.selection.set({ kind: 'shot', id: created.id });
+            // Alternative placement is one-shot. The new option remains
+            // selected and ordinary add-shot stays armed for its continuation.
+            if (alternative) this.mode.set('add-shot');
             // Shot-place cadence (DECADE §4.5): re-run EV/lights/ghost now that
             // the plan has a new landing point.
             this.refreshStrategy();
@@ -1925,10 +1993,13 @@ export class PlannerToolService {
      * the leg draw its dispersion ellipse, so a placed shot immediately shows
      * where that club lands.
      */
-    private autoClubForShot(lngLat: { lng: number; lat: number }, elevation: number | null): string | null {
+    private autoClubForShot(
+        lngLat: { lng: number; lat: number },
+        elevation: number | null,
+        origin: { lat: number; lon: number; elevation: number | null } | null = this.previousNodePoint(),
+    ): string | null {
         const clubs = this.orderedClubs.peek();
         if (clubs.length === 0) return null;
-        const origin = this.previousNodePoint();
         if (!origin) return null;
         const a = wgs84ToSweref99tm(origin.lat, origin.lon);
         const b = wgs84ToSweref99tm(lngLat.lat, lngLat.lng);
@@ -1951,9 +2022,21 @@ export class PlannerToolService {
      * hole has no tee.
      */
     private previousNodePoint(): { lat: number; lon: number; elevation: number | null } | null {
-        const shots = this.holeShots.peek();
+        const shots = this.primaryShots.peek();
         const last = shots[shots.length - 1];
         if (last) return { lat: last.lat, lon: last.lon, elevation: last.elevation };
+        const tee = this.originTee.peek();
+        return tee ? { lat: tee.lat, lon: tee.lon, elevation: tee.elevation } : null;
+    }
+
+    /** Resolve a tree parent to its landing point; null is the tee origin. */
+    private nodePointForShot(
+        shotId: string | null,
+    ): { lat: number; lon: number; elevation: number | null } | null {
+        if (shotId !== null) {
+            const shot = this.plan.shots.items.peek().find(candidate => candidate.id === shotId);
+            return shot ? { lat: shot.lat, lon: shot.lon, elevation: shot.elevation } : null;
+        }
         const tee = this.originTee.peek();
         return tee ? { lat: tee.lat, lon: tee.lon, elevation: tee.elevation } : null;
     }
@@ -1971,11 +2054,11 @@ export class PlannerToolService {
         }
         const plan = this.holePlan.peek();
         const map = this.map.map.peek();
-        if (!plan || plan.legs.length === 0 || !map) {
+        if (!plan || plan.allLegs.length === 0 || !map) {
             this.notice.set('No legs to attach a gate to — the hole needs a tee/green (and optionally shots) first.');
             return;
         }
-        const foot = nearestLegFoot(lngLatToSweref99tm(e.lngLat), plan.legs);
+        const foot = nearestLegFoot(lngLatToSweref99tm(e.lngLat), plan.allLegs);
         if (!foot) return;
         const { lat, lon } = sweref99tmToWgs84(foot.point.x, foot.point.y);
         const projected = map.project([lon, lat]);
@@ -1986,7 +2069,7 @@ export class PlannerToolService {
         const created = await this.plan.addGate(hole.number, {
             lat,
             lon,
-            directionDeg: plan.legs[foot.legIndex].bearingDeg,
+            directionDeg: plan.allLegs.find(leg => leg.index === foot.legIndex)!.bearingDeg,
             halfWidthLeftM: GATE_DEFAULT_HALF_WIDTH_M,
             halfWidthRightM: GATE_DEFAULT_HALF_WIDTH_M,
             source: 'manual',
