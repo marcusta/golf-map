@@ -4935,6 +4935,648 @@
                     "out": []
                 }
             ]
+        },
+        "carry": {
+            "cases": [
+                {
+                    "name": "front bunker in the window clubs up",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "6 iron",
+                                "carryM": 152,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "5 iron",
+                                "carryM": 166,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": -15,
+                                        "y": 130
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 130
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 145
+                                    },
+                                    {
+                                        "x": -15,
+                                        "y": 145
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": [
+                        {
+                            "ruleId": "can-you-carry-it",
+                            "kind": "club",
+                            "priority": 3,
+                            "confidence": 0.5638157894736842,
+                            "headline": "Can't carry the bunker with the 6 iron — club up to the 5 iron.",
+                            "detail": "The bunker runs 130–145 m on this line; the 6 iron lands 144–160 m.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 145
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "no carrying club within overshoot lays up",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "6 iron",
+                                "carryM": 152,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "driver",
+                                "carryM": 230,
+                                "dispersionM": 60
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": -15,
+                                        "y": 130
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 130
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 145
+                                    },
+                                    {
+                                        "x": -15,
+                                        "y": 145
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": [
+                        {
+                            "ruleId": "can-you-carry-it",
+                            "kind": "layup",
+                            "priority": 3,
+                            "confidence": 0.5638157894736842,
+                            "headline": "Can't carry the bunker with the 6 iron — lay up short with the 9 iron.",
+                            "detail": "The bunker runs 130–145 m on this line; the 6 iron lands 144–160 m.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 130
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "no remedy in the bag warns",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "6 iron",
+                                "carryM": 152,
+                                "dispersionM": 16
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": -15,
+                                        "y": 130
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 130
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 145
+                                    },
+                                    {
+                                        "x": -15,
+                                        "y": 145
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": [
+                        {
+                            "ruleId": "can-you-carry-it",
+                            "kind": "warning",
+                            "priority": 3,
+                            "confidence": 0.5638157894736842,
+                            "headline": "The bunker at 145 m is in play with the 6 iron.",
+                            "detail": "The bunker runs 130–145 m on this line; the 6 iron lands 144–160 m.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 145
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "water outranks sand",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "6 iron",
+                                "carryM": 152,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "5 iron",
+                                "carryM": 166,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": [
+                            {
+                                "kind": "water",
+                                "points": [
+                                    {
+                                        "x": -15,
+                                        "y": 130
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 130
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 145
+                                    },
+                                    {
+                                        "x": -15,
+                                        "y": 145
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": [
+                        {
+                            "ruleId": "can-you-carry-it",
+                            "kind": "club",
+                            "priority": 4,
+                            "confidence": 0.5638157894736842,
+                            "headline": "Can't carry the water with the 6 iron — club up to the 5 iron.",
+                            "detail": "The water runs 130–145 m on this line; the 6 iron lands 144–160 m.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 145
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "clean carry stays quiet",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "6 iron",
+                                "carryM": 152,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "5 iron",
+                                "carryM": 166,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": -15,
+                                        "y": 60
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 60
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 80
+                                    },
+                                    {
+                                        "x": -15,
+                                        "y": 80
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": []
+                },
+                {
+                    "name": "headwind pulls the band into the ring",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "6 iron",
+                                "carryM": 152,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "5 iron",
+                                "carryM": 166,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": {
+                            "speedMps": 6,
+                            "directionDeg": 0
+                        },
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": -15,
+                                        "y": 118
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 118
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 136
+                                    },
+                                    {
+                                        "x": -15,
+                                        "y": 136
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": [
+                        {
+                            "ruleId": "can-you-carry-it",
+                            "kind": "club",
+                            "priority": 3,
+                            "confidence": 0.7398319206345688,
+                            "headline": "Can't carry the bunker with the 6 iron — club up to the 5 iron.",
+                            "detail": "The bunker runs 118–136 m on this line; the 6 iron lands 129–142 m.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 136
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "most-overlapping crossed hazard wins",
+                    "ctx": {
+                        "leg": "approach",
+                        "origin": {
+                            "x": 0,
+                            "y": 0
+                        },
+                        "target": {
+                            "greenPoly": {
+                                "kind": "green",
+                                "points": []
+                            },
+                            "center": {
+                                "x": 0,
+                                "y": 150
+                            },
+                            "front": {
+                                "x": 0,
+                                "y": 145
+                            },
+                            "back": {
+                                "x": 0,
+                                "y": 155
+                            }
+                        },
+                        "clubs": [
+                            {
+                                "name": "6 iron",
+                                "carryM": 152,
+                                "dispersionM": 16
+                            },
+                            {
+                                "name": "5 iron",
+                                "carryM": 166,
+                                "dispersionM": 18
+                            },
+                            {
+                                "name": "9 iron",
+                                "carryM": 120,
+                                "dispersionM": 14
+                            }
+                        ],
+                        "wind": null,
+                        "hole": {
+                            "par": 4,
+                            "index": 1
+                        },
+                        "risk": {
+                            "riskAversion": 0
+                        },
+                        "aim": null,
+                        "hazards": [
+                            {
+                                "kind": "bunker",
+                                "points": [
+                                    {
+                                        "x": -15,
+                                        "y": 155
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 155
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 170
+                                    },
+                                    {
+                                        "x": -15,
+                                        "y": 170
+                                    }
+                                ]
+                            },
+                            {
+                                "kind": "water",
+                                "points": [
+                                    {
+                                        "x": -15,
+                                        "y": 145
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 145
+                                    },
+                                    {
+                                        "x": 15,
+                                        "y": 152
+                                    },
+                                    {
+                                        "x": -15,
+                                        "y": 152
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "out": [
+                        {
+                            "ruleId": "can-you-carry-it",
+                            "kind": "club",
+                            "priority": 4,
+                            "confidence": 0.711184210526316,
+                            "headline": "Can't carry the water with the 6 iron — club up to the 5 iron.",
+                            "detail": "The water runs 145–152 m on this line; the 6 iron lands 144–160 m.",
+                            "anchor": {
+                                "x": 0,
+                                "y": 152
+                            }
+                        }
+                    ]
+                }
+            ]
         }
     },
     "ellipse": {

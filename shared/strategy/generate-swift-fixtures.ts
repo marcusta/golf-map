@@ -22,6 +22,7 @@ import { noDoublesRule } from './caddy/rules/no-doubles';
 import { shortSideGuardRule } from './caddy/rules/short-side-guard';
 import { specificTargetRule } from './caddy/rules/specific-target';
 import { takeYourMedicineRule } from './caddy/rules/take-your-medicine';
+import { canYouCarryItRule } from './caddy/rules/can-you-carry-it';
 import {
     type AimCandidate,
     type AimOptions,
@@ -923,6 +924,57 @@ const caddyPar5 = ruleFixture(par5AttackRule, [
     },
 ]);
 
+// can-you-carry-it — landing window vs crossed-hazard interval (mirrors
+// can-you-carry-it.test.ts). Approach target 150 m north of the origin.
+const carryTarget = {
+    greenPoly: { kind: 'green', points: [] as Vec2[] },
+    center: { x: 0, y: 150 },
+    front: { x: 0, y: 145 },
+    back: { x: 0, y: 155 },
+};
+const carryClubs = [fxClub('6 iron', 152, 16), fxClub('5 iron', 166, 18), fxClub('9 iron', 120, 14)];
+const caddyCarry = ruleFixture(canYouCarryItRule, [
+    {
+        name: 'front bunker in the window clubs up',
+        over: { target: carryTarget, clubs: carryClubs, hazards: [fxBox('bunker', -15, 130, 15, 145)] },
+    },
+    {
+        name: 'no carrying club within overshoot lays up',
+        over: {
+            target: carryTarget,
+            clubs: [fxClub('6 iron', 152, 16), fxClub('driver', 230, 60), fxClub('9 iron', 120, 14)],
+            hazards: [fxBox('bunker', -15, 130, 15, 145)],
+        },
+    },
+    {
+        name: 'no remedy in the bag warns',
+        over: { target: carryTarget, clubs: [fxClub('6 iron', 152, 16)], hazards: [fxBox('bunker', -15, 130, 15, 145)] },
+    },
+    {
+        name: 'water outranks sand',
+        over: { target: carryTarget, clubs: carryClubs, hazards: [fxBox('water', -15, 130, 15, 145)] },
+    },
+    {
+        name: 'clean carry stays quiet',
+        over: { target: carryTarget, clubs: carryClubs, hazards: [fxBox('bunker', -15, 60, 15, 80)] },
+    },
+    {
+        name: 'headwind pulls the band into the ring',
+        over: {
+            target: carryTarget, clubs: carryClubs,
+            hazards: [fxBox('bunker', -15, 118, 15, 136)],
+            wind: { speedMps: 6, directionDeg: 0 },
+        },
+    },
+    {
+        name: 'most-overlapping crossed hazard wins',
+        over: {
+            target: carryTarget, clubs: carryClubs,
+            hazards: [fxBox('bunker', -15, 155, 15, 170), fxBox('water', -15, 145, 15, 152)],
+        },
+    },
+]);
+
 const caddy = {
     run: caddyRun,
     greenSlope: caddyGreenSlope,
@@ -931,6 +983,7 @@ const caddy = {
     shortSide: caddyShortSide,
     specificTarget: caddySpecificTarget,
     par5: caddyPar5,
+    carry: caddyCarry,
 };
 
 // ---------------------------------------------------------------------------

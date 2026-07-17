@@ -45,3 +45,7 @@ export {
     HERO_EXTRA_ADVANCE_M,
 } from './rules/take-your-medicine';
 export { specificTargetRule } from './rules/specific-target';
+export {
+    canYouCarryItRule,
+    CLUB_UP_MAX_PAST_TARGET_M,
+} from './rules/can-you-carry-it';

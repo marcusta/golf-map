@@ -215,6 +215,7 @@ final class CaddyGoldenParityTests: XCTestCase {
         let shortSide: RuleFx
         let specificTarget: RuleFx
         let par5: RuleFx
+        let carry: RuleFx
     }
     private struct Goldens: Decodable { let caddy: CaddyFx }
 
@@ -303,6 +304,15 @@ final class CaddyGoldenParityTests: XCTestCase {
 
     func testPar5AttackMatchesTS() throws {
         try assertRule(loadCaddy().par5, par5AttackRule(), label: "par5-attack")
+    }
+
+    func testCanYouCarryItMatchesTS() throws {
+        try assertRule(loadCaddy().carry, canYouCarryItRule(), label: "can-you-carry-it")
+    }
+
+    func testCarryConstantsMatchTS() {
+        // TS exports CLUB_UP_MAX_PAST_TARGET_M = 20 (can-you-carry-it.ts).
+        XCTAssertEqual(CLUB_UP_MAX_PAST_TARGET_M, 20, accuracy: acc)
     }
 
     // MARK: - Shared assertions

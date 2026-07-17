@@ -23,16 +23,19 @@ enum ShotCaptureDefaults {
         return inHole ? .full : .putt
     }
 
-    /// Target pre-fill: active pin ?? the next plan landing ahead of the
-    /// position (first planned landing still closer to the green than the
-    /// player — same rule as `OnCourseModel.nextPlannedLanding`) ?? green
-    /// center. Nil only on a hole with no green and no plan.
+    /// Target pre-fill: working target (a tapped decide choice, round-loop
+    /// R4 — T33) ?? active pin ?? the next plan landing ahead of the position
+    /// (first planned landing still closer to the green than the player —
+    /// same rule as `OnCourseModel.nextPlannedLanding`) ?? green center. Nil
+    /// only on a hole with no green, no plan, and no working target.
     static func defaultTarget(
+        workingTarget: LatLon? = nil,
         position: LatLon,
         activePin: LatLon?,
         planLandings: [LatLon],
         greenCenter: LatLon?
     ) -> LatLon? {
+        if let workingTarget { return workingTarget }
         if let activePin { return activePin }
         if let greenCenter {
             let remaining = Distance.planarMeters(position, greenCenter)

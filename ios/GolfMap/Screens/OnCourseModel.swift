@@ -512,6 +512,8 @@ final class OnCourseModel {
         browseTargetElevation = nil
         restoreCamera = nil
         cameraToken += 1
+        // A decide-choice working target is per-hole transient state (R4).
+        workingTarget = nil
         refreshGreenElevationFallback()
         // The per-hole target set changes; drop the old samples and re-sweep.
         ladderTerrainElevations.removeAll(keepingCapacity: true)
@@ -2052,6 +2054,10 @@ final class OnCourseModel {
     struct RoundStroke: Equatable, Sendable {
         var holeNumber: Int
         var position: LatLon
+        /// Penalty strokes attached to this stroke — score bookkeeping only
+        /// (the decide card's probable-score baseline, R4). Defaults to 0 so
+        /// pure position-driven callers/tests stay unchanged.
+        var penaltyStrokes: Int = 0
     }
 
     /// The active round's captured strokes in capture order, or nil when no
@@ -2065,6 +2071,9 @@ final class OnCourseModel {
     /// capture-driven advancement (R1): this is the ONLY thing that moves the
     /// playing state; live GPS never does.
     func setActiveRound(strokes: [RoundStroke]?) {
+        // A capture (or scorecard edit) consumes the working target: the
+        // decide choices re-derive from the NEW ball position (R4).
+        if strokes != activeRoundStrokes { workingTarget = nil }
         activeRoundStrokes = strokes
     }
 
@@ -2364,6 +2373,377 @@ final class OnCourseModel {
         }
         guard let nearest else { return nil }
         return Int((nearest.halfWidthLeftM + nearest.halfWidthRightM).rounded())
+    }
+
+    // MARK: - Decide moment (R4 — T33)
+
+    /// One ranked decide choice: a shot the player can commit to from the
+    /// actual ball position, carrying the R4 score/risk triple. Tap →
+    /// `selectDecideChoice` makes it the working target.
+    struct DecideChoice: Equatable, Identifiable {
+        enum Kind: String, Equatable {
+            /// Attack the hole target with a reaching club.
+            case go
+            /// Lay up to a full number (the par-5 rule's vocabulary).
+            case layupFull = "layup-full"
+            /// Lay back short of the first pinching hazard on the line.
+            case layBack = "lay-back"
+            /// Recovery-lie punch-out (take-your-medicine's escape).
+            case punchOut = "punch-out"
+        }
+        /// Stable per-derivation id ("go-c5i" / "lay-back-cpw").
+        let id: String
+        let kind: Kind
+        /// e.g. "Go — 178 plays 186" / "Layup 7i → 95 m in".
+        let headline: String
+        let clubId: String?
+        let clubName: String?
+        /// The choice's landing point — the working target on tap.
+        let target: LatLon
+        /// Ball → landing along the line, whole meters.
+        let distanceM: Int
+        /// Probable hole score: strokes already taken on the hole (incl.
+        /// penalties) + EV to hole out from here (R4).
+        let probableScore: Double
+        /// Penalty share of the dispersion samples at this choice, 0..1.
+        let penaltyShare: Double
+        /// Blow-up probable score (strokes taken + 1 + CVaR₈₀ tail) — only
+        /// where the tail changes the call (gap ≥ the no-doubles
+        /// `TAIL_GAP_WARN` gate); nil otherwise.
+        let tailScore: Double?
+        /// The R4 triple, through THE shared formatter (option chips reuse it).
+        var triple: String {
+            ScoreRiskFormat.triple(
+                probableScore: probableScore, penaltyShare: penaltyShare, tailScore: tailScore
+            )
+        }
+    }
+
+    /// The decide card's content: ≤3 ranked choices + the top caddy headline
+    /// (the "why" line under the list).
+    struct DecideContent: Equatable {
+        var choices: [DecideChoice]
+        var caddyHeadline: String?
+    }
+
+    /// Fingerprint of every input `decideContent` reads — self-invalidating
+    /// (same pattern as `PlayingKey`): the ball only moves on capture, so the
+    /// derivation runs on capture / hole / bag / wind / surface change and
+    /// NEVER continuously while walking (R4 compute cadence).
+    private struct DecideKey: Equatable {
+        var holeNumber: Int
+        var strokes: [RoundStroke]
+        var planShots: [CoursePlan.Shot]
+        var surfacesVersion: Int
+        var hazardsVersion: Int
+        var clubs: [String]
+        var windSpeed: Double?
+        var windDir: Double?
+        var competitionMode: Bool
+    }
+    @ObservationIgnored private var decideKey: DecideKey?
+    @ObservationIgnored private var decideCache: DecideContent?
+    /// Cache-miss counter for the memo tests; `@ObservationIgnored`.
+    @ObservationIgnored private(set) var decideBuildCount = 0
+
+    /// The ranked decide choices for the current off-plan position, or nil
+    /// outside decide mode / in competition mode (EV + club advice is advice —
+    /// same gate as `planCaddyAdvice`) / without a ball, green, or bag.
+    var decideContent: DecideContent? {
+        guard !competitionMode,
+              roundCardMode == .decide,
+              let state = playingState,
+              let ball = state.ballPosition,
+              let hole = currentHole,
+              let green = greenCenterPosition(for: hole),
+              !clubs.isEmpty
+        else { return nil }
+        let key = DecideKey(
+            holeNumber: state.holeNumber,
+            strokes: activeRoundStrokes ?? [],
+            planShots: state.activeLine,
+            surfacesVersion: surfacesVersion,
+            hazardsVersion: hazardsVersion,
+            clubs: clubsFingerprint(),
+            windSpeed: effectiveWind?.speedMps,
+            windDir: effectiveWind?.directionDeg,
+            competitionMode: competitionMode
+        )
+        if key == decideKey, let cached = decideCache { return cached }
+        let content = buildDecideContent(state: state, ball: ball, hole: hole, green: green)
+        decideKey = key
+        decideCache = content
+        decideBuildCount += 1
+        return content
+    }
+
+    /// One engine candidate before pricing: a club committed to a distance
+    /// along the ball → green line.
+    private struct DecideCandidate {
+        var kind: DecideChoice.Kind
+        var club: ClubRecord
+        /// Ball → intended landing along the line, meters.
+        var targetM: Double
+    }
+
+    /// T32 merge seam: authored option branches surviving from the current
+    /// position merge AHEAD of the engine candidates (R4 list order:
+    /// authored → engine). Empty until the options tree lands on iOS.
+    private func authoredDecideCandidates(remainingM: Double) -> [DecideCandidate] { [] }
+
+    /// Assemble the decide content: enumerate the par-5-trio-shaped engine
+    /// candidates from the actual ball (go / lay-up-to-full-number /
+    /// lay-back-of-pinch, + the recovery punch-out), price each through
+    /// `optimizeAim` (EV / penalty share / tail off `Aim.swift`'s outputs —
+    /// no chain scorer, O4), then let the caddy rules rank and veto.
+    private func buildDecideContent(
+        state: PlayingState, ball: LatLon, hole: HoleData, green: LatLon
+    ) -> DecideContent {
+        let o = Self.planar(ball)
+        let g = Self.planar(green)
+        let dx = g.x - o.x, dy = g.y - o.y
+        let remainingM = hypot(dx, dy)
+        guard remainingM > 0 else { return DecideContent(choices: [], caddyHeadline: nil) }
+        let bearing = PlanStrategy.compassBearing(dx: dx, dy: dy)
+        let wind = effectiveWind
+
+        // Strokes already taken on the hole, penalties included (R4's
+        // probable-score baseline).
+        let strokesTaken = (activeRoundStrokes ?? [])
+            .filter { $0.holeNumber == state.holeNumber }
+            .reduce(0) { $0 + 1 + $1.penaltyStrokes }
+
+        func effect(for club: ClubRecord) -> Double {
+            wind.map { windEffect($0.speedMps, $0.directionDeg, bearing, club.carryM) } ?? 0
+        }
+
+        // --- Candidates (authored first — T32 seam — then the engine trio).
+        var candidates = authoredDecideCandidates(remainingM: remainingM)
+
+        // GO: the closest-carry club whose max carry still reaches. Hazards do
+        // NOT drop it (unlike par5-attack) — the triple carries the risk.
+        var goClub: ClubRecord?
+        var goDiff = Double.infinity
+        for club in clubs where maxCarryM(club.carryM, windEffect: effect(for: club)) >= remainingM {
+            let diff = abs(club.carryM - remainingM)
+            if diff < goDiff { goClub = club; goDiff = diff }
+        }
+        if let goClub {
+            candidates.append(DecideCandidate(kind: .go, club: goClub, targetM: remainingM))
+        }
+
+        // LAY UP TO A FULL NUMBER (par5-attack vocabulary, any hole).
+        let fullTargetM = remainingM - FULL_NUMBER_LAYUP_M
+        if fullTargetM > 0,
+           let club = closestClub(clubs, fullTargetM),
+           abs(club.carryM - fullTargetM) <= LAYUP_TARGET_TOLERANCE_M {
+            candidates.append(DecideCandidate(kind: .layupFull, club: club, targetM: fullTargetM))
+        }
+
+        // LAY BACK OF THE FIRST PINCH on the line.
+        let pinches = hazardsAlongLine(o, bearing, hazardRings, maxM: remainingM)
+            .filter { $0.frontM > LAY_BACK_OF_PINCH_BUFFER_M }
+            .sorted { $0.frontM < $1.frontM }
+        if let pinch = pinches.first {
+            let layBackM = pinch.frontM - LAY_BACK_OF_PINCH_BUFFER_M
+            if let club = closestClub(clubs, layBackM),
+               abs(club.carryM - layBackM) <= LAYUP_TARGET_TOLERANCE_M {
+                candidates.append(DecideCandidate(kind: .layBack, club: club, targetM: layBackM))
+            }
+        }
+
+        // PUNCH OUT from jail (take-your-medicine's escape, same constants).
+        if state.lie == .recovery, let escape = clubs.min(by: { $0.carryM < $1.carryM }) {
+            let advanceM = min(
+                remainingM,
+                maxCarryM(escape.carryM, windEffect: effect(for: escape)) * ESCAPE_ADVANCE_FRACTION
+            )
+            if advanceM > 0 {
+                candidates.append(DecideCandidate(kind: .punchOut, club: escape, targetM: advanceM))
+            }
+        }
+
+        // Fallback so an out-of-reach, hazard-free position still gets its
+        // honest "bomb it, here's what's left" line.
+        if candidates.isEmpty, let bomb = longestLayup(clubs, remainingM) {
+            candidates.append(DecideCandidate(kind: .layupFull, club: bomb.club, targetM: bomb.carryM))
+        }
+
+        // Dedupe (club, landing) — the full-number and lay-back clubs can
+        // coincide. First (authored → go → …) wins.
+        var seen = Set<String>()
+        candidates = candidates.filter {
+            seen.insert("\($0.club.id)@\(Int($0.targetM.rounded()))").inserted
+        }
+
+        // --- Price each candidate: one aim sweep from the ball (the same
+        // surfaces stack the plan overlay classifies against), EV to hole out
+        // = 1 + expected strokes from the landing distribution.
+        let unit = bearingToUnitVector(bearing)
+        struct Scored {
+            var candidate: DecideCandidate
+            var aim: AimResult
+            var order: Int
+        }
+        var scored: [Scored] = []
+        for (order, candidate) in candidates.enumerated() {
+            let aim = optimizeAim(AimOptions(
+                origin: o,
+                club: candidate.club,
+                targetBearingDeg: bearing,
+                surfaces: surfaces,
+                greenCenter: g,
+                windSpeedMps: wind?.speedMps,
+                windDirectionDeg: wind?.directionDeg,
+                riskAversion: 0,
+                fallbackLie: .rough
+            ))
+            scored.append(Scored(candidate: candidate, aim: aim, order: order))
+        }
+
+        // --- Caddy ranking/vetoes over ONE context from the ball: the
+        // aggressive line's aim feeds the aim-reading rules; leg kind comes
+        // from the classified lie (recovery wins), the go line, and the
+        // stroke index (the web `caddyLegKind` port).
+        let goAim = scored.first { $0.candidate.kind == .go }?.aim
+        let legKind = Self.caddyLegKind(
+            originLie: state.lie,
+            landsOnGreen: goAim != nil,
+            index: state.strokeIndex,
+            par: hole.hole.par
+        )
+        let front = targets.greenFront.map(Self.planar) ?? g
+        let back = targets.greenBack.map(Self.planar) ?? g
+        let ctx = CaddyContext<ClubRecord>(
+            leg: legKind,
+            origin: StrategyPoint(x: o.x, y: o.y),
+            target: CaddyGreenTarget(greenPoly: greenRing(near: g), center: g, front: front, back: back),
+            aim: goAim ?? scored.first?.aim,
+            hazards: courseHazardRings,
+            clubs: clubs,
+            wind: wind.map { FeatureWind(speedMps: $0.speedMps, directionDeg: $0.directionDeg) },
+            hole: CaddyHole(par: hole.hole.par, index: hole.hole.strokeIndex ?? hole.hole.number),
+            risk: RiskProfile(riskAversion: 0)
+        )
+        let advice = runCaddy(ctx, caddyRules())
+        // Any emitted advice that vetoes the aggressive-line rules is the
+        // caddy saying "don't fire at it" — demote GO below the safe plays.
+        let vetoesAggressive = advice.contains { ($0.vetoes ?? []).contains("specific-target") }
+        let medicineFired = advice.contains { $0.ruleId == "take-your-medicine" }
+
+        // --- Rank: EV ascending, deterministic tie-break on candidate order;
+        // then the caddy's vetoes reorder (punch-out first from jail, GO last
+        // when the safety rules veto the aggressive line); cap at 3 (R4).
+        var ranked = scored.sorted {
+            let a = $0.aim.best.expectedStrokes
+            let b = $1.aim.best.expectedStrokes
+            return a != b ? a < b : $0.order < $1.order
+        }
+        if vetoesAggressive {
+            let (goes, rest) = (ranked.filter { $0.candidate.kind == .go },
+                                ranked.filter { $0.candidate.kind != .go })
+            ranked = rest + goes
+        }
+        if medicineFired {
+            let (punches, rest) = (ranked.filter { $0.candidate.kind == .punchOut },
+                                   ranked.filter { $0.candidate.kind != .punchOut })
+            ranked = punches + rest
+        }
+
+        let choices = ranked.prefix(3).map { item -> DecideChoice in
+            let candidate = item.candidate
+            let aim = item.aim
+            let targetPoint: LatLon = candidate.kind == .go
+                ? green
+                : Sweref99TM.toWGS84(
+                    x: o.x + unit.x * candidate.targetM,
+                    y: o.y + unit.y * candidate.targetM
+                )
+            let ev = 1 + aim.best.expectedStrokes
+            let gap = aim.best.tailStrokes - aim.best.expectedStrokes
+            return DecideChoice(
+                id: "\(candidate.kind.rawValue)-\(candidate.club.id)",
+                kind: candidate.kind,
+                headline: Self.decideHeadline(
+                    candidate.kind, club: candidate.club, targetM: candidate.targetM,
+                    remainingM: remainingM, bearing: bearing, wind: wind
+                ),
+                clubId: candidate.club.id,
+                clubName: candidate.club.name,
+                target: targetPoint,
+                distanceM: Int(candidate.targetM.rounded()),
+                probableScore: Double(strokesTaken) + ev,
+                penaltyShare: aim.best.breakdown[.penalty] ?? 0,
+                tailScore: gap >= TAIL_GAP_WARN
+                    ? Double(strokesTaken) + 1 + aim.best.tailStrokes
+                    : nil
+            )
+        }
+        return DecideContent(choices: Array(choices), caddyHeadline: advice.first?.headline)
+    }
+
+    /// One compact headline per choice kind — the R4 vocabulary ("Go — 178
+    /// plays 186" / "Layup 7i → 95 m in").
+    private static func decideHeadline(
+        _ kind: DecideChoice.Kind, club: ClubRecord, targetM: Double,
+        remainingM: Double, bearing: Double,
+        wind: (speedMps: Double, directionDeg: Double)?
+    ) -> String {
+        switch kind {
+        case .go:
+            let actual = Int(remainingM.rounded())
+            if let wind {
+                let plays = Int(playsAsM(
+                    remainingM, windEffect(wind.speedMps, wind.directionDeg, bearing, remainingM)
+                ).rounded())
+                if plays != actual { return "Go — \(actual) plays \(plays)" }
+            }
+            return "Go — \(actual)"
+        case .layupFull, .layBack:
+            let leftM = Int(max(0, remainingM - targetM).rounded())
+            let verb = kind == .layBack ? "Lay back" : "Layup"
+            return "\(verb) \(club.name) → \(leftM) m in"
+        case .punchOut:
+            return "Punch out \(club.name) — back in play"
+        }
+    }
+
+    // MARK: - Working target (decide choice → capture prefill, R4)
+
+    /// The transient working target a tapped decide choice sets: the distance
+    /// line, banner, and ghost pattern point here, and capture's target
+    /// prefill reads it FIRST (before pin / plan landing / green). Round
+    /// state, never a plan write (R8); cleared on capture and hole change.
+    struct WorkingTarget: Equatable {
+        var choiceId: String
+        /// Banner title (the choice's headline).
+        var label: String
+        var position: LatLon
+        var clubId: String?
+        var clubName: String?
+    }
+
+    private(set) var workingTarget: WorkingTarget?
+
+    static let workingTargetRowID = "working-target"
+
+    /// Tap a decide choice: make it the working target (tap again to clear).
+    func selectDecideChoice(_ choice: DecideChoice) {
+        if workingTarget?.choiceId == choice.id {
+            workingTarget = nil
+            return
+        }
+        workingTarget = WorkingTarget(
+            choiceId: choice.id,
+            label: choice.headline,
+            position: choice.target,
+            clubId: choice.clubId,
+            clubName: choice.clubName
+        )
+    }
+
+    func clearWorkingTarget() {
+        workingTarget = nil
     }
 
     // MARK: - Plan editing (planner tool — task T3)
@@ -2979,6 +3359,19 @@ final class OnCourseModel {
     /// The target the banner + map advice reflect: an arbitrary inspected map
     /// point, else the focused ladder rung, else the green/pin/default row.
     private var selectedLadderRow: LadderRow? {
+        // A decide-choice working target OWNS the banner/advice surface while
+        // set (R4): the tapped choice is the shot being played.
+        if let wt = workingTarget, let origin {
+            return LadderRow(
+                id: Self.workingTargetRowID,
+                kind: .aim,
+                label: wt.label,
+                detail: nil,
+                meters: Int(Distance.planarMeters(origin, wt.position).rounded()),
+                carryM: nil,
+                position: wt.position
+            )
+        }
         // Inspecting an arbitrary tapped point needs no ladder — return early so a
         // browse tap never builds the (course-wide) ladder it would not use.
         if let browseTarget, let origin {
@@ -3021,7 +3414,12 @@ final class OnCourseModel {
         var club: String?
         var note: String?
         if !competitionMode, !clubs.isEmpty {
-            if row.kind == .hazard {
+            if row.id == Self.workingTargetRowID, let chosen = workingTarget?.clubName {
+                // The working target carries ITS choice's club — the banner
+                // and ghost pattern must show what the player committed to,
+                // not a re-derived closest club.
+                club = chosen
+            } else if row.kind == .hazard {
                 if let carry = row.carryM {
                     let longest = clubs.map(\.carryM).max() ?? 0
                     if Double(carry) <= longest {
@@ -3238,6 +3636,9 @@ final class OnCourseModel {
     /// Parses the builder's row-id scheme ("aim-<i>", "plan-<index>").
     private func targetElevation(for row: LadderRow) -> Double? {
         if row.id == Self.browseTargetRowID { return browseTargetElevation }
+        // Working target: sample the terrain at the committed landing (same
+        // first-order treatment as layup rungs).
+        if row.id == Self.workingTargetRowID { return row.position.flatMap(ladderTerrainElevation) }
         switch row.kind {
         case .green, .pin:
             return targets.greenElevation
@@ -3797,7 +4198,14 @@ final class OnCourseModel {
         if let p = targets.greenBack { markers.append(TargetMarker(kind: .back, position: p)) }
         if let p = targets.activePin { markers.append(TargetMarker(kind: .pin, position: p)) }
 
-        let line: [LatLon] = isBrowseMode ? browseForwardRoute : gpsForwardRoute
+        // A working target (decide choice, R4) owns the distance line while
+        // set: origin straight to the committed landing.
+        let line: [LatLon]
+        if let wt = workingTarget, let origin {
+            line = [origin, wt.position]
+        } else {
+            line = isBrowseMode ? browseForwardRoute : gpsForwardRoute
+        }
 
         // Ellipse labels follow their ellipses' visibility (advice ellipse +
         // the selection-scoped plan leg ellipses) — deliberately NOT behind

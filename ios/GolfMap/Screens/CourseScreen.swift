@@ -1180,7 +1180,7 @@ private struct OnCourseContentView: View {
                         model.setActiveRound(strokes: strokes)
                         steps.append(Self.roundModeDescription(model.roundCardMode))
                     }
-                    let outcome: String
+                    var outcome: String
                     if let state = model.playingState {
                         outcome = "steps=\(steps.joined(separator: ">")) "
                             + "hole=\(state.holeNumber) strokeIndex=\(state.strokeIndex) "
@@ -1189,6 +1189,36 @@ private struct OnCourseContentView: View {
                             + "mode=\(Self.roundModeDescription(model.roundCardMode))"
                     } else {
                         outcome = "no-playing-state"
+                    }
+                    // T33: in decide mode also dump the ranked choices (kind,
+                    // club, distance, R4 triple), and with `-decidePick 1`
+                    // tap the top choice so the working-target wiring (banner
+                    // + distance line + capture prefill) can be verified.
+                    if model.roundCardMode == .decide {
+                        let choices = model.decideContent?.choices ?? []
+                        outcome += " choices=["
+                            + choices.map {
+                                "\($0.kind.rawValue):\($0.clubName ?? "-")@\($0.distanceM)"
+                                    + "|\($0.triple)"
+                            }.joined(separator: ";")
+                            + "]"
+                        if UserDefaults.standard.string(forKey: "decidePick") == "1",
+                           let first = choices.first {
+                            model.selectDecideChoice(first)
+                            if let wt = model.workingTarget {
+                                let prefill = ShotCaptureDefaults.defaultTarget(
+                                    workingTarget: wt.position,
+                                    position: wt.position,
+                                    activePin: model.targets.activePin,
+                                    planLandings: [],
+                                    greenCenter: model.targets.greenCenter
+                                )
+                                outcome += " working=\(wt.clubName ?? "-")"
+                                    + "@\(wt.position.lat),\(wt.position.lon)"
+                                    + " line=\(model.overlays.distanceLine.count)pts"
+                                    + " prefillHitsWorking=\(prefill == wt.position)"
+                            }
+                        }
                     }
                     print("ROUND-DEBUG \(outcome)")
                     UserDefaults.standard.set(outcome, forKey: "roundDebug.lastResult")
@@ -1813,6 +1843,7 @@ private struct OnCourseContentView: View {
         let targets = model.targets
         let planLandings = model.currentHolePlan?.shots.map(\.position) ?? []
         let target = ShotCaptureDefaults.defaultTarget(
+            workingTarget: model.workingTarget?.position,
             position: position,
             activePin: targets.activePin,
             planLandings: planLandings,
@@ -1872,6 +1903,7 @@ private struct OnCourseContentView: View {
         capture.rearm(
             position: position,
             target: ShotCaptureDefaults.defaultTarget(
+                workingTarget: model.workingTarget?.position,
                 position: position,
                 activePin: targets.activePin,
                 planLandings: planLandings,
@@ -2173,7 +2205,13 @@ private struct DistanceCardView: View {
                 roundLegCard(card)
             }
         case .decide:
-            roundDecidePlaceholder
+            if let content = model.decideContent, !content.choices.isEmpty {
+                roundDecideCard(content)
+            } else {
+                // No choices to rank (competition mode, no bag, no green) —
+                // name the situation and defer to the distances below.
+                roundDecidePlaceholder
+            }
         case .green:
             // Derivation + putt-first content land in T35 (R6).
             EmptyView()
@@ -2278,9 +2316,73 @@ private struct DistanceCardView: View {
         .accessibilityElement(children: .combine)
     }
 
-    // Decide placeholder (R2/R3): divergence flips the card here; the ranked
-    // choices are T33's — until then the strip names the situation and defers
-    // to the distances below.
+    // Decide card (R4): ≤3 ranked choices from the actual ball — engine
+    // candidates ranked/vetoed by the caddy rules — each carrying the
+    // probable-score / penalty% / tail triple (ScoreRiskFormat, the ONE
+    // formatter option chips will reuse). Tap a choice → working target.
+    private func roundDecideCard(_ content: OnCourseModel.DecideContent) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.caption)
+                    .foregroundStyle(Self.pinColor)
+                OverlineLabel("Off plan · Pick your shot", color: Self.pinColor)
+                Spacer()
+            }
+            ForEach(content.choices) { choice in
+                decideChoiceRow(choice)
+            }
+            if let why = content.caddyHeadline {
+                Text(why)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func decideChoiceRow(_ choice: OnCourseModel.DecideChoice) -> some View {
+        let isWorking = model.workingTarget?.choiceId == choice.id
+        return Button {
+            model.selectDecideChoice(choice)
+        } label: {
+            HStack(spacing: 10) {
+                if let club = choice.clubName {
+                    clubChip("", club, isWorking ? Self.pinColor : PlanStyle.violet)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(choice.headline)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    Text(choice.triple)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                MetricText(
+                    DistanceFormat.string(choice.distanceM, unit: unit),
+                    unit: unit.abbreviation, size: 14
+                )
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isWorking ? Self.pinColor.opacity(0.14) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(choice.headline), \(choice.triple)")
+        .accessibilityAddTraits(isWorking ? [.isSelected] : [])
+    }
+
+    // Decide placeholder (R2/R3): shown while decide mode has no rankable
+    // choices (competition mode gates the advice; no bag / no green degrades)
+    // — the strip names the situation and defers to the distances below.
     private var roundDecidePlaceholder: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "arrow.triangle.branch")
