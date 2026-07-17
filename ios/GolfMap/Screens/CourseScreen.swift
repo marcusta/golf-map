@@ -258,6 +258,9 @@ struct CourseScreen: View {
                 sync: env.roundSync
             )
             await newRoundModel.loadActiveRound()
+            // Seed the playing state (round loop R1) from the resumed round;
+            // OnCourseContentView keeps it in sync on every capture / edit.
+            newModel.setActiveRound(strokes: roundLoopStrokes(of: newRoundModel))
             greenPolygons = try? GreenPolygonStore(featuresGeoJSON: featuresGeoJSON)
 
             #if DEBUG
@@ -465,6 +468,20 @@ struct CourseScreen: View {
 }
 
 // MARK: - Content
+
+/// The active round's shots as playing-state stroke snapshots (round loop
+/// R1), nil when no round is active. Shared by the initial seed in `load()`
+/// and the content view's ongoing sync.
+@MainActor
+private func roundLoopStrokes(of roundModel: RoundModel) -> [OnCourseModel.RoundStroke]? {
+    guard roundModel.hasActiveRound else { return nil }
+    return roundModel.shots.map {
+        OnCourseModel.RoundStroke(
+            holeNumber: $0.holeNumber,
+            position: LatLon(lat: $0.lat, lon: $0.lon)
+        )
+    }
+}
 
 /// Map + chrome once the bundle is loaded. Split out so `model` is non-optional.
 private extension View {
@@ -881,6 +898,17 @@ private struct OnCourseContentView: View {
             puttRead.installGrid(greenAnalysis.result?.grid)
             recomputeCaddy()
         }
+        // Capture is the drivetrain (round loop R1/R5): every stroke write —
+        // capture, penalty, scorecard edit, delete — and every round
+        // start/finish re-installs the playing-state stroke snapshot, which
+        // advances the card's context machine. Push-based like
+        // `setPlan`/`setClubs`; the model itself never reaches into RoundModel.
+        .onChange(of: roundModel.round?.id) { _, _ in
+            model.setActiveRound(strokes: roundLoopStrokes(of: roundModel))
+        }
+        .onChange(of: roundModel.shots) { _, _ in
+            model.setActiveRound(strokes: roundLoopStrokes(of: roundModel))
+        }
         // The profile follows whatever path is live: the measure path while
         // measuring (points change per tap), else the hole route (tee
         // override / tee selection changes move it).
@@ -1123,6 +1151,49 @@ private struct OnCourseContentView: View {
                     }
                 }
             }
+            // `-roundState "lat,lon;lat,lon;…"` installs a synthetic ACTIVE
+            // round whose strokes were captured at those positions on the
+            // CURRENT hole (combine with `-openHole` + `-planDemo`), stepping
+            // stroke by stroke and recording the card mode after each — so R1
+            // leg matching + R2 mode switching can be live-verified headlessly
+            // with no GRDB writes. An empty value = a round with no strokes
+            // (tee preview). The outcome — per-step modes + the final playing
+            // state — is persisted under `roundDebug.lastResult` (the pinDebug
+            // pattern: simctl console capture is unreliable). DEBUG-only and
+            // inert without the flag.
+            if let raw = UserDefaults.standard.string(forKey: "roundState") {
+                Task { @MainActor in
+                    // Wait out the style-load hole fit + `-openHole`/`-planDemo`.
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    var strokes: [OnCourseModel.RoundStroke] = []
+                    model.setActiveRound(strokes: strokes)
+                    var steps = [Self.roundModeDescription(model.roundCardMode)]
+                    for part in raw.split(separator: ";") {
+                        let nums = part.split(separator: ",")
+                        guard nums.count == 2,
+                              let lat = Double(nums[0]), let lon = Double(nums[1])
+                        else { continue }
+                        strokes.append(OnCourseModel.RoundStroke(
+                            holeNumber: model.currentHoleNumber,
+                            position: LatLon(lat: lat, lon: lon)
+                        ))
+                        model.setActiveRound(strokes: strokes)
+                        steps.append(Self.roundModeDescription(model.roundCardMode))
+                    }
+                    let outcome: String
+                    if let state = model.playingState {
+                        outcome = "steps=\(steps.joined(separator: ">")) "
+                            + "hole=\(state.holeNumber) strokeIndex=\(state.strokeIndex) "
+                            + "lie=\(state.lie.rawValue) "
+                            + "currentLeg=\(state.currentLeg.map(String.init) ?? "nil") "
+                            + "mode=\(Self.roundModeDescription(model.roundCardMode))"
+                    } else {
+                        outcome = "no-playing-state"
+                    }
+                    print("ROUND-DEBUG \(outcome)")
+                    UserDefaults.standard.set(outcome, forKey: "roundDebug.lastResult")
+                }
+            }
             // `-zoomTaps N` fires N in-taps; `-zoomOutTaps N` fires N out-taps
             // (a separate positive-valued key because simctl swallows a negative
             // launch-arg value).
@@ -1236,6 +1307,18 @@ private struct OnCourseContentView: View {
         if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]) {
             try? data.write(to: url)
             print("CAPTURE-DEBUG \(String(data: data, encoding: .utf8) ?? "")")
+        }
+    }
+
+    /// `-roundState` outcome vocabulary: one token per card mode, so a
+    /// live-verify run can assert the whole switching sequence from one string.
+    private static func roundModeDescription(_ mode: OnCourseModel.RoundCardMode?) -> String {
+        switch mode {
+        case .teePreview: return "teePreview"
+        case .plan(let legIndex): return "plan(leg:\(legIndex))"
+        case .decide: return "decide"
+        case .green: return "green"
+        case nil: return "none"
         }
     }
 
@@ -2049,6 +2132,13 @@ private struct DistanceCardView: View {
 
     var body: some View {
         VStack(spacing: 10) {
+            // Round loop (R2): with a round active and a planned line on the
+            // hole, the context strip LEADS — tee preview / plan leg / decide.
+            // Everything below it (banner, pin, strip — the trust anchor) is
+            // exactly today's card, competition gating untouched.
+            if let mode = model.roundCardMode {
+                roundContext(mode)
+            }
             if let advice = model.selectedTargetAdvice {
                 selectedTargetBanner(advice)
             }
@@ -2064,6 +2154,148 @@ private struct DistanceCardView: View {
         .padding(.bottom, Space.s2)
         .glassPanel()
         .holeSwipeGesture(model: model)
+    }
+
+    // MARK: Round context (playing-state card modes — round loop R2)
+
+    // The context strip that leads the card while a round is active and the
+    // hole has a planned line. Plan violet = "this is the plan talking"; the
+    // decide placeholder borrows the hazard gold (attention, not advice).
+    @ViewBuilder
+    private func roundContext(_ mode: OnCourseModel.RoundCardMode) -> some View {
+        switch mode {
+        case .teePreview:
+            if let strip = model.teePreviewStrip {
+                roundTeePreview(strip)
+            }
+        case .plan(let legIndex):
+            if let card = model.roundLegCard(legIndex: legIndex) {
+                roundLegCard(card)
+            }
+        case .decide:
+            roundDecidePlaceholder
+        case .green:
+            // Derivation + putt-first content land in T35 (R6).
+            EmptyView()
+        }
+    }
+
+    // Tee preview (R2): the hole's plan in one strip — tee club, first aim,
+    // the one hazard that matters, hole notes. Option chips land with T32.
+    private func roundTeePreview(_ strip: OnCourseModel.TeePreviewStrip) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "signpost.right.fill")
+                    .font(.caption)
+                    .foregroundStyle(PlanStyle.violet)
+                OverlineLabel("Tee · Hole plan", color: .secondary)
+                Spacer()
+                if let meters = strip.firstLegMeters {
+                    MetricText(
+                        DistanceFormat.string(meters, unit: unit),
+                        unit: unit.abbreviation, size: 16
+                    )
+                }
+            }
+            HStack(spacing: 10) {
+                if let club = strip.teeClubName {
+                    clubChip("", club, PlanStyle.violet)
+                } else if let suggested = strip.suggestedClubName {
+                    clubChip("", "~\(suggested)", PlanStyle.violet)
+                }
+                if let aim = strip.aimLabel {
+                    Text("→ \(aim)")
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                }
+                if let hazard = strip.hazardLabel, let carry = strip.hazardCarryM {
+                    Text("\(hazard) · carry \(DistanceFormat.string(carry, unit: unit))")
+                        .font(.caption2)
+                        .foregroundStyle(Self.pinColor)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+            if let notes = strip.notes {
+                Text(notes)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    // Plan mode (R2): the leg the plan wants next — planned club, aim label,
+    // gate width, distance + plays-as to the planned landing, hole notes.
+    private func roundLegCard(_ card: OnCourseModel.RoundLegCard) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "signpost.right.fill")
+                    .font(.caption)
+                    .foregroundStyle(PlanStyle.violet)
+                OverlineLabel("Shot \(card.legIndex) of \(card.legCount) · Plan", color: .secondary)
+                Spacer()
+                if let distance = card.distanceM {
+                    MetricText(
+                        DistanceFormat.string(distance, unit: unit),
+                        unit: unit.abbreviation, size: 16
+                    )
+                }
+            }
+            HStack(spacing: 10) {
+                if let club = card.clubName {
+                    clubChip("", club, PlanStyle.violet)
+                } else if let suggested = card.suggestedClubName {
+                    clubChip("", "~\(suggested)", PlanStyle.violet)
+                }
+                Text(card.toGreen ? "→ Green" : "→ \(card.aimLabel ?? "Landing")")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                if let gate = card.gateWidthM {
+                    Text("Gate \(DistanceFormat.string(gate, unit: unit)) \(unit.abbreviation)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if let playsAs = card.playsAsM, playsAs != card.distanceM {
+                    Text("plays \(DistanceFormat.string(playsAs, unit: unit))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+            if let notes = card.notes {
+                Text(notes)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    // Decide placeholder (R2/R3): divergence flips the card here; the ranked
+    // choices are T33's — until then the strip names the situation and defers
+    // to the distances below.
+    private var roundDecidePlaceholder: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.caption)
+                .foregroundStyle(Self.pinColor)
+            VStack(alignment: .leading, spacing: 2) {
+                OverlineLabel("Off plan", color: Self.pinColor)
+                Text("Ball is off the planned line — pick your shot from the distances below.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .accessibilityElement(children: .combine)
     }
 
     // The inspected map/ladder target's "what do I do" line: its plays-as

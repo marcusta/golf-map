@@ -1496,4 +1496,40 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertFalse(model.ladderRows.contains { $0.kind == .layup && $0.meters == 300 },
                        "water topmost → penalty lie → 300 rung dropped")
     }
+
+    // MARK: - Playing state (round loop R1) — nil-round regression
+
+    func testNoActiveRoundExposesNoRoundLoopSurface() {
+        // R1's zero-regression guarantee: without a round, every round-loop
+        // property is nil and nothing else in the model reads them.
+        let model = makeModel()
+        XCTAssertNil(model.activeRoundStrokes)
+        XCTAssertNil(model.playingState)
+        XCTAssertNil(model.roundCardMode)
+        XCTAssertNil(model.teePreviewStrip)
+        XCTAssertEqual(model.playingStateBuildCount, 0, "the derivation never even runs")
+    }
+
+    func testActiveRoundWithoutPlanKeepsTodaysCardOutputsByteForByte() {
+        // The fixture has no plan: a round may be active, but the mode machine
+        // stays out of the way and every existing derived output is unchanged.
+        let model = makeModel()
+        let rowsBefore = model.ladderRows
+        let distancesBefore = model.distances
+        let targetsBefore = model.targets
+
+        model.setActiveRound(strokes: [
+            OnCourseModel.RoundStroke(holeNumber: 1, position: LatLon(lat: 58.3600, lon: 15.7100))
+        ])
+        XCTAssertNotNil(model.playingState, "the spine derives even without a plan (T34/T35 need it)")
+        XCTAssertNil(model.roundCardMode, "no planned line → no card mode → today's card")
+        XCTAssertEqual(model.ladderRows, rowsBefore)
+        XCTAssertEqual(model.distances, distancesBefore)
+        XCTAssertEqual(model.targets, targetsBefore)
+
+        model.setActiveRound(strokes: nil)
+        XCTAssertNil(model.playingState)
+        XCTAssertEqual(model.ladderRows, rowsBefore)
+        XCTAssertEqual(model.distances, distancesBefore)
+    }
 }

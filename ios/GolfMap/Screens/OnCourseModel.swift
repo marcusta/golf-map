@@ -2042,6 +2042,330 @@ final class OnCourseModel {
         refreshLadderElevations(force: true)
     }
 
+    // MARK: - Playing state (on-course round loop — R1–R3)
+
+    /// One captured stroke of the active round, as the playing state consumes
+    /// it — a value snapshot the screen pushes from `RoundModel` (the same
+    /// install pattern as `setPlan`/`setClubs`, so tests drive it without a
+    /// database). `position` is where the stroke was played FROM (shot-capture
+    /// §2), which is also the last known ball position between captures.
+    struct RoundStroke: Equatable, Sendable {
+        var holeNumber: Int
+        var position: LatLon
+    }
+
+    /// The active round's captured strokes in capture order, or nil when no
+    /// round is active. Nil ⇒ the entire round-loop surface below disappears
+    /// (`playingState`/`roundCardMode` nil) and the card behaves exactly as
+    /// before the round loop existed — R1's zero-regression guarantee.
+    private(set) var activeRoundStrokes: [RoundStroke]?
+
+    /// Install (or clear, with nil) the active round's strokes. Called by the
+    /// screen on round load and after every capture / scorecard edit —
+    /// capture-driven advancement (R1): this is the ONLY thing that moves the
+    /// playing state; live GPS never does.
+    func setActiveRound(strokes: [RoundStroke]?) {
+        activeRoundStrokes = strokes
+    }
+
+    /// R3 divergence-rule constants — THE one place they live (tuned on
+    /// course). Off-plan when the ball's distance to the nearest planned
+    /// landing of the active line exceeds `radiusM(for:)` for that landing's
+    /// club, or when the stroke count has passed the planned shot count.
+    enum Divergence {
+        /// Multiplier on the planned club's lateral dispersion SEMI-axis
+        /// (`dispersionM / 2`, the ellipse convention — Ellipse.swift).
+        static let dispersionMultiplier = 1.5
+        /// Floor radius (m): even a tight wedge leg tolerates this much
+        /// scatter before the card flips to *decide*.
+        static let minRadiusM = 25.0
+        /// The on-plan radius around a planned landing reached with `club`
+        /// (nil — clubless leg / unknown id — falls back to the floor alone).
+        static func radiusM(for club: ClubRecord?) -> Double {
+            max(dispersionMultiplier * (club?.dispersionM ?? 0) / 2, minRadiusM)
+        }
+    }
+
+    /// The round's spine (R1): where the ball is in the current hole's story,
+    /// derived from the active round's captured strokes. Capture-driven —
+    /// deliberately independent of the live GPS fix, so the card context only
+    /// moves when a stroke is captured (or the hole/plan changes), never while
+    /// walking.
+    struct PlayingState: Equatable {
+        /// The hole the state describes (the model's current hole).
+        var holeNumber: Int
+        /// 0-based; the next stroke to be played = captured strokes on the hole.
+        var strokeIndex: Int
+        /// Last captured position on the hole; nil = on the tee (no capture yet).
+        var ballPosition: LatLon?
+        /// Lie classified from `ballPosition` against the surface stack
+        /// (`.tee` for stroke 0).
+        var lie: Lie
+        /// The plan line the state tracks — the hole plan's shots. T32 swaps
+        /// this for the round-scoped chosen option branch (R8); until then the
+        /// single stored chain IS the active line. Empty = no plan content.
+        var activeLine: [CoursePlan.Shot]
+        /// Index into `activeLine` of the planned landing the ball is AT
+        /// (nearest landing within the R3 divergence radius); the leg after it
+        /// is "your shot". Nil = on the tee, diverged, or past the plan.
+        var currentLeg: Int?
+    }
+
+    /// Fingerprint of every input `playingState` reads — self-invalidating
+    /// like `LadderKey`/`HazardKey` (values + install-bumped versions), so no
+    /// mutation site has to clear anything.
+    private struct PlayingKey: Equatable {
+        var holeNumber: Int
+        var strokes: [RoundStroke]
+        var planShots: [CoursePlan.Shot]
+        var surfacesVersion: Int
+        var clubs: [String]
+    }
+    @ObservationIgnored private var playingStateKey: PlayingKey?
+    @ObservationIgnored private var playingStateCache: PlayingState?
+    /// Count of full `playingState` rebuilds (cache misses). Behaviour-neutral
+    /// instrumentation the memo tests assert on; `@ObservationIgnored`.
+    @ObservationIgnored private(set) var playingStateBuildCount = 0
+
+    /// The playing state for the current hole, or nil when no round is active
+    /// (today's behaviour, untouched). Memoised — the card reads it several
+    /// times per render and `lieAt` walks the surface stack, so the derivation
+    /// runs only when a capture / hole change / plan or bag change lands.
+    var playingState: PlayingState? {
+        guard let strokes = activeRoundStrokes, let hole = currentHole else { return nil }
+        let line = currentHolePlan?.shots ?? []
+        let key = PlayingKey(
+            holeNumber: hole.hole.number,
+            strokes: strokes,
+            planShots: line,
+            surfacesVersion: surfacesVersion,
+            clubs: clubsFingerprint()
+        )
+        if key == playingStateKey, let cached = playingStateCache { return cached }
+
+        let holeStrokes = strokes.filter { $0.holeNumber == hole.hole.number }
+        let ball = holeStrokes.last?.position
+        let state = PlayingState(
+            holeNumber: hole.hole.number,
+            strokeIndex: holeStrokes.count,
+            ballPosition: ball,
+            lie: ball.map { lieAt(Self.planar($0)) } ?? .tee,
+            activeLine: line,
+            currentLeg: ball.flatMap { matchedLeg(ball: $0, activeLine: line) }
+        )
+        playingStateKey = key
+        playingStateCache = state
+        playingStateBuildCount += 1
+        return state
+    }
+
+    /// R3 leg matching: the nearest planned landing to `ball`, kept only when
+    /// it lies within that leg's divergence radius (the landing's club is the
+    /// club that flies the ball TO it — the shot entity's club).
+    private func matchedLeg(ball: LatLon, activeLine: [CoursePlan.Shot]) -> Int? {
+        var best: (index: Int, distanceM: Double)?
+        for (index, shot) in activeLine.enumerated() {
+            let d = Distance.planarMeters(ball, shot.position)
+            if best == nil || d < best!.distanceM { best = (index, d) }
+        }
+        guard let best else { return nil }
+        let club = activeLine[best.index].clubId.flatMap { id in clubs.first { $0.id == id } }
+        return best.distanceM <= Divergence.radiusM(for: club) ? best.index : nil
+    }
+
+    // MARK: - Round card modes (R2 — the card is a context machine)
+
+    /// Card mode = f(PlayingState). The modes are legal scaffolding — the
+    /// competition gating stays where it is today (club advice, plays-like);
+    /// nothing here widens or narrows it.
+    enum RoundCardMode: Equatable {
+        /// On the tee (hole entry before any capture, or the tee shot just
+        /// captured from it): the hole-plan summary strip. Leg 1 IS the shot.
+        case teePreview
+        /// Following the plan: `legIndex` is 1-based over the hole's legs
+        /// (tee→shot1 = 1, …, →green = shots.count + 1) — the leg being played
+        /// from the last captured position (`roundLegCard(legIndex:)`).
+        case plan(legIndex: Int)
+        /// R3 divergence (or past the planned shot count). The ranked-choices
+        /// content is T33; T31 renders a placeholder. Divergence flips the
+        /// card — it never edits the plan.
+        case decide
+        /// Ball on the green — derivation + content land in T35 (R6). Never
+        /// produced here yet; the case exists so the card switch is stable.
+        case green
+    }
+
+    /// The card mode for the active round, or nil when no round is active OR
+    /// the hole has no planned line (the mode machine is a lens over the plan;
+    /// without one the card behaves exactly as today — strokes still count).
+    var roundCardMode: RoundCardMode? {
+        guard let state = playingState, !state.activeLine.isEmpty else { return nil }
+        guard let ball = state.ballPosition, state.strokeIndex > 0 else { return .teePreview }
+        // "strokeIndex has passed the planned shot count" (R3): the planned
+        // count is one stroke per landing + the approach into the green.
+        if state.strokeIndex > state.activeLine.count + 1 { return .decide }
+        if let leg = state.currentLeg { return .plan(legIndex: leg + 2) }
+        // Tee grace: a capture AT the tee (the tee shot, or a re-tee) is not
+        // divergence — the ball is exactly where the plan starts, and R3's
+        // nearest-landing distance is meaningless there. The tee-preview strip
+        // already describes leg 1, so it stays up.
+        if let tee = planTeePosition(),
+           Distance.planarMeters(ball, tee) <= Divergence.minRadiusM {
+            return .teePreview
+        }
+        return .decide
+    }
+
+    /// The plan tee for the mode machine's tee grace: the hole plan's tee when
+    /// placed here, else the active tee (override-aware).
+    private func planTeePosition() -> LatLon? {
+        guard let hole = currentHole else { return nil }
+        if let holePlan = currentHolePlan, let tee = planTee(for: hole, plan: holePlan) {
+            return LatLon(lat: tee.lat, lon: tee.lon)
+        }
+        return teePosition(for: hole)
+    }
+
+    /// Tee-preview strip content (R2): the hole's plan in one line — tee club,
+    /// first aim, the one hazard that matters, hole notes. Option chips land
+    /// with T32.
+    struct TeePreviewStrip: Equatable {
+        /// Leg 1's planned club, nil when the plan leaves it open.
+        var teeClubName: String?
+        /// Fallback when leg 1 is clubless (nil in competition mode — the
+        /// existing `suggestedClub` gate, untouched).
+        var suggestedClubName: String?
+        /// The first planned landing's authored label ("Layup").
+        var aimLabel: String?
+        /// Plan tee → first landing, whole meters (the tee shot's number).
+        var firstLegMeters: Int?
+        /// Nearest carry hazard on the line ("R Bunker") + its carry figure —
+        /// the one hazard that matters off the tee.
+        var hazardLabel: String?
+        var hazardCarryM: Int?
+        var notes: String?
+    }
+
+    /// Content for `.teePreview`, nil outside that mode.
+    var teePreviewStrip: TeePreviewStrip? {
+        guard roundCardMode == .teePreview, let holePlan = currentHolePlan else { return nil }
+        let firstLeg = planLegs.first
+        let hazard = teeHazardThatMatters(firstLegMeters: firstLeg?.meters)
+        return TeePreviewStrip(
+            teeClubName: firstLeg?.clubName,
+            suggestedClubName: firstLeg?.clubName == nil ? firstLeg?.suggestedClubName : nil,
+            aimLabel: holePlan.shots.first?.label,
+            firstLegMeters: firstLeg?.meters,
+            hazardLabel: hazard?.displayLabel,
+            hazardCarryM: hazard?.carryM,
+            notes: holePlan.notes
+        )
+    }
+
+    /// "The one hazard that matters" off the tee (R2): the farthest carry the
+    /// tee shot must still clear on the way to the planned landing (fronts up
+    /// to `hazardExtraAheadM` past it count — greenside-of-the-landing traps),
+    /// NOT merely the nearest ring, which can be a bunker at your feet.
+    private func teeHazardThatMatters(firstLegMeters: Int?) -> HazardCarry? {
+        let carries = hazardCarries
+        guard let legM = firstLegMeters else { return carries.first }
+        return carries
+            .filter { $0.frontM < legM + Int(Self.hazardExtraAheadM) }
+            .max { $0.carryM < $1.carryM }
+    }
+
+    /// Plan-mode leg card content (R2): the shot the plan wants next —
+    /// planned club, aim label, gate width at the leg, distance + plays-like
+    /// to the planned landing (from the live origin, so it counts down as you
+    /// walk), hole notes.
+    struct RoundLegCard: Equatable {
+        /// 1-based leg number over the hole ("Shot 2 of 3").
+        var legIndex: Int
+        var legCount: Int
+        /// The planned club on the leg's landing shot; nil on the approach leg
+        /// (no shot entity) or a clubless shot.
+        var clubName: String?
+        /// Fallback when `clubName` is nil (competition-gated upstream).
+        var suggestedClubName: String?
+        /// The landing's authored label ("Layup"), nil for the approach.
+        var aimLabel: String?
+        /// Total width (m) of the plan gate at this leg, nil without gates.
+        var gateWidthM: Int?
+        /// Straight meters origin → planned landing (nil without an origin).
+        var distanceM: Int?
+        /// Plays-as (slope + wind; competition-degraded upstream) to the
+        /// landing, nil when elevations are unknown.
+        var playsAsM: Int?
+        var notes: String?
+        /// The leg lands on the green (the approach — no landing shot entity).
+        var toGreen: Bool
+        /// The planned landing itself (T33's working-target seam).
+        var landing: LatLon?
+    }
+
+    /// Content for `.plan(legIndex:)`, nil when the leg is out of range or the
+    /// hole has no plan.
+    func roundLegCard(legIndex: Int) -> RoundLegCard? {
+        guard let hole = currentHole, let holePlan = currentHolePlan else { return nil }
+        let shots = holePlan.shots
+        let legCount = shots.count + 1
+        guard legIndex >= 1, legIndex <= legCount else { return nil }
+        let toGreen = legIndex == legCount
+        let landing: LatLon?
+        let landingElevation: Double?
+        let clubName: String?
+        let aimLabel: String?
+        if toGreen {
+            landing = greenCenterPosition(for: hole)
+            landingElevation = hole.green?.elevation
+            clubName = nil
+            aimLabel = nil
+        } else {
+            let shot = shots[legIndex - 1]
+            landing = shot.position
+            landingElevation = shot.elevation
+            clubName = shot.clubName
+            aimLabel = shot.label
+        }
+        var distanceM: Int?
+        var playsAsM: Int?
+        var suggested: String?
+        if let origin, let landing {
+            distanceM = Int(Distance.planarMeters(origin, landing).rounded())
+            playsAsM = playsAsAndElevation(to: landing, elevation: landingElevation)?.playsAs
+            if clubName == nil {
+                suggested = suggestedClub(
+                    from: origin, fromElevation: originElevation,
+                    to: landing, toElevation: landingElevation
+                )
+            }
+        }
+        return RoundLegCard(
+            legIndex: legIndex,
+            legCount: legCount,
+            clubName: clubName,
+            suggestedClubName: suggested,
+            aimLabel: aimLabel,
+            gateWidthM: landing.flatMap { gateWidthM(near: $0, gates: holePlan.gates) },
+            distanceM: distanceM,
+            playsAsM: playsAsM,
+            notes: holePlan.notes,
+            toGreen: toGreen,
+            landing: landing
+        )
+    }
+
+    /// Total width (m) of the plan gate nearest `landing` — "the gate width at
+    /// that leg". Gates are authored per leg, so nearest-by-center is the
+    /// association; nil without gates.
+    private func gateWidthM(near landing: LatLon, gates: [CoursePlan.Gate]) -> Int? {
+        let nearest = gates.min {
+            Distance.planarMeters($0.position, landing) < Distance.planarMeters($1.position, landing)
+        }
+        guard let nearest else { return nil }
+        return Int((nearest.halfWidthLeftM + nearest.halfWidthRightM).rounded())
+    }
+
     // MARK: - Plan editing (planner tool — task T3)
 
     /// Persistence sink for planner edits: the screen wires these to the GRDB
