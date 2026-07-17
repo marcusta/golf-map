@@ -478,7 +478,11 @@ private func roundLoopStrokes(of roundModel: RoundModel) -> [OnCourseModel.Round
     return roundModel.shots.map {
         OnCourseModel.RoundStroke(
             holeNumber: $0.holeNumber,
-            position: LatLon(lat: $0.lat, lon: $0.lon)
+            position: LatLon(lat: $0.lat, lon: $0.lon),
+            // Penalties ride on the stroke (§2) and feed the decide card's
+            // probable-score baseline (R4) + the geofence "has no hole-out"
+            // read — keep them on the snapshot the playing state derives from.
+            penaltyStrokes: $0.penaltyStrokes
         )
     }
 }
@@ -988,6 +992,22 @@ private struct OnCourseContentView: View {
                 .interactiveDismissDisabled()
             }
         }
+        // Round loop R5: the live fix walked onto the next tee without a
+        // hole-out — PROMPT to advance, never a silent move. The model owns
+        // the geofence detection + nag guard; this only presents the choice.
+        .alert(
+            "Start hole \(model.teeGeofencePrompt ?? 0)?",
+            isPresented: Binding(
+                get: { model.teeGeofencePrompt != nil },
+                set: { if !$0 { model.dismissTeeGeofencePrompt() } }
+            ),
+            presenting: model.teeGeofencePrompt
+        ) { holeNumber in
+            Button("Start hole \(holeNumber)") { model.confirmTeeGeofenceAdvance() }
+            Button("Not yet", role: .cancel) { model.dismissTeeGeofencePrompt() }
+        } message: { _ in
+            Text("Hole \(model.currentHoleNumber) has no hole-out.")
+        }
         // The chrome floats over a dark ortho map — force dark materials.
         .environment(\.colorScheme, .dark)
         #if DEBUG
@@ -1149,6 +1169,102 @@ private struct OnCourseContentView: View {
                     if UserDefaults.standard.string(forKey: "captureScorecard") == "1" {
                         showScorecard = true
                     }
+                }
+            }
+            // `-roundLoop 1` (round loop R5): drives a 3-hole round entirely
+            // through the capture drivetrain — Confirm / Hole-out taps — proving
+            // the loop closes with no manual navigation. Hole 1 plays out and
+            // holes out (auto-advance); hole 2 plays two shots then WALKS onto
+            // hole 3's tee without a hole-out (the geofence prompts, we accept);
+            // hole 3 holes out. Dumps the scorecard totals + an advance trace to
+            // `roundDebug.lastResult` (and a CAPTURE-DEBUG summary) so the closed
+            // loop + penalty totals + sync queue can be verified headlessly.
+            // DEBUG-only and inert without the flag.
+            if UserDefaults.standard.string(forKey: "roundLoop") == "1" {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    model.setGPSEnabled(true)
+                    model.goToHole(number: 1)
+                    if !roundModel.hasActiveRound {
+                        await roundModel.startRound(
+                            gamePlanId: model.plan?.id, wind: planWindSnapshot
+                        )
+                    }
+                    var trace: [String] = []
+
+                    // One "tap": fix at the ball, drop the crosshair, then hit
+                    // Confirm / Hole-out — the exact core the buttons call.
+                    let tap: (LatLon, Bool) async -> ShotRecord? = { position, holeOut in
+                        model.updateUserLocation(position)
+                        armCapture(at: position)
+                        let shot = await recordStrokeAndAdvance(holeOut: holeOut)
+                        // Mirror the `.onChange(shots)` playing-state sync that a
+                        // headless Task doesn't get a SwiftUI update cycle for.
+                        model.setActiveRound(strokes: roundLoopStrokes(of: roundModel))
+                        return shot
+                    }
+                    let geometry: () -> (tee: LatLon, mid: LatLon, green: LatLon)? = {
+                        guard let hole = model.currentHole,
+                              let tee = model.teePosition(for: hole),
+                              let green = model.greenCenterPosition(for: hole)
+                        else { return nil }
+                        return (
+                            tee,
+                            LatLon(lat: (tee.lat + green.lat) / 2, lon: (tee.lon + green.lon) / 2),
+                            green
+                        )
+                    }
+
+                    // Hole 1 — full hole; hole-out auto-advances to hole 2. The
+                    // approach takes a penalty (e.g. OB re-tee) to prove totals.
+                    if let g = geometry() {
+                        _ = await tap(g.tee, false)
+                        if let approach = await tap(g.mid, false) {
+                            _ = await roundModel.addPenalty(shotId: approach.id)
+                            model.setActiveRound(strokes: roundLoopStrokes(of: roundModel))
+                        }
+                        _ = await tap(g.green, true)
+                        trace.append("h1holeOut->h\(model.currentHoleNumber)")
+                    }
+
+                    // Hole 2 — two shots, then walk onto hole 3's tee with no
+                    // hole-out: the geofence prompts, we accept, the card moves.
+                    if model.currentHoleNumber == 2, let g = geometry() {
+                        _ = await tap(g.tee, false)
+                        _ = await tap(g.mid, false)
+                        model.goToHole(number: 3)
+                        let tee3 = model.currentHole.flatMap { model.teePosition(for: $0) }
+                        model.goToHole(number: 2)
+                        if let tee3 {
+                            model.updateUserLocation(tee3)
+                            trace.append(
+                                "h2geofence=\(model.teeGeofencePrompt.map(String.init) ?? "nil")"
+                            )
+                            model.confirmTeeGeofenceAdvance()
+                            trace.append("h2accept->h\(model.currentHoleNumber)")
+                        }
+                    }
+
+                    // Hole 3 — tee shot then hole-out (advances again).
+                    if model.currentHoleNumber == 3, let g = geometry() {
+                        _ = await tap(g.tee, false)
+                        _ = await tap(g.green, true)
+                        trace.append("h3holeOut->h\(model.currentHoleNumber)")
+                    }
+
+                    let card = roundModel.scorecard
+                    let pending = roundModel.shots.count { $0.syncState != .synced }
+                    let outcome = "final=h\(model.currentHoleNumber) "
+                        + "shots=\(roundModel.shots.count) "
+                        + "total=\(card.total.score) "
+                        + "vsPar=\(Scorecard.formatVsPar(card.total.vsPar)) "
+                        + "penalties=\(card.total.penalties) "
+                        + "holesPlayed=\(card.total.holesPlayed) "
+                        + "syncPending=\(pending) "
+                        + "trace=\(trace.joined(separator: ">"))"
+                    print("ROUND-LOOP-DEBUG \(outcome)")
+                    UserDefaults.standard.set(outcome, forKey: "roundDebug.lastResult")
+                    Self.writeCaptureDebugSummary(roundModel)
                 }
             }
             // `-roundState "lat,lon;lat,lon;…"` installs a synthetic ACTIVE
@@ -1866,22 +1982,40 @@ private struct OnCourseContentView: View {
     /// §2). Hole-out forces the final putt (its landing is the cup — no
     /// extra row needed).
     private func confirmStroke(holeOut: Bool) {
-        guard let position = capture.position else { return }
+        Task { @MainActor in
+            guard await recordStrokeAndAdvance(holeOut: holeOut) != nil else { return }
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+    }
+
+    /// The stroke-write + auto-advance core shared by the Confirm / Hole-out
+    /// taps and the `-roundLoop` headless hook (round loop R5). Records the
+    /// stroke AT the crosshair (§2), notes it for the penalty stepper, and on
+    /// hole-out auto-advances to the next hole — the loop's drivetrain: one tap
+    /// both reports the stroke and moves the card on. `holeDidChange` dismisses
+    /// the capture tool (toolMode → .none) and the `.onChange` on the hole
+    /// number ends the panel, so the card returns to the new hole's tee
+    /// preview. The last hole doesn't advance (the round is finished from the
+    /// scorecard). Returns the written record, or nil if nothing was in flight.
+    @discardableResult
+    private func recordStrokeAndAdvance(holeOut: Bool) async -> ShotRecord? {
+        guard let position = capture.position else { return nil }
         let shotType = holeOut ? ShotType.putt : capture.shotType
         let clubId = holeOut ? nil : capture.clubId
         let holeNumber = model.currentHoleNumber
         let target = capture.target
-        Task { @MainActor in
-            guard let shot = await roundModel.recordStroke(
-                holeNumber: holeNumber,
-                position: position,
-                clubId: clubId,
-                shotType: shotType,
-                target: target
-            ) else { return }
-            capture.noteConfirmed(shot)
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        guard let shot = await roundModel.recordStroke(
+            holeNumber: holeNumber,
+            position: position,
+            clubId: clubId,
+            shotType: shotType,
+            target: target
+        ) else { return nil }
+        capture.noteConfirmed(shot)
+        if holeOut, model.canGoNext {
+            model.nextHole()
         }
+        return shot
     }
 
     /// The "+1 penalty" stepper on the just-confirmed stroke.

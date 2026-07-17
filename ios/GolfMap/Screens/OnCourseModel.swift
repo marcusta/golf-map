@@ -514,6 +514,9 @@ final class OnCourseModel {
         cameraToken += 1
         // A decide-choice working target is per-hole transient state (R4).
         workingTarget = nil
+        // The tee-geofence prompt/guard is keyed to the hole we were on (R5).
+        teeGeofencePrompt = nil
+        geofenceHandledHole = nil
         refreshGreenElevationFallback()
         // The per-hole target set changes; drop the old samples and re-sweep.
         ladderTerrainElevations.removeAll(keepingCapacity: true)
@@ -1340,6 +1343,10 @@ final class OnCourseModel {
         // still uncached, so a stationary user whose bag/targets changed still
         // gets sampled; pure GPS jitter with a full cache reuses it.
         refreshLadderElevations()
+        // Round loop R5: the live fix may have walked onto the next tee. Runs
+        // BEFORE the elevation-sampler early-return below so the geofence still
+        // fires when no terrain sampler is installed.
+        refreshTeeGeofence()
         userElevationTask?.cancel()
         guard let location, let sampler = elevationSampler else {
             userElevation = nil
@@ -1350,6 +1357,71 @@ final class OnCourseModel {
             guard !Task.isCancelled else { return }
             self?.userElevation = elevation
         }
+    }
+
+    // MARK: - Tee geofence (round loop R5 — prompt-only hole advance)
+
+    /// R5 tee-geofence radius: a live fix within this planar distance of the
+    /// next hole's tee is treated as "the player is standing on the next tee".
+    /// One place, tunable on course (sibling of `Divergence`).
+    static let teeGeofenceRadiusM = 30.0
+
+    /// The number of the next hole whose tee the live fix has walked into
+    /// while the card is still on the current hole — i.e. the player moved on
+    /// without holing out. A PROMPT to advance the card (R5): the screen shows
+    /// an alert and calls `confirmTeeGeofenceAdvance()` / `dismissTeeGeofencePrompt()`.
+    /// Never advances silently. nil = nothing pending. Only ever set while a
+    /// round is active; cleared on hole change and when the fix leaves the ring.
+    private(set) var teeGeofencePrompt: Int?
+
+    /// The next-hole number a prompt was already answered for (advanced or
+    /// declined), so a fix lingering inside the ring doesn't re-nag. Cleared
+    /// when the fix leaves the ring (a genuine re-approach may prompt again)
+    /// and on hole change.
+    @ObservationIgnored private var geofenceHandledHole: Int?
+
+    /// Re-evaluate the tee geofence against the latest (GPS-gated) fix (R5).
+    /// Sets `teeGeofencePrompt` only when a round is active, a next hole
+    /// exists, its tee is within `teeGeofenceRadiusM` of the fix, and we have
+    /// not already answered a prompt for it. Leaving the ring clears any stale
+    /// prompt and re-arms the nag guard. Browse mode (no gated fix) never
+    /// fires. Capture-driven advance (hole-out) has already moved the card
+    /// forward by the time the fix reaches the next tee, so this only fires
+    /// when the previous hole truly has no hole-out.
+    private func refreshTeeGeofence() {
+        guard activeRoundStrokes != nil,
+              let fix = effectiveUserLocation,
+              currentHoleIndex + 1 < holes.count,
+              let tee = teePosition(for: holes[currentHoleIndex + 1])
+        else {
+            teeGeofencePrompt = nil
+            return
+        }
+        let nextNumber = holes[currentHoleIndex + 1].hole.number
+        let inside = Distance.planarMeters(fix, tee) <= Self.teeGeofenceRadiusM
+        guard inside else {
+            if teeGeofencePrompt == nextNumber { teeGeofencePrompt = nil }
+            if geofenceHandledHole == nextNumber { geofenceHandledHole = nil }
+            return
+        }
+        guard geofenceHandledHole != nextNumber else { return }
+        teeGeofencePrompt = nextNumber
+    }
+
+    /// The player accepted the geofence prompt: advance the card to the primed
+    /// next hole (R5). Marks it handled and clears the prompt.
+    func confirmTeeGeofenceAdvance() {
+        guard let number = teeGeofencePrompt else { return }
+        teeGeofencePrompt = nil
+        geofenceHandledHole = number
+        goToHole(number: number)
+    }
+
+    /// The player declined the geofence prompt: keep the card put and don't
+    /// re-nag for this hole until the fix leaves and re-enters the ring (R5).
+    func dismissTeeGeofencePrompt() {
+        if let number = teeGeofencePrompt { geofenceHandledHole = number }
+        teeGeofencePrompt = nil
     }
 
     /// Samples the green's terrain elevation when the record has none stored,
