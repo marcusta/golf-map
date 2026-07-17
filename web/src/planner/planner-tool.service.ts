@@ -51,6 +51,7 @@ import {
     GATE_DEFAULT_HALF_WIDTH_M,
     autoGatesForPlan,
     buildHolePlan,
+    buildOptionChips,
     buildPlanGeojson,
     enrichPlanStrategy,
     ghostAimForLeg,
@@ -60,6 +61,7 @@ import {
     type EffectiveWind,
     type GhostAim,
     type HolePlan,
+    type OptionChip,
     type PlanLeg,
 } from './plan-overlay';
 import { buildLieMap, type LieMap } from './lie-map';
@@ -690,19 +692,25 @@ export class PlannerToolService {
             if (!base || !greenCenter) {
                 this.enrichedPlan.set(null);
                 this.caddyResult.set(null);
+                this.optionChipsResult.set(null);
                 return;
             }
-            const enriched = enrichPlanStrategy(base, {
+            const strategyCtx = {
                 lieMap: this.lieMap.peek(),
                 greenCenter,
                 wind: this.effectiveWind.peek(),
-            });
+            };
+            const enriched = enrichPlanStrategy(base, strategyCtx);
             this.enrichedPlan.set({ base, enriched });
             // Caddy advice runs on the SAME cadence as EV enrichment (shot-place
             // / drag-release, coalesced onto this microtask) — never per frame
             // (feature-smart-caddy.md §4.5). It reads the just-enriched plan so
             // every rule sees the settled geometry + lie breakdowns.
             this.caddyResult.set({ base, advice: this.computeCaddyAdvice(enriched) });
+            // Option score chips (T30) ride the same coalesced pass — the chain
+            // scorer sweeps optimizeAim per clubbed option leg, which is exactly
+            // the cost class the cadence guarantee keeps off the drag hot loop.
+            this.optionChipsResult.set({ base, chips: buildOptionChips(enriched, strategyCtx) });
             // Cadence instrumentation — one bump per completed enrichment pass.
             this.enrichCount.set(this.enrichCount.peek() + 1);
         });
@@ -842,6 +850,30 @@ export class PlannerToolService {
      * `holePlan`, so no stale advice shows mid-drag.
      */
     private readonly caddyResult = new Signal<{ base: HolePlan; advice: readonly CaddyAdvice[] } | null>(null);
+
+    /**
+     * The last option-chip pass (T30), paired with the `holePlan` it was
+     * derived from — the same base-guard pattern as `enrichedPlan` /
+     * `caddyResult`, so chips drop out mid-drag and reappear priced against
+     * the settled plan on release.
+     */
+    private readonly optionChipsResult = new Signal<
+        { base: HolePlan; chips: readonly OptionChip[] } | null
+    >(null);
+
+    /**
+     * Score chips for every option at multi-sibling decision points
+     * (feature-plan-shot-options.md O4): probable hole score + penalty% +
+     * blow-up tail per option, from `scoreOptionChain`. Recomputed ONLY on
+     * the strategy enrich cadence (shot-place / drag-release); empty while
+     * the live plan has moved past the last enrichment (mid-drag) or when
+     * there is nothing to price.
+     */
+    readonly optionChips = new Computed<readonly OptionChip[]>(() => {
+        const live = this.holePlan.get();
+        const result = this.optionChipsResult.get();
+        return result && result.base === live ? result.chips : [];
+    });
 
     /**
      * Ranked smart-caddy advice for the current hole across ALL its legs
@@ -1054,6 +1086,7 @@ export class PlannerToolService {
         return buildPlanGeojson({
             plan: this.overlayPlan.get(),
             gates: this.holeGates.get(),
+            optionChips: this.optionChips.get(),
             selectedShotId: sel?.kind === 'shot' ? sel.id : null,
             selectedGateId: sel?.kind === 'gate' ? sel.id : null,
         });

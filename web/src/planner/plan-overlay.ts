@@ -30,8 +30,10 @@ import {
     corridorWidth,
     dispersionEllipse,
     optimizeAim,
+    scoreOptionChain,
     segmentStats,
     windEffect,
+    type ChainLeg,
     type DispersionEllipse,
     type FlatRing,
     type Lie,
@@ -517,6 +519,136 @@ export function buildHolePlan(input: HolePlanInput): HolePlan {
     };
 }
 
+// ── Option score chips (feature-plan-shot-options.md O4, T30) ───────────────
+//
+// At every decision point with more than one sibling, each option gets the
+// score/risk triple from `scoreOptionChain` (shared/strategy): probable hole
+// score leading, penalty% beside, blow-up (CVaR₈₀) on hover/expand. The
+// chain behind each chip is the option shot followed by its RANK-0
+// continuation to the branch leaf (the option's own planned line); the
+// terminal expected strokes from the leaf landing live inside the chain
+// scorer. Probable hole score = strokes already played to reach the decision
+// point (tree depth) + the chain EV — Arccos-style presentation per O4.
+//
+// COMPUTE CADENCE: `buildOptionChips` runs `scoreOptionChain`, which sweeps
+// `optimizeAim` per clubbed leg — the same cost class as `enrichPlanStrategy`.
+// Callers invoke it ONLY on the strategy enrich cadence (shot-place /
+// drag-release, coalesced — see PlannerToolService.refreshStrategy), never
+// per drag frame.
+
+/** One option's score chip at a multi-sibling decision point. */
+export interface OptionChip {
+    /** The option shot at the decision point (the chain's first landing). */
+    shotId: string;
+    /** Sibling rank within the decision point (0 = current primary choice). */
+    rank: number;
+    /** True when the option shot sits on the hole's primary line. */
+    primary: boolean;
+    /** The option leg's assigned club name, when set. */
+    clubName: string | null;
+    /** Strokes already played to reach the decision point (tree depth). */
+    strokesBefore: number;
+    /** Probable hole score: strokesBefore + chain expectedStrokes. */
+    probableScore: number;
+    /** Chain-aggregate penalty probability (0..1). */
+    penaltyProb: number;
+    /** Probable blow-up score: strokesBefore + chain tailStrokes (CVaR₈₀). */
+    tailScore: number;
+    /** Chip anchor — the option shot's landing point (WGS84). */
+    lat: number;
+    lon: number;
+}
+
+/**
+ * "prob. 4.2 · 12% pen", plus ", blow-up 5.6" when `tailScore` is present —
+ * the SAME vocabulary as iOS `ScoreRiskFormat.triple` (options doc O4: decide
+ * choices and option chips must speak identically across surfaces).
+ */
+export function scoreRiskTriple(probableScore: number, penaltyShare: number, tailScore?: number): string {
+    let out = `prob. ${probableScore.toFixed(1)} · ${Math.round(penaltyShare * 100)}% pen`;
+    if (tailScore !== undefined) out += `, blow-up ${tailScore.toFixed(1)}`;
+    return out;
+}
+
+/** Map-chip label: club leading ("Driver · prob. 4.2 · 12% pen"), tail when expanded. */
+export function optionChipLabel(chip: OptionChip, expanded: boolean): string {
+    const triple = scoreRiskTriple(
+        chip.probableScore, chip.penaltyProb, expanded ? chip.tailScore : undefined);
+    return chip.clubName ? `${chip.clubName} · ${triple}` : triple;
+}
+
+/**
+ * Score chips for every option at every multi-sibling decision point of the
+ * plan. Pure; runs the aim sweep per clubbed chain leg — enrich cadence only
+ * (see the section comment). Legs without a club price as the point estimate
+ * inside `scoreOptionChain`, so chips appear as soon as siblings exist.
+ */
+export function buildOptionChips(plan: HolePlan, ctx: LegStrategyContext): OptionChip[] {
+    const shots = plan.allNodes
+        .filter(node => node.kind === 'shot' && node.shot !== undefined)
+        .map(node => node.shot!);
+    const nodeByShotId = new Map(
+        plan.allNodes.filter(node => node.shot !== undefined).map(node => [node.shot!.id, node]));
+    const legByShotId = new Map(
+        plan.allLegs
+            .filter(leg => leg.to.kind === 'shot' && leg.to.shot !== undefined)
+            .map(leg => [leg.to.shot!.id, leg]));
+    const children = orderedChildren(shots);
+
+    const chainLegFor = (shot: PlanShot): ChainLeg | null => {
+        const leg = legByShotId.get(shot.id);
+        if (!leg) return null;
+        const groundSlope = leg.playsLikeM !== undefined && leg.horizontalM > 0
+            ? (leg.playsLikeM - leg.horizontalM) / leg.horizontalM
+            : 0;
+        return {
+            origin: { x: leg.from.x, y: leg.from.y },
+            landing: { x: leg.to.x, y: leg.to.y },
+            club: leg.club,
+            groundSlope,
+        };
+    };
+
+    const chips: OptionChip[] = [];
+    for (const siblings of children.values()) {
+        if (siblings.length < 2) continue; // not a decision point
+        siblings.forEach((shot, rank) => {
+            // The option's planned line: this shot, then rank-0 descendants.
+            const legs: ChainLeg[] = [];
+            let current: PlanShot | undefined = shot;
+            while (current) {
+                const leg = chainLegFor(current);
+                if (!leg) return; // no origin resolved (e.g. missing tee) — no chip
+                legs.push(leg);
+                current = children.get(current.id)?.[0];
+            }
+            const node = nodeByShotId.get(shot.id);
+            if (!node) return;
+            const score = scoreOptionChain(legs, {
+                surfaces: ctx.lieMap.surfaces(),
+                greenCenter: ctx.greenCenter,
+                ...(ctx.wind !== null
+                    ? { wind: { speedMps: ctx.wind.speedMps, directionDeg: ctx.wind.directionDeg } }
+                    : {}),
+            });
+            const strokesBefore = node.depth; // shots played before this decision
+            chips.push({
+                shotId: shot.id,
+                rank,
+                primary: node.primary,
+                clubName: legByShotId.get(shot.id)?.club?.name ?? null,
+                strokesBefore,
+                probableScore: strokesBefore + score.expectedStrokes,
+                penaltyProb: score.penaltyProb,
+                tailScore: strokesBefore + score.tailStrokes,
+                lat: node.lat,
+                lon: node.lon,
+            });
+        });
+    }
+    return chips;
+}
+
 // ── Corridor-gate geometry ─────────────────────────────────────────────────
 
 /**
@@ -634,6 +766,11 @@ export function autoGatesForPlan(
 export interface PlanOverlayInput {
     plan: HolePlan | null;
     gates: readonly PlanGate[];
+    /**
+     * Score chips for multi-sibling decision points (T30), computed on the
+     * strategy enrich cadence — absent/empty mid-drag, like all enrichment.
+     */
+    optionChips?: readonly OptionChip[];
     selectedShotId: string | null;
     selectedGateId: string | null;
 }
@@ -794,6 +931,22 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
                 geometry: { type: 'Point', coordinates: [node.lon, node.lat] },
             });
         }
+    }
+
+    // Option score chips (T30): one labelled point per option at a decision
+    // point. The SELECTED option's chip expands with the blow-up (tail) score
+    // — the map's "expand" affordance; the panel's is its hover tooltip.
+    for (const chip of input.optionChips ?? []) {
+        features.push({
+            type: 'Feature',
+            properties: {
+                role: 'option-chip',
+                shotId: chip.shotId,
+                primary: chip.primary,
+                label: optionChipLabel(chip, chip.shotId === input.selectedShotId),
+            },
+            geometry: { type: 'Point', coordinates: [chip.lon, chip.lat] },
+        });
     }
 
     for (const gate of input.gates) {
@@ -1043,6 +1196,28 @@ export function planLayers(): OverlayLayerSpec[] {
                 'circle-stroke-width': MARKER_RING_WIDTH,
                 'circle-opacity': ['case', ['get', 'primary'], 1, 0.62] as never,
                 'circle-stroke-opacity': ['case', ['get', 'primary'], 1, 0.62] as never,
+            },
+        },
+        {
+            // Option score chips (T30): the probable-score/penalty readout
+            // under each option marker at a decision point. Collision-hidden
+            // before overlapping (guide §03); the primary choice's chip wins
+            // visual weight over its alternatives.
+            id: `${PLAN_OVERLAY_ID}-option-chip`,
+            type: 'symbol',
+            filter: role('option-chip'),
+            layout: {
+                'text-field': ['get', 'label'] as never,
+                'text-size': 11,
+                'text-offset': [0, 1.4],
+                'text-anchor': 'top',
+                'text-allow-overlap': false,
+            },
+            paint: {
+                'text-color': OVERLAY_TEXT,
+                'text-halo-color': OVERLAY_TEXT_HALO,
+                'text-halo-width': 1.5,
+                'text-opacity': ['case', ['get', 'primary'], 1, 0.75] as never,
             },
         },
         {

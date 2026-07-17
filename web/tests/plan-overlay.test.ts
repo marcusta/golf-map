@@ -2,6 +2,7 @@ import { test, expect, describe } from 'bun:test';
 import {
     autoGatesForPlan,
     buildHolePlan,
+    buildOptionChips,
     buildPlanGeojson,
     enrichLegStrategy,
     enrichPlanStrategy,
@@ -12,12 +13,15 @@ import {
     legLabel,
     legLight,
     nearestLegFoot,
+    optionChipLabel,
     perpendicularFoot,
     planarBearingDeg,
     planLayers,
+    scoreRiskTriple,
     type HolePlan,
     type HolePlanInput,
     type LegStrategyContext,
+    type OptionChip,
     type PlanLeg,
 } from '../src/planner/plan-overlay';
 import { buildLieMap } from '../src/planner/lie-map';
@@ -25,8 +29,10 @@ import {
     adjustedCarryM,
     dispersionEllipse,
     optimizeAim,
+    scoreOptionChain,
     segmentStats,
     windEffect,
+    type ChainLeg,
 } from '../../shared/strategy';
 import { sweref99tmToWgs84, wgs84ToSweref99tm } from '../src/geo/transform';
 import type { Club } from '../../shared/api/clubs.gen';
@@ -746,6 +752,175 @@ describe('buildPlanGeojson strategy rendering', () => {
         const approach = byRole(fc.features, 'leg')[0];
         const light = (approach.properties as { light: string }).light;
         expect(light).toBe(legLight(enriched.legs[0]) ?? '');
+    });
+});
+
+// ── Option score chips (feature-plan-shot-options.md O4, T30) ───────────────
+
+describe('option score chips', () => {
+    const byRole = (features: Feature[], role: string) =>
+        features.filter(f => (f.properties as { role: string }).role === role);
+
+    const fairway = rectFeature('fw1', 'fairway', BASE.x - 200, BASE.x + 200, BASE.y - 50, BASE.y + 400);
+    function ctx(): LegStrategyContext {
+        return { lieMap: buildLieMap([fairway]), greenCenter: { x: BASE.x, y: BASE.y + 350 }, wind: null };
+    }
+
+    /** Driver-vs-iron root options, each with a rank-0 continuation. */
+    function optionTree() {
+        const driver = shot('driver', at(200, -15), { clubId: DRIVER.id, sortOrder: 0 });
+        const wedge = shot('wedge', at(320, -5), {
+            parentShotId: driver.id, clubId: IRON7.id, sortOrder: 0,
+        });
+        const iron = shot('iron', at(160, 20), { clubId: IRON7.id, sortOrder: 1 });
+        const seven = shot('seven', at(285, 10), {
+            parentShotId: iron.id, clubId: IRON7.id, sortOrder: 0,
+        });
+        return { driver, wedge, iron, seven, plan: buildHolePlan(northInput({ shots: [driver, wedge, iron, seven] })) };
+    }
+
+    /** The ChainLeg buildOptionChips derives for the leg landing on `shotId`. */
+    function chainLegFor(plan: HolePlan, shotId: string): ChainLeg {
+        const leg = plan.allLegs.find(l => l.to.kind === 'shot' && l.to.shot?.id === shotId)!;
+        return {
+            origin: { x: leg.from.x, y: leg.from.y },
+            landing: { x: leg.to.x, y: leg.to.y },
+            club: leg.club,
+            groundSlope: leg.playsLikeM !== undefined && leg.horizontalM > 0
+                ? (leg.playsLikeM - leg.horizontalM) / leg.horizontalM
+                : 0,
+        };
+    }
+
+    test('a linear plan (no multi-sibling decision point) yields no chips', () => {
+        expect(buildOptionChips(buildHolePlan(northInput()), ctx())).toEqual([]);
+    });
+
+    test('every option at a decision point gets a chip; chains follow rank-0 continuations', () => {
+        const { driver, iron, wedge, seven, plan } = optionTree();
+        const c = ctx();
+        const chips = buildOptionChips(plan, c);
+        expect(chips.map(chip => chip.shotId).sort()).toEqual([driver.id, iron.id].sort());
+
+        const chainCtx = { surfaces: c.lieMap.surfaces(), greenCenter: c.greenCenter };
+        const driverChain = scoreOptionChain(
+            [chainLegFor(plan, driver.id), chainLegFor(plan, wedge.id)], chainCtx);
+        const ironChain = scoreOptionChain(
+            [chainLegFor(plan, iron.id), chainLegFor(plan, seven.id)], chainCtx);
+
+        const driverChip = chips.find(chip => chip.shotId === driver.id)!;
+        const ironChip = chips.find(chip => chip.shotId === iron.id)!;
+        // Root options: no strokes behind the decision — probable score IS the chain EV.
+        expect(driverChip.strokesBefore).toBe(0);
+        expect(driverChip.probableScore).toBe(driverChain.expectedStrokes);
+        expect(driverChip.tailScore).toBe(driverChain.tailStrokes);
+        expect(driverChip.penaltyProb).toBe(driverChain.penaltyProb);
+        expect(ironChip.probableScore).toBe(ironChain.expectedStrokes);
+        // Ranks mirror sibling order; both roots are options of one decision.
+        expect(driverChip.rank).toBe(0);
+        expect(driverChip.primary).toBe(true);
+        expect(ironChip.rank).toBe(1);
+        expect(ironChip.primary).toBe(false);
+        expect(driverChip.clubName).toBe('Driver');
+    });
+
+    test('a deeper decision point counts the strokes already played before it', () => {
+        // One tee shot, then TWO options for shot 2 (a depth-1 decision).
+        const tee1 = shot('tee1', at(200), { clubId: DRIVER.id, sortOrder: 0 });
+        const attack = shot('attack', at(330, -5), {
+            parentShotId: tee1.id, clubId: IRON7.id, sortOrder: 0,
+        });
+        const safe = shot('safe', at(280, 10), {
+            parentShotId: tee1.id, clubId: IRON7.id, sortOrder: 1,
+        });
+        const plan = buildHolePlan(northInput({ shots: [tee1, attack, safe] }));
+        const c = ctx();
+        const chips = buildOptionChips(plan, c);
+        expect(chips.map(chip => chip.shotId).sort()).toEqual([attack.id, safe.id].sort());
+
+        const attackChip = chips.find(chip => chip.shotId === attack.id)!;
+        expect(attackChip.strokesBefore).toBe(1); // the tee shot is behind the decision
+        const chain = scoreOptionChain(
+            [chainLegFor(plan, attack.id)],
+            { surfaces: c.lieMap.surfaces(), greenCenter: c.greenCenter },
+        );
+        expect(attackChip.probableScore).toBe(1 + chain.expectedStrokes);
+    });
+
+    test('clubless options still price (point estimate inside the chain scorer)', () => {
+        const a = shot('a', at(200, -15), { clubId: null, sortOrder: 0 });
+        const b = shot('b', at(160, 20), { clubId: null, sortOrder: 1 });
+        const plan = buildHolePlan(northInput({ shots: [a, b] }));
+        const chips = buildOptionChips(plan, ctx());
+        expect(chips).toHaveLength(2);
+        for (const chip of chips) {
+            expect(chip.probableScore).toBeGreaterThan(1);
+            expect(chip.penaltyProb).toBe(0);
+            expect(chip.tailScore).toBe(chip.probableScore); // zero tail spread
+        }
+    });
+
+    test('scoreRiskTriple / optionChipLabel speak the shared O4 vocabulary', () => {
+        expect(scoreRiskTriple(4.23, 0.12)).toBe('prob. 4.2 · 12% pen');
+        expect(scoreRiskTriple(3.91, 0.184, 5.62)).toBe('prob. 3.9 · 18% pen, blow-up 5.6');
+        const chip: OptionChip = {
+            shotId: 's', rank: 0, primary: true, clubName: 'Driver', strokesBefore: 0,
+            probableScore: 4.21, penaltyProb: 0.12, tailScore: 5.63, lat: 0, lon: 0,
+        };
+        expect(optionChipLabel(chip, false)).toBe('Driver · prob. 4.2 · 12% pen');
+        expect(optionChipLabel(chip, true)).toBe('Driver · prob. 4.2 · 12% pen, blow-up 5.6');
+        expect(optionChipLabel({ ...chip, clubName: null }, false)).toBe('prob. 4.2 · 12% pen');
+    });
+
+    test('geojson renders one option-chip feature per chip; selection expands the tail', () => {
+        const { driver, iron, plan } = optionTree();
+        const chips = buildOptionChips(plan, ctx());
+        const fc = buildPlanGeojson({
+            plan, gates: [], optionChips: chips, selectedShotId: iron.id, selectedGateId: null,
+        });
+        const chipFeatures = byRole(fc.features, 'option-chip');
+        expect(chipFeatures).toHaveLength(2);
+
+        const labelOf = (shotId: string) => (chipFeatures
+            .find(f => (f.properties as { shotId: string }).shotId === shotId)!
+            .properties as { label: string }).label;
+        expect(labelOf(driver.id)).toContain('prob. ');
+        expect(labelOf(driver.id)).not.toContain('blow-up');
+        expect(labelOf(iron.id)).toContain('blow-up'); // selected → expanded
+        // Chips anchor at the option landing.
+        const ironFeature = chipFeatures
+            .find(f => (f.properties as { shotId: string }).shotId === iron.id)!;
+        const coords = (ironFeature.geometry as Point).coordinates;
+        expect(coords[1]).toBeCloseTo(at(160, 20).lat, 9);
+        // And the overlay has a symbol layer for the role.
+        expect(planLayers().some(layer => layer.id === 'plan-option-chip' && layer.type === 'symbol'))
+            .toBe(true);
+    });
+
+    test('omitting optionChips renders no chip features (the mid-drag frame)', () => {
+        const { plan } = optionTree();
+        const fc = buildPlanGeojson({ plan, gates: [], selectedShotId: null, selectedGateId: null });
+        expect(byRole(fc.features, 'option-chip')).toHaveLength(0);
+    });
+
+    test('chip pricing runs the aim sweep; geojson formatting never does (cadence split)', () => {
+        // Same spy proxy as the compute-cadence suite below: reading the lie
+        // map's surfaces is how the sweep gets its rings, so counting reads
+        // distinguishes "priced" (enrich cadence) from "formatted" (per frame).
+        const real = buildLieMap([fairway]);
+        let surfaceReads = 0;
+        const spy: LegStrategyContext['lieMap'] = {
+            classifyLie: p => real.classifyLie(p),
+            surfaces: () => { surfaceReads++; return real.surfaces(); },
+            hazardRings: () => real.hazardRings(),
+        };
+        const { plan } = optionTree();
+        const chips = buildOptionChips(plan, { ...ctx(), lieMap: spy });
+        expect(surfaceReads).toBeGreaterThan(0);
+
+        surfaceReads = 0;
+        buildPlanGeojson({ plan, gates: [], optionChips: chips, selectedShotId: null, selectedGateId: null });
+        expect(surfaceReads).toBe(0);
     });
 });
 

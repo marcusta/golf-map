@@ -12,7 +12,15 @@ import { icon } from '../ui/icons';
 import { PuttReadService, DEFAULT_STIMP_FT, type PuttReadDisplay } from './putt-read.service';
 import { PuttEstimateService } from './putt-estimate.service';
 import { scoreEstimate, type PuttEstimate, type PuttEstimateScore } from './putt-estimate-score';
-import { gateLabel, legDriftLabel, legLight, type LegLight, type PlanLeg, type PlanNode } from './plan-overlay';
+import {
+    gateLabel,
+    legDriftLabel,
+    legLight,
+    scoreRiskTriple,
+    type LegLight,
+    type PlanLeg,
+    type PlanNode,
+} from './plan-overlay';
 import { ElevationService } from '../map/elevation.service';
 import { ElevationProfileService } from '../profile/elevation-profile.service';
 import { ElevationProfileComponent, signedMeters } from '../profile/elevation-profile.component';
@@ -201,6 +209,7 @@ const shotRowTpl = template(`
             <button bind="removeOption" class="option-action danger" type="button" data-testid="planner-delete-option">Delete option</button>
             <button bind="remove" class="row-remove" type="button" aria-label="Delete shot" title="Delete shot and splice its continuations">${icon('x')}</button>
         </div>
+        <span bind="chip" class="shot-chip" data-testid="planner-option-chip"></span>
         <span bind="dist" class="shot-dist"></span>
         <span bind="advice" class="shot-advice"></span>
     </div>
@@ -547,6 +556,17 @@ export class PlannerPanelComponent extends Component {
                 border-radius: ${t('radius-sm')};
                 background: ${t('color-surface-card')};
                 color: ${t('color-text-primary')};
+            }
+            /* Option score chip (T30): the decision's headline number —
+               semibold mono, hidden entirely off decision points. */
+            & .shot-chip {
+                grid-column: 2 / span 2;
+                font-size: 0.7rem;
+                font-weight: 600;
+                color: ${t('color-text-primary')};
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
+                &:empty { display: none; }
             }
             & .shot-dist {
                 grid-column: 2 / span 2;
@@ -1167,6 +1187,13 @@ export class PlannerPanelComponent extends Component {
                     // Reactive index — keyed rows are reused, so a captured
                     // index would go stale after a mid-list delete.
                     idx: () => this.optionIndexLabel(live.get()),
+                    // Option score chip (T30): probable score + penalty%; the
+                    // blow-up tail rides the hover tooltip. Empty (and hidden
+                    // via :empty) off decision points and mid-drag.
+                    chip: {
+                        textContent: () => this.optionChipText(shot.id),
+                        title: () => this.optionChipTailText(shot.id),
+                    },
                     dist: () => this.shotDistText(shot.id),
                     advice: () => this.shotAdviceText(shot.id),
                     remove: {
@@ -1262,6 +1289,23 @@ export class PlannerPanelComponent extends Component {
             parentShotId = parent.parentShotId;
         }
         return depth;
+    }
+
+    /**
+     * The option's score/risk chip text — "prob. 4.2 · 12% pen" (O4: probable
+     * hole score leading, penalty% beside) — or '' when the shot is not part
+     * of a multi-sibling decision point / not yet priced (mid-drag). Same
+     * vocabulary as the map chip and iOS ScoreRiskFormat.
+     */
+    private optionChipText(shotId: string): string {
+        const chip = this.tool.optionChips.get().find(c => c.shotId === shotId);
+        return chip ? scoreRiskTriple(chip.probableScore, chip.penaltyProb) : '';
+    }
+
+    /** Hover tooltip for the chip: the blow-up (CVaR₈₀) score. */
+    private optionChipTailText(shotId: string): string {
+        const chip = this.tool.optionChips.get().find(c => c.shotId === shotId);
+        return chip ? `blow-up ${chip.tailScore.toFixed(1)}` : '';
     }
 
     /** Compact leg/option label: 1A, 1B, 2A… within each decision point. */

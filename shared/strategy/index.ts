@@ -94,6 +94,16 @@ export {
     optimizeAim,
     standardNormalPairs,
 } from './aim';
+// Option-chain scoring (feature-plan-shot-options.md O4): the score/risk
+// triple for one authored option branch, generalising the par-5 attack
+// rule's two-shot chain to depth n. Derived client-side, never persisted.
+export {
+    type ChainLeg,
+    type ChainScoreContext,
+    type ChainLegScore,
+    type ChainScore,
+    scoreOptionChain,
+} from './option-chain';
 // Smart-caddy advice layer. NOTE: GreenSlopeSummary is still
 // FORWARD-DECLARED (see caddy/rule.ts) until the slope adapter (T9) exports
 // the canonical type. FeatureDistance is now sourced from feature-distances.ts

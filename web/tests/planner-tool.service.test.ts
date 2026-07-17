@@ -11,6 +11,8 @@ import { test, expect, describe, afterEach } from 'bun:test';
 import { di, Router } from '@basics/core/client/core';
 import { _reset } from '@basics/core/client/error-report';
 import { PlannerToolService } from '../src/planner/planner-tool.service';
+import { PlanService } from '../src/planner/plan.service';
+import type { PlanShot } from '../../shared/api/game-plans.gen';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { FeaturesService } from '../src/draw/features.service';
 import { FurnitureService } from '../src/furniture/furniture.service';
@@ -142,6 +144,62 @@ function seedHoleWithGreen(h: Hole, opts: { withGreenRow?: boolean } = {}): void
 function selectHole(number: number): void {
     di.get(Router).navigate('/planner', { query: { hole: String(number) } });
 }
+
+describe('PlannerToolService — option score chips (T30, enrich cadence)', () => {
+    /** Two root options for hole 1 (a tee decision point), no clubs — the
+     *  chain scorer's point-estimate branch prices them regardless. */
+    function seedOptionPlan(): { plan: PlanService; a: PlanShot; b: PlanShot } {
+        const mk = (id: string, sortOrder: number, eastM: number): PlanShot => {
+            const p = sweref99tmToWgs84(GREEN_CENTER_XY.x + eastM, GREEN_CENTER_XY.y - 40);
+            return {
+                id, gamePlanHoleId: 'ph1', parentShotId: null, sortOrder,
+                lat: p.lat, lon: p.lon, elevation: null, clubId: null, label: null, version: 1,
+            };
+        };
+        const a = mk('opt-a', 0, -12);
+        const b = mk('opt-b', 1, 12);
+        const plan = new PlanService();
+        plan.holes.set([{
+            id: 'ph1', gamePlanId: 'p1', holeNumber: 1, teeId: null, preferredClubId: null,
+            plannedDirectionDeg: null, windSpeedMps: null, windDirectionDeg: null,
+            notes: null, version: 1,
+        }]);
+        plan.shots.set([a, b]);
+        di.set(PlanService, plan);
+        return { plan, a, b };
+    }
+
+    test('sibling options get chips on the enrich pass; a drag frame empties them without re-enriching', async () => {
+        seedHoleWithGreen(hole('h1', 1));
+        const { plan, a } = seedOptionPlan();
+        selectHole(1);
+        const { api } = stubAnalysisApi(tiltedGreenGrid());
+
+        const svc = new PlannerToolService(api);
+        const disposers: Array<() => void> = [];
+        svc.start(d => disposers.push(d));
+        await settle();
+
+        // Both options of the tee decision point are priced.
+        const chips = svc.optionChips.get();
+        expect(chips.map(c => c.shotId).sort()).toEqual(['opt-a', 'opt-b']);
+        for (const chip of chips) {
+            expect(chip.strokesBefore).toBe(0);
+            expect(chip.probableScore).toBeGreaterThan(1);
+        }
+        const enrichesBefore = svc.enrichCount.get();
+
+        // A per-frame drag patch (no network, cadence-exempt): the live plan
+        // moves past the priced base → chips drop out, and NO enrichment runs.
+        plan.patchShotLocal(a.id, { lat: a.lat + 0.0002 });
+        expect(svc.optionChips.get()).toEqual([]);
+        await settle();
+        expect(svc.optionChips.get()).toEqual([]);
+        expect(svc.enrichCount.get()).toBe(enrichesBefore); // cadence held
+
+        for (const dispose of disposers) dispose();
+    });
+});
 
 describe('PlannerToolService — green-slope caddy seam (D10)', () => {
     test('selecting a hole with a tilted, mapped green fetches the slope grid and the caddy surfaces green-slope-half advice', async () => {

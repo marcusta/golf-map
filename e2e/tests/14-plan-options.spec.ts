@@ -142,6 +142,16 @@ test('author driver vs 4-iron options with continuations, promote one, and survi
     await expect(ironContinuation).toHaveCount(1);
     await updateClub(page, ironContinuation, '7i');
 
+    // Option score chips (T30): once both roots are siblings of one decision
+    // point, the enrich pass prices each option and the panel rows show the
+    // probable-score/penalty triple. Continuation rows (singleton sibling
+    // groups) stay chipless — no decision, no chip.
+    await expect(driver.locator(tid('planner-option-chip'))).toHaveText(/prob\. \d+\.\d · \d+% pen/);
+    await expect(iron.locator(tid('planner-option-chip'))).toHaveText(/prob\. \d+\.\d · \d+% pen/);
+    // The blow-up (tail) score rides the chip's hover tooltip.
+    await expect(driver.locator(tid('planner-option-chip'))).toHaveAttribute('title', /blow-up \d+\.\d/);
+    await expect(ironContinuation.locator(tid('planner-option-chip'))).toHaveText('');
+
     // The 4-iron root starts as rank 1. Promote it and verify both root ranks
     // before the reload.
     const promoted = page.waitForResponse(response =>
@@ -168,4 +178,9 @@ test('author driver vs 4-iron options with continuations, promote one, and survi
     await expect(page.locator(
         `${tid('planner-shot-row')}[data-parent-shot-id="${ironId}"]`,
     )).toHaveCount(1);
+
+    // Chips survive the reload: the load-time enrich pass re-prices both
+    // options of the decision point (T30).
+    await expect(reloadedDriver.locator(tid('planner-option-chip'))).toHaveText(/prob\. \d+\.\d · \d+% pen/);
+    await expect(reloadedIron.locator(tid('planner-option-chip'))).toHaveText(/prob\. \d+\.\d · \d+% pen/);
 });
