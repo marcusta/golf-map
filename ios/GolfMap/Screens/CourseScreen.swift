@@ -379,8 +379,12 @@ struct CourseScreen: View {
             }
             // `-planDemo 1` installs a synthetic one-shot-per-hole game plan.
             // `-planOptions 1` installs the same fixture as a driver-vs-safe
-            // tree with continuations for T32's headless option verification.
-            let optionDemo = UserDefaults.standard.string(forKey: "planOptions") == "1"
+            // tree with continuations for T32's headless option verification;
+            // `-planOptions 2` installs the tree WITHOUT the T32 driver so a
+            // `-roundState` decide scenario can run against authored options
+            // without competing round writes (T37).
+            let planOptionsFlag = UserDefaults.standard.string(forKey: "planOptions")
+            let optionDemo = planOptionsFlag == "1" || planOptionsFlag == "2"
             if UserDefaults.standard.string(forKey: "planDemo") == "1" || optionDemo {
                 newModel.setPlan(Self.demoPlan(furniture: furniture, withOptions: optionDemo))
                 newModel.setClubs(Self.demoClubs)
@@ -1386,6 +1390,9 @@ private struct OnCourseContentView: View {
                     // club, distance, R4 triple), and with `-decidePick 1`
                     // tap the top choice so the working-target wiring (banner
                     // + distance line + capture prefill) can be verified.
+                    // `-decidePick option` (T37) taps the first AUTHORED
+                    // option choice instead, proving the merged branch is
+                    // pickable and its own landing becomes the working target.
                     if model.roundCardMode == .decide {
                         let choices = model.decideContent?.choices ?? []
                         outcome += " choices=["
@@ -1394,8 +1401,11 @@ private struct OnCourseContentView: View {
                                     + "|\($0.triple)"
                             }.joined(separator: ";")
                             + "]"
-                        if UserDefaults.standard.string(forKey: "decidePick") == "1",
-                           let first = choices.first {
+                        let pick = UserDefaults.standard.string(forKey: "decidePick")
+                        if let pick, pick == "1" || pick == "option",
+                           let first = pick == "option"
+                               ? choices.first(where: { $0.kind == .option })
+                               : choices.first {
                             model.selectDecideChoice(first)
                             if let wt = model.workingTarget {
                                 let prefill = ShotCaptureDefaults.defaultTarget(
@@ -1467,6 +1477,19 @@ private struct OnCourseContentView: View {
                     model.selectPlanOption(shotId: alternative.id)
                     let selectedLine = model.playingState?.activeLine.map(\.id) ?? []
                     let selected = model.planOptionChips.first { $0.id == alternative.id }?.isSelected == true
+                    // T37 finding 2: with the alternative selected (and no
+                    // pin/working target in play), capture's target prefill
+                    // must read the SELECTED branch's landing, not the
+                    // primary line's.
+                    let prefill = ShotCaptureDefaults.defaultTarget(
+                        position: tee,
+                        activePin: nil,
+                        planLandings: model.capturePlanLandings,
+                        greenCenter: model.targets.greenCenter
+                    )
+                    let prefillToken = prefill == alternativeRoot.position
+                        ? "branch"
+                        : (prefill == holePlan.shots.first?.position ? "primary" : "other")
                     let atAlternative = [
                         OnCourseModel.RoundStroke(holeNumber: model.currentHoleNumber, position: tee),
                         OnCourseModel.RoundStroke(
@@ -1491,6 +1514,7 @@ private struct OnCourseContentView: View {
                     model.selectPlanOption(shotId: alternative.id)
                     let outcome = "chips=\(initial.map { "\($0.label)|\($0.clubName)" }.joined(separator: ";")) "
                         + "selected=\(selected) line=\(selectedLine.joined(separator: ">")) "
+                        + "prefill=\(prefillToken) "
                         + "selectedMode=\(selectedMode) primaryMode=\(primaryMode) "
                         + "roundReset=\(roundReset)"
                     print("OPTIONS-DEBUG \(outcome)")
@@ -2138,7 +2162,9 @@ private struct OnCourseContentView: View {
     /// plays-like remaining, shot type auto (putt on the green).
     private func armCapture(at position: LatLon) {
         let targets = model.targets
-        let planLandings = model.currentHolePlan?.shots.map(\.position) ?? []
+        // Active line first (a picked option's branch), primary otherwise
+        // (T37 finding 2).
+        let planLandings = model.capturePlanLandings
         let target = ShotCaptureDefaults.defaultTarget(
             workingTarget: model.workingTarget?.position,
             position: position,
@@ -2214,7 +2240,8 @@ private struct OnCourseContentView: View {
     private func rearmCapture() {
         guard let position = model.captureStartPosition else { return }
         let targets = model.targets
-        let planLandings = model.currentHolePlan?.shots.map(\.position) ?? []
+        // Same active-line preference as `armCapture` (T37 finding 2).
+        let planLandings = model.capturePlanLandings
         capture.rearm(
             position: position,
             target: ShotCaptureDefaults.defaultTarget(

@@ -208,6 +208,14 @@ struct LaserEntrySheet: View {
                 message = .invalid
                 return
             }
+            // Without a live fix `registerLaserShot` can only return
+            // `.inconclusive` (no residual was ever computed) — that is a
+            // missing-fix problem, not a near-gate residual, so say so
+            // (T37 finding 5; the `.calibrationShot` path guards the same way).
+            guard model.userLocation != nil else {
+                message = .needsFix
+                return
+            }
             switch model.registerLaserShot(distanceM: metres, target: target) {
             case .confirmed:
                 // Silent refresh by decision: the carry check remains visible
@@ -292,7 +300,7 @@ struct LaserEntrySheet: View {
             color = .statusCaution
             icon = "exclamationmark.triangle.fill"
         case .needsFix:
-            text = "A mapped-feature calibration shot needs a live GPS fix. Re-shoot once GPS is available."
+            text = "A mapped-feature laser shot needs a live GPS fix. Re-shoot once GPS is available."
             color = .statusCaution
             icon = "exclamationmark.triangle.fill"
         case .shotAdded(let count):

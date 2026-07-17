@@ -33,6 +33,11 @@ final class DecideMomentTests: XCTestCase {
     private let landing = LatLon(lat: 58.3620, lon: 15.7090)
     private let greenCenter = LatLon(lat: 58.3640, lon: 15.7080)
     private let offPlanBall = LatLon(lat: 58.3625, lon: 15.7080)
+    /// The safe-line sibling's landing (option-tree fixture, T37): ~106 m
+    /// from the off-plan ball and ~97 m short of the green — the authored
+    /// option SURVIVES the divergence position, while the primary "Attack"
+    /// root (~230 m from the green) is behind the ball and does not.
+    private let safeOptionLanding = LatLon(lat: 58.3633, lon: 15.7090)
 
     private func makeFurniture() -> CourseFurniture {
         let course = CourseRecord(
@@ -87,6 +92,41 @@ final class DecideMomentTests: XCTestCase {
         )
     }
 
+    /// Option-tree variant (T37): the primary "Attack" root plus a "Safe
+    /// line" sibling whose landing survives from `offPlanBall`, plus a
+    /// single-child continuation under it — a continuation is plan-leg
+    /// content, NOT a decision-point option, so it must never enter decide.
+    private func makeOptionPlan(clubs: [ClubRecord], safeClubId: String) -> CoursePlan {
+        CoursePlan.make(
+            stored: StoredGamePlan(
+                plan: GamePlanRecord(id: "plan-1", courseId: "course-1"),
+                holes: [GamePlanHoleRecord(
+                    id: "ph1", gamePlanId: "plan-1", holeNumber: 1, notes: nil
+                )],
+                shots: [
+                    PlanShotRecord(
+                        id: "ps1", gamePlanHoleId: "ph1", sortOrder: 0,
+                        lat: landing.lat, lon: landing.lon,
+                        clubId: "c-drv", label: "Attack"
+                    ),
+                    PlanShotRecord(
+                        id: "ps-safe", gamePlanHoleId: "ph1", sortOrder: 1,
+                        lat: safeOptionLanding.lat, lon: safeOptionLanding.lon,
+                        clubId: safeClubId, label: "Safe line"
+                    ),
+                    PlanShotRecord(
+                        id: "ps-safe-next", gamePlanHoleId: "ph1", sortOrder: 0,
+                        parentShotId: "ps-safe",
+                        lat: 58.3636, lon: 15.7085,
+                        clubId: "c-sw", label: "Chip zone"
+                    ),
+                ],
+                gates: []
+            ),
+            clubs: clubs
+        )
+    }
+
     private func makeBag() -> [ClubRecord] {
         [
             ClubRecord(id: "c-drv", name: "Driver", carryM: 230, dispersionM: 40, sortOrder: 0),
@@ -113,19 +153,29 @@ final class DecideMomentTests: XCTestCase {
 
     /// Model on the golden hole with the ball off-plan (mode = decide):
     /// green ring installed, mid-line bunker, optional jail (trees) around
-    /// the ball.
-    private func makeDecideModel(jail: Bool = false) -> OnCourseModel {
+    /// the ball. `optionPlan` swaps in the T37 option tree and drops the
+    /// bunker/hazards, so the engine yields go + layup-full and the option
+    /// list never overflows the R4 cap of 3.
+    private func makeDecideModel(
+        jail: Bool = false, optionPlan: Bool = false, safeClubId: String = "c-pw"
+    ) -> OnCourseModel {
         let model = OnCourseModel(furniture: makeFurniture(), defaults: defaults)
         let bag = makeBag()
         model.setClubs(bag)
-        model.setPlan(makePlan(clubs: bag))
+        model.setPlan(
+            optionPlan
+                ? makeOptionPlan(clubs: bag, safeClubId: safeClubId)
+                : makePlan(clubs: bag)
+        )
         var surfaces = [box(around: greenCenter, half: 20, kind: "green")]
         if jail {
             surfaces.insert(box(around: offPlanBall, half: 20, kind: "trees"), at: 0)
         }
-        surfaces.append(midLineBunker)
+        if !optionPlan {
+            surfaces.append(midLineBunker)
+            model.setHazards([midLineBunker], holeIds: ["h1"])
+        }
         model.setSurfaces(surfaces)
-        model.setHazards([midLineBunker], holeIds: ["h1"])
         model.setActiveRound(strokes: [
             OnCourseModel.RoundStroke(holeNumber: 1, position: tee),
             OnCourseModel.RoundStroke(holeNumber: 1, position: offPlanBall),
@@ -221,6 +271,96 @@ final class DecideMomentTests: XCTestCase {
             )
         }
         XCTAssertNotNil(content.caddyHeadline, "the caddy names why")
+    }
+
+    // MARK: - Authored options in decide (R4 merge — T37)
+
+    func testAuthoredSafeLineBranchAppearsPricedAndRanked() throws {
+        let model = makeDecideModel(optionPlan: true)
+        XCTAssertEqual(model.roundCardMode, .decide, "fixture sanity: ball is off-plan")
+        let content = try XCTUnwrap(model.decideContent)
+        XCTAssertLessThanOrEqual(content.choices.count, 3, "the option obeys the R4 cap")
+
+        let options = content.choices.filter { $0.kind == .option }
+        XCTAssertEqual(
+            options.count, 1,
+            "only the SURVIVING safe-line sibling: the behind-the-ball Attack root "
+                + "and the single-child continuation must not enter, got \(content.choices.map(\.id))"
+        )
+        let option = try XCTUnwrap(options.first)
+        XCTAssertEqual(option.id, "option-ps-safe")
+        XCTAssertEqual(option.clubName, "PW", "the authored club still fits from here")
+        XCTAssertTrue(
+            option.headline.hasPrefix("Safe line PW → "),
+            "authored label + club + remaining-in vocabulary, got \(option.headline)"
+        )
+        XCTAssertEqual(option.target, safeOptionLanding, "the option's OWN landing point")
+        XCTAssertEqual(
+            option.distanceM,
+            Int(Distance.planarMeters(offPlanBall, safeOptionLanding).rounded())
+        )
+        // Priced like every other choice: baseline strokes + EV, share in
+        // range, the shared triple formatter.
+        XCTAssertGreaterThan(option.probableScore, 2)
+        XCTAssertTrue((0...1).contains(option.penaltyShare))
+        XCTAssertTrue(option.triple.hasPrefix("prob. "))
+        // Ranked alongside the engine candidates, not pinned to the top.
+        XCTAssertTrue(content.choices.contains { $0.kind == .go }, "engine go still present")
+    }
+
+    func testAuthoredOptionReclubsWhenTheAuthoredCarryNoLongerFits() throws {
+        // The plan's Driver was authored for the TEE origin; from the
+        // diverged ball ~106 m out it cannot fit, so the option re-clubs to
+        // the closest club that does (PW 115).
+        let model = makeDecideModel(optionPlan: true, safeClubId: "c-drv")
+        let option = try XCTUnwrap(
+            model.decideContent?.choices.first { $0.kind == .option }
+        )
+        XCTAssertEqual(option.id, "option-ps-safe")
+        XCTAssertEqual(option.clubName, "PW")
+    }
+
+    func testTappedAuthoredOptionLandingBecomesTheWorkingTarget() throws {
+        let model = makeDecideModel(optionPlan: true)
+        let option = try XCTUnwrap(
+            model.decideContent?.choices.first { $0.kind == .option }
+        )
+        model.selectDecideChoice(option)
+        let wt = try XCTUnwrap(model.workingTarget)
+        XCTAssertEqual(wt.position, safeOptionLanding, "the authored landing, not a green-line projection")
+        XCTAssertEqual(wt.clubName, option.clubName)
+        // Capture prefill reads it FIRST, exactly like an engine choice.
+        XCTAssertEqual(
+            ShotCaptureDefaults.defaultTarget(
+                workingTarget: model.workingTarget?.position,
+                position: offPlanBall,
+                activePin: nil,
+                planLandings: [landing],
+                greenCenter: greenCenter
+            ),
+            safeOptionLanding
+        )
+    }
+
+    // MARK: - DecideKey covers adjust-mode overrides (T37 finding 4)
+
+    func testMovedGreenCentreOverrideInvalidatesTheDecideMemo() throws {
+        let model = makeDecideModel()
+        _ = try XCTUnwrap(model.decideContent)
+        XCTAssertEqual(model.decideBuildCount, 1)
+
+        // ~145 m out — still 5i-reachable, so GO survives and must re-target.
+        let movedGreen = LatLon(lat: 58.3638, lon: 15.7078)
+        model.setHandleOverride(id: OnCourseModel.greenHandleID, to: movedGreen)
+        let after = try XCTUnwrap(model.decideContent)
+        XCTAssertEqual(
+            model.decideBuildCount, 2,
+            "a moved green centre changes the DecideKey and rebuilds exactly once"
+        )
+        let go = try XCTUnwrap(after.choices.first { $0.kind == .go })
+        XCTAssertEqual(go.target, movedGreen, "go re-targets the moved green centre")
+        _ = model.decideContent
+        XCTAssertEqual(model.decideBuildCount, 2, "and the memo holds again afterwards")
     }
 
     // MARK: - Working target (tap → distance line, club, capture prefill)

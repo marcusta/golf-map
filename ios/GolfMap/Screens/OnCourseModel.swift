@@ -2641,6 +2641,10 @@ final class OnCourseModel {
             case layBack = "lay-back"
             /// Recovery-lie punch-out (take-your-medicine's escape).
             case punchOut = "punch-out"
+            /// An authored plan option surviving from the current position
+            /// (options tree, R4 merge — T37). Carries the option's OWN
+            /// landing point as the target.
+            case option
         }
         /// Stable per-derivation id ("go-c5i" / "lay-back-cpw").
         let id: String
@@ -2685,6 +2689,13 @@ final class OnCourseModel {
         var holeNumber: Int
         var strokes: [RoundStroke]
         var planShots: [CoursePlan.Shot]
+        /// The WHOLE option tree, not just the active line — the authored
+        /// decide candidates enumerate every sibling group (T37).
+        var allPlanShots: [CoursePlan.Shot]
+        /// The current hole's Adjust-mode green-centre override: the derivation
+        /// reads the green through `greenCenterPosition(for:)`, so a moved
+        /// green must invalidate the memo (T37 finding 4).
+        var greenOverride: LatLon?
         var surfacesVersion: Int
         var hazardsVersion: Int
         var clubs: [String]
@@ -2713,6 +2724,8 @@ final class OnCourseModel {
             holeNumber: state.holeNumber,
             strokes: activeRoundStrokes ?? [],
             planShots: state.activeLine,
+            allPlanShots: currentHolePlan?.allShots ?? [],
+            greenOverride: greenOverrides[hole.id],
             surfacesVersion: surfacesVersion,
             hazardsVersion: hazardsVersion,
             clubs: clubsFingerprint(),
@@ -2728,19 +2741,66 @@ final class OnCourseModel {
         return content
     }
 
-    /// One engine candidate before pricing: a club committed to a distance
-    /// along the ball → green line.
+    /// One candidate before pricing: a club committed to a distance along the
+    /// ball → green line, or (authored options) to an authored landing point.
     private struct DecideCandidate {
         var kind: DecideChoice.Kind
         var club: ClubRecord
-        /// Ball → intended landing along the line, meters.
+        /// Ball → intended landing, meters (along the green line for engine
+        /// candidates; straight to `target` for authored options).
         var targetM: Double
+        /// Authored-option landing override: the option's OWN point becomes
+        /// the choice target (and the working target on tap); nil for engine
+        /// candidates, whose landing derives along the ball → green line.
+        var target: LatLon? = nil
+        /// The authored shot behind an `.option` candidate (stable choice id
+        /// + headline label); nil for engine candidates.
+        var authoredShotId: String? = nil
+        var authoredLabel: String? = nil
     }
 
-    /// T32 merge seam: authored option branches surviving from the current
-    /// position merge AHEAD of the engine candidates (R4 list order:
-    /// authored → engine). Empty until the options tree lands on iOS.
-    private func authoredDecideCandidates(remainingM: Double) -> [DecideCandidate] { [] }
+    /// R4 merge (T37): the authored sibling options surviving from the
+    /// current position, entered AHEAD of the engine candidates so they win
+    /// dedupe/tie-breaks and inherit the pricing/ranking/vetoes/cap pipeline
+    /// unchanged. An option is a member of a >1-sibling group (a real
+    /// decision point, options doc O1); it survives when its landing still
+    /// advances the ball toward the hole from here. The authored club is kept
+    /// when its carry still fits the ball → landing distance; otherwise the
+    /// option re-clubs like a layup (the plan's club was chosen from its
+    /// parent's landing, not from a diverged ball) and drops out entirely when
+    /// no club in the bag fits — it is not executable from here.
+    private func authoredDecideCandidates(
+        ball: LatLon, remainingM: Double, green: LatLon
+    ) -> [DecideCandidate] {
+        guard let holePlan = currentHolePlan else { return [] }
+        let optionShots = Dictionary(grouping: holePlan.allShots, by: \.parentShotId)
+            .values
+            .filter { $0.count > 1 }
+            .joined()
+            .sorted { ($0.sortOrder, $0.id) < ($1.sortOrder, $1.id) }
+        var candidates: [DecideCandidate] = []
+        for shot in optionShots {
+            let d = Distance.planarMeters(ball, shot.position)
+            let landingRemainingM = Distance.planarMeters(shot.position, green)
+            guard d >= 1, landingRemainingM < remainingM - 1 else { continue }
+            let authoredClub = shot.clubId.flatMap { id in clubs.first { $0.id == id } }
+            let club: ClubRecord?
+            if let authoredClub, abs(authoredClub.carryM - d) <= LAYUP_TARGET_TOLERANCE_M {
+                club = authoredClub
+            } else {
+                club = closestClub(clubs, d).flatMap {
+                    abs($0.carryM - d) <= LAYUP_TARGET_TOLERANCE_M ? $0 : nil
+                }
+            }
+            guard let club else { continue }
+            candidates.append(DecideCandidate(
+                kind: .option, club: club, targetM: d,
+                target: shot.position,
+                authoredShotId: shot.id, authoredLabel: shot.label
+            ))
+        }
+        return candidates
+    }
 
     /// Assemble the decide content: enumerate the par-5-trio-shaped engine
     /// candidates from the actual ball (go / lay-up-to-full-number /
@@ -2768,8 +2828,11 @@ final class OnCourseModel {
             wind.map { windEffect($0.speedMps, $0.directionDeg, bearing, club.carryM) } ?? 0
         }
 
-        // --- Candidates (authored first — T32 seam — then the engine trio).
-        var candidates = authoredDecideCandidates(remainingM: remainingM)
+        // --- Candidates (authored options first — R4 list order — then the
+        // engine trio).
+        var candidates = authoredDecideCandidates(
+            ball: ball, remainingM: remainingM, green: green
+        )
 
         // GO: the closest-carry club whose max carry still reaches. Hazards do
         // NOT drop it (unlike par5-attack) — the triple carries the risk.
@@ -2838,10 +2901,20 @@ final class OnCourseModel {
         }
         var scored: [Scored] = []
         for (order, candidate) in candidates.enumerated() {
+            // Authored options aim at their OWN landing, not down the green
+            // line — the same single-shot Aim.swift pricing, just pointed at
+            // the authored point (no chain scorer on device, O4).
+            let aimBearing: Double
+            if let authoredTarget = candidate.target {
+                let t = Self.planar(authoredTarget)
+                aimBearing = PlanStrategy.compassBearing(dx: t.x - o.x, dy: t.y - o.y)
+            } else {
+                aimBearing = bearing
+            }
             let aim = optimizeAim(AimOptions(
                 origin: o,
                 club: candidate.club,
-                targetBearingDeg: bearing,
+                targetBearingDeg: aimBearing,
                 surfaces: surfaces,
                 greenCenter: g,
                 windSpeedMps: wind?.speedMps,
@@ -2904,21 +2977,37 @@ final class OnCourseModel {
         let choices = ranked.prefix(3).map { item -> DecideChoice in
             let candidate = item.candidate
             let aim = item.aim
-            let targetPoint: LatLon = candidate.kind == .go
-                ? green
-                : Sweref99TM.toWGS84(
+            let targetPoint: LatLon
+            if let authored = candidate.target {
+                targetPoint = authored
+            } else if candidate.kind == .go {
+                targetPoint = green
+            } else {
+                targetPoint = Sweref99TM.toWGS84(
                     x: o.x + unit.x * candidate.targetM,
                     y: o.y + unit.y * candidate.targetM
                 )
+            }
+            // Authored options headline with their label + the option's own
+            // remaining-in figure (the landing is off the green line, so the
+            // engine's remaining − targetM arithmetic does not apply).
+            let headline: String
+            if candidate.kind == .option {
+                let leftM = Int(Distance.planarMeters(targetPoint, green).rounded())
+                headline = "\(candidate.authoredLabel ?? "Option") \(candidate.club.name) → \(leftM) m in"
+            } else {
+                headline = Self.decideHeadline(
+                    candidate.kind, club: candidate.club, targetM: candidate.targetM,
+                    remainingM: remainingM, bearing: bearing, wind: wind
+                )
+            }
             let ev = 1 + aim.best.expectedStrokes
             let gap = aim.best.tailStrokes - aim.best.expectedStrokes
             return DecideChoice(
-                id: "\(candidate.kind.rawValue)-\(candidate.club.id)",
+                id: candidate.authoredShotId.map { "option-\($0)" }
+                    ?? "\(candidate.kind.rawValue)-\(candidate.club.id)",
                 kind: candidate.kind,
-                headline: Self.decideHeadline(
-                    candidate.kind, club: candidate.club, targetM: candidate.targetM,
-                    remainingM: remainingM, bearing: bearing, wind: wind
-                ),
+                headline: headline,
                 clubId: candidate.club.id,
                 clubName: candidate.club.name,
                 target: targetPoint,
@@ -2956,6 +3045,11 @@ final class OnCourseModel {
             return "\(verb) \(club.name) → \(leftM) m in"
         case .punchOut:
             return "Punch out \(club.name) — back in play"
+        case .option:
+            // Not reached: authored-option headlines are built inline in
+            // `buildDecideContent` (they need the option's own landing
+            // geometry, not the green-line projection).
+            return "\(club.name) → \(Int(targetM.rounded())) m"
         }
     }
 
@@ -2995,6 +3089,14 @@ final class OnCourseModel {
 
     func clearWorkingTarget() {
         workingTarget = nil
+    }
+
+    /// The plan landings capture's target prefill scans (armCapture /
+    /// rearmCapture): the round's chosen line when an authored option is
+    /// selected (R8 — T37 finding 2), falling back to the primary-line
+    /// projection — so the prefill follows the branch actually being played.
+    var capturePlanLandings: [LatLon] {
+        (playingState?.activeLine ?? currentHolePlan?.shots ?? []).map(\.position)
     }
 
     // MARK: - Plan editing (planner tool — task T3)

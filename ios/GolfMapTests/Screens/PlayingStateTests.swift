@@ -422,6 +422,43 @@ final class PlayingStateTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(model.roundLegCard(legIndex: 2)).aimLabel, "Bail out")
     }
 
+    // MARK: - Capture prefill follows the active line (T37 finding 2)
+
+    func testCapturePrefillLandingsFollowTheSelectedOptionLine() throws {
+        let model = makeOptionModel()
+        model.setActiveRound(strokes: [])
+        let primary = try XCTUnwrap(model.currentHolePlan).shots.map(\.position)
+        XCTAssertEqual(model.capturePlanLandings, primary, "primary projection by default")
+
+        model.selectPlanOption(shotId: "safe")
+        let line = try XCTUnwrap(model.playingState).activeLine
+        XCTAssertEqual(line.map(\.id), ["safe", "safe-primary"])
+        XCTAssertEqual(
+            model.capturePlanLandings, line.map(\.position),
+            "a picked option redirects the prefill landings to its branch"
+        )
+
+        // Arm capture with no pin and no working target: the prefill is the
+        // SELECTED branch's landing, not the primary line's.
+        let prefill = ShotCaptureDefaults.defaultTarget(
+            position: tee,
+            activePin: nil,
+            planLandings: model.capturePlanLandings,
+            greenCenter: greenCenter
+        )
+        XCTAssertEqual(prefill, line.first?.position)
+        XCTAssertNotEqual(prefill, landing, "not the primary Attack landing")
+    }
+
+    func testCapturePrefillLandingsFallBackToPrimaryWithoutARound() throws {
+        let model = makeOptionModel()
+        XCTAssertEqual(
+            model.capturePlanLandings,
+            try XCTUnwrap(model.currentHolePlan).shots.map(\.position),
+            "no round → the primary projection, byte-identical to today"
+        )
+    }
+
     func testTeePreviewHazardIsTheFarthestCarryBeforeTheLanding() throws {
         // Two bunkers on the line: one at the player's feet, one mid-leg. The
         // strip must name the mid-leg one — the farthest carry the tee shot
