@@ -19,6 +19,9 @@ struct GolfMapApp: App {
                     if UserDefaults.standard.string(forKey: "verifyPlanOptions") == "1" {
                         T32OptionsDebug.run()
                     }
+                    if UserDefaults.standard.string(forKey: "verifyLaserRound") == "1" {
+                        T36LaserRoundDebug.run()
+                    }
                     #endif
                     let roundSync = appEnvironment.roundSync
                     let planSync = appEnvironment.planSync
@@ -150,6 +153,49 @@ private enum T32OptionsDebug {
         case .green: "green"
         case nil: "nil"
         }
+    }
+}
+
+/// Data-independent headless verification for T36. Eighteen fixed-feature
+/// shots, one every four minutes over a 72-minute round, all travel through
+/// OriginCalibration's production residual gate. Without refresh the initial
+/// solve would hit zero trust after 15 minutes; with the periodic observations
+/// it remains applied through the final hole.
+private enum T36LaserRoundDebug {
+    static func run() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var calibration = OriginCalibration(
+            biasE: 2.5,
+            biasN: -1.5,
+            solvedAt: start,
+            solvedNear: LatLon(lat: 58.36, lon: 15.71),
+            method: .trilateration,
+            baseConfidence: 0.85
+        )
+        var confirmed = 0
+        var allApplied = true
+
+        for hole in 1...18 {
+            let shotAt = start.addingTimeInterval(Double(hole * 4 * 60))
+            let residual = hole.isMultiple(of: 2) ? -1.0 : 1.0
+            let (updated, outcome) = calibration.registeringResidual(residual, now: shotAt)
+            calibration = updated
+            if outcome == .confirmed { confirmed += 1 }
+            allApplied = allApplied
+                && calibration.appliedBias(now: shotAt, distanceFromSolveM: 0) != nil
+        }
+
+        let finish = start.addingTimeInterval(72 * 60)
+        let confidence = calibration.confidence(now: finish, distanceFromSolveM: 0)
+        let fresh = allApplied
+            && confirmed == 18
+            && calibration.method == .residualRefresh
+            && calibration.solvedAt == finish
+            && !calibration.stale
+        let outcome = "holes=18 confirmed=\(confirmed) fresh=\(fresh) "
+            + "method=\(calibration.method.rawValue) confidence=\(confidence)"
+        print("LASER-DEBUG \(outcome)")
+        UserDefaults.standard.set(outcome, forKey: "laserDebug.lastResult")
     }
 }
 #endif

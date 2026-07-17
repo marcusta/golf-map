@@ -588,6 +588,11 @@ private struct OnCourseContentView: View {
     @State private var showWind = false
     /// Pin-entry sheet (the pin button on the distance card opens it).
     @State private var showPinEntry = false
+    /// One contextual laser entry (R7): pin / trilateration / residual refresh.
+    @State private var showLaserEntry = false
+    /// Trilateration shots survive closing the one-shot laser sheet so the
+    /// player can browse-pick the next feature between observations.
+    @State private var laserSession = CalibrationSession()
     /// GPS calibration sheet (the calibrate button / status chip open it).
     @State private var showCalibration = false
 
@@ -803,6 +808,7 @@ private struct OnCourseContentView: View {
                 model: model,
                 onProfile: { showProfile.toggle() },
                 onPinEntry: { showPinEntry = true },
+                onLaserEntry: { showLaserEntry = true },
                 onReadPutt: { readPuttFromGreenCard() }
             )
                 .padding(.horizontal, 12)
@@ -932,6 +938,7 @@ private struct OnCourseContentView: View {
             caddy.clear()
             measure.clear()
             capture.end()
+            laserSession.reset()
             refreshProfileIfShown()
         }
         // Hand the analysis grid to the putt read when the terrain sampling
@@ -1016,6 +1023,13 @@ private struct OnCourseContentView: View {
                     onClose: { showPinEntry = false }
                 )
             }
+        }
+        .sheet(isPresented: $showLaserEntry) {
+            LaserEntrySheet(
+                model: model,
+                session: laserSession,
+                onClose: { showLaserEntry = false }
+            )
         }
         .sheet(isPresented: $showLevel) {
             if let greenId = model.currentHole?.green?.id {
@@ -2445,6 +2459,9 @@ private struct DistanceCardView: View {
     /// Opens the pin-entry sheet (owned by the content view — needs the current
     /// green frame, which the button only offers when one exists).
     let onPinEntry: () -> Void
+    /// Opens the one R7 rangefinder entry. It routes the number by picked-map
+    /// context, so this is the card's only laser affordance.
+    let onLaserEntry: () -> Void
     /// Opens the green view / putt read pre-placed from the green card (R6 —
     /// ball = last captured position, hole = resolved active pin).
     let onReadPutt: () -> Void
@@ -2478,6 +2495,7 @@ private struct DistanceCardView: View {
             if let advice = model.selectedTargetAdvice {
                 selectedTargetBanner(advice)
             }
+            laserRow
             // Today's-pin entry — only where the hole has a green frame to place
             // a pin against (spec §5). A placed override adds a source chip.
             if model.currentGreenFrame != nil {
@@ -2935,6 +2953,58 @@ private struct DistanceCardView: View {
             }
             Spacer()
         }
+    }
+
+    /// One rangefinder button for pin placement, calibration shots and live
+    /// residual verification. The last mapped-feature shot remains visible as
+    /// a plain carry check even when a confirming refresh closed silently.
+    private var laserRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Button(action: onLaserEntry) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "scope")
+                            .font(.caption)
+                        Text("Laser")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(Color.accentPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.accentPrimary.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Enter laser distance")
+                .accessibilityHint("Routes to pin placement, GPS calibration, or calibration verification")
+
+                if model.browseTarget != nil {
+                    Text("Mapped target picked")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            if let check = model.lastLaserCarryCheck {
+                Text(
+                    "Carry · laser \(DistanceFormat.string(check.laserDistanceM, unit: unit)) "
+                    + "· map \(DistanceFormat.string(check.mappedDistanceM, unit: unit)) "
+                    + "· Δ \(signedDistance(check.deltaM))"
+                )
+                .font(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(
+                    "Carry check, laser \(DistanceFormat.stringWithUnit(check.laserDistanceM, unit: unit)), "
+                    + "map \(DistanceFormat.stringWithUnit(check.mappedDistanceM, unit: unit))"
+                )
+            }
+        }
+    }
+
+    private func signedDistance(_ meters: Double) -> String {
+        let value = DistanceFormat.string(abs(meters), unit: unit)
+        return "\(meters >= 0 ? "+" : "−")\(value) \(unit.abbreviation)"
     }
 
     /// Today's-pin override for the current hole, keyed the way the model keys

@@ -75,6 +75,11 @@ final class OnCourseModel {
     /// lives only in memory — re-solve (anchor / trilateration) each session.
     private(set) var originCalibration: OriginCalibration?
 
+    /// Most recent fixed-feature laser read. It stays on the card for the hole
+    /// even when the residual refresh itself was silent (R7), so every mapped
+    /// shot still gives the player the free plain carry comparison.
+    private(set) var lastLaserCarryCheck: LaserCarryCheck?
+
     /// App-level competition mode (DMD rule: distance only). Mirrored from
     /// `AppSettings` by the screen; when true, `distances` omits the slope-
     /// adjusted plays-like figures. Straight distances are unchanged.
@@ -514,6 +519,8 @@ final class OnCourseModel {
         cameraToken += 1
         // A decide-choice working target is per-hole transient state (R4).
         workingTarget = nil
+        // A carry check describes one picked target on the hole just left.
+        lastLaserCarryCheck = nil
         // The tee-geofence prompt/guard is keyed to the hole we were on (R5).
         teeGeofencePrompt = nil
         geofenceHandledHole = nil
@@ -1079,6 +1086,50 @@ final class OnCourseModel {
         let (updated, outcome) = calibration.registeringResidual(residualM, now: now())
         originCalibration = updated
         return outcome
+    }
+
+    /// Contextual route for the card's single laser entry. A calibration that
+    /// exists but has decayed below the confidence floor is NOT live: the next
+    /// fixed-feature shot starts/restarts trilateration rather than validating
+    /// a correction that is no longer being applied.
+    func laserRoute(distanceM: Double) -> LaserInputRouter.Route {
+        let live: Bool
+        if case .active = calibrationStatus { live = true } else { live = false }
+        return LaserInputRouter.route(
+            distanceM: distanceM,
+            hasPickedFeature: browseTarget != nil,
+            hasLiveCalibration: live,
+            canSolvePin: currentGreenFrame != nil
+        )
+    }
+
+    /// Record the plain carry comparison for a shot at `target`, using the
+    /// corrected live fix when its confidence clears the floor and raw GPS
+    /// otherwise. Browse mode deliberately does not substitute the tee/browse
+    /// origin: this observation was physically shot from the player's GPS fix.
+    @discardableResult
+    func recordLaserCarry(distanceM: Double, target: LatLon) -> LaserCarryCheck? {
+        guard let rawFix = userLocation else { return nil }
+        let shotOrigin = Self.corrected(rawFix, with: originCalibration, now: now())
+        let check = LaserCarryCheck(
+            target: target,
+            laserDistanceM: distanceM,
+            mappedDistanceM: Distance.planarMeters(shotOrigin, target)
+        )
+        lastLaserCarryCheck = check
+        return check
+    }
+
+    /// Live-calibration path for one fixed-feature laser shot. The same delta
+    /// rendered as the carry check is the signed residual fed into §6.4's gate.
+    /// Callers route first; if calibration is below the confidence floor this
+    /// returns `.inconclusive` and leaves it for a new trilateration session.
+    @discardableResult
+    func registerLaserShot(distanceM: Double, target: LatLon) -> OriginCalibration.ResidualOutcome {
+        guard case .active = calibrationStatus,
+              let check = recordLaserCarry(distanceM: distanceM, target: target)
+        else { return .inconclusive }
+        return registerLaserResidual(check.deltaM)
     }
 
     /// UI-facing calibration state for the distance card's badge.

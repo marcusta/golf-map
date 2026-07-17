@@ -150,4 +150,24 @@ final class PinPhraseParserTests: XCTestCase {
         XCTAssertEqual(en, [.laser(distanceM: 143, lateralFraction: near)])
         XCTAssertEqual(sv, [.laser(distanceM: 143, lateralFraction: near)])
     }
+
+    /// The one-laser entry does not own a second voice-number grammar: its
+    /// extraction API must reuse the exact PinPhraseParser digit/word path.
+    func testLaserDistanceReusesPinPhraseNumericPath() {
+        let rows: [(String, PinVoiceLocale, Double)] = [
+            ("143", .english, 143),
+            ("one forty three", .english, 143),
+            ("etthundrafyrtiotre", .swedish, 143),
+            ("4,5", .swedish, 4.5),
+        ]
+        for (text, locale, expected) in rows {
+            XCTAssertEqual(PinPhraseParser.laserDistance(text, locale: locale), expected)
+            let parsed = PinPhraseParser.parse(text, locale: locale)
+            XCTAssertTrue(parsed.contains { phrase in
+                guard case let .laser(distance, _) = phrase else { return false }
+                return distance == expected
+            })
+        }
+        XCTAssertNil(PinPhraseParser.laserDistance("not a number", locale: .english))
+    }
 }

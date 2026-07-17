@@ -23,6 +23,10 @@ struct PinEntrySheet: View {
     @Bindable var model: OnCourseModel
     /// The current hole's green-local frame, snapshotted at presentation.
     let frame: GreenFrame
+    /// Optional phrase handed off by the card's contextual laser entry. It is
+    /// parsed once through the exact same candidate/solve path as mic or typed
+    /// input, preserving PinEntrySheet's confirm-before-commit contract.
+    var initialPhrase: String? = nil
     let onClose: () -> Void
 
     /// On-device dictation, owned for the sheet's lifetime. Its `locale` is the
@@ -46,6 +50,7 @@ struct PinEntrySheet: View {
     /// A `.laser` phrase was picked but there is no origin to solve depth from
     /// (raw GPS off / browse with no fix) — surfaced as a hint, not a crash.
     @State private var laserNeedsOrigin = false
+    @State private var consumedInitialPhrase = false
 
     /// The map-marker pin yellow, matched to the distance card + on-map pin.
     private static let pinColor = Color(red: 1.0, green: 0.83, blue: 0.23)
@@ -79,6 +84,12 @@ struct PinEntrySheet: View {
         // `stop()`. Either way, parse the settled transcript here.
         .onChange(of: voice.status) { old, new in
             if old == .listening, new == .idle { parse(voice.transcript) }
+        }
+        .onAppear {
+            guard !consumedInitialPhrase, let initialPhrase else { return }
+            consumedInitialPhrase = true
+            typed = initialPhrase
+            parse(initialPhrase)
         }
         .onDisappear { voice.stop() }
     }

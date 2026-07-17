@@ -44,6 +44,18 @@ enum PinPhraseParser {
         return interpret(tokens)
     }
 
+    /// Extract the rangefinder number from a spoken/typed laser utterance.
+    /// This deliberately goes through `parse` instead of owning a second
+    /// number grammar: digits, English number words, Swedish compounds and
+    /// decimal-comma handling therefore stay bit-for-bit identical to pin
+    /// entry (round-loop R7).
+    static func laserDistance(_ text: String, locale: PinVoiceLocale) -> Double? {
+        parse(text, locale: locale).lazy.compactMap { phrase in
+            guard case let .laser(distanceM, _) = phrase else { return nil }
+            return distanceM
+        }.first
+    }
+
     // MARK: - Tokens
 
     /// The classified token stream. Units and noise words are never emitted —

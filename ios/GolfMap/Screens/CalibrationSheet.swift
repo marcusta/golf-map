@@ -248,11 +248,9 @@ struct CalibrationSheet: View {
 
     // MARK: - Trilateration flow (spec §6.3)
 
-    // TODO(spec §6.4): opportunistic residual refresh — when a calibration is
-    // already `.active`, a laser shot at a fixed feature should feed its
-    // solved residual through `model.registerLaserResidual(_:)` instead of
-    // (only) seeding a new solve. That hook belongs to the distance-ladder
-    // integration task, not this sheet — the model API already exists.
+    // Opportunistic §6.4 checks now enter through the card's one Laser button
+    // (T36 / LaserEntrySheet). This explicit calibration tool stays focused on
+    // deliberately collecting a fresh trilateration solve.
     @ViewBuilder
     private var laserZone: some View {
         VStack(alignment: .leading, spacing: Space.s3) {
