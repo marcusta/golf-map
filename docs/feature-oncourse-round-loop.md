@@ -3,8 +3,11 @@
 **Status:** built 2026-07-17 — T31 `0e726b3d` (PlayingState + card modes), T33 `1389d97a`
 (decide moment + can-you-carry-it), T34 `a88741c8` (capture drivetrain), T35 `d8f534a8` (green
 handoff + per-round stimp), T36 `70620011` (contextual laser entry + residual refresh). Known
-follow-ups: server `rounds.stimp_ft` sync and the pre-existing `WebMercatorTiles.tilePixel`
-NaN crash (both in flight as separate sessions). Briefs:
+follow-ups: **R4 partially unmet** — authored options do not yet merge into the decide card
+(`authoredDecideCandidates` is an empty seam; cross-task review findings 1–3 = "close the
+option-tree loop": decide merge, capture prefill vs active line, `parentShotId` in the iOS
+add-shot push); server `rounds.stimp_ft` sync and the pre-existing
+`WebMercatorTiles.tilePixel` NaN crash (both in flight as separate sessions). Briefs:
 [delegation-briefs-oncourse.md](delegation-briefs-oncourse.md); reports in `docs/reports/`.
 **Scope:** `ios` (orchestration + card UX over existing engines), small `shared/strategy`
 dependency on [feature-plan-shot-options.md](feature-plan-shot-options.md). No schema change
