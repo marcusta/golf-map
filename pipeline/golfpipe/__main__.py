@@ -8,6 +8,7 @@ Commands:
   fetch-hydro       Hydrografi Direkt water + creeks -> typed GeoJSON (water / water_creek)
   fetch-osm         Overpass OSM golf/terrain polygons -> typed GeoJSON (ODbL)
   grid-dem          Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
+  apply-dem-edits   Replay vector terrain edits (plane/smooth + feather) onto a DEM
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor -> .clean.tif
@@ -29,6 +30,7 @@ from pathlib import Path
 
 from golfpipe import clean_ortho
 from golfpipe import commands
+from golfpipe import dem_edit
 from golfpipe import detect_trees
 from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
@@ -112,6 +114,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--classes", default=",".join(str(c) for c in grid_dem_mod.DEFAULT_CLASSES),
         help="comma-separated classification codes to use as terrain surface (default 2,9 = ground,water)",
     )
+
+    p = sub.add_parser(
+        "apply-dem-edits",
+        help="Replay vector terrain edits (plane-fit flatten / median smooth, feathered) onto a DEM GeoTIFF",
+    )
+    p.add_argument("--input", required=True, help="input DEM GeoTIFF (grid-dem output) — never modified")
+    p.add_argument(
+        "--edits", required=True,
+        help="edits GeoJSON FeatureCollection (WGS84; per-feature properties op/featherM/radiusM/flat, createdAt order)",
+    )
+    p.add_argument("--out", required=True, help="output edited DEM GeoTIFF path (must differ from --input)")
 
     p = sub.add_parser("detect-trees", help="Derive tree-canopy polygons from classified lidar via nDSM -> typed GeoJSON")
     p.add_argument("--lidar", required=True, nargs="+", help="one or more .laz/.copc.laz point cloud files (from fetch-lidar)")
@@ -337,6 +350,9 @@ def main(argv: list[str] | None = None) -> int:
                 resolution=args.resolution, classes=classes,
             )
 
+        elif args.command == "apply-dem-edits":
+            commands.cmd_apply_dem_edits(Path(args.input), Path(args.edits), Path(args.out))
+
         elif args.command == "detect-trees":
             bbox_3006 = tuple(float(v) for v in args.bbox_3006.split(","))
             if len(bbox_3006) != 4:
@@ -449,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except clean_ortho.CleanOrthoError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except dem_edit.DemEditError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except InpaintError as exc:

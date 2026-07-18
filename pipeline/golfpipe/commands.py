@@ -4,6 +4,7 @@ parsing (__main__.py) so they're easy to unit test directly.
 
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -17,6 +18,7 @@ from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 
 from golfpipe import clean_ortho as clean_ortho_mod
+from golfpipe import dem_edit as dem_edit_mod
 from golfpipe import detect_common
 from golfpipe import detect_trees as detect_trees_mod
 from golfpipe import detect_water as detect_water_mod
@@ -394,6 +396,56 @@ def cmd_grid_dem(
     print(f"Spike cells (8-neighbour max diff > {grid_dem_mod.SPIKE_THRESHOLD_M} m): {spikes:,}")
 
     grid_dem_mod.write_dem_geotiff(dem, transform, out_path)
+    print(f"Wrote {out_path}")
+    return out_path
+
+
+def cmd_apply_dem_edits(input_path: Path, edits_path: Path, out_path: Path) -> Path:
+    """Replays vector terrain edits (plane-fit flatten / circular-median
+    smooth, both feathered — see golfpipe/dem_edit.py) onto a DEM GeoTIFF.
+
+    Input is the grid-dem output (float32, EPSG:3006, nodata already mostly
+    filled — but nodata cells may remain and pass through untouched); the
+    edits file is the D-TE5 handoff (GeoJSON FeatureCollection, WGS84,
+    per-feature properties op/featherM/radiusM/flat, applied in createdAt
+    order). The input DEM is never modified (D-TE2 — the raw DEM stays the
+    single source of truth); the edited DEM is a derived artifact written to
+    out_path with the input's profile/transform/nodata. An empty edits file
+    writes a byte-identical copy of the input.
+    """
+    if out_path.resolve() == input_path.resolve():
+        raise dem_edit_mod.DemEditError(
+            f"refusing to overwrite the input DEM {input_path} — the raw DEM stays "
+            "pristine (D-TE2); pass a different --out"
+        )
+
+    edits = dem_edit_mod.load_edits(edits_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not edits:
+        shutil.copyfile(input_path, out_path)
+        print(f"No edits in {edits_path} — wrote a byte-identical copy of the input")
+        print(f"Wrote {out_path}")
+        return out_path
+
+    with rasterio.open(input_path) as src:
+        dem = src.read(1)
+        profile = src.profile.copy()
+        reprojected = dem_edit_mod.reproject_edits(edits, src.crs)
+        edited = dem_edit_mod.apply_edits(dem, src.transform, src.nodata, reprojected)
+
+    # Same profile-copy hygiene as _fill_interior_nodata: drop source
+    # tiling/block-size options — they're only valid together with TILED=YES,
+    # which we don't set for this derived write.
+    profile.pop("blockxsize", None)
+    profile.pop("blockysize", None)
+    profile.pop("tiled", None)
+    profile.update(count=1, dtype="float32")
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(edited, 1)
+
+    changed = int(np.count_nonzero(edited != dem))
+    print(f"Applied {len(edits)} edit(s); {changed:,} cell(s) changed")
     print(f"Wrote {out_path}")
     return out_path
 
