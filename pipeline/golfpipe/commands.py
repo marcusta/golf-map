@@ -16,6 +16,7 @@ from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 
+from golfpipe import detect_trees as detect_trees_mod
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import osm as osm_mod
 from golfpipe import stac
@@ -345,6 +346,65 @@ def cmd_grid_dem(
     grid_dem_mod.write_dem_geotiff(dem, transform, out_path)
     print(f"Wrote {out_path}")
     return out_path
+
+
+def cmd_detect_trees(
+    lidar_paths: list[Path],
+    bbox_3006: tuple[float, float, float, float],
+    out: Path,
+    resolution: float = grid_dem_mod.DEFAULT_RESOLUTION,
+    min_height_m: float = detect_trees_mod.DEFAULT_MIN_HEIGHT_M,
+    min_area_m2: float = detect_trees_mod.DEFAULT_MIN_AREA_M2,
+    simplify_tolerance_m: float = detect_trees_mod.DEFAULT_SIMPLIFY_TOLERANCE_M,
+) -> Path:
+    """Derives draft `trees` canopy polygons from the classified COPC lidar
+    cmd_fetch_lidar downloads, via an nDSM (Laserdata Skog does not classify
+    vegetation, so class codes can't select trees):
+
+      ground  = mean z of DEFAULT_CLASSES returns (grid-dem's own path)
+      surface = max z per cell over all returns except noise (7/18)
+      nDSM    = surface - ground
+
+    Threshold at min_height_m, binary opening + closing (noise removal +
+    crown dissolve), 8-connected polygonize, min-area filter, simplify.
+    Writes one EPSG:3006 GeoJSON FeatureCollection (properties.type
+    'trees') importable by the web GeoJSON draft-import wizard.
+    """
+    print("Gridding ground returns (mean z) ...")
+    ground_sum, ground_count, transform, ground_counts = grid_dem_mod.grid_lidar_points(
+        lidar_paths, bbox_3006, resolution=resolution, classes=grid_dem_mod.DEFAULT_CLASSES,
+    )
+    ground_dem = grid_dem_mod.build_dem_grid(ground_sum, ground_count)
+
+    print(f"Gridding surface returns (max z, all classes except noise {detect_trees_mod.NOISE_CLASSES}) ...")
+    surface_max, surface_count, _, surface_counts = grid_dem_mod.grid_lidar_points(
+        lidar_paths, bbox_3006, resolution=resolution,
+        classes=None, aggregate="max", exclude_classes=detect_trees_mod.NOISE_CLASSES,
+    )
+
+    print(f"Ground points used: {ground_counts.points_used_for_grid:,}")
+    print(f"Surface points used: {surface_counts.points_used_for_grid:,}")
+
+    ndsm = detect_trees_mod.build_ndsm(ground_dem, surface_max, surface_count)
+    raw_cells = int(np.count_nonzero(ndsm >= min_height_m))
+    mask = detect_trees_mod.canopy_mask(ndsm, min_height_m=min_height_m)
+    cleaned_cells = int(np.count_nonzero(mask))
+    cell_area = resolution * resolution
+    print(f"Canopy cells >= {min_height_m} m: {raw_cells:,} raw, {cleaned_cells:,} after morphology "
+          f"(~{cleaned_cells * cell_area:,.0f} m²)")
+
+    polygons = detect_trees_mod.mask_to_polygons(mask, transform)
+    kept = detect_trees_mod.filter_and_simplify(
+        polygons, min_area_m2=min_area_m2, simplify_tolerance_m=simplify_tolerance_m,
+    )
+    print(f"Crown polygons: {len(polygons)} polygonized, {len(kept)} kept (min area {min_area_m2} m²)")
+
+    collection = detect_trees_mod.build_trees_geojson(kept)
+    water_mod.write_geojson(collection, out)
+    if not collection["features"]:
+        print("(no canopy found — is the bbox on the course? try a lower --min-height)")
+    print(f"Wrote {out}")
+    return out
 
 
 def cmd_tile_ortho(input_path: Path, out_dir: Path, minzoom: int = DEFAULT_ORTHO_MINZOOM, maxzoom: int = DEFAULT_ORTHO_MAXZOOM, webp_quality: int = 80) -> int:

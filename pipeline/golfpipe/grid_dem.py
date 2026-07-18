@@ -86,8 +86,11 @@ def grid_lidar_points(
     lidar_paths: list[Path],
     bbox_3006: tuple[float, float, float, float],
     resolution: float = DEFAULT_RESOLUTION,
-    classes: tuple[int, ...] = DEFAULT_CLASSES,
+    classes: tuple[int, ...] | None = DEFAULT_CLASSES,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    *,
+    aggregate: str = "sum",
+    exclude_classes: tuple[int, ...] = (),
 ) -> tuple[np.ndarray, np.ndarray, "rasterio.Affine", ClassCounts]:
     """Reads one or more LAS/LAZ/COPC files in chunks, filters points to
     bbox_3006 (e_min, n_min, e_max, n_max in EPSG:3006 metres) and to the
@@ -98,11 +101,26 @@ def grid_lidar_points(
     combine sum/count into a mean-height grid (see build_dem_grid) —
     kept as raw accumulators here so multiple files can be merged before
     finalizing, and so this function alone is easy to unit test.
+
+    Aggregation modes (keyword-only, DEM callers are untouched):
+    - aggregate="sum" (default): the historical contract above — the first
+      grid is the per-cell z sum, mean = sum / count.
+    - aggregate="max": the first grid is the per-cell z MAX instead
+      (np.maximum.at), used by detect-trees to build a canopy surface
+      (nDSM); cells no point hit hold -inf, so callers must mask by
+      count_grid > 0. count/transform/class_counts semantics unchanged.
+
+    Class selection: `classes=None` uses ALL classification codes (the
+    detect-trees "every return is surface" case); `exclude_classes` then
+    drops codes from whatever `classes` selected (e.g. noise 7/18).
     """
+    if aggregate not in ("sum", "max"):
+        raise ValueError(f"aggregate must be 'sum' or 'max', got {aggregate!r}")
     width, height, transform = _grid_shape(bbox_3006, resolution)
-    sum_grid = np.zeros((height, width), dtype=np.float64)
+    init = 0.0 if aggregate == "sum" else -np.inf
+    sum_grid = np.full((height, width), init, dtype=np.float64)
     count_grid = np.zeros((height, width), dtype=np.float64)
-    class_counts = ClassCounts(used_classes=tuple(classes))
+    class_counts = ClassCounts(used_classes=tuple(classes) if classes is not None else ())
 
     e_min, n_min, e_max, n_max = bbox_3006
     inv_res = 1.0 / resolution
@@ -127,7 +145,12 @@ def grid_lidar_points(
                 for code in np.unique(cls_b):
                     class_counts.add(int(code), int(np.count_nonzero(cls_b == code)))
 
-                use_mask = np.isin(cls_b, classes)
+                if classes is None:
+                    use_mask = np.ones(cls_b.shape, dtype=bool)
+                else:
+                    use_mask = np.isin(cls_b, classes)
+                if exclude_classes:
+                    use_mask &= ~np.isin(cls_b, exclude_classes)
                 if not np.any(use_mask):
                     continue
                 x_u, y_u, z_u = x_b[use_mask], y_b[use_mask], z_b[use_mask]
@@ -141,7 +164,10 @@ def grid_lidar_points(
                 col, row, z_u = col[valid], row[valid], z_u[valid]
 
                 flat_idx = row * width + col
-                np.add.at(sum_grid.reshape(-1), flat_idx, z_u)
+                if aggregate == "max":
+                    np.maximum.at(sum_grid.reshape(-1), flat_idx, z_u)
+                else:
+                    np.add.at(sum_grid.reshape(-1), flat_idx, z_u)
                 np.add.at(count_grid.reshape(-1), flat_idx, 1.0)
 
     return sum_grid, count_grid, transform, class_counts

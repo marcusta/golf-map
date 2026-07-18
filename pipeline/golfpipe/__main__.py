@@ -7,6 +7,7 @@ Commands:
   fetch-water       Marktäcke vector water -> typed GeoJSON (water / water_creek)
   fetch-osm         Overpass OSM golf/terrain polygons -> typed GeoJSON (ODbL)
   grid-dem          Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
+  detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   manifest          Write manifest.json for a tiled course
@@ -24,6 +25,7 @@ import sys
 from pathlib import Path
 
 from golfpipe import commands
+from golfpipe import detect_trees
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import osm
 from golfpipe import water
@@ -95,6 +97,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--classes", default=",".join(str(c) for c in grid_dem_mod.DEFAULT_CLASSES),
         help="comma-separated classification codes to use as terrain surface (default 2,9 = ground,water)",
     )
+
+    p = sub.add_parser("detect-trees", help="Derive tree-canopy polygons from classified lidar via nDSM -> typed GeoJSON")
+    p.add_argument("--lidar", required=True, nargs="+", help="one or more .laz/.copc.laz point cloud files (from fetch-lidar)")
+    p.add_argument("--bbox-3006", required=True, help="e_min,n_min,e_max,n_max in EPSG:3006 metres")
+    p.add_argument("--resolution", type=float, default=grid_dem_mod.DEFAULT_RESOLUTION, help="grid cell size in metres (default 0.5)")
+    p.add_argument(
+        "--min-height", dest="min_height", type=float, default=detect_trees.DEFAULT_MIN_HEIGHT_M,
+        help=f"minimum height above ground in metres to count as canopy (default {detect_trees.DEFAULT_MIN_HEIGHT_M})",
+    )
+    p.add_argument(
+        "--min-area", dest="min_area", type=float, default=detect_trees.DEFAULT_MIN_AREA_M2,
+        help=f"minimum crown polygon area in m² (default {detect_trees.DEFAULT_MIN_AREA_M2})",
+    )
+    p.add_argument(
+        "--simplify", dest="simplify_tolerance", type=float, default=detect_trees.DEFAULT_SIMPLIFY_TOLERANCE_M,
+        help=f"polygon simplification tolerance in metres (default {detect_trees.DEFAULT_SIMPLIFY_TOLERANCE_M})",
+    )
+    p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
 
     p = sub.add_parser("tile-ortho", help="Tile an orthophoto GeoTIFF into an XYZ WebP pyramid")
     p.add_argument("--input", required=True, help="input orthophoto GeoTIFF (any CRS)")
@@ -234,6 +254,18 @@ def main(argv: list[str] | None = None) -> int:
             commands.cmd_grid_dem(
                 [Path(p) for p in args.lidar], bbox_3006, Path(args.out),
                 resolution=args.resolution, classes=classes,
+            )
+
+        elif args.command == "detect-trees":
+            bbox_3006 = tuple(float(v) for v in args.bbox_3006.split(","))
+            if len(bbox_3006) != 4:
+                parser.error("--bbox-3006 must have 4 comma-separated values (e_min,n_min,e_max,n_max)")
+            commands.cmd_detect_trees(
+                [Path(p) for p in args.lidar], bbox_3006, Path(args.out),
+                resolution=args.resolution,
+                min_height_m=args.min_height,
+                min_area_m2=args.min_area,
+                simplify_tolerance_m=args.simplify_tolerance,
             )
 
         elif args.command == "tile-ortho":
