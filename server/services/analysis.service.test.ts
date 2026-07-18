@@ -22,6 +22,9 @@ import {
     DEFAULT_RESOLUTION_M,
 } from './analysis.service';
 import type { FeatureGeometry } from './geo';
+import { MapBuildService } from './map-build.service';
+import { AssetsService } from './assets.service';
+import { TerrainEditsService } from './terrain-edits.service';
 
 // ─── Synthetic DEM fixture ────────────────────────────────────────────────
 //
@@ -58,9 +61,8 @@ function buildDemPixels(): Float32Array {
 
 let fixtureCounter = 0;
 
-async function writeDemFixture(pixels: Float32Array): Promise<{ dataDir: string }> {
-    const dataDir = path.join('/tmp', `golf-map-analysis-test-${process.pid}-${fixtureCounter++}`);
-    fs.mkdirSync(path.join(dataDir, 'dem'), { recursive: true });
+async function writeDemTiff(absPath: string, pixels: Float32Array): Promise<void> {
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
     const metadata = {
         height: DEM_H,
         width: DEM_W,
@@ -72,7 +74,12 @@ async function writeDemFixture(pixels: Float32Array): Promise<{ dataDir: string 
         BitsPerSample: [32],
     };
     const buffer = writeArrayBuffer(pixels as never, metadata as never);
-    await Bun.write(path.join(dataDir, 'dem', 'test-dem.tif'), buffer as ArrayBuffer);
+    await Bun.write(absPath, buffer as ArrayBuffer);
+}
+
+async function writeDemFixture(pixels: Float32Array): Promise<{ dataDir: string }> {
+    const dataDir = path.join('/tmp', `golf-map-analysis-test-${process.pid}-${fixtureCounter++}`);
+    await writeDemTiff(path.join(dataDir, 'dem', 'test-dem.tif'), pixels);
     return { dataDir };
 }
 
@@ -455,4 +462,93 @@ test('sampleElevations rejects points entirely outside DEM coverage', async () =
     const { svc } = await setup();
     await expect(svc.sampleElevations(TEST_COURSE_ID, [{ e: E0 + 100000, n: N0 - 100000 }]))
         .rejects.toBeInstanceOf(InvalidAnalysisRequestError);
+});
+
+// ─── T57: analysis samples the EDITED DEM after a re-terrain ──────────────
+//
+// Integration with MapBuildService.reTerrain: its register step re-points
+// dem_cog at sources/dem-edited.tif when terrain edits were applied (and
+// back at the raw sources/dem.tif on revert), and the analysis DEM cache
+// must not keep serving pre-rewrite heights when a later re-terrain
+// rewrites dem-edited.tif in place. The fake pipeline runner writes REAL
+// GeoTIFFs so the whole analysis read path is exercised.
+
+test('T57: analysis sampling sees edited heights after a re-terrain, and raw heights again on revert', async () => {
+    const ctx = await createTestDb(seedCourse);
+    const dataDir = path.join('/tmp', `golf-map-analysis-reterrain-${process.pid}-${fixtureCounter++}`);
+    const siteId = TEST_COURSE_ID;
+    try {
+        await ctx.db.insertInto('sites').values({ id: siteId, name: 'Test Site', version: 1 }).execute();
+        await ctx.db.updateTable('courses').where('id', '=', TEST_COURSE_ID).set({ site_id: siteId }).execute();
+
+        // A prior full build's leftovers: persisted raw DEM + dem_cog → raw.
+        await writeDemTiff(path.join(dataDir, 'sources', siteId, 'dem.tif'), buildDemPixels());
+        const assets = new AssetsService(ctx.db, dataDir);
+        await assets.register({ siteId, courseId: TEST_COURSE_ID, kind: 'dem_cog', filename: `sources/${siteId}/dem.tif` });
+
+        // Fake runner: apply-dem-edits writes a REAL GeoTIFF = raw + offset;
+        // manifest writes the minimal file the register step reads back.
+        let editOffset = 5;
+        const argValue = (args: string[], flag: string) => args[args.indexOf(flag) + 1];
+        const builder = new MapBuildService({
+            db: ctx.db,
+            assets,
+            dataDir,
+            pipelineDir: '/nonexistent/pipeline',
+            python: '/nonexistent/python',
+            terrainEdits: new TerrainEditsService(ctx.db),
+            runner: async (args) => {
+                const step = args[2];
+                if (step === 'apply-dem-edits') {
+                    await writeDemTiff(argValue(args, '--out'), buildDemPixels().map((v) => v + editOffset));
+                }
+                if (step === 'manifest') {
+                    const target = path.join(argValue(args, '--tiles-dir'), 'manifest.json');
+                    fs.mkdirSync(path.dirname(target), { recursive: true });
+                    await Bun.write(target, JSON.stringify({ generatedAt: '2026-07-19T00:00:00Z' }));
+                }
+                return { code: 0, stdout: `ok ${step}\n`, stderr: '' };
+            },
+        });
+        const terrainEdits = new TerrainEditsService(ctx.db);
+        const edit = await terrainEdits.create({
+            siteId,
+            op: 'plane',
+            params: { featherM: 2, flat: true },
+            rings: [[{ x: E0 + 10, y: N0 - 40 }, { x: E0 + 40, y: N0 - 40 }, { x: E0 + 40, y: N0 - 10 }]],
+        });
+
+        const analysis = new AnalysisService(ctx.db, dataDir);
+        const point = { e: E0 + 50, n: N0 - 50 };
+        const sample = async () => (await analysis.sampleElevations(TEST_COURSE_ID, [point]))[0]!;
+        const demCog = async () => (await assets.listBySite(siteId)).find((a) => a.kind === 'dem_cog')!.filename;
+        const runReTerrain = async () => {
+            const job = await builder.reTerrain(TEST_COURSE_ID);
+            await builder.waitForJob(job.id);
+            expect((await builder.get(job.id)).status).toBe('succeeded');
+        };
+
+        // Before any re-terrain: raw heights (also primes the DEM cache).
+        expect(await sample()).toBeCloseTo(planeHeight(point.e, point.n), 2);
+
+        // Apply → dem_cog points at the edited DEM and analysis reads it.
+        await runReTerrain();
+        expect(await demCog()).toBe(`sources/${siteId}/dem-edited.tif`);
+        expect(await sample()).toBeCloseTo(planeHeight(point.e, point.n) + 5, 2);
+
+        // Re-apply with a changed outcome: dem-edited.tif is rewritten IN
+        // PLACE (same path), so this pins the cache's file-identity keying.
+        editOffset = 12;
+        await runReTerrain();
+        expect(await demCog()).toBe(`sources/${siteId}/dem-edited.tif`);
+        expect(await sample()).toBeCloseTo(planeHeight(point.e, point.n) + 12, 2);
+
+        // Revert (disable the only edit) → dem_cog falls back to the raw DEM.
+        await terrainEdits.update(edit.id, edit.version, { enabled: false });
+        await runReTerrain();
+        expect(await demCog()).toBe(`sources/${siteId}/dem.tif`);
+        expect(await sample()).toBeCloseTo(planeHeight(point.e, point.n), 2);
+    } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
 });

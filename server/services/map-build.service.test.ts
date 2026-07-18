@@ -399,7 +399,7 @@ test('start rejects a second concurrent build for the same course', async () => 
 // --- T56: terrain-edit replay in full builds + the fast re-terrain job ---
 
 test('full build replays enabled terrain edits: D-TE5 export, edited-DEM threading, persisted cache', async () => {
-    const { ctx, svc, terrainEdits, dataDir, calls, captured, cleanup } = await setup();
+    const { ctx, svc, assets, terrainEdits, dataDir, calls, captured, cleanup } = await setup();
     try {
         const siteId = await seedSite(ctx);
         await terrainEdits.create({ siteId, op: 'plane', params: { featherM: 3, flat: true }, rings: [RING_3006] });
@@ -429,6 +429,10 @@ test('full build replays enabled terrain edits: D-TE5 export, edited-DEM threadi
         // D-TE2: raw DEM persisted untouched; edited DEM persisted as a cache.
         expect(await Bun.file(path.join(dataDir, 'sources', siteId, 'dem.tif')).text()).toBe('fake grid-dem');
         expect(await Bun.file(path.join(dataDir, 'sources', siteId, 'dem-edited.tif')).text()).toBe('fake edited dem');
+
+        // T57: dem_cog points analysis at the EDITED DEM, not the raw one.
+        const demAsset = (await assets.listBySite(siteId)).find((a) => a.kind === 'dem_cog')!;
+        expect(demAsset.filename).toBe(`sources/${siteId}/dem-edited.tif`);
 
         // D-TE5 handoff: WGS84 FeatureCollection, enabled edits only, closed
         // rings, op/params/createdAt properties.
@@ -517,8 +521,9 @@ test('re-terrain runs exactly the fast subset with a partial install and preserv
         expect(argValue(manifest.args, '--dem')!.endsWith('dem-edited.tif')).toBe(true);
 
         // The tile_manifest asset was refreshed: new generatedAt (→ new ?v=
-        // cache-buster) with the vintage fields carried over; the other two
-        // registrations were left alone.
+        // cache-buster) with the vintage fields carried over; ortho_cog was
+        // left alone; dem_cog was re-pointed at the edited DEM (T57) so
+        // analysis samples the same heights the fresh tiles show.
         const after = Object.fromEntries((await assets.listBySite(siteId)).map((a) => [a.kind, a]));
         expect(Object.keys(after).sort()).toEqual(['dem_cog', 'ortho_cog', 'tile_manifest']);
         const meta = JSON.parse(after.tile_manifest.metaJson!);
@@ -526,7 +531,8 @@ test('re-terrain runs exactly the fast subset with a partial install and preserv
         expect(meta.activeOrtho).toBe('orto-l2-2025');
         expect(meta.orthoVintages.map((v: { collection: string }) => v.collection)).toEqual(['orto-l2-2025', 'orto-l2-2023']);
         expect(after.ortho_cog.id).toBe(before.ortho_cog.id);
-        expect(after.dem_cog.id).toBe(before.dem_cog.id);
+        expect(before.dem_cog.filename).toBe(`sources/${siteId}/dem.tif`);
+        expect(after.dem_cog.filename).toBe(`sources/${siteId}/dem-edited.tif`);
 
         // The on-disk manifest matches the registered metaJson.
         const onDisk = JSON.parse(await Bun.file(path.join(dataDir, 'tiles', siteId, 'manifest.json')).text());
@@ -540,17 +546,19 @@ test('re-terrain runs exactly the fast subset with a partial install and preserv
 });
 
 test('re-terrain with zero enabled edits re-tiles from the raw DEM (revert path)', async () => {
-    const { svc, terrainEdits, dataDir, calls, cleanup } = await setup();
+    const { svc, assets, terrainEdits, dataDir, calls, cleanup } = await setup();
     try {
         const build = await svc.start(TEST_COURSE_ID, BBOX);
         await svc.waitForJob(build.id);
         const siteId = (await svc.get(build.id)).siteId!;
         const edit = await terrainEdits.create({ siteId, op: 'plane', params: { featherM: 2 }, rings: [RING_3006] });
+        const demCog = async () => (await assets.listBySite(siteId)).find((a) => a.kind === 'dem_cog')!.filename;
 
         // Apply once with the edit…
         const first = await svc.reTerrain(TEST_COURSE_ID);
         await svc.waitForJob(first.id);
         expect(await Bun.file(path.join(dataDir, 'sources', siteId, 'dem-edited.tif')).exists()).toBe(true);
+        expect(await demCog()).toBe(`sources/${siteId}/dem-edited.tif`);
 
         // …then disable it and re-apply: revert to the raw DEM.
         await terrainEdits.update(edit.id, edit.version, { enabled: false });
@@ -562,8 +570,9 @@ test('re-terrain with zero enabled edits re-tiles from the raw DEM (revert path)
         expect(calls.map((c) => c.step)).toEqual(['tile-terrain', 'tile-hillshade', 'install', 'manifest']);
         expect(argValue(calls.find((c) => c.step === 'tile-terrain')!.args, '--input'))
             .toBe(path.join(dataDir, 'sources', siteId, 'dem.tif'));
-        // The stale edited-DEM cache is gone.
+        // The stale edited-DEM cache is gone, and dem_cog fell back to raw (T57).
         expect(await Bun.file(path.join(dataDir, 'sources', siteId, 'dem-edited.tif')).exists()).toBe(false);
+        expect(await demCog()).toBe(`sources/${siteId}/dem.tif`);
     } finally {
         await cleanup();
     }

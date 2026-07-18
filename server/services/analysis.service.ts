@@ -13,6 +13,11 @@ import { flattenRing, type FeatureGeometry } from './geo';
 // (dem_cog asset, 0.5 m LiDAR GeoTIFF) over the polygon's bbox plus a
 // buffer, and return a regular height grid + an inside-the-green mask.
 //
+// The dem_cog registration points at the EDITED DEM (sources/dem-edited.tif)
+// when the site has applied terrain edits, else the raw sources/dem.tif —
+// the build/re-terrain register step maintains it (D-TE2: every DEM consumer
+// sees replayed edits), so analysis heights always match the visible terrain.
+//
 // Heights are lightly Gaussian-blurred server-side (radius 3 cells — the
 // golf-map-2 reference pipeline's smoothing step) so the client's
 // central-difference gradients aren't dominated by LiDAR quantization
@@ -308,7 +313,11 @@ interface OpenDem {
 }
 
 export class AnalysisService {
-    /** Opened GeoTIFF handles per absolute path (a DEM is ~150 MB; opening reads only headers). */
+    /**
+     * Opened GeoTIFF handles keyed by `path|mtimeMs|size` (a DEM is ~150 MB;
+     * opening reads only headers). The mtime/size in the key drops the handle
+     * when a re-terrain rewrites the file in place.
+     */
     private demCache = new Map<string, Promise<OpenDem>>();
 
     constructor(private db: Kysely<Database>, private dataDir: string) {}
@@ -405,12 +414,20 @@ export class AnalysisService {
         if (!demPath.startsWith(dataRoot + path.sep)) {
             throw new NotFoundError('DEM path escapes the data directory');
         }
-        if (!fs.existsSync(demPath) || !fs.statSync(demPath).isFile()) {
+        const st = fs.statSync(demPath, { throwIfNoEntry: false });
+        if (!st || !st.isFile()) {
             throw new NotFoundError(`DEM file not available for site ${mapKey}`);
         }
 
-        let pending = this.demCache.get(demPath);
+        // Cache by file identity, not just path: a re-terrain rewrites
+        // sources/dem-edited.tif in place, and a handle cached per-path would
+        // keep serving the pre-rewrite heights.
+        const cacheKey = `${demPath}|${st.mtimeMs}|${st.size}`;
+        let pending = this.demCache.get(cacheKey);
         if (!pending) {
+            for (const key of this.demCache.keys()) {
+                if (key.startsWith(`${demPath}|`)) this.demCache.delete(key);
+            }
             pending = (async (): Promise<OpenDem> => {
                 const tiff = await fromFile(demPath);
                 const image = await tiff.getImage();
@@ -427,8 +444,8 @@ export class AnalysisService {
                     height: image.getHeight(),
                 };
             })();
-            this.demCache.set(demPath, pending);
-            pending.catch(() => this.demCache.delete(demPath));
+            this.demCache.set(cacheKey, pending);
+            pending.catch(() => this.demCache.delete(cacheKey));
         }
         return pending;
     }

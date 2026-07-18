@@ -374,7 +374,7 @@ export class MapBuildService {
 
             // register step is TS, not a subprocess: the server owns the DB.
             await this.setStep(jobId, 'register');
-            await this.registerAssets(siteId, courseId, chosen, active);
+            await this.registerAssets(siteId, courseId, chosen, active, demEdited !== null);
 
             await this.setStatus(jobId, 'succeeded');
         } catch (err) {
@@ -514,6 +514,9 @@ export class MapBuildService {
 
             await this.setStep(jobId, 'register');
             await this.refreshManifestAsset(siteId, courseId, oldManifest);
+            // Re-point dem_cog at the DEM the tiles were just built from, so
+            // analysis sampling agrees with the visible terrain (T57).
+            await this.registerDemAsset(siteId, courseId, demEdited !== null);
 
             await this.setStatus(jobId, 'succeeded');
         } catch (err) {
@@ -538,8 +541,10 @@ export class MapBuildService {
      * ortho-vintage fields over from the pre-regeneration manifest (the
      * pipeline knows nothing about vintages), then replace ONLY the
      * `tile_manifest` asset registration so the web picks up the new
-     * `generatedAt` (→ new `?v=`). ortho_cog/dem_cog registrations still
-     * point at unchanged paths and are left alone.
+     * `generatedAt` (→ new `?v=`). The ortho_cog registration still points
+     * at an unchanged path and is left alone; dem_cog is refreshed
+     * separately (`registerDemAsset`) since a re-terrain can flip it
+     * between the raw and edited DEM.
      */
     private async refreshManifestAsset(siteId: string, courseId: string, old: Record<string, unknown> | null): Promise<void> {
         const manifestPath = path.join(this.dataDir, 'tiles', siteId, 'manifest.json');
@@ -655,7 +660,7 @@ export class MapBuildService {
      * The tile_manifest metaJson is what the web tileset.service reads to flip
      * `hasTiles` and (now) to populate the vintage switcher.
      */
-    private async registerAssets(siteId: string, courseId: string, vintages: OrthoVintage[], active: string): Promise<void> {
+    private async registerAssets(siteId: string, courseId: string, vintages: OrthoVintage[], active: string, demEdited: boolean): Promise<void> {
         const manifestJson = await this.writeManifestVintages(siteId, vintages, active);
 
         // Idempotent rebuild: drop any prior tile assets for this site first.
@@ -669,11 +674,26 @@ export class MapBuildService {
         // Assets resolve by site_id; course_id (the requester) satisfies the legacy
         // FK and is otherwise unused for map lookups.
         await this.assets.register({ siteId, courseId, kind: 'ortho_cog', filename: `tiles/${siteId}/ortho` });
-        // dem_cog must point at the persisted DEM GeoTIFF *file* (not the terrain
-        // tile dir) — the analysis service opens it directly for green/elevation
-        // sampling. The terrain tiles are referenced via the manifest instead.
-        await this.assets.register({ siteId, courseId, kind: 'dem_cog', filename: `sources/${siteId}/dem.tif` });
+        await this.registerDemAsset(siteId, courseId, demEdited);
         await this.assets.register({ siteId, courseId, kind: 'tile_manifest', filename: `tiles/${siteId}/manifest.json`, metaJson: manifestJson });
+    }
+
+    /**
+     * (Re)points the site's `dem_cog` registration at the DEM analysis must
+     * sample: `sources/dem-edited.tif` when terrain edits were applied this
+     * run, else the raw `sources/dem.tif` (T57). dem_cog must point at a DEM
+     * GeoTIFF *file* (not the terrain tile dir) — the analysis service opens
+     * it directly for green/elevation sampling, and D-TE2 requires every DEM
+     * consumer to see replayed edits, so it gets the same edited artifact the
+     * tiles were built from. No-op when the registration already points at
+     * the right file (keeps re-applies churn-free).
+     */
+    private async registerDemAsset(siteId: string, courseId: string, demEdited: boolean): Promise<void> {
+        const filename = `sources/${siteId}/${demEdited ? 'dem-edited.tif' : 'dem.tif'}`;
+        const existing = (await this.assets.listBySite(siteId)).find(a => a.kind === 'dem_cog');
+        if (existing?.filename === filename) return;
+        if (existing) await this.assets.remove(existing.id, existing.version);
+        await this.assets.register({ siteId, courseId, kind: 'dem_cog', filename });
     }
 
     /** Patch the on-disk manifest with orthoVintages + activeOrtho; returns the JSON. */
