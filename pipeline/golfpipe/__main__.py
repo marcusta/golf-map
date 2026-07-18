@@ -8,6 +8,7 @@ Commands:
   fetch-osm         Overpass OSM golf/terrain polygons -> typed GeoJSON (ODbL)
   grid-dem          Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
+  detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   manifest          Write manifest.json for a tiled course
@@ -26,6 +27,7 @@ from pathlib import Path
 
 from golfpipe import commands
 from golfpipe import detect_trees
+from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import osm
 from golfpipe import water
@@ -101,7 +103,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("detect-trees", help="Derive tree-canopy polygons from classified lidar via nDSM -> typed GeoJSON")
     p.add_argument("--lidar", required=True, nargs="+", help="one or more .laz/.copc.laz point cloud files (from fetch-lidar)")
     p.add_argument("--bbox-3006", required=True, help="e_min,n_min,e_max,n_max in EPSG:3006 metres")
-    p.add_argument("--resolution", type=float, default=grid_dem_mod.DEFAULT_RESOLUTION, help="grid cell size in metres (default 0.5)")
+    p.add_argument(
+        "--resolution", type=float, default=detect_trees.DEFAULT_RESOLUTION,
+        help=f"grid cell size in metres (default {detect_trees.DEFAULT_RESOLUTION}; coarser than grid-dem so ~1-2 pts/m² lidar fills cells)",
+    )
     p.add_argument(
         "--min-height", dest="min_height", type=float, default=detect_trees.DEFAULT_MIN_HEIGHT_M,
         help=f"minimum height above ground in metres to count as canopy (default {detect_trees.DEFAULT_MIN_HEIGHT_M})",
@@ -113,6 +118,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--simplify", dest="simplify_tolerance", type=float, default=detect_trees.DEFAULT_SIMPLIFY_TOLERANCE_M,
         help=f"polygon simplification tolerance in metres (default {detect_trees.DEFAULT_SIMPLIFY_TOLERANCE_M})",
+    )
+    p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
+
+    p = sub.add_parser("detect-water", help="Derive water polygons from class-9 lidar returns -> typed GeoJSON")
+    p.add_argument("--lidar", required=True, nargs="+", help="one or more .laz/.copc.laz point cloud files (from fetch-lidar)")
+    p.add_argument("--bbox-3006", required=True, help="e_min,n_min,e_max,n_max in EPSG:3006 metres")
+    p.add_argument("--resolution", type=float, default=grid_dem_mod.DEFAULT_RESOLUTION, help="grid cell size in metres (default 0.5)")
+    p.add_argument(
+        "--closing-radius", dest="closing_radius", type=float, default=detect_water.DEFAULT_CLOSING_RADIUS_M,
+        help=f"binary-closing radius in metres bridging sparse class-9 returns (default {detect_water.DEFAULT_CLOSING_RADIUS_M})",
+    )
+    p.add_argument(
+        "--min-area", dest="min_area", type=float, default=detect_water.DEFAULT_MIN_AREA_M2,
+        help=f"minimum water polygon area in m² (default {detect_water.DEFAULT_MIN_AREA_M2} — ponds, not puddles)",
+    )
+    p.add_argument(
+        "--simplify", dest="simplify_tolerance", type=float, default=detect_water.DEFAULT_SIMPLIFY_TOLERANCE_M,
+        help=f"polygon simplification tolerance in metres (default {detect_water.DEFAULT_SIMPLIFY_TOLERANCE_M})",
+    )
+    p.add_argument(
+        "--flatness-spread", dest="flatness_spread", type=float, default=detect_water.DEFAULT_FLATNESS_SPREAD_M,
+        help=(
+            "warn (report-only, never filters) when a polygon's class-9 z-spread exceeds this "
+            f"many metres (default {detect_water.DEFAULT_FLATNESS_SPREAD_M})"
+        ),
     )
     p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
 
@@ -266,6 +296,19 @@ def main(argv: list[str] | None = None) -> int:
                 min_height_m=args.min_height,
                 min_area_m2=args.min_area,
                 simplify_tolerance_m=args.simplify_tolerance,
+            )
+
+        elif args.command == "detect-water":
+            bbox_3006 = tuple(float(v) for v in args.bbox_3006.split(","))
+            if len(bbox_3006) != 4:
+                parser.error("--bbox-3006 must have 4 comma-separated values (e_min,n_min,e_max,n_max)")
+            commands.cmd_detect_water(
+                [Path(p) for p in args.lidar], bbox_3006, Path(args.out),
+                resolution=args.resolution,
+                closing_radius_m=args.closing_radius,
+                min_area_m2=args.min_area,
+                simplify_tolerance_m=args.simplify_tolerance,
+                flatness_spread_m=args.flatness_spread,
             )
 
         elif args.command == "tile-ortho":

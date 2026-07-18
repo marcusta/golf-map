@@ -147,9 +147,9 @@ def test_build_ndsm_clamps_and_masks():
     assert ndsm[1, 1] == pytest.approx(2.0)
 
 
-def test_canopy_mask_thresholds_opens_and_closes():
+def test_canopy_mask_thresholds_closes_then_opens():
     ndsm = np.zeros((20, 20))
-    ndsm[2, 2] = 9.0  # isolated single cell — opening must kill it
+    ndsm[2, 2] = 9.0  # isolated single cell — closing keeps it, opening kills it
     ndsm[5:15, 5:15] = 9.0  # solid blob
     ndsm[8:10, 8:10] = 0.0  # 2x2 interior gap — closing must bridge it
     ndsm[16, 5:15] = 1.9  # below threshold — never canopy
@@ -160,6 +160,24 @@ def test_canopy_mask_thresholds_opens_and_closes():
     assert mask[8:10, 8:10].all()  # gap dissolved into the crown
     assert mask[5:15, 5:15].all()
     assert not mask[16, 5:15].any()
+
+
+def test_canopy_mask_survives_sparse_lidar_sampling():
+    """Real Laserdata Skog density (~1-2 pts/m²) leaves ~30-40% of 1 m
+    forest cells with no surface return: the raw mask is salt-and-pepper.
+    Closing must run BEFORE opening or a 3x3 erosion annihilates real
+    forest (~0.65^9 ≈ 2% survival — the T46 real-data bug)."""
+    rng = np.random.default_rng(46)
+    mask_in = np.zeros((40, 40), dtype=bool)
+    block = rng.random((30, 30)) < 0.65  # ~35% sampling holes
+    mask_in[5:35, 5:35] = block
+    ndsm = np.where(mask_in, 9.0, 0.0)
+
+    mask = detect_trees.canopy_mask(ndsm, min_height_m=2.0)
+
+    filled = int(np.count_nonzero(mask[5:35, 5:35]))
+    assert filled >= 0.85 * 900  # consolidated to (nearly) the full block
+    assert not mask[:4, :].any() and not mask[:, :4].any()  # nothing invented outside
 
 
 # ─── end-to-end command ──────────────────────────────────────────────────────
@@ -193,6 +211,53 @@ def test_cmd_detect_trees_end_to_end(tmp_path: Path, scene_las: Path, capsys):
             assert E0 <= x <= E0 + SIZE and N0 <= y <= N0 + SIZE
 
     assert "Wrote" in capsys.readouterr().out
+
+
+def test_cmd_detect_trees_sparse_sampling_regression(tmp_path: Path):
+    """Realistic-density regression for the T46 real-data bug: a forest
+    block sampled at ~1.4 pts/m² (65% of 1 m cells hit, 2-3 returns each —
+    Laserdata Skog-like) must come out as ONE crown polygon of roughly the
+    block's area. Under the old opening-first morphology the salt-and-pepper
+    mask eroded to ~2% and the block vanished into sub-min-area shreds."""
+    rng = np.random.default_rng(46)
+    xs, ys, zs, cls = [], [], [], []
+
+    # Dense ground everywhere (class 2).
+    gx, gy = _block(0, SIZE, 0, SIZE)
+    xs.append(gx)
+    ys.append(gy)
+    zs.append(np.full(gx.shape, GROUND_Z))
+    cls.append(np.full(gx.shape, 2, dtype=np.uint8))
+
+    # Sparse canopy over cells [4,26) x [4,26) — 484 m².
+    px, py = [], []
+    for i in range(4, 26):
+        for j in range(4, 26):
+            if rng.random() < 0.65:
+                for _ in range(2 + (rng.random() < 0.3)):
+                    px.append(E0 + i + rng.random())
+                    py.append(N0 + j + rng.random())
+    px, py = np.asarray(px), np.asarray(py)
+    xs.append(px)
+    ys.append(py)
+    zs.append(np.full(px.shape, CANOPY_Z))
+    cls.append(np.full(px.shape, 1, dtype=np.uint8))
+
+    las = _write_las(
+        tmp_path / "sparse.las",
+        np.concatenate(xs), np.concatenate(ys), np.concatenate(zs), np.concatenate(cls),
+    )
+
+    import json
+
+    out = tmp_path / "sparse-trees.geojson"
+    cmd_detect_trees([las], BBOX_3006, out)  # default 1.0 m resolution
+
+    collection = json.loads(out.read_text(encoding="utf-8"))
+    assert len(collection["features"]) == 1  # one consolidated crown polygon
+    rings = collection["features"][0]["geometry"]["coordinates"]
+    polygon = Polygon(rings[0], rings[1:])
+    assert polygon.area == pytest.approx(484.0, rel=0.15)
 
 
 def test_detect_trees_cli_dispatch(tmp_path: Path, scene_las: Path):

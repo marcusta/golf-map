@@ -16,7 +16,9 @@ from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 
+from golfpipe import detect_common
 from golfpipe import detect_trees as detect_trees_mod
+from golfpipe import detect_water as detect_water_mod
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import osm as osm_mod
 from golfpipe import stac
@@ -352,7 +354,7 @@ def cmd_detect_trees(
     lidar_paths: list[Path],
     bbox_3006: tuple[float, float, float, float],
     out: Path,
-    resolution: float = grid_dem_mod.DEFAULT_RESOLUTION,
+    resolution: float = detect_trees_mod.DEFAULT_RESOLUTION,
     min_height_m: float = detect_trees_mod.DEFAULT_MIN_HEIGHT_M,
     min_area_m2: float = detect_trees_mod.DEFAULT_MIN_AREA_M2,
     simplify_tolerance_m: float = detect_trees_mod.DEFAULT_SIMPLIFY_TOLERANCE_M,
@@ -365,8 +367,11 @@ def cmd_detect_trees(
       surface = max z per cell over all returns except noise (7/18)
       nDSM    = surface - ground
 
-    Threshold at min_height_m, binary opening + closing (noise removal +
-    crown dissolve), 8-connected polygonize, min-area filter, simplify.
+    The default 1.0 m resolution (detect_trees.DEFAULT_RESOLUTION, coarser
+    than grid-dem's 0.5 m) keeps ~1-2 pts/m² lidar from leaving empty cells
+    all over real forest. Threshold at min_height_m, binary closing + opening
+    (sampling-hole bridge / crown dissolve first, then noise removal),
+    8-connected polygonize, min-area filter, simplify.
     Writes one EPSG:3006 GeoJSON FeatureCollection (properties.type
     'trees') importable by the web GeoJSON draft-import wizard.
     """
@@ -403,6 +408,63 @@ def cmd_detect_trees(
     water_mod.write_geojson(collection, out)
     if not collection["features"]:
         print("(no canopy found — is the bbox on the course? try a lower --min-height)")
+    print(f"Wrote {out}")
+    return out
+
+
+def cmd_detect_water(
+    lidar_paths: list[Path],
+    bbox_3006: tuple[float, float, float, float],
+    out: Path,
+    resolution: float = grid_dem_mod.DEFAULT_RESOLUTION,
+    closing_radius_m: float = detect_water_mod.DEFAULT_CLOSING_RADIUS_M,
+    min_area_m2: float = detect_water_mod.DEFAULT_MIN_AREA_M2,
+    simplify_tolerance_m: float = detect_water_mod.DEFAULT_SIMPLIFY_TOLERANCE_M,
+    flatness_spread_m: float = detect_water_mod.DEFAULT_FLATNESS_SPREAD_M,
+) -> Path:
+    """Derives draft `water` polygons from the classified COPC lidar
+    cmd_fetch_lidar downloads: per-cell PRESENCE of class-9 (water) points,
+    generously closed (water absorbs NIR, so returns are sparse), opened,
+    8-connected polygonized, min-area filtered, simplified. A per-polygon
+    flatness check (class-9 z-spread > flatness_spread_m) is REPORT-ONLY —
+    warnings are printed, nothing is dropped. Creeks rarely carry class-9
+    returns: water_creek is out of scope (fetch-water covers it once the
+    Marktäcke entitlement is active). Writes one EPSG:3006 GeoJSON
+    FeatureCollection (properties.type 'water') importable by the web
+    GeoJSON draft-import wizard.
+    """
+    print(f"Gridding water returns (class {detect_water_mod.WATER_CLASSES} presence) ...")
+    sum_grid, count_grid, transform, class_counts = grid_dem_mod.grid_lidar_points(
+        lidar_paths, bbox_3006, resolution=resolution, classes=detect_water_mod.WATER_CLASSES,
+    )
+    print(f"Class-9 points used: {class_counts.points_used_for_grid:,}")
+
+    presence_cells = int(np.count_nonzero(count_grid > 0))
+    mask = detect_water_mod.water_mask(count_grid, resolution, closing_radius_m=closing_radius_m)
+    cleaned_cells = int(np.count_nonzero(mask))
+    cell_area = resolution * resolution
+    print(f"Water cells: {presence_cells:,} with returns, {cleaned_cells:,} after closing "
+          f"(radius {closing_radius_m} m) + opening (~{cleaned_cells * cell_area:,.0f} m²)")
+
+    polygons = detect_common.mask_to_polygons(mask, transform)
+    kept = detect_common.filter_and_simplify(
+        polygons, min_area_m2=min_area_m2, simplify_tolerance_m=simplify_tolerance_m,
+    )
+    print(f"Water polygons: {len(polygons)} polygonized, {len(kept)} kept (min area {min_area_m2} m²)")
+
+    # Report-only flatness sanity check: standing water is flat, so a big
+    # z-spread hints at misclassified noise — warn, never filter silently.
+    spreads = detect_water_mod.flatness_spreads(kept, sum_grid, count_grid, transform)
+    for i, (polygon, spread) in enumerate(zip(kept, spreads)):
+        if spread > flatness_spread_m:
+            e, n = polygon.centroid.x, polygon.centroid.y
+            print(f"warning: water polygon {i} at ({e:.0f}, {n:.0f}) has class-9 z-spread "
+                  f"{spread:.2f} m (> {flatness_spread_m} m) — possible misclassified noise, kept anyway")
+
+    collection = detect_water_mod.build_water_geojson(kept)
+    water_mod.write_geojson(collection, out)
+    if not collection["features"]:
+        print("(no water found — class 9 may be absent here; creeks rarely carry class-9 returns)")
     print(f"Wrote {out}")
     return out
 
