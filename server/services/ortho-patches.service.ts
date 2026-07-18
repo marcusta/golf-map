@@ -285,33 +285,55 @@ export class OrthoPatchesService {
     }
 
     /**
-     * Resolves the PRISTINE source GeoTIFF of the active ortho vintage for a
-     * site, or a human `reason` cleaning can't bake. Tolerant of legacy
-     * builds: when the manifest carries no vintage metadata (or names one
-     * whose .tif is gone) BUT exactly one `ortho-*.tif` sits in
-     * `sources/<siteId>/`, that lone source is used (logged). Vreta has zero
-     * source tifs, so it still reports a reason — surfaced up front by info().
+     * Resolves the PRISTINE source GeoTIFF of the vintage the flat ortho tile
+     * tree was BUILT from — the only raster patches may replay onto — or a
+     * human `reason` cleaning can't bake. Pre-flight (`bakeable`) and the
+     * bake share this resolution, in order:
+     *
+     *  1. `builtOrtho` — the explicit built-vintage marker map-build records
+     *     alongside the manifest (and re-terrain carries over).
+     *  2. Legacy manifests without the marker: the newest recorded vintage
+     *     (`orthoVintages[0]` — the collection every build tiles into the
+     *     flat tree), provided `activeOrtho` doesn't contradict it. A
+     *     divergent `activeOrtho` is a leftover of the removed in-place
+     *     vintage switcher: the flat tree's real vintage is unrecorded, so
+     *     refuse rather than risk replaying wrong-year pixels into the tile
+     *     pyramid.
+     *  3. Nothing recorded at all (pre-vintage legacy build) but exactly one
+     *     `ortho-*.tif` in `sources/<siteId>/`: that sole source (logged).
+     *
+     * A NAMED vintage whose source tif is gone is always a refusal — never a
+     * silent fallback onto some other vintage's tif.
      */
     private async resolveOrthoSource(
         siteId: string,
         metaJson: string,
     ): Promise<{ sourcePath: string } | { reason: string }> {
         const meta = JSON.parse(metaJson) as {
+            builtOrtho?: string;
             activeOrtho?: string;
             orthoVintages?: Array<{ collection: string }>;
         };
-        const collection = meta.activeOrtho ?? meta.orthoVintages?.[0]?.collection;
+        const newest = meta.orthoVintages?.[0]?.collection;
+        let collection = meta.builtOrtho;
+        if (!collection) {
+            if (newest && meta.activeOrtho && meta.activeOrtho !== newest) {
+                return {
+                    reason: `Site ${siteId} has ambiguous ortho vintage metadata (activeOrtho '${meta.activeOrtho}' `
+                        + `vs newest recorded '${newest}') — rebuild the map before baking patches`,
+                };
+            }
+            collection = newest ?? meta.activeOrtho;
+        }
         if (collection) {
             const sourcePath = path.join(this.dataDir, 'sources', siteId, orthoSourceName(collection));
             if (await Bun.file(sourcePath).exists()) return { sourcePath };
+            return { reason: `Pristine ortho source missing: sources/${siteId}/${orthoSourceName(collection)} — rebuild the map` };
         }
         const fallback = await this.soleOrthoTif(siteId);
         if (fallback) {
-            console.log(`[ortho-patches] site ${siteId}: ortho vintage ${collection ? `'${collection}' has no source tif` : 'metadata is empty'}; falling back to the sole source ${path.basename(fallback)}`);
+            console.log(`[ortho-patches] site ${siteId}: no ortho vintage recorded; falling back to the sole source ${path.basename(fallback)}`);
             return { sourcePath: fallback };
-        }
-        if (collection) {
-            return { reason: `Pristine ortho source missing: sources/${siteId}/${orthoSourceName(collection)} — rebuild the map` };
         }
         return { reason: `Site ${siteId} has no ortho vintage to patch — rebuild the map` };
     }

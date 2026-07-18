@@ -199,6 +199,9 @@ test('happy path: runs the lidar→dem→ortho chain in order and registers 3 ti
 
         const meta = JSON.parse(byKind.tile_manifest.metaJson!);
         expect(meta.activeOrtho).toBe('orto-l2-2025');
+        // Explicit built-vintage marker: the collection the flat ortho tree
+        // was tiled from — what T55 ortho patches replay onto.
+        expect(meta.builtOrtho).toBe('orto-l2-2025');
         expect(meta.orthoVintages.map((v: { collection: string }) => v.collection)).toEqual(['orto-l2-2025', 'orto-l2-2023']);
         expect(meta.bounds).toEqual(BBOX); // original manifest fields preserved
     } finally {
@@ -529,6 +532,7 @@ test('re-terrain runs exactly the fast subset with a partial install and preserv
         const meta = JSON.parse(after.tile_manifest.metaJson!);
         expect(meta.generatedAt).toBe(REGENERATED_AT);
         expect(meta.activeOrtho).toBe('orto-l2-2025');
+        expect(meta.builtOrtho).toBe('orto-l2-2025'); // built-vintage marker survives re-terrain
         expect(meta.orthoVintages.map((v: { collection: string }) => v.collection)).toEqual(['orto-l2-2025', 'orto-l2-2023']);
         expect(after.ortho_cog.id).toBe(before.ortho_cog.id);
         expect(before.dem_cog.filename).toBe(`sources/${siteId}/dem.tif`);

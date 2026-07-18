@@ -291,6 +291,111 @@ test('empty ortho-vintage metadata + exactly one ortho-*.tif on disk: bake proce
     }
 });
 
+// --- Built-vintage resolution (fix: ortho-patch vintage resolution) ---
+// The vintage patches replay onto MUST be the vintage the flat tile tree was
+// built from. `builtOrtho` is the explicit marker; legacy manifests without
+// it infer the newest recorded vintage, and never silently pick another.
+
+/** Site + custom manifest + the given pristine tifs, via the setup() db. */
+async function setupVintage(manifest: Record<string, unknown>, tifs: string[]) {
+    const base = await setup({ withSite: false });
+    const { ctx, assets, dataDir } = base;
+    await ctx.db.insertInto('sites').values({ id: SITE_ID, name: 'Vintage site', version: 1 }).execute();
+    await ctx.db.updateTable('courses').where('id', '=', TEST_COURSE_ID)
+        .set({ site_id: SITE_ID, updated_at: sql`(datetime('now'))` }).execute();
+    await mkdir(path.join(dataDir, 'sources', SITE_ID), { recursive: true });
+    for (const tif of tifs) {
+        await writeFile(path.join(dataDir, 'sources', SITE_ID, tif), 'pristine');
+    }
+    await mkdir(path.join(dataDir, 'tiles', SITE_ID), { recursive: true });
+    await writeFile(path.join(dataDir, 'tiles', SITE_ID, 'manifest.json'), JSON.stringify(manifest));
+    await assets.register({
+        siteId: SITE_ID, courseId: TEST_COURSE_ID, kind: 'tile_manifest',
+        filename: `tiles/${SITE_ID}/manifest.json`, metaJson: JSON.stringify(manifest),
+    });
+    return base;
+}
+
+const TWO_VINTAGES = [
+    { collection: 'orto-l2-2025', dates: ['2025-06-21'] },
+    { collection: 'orto-l2-2023', dates: ['2023-04-21'] },
+];
+
+test('builtOrtho marker wins: bake + pre-flight replay onto the recorded built vintage', async () => {
+    // Marker says 2023 even though 2025 is newest — an explicit record beats
+    // any inference (e.g. a site rebuilt while pinned to an older flight).
+    const manifest = {
+        ...MANIFEST, orthoVintages: TWO_VINTAGES,
+        activeOrtho: 'orto-l2-2023', builtOrtho: 'orto-l2-2023',
+    };
+    const { svc, dataDir, calls, cleanup } =
+        await setupVintage(manifest, ['ortho-orto-l2-2025.tif', 'ortho-orto-l2-2023.tif']);
+    try {
+        expect((await svc.info(TEST_COURSE_ID)).bakeable).toBe(true);
+        await svc.apply(TEST_COURSE_ID, PATCH);
+        expect(argValue(calls[0].args, '--ortho'))
+            .toBe(path.join(dataDir, 'sources', SITE_ID, 'ortho-orto-l2-2023.tif'));
+    } finally {
+        await cleanup();
+    }
+});
+
+test('builtOrtho naming a missing tif refuses — never falls back to another vintage', async () => {
+    const manifest = {
+        ...MANIFEST, orthoVintages: TWO_VINTAGES,
+        activeOrtho: 'orto-l2-2025', builtOrtho: 'orto-l2-2025',
+    };
+    // Only the OTHER vintage's tif is on disk (it is also the sole one — the
+    // sole-tif fallback must not kick in for a named vintage).
+    const { svc, cleanup } = await setupVintage(manifest, ['ortho-orto-l2-2023.tif']);
+    try {
+        const info = await svc.info(TEST_COURSE_ID);
+        expect(info.bakeable).toBe(false);
+        expect(info.reason).toMatch(/ortho-orto-l2-2025\.tif.*rebuild/);
+        await expect(svc.apply(TEST_COURSE_ID, PATCH)).rejects.toThrow(/ortho-orto-l2-2025\.tif/);
+    } finally {
+        await cleanup();
+    }
+});
+
+test('legacy two-tif manifest without marker resolves to the NEWEST recorded vintage', async () => {
+    // activeOrtho agrees with orthoVintages[0] (every post-switcher build
+    // writes them equal) — resolution must pick 2025, never the older 2023.
+    for (const activeOrtho of ['orto-l2-2025', undefined]) {
+        const manifest = { ...MANIFEST, orthoVintages: TWO_VINTAGES, activeOrtho, builtOrtho: undefined };
+        const { svc, dataDir, calls, cleanup } =
+            await setupVintage(manifest, ['ortho-orto-l2-2025.tif', 'ortho-orto-l2-2023.tif']);
+        try {
+            expect((await svc.info(TEST_COURSE_ID)).bakeable).toBe(true);
+            await svc.apply(TEST_COURSE_ID, PATCH);
+            expect(argValue(calls[0].args, '--ortho'))
+                .toBe(path.join(dataDir, 'sources', SITE_ID, 'ortho-orto-l2-2025.tif'));
+        } finally {
+            await cleanup();
+        }
+    }
+});
+
+test('legacy manifest with a DIVERGENT activeOrtho (removed in-place switcher) refuses to bake', async () => {
+    // Linkan's exact shape: vintages [2025, 2023] but activeOrtho=2023 left
+    // behind by the removed re-tiling switcher. The flat tree's vintage is
+    // unrecorded — pre-flight and bake must refuse identically, not guess.
+    const manifest = {
+        ...MANIFEST, orthoVintages: TWO_VINTAGES, activeOrtho: 'orto-l2-2023', builtOrtho: undefined,
+    };
+    const { svc, calls, cleanup } =
+        await setupVintage(manifest, ['ortho-orto-l2-2025.tif', 'ortho-orto-l2-2023.tif']);
+    try {
+        const info = await svc.info(TEST_COURSE_ID);
+        expect(info.bakeable).toBe(false);
+        expect(info.reason).toMatch(/ambiguous.*rebuild the map/);
+        await expect(svc.apply(TEST_COURSE_ID, PATCH)).rejects.toThrow(/ambiguous/);
+        expect(calls).toHaveLength(0); // nothing replayed onto either vintage
+    } finally {
+        await cleanup();
+    }
+});
+
 test('empty ortho-vintage metadata + NO source tif (Vreta): not bakeable, apply gives the clear error', async () => {
     const { ctx, svc, assets, dataDir, cleanup } = await setup({ withSite: false });
     try {

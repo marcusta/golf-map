@@ -551,6 +551,7 @@ export class MapBuildService {
         const manifest = JSON.parse(await Bun.file(manifestPath).text());
         if (old && Array.isArray(old.orthoVintages)) manifest.orthoVintages = old.orthoVintages;
         if (old && typeof old.activeOrtho === 'string') manifest.activeOrtho = old.activeOrtho;
+        if (old && typeof old.builtOrtho === 'string') manifest.builtOrtho = old.builtOrtho;
         const json = JSON.stringify(manifest);
         await writeFile(manifestPath, json);
 
@@ -696,12 +697,20 @@ export class MapBuildService {
         await this.assets.register({ siteId, courseId, kind: 'dem_cog', filename });
     }
 
-    /** Patch the on-disk manifest with orthoVintages + activeOrtho; returns the JSON. */
+    /**
+     * Patch the on-disk manifest with orthoVintages + activeOrtho +
+     * builtOrtho; returns the JSON. `builtOrtho` is the explicit
+     * built-vintage marker: the collection the flat ortho tile tree was
+     * tiled from this build — the single source of truth ortho patches
+     * (T55) replay onto. `activeOrtho` (same value on a fresh build) is
+     * what the web shows by default.
+     */
     private async writeManifestVintages(siteId: string, vintages: OrthoVintage[], active: string): Promise<string> {
         const manifestPath = path.join(this.dataDir, 'tiles', siteId, 'manifest.json');
         const manifest = JSON.parse(await Bun.file(manifestPath).text());
         manifest.orthoVintages = vintages;
         manifest.activeOrtho = active;
+        manifest.builtOrtho = active;
         const json = JSON.stringify(manifest);
         await writeFile(manifestPath, json);
         return json;
