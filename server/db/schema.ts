@@ -23,6 +23,7 @@ export interface Database {
     green_calibration: GreenCalibrationTable;
     putt_estimate_samples: PuttEstimateSamplesTable;
     map_build_jobs: MapBuildJobsTable;
+    terrain_edits: TerrainEditsTable;
 }
 
 // --- Auth ---
@@ -244,6 +245,7 @@ export interface RoundsTable {
     game_plan_id: string | null;
     wind_speed_mps: number | null;
     wind_direction_deg: number | null;
+    stimp_ft: number | null;
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;
@@ -331,6 +333,20 @@ export interface MapBuildJobsTable {
     bbox_json: string; // JSON {west,south,east,north} WGS84
     log: string;
     error: string | null;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+}
+
+// --- Terrain edits (smooth/flatten the DEM; replayed as vector edits at build) ---
+
+export interface TerrainEditsTable {
+    id: string;
+    site_id: string; // the site (map) this edit belongs to — site owns the map (D-TE1)
+    op: string; // 'plane' | 'smooth' (D-TE3)
+    params_json: string; // JSON { featherM, radiusM?, flat? }
+    rings_json: string; // JSON straight-segment rings in the DEM CRS (EPSG:3006)
+    enabled: number; // bool as 0/1
+    version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;
 }

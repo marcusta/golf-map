@@ -20,6 +20,7 @@ import { PuttEstimateService } from './putt-estimate.service';
 import { MapBuildService } from './map-build.service';
 import { HydroService } from './hydro.service';
 import { OsmService } from './osm.service';
+import { TerrainEditsService } from './terrain-edits.service';
 
 export interface ServicesConfig {
     /** Root directory for course assets/tiles on disk. Defaults to DATA_DIR env var, then './data'. */
@@ -49,6 +50,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const mapBuildService = new MapBuildService({ db, assets: assetsService, dataDir });
     const hydroService = new HydroService({ courses: coursesService, assets: assetsService });
     const osmService = new OsmService({ courses: coursesService, assets: assetsService });
+    const terrainEditsService = new TerrainEditsService(db);
 
     return {
         db,
@@ -72,5 +74,6 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         mapBuildService,
         hydroService,
         osmService,
+        terrainEditsService,
     };
 }
