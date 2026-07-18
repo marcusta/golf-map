@@ -17,6 +17,7 @@ from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 
 from golfpipe import grid_dem as grid_dem_mod
+from golfpipe import osm as osm_mod
 from golfpipe import stac
 from golfpipe import water as water_mod
 from golfpipe.hillshade import write_hillshade_geotiff
@@ -238,6 +239,66 @@ def cmd_fetch_water(
     print(f"Watercourse lines in bbox: {len(lines)} source, {counts.get('water_creek', 0)} buffered ribbons (width {creek_width_m} m)")
     if not lines:
         print("(no watercourse lines found — the open Marktäcke product may not carry them for this area)")
+    print(f"Wrote {out}")
+    return out
+
+
+def cmd_fetch_osm(
+    bbox: tuple[float, float, float, float],
+    out: Path,
+    overpass_fetch=None,
+    overpass_url: str = osm_mod.OVERPASS_URL,
+) -> Path:
+    """Queries the Overpass API for OSM golf + land-cover polygons in bbox
+    (WGS84), reprojects them to EPSG:3006, and writes one GeoJSON
+    FeatureCollection to `out`, importable by the web GeoJSON draft-import
+    wizard. Tag→type: golf=green/tee/fairway/bunker/rough → same;
+    golf=water_hazard|lateral_water_hazard and natural=water → 'water';
+    landuse=forest|natural=wood → 'trees'. Closed ways become one Polygon;
+    type=multipolygon relations become one Polygon per outer ring with
+    inners as holes. Anything else (incl. linear ways) is skipped.
+
+    LICENSING: OSM is ODbL — every feature carries provenance properties and
+    the collection a top-level `attribution` field (see golfpipe.osm). Durable
+    provenance/attribution before public distribution is a flagged wave-level
+    decision; no schema column is added here.
+    """
+    from rasterio.crs import CRS
+    from rasterio.warp import transform as warp_transform
+
+    fetch = overpass_fetch or osm_mod.fetch_overpass
+    query = osm_mod.build_overpass_query(bbox)
+    print(f"Querying Overpass for golf/terrain features in bbox {bbox} ...")
+    overpass_json = fetch(query, url=overpass_url)
+
+    src = CRS.from_epsg(4326)
+    dst = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
+
+    def reproject(lons, lats):
+        xs, ys = warp_transform(src, dst, list(lons), list(lats))
+        return xs, ys
+
+    features, skipped = osm_mod.assemble_features(overpass_json, reproject)
+    from datetime import date
+
+    collection = osm_mod.build_osm_geojson(features, fetch_date=date.today().isoformat())
+    osm_mod.write_geojson(collection, out)
+
+    counts: dict[str, int] = {}
+    for feature in collection["features"]:
+        t = feature["properties"]["type"]
+        counts[t] = counts.get(t, 0) + 1
+    print(f"OSM features imported: {len(collection['features'])} " + (
+        ", ".join(f"{t}={n}" for t, n in sorted(counts.items())) or "(none)"
+    ))
+    if skipped:
+        print(f"Skipped {len(skipped)} element(s):")
+        for note in skipped[:10]:
+            print(f"  - {note}")
+        if len(skipped) > 10:
+            print(f"  … and {len(skipped) - 10} more")
+    if not collection["features"]:
+        print("(no golf/terrain polygons found in bbox — is the course mapped in OSM?)")
     print(f"Wrote {out}")
     return out
 
