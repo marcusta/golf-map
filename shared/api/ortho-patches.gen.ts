@@ -10,6 +10,8 @@ export interface OrthoPatchesInfo {
     count: number;
     lastCreatedAt: null | string;
     lastTool: null | string;
+    bakeable: boolean;
+    reason?: string;
 }
 
 export interface OrthoPatchesApi {

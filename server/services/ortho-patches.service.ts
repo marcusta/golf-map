@@ -1,6 +1,6 @@
 import type { Kysely } from 'kysely';
 import * as path from 'node:path';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import type { Database } from '../db/schema';
 import type { AssetsService, CourseAsset } from './assets.service';
 import { NotFoundError } from '@basics/core/server/auth';
@@ -31,6 +31,11 @@ export interface OrthoPatchesInfo {
     count: number;
     lastCreatedAt: string | null;
     lastTool: string | null;
+    /** Whether accepted patches can be baked onto the pristine ortho + tiles
+     * right now (false on legacy courses with no persisted source). */
+    bakeable: boolean;
+    /** Human reason cleaning can only preview (present when !bakeable). */
+    reason?: string;
 }
 
 export interface OrthoPatchResult {
@@ -137,17 +142,46 @@ export class OrthoPatchesService {
 
     // --- Public API ---
 
-    /** Patch count + last-entry summary for the course's map (site). */
+    /**
+     * Patch count + last-entry summary for the course's map (site), plus a
+     * pre-flight `bakeable` flag (+ `reason`) computed by the SAME source
+     * resolution the bake uses — so the Clean panel can gate "Accept & bake"
+     * up front instead of failing late (legacy/unbuilt courses can only
+     * preview).
+     */
     async info(courseId: string): Promise<OrthoPatchesInfo> {
         const siteId = await this.siteIdForCourse(courseId);
-        if (!siteId) return { count: 0, lastCreatedAt: null, lastTool: null };
+        if (!siteId) {
+            return {
+                count: 0, lastCreatedAt: null, lastTool: null,
+                bakeable: false,
+                reason: `Course ${courseId} has no map (no site) — build the map first`,
+            };
+        }
         const log = await this.readLog(siteId);
         const last = log.patches[log.patches.length - 1] ?? null;
+        const bake = await this.checkBakeable(siteId);
         return {
             count: log.patches.length,
             lastCreatedAt: last?.createdAt ?? null,
             lastTool: last?.tool ?? null,
+            ...bake,
         };
+    }
+
+    /**
+     * Pre-flight for the Clean panel: can accepted patches actually bake?
+     * Runs the same resolution the bake uses (manifest present + a pristine
+     * ortho source resolvable), reporting the blocking reason rather than
+     * throwing.
+     */
+    private async checkBakeable(siteId: string): Promise<{ bakeable: boolean; reason?: string }> {
+        const manifestAsset = (await this.assets.listBySite(siteId)).find(a => a.kind === 'tile_manifest');
+        if (!manifestAsset?.metaJson) {
+            return { bakeable: false, reason: `Site ${siteId} has no tile manifest — build the map first` };
+        }
+        const resolved = await this.resolveOrthoSource(siteId, manifestAsset.metaJson);
+        return 'reason' in resolved ? { bakeable: false, reason: resolved.reason } : { bakeable: true };
     }
 
     /**
@@ -245,17 +279,58 @@ export class OrthoPatchesService {
         if (!manifestAsset?.metaJson) {
             throw new NotFoundError(`Site ${siteId} has no tile manifest — build the map first`);
         }
-        const meta = JSON.parse(manifestAsset.metaJson) as {
+        const resolved = await this.resolveOrthoSource(siteId, manifestAsset.metaJson);
+        if ('reason' in resolved) throw new NotFoundError(resolved.reason);
+        return { siteId, manifestAsset, sourcePath: resolved.sourcePath };
+    }
+
+    /**
+     * Resolves the PRISTINE source GeoTIFF of the active ortho vintage for a
+     * site, or a human `reason` cleaning can't bake. Tolerant of legacy
+     * builds: when the manifest carries no vintage metadata (or names one
+     * whose .tif is gone) BUT exactly one `ortho-*.tif` sits in
+     * `sources/<siteId>/`, that lone source is used (logged). Vreta has zero
+     * source tifs, so it still reports a reason — surfaced up front by info().
+     */
+    private async resolveOrthoSource(
+        siteId: string,
+        metaJson: string,
+    ): Promise<{ sourcePath: string } | { reason: string }> {
+        const meta = JSON.parse(metaJson) as {
             activeOrtho?: string;
             orthoVintages?: Array<{ collection: string }>;
         };
         const collection = meta.activeOrtho ?? meta.orthoVintages?.[0]?.collection;
-        if (!collection) throw new NotFoundError(`Site ${siteId} has no ortho vintage to patch`);
-        const sourcePath = path.join(this.dataDir, 'sources', siteId, orthoSourceName(collection));
-        if (!await Bun.file(sourcePath).exists()) {
-            throw new NotFoundError(`Pristine ortho source missing: sources/${siteId}/${orthoSourceName(collection)}`);
+        if (collection) {
+            const sourcePath = path.join(this.dataDir, 'sources', siteId, orthoSourceName(collection));
+            if (await Bun.file(sourcePath).exists()) return { sourcePath };
         }
-        return { siteId, manifestAsset, sourcePath };
+        const fallback = await this.soleOrthoTif(siteId);
+        if (fallback) {
+            console.log(`[ortho-patches] site ${siteId}: ortho vintage ${collection ? `'${collection}' has no source tif` : 'metadata is empty'}; falling back to the sole source ${path.basename(fallback)}`);
+            return { sourcePath: fallback };
+        }
+        if (collection) {
+            return { reason: `Pristine ortho source missing: sources/${siteId}/${orthoSourceName(collection)} — rebuild the map` };
+        }
+        return { reason: `Site ${siteId} has no ortho vintage to patch — rebuild the map` };
+    }
+
+    /**
+     * The single pristine ortho source in `sources/<siteId>/`, or null if
+     * there are zero or several. Excludes the working `.patched.tif` (the
+     * replay's OUTPUT — never a valid source to replay onto).
+     */
+    private async soleOrthoTif(siteId: string): Promise<string | null> {
+        const dir = path.join(this.dataDir, 'sources', siteId);
+        let names: string[];
+        try {
+            names = await readdir(dir);
+        } catch {
+            return null; // sources dir absent — nothing persisted
+        }
+        const tifs = names.filter(n => /^ortho-.+\.tif$/i.test(n) && !/\.patched\.tif$/i.test(n));
+        return tifs.length === 1 ? path.join(dir, tifs[0]) : null;
     }
 
     // --- Replay + versioning ---

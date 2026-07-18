@@ -164,7 +164,9 @@ test('a failed replay rolls the stored patch back and leaves the version untouch
         expect(await Bun.file(path.join(patchesDir, '1.png')).exists()).toBe(false);
         const onDisk = JSON.parse(await readFile(path.join(dataDir, 'tiles', SITE_ID, 'manifest.json'), 'utf8'));
         expect(onDisk.generatedAt).toBe(MANIFEST.generatedAt);
-        expect(await svc.info(TEST_COURSE_ID)).toEqual({ count: 0, lastCreatedAt: null, lastTool: null });
+        expect(await svc.info(TEST_COURSE_ID)).toEqual({
+            count: 0, lastCreatedAt: null, lastTool: null, bakeable: true,
+        });
     } finally {
         await cleanup();
     }
@@ -245,9 +247,71 @@ test('apply rejects non-PNG payloads and degenerate bounds without storing anyth
 test('apply/info for a course without a built map explain themselves', async () => {
     const { svc, cleanup } = await setup({ withSite: false });
     try {
-        // info: readable (0 patches) without minting a site.
-        expect(await svc.info(TEST_COURSE_ID)).toEqual({ count: 0, lastCreatedAt: null, lastTool: null });
+        // info: readable (0 patches, not bakeable) without minting a site.
+        const info = await svc.info(TEST_COURSE_ID);
+        expect(info.count).toBe(0);
+        expect(info.bakeable).toBe(false);
+        expect(info.reason).toMatch(/no map|build the map/);
         await expect(svc.apply(TEST_COURSE_ID, PATCH)).rejects.toThrow(/no map|build the map/);
+    } finally {
+        await cleanup();
+    }
+});
+
+test('empty ortho-vintage metadata + exactly one ortho-*.tif on disk: bake proceeds via the fallback', async () => {
+    // Legacy build: manifest present but no activeOrtho / empty orthoVintages,
+    // yet a single pristine ortho-*.tif sits in sources/<siteId>/.
+    const { ctx, svc, assets, dataDir, calls, cleanup } = await setup({ withSite: false });
+    try {
+        await ctx.db.insertInto('sites').values({ id: SITE_ID, name: 'Legacy site', version: 1 }).execute();
+        await ctx.db.updateTable('courses').where('id', '=', TEST_COURSE_ID)
+            .set({ site_id: SITE_ID, updated_at: sql`(datetime('now'))` }).execute();
+        await mkdir(path.join(dataDir, 'sources', SITE_ID), { recursive: true });
+        // One source tif whose name does NOT match any vintage collection.
+        await writeFile(path.join(dataDir, 'sources', SITE_ID, 'ortho-legacy.tif'), 'pristine');
+        await mkdir(path.join(dataDir, 'tiles', SITE_ID), { recursive: true });
+        const legacyManifest = { ...MANIFEST, orthoVintages: [], activeOrtho: undefined };
+        await writeFile(path.join(dataDir, 'tiles', SITE_ID, 'manifest.json'), JSON.stringify(legacyManifest));
+        await assets.register({
+            siteId: SITE_ID, courseId: TEST_COURSE_ID, kind: 'tile_manifest',
+            filename: `tiles/${SITE_ID}/manifest.json`, metaJson: JSON.stringify(legacyManifest),
+        });
+
+        // Pre-flight reports bakeable.
+        expect((await svc.info(TEST_COURSE_ID)).bakeable).toBe(true);
+
+        // Bake proceeds against the sole source tif.
+        const result = await svc.apply(TEST_COURSE_ID, PATCH);
+        expect(result.count).toBe(1);
+        expect(calls).toHaveLength(1);
+        expect(argValue(calls[0].args, '--ortho'))
+            .toBe(path.join(dataDir, 'sources', SITE_ID, 'ortho-legacy.tif'));
+    } finally {
+        await cleanup();
+    }
+});
+
+test('empty ortho-vintage metadata + NO source tif (Vreta): not bakeable, apply gives the clear error', async () => {
+    const { ctx, svc, assets, dataDir, cleanup } = await setup({ withSite: false });
+    try {
+        await ctx.db.insertInto('sites').values({ id: SITE_ID, name: 'Vreta-like site', version: 1 }).execute();
+        await ctx.db.updateTable('courses').where('id', '=', TEST_COURSE_ID)
+            .set({ site_id: SITE_ID, updated_at: sql`(datetime('now'))` }).execute();
+        // sources dir has a dem.tif but no ortho-*.tif (mirrors Vreta).
+        await mkdir(path.join(dataDir, 'sources', SITE_ID), { recursive: true });
+        await writeFile(path.join(dataDir, 'sources', SITE_ID, 'dem.tif'), 'dem');
+        await mkdir(path.join(dataDir, 'tiles', SITE_ID), { recursive: true });
+        const legacyManifest = { ...MANIFEST, orthoVintages: [], activeOrtho: undefined };
+        await writeFile(path.join(dataDir, 'tiles', SITE_ID, 'manifest.json'), JSON.stringify(legacyManifest));
+        await assets.register({
+            siteId: SITE_ID, courseId: TEST_COURSE_ID, kind: 'tile_manifest',
+            filename: `tiles/${SITE_ID}/manifest.json`, metaJson: JSON.stringify(legacyManifest),
+        });
+
+        const info = await svc.info(TEST_COURSE_ID);
+        expect(info.bakeable).toBe(false);
+        expect(info.reason).toMatch(/no ortho vintage|rebuild the map/);
+        await expect(svc.apply(TEST_COURSE_ID, PATCH)).rejects.toThrow(/no ortho vintage|rebuild the map/);
     } finally {
         await cleanup();
     }

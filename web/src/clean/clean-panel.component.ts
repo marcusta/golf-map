@@ -18,6 +18,7 @@ const tpl = template(`
             </div>
             <div bind="modeHint" class="mode-hint"></div>
         </div>
+        <div bind="bakeNotice" class="bake-notice"></div>
         <div bind="busyLine" class="busy-line"></div>
         <div bind="previewSection" class="preview-section">
             <div class="preview-label">Preview on the map — bake it?</div>
@@ -121,6 +122,18 @@ export class CleanPanelComponent extends Component {
                 color: ${t('color-text-secondary')};
             }
 
+            & .bake-notice {
+                display: none;
+                padding: ${s('sm')};
+                border: 1px solid var(--data-risk);
+                border-radius: ${t('radius-sm')};
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-secondary')};
+                line-height: 1.4;
+                font-size: 0.72rem;
+                &.show { display: block; }
+            }
+
             & .busy-line {
                 display: none;
                 color: ${t('color-text-secondary')};
@@ -152,6 +165,7 @@ export class CleanPanelComponent extends Component {
                 background: ${t('color-accent-primary')};
                 color: ${t('color-on-accent')};
                 cursor: pointer;
+                &:disabled { opacity: 0.45; cursor: default; }
             }
 
             & .patches-row {
@@ -226,6 +240,10 @@ export class CleanPanelComponent extends Component {
                     ? 'Click a blemish on the photo — SAM traces its outline.'
                     : 'Press and drag a box — the inscribed ellipse becomes the mask.',
             },
+            bakeNotice: {
+                textContent: () => 'Preview only — this course\'s map must be rebuilt before patches can bake.',
+                className: () => this.tool.bakeable.get() ? 'bake-notice' : 'bake-notice show',
+            },
             busyLine: {
                 textContent: () => this.tool.phase.get() === 'applying'
                     ? 'Baking into ortho + tiles…'
@@ -237,7 +255,10 @@ export class CleanPanelComponent extends Component {
             previewSection: {
                 className: () => this.tool.phase.get() === 'preview' ? 'preview-section show' : 'preview-section',
             },
-            acceptBtn: { onclick: () => void this.tool.accept() },
+            acceptBtn: {
+                onclick: () => void this.tool.accept(),
+                disabled: () => !this.tool.bakeable.get(),
+            },
             discardBtn: { onclick: () => this.tool.discard() },
             patchCount: {
                 textContent: () => {

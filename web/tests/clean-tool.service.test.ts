@@ -68,7 +68,7 @@ interface Harness {
     sidecar: SidecarOpts;
 }
 
-async function harness(opts: SidecarOpts & { patchCount?: number } = {}): Promise<Harness> {
+async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boolean } = {}): Promise<Harness> {
     const sidecar: SidecarOpts = {
         online: opts.online ?? true,
         inpaintAvailable: opts.inpaintAvailable ?? true,
@@ -128,7 +128,11 @@ async function harness(opts: SidecarOpts & { patchCount?: number } = {}): Promis
             count = Math.max(0, count - 1);
             return { count, generatedAt: '2026-07-18T12:59:59.000Z' };
         },
-        orthoPatchesInfo: async () => ({ count, lastCreatedAt: null, lastTool: null }),
+        orthoPatchesInfo: async () => ({
+            count, lastCreatedAt: null, lastTool: null,
+            bakeable: opts.bakeable ?? true,
+            reason: (opts.bakeable ?? true) ? undefined : 'rebuild the map first',
+        }),
     };
 
     const svc = new CleanToolService(
@@ -426,12 +430,40 @@ test('a failed bake keeps the preview and reports the error', async () => {
     svcAny.patchesApi = {
         applyOrthoPatch: async () => { throw new Error('server exploded'); },
         revertLastOrthoPatch: async () => ({ count: 0, generatedAt: '' }),
-        orthoPatchesInfo: async () => ({ count: 0, lastCreatedAt: null, lastTool: null }),
+        orthoPatchesInfo: async () => ({ count: 0, lastCreatedAt: null, lastTool: null, bakeable: true }),
     };
     expect(await h.svc.accept()).toBe(false);
     expect(h.svc.phase.get()).toBe('preview'); // still previewable
     expect(h.svc.notice.get()).toContain('server exploded');
     expect(h.reloads).toHaveLength(0);
+});
+
+// ─── bake pre-flight (legacy courses) ───────────────────────────────────────
+
+describe('bake pre-flight', () => {
+    test('bakeable course: info flips the gate on, accept is allowed', async () => {
+        const h = await harness();
+        expect(h.svc.bakeable.get()).toBe(true);
+        expect(h.svc.bakeReason.get()).toBeNull();
+    });
+
+    test('non-bakeable course: preview still works, but accept refuses without touching the server', async () => {
+        const h = await harness({ bakeable: false });
+        // info() on activation surfaced the reason up front.
+        expect(h.svc.bakeable.get()).toBe(false);
+        expect(h.svc.bakeReason.get()).toContain('rebuild the map');
+
+        // Previewing is genuinely useful — the click pipeline still runs.
+        expect(await h.svc.clickAt(CLICK)).toBe(true);
+        expect(h.svc.phase.get()).toBe('preview');
+
+        // But baking is blocked before any patch is sent; preview is kept.
+        expect(await h.svc.accept()).toBe(false);
+        expect(h.applyCalls).toHaveLength(0);
+        expect(h.svc.phase.get()).toBe('preview');
+        expect(h.svc.notice.get()).toContain('rebuilt');
+        expect(h.reloads).toHaveLength(0);
+    });
 });
 
 // ─── revert ─────────────────────────────────────────────────────────────────

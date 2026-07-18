@@ -171,6 +171,13 @@ export class CleanToolService {
     readonly notice = new Signal<string | null>(null);
     /** Baked patches on this course's map (server log length). */
     readonly patchCount = new Signal(0);
+    /** Pre-flight: can accepted patches actually bake into ortho + tiles?
+     * False on legacy courses with no persisted source — previewing still
+     * works, but "Accept & bake" is disabled (server resolves this the same
+     * way the bake does). Optimistic until the first info() lands. */
+    readonly bakeable = new Signal(true);
+    /** Server's reason cleaning can only preview (present when !bakeable). */
+    readonly bakeReason = new Signal<string | null>(null);
 
     private ctx: ToolContext | null = null;
     private preview: PreviewState | null = null;
@@ -248,6 +255,8 @@ export class CleanToolService {
         try {
             const info = await this.patchesApi.orthoPatchesInfo({ courseId: ctx.courseId });
             this.patchCount.set(info.count);
+            this.bakeable.set(info.bakeable);
+            this.bakeReason.set(info.reason ?? null);
         } catch {
             // Patch info is decorative; the tool works without it.
         }
@@ -525,6 +534,12 @@ export class CleanToolService {
         const ctx = this.ctx;
         const preview = this.preview;
         if (!ctx || !preview || this.phase.peek() !== 'preview') return false;
+        if (!this.bakeable.peek()) {
+            // Pre-flight already told the user (and disabled the button); guard
+            // the path anyway so a legacy course never fails late in the bake.
+            this.notice.set("This course's map must be rebuilt before patches can bake.");
+            return false;
+        }
         this.phase.set('applying');
         this.notice.set(null);
         try {
