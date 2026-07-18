@@ -15,6 +15,7 @@ import { EditorModeService } from '../editor/editor-mode.service';
 import { EDITOR_TOOLS } from '../editor/tools/index';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
 import { GeojsonImportService } from '../import/geojson-import.service';
+import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
 
 type CommandBarMode = 'create' | 'plan';
 
@@ -460,6 +461,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private mode = this.inject(EditorModeService);
     private importSvc = this.inject(SvgImportService);
     private geojsonImportSvc = this.inject(GeojsonImportService);
+    private mapBuild = this.inject(MapBuildClientService);
     private confirm = this.inject(ConfirmService);
     private helpModal = this.inject(HelpModalService);
     private auth = this.inject(AuthService);
@@ -859,6 +861,12 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             };
             host.appendChild(geojsonBtn);
 
+            // Delete lidar files — the .laz sources kept after a map build are
+            // multi-use (detect-trees/water) but large; this frees them per
+            // course on explicit action. Shown only when files exist; the label
+            // names the reclaimable size, and the delete is confirmed first.
+            this.mountDeleteLidar(host, close);
+
             const divider = document.createElement('div');
             divider.className = 'menu-divider';
             host.appendChild(divider);
@@ -893,6 +901,73 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             publishBtn.disabled = disabled;
         }));
         host.appendChild(publishBtn);
+    }
+
+    /**
+     * "Delete lidar files (X.X GB)" — appended into the actions menu only when
+     * the course has persisted .laz sources. Fetches lidar info on menu open;
+     * the button lands hidden and reveals itself (or removes itself) once the
+     * size is known, so it never flashes an empty/loading state.
+     */
+    private mountDeleteLidar(host: HTMLElement, close: () => void): void {
+        const course = this.svc.course.peek();
+        if (!course) return;
+        const courseId = course.id;
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'menu-item';
+        btn.dataset.testid = 'course-delete-lidar-btn';
+        btn.style.display = 'none';
+        host.appendChild(btn);
+
+        void this.mapBuild.lidarInfo(courseId).then((info) => {
+            if (info.files.length === 0) {
+                btn.remove();
+                return;
+            }
+            const size = formatBytes(info.totalBytes);
+            btn.innerHTML = `<span class="menu-item__icon">${icon('trash-2', 16)}</span>`
+                + `<span class="menu-item__label">Delete lidar files (${size})</span>`;
+            btn.style.display = '';
+            btn.onclick = () => {
+                close();
+                void this.confirmDeleteLidar(courseId, info.files.length, size);
+            };
+        }).catch(() => {
+            btn.remove(); // info fetch failed — leave the menu unchanged
+        });
+    }
+
+    /** Confirm, delete, then report the result as a notice (house ConfirmService). */
+    private async confirmDeleteLidar(courseId: string, fileCount: number, size: string): Promise<void> {
+        const ok = await this.confirm.confirm({
+            title: 'Delete lidar files?',
+            body: `This permanently removes the ${fileCount} downloaded lidar (.laz) file${fileCount === 1 ? '' : 's'} for this course, freeing ${size}.`,
+            detail: 'The built map (terrain, hillshade, DEM) is unaffected. Re-fetching the lidar means rebuilding the map from Lantmäteriet.',
+            confirmLabel: 'Delete lidar files',
+            cancelLabel: 'Keep files',
+            tone: 'danger',
+        });
+        if (!ok) return;
+        try {
+            const { freedBytes } = await this.mapBuild.deleteLidar(courseId);
+            await this.confirm.confirm({
+                title: 'Lidar files deleted',
+                body: `Freed ${formatBytes(freedBytes)}.`,
+                confirmLabel: 'Done',
+                cancelLabel: 'Close',
+                tone: 'primary',
+            });
+        } catch (e) {
+            await this.confirm.confirm({
+                title: 'Could not delete lidar files',
+                body: e instanceof Error ? e.message : String(e),
+                confirmLabel: 'OK',
+                cancelLabel: 'Close',
+                tone: 'warning',
+            });
+        }
     }
 
     private buildAvatarPanel(host: HTMLElement, close: () => void): void {

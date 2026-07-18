@@ -1,9 +1,22 @@
 import { Signal } from '@basics/core/client/core';
 import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
-import type { MapBuildApi, MapBuildJob, Bbox } from '../../../shared/api/map-build.gen';
+import type { MapBuildApi, MapBuildJob, Bbox, LidarInfo } from '../../../shared/api/map-build.gen';
 
-export type { MapBuildJob, Bbox };
+export type { MapBuildJob, Bbox, LidarInfo };
+
+/** Human-readable size for lidar totals (e.g. "1.4 GB", "820 MB", "512 KB"). */
+export function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let value = bytes / 1024;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit++;
+    }
+    return `${value.toFixed(1)} ${units[unit]}`;
+}
 
 /** Ordered pipeline steps — mirrors the server's BUILD_STEPS, drives the progress UI. */
 export const BUILD_STEPS = [
@@ -100,6 +113,16 @@ export class MapBuildClientService {
         } catch {
             // Transient poll failure — keep polling; a persistent failure will surface via the job row.
         }
+    }
+
+    /** List the persisted lidar (.laz) source files for a course. */
+    async lidarInfo(courseId: string): Promise<LidarInfo> {
+        return this.mapBuildApi.lidarInfo({ courseId });
+    }
+
+    /** Delete a course's persisted lidar files (explicit user action); returns bytes freed. */
+    async deleteLidar(courseId: string): Promise<{ freedBytes: number }> {
+        return this.mapBuildApi.deleteLidar({ courseId });
     }
 
     /** Stop polling (call on component teardown). */

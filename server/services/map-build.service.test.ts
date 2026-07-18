@@ -142,6 +142,9 @@ test('happy path: runs the lidar→dem→ortho chain in order and registers 3 ti
             expect(await Bun.file(path.join(dataDir, 'sources', siteId, f)).exists()).toBe(true);
         }
 
+        // The .laz is kept (not deleted with the workdir) under sources/<site>/lidar.
+        expect(await Bun.file(path.join(dataDir, 'sources', siteId, 'lidar', 'item_648_52.copc.laz')).exists()).toBe(true);
+
         // Three assets registered against the site; tile_manifest carries vintages.
         const registered = await assets.listBySite(siteId);
         const byKind = Object.fromEntries(registered.map((a) => [a.kind, a]));
@@ -236,6 +239,58 @@ test('failure path: nonzero exit marks job failed at the step and registers noth
         // No partial assets.
         const registered = await assets.listByCourse(TEST_COURSE_ID);
         expect(registered).toHaveLength(0);
+    } finally {
+        await cleanup();
+    }
+});
+
+test('lidar is persisted even when a later step fails (moved right after fetch)', async () => {
+    // Fail at grid-dem — AFTER fetch-lidar has run and the .laz was relocated.
+    const { svc, dataDir, cleanup } = await setup({ failAt: 'grid-dem' });
+    try {
+        const job = await svc.start(TEST_COURSE_ID, BBOX);
+        await svc.waitForJob(job.id);
+        const final = await svc.get(job.id);
+
+        expect(final.status).toBe('failed');
+        expect(final.step).toBe('grid-dem');
+
+        // Despite the failure + workdir teardown, the .laz survives persistently.
+        const siteId = final.siteId!;
+        expect(await Bun.file(path.join(dataDir, 'sources', siteId, 'lidar', 'item_648_52.copc.laz')).exists()).toBe(true);
+    } finally {
+        await cleanup();
+    }
+});
+
+test('lidarInfo lists persisted .laz files; deleteLidar removes them and reports freed bytes', async () => {
+    const { svc, cleanup } = await setup();
+    try {
+        const build = await svc.start(TEST_COURSE_ID, BBOX);
+        await svc.waitForJob(build.id);
+
+        const info = await svc.lidarInfo(TEST_COURSE_ID);
+        expect(info.files).toEqual(['item_648_52.copc.laz']);
+        expect(info.totalBytes).toBe(4); // 'fake'
+
+        const { freedBytes } = await svc.deleteLidar(TEST_COURSE_ID);
+        expect(freedBytes).toBe(4);
+
+        // Gone now — a second read is empty, a second delete is a 0-byte no-op.
+        expect(await svc.lidarInfo(TEST_COURSE_ID)).toEqual({ files: [], totalBytes: 0 });
+        expect((await svc.deleteLidar(TEST_COURSE_ID)).freedBytes).toBe(0);
+    } finally {
+        await cleanup();
+    }
+});
+
+test('lidarInfo returns empty (and mints no site) for a never-built course', async () => {
+    const { ctx, svc, cleanup } = await setup();
+    try {
+        expect(await svc.lidarInfo(TEST_COURSE_ID)).toEqual({ files: [], totalBytes: 0 });
+        // Read must not create a site as a side effect.
+        const course = await ctx.coursesService.get(TEST_COURSE_ID);
+        expect(course.siteId).toBeNull();
     } finally {
         await cleanup();
     }

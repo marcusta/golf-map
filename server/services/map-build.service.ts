@@ -1,7 +1,7 @@
 import type { Kysely, Selectable } from 'kysely';
 import { sql } from 'kysely';
 import * as path from 'node:path';
-import { mkdtemp, mkdir, copyFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, copyFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import type { Database, MapBuildJobsTable } from '../db/schema';
 import type { AssetsService } from './assets.service';
@@ -36,6 +36,12 @@ export interface Bbox {
 export interface OrthoVintage {
     collection: string; // e.g. 'orto-l2-2025'
     dates: string[]; // capture dates (YYYY-MM-DD)
+}
+
+/** The persisted lidar (.laz) tiles for a course's site — multi-use source assets. */
+export interface LidarInfo {
+    files: string[]; // .laz file names (no path), sorted
+    totalBytes: number;
 }
 
 export interface MapBuildJob {
@@ -266,8 +272,16 @@ export class MapBuildService {
             // Elevation: Laserdata Skog lidar → gridded DEM (EPSG:3006).
             if (!await this.exec(jobId, 'fetch-lidar', gp('fetch-lidar', '--bbox', bboxArg, '--out-dir', lidarDir), env)) return;
 
+            // Persist the .laz IMMEDIATELY (before any later step can fail): they
+            // are multi-use assets (detect-trees, detect-water, future tooling),
+            // not build scratch. They live under the site's sources dir and are
+            // deleted manually per course via the editor's "Delete lidar files"
+            // action — the workdir cleanup below no longer removes them.
+            const persistedLidar = this.lidarDir(siteId);
+            await relocateLidar(lidarDir, persistedLidar);
+
             await this.setStep(jobId, 'grid-dem');
-            const lidarFiles = await this.listLidar(lidarDir);
+            const lidarFiles = await this.listLidar(persistedLidar);
             if (lidarFiles.length === 0) {
                 await this.fail(jobId, 'grid-dem', 'fetch-lidar downloaded no .laz files for this area — the bbox may be outside Laserdata Skog coverage.', env);
                 return;
@@ -367,6 +381,67 @@ export class MapBuildService {
 
     private sourcesDir(siteId: string): string {
         return path.join(this.dataDir, 'sources', siteId);
+    }
+
+    /** Persistent lidar (.laz) directory for a site (kept after builds). */
+    private lidarDir(siteId: string): string {
+        return path.join(this.sourcesDir(siteId), 'lidar');
+    }
+
+    /**
+     * The site owning a course's map, WITHOUT creating one — a read for lidar
+     * info/delete must not mint a site as a side effect. Null when the course
+     * has never been built (no site yet). Throws if the course is missing.
+     */
+    private async siteIdForCourse(courseId: string): Promise<string | null> {
+        const course = await this.db
+            .selectFrom('courses').select(['id', 'site_id']).where('id', '=', courseId).executeTakeFirst();
+        if (!course) throw new NotFoundError(`Course ${courseId} not found`);
+        return course.site_id ?? null;
+    }
+
+    /**
+     * Lists the persisted lidar .laz files for a course (resolves course→site).
+     * Empty when the course has no site or no lidar dir.
+     */
+    async lidarInfo(courseId: string): Promise<LidarInfo> {
+        const siteId = await this.siteIdForCourse(courseId);
+        if (!siteId) return { files: [], totalBytes: 0 };
+        return this.readLidarDir(this.lidarDir(siteId));
+    }
+
+    /**
+     * Deletes the persisted lidar dir for a course (an explicit, user-driven
+     * action from the editor menu — builds no longer auto-delete). Returns the
+     * bytes freed; a no-op (0 bytes) when there's nothing to delete.
+     */
+    async deleteLidar(courseId: string): Promise<{ freedBytes: number }> {
+        const siteId = await this.siteIdForCourse(courseId);
+        if (!siteId) return { freedBytes: 0 };
+        const dir = this.lidarDir(siteId);
+        const { totalBytes } = await this.readLidarDir(dir);
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+        return { freedBytes: totalBytes };
+    }
+
+    /** Reads a lidar dir into {names, total bytes}; empty if it doesn't exist. */
+    private async readLidarDir(dir: string): Promise<LidarInfo> {
+        let names: string[];
+        try {
+            names = await readdir(dir);
+        } catch {
+            return { files: [], totalBytes: 0 };
+        }
+        const laz = names.filter(n => n.toLowerCase().endsWith('.laz')).sort();
+        let totalBytes = 0;
+        for (const name of laz) {
+            try {
+                totalBytes += (await stat(path.join(dir, name))).size;
+            } catch {
+                // File vanished between readdir and stat — skip it.
+            }
+        }
+        return { files: laz, totalBytes };
     }
 
     /** Runs list-ortho-vintages and parses its JSON, or fails the job (→ null). */
@@ -528,6 +603,38 @@ export class MapBuildService {
                 error: scrubSecrets(error, env),
                 updated_at: sql`(datetime('now'))`,
             }).execute();
+    }
+}
+
+/**
+ * Moves the .laz files fetch-lidar wrote into `fromDir` (the ephemeral workdir)
+ * into the persistent `toDir`, overwriting same-named tiles (Lantmäteriet tiles
+ * are immutable, so an identical name is the same data). No-op when nothing was
+ * fetched. `move`, not copy — the workdir is torn down afterwards.
+ */
+async function relocateLidar(fromDir: string, toDir: string): Promise<void> {
+    let names: string[];
+    try {
+        names = await readdir(fromDir);
+    } catch {
+        return; // fetch-lidar wrote nothing
+    }
+    const laz = names.filter(n => n.toLowerCase().endsWith('.laz'));
+    if (laz.length === 0) return;
+    await mkdir(toDir, { recursive: true });
+    for (const name of laz) {
+        await moveFile(path.join(fromDir, name), path.join(toDir, name));
+    }
+}
+
+/** Rename, falling back to copy+unlink across filesystems (tmpdir → data dir EXDEV). */
+async function moveFile(src: string, dst: string): Promise<void> {
+    try {
+        await rename(src, dst);
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+        await copyFile(src, dst);
+        await rm(src, { force: true });
     }
 }
 

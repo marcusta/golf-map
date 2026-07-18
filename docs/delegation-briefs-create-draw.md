@@ -32,7 +32,8 @@ Opus:1 — derived from the cost column above):
 | T47 | Lidar water drafts (class 9) | Fable | S | 4 |
 | T48 | Hydrografi Direkt creeks + water | Fable | S | 4 |
 | T49 | Feature provenance + ODbL posture | Fable | M | 8 |
-| **Σ** | | | | **94** |
+| T51 | Keep lidar .laz; manual delete | Opus | M | 2 |
+| **Σ** | | | | **96** |
 
 **Kickoff prompt (paste into a fresh session, fill in the task number):**
 
@@ -224,3 +225,26 @@ status-bar attribution. The GeoJSON import wizard maps fetch-osm properties
 `license` to 'ODbL' for `source: "osm"` when the file carries no license
 property. iOS attribution display deferred (gap noted in the report).
 **Done:** see docs/reports/T49-report.md.
+
+### T51 · Keep lidar .laz after builds; manual delete — **Opus**
+
+*(Added 2026-07-18. **Decision (Marcus, binding):** .laz files are multi-use
+assets — detect-trees, detect-water, future tooling — so map builds must stop
+auto-deleting them. They are kept after the DEM build and deleted manually per
+course, when done, via a "Delete lidar files" entry in the editor's ⋯ menu.)*
+
+Scope as built. **Server:** `MapBuildService.run()` relocates the fetched
+`.laz` from the ephemeral workdir into a persistent `data/sources/<siteId>/lidar/`
+IMMEDIATELY after `fetch-lidar` succeeds (a cross-device-safe move — rename with
+copy+unlink EXDEV fallback, overwriting same-named immutable Lantmäteriet tiles),
+so they survive later-step failures; the workdir teardown no longer removes them.
+New `lidarInfo(courseId)` (file names + total bytes, resolves course→site WITHOUT
+minting a site) and `deleteLidar(courseId)` (rm the dir, returns freed bytes)
+service methods, exposed as `GET /mapbuild/lidar` + `POST /mapbuild/lidar/delete`
+in `map-build.api.ts` (regenerated `map-build.gen.ts`). **Web:** command-bar ⋯
+menu gains "Delete lidar files (X.X GB)" next to Import GeoJSON — shown only when
+`lidarInfo` reports files, with a danger-confirm naming the size and a
+ConfirmService result notice (freed bytes / error). Added a `trash-2` icon and a
+`formatBytes` helper. **Pipeline:** detect-trees/detect-water can now be pointed
+at `data/sources/<mapKey>/lidar/` (no pipeline changes this task).
+**Done:** see docs/reports/T51-report.md.

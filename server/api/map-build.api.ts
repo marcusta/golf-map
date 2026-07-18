@@ -29,6 +29,10 @@ const EnsureOrthoInput = Type.Object({
     collection: Type.String(),
 });
 
+const CourseLidarInput = Type.Object({
+    courseId: Type.String(),
+});
+
 // --- API descriptor ---
 
 export function createMapBuildApi(svc: MapBuildService) {
@@ -60,6 +64,22 @@ export function createMapBuildApi(svc: MapBuildService) {
             path: '/mapbuild/ensure-ortho',
             fn: (input: Static<typeof EnsureOrthoInput>) => svc.ensureOrthoTiled(input.courseId, input.collection),
             schema: EnsureOrthoInput,
+            middleware: mw,
+        },
+        // Persisted lidar (.laz) source assets — listed for the editor menu and
+        // deleted on explicit user action (builds no longer auto-delete them).
+        lidarInfo: {
+            method: 'GET' as const,
+            path: '/mapbuild/lidar',
+            fn: (input: Static<typeof CourseLidarInput>) => svc.lidarInfo(input.courseId),
+            schema: CourseLidarInput,
+            middleware: mw,
+        },
+        deleteLidar: {
+            method: 'POST' as const,
+            path: '/mapbuild/lidar/delete',
+            fn: (input: Static<typeof CourseLidarInput>) => svc.deleteLidar(input.courseId),
+            schema: CourseLidarInput,
             middleware: mw,
         },
     };

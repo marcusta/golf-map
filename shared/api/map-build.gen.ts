@@ -14,6 +14,11 @@ export interface MapBuildJob {
     updatedAt: string;
 }
 
+export interface LidarInfo {
+    files: string[];
+    totalBytes: number;
+}
+
 export interface Bbox {
     west: number;
     south: number;
@@ -26,6 +31,8 @@ export interface MapBuildApi {
     status(input: { jobId: string }): Promise<MapBuildJob>;
     latest(input: { courseId: string }): Promise<null | MapBuildJob>;
     ensureOrtho(input: { courseId: string; collection: string }): Promise<MapBuildJob>;
+    lidarInfo(input: { courseId: string }): Promise<LidarInfo>;
+    deleteLidar(input: { courseId: string }): Promise<{ freedBytes: number }>;
 }
 
 export function createMapBuildClient(baseUrl: string): MapBuildApi {
@@ -49,6 +56,16 @@ export function createMapBuildClient(baseUrl: string): MapBuildApi {
         },
         async ensureOrtho(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/mapbuild/ensure-ortho`, body: input });
+        },
+        async lidarInfo(input) {
+            const params = new URLSearchParams();
+            for (const [k, v] of Object.entries(input as any))
+                if (v !== undefined) params.set(k, String(v));
+            const qs = params.toString();
+            return apiFetch({ method: 'GET', url: `${baseUrl}/mapbuild/lidar${qs ? '?' + qs : ''}` });
+        },
+        async deleteLidar(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/mapbuild/lidar/delete`, body: input });
         },
     };
 }
