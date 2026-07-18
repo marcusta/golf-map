@@ -328,6 +328,7 @@ export interface MapBuildJobsTable {
     id: string;
     course_id: string;
     site_id: string | null; // the site (map) this build targets
+    kind: Generated<string>; // 'build' (full pipeline) | 're-terrain' (fast edit replay, T56)
     status: string; // pending|running|succeeded|failed
     step: string | null; // current BUILD_STEPS value, or null
     bbox_json: string; // JSON {west,south,east,north} WGS84

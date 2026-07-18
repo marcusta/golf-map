@@ -20,7 +20,7 @@ export function formatBytes(bytes: number): string {
 
 /** Ordered pipeline steps — mirrors the server's BUILD_STEPS, drives the progress UI. */
 export const BUILD_STEPS = [
-    'fetch-lidar', 'grid-dem', 'fetch-ortho', 'tile-ortho', 'tile-terrain', 'tile-hillshade', 'manifest', 'install', 'register',
+    'fetch-lidar', 'grid-dem', 'apply-dem-edits', 'fetch-ortho', 'tile-ortho', 'tile-terrain', 'tile-hillshade', 'manifest', 'install', 'register',
 ] as const;
 
 export type BuildStep = (typeof BUILD_STEPS)[number];
@@ -29,6 +29,7 @@ export type BuildStep = (typeof BUILD_STEPS)[number];
 export const STEP_LABELS: Record<BuildStep, string> = {
     'fetch-lidar': 'Fetch lidar (Laserdata Skog)',
     'grid-dem': 'Grid DEM from lidar',
+    'apply-dem-edits': 'Apply terrain edits',
     'fetch-ortho': 'Fetch orthophoto',
     'tile-ortho': 'Tile orthophoto',
     'tile-terrain': 'Tile terrain',

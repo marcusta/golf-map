@@ -21,6 +21,8 @@
 import { Signal, Computed, effect, untrack } from '@basics/core/client/core';
 import { api } from '../api';
 import type { TerrainEdit, TerrainEditsApi } from '../../../shared/api/terrain-edits.gen';
+import type { MapBuildApi, MapBuildJob } from '../../../shared/api/map-build.gen';
+import { STEP_LABELS } from '../map-build/map-build.service';
 import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent, MapService } from '../map/map.service';
 import type { AnchorPoint } from '../geo/bezier';
@@ -32,6 +34,9 @@ export const TERRAIN_EDIT_TOOL_ID = 'terrain-edit';
 
 /** Screen-px radius: clicking within this of the draft's first point closes it. */
 const CLOSE_RING_PX = 12;
+
+/** Re-terrain job poll interval (map-build.service pattern). */
+const POLL_MS = 1500;
 
 /** Default edge-feather band width, meters (D-TE3; pipeline default). */
 export const DEFAULT_FEATHER_M = 2;
@@ -114,7 +119,12 @@ export class TerrainEditToolService {
     /** Monotonic token so a stale list response never clobbers a newer one. */
     private loadSeq = 0;
 
-    constructor(private editsApi: TerrainEditsApi = api.terrainEdits) {}
+    constructor(
+        private editsApi: TerrainEditsApi = api.terrainEdits,
+        private mapBuildApi: MapBuildApi = api.mapBuild,
+        /** Poll interval override for tests (real timers). */
+        private pollMs: number = POLL_MS,
+    ) {}
 
     // ── EditorTool lifecycle (called via terrain-edit-tool.ts) ─────────────
 
@@ -283,21 +293,85 @@ export class TerrainEditToolService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T56 SEAM — "Apply to terrain".
-    //
-    // T56 wires this to the fast re-terrain job: export the site's enabled
-    // edits (D-TE5 GeoJSON) → `apply-dem-edits` → tile-terrain/tile-hillshade
-    // → install, reusing the map-build job plumbing (job row + progress
-    // polling). Until then the panel button is disabled (canApply === false)
-    // and this method is a stub. T56: flip `canApply` to a real readiness
-    // check and start/poll the job here.
+    // "Apply to terrain" (T56) — the fast re-terrain job: the server exports
+    // the site's enabled edits (D-TE5 GeoJSON) → `apply-dem-edits` →
+    // tile-terrain/tile-hillshade → partial install + manifest refresh,
+    // reusing the map-build job plumbing (job row + progress polling).
     // ─────────────────────────────────────────────────────────────────────────
 
-    /** False until T56 lands the fast re-terrain job. */
-    readonly canApply = false;
+    /** True while the re-terrain job is starting/running. */
+    readonly applying = new Signal(false);
+    /** Human label of the running re-terrain step (panel progress line). */
+    readonly applyStep = new Signal<string | null>(null);
+    /** Whether "Apply to terrain" can start (no job already in flight). */
+    readonly canApply = new Computed(() => !this.applying.get());
 
-    applyToTerrain(): void {
-        this.notice.set('Apply to terrain arrives with the fast re-terrain job (T56).');
+    /**
+     * Start the fast re-terrain job and poll it to completion (map-build
+     * polling contract). Applying with zero ENABLED edits is deliberate — it
+     * re-tiles from the raw DEM, i.e. reverts previous applies. On success
+     * the tile manifest changed (`generatedAt` → new `?v=`), so the tileset
+     * is reloaded to re-init the map — tiles carry year-long immutable cache
+     * headers and same-URL refetches would serve stale bytes (clean-tool
+     * precedent).
+     */
+    async applyToTerrain(): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx || this.applying.peek()) return false;
+        this.applying.set(true);
+        this.notice.set(null);
+        try {
+            let job: MapBuildJob = await this.mapBuildApi.reTerrain({ courseId: ctx.courseId });
+            this.applyStep.set(stepLabel(job));
+            while (job.status === 'pending' || job.status === 'running') {
+                await sleep(this.pollMs);
+                try {
+                    job = await this.mapBuildApi.status({ jobId: job.id });
+                    this.applyStep.set(stepLabel(job));
+                } catch {
+                    // Transient poll failure — keep polling; a persistent one
+                    // surfaces via the job row (or the reTerrain error path).
+                }
+            }
+            if (job.status !== 'succeeded') {
+                this.notice.set(`Applying to terrain failed: ${job.error ?? 'unknown error'}`);
+                return false;
+            }
+            await this.reloadTiles();
+            this.notice.set('Terrain re-tiled with the current edits.');
+            return true;
+        } catch (e) {
+            this.notice.set(`Applying to terrain failed: ${message(e)}`);
+            return false;
+        } finally {
+            this.applying.set(false);
+            this.applyStep.set(null);
+        }
+    }
+
+    /**
+     * Reload the tile manifest so the editor canvas re-inits the map against
+     * the new `?v=`, keeping the camera where the user was working
+     * (clean-tool reloadTiles pattern).
+     */
+    private async reloadTiles(): Promise<void> {
+        const ctx = this.ctx;
+        if (!ctx) return;
+        const map = ctx.map.map.peek();
+        const camera = map
+            ? { center: map.getCenter(), zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() }
+            : null;
+        await ctx.tileset.reload(ctx.courseId);
+        if (!camera) return;
+        let restored = false;
+        const stop = effect(() => {
+            if (restored || !ctx.map.ready.get()) return;
+            restored = true;
+            ctx.map.map.peek()?.jumpTo(camera);
+            queueMicrotask(() => stop());
+        });
+        // Don't leak the effect if the new map never becomes ready.
+        setTimeout(() => { if (!restored) stop(); }, 15_000);
     }
 
     // ── Map event handling ──────────────────────────────────────────────────
@@ -340,4 +414,13 @@ export class TerrainEditToolService {
 
 function message(e: unknown): string {
     return e instanceof Error ? e.message : String(e);
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** Progress-line label for a job's current step ("Tile terrain…"). */
+function stepLabel(job: MapBuildJob): string | null {
+    return job.step ? STEP_LABELS[job.step] ?? job.step : null;
 }

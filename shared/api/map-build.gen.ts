@@ -5,8 +5,9 @@ export interface MapBuildJob {
     id: string;
     courseId: string;
     siteId: null | string;
+    kind: 'build' | 're-terrain';
     status: 'pending' | 'running' | 'succeeded' | 'failed';
-    step: null | 'fetch-lidar' | 'grid-dem' | 'fetch-ortho' | 'tile-ortho' | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register';
+    step: null | 'fetch-lidar' | 'grid-dem' | 'apply-dem-edits' | 'fetch-ortho' | 'tile-ortho' | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register';
     bbox: Bbox;
     log: string;
     error: null | string;
@@ -31,6 +32,7 @@ export interface MapBuildApi {
     status(input: { jobId: string }): Promise<MapBuildJob>;
     latest(input: { courseId: string }): Promise<null | MapBuildJob>;
     ensureOrtho(input: { courseId: string; collection: string }): Promise<MapBuildJob>;
+    reTerrain(input: { courseId: string }): Promise<MapBuildJob>;
     lidarInfo(input: { courseId: string }): Promise<LidarInfo>;
     deleteLidar(input: { courseId: string }): Promise<{ freedBytes: number }>;
 }
@@ -56,6 +58,9 @@ export function createMapBuildClient(baseUrl: string): MapBuildApi {
         },
         async ensureOrtho(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/mapbuild/ensure-ortho`, body: input });
+        },
+        async reTerrain(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/mapbuild/re-terrain`, body: input });
         },
         async lidarInfo(input) {
             const params = new URLSearchParams();

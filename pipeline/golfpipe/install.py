@@ -39,8 +39,12 @@ def install_course_tiles(
     """Copies ortho_dir -> data/tiles/{courseId}/ortho,
     terrain_dir -> data/tiles/{courseId}/terrain,
     hillshade_dir -> data/tiles/{courseId}/hillshade, and manifest_path ->
-    data/tiles/{courseId}/manifest.json. Any of them may be omitted.
-    Returns a dict of layer/kind -> installed path.
+    data/tiles/{courseId}/manifest.json. Any of them may be omitted —
+    omitted layers (and the manifest) are left exactly as installed, which
+    is what the T56 fast re-terrain job relies on: it installs ONLY
+    terrain + hillshade and must not disturb the ortho tree (including
+    per-vintage subdirs) or the manifest. Returns a dict of layer/kind ->
+    installed path.
     """
     course_root = data_dir / "tiles" / course_id
     installed: dict[str, Path] = {}

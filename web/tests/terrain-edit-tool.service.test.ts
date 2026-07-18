@@ -3,6 +3,7 @@ import { di, Signal } from '@basics/core/client/core';
 import type { ToolContext } from '../src/editor/tool';
 import type { MapService } from '../src/map/map.service';
 import type { TerrainEdit, TerrainEditsApi } from '../../shared/api/terrain-edits.gen';
+import type { MapBuildApi, MapBuildJob } from '../../shared/api/map-build.gen';
 import { lngLatToSweref99tm } from '../src/geo/transform';
 import {
     TerrainEditToolService,
@@ -92,6 +93,52 @@ function fakeApi(listResult: TerrainEdit[] = []): FakeApi {
     return api;
 }
 
+function makeJob(overrides: Partial<MapBuildJob> = {}): MapBuildJob {
+    return {
+        id: 'job-1',
+        courseId: 'course-1',
+        siteId: 'site-1',
+        kind: 're-terrain',
+        status: 'succeeded',
+        step: 'register',
+        bbox: { west: 0, south: 0, east: 0, north: 0 },
+        log: '',
+        error: null,
+        createdAt: '2026-07-18T10:00:00Z',
+        updatedAt: '2026-07-18T10:00:00Z',
+        ...overrides,
+    };
+}
+
+interface FakeMapBuild extends MapBuildApi {
+    calls: { reTerrain: Array<{ courseId: string }>; status: Array<{ jobId: string }> };
+    /** Job returned by reTerrain; then statusQueue is consumed per poll. */
+    reTerrainResult: MapBuildJob;
+    statusQueue: MapBuildJob[];
+}
+
+function fakeMapBuild(): FakeMapBuild {
+    const mb: FakeMapBuild = {
+        calls: { reTerrain: [], status: [] },
+        reTerrainResult: makeJob(),
+        statusQueue: [],
+        async reTerrain(input) {
+            mb.calls.reTerrain.push(input);
+            return mb.reTerrainResult;
+        },
+        async status(input) {
+            mb.calls.status.push(input);
+            return mb.statusQueue.shift() ?? makeJob();
+        },
+        async start() { throw new Error('unused'); },
+        async latest() { return null; },
+        async ensureOrtho() { throw new Error('unused'); },
+        async lidarInfo() { return { files: [], totalBytes: 0 }; },
+        async deleteLidar() { return { freedBytes: 0 }; },
+    };
+    return mb;
+}
+
 interface FakeRenderer extends TerrainEditRenderer {
     renders: TerrainEditView[];
     resets: number;
@@ -113,9 +160,12 @@ function fakeRenderer(): FakeRenderer {
 interface Harness {
     svc: TerrainEditToolService;
     api: FakeApi;
+    mapBuild: FakeMapBuild;
     renderer: FakeRenderer;
     ready: Signal<boolean>;
     interactionMode: Signal<string>;
+    /** courseIds passed to tileset.reload (post-apply cache-bust). */
+    reloads: string[];
     clickHandlers: Array<(e: { lngLat: { lng: number; lat: number }; point: { x: number; y: number } }) => void>;
     disposers: Array<() => void>;
     /** Run the activation-span disposers + deactivate (EditorModeService order). */
@@ -128,11 +178,13 @@ async function harness(opts: {
     mapKey?: string | null;
 } = {}): Promise<Harness> {
     const api = fakeApi(opts.listResult ?? []);
+    const mapBuild = fakeMapBuild();
     const renderer = fakeRenderer();
-    const svc = new TerrainEditToolService(api);
+    const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */);
 
     const ready = new Signal(true);
     const interactionMode = new Signal<string>(TERRAIN_EDIT_TOOL_ID);
+    const reloads: string[] = [];
     const clickHandlers: Harness['clickHandlers'] = [];
     const disposers: Array<() => void> = [];
 
@@ -150,6 +202,7 @@ async function harness(opts: {
         elevation: null as never,
         tileset: {
             mapKey: new Signal(opts.mapKey === undefined ? null : opts.mapKey),
+            reload: async (id: string) => { reloads.push(id); },
         } as never,
         courseDetail: {
             course: new Signal(siteId === null ? null : { id: 'course-1', siteId }),
@@ -167,9 +220,11 @@ async function harness(opts: {
     return {
         svc,
         api,
+        mapBuild,
         renderer,
         ready,
         interactionMode,
+        reloads,
         clickHandlers,
         disposers,
         deactivate() {
@@ -425,9 +480,82 @@ test('paramsSummary names flat planes and smooth radii', () => {
         .toBe(`r ${DEFAULT_RADIUS_M} m · feather 2 m`);
 });
 
-test('apply-to-terrain stays a disabled stub until T56', async () => {
-    const h = await harness();
-    expect(h.svc.canApply).toBe(false);
-    h.svc.applyToTerrain();
-    expect(h.svc.notice.get()).toContain('T56');
+// ─── Apply to terrain (the T56 fast re-terrain job) ─────────────────────────
+
+describe('applyToTerrain', () => {
+    test('starts the job, polls to success, then reloads the tileset (new ?v=)', async () => {
+        const h = await harness();
+        h.mapBuild.reTerrainResult = makeJob({ status: 'running', step: 'apply-dem-edits' });
+        h.mapBuild.statusQueue = [
+            makeJob({ status: 'running', step: 'tile-terrain' }),
+            makeJob({ status: 'succeeded', step: 'register' }),
+        ];
+
+        const ok = await h.svc.applyToTerrain();
+
+        expect(ok).toBe(true);
+        expect(h.mapBuild.calls.reTerrain).toEqual([{ courseId: 'course-1' }]);
+        expect(h.mapBuild.calls.status).toEqual([{ jobId: 'job-1' }, { jobId: 'job-1' }]);
+        expect(h.reloads).toEqual(['course-1']); // manifest reload busts the tile cache
+        expect(h.svc.notice.get()).toContain('re-tiled');
+        expect(h.svc.applying.get()).toBe(false);
+        expect(h.svc.applyStep.get()).toBeNull();
+        expect(h.svc.canApply.get()).toBe(true);
+    });
+
+    test('a failed job surfaces its error and does NOT reload the tileset', async () => {
+        const h = await harness();
+        h.mapBuild.reTerrainResult = makeJob({ status: 'failed', step: 'tile-terrain', error: 'boom at tile-terrain' });
+
+        const ok = await h.svc.applyToTerrain();
+
+        expect(ok).toBe(false);
+        expect(h.reloads).toEqual([]);
+        expect(h.svc.notice.get()).toContain('boom at tile-terrain');
+        expect(h.svc.applying.get()).toBe(false);
+    });
+
+    test('a rejected start (e.g. no persisted DEM) surfaces the message', async () => {
+        const h = await harness();
+        h.mapBuild.reTerrain = async () => { throw new Error('No persisted DEM — run a full map build first'); };
+
+        const ok = await h.svc.applyToTerrain();
+
+        expect(ok).toBe(false);
+        expect(h.svc.notice.get()).toContain('full map build');
+        expect(h.svc.applying.get()).toBe(false);
+    });
+
+    test('canApply gates re-entry while a job is in flight', async () => {
+        const h = await harness();
+        let resolveJob!: (j: MapBuildJob) => void;
+        h.mapBuild.reTerrain = () => new Promise<MapBuildJob>(resolve => { resolveJob = resolve; });
+
+        const first = h.svc.applyToTerrain();
+        expect(h.svc.applying.get()).toBe(true);
+        expect(h.svc.canApply.get()).toBe(false);
+
+        // A second apply while in flight is refused without a second POST.
+        expect(await h.svc.applyToTerrain()).toBe(false);
+
+        resolveJob(makeJob({ status: 'succeeded' }));
+        expect(await first).toBe(true);
+        expect(h.svc.canApply.get()).toBe(true);
+    });
+
+    test('the running step is exposed as a human progress label', async () => {
+        const h = await harness();
+        const seen: Array<string | null> = [];
+        let resolveStatus!: (j: MapBuildJob) => void;
+        h.mapBuild.reTerrainResult = makeJob({ status: 'running', step: 'apply-dem-edits' });
+        h.mapBuild.status = () => new Promise<MapBuildJob>(resolve => {
+            seen.push(h.svc.applyStep.get());
+            resolveStatus = resolve;
+            queueMicrotask(() => resolveStatus(makeJob({ status: 'succeeded' })));
+        });
+
+        await h.svc.applyToTerrain();
+        expect(seen).toEqual(['Apply terrain edits']); // STEP_LABELS mapping
+        expect(h.svc.applyStep.get()).toBeNull(); // cleared once terminal
+    });
 });

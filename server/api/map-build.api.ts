@@ -33,6 +33,10 @@ const CourseLidarInput = Type.Object({
     courseId: Type.String(),
 });
 
+const ReTerrainInput = Type.Object({
+    courseId: Type.String(),
+});
+
 // --- API descriptor ---
 
 export function createMapBuildApi(svc: MapBuildService) {
@@ -64,6 +68,16 @@ export function createMapBuildApi(svc: MapBuildService) {
             path: '/mapbuild/ensure-ortho',
             fn: (input: Static<typeof EnsureOrthoInput>) => svc.ensureOrthoTiled(input.courseId, input.collection),
             schema: EnsureOrthoInput,
+            middleware: mw,
+        },
+        // Fast terrain-edit replay (T56): re-tile terrain + hillshade from the
+        // persisted DEM + the site's enabled terrain_edits — no refetch. Same
+        // job/polling contract as `start`.
+        reTerrain: {
+            method: 'POST' as const,
+            path: '/mapbuild/re-terrain',
+            fn: (input: Static<typeof ReTerrainInput>) => svc.reTerrain(input.courseId),
+            schema: ReTerrainInput,
             middleware: mw,
         },
         // Persisted lidar (.laz) source assets — listed for the editor menu and

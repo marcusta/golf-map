@@ -38,6 +38,7 @@ const tpl = template(`
             <div bind="empty" class="empty">No terrain edits yet.</div>
         </div>
         <button bind="applyBtn" type="button" class="apply-btn" data-testid="terrain-edit-apply">Apply to terrain</button>
+        <div bind="applyLine" class="busy-line" data-testid="terrain-edit-apply-progress"></div>
         <div class="tedit-panel__hints">
             <div><b>Click</b> to outline the area (parking lot, road, house pad…).</div>
             <div><b>Click the first point</b> to save the edit; <b>Esc</b> discards the outline.</div>
@@ -62,9 +63,9 @@ const rowTpl = template(`
  * Dock panel for the terrain-edit tool (hosted by the contextual right dock
  * via the EditorTool `panel` contract): op/params for the next drawn edit,
  * the site's edit list with enabled toggle + delete, and the "Apply to
- * terrain" button (a disabled stub until the T56 fast re-terrain job — see
- * the T56 SEAM in terrain-edit-tool.service.ts). Shares the
- * TerrainEditToolService DI singleton with the tool descriptor.
+ * terrain" button, which starts the fast re-terrain job (T56) and shows its
+ * step progress while polling. Shares the TerrainEditToolService DI
+ * singleton with the tool descriptor.
  */
 export class TerrainEditPanelComponent extends Component {
     static styles = `
@@ -188,11 +189,17 @@ export class TerrainEditPanelComponent extends Component {
                 className: () => !this.tool.loading.get() && this.tool.edits.get().length === 0 ? 'empty show' : 'empty',
             },
             applyBtn: {
-                // T56 SEAM — stays disabled until the fast re-terrain job
-                // exists; T56 flips `canApply` and wires the job start here.
-                disabled: () => !this.tool.canApply,
-                title: 'Re-tiles terrain + hillshade with these edits — arrives with the fast re-terrain job (T56)',
-                onclick: () => this.tool.applyToTerrain(),
+                disabled: () => !this.tool.canApply.get(),
+                textContent: () => this.tool.applying.get() ? 'Applying…' : 'Apply to terrain',
+                title: 'Re-tile terrain + hillshade with the enabled edits (fast — no lidar/ortho refetch)',
+                onclick: () => void this.tool.applyToTerrain(),
+            },
+            applyLine: {
+                textContent: () => {
+                    const step = this.tool.applyStep.get();
+                    return step ? `${step}…` : '';
+                },
+                className: () => this.tool.applying.get() ? 'busy-line show' : 'busy-line',
             },
         });
 

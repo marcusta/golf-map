@@ -5,6 +5,8 @@ import { mkdtemp, mkdir, copyFile, readdir, rename, rm, stat, writeFile } from '
 import { tmpdir } from 'node:os';
 import type { Database, MapBuildJobsTable } from '../db/schema';
 import type { AssetsService } from './assets.service';
+import { TerrainEditsService, type TerrainEdit } from './terrain-edits.service';
+import { sweref99tmToWgs84 } from './geo';
 import { NotFoundError } from '@basics/core/server/auth';
 
 // --- Public types ---
@@ -12,17 +14,32 @@ import { NotFoundError } from '@basics/core/server/auth';
 export type BuildStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 
 export type BuildStep =
-    | 'fetch-lidar' | 'grid-dem' | 'fetch-ortho' | 'tile-ortho'
+    | 'fetch-lidar' | 'grid-dem' | 'apply-dem-edits' | 'fetch-ortho' | 'tile-ortho'
     | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register';
+
+/** Job kind: the full pipeline, or the fast terrain-edit replay (T56). */
+export type BuildJobKind = 'build' | 're-terrain';
 
 /**
  * Ordered pipeline steps the runner walks through. Also drives the web
  * progress UI. Elevation comes from Laserdata Skog lidar (fetch-lidar →
  * grid-dem), NOT the Markhöjdmodell DTM grid (fetch-dem) — the account is
- * entitled to the laser + ortho products, not the DTM.
+ * entitled to the laser + ortho products, not the DTM. apply-dem-edits
+ * replays the site's enabled terrain_edits onto the DEM (T54/T56) and is
+ * skipped when there are none.
  */
 export const BUILD_STEPS: readonly BuildStep[] = [
-    'fetch-lidar', 'grid-dem', 'fetch-ortho', 'tile-ortho', 'tile-terrain', 'tile-hillshade', 'manifest', 'install', 'register',
+    'fetch-lidar', 'grid-dem', 'apply-dem-edits', 'fetch-ortho', 'tile-ortho', 'tile-terrain', 'tile-hillshade', 'manifest', 'install', 'register',
+];
+
+/**
+ * Ordered steps of the fast re-terrain job (`kind: 're-terrain'`): replay
+ * terrain edits onto the persisted DEM and re-tile terrain + hillshade —
+ * no lidar/ortho refetch. `install` runs before `manifest` because the
+ * manifest is regenerated from the INSTALLED tile tree (see runReTerrain).
+ */
+export const RE_TERRAIN_STEPS: readonly BuildStep[] = [
+    'apply-dem-edits', 'tile-terrain', 'tile-hillshade', 'install', 'manifest', 'register',
 ];
 
 export interface Bbox {
@@ -48,6 +65,7 @@ export interface MapBuildJob {
     id: string;
     courseId: string;
     siteId: string | null;
+    kind: BuildJobKind;
     status: BuildStatus;
     step: BuildStep | null;
     bbox: Bbox;
@@ -102,10 +120,15 @@ export interface MapBuildDeps {
     python?: string;
     /** Injected in tests to avoid spawning Python. */
     runner?: PipelineRunner;
+    /** Source of the site's terrain edits; defaults to a db-backed instance. */
+    terrainEdits?: TerrainEditsService;
 }
 
 // The three asset kinds a build (re)writes for a course.
 const BUILT_ASSET_KINDS = ['ortho_cog', 'dem_cog', 'tile_manifest'] as const;
+
+/** Argv for one `python -m golfpipe <cmd> …` invocation. */
+const gp = (...args: string[]): string[] => ['-m', 'golfpipe', ...args];
 
 // --- Row mapping ---
 
@@ -116,6 +139,7 @@ function toJob(row: MapBuildJobRow): MapBuildJob {
         id: row.id,
         courseId: row.course_id,
         siteId: row.site_id,
+        kind: row.kind as BuildJobKind,
         status: row.status as BuildStatus,
         step: (row.step as BuildStep | null) ?? null,
         bbox: JSON.parse(row.bbox_json) as Bbox,
@@ -143,6 +167,7 @@ export class MapBuildService {
     private readonly pipelineDir: string;
     private readonly python: string;
     private readonly runner: PipelineRunner;
+    private readonly terrainEdits: TerrainEditsService;
 
     /** jobId → in-flight run promise (so tests can await a build to completion). */
     private readonly inflight = new Map<string, Promise<void>>();
@@ -156,6 +181,7 @@ export class MapBuildService {
             ?? path.resolve(process.cwd(), '../pipeline');
         this.python = deps.python ?? path.join(this.pipelineDir, '.venv', 'bin', 'python');
         this.runner = deps.runner ?? defaultRunner(this.python);
+        this.terrainEdits = deps.terrainEdits ?? new TerrainEditsService(deps.db);
     }
 
     // --- Queries ---
@@ -264,7 +290,6 @@ export class MapBuildService {
         const tiles = path.join(work, 'tiles');
         const sources = this.sourcesDir(siteId);
         const bboxArg = `${bbox.west},${bbox.south},${bbox.east},${bbox.north}`;
-        const gp = (...args: string[]) => ['-m', 'golfpipe', ...args];
 
         try {
             await this.setStatus(jobId, 'running');
@@ -300,6 +325,15 @@ export class MapBuildService {
             await mkdir(sources, { recursive: true });
             await copyFile(demTif, path.join(sources, 'dem.tif'));
 
+            // Replay the site's enabled terrain edits (T54/T56). Every DEM
+            // consumer downstream (terrain tiles, hillshade, manifest
+            // elevation, the future Unity .raw export) reads the EDITED DEM;
+            // sources/dem.tif stays raw forever (D-TE2). Zero enabled edits →
+            // skipped, identical behavior to a plain build.
+            const demEdited = await this.applyTerrainEdits(jobId, siteId, work, demTif, env);
+            if (demEdited === false) return; // job failed at apply-dem-edits
+            const terrainDem = demEdited ?? demTif;
+
             // Ortho: fetch the two newest vintages (often flown in different
             // seasons) so they can be compared/switched in-app. Persist both as
             // GeoTIFFs; the active (newest) one is tiled into the flat ortho
@@ -320,12 +354,12 @@ export class MapBuildService {
             const active = chosen[0].collection;
 
             if (!await this.exec(jobId, 'tile-ortho', gp('tile-ortho', '--input', path.join(sources, orthoSourceName(active)), '--out', path.join(tiles, 'ortho'), '--minzoom', '14', '--maxzoom', '20'), env)) return;
-            if (!await this.exec(jobId, 'tile-terrain', gp('tile-terrain', '--input', demTif, '--out', path.join(tiles, 'terrain'), '--minzoom', '12', '--maxzoom', '16'), env)) return;
+            if (!await this.exec(jobId, 'tile-terrain', gp('tile-terrain', '--input', terrainDem, '--out', path.join(tiles, 'terrain'), '--minzoom', '12', '--maxzoom', '16'), env)) return;
             // Opaque QGIS-style grayscale hillshade (az 315 / alt 45 / z 1) as its
             // own raster layer — the map's "Hillshade" toggle shows this image.
-            if (!await this.exec(jobId, 'tile-hillshade', gp('tile-hillshade', '--input', demTif, '--out', path.join(tiles, 'hillshade')), env)) return;
+            if (!await this.exec(jobId, 'tile-hillshade', gp('tile-hillshade', '--input', terrainDem, '--out', path.join(tiles, 'hillshade')), env)) return;
             // --course is the on-disk/tile-URL key = the site id (install writes data/tiles/{siteId}).
-            if (!await this.exec(jobId, 'manifest', gp('manifest', '--course', siteId, '--tiles-dir', tiles, '--dem', demTif), env)) return;
+            if (!await this.exec(jobId, 'manifest', gp('manifest', '--course', siteId, '--tiles-dir', tiles, '--dem', terrainDem), env)) return;
             if (!await this.exec(jobId, 'install', gp('install', '--course', siteId, '--ortho', path.join(tiles, 'ortho'), '--terrain', path.join(tiles, 'terrain'), '--hillshade', path.join(tiles, 'hillshade'), '--manifest', path.join(tiles, 'manifest.json'), '--data-dir', this.dataDir), env)) return;
 
             // Tile the non-active vintages into ortho/<collection>/ (served via
@@ -366,6 +400,160 @@ export class MapBuildService {
             return false;
         }
         return true;
+    }
+
+    /**
+     * Replays the site's ENABLED terrain edits onto `demTif` (T54's
+     * `apply-dem-edits`): exports them as the D-TE5 GeoJSON handoff (WGS84,
+     * created_at order) to the workdir, writes the edited DEM next to it, and
+     * persists a copy as `sources/dem-edited.tif` (D-TE2 — a regenerable
+     * cache; the raw DEM is never modified).
+     *
+     * Returns the edited DEM path, `null` when there are no enabled edits
+     * (step skipped — callers use the raw DEM; any stale cached edited DEM is
+     * removed so no consumer reads outdated edits), or `false` when the
+     * pipeline step failed (the job row is already marked failed).
+     */
+    private async applyTerrainEdits(
+        jobId: string,
+        siteId: string,
+        work: string,
+        demTif: string,
+        env: Record<string, string | undefined>,
+    ): Promise<string | null | false> {
+        const edits = (await this.terrainEdits.listBySite(siteId)).filter(e => e.enabled);
+        const persisted = path.join(this.sourcesDir(siteId), 'dem-edited.tif');
+        if (edits.length === 0) {
+            await rm(persisted, { force: true }).catch(() => {});
+            return null;
+        }
+        const editsPath = path.join(work, 'terrain-edits.geojson');
+        await writeFile(editsPath, JSON.stringify(terrainEditsGeojson(edits)));
+        const demEdited = path.join(work, 'dem-edited.tif');
+        if (!await this.exec(jobId, 'apply-dem-edits', gp('apply-dem-edits', '--input', demTif, '--edits', editsPath, '--out', demEdited), env)) {
+            return false;
+        }
+        await mkdir(this.sourcesDir(siteId), { recursive: true });
+        await copyFile(demEdited, persisted);
+        return demEdited;
+    }
+
+    // --- Fast re-terrain (T56): replay edits + re-tile, no refetch ---
+
+    /**
+     * Starts the fast re-terrain job for a course: replay the site's enabled
+     * terrain edits onto the persisted `sources/dem.tif` and re-tile ONLY
+     * terrain + hillshade (RE_TERRAIN_STEPS) — no lidar/ortho refetch. This
+     * is the editing loop behind the terrain tool's "Apply to terrain".
+     * Requires a prior full build (persisted DEM + installed tiles). Same
+     * job-row/polling contract as `start()`.
+     */
+    async reTerrain(courseId: string): Promise<MapBuildJob> {
+        const siteId = await this.siteIdForCourse(courseId);
+        const demSrc = siteId ? path.join(this.sourcesDir(siteId), 'dem.tif') : null;
+        if (!siteId || !demSrc || !await Bun.file(demSrc).exists()) {
+            throw new Error(
+                'No persisted DEM (sources/dem.tif) for this course’s site — '
+                + 'run a full map build first, then apply terrain edits.',
+            );
+        }
+
+        const running = await this.jobs()
+            .where('course_id', '=', courseId)
+            .where((eb) => eb('status', '=', 'running').or('status', '=', 'pending'))
+            .executeTakeFirst();
+        if (running) throw new Error(`A build is already running for course ${courseId}`);
+
+        const id = crypto.randomUUID();
+        const bbox = await this.siteBbox(siteId);
+        await this.db.insertInto('map_build_jobs').values({
+            id, course_id: courseId, site_id: siteId, kind: 're-terrain',
+            status: 'pending', step: null, bbox_json: JSON.stringify(bbox), log: '', error: null,
+        }).execute();
+
+        const promise = this.runReTerrain(id, siteId, courseId, demSrc).finally(() => this.inflight.delete(id));
+        this.inflight.set(id, promise);
+        promise.catch(() => {});
+        return this.get(id);
+    }
+
+    private async runReTerrain(jobId: string, siteId: string, courseId: string, demSrc: string): Promise<void> {
+        const env = { ...process.env };
+        const work = await mkdtemp(path.join(tmpdir(), `golfreterrain-${jobId}-`));
+        const tiles = path.join(work, 'tiles');
+        const installedRoot = path.join(this.dataDir, 'tiles', siteId);
+
+        try {
+            await this.setStatus(jobId, 'running');
+
+            // Zero enabled edits is VALID here (null): the user disabled or
+            // deleted them all and re-applies to revert to the raw DEM.
+            const demEdited = await this.applyTerrainEdits(jobId, siteId, work, demSrc, env);
+            if (demEdited === false) return;
+            const terrainDem = demEdited ?? demSrc;
+
+            // Same zoom ranges as a full build (constants — see run()).
+            if (!await this.exec(jobId, 'tile-terrain', gp('tile-terrain', '--input', terrainDem, '--out', path.join(tiles, 'terrain'), '--minzoom', '12', '--maxzoom', '16'), env)) return;
+            if (!await this.exec(jobId, 'tile-hillshade', gp('tile-hillshade', '--input', terrainDem, '--out', path.join(tiles, 'hillshade')), env)) return;
+
+            // Partial install: only terrain + hillshade are passed, so install
+            // replaces exactly those two layer dirs and leaves the installed
+            // ortho tree (incl. per-vintage subdirs) and manifest untouched.
+            if (!await this.exec(jobId, 'install', gp('install', '--course', siteId, '--terrain', path.join(tiles, 'terrain'), '--hillshade', path.join(tiles, 'hillshade'), '--data-dir', this.dataDir), env)) return;
+
+            // Regenerate the manifest AFTER install, scanning the INSTALLED
+            // tile root (ortho + the fresh terrain/hillshade all present).
+            // This must happen on every re-terrain: `generatedAt` drives the
+            // web's `?v=` tile cache-buster (tiles are served with year-long
+            // immutable cache headers) and the elevation min/max is
+            // DEM-derived, so edits can change it. The vintage fields the
+            // pipeline doesn't know about are re-patched from the old
+            // manifest, which is read BEFORE the pipeline overwrites it.
+            const oldManifest = await this.readInstalledManifest(siteId);
+            if (!await this.exec(jobId, 'manifest', gp('manifest', '--course', siteId, '--tiles-dir', installedRoot, '--dem', terrainDem), env)) return;
+
+            await this.setStep(jobId, 'register');
+            await this.refreshManifestAsset(siteId, courseId, oldManifest);
+
+            await this.setStatus(jobId, 'succeeded');
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            await this.fail(jobId, null, message, env).catch(() => {});
+        } finally {
+            await rm(work, { recursive: true, force: true }).catch(() => {});
+        }
+    }
+
+    /** The installed manifest.json for a site, parsed, or null when absent/invalid. */
+    private async readInstalledManifest(siteId: string): Promise<Record<string, unknown> | null> {
+        try {
+            return JSON.parse(await Bun.file(path.join(this.dataDir, 'tiles', siteId, 'manifest.json')).text());
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * After a re-terrain regenerated the installed manifest.json: carry the
+     * ortho-vintage fields over from the pre-regeneration manifest (the
+     * pipeline knows nothing about vintages), then replace ONLY the
+     * `tile_manifest` asset registration so the web picks up the new
+     * `generatedAt` (→ new `?v=`). ortho_cog/dem_cog registrations still
+     * point at unchanged paths and are left alone.
+     */
+    private async refreshManifestAsset(siteId: string, courseId: string, old: Record<string, unknown> | null): Promise<void> {
+        const manifestPath = path.join(this.dataDir, 'tiles', siteId, 'manifest.json');
+        const manifest = JSON.parse(await Bun.file(manifestPath).text());
+        if (old && Array.isArray(old.orthoVintages)) manifest.orthoVintages = old.orthoVintages;
+        if (old && typeof old.activeOrtho === 'string') manifest.activeOrtho = old.activeOrtho;
+        const json = JSON.stringify(manifest);
+        await writeFile(manifestPath, json);
+
+        const existing = await this.assets.listBySite(siteId);
+        for (const asset of existing) {
+            if (asset.kind === 'tile_manifest') await this.assets.remove(asset.id, asset.version);
+        }
+        await this.assets.register({ siteId, courseId, kind: 'tile_manifest', filename: `tiles/${siteId}/manifest.json`, metaJson: json });
     }
 
     /** Absolute paths of the `.laz`/`.copc.laz` files fetch-lidar downloaded. */
@@ -641,6 +829,48 @@ async function moveFile(src: string, dst: string): Promise<void> {
 /** Filename for a persisted ortho vintage source GeoTIFF (sanitized collection). */
 function orthoSourceName(collection: string): string {
     return `ortho-${collection.replace(/[^A-Za-z0-9_-]+/g, '_')}.tif`;
+}
+
+/**
+ * The D-TE5 server→pipeline handoff: terrain edits as a GeoJSON
+ * FeatureCollection in WGS84 with per-feature properties
+ * `{ op, featherM, radiusM?, flat?, createdAt }`. Rings are stored EPSG:3006
+ * (`{x,y}` metres) and reprojected here; the pipeline reprojects back to the
+ * DEM CRS via `rasterio.warp.transform_geom`. Callers pass edits pre-sorted
+ * (listBySite is created_at order, D-TE4); `createdAt` is included so the
+ * pipeline's defensive re-sort agrees. GeoJSON linear rings must be closed —
+ * the tool stores open rings, so the first point is repeated at the end.
+ */
+export function terrainEditsGeojson(edits: TerrainEdit[]): {
+    type: 'FeatureCollection';
+    features: object[];
+} {
+    return {
+        type: 'FeatureCollection',
+        features: edits.map(edit => ({
+            type: 'Feature',
+            geometry: {
+                type: 'Polygon',
+                coordinates: edit.rings.map(ring => {
+                    const coords = ring.map(p => {
+                        const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
+                        return [lon, lat];
+                    });
+                    const first = coords[0];
+                    const last = coords[coords.length - 1];
+                    if (first && (first[0] !== last[0] || first[1] !== last[1])) coords.push([...first]);
+                    return coords;
+                }),
+            },
+            properties: {
+                op: edit.op,
+                featherM: edit.params.featherM,
+                ...(edit.params.radiusM !== undefined ? { radiusM: edit.params.radiusM } : {}),
+                ...(edit.params.flat ? { flat: true } : {}),
+                createdAt: edit.createdAt,
+            },
+        })),
+    };
 }
 
 /**
