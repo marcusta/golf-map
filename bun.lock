@@ -17,6 +17,7 @@
         "hono": "^4",
         "kysely": "^0.27",
         "kysely-bun-sqlite": "^0.3",
+        "polygon-clipping": "^0.15.7",
       },
       "devDependencies": {
         "@types/bun": "^1",

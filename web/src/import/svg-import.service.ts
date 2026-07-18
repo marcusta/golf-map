@@ -94,6 +94,11 @@ export class SvgImportService {
 
     private courseId: string | null = null;
 
+    /** The course the wizard is open for (panel refresh needs it). */
+    get targetCourseId(): string | null {
+        return this.courseId;
+    }
+
     /** Number of features that `build()` would create with current mapping. */
     readonly assignedPathCount = new Computed(() => {
         const parsed = this.parsed.get();

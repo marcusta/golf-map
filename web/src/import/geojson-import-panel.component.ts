@@ -32,8 +32,10 @@ const tpl = template(`
         </div>
 
         <div class="geojson-import__section">
-            <h4 class="section-title">1 &middot; GeoJSON file (EPSG:3006)</h4>
+            <h4 class="section-title">1 &middot; Source (EPSG:3006)</h4>
             <input bind="file" type="file" accept=".geojson,.json,application/geo+json" />
+            <button bind="fetchHydro" type="button" class="fetch-btn" data-testid="geojson-fetch-hydro-btn"></button>
+            <div bind="fetchError" class="error"></div>
             <div bind="fileInfo" class="hint"></div>
             <div bind="parseError" class="error"></div>
         </div>
@@ -133,6 +135,13 @@ export class GeojsonImportPanelComponent extends Component {
             & .hint { font-size: 0.72rem; color: ${t('color-text-secondary')}; }
             & .error { font-size: 0.75rem; color: ${t('color-status-negative')}; &:empty { display: none; } }
 
+            & .fetch-btn {
+                padding: ${s('xs')} ${s('sm')};
+                font-size: 0.78rem;
+                ${btn()}
+                &:disabled { opacity: 0.5; cursor: default; }
+            }
+
             & .prop-field {
                 display: flex;
                 align-items: center;
@@ -203,9 +212,19 @@ export class GeojsonImportPanelComponent extends Component {
                     this.svc.loadGeojsonText(await file.text(), file.name);
                 },
             },
+            // One-click variant (T50): server-proxied Hydrografi Direkt
+            // fetch for the course map area — no manual file step.
+            fetchHydro: {
+                textContent: () => this.svc.fetching.get()
+                    ? 'Fetching from Lantmäteriet…'
+                    : 'Fetch from Lantmäteriet (water + creeks)',
+                disabled: () => this.svc.fetching.get(),
+                onclick: () => void this.svc.fetchFromLantmateriet(),
+            },
+            fetchError: () => this.svc.fetchError.get() ?? '',
             fileInfo: () => {
                 const p = parsed();
-                if (!p) return this.svc.fileName.get() ?? 'Choose a pipeline draft (fetch-water / fetch-osm / detect-trees output).';
+                if (!p) return this.svc.fileName.get() ?? 'Choose a pipeline draft (fetch-water / fetch-osm / detect-trees output), or fetch directly from Lantmäteriet.';
                 const skipped = p.skipped.length > 0 ? ` (${p.skipped.join('; ')})` : '';
                 return `${this.svc.fileName.get()} — ${p.features.length} importable features${skipped}`;
             },
@@ -231,7 +250,11 @@ export class GeojsonImportPanelComponent extends Component {
                 disabled: () => this.svc.importing.get() || this.svc.assignedFeatureCount.get() === 0,
                 onclick: async () => {
                     const summary = await this.svc.confirmImport();
-                    if (summary) await this.features.reload();
+                    // reloadOrLoad, not reload(): the store may never have
+                    // loaded (import before the draw tool ever activated) —
+                    // reload() would no-op and nothing would render.
+                    const courseId = this.svc.targetCourseId;
+                    if (summary && courseId) await this.features.reloadOrLoad(courseId);
                 },
             },
             summarySection: { className: () => this.svc.summary.get() ? 'geojson-import__section' : 'geojson-import__section hidden' },

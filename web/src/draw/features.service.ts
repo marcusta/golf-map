@@ -216,6 +216,19 @@ export class FeaturesService {
         await this.load(courseId);
     }
 
+    /**
+     * Guarantee `courseId`'s features are freshly loaded — re-fetch when it
+     * is the loaded course, initial-load otherwise. Post-import refresh
+     * MUST use this, not `reload()`: opening a course and importing before
+     * the draw tool ever activates leaves the store unloaded, and a bare
+     * `reload()` silently no-ops — features land in the DB but nothing
+     * renders until a full page reload.
+     */
+    async reloadOrLoad(courseId: string): Promise<void> {
+        if (this.loadedCourseId === courseId) this.loadedCourseId = null;
+        await this.load(courseId);
+    }
+
     /** Replace the selection with a single feature (or clear with null). */
     select(id: string | null): void {
         this.selectedIds.set(id ? new Set([id]) : new Set());

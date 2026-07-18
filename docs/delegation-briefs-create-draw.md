@@ -32,8 +32,9 @@ Opus:1 — derived from the cost column above):
 | T47 | Lidar water drafts (class 9) | Fable | S | 4 |
 | T48 | Hydrografi Direkt creeks + water | Fable | S | 4 |
 | T49 | Feature provenance + ODbL posture | Fable | M | 8 |
+| T50 | One-click water import (wizard fetch) | Fable | M | 8 |
 | T51 | Keep lidar .laz; manual delete | Opus | M | 2 |
-| **Σ** | | | | **96** |
+| **Σ** | | | | **104** |
 
 **Kickoff prompt (paste into a fresh session, fill in the task number):**
 
@@ -225,6 +226,41 @@ status-bar attribution. The GeoJSON import wizard maps fetch-osm properties
 `license` to 'ODbL' for `source: "osm"` when the file carries no license
 property. iOS attribution display deferred (gap noted in the report).
 **Done:** see docs/reports/T49-report.md.
+
+### T50 · One-click water import in the web editor — **Fable**
+
+*(Added 2026-07-18. **Decision (Marcus, binding):** the GeoJSON import wizard
+keeps its file-pick variant AND gains a "Fetch from Lantmäteriet (water +
+creeks)" variant that downloads, formats, and feeds the same
+mapping/preview/accept flow — no manual file step.)*
+
+Scope as built. **Server:** `HydroService` (server/services/hydro.service.ts)
++ descriptor `POST /course-features/fetch-hydro` (server/api/hydro.api.ts,
+generated client shared/api/hydro.gen.ts) taking `courseId`. The WGS84 bbox
+is derived server-side — course `georeference_json` `{bbox}` (EPSG:3006 →
+WGS84) when present, else the site's tile_manifest asset `bounds` (site owns
+the map), else a clear 409. Fetch semantics ported from
+pipeline/golfpipe/hydro.py (T48): StandingWater + WatercoursePolygon as
+water, WatercourseLine as creek centerlines, `crs=EPSG:3006` output with
+(northing, easting) axis-order swap, `next`-link paging, EPSG:3006 bbox
+clip (polygon-clipping for surfaces, Liang–Barsky for lines). Returns
+PER-FEATURE water polygons + RAW centerlines with `suggestedCreekWidthM`
+(2 m) and OGC-id sourceRefs — no union, so T49 provenance survives; creds
+from server env with a repo-.env fallback; HTTP behind a fetchImpl seam
+(offline tests incl. a multi-page fixture). **Web:** wizard section 1 is a
+source picker (file input + fetch button);
+`GeojsonImportService.fetchFromLantmateriet()` calls the endpoint, buffers
+centerlines into ribbons via the new pure `bufferPolyline`
+(web/src/geo/polyline-buffer.ts — open-line both-side offset, miter-clamped,
+butt caps), and hands the synthesized EPSG:3006 FeatureCollection to the
+EXISTING `loadGeojsonText` flow. Provenance per T49: `source
+'lantmateriet-hydrografi'`, `source_ref` → `sourceRef`
+(`provenanceFromProperties` extended), no license (matches hydro.py, which
+emits attribution only). Also fixed in passing (found live on Vreta): both
+import panels refreshed via `FeaturesService.reload()`, which no-ops when
+the store never loaded — imports landed in the DB but rendered nothing;
+panels now use the new `reloadOrLoad(courseId)`.
+**Done:** see docs/reports/T50-report.md.
 
 ### T51 · Keep lidar .laz after builds; manual delete — **Opus**
 

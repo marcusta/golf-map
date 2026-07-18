@@ -15,7 +15,9 @@
 import { Signal, Computed, batch } from '@basics/core/client/core';
 import { api } from '../api';
 import type { CourseFeaturesApi } from '../../../shared/api/course-features.gen';
+import type { HydroApi, HydroFetchResult } from '../../../shared/api/hydro.gen';
 import type { BucketAssignment, BuiltFeature, BuildResult, ImportSummary } from './svg-import.service';
+import { bufferPolyline } from '../geo/polyline-buffer';
 import {
     parseGeojsonDocument,
     bucketByProperty,
@@ -32,7 +34,9 @@ const CREATE_CONCURRENCY = 6;
  * create API's provenance fields. fetch-osm output carries
  * `source: "osm"` + `osm_type`/`osm_id` (see pipeline/golfpipe/osm.py);
  * OSM data is ODbL, so when the file lacks an explicit `license` property
- * an `osm` source defaults to 'ODbL'.
+ * an `osm` source defaults to 'ODbL'. An explicit `source_ref` property
+ * (T50: the Lantmäteriet fetch path stamps the OGC feature id) wins over
+ * the OSM composite.
  */
 export function provenanceFromProperties(
     props: Record<string, unknown>,
@@ -40,10 +44,14 @@ export function provenanceFromProperties(
     const source = typeof props['source'] === 'string' ? (props['source'] as string) : undefined;
 
     let sourceRef: string | undefined;
-    const osmId = props['osm_id'];
-    if (typeof osmId === 'string' || typeof osmId === 'number') {
-        const osmType = props['osm_type'];
-        sourceRef = typeof osmType === 'string' ? `${osmType}/${osmId}` : String(osmId);
+    if (typeof props['source_ref'] === 'string') {
+        sourceRef = props['source_ref'] as string;
+    } else {
+        const osmId = props['osm_id'];
+        if (typeof osmId === 'string' || typeof osmId === 'number') {
+            const osmType = props['osm_type'];
+            sourceRef = typeof osmType === 'string' ? `${osmType}/${osmId}` : String(osmId);
+        }
     }
 
     let license = typeof props['license'] === 'string' ? (props['license'] as string) : undefined;
@@ -54,6 +62,54 @@ export function provenanceFromProperties(
     if (sourceRef !== undefined) result.sourceRef = sourceRef;
     if (license !== undefined) result.license = license;
     return result;
+}
+
+/** Wizard-facing filename for the one-click Lantmäteriet fetch (T50). */
+export const HYDRO_FETCH_FILENAME = 'lantmateriet-hydrografi.geojson';
+
+/**
+ * Format a fetch-hydro response as the pipeline-shaped GeoJSON document the
+ * wizard already understands (EPSG:3006 crs member, `properties.type` per
+ * feature, provenance properties per T49): water polygons pass through,
+ * creek centerlines are buffered into `water_creek` ribbons of the
+ * suggested width. Pure — exported for tests.
+ */
+export function hydroToFeatureCollection(result: HydroFetchResult): {
+    type: 'FeatureCollection';
+    crs: { type: 'name'; properties: { name: string } };
+    attribution: string;
+    features: unknown[];
+} {
+    const features: unknown[] = [];
+    const properties = (type: string, sourceRef: string | null) => ({
+        type,
+        source: result.source,
+        ...(sourceRef !== null ? { source_ref: sourceRef } : {}),
+    });
+
+    for (const water of result.water) {
+        features.push({
+            type: 'Feature',
+            properties: properties('water', water.sourceRef),
+            geometry: { type: 'Polygon', coordinates: water.rings },
+        });
+    }
+    for (const creek of result.creeks) {
+        const ring = bufferPolyline(creek.points, result.suggestedCreekWidthM);
+        if (!ring) continue; // degenerate centerline run — nothing to import
+        features.push({
+            type: 'Feature',
+            properties: properties('water_creek', creek.sourceRef),
+            geometry: { type: 'Polygon', coordinates: [ring] },
+        });
+    }
+
+    return {
+        type: 'FeatureCollection',
+        crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
+        attribution: result.attribution,
+        features,
+    };
 }
 
 export class GeojsonImportService {
@@ -71,8 +127,16 @@ export class GeojsonImportService {
     readonly importing = new Signal(false);
     readonly progress = new Signal<{ done: number; total: number } | null>(null);
     readonly summary = new Signal<ImportSummary | null>(null);
+    /** One-click Lantmäteriet fetch (T50) in flight / failed. */
+    readonly fetching = new Signal(false);
+    readonly fetchError = new Signal<string | null>(null);
 
     private courseId: string | null = null;
+
+    /** The course the wizard is open for (panel refresh needs it). */
+    get targetCourseId(): string | null {
+        return this.courseId;
+    }
 
     /** Current mapping rows (re-binned whenever the property changes). */
     readonly buckets = new Computed<GeojsonBucket[]>(() => {
@@ -92,7 +156,10 @@ export class GeojsonImportService {
         return n;
     });
 
-    constructor(private featuresApi: CourseFeaturesApi = api.courseFeatures) {}
+    constructor(
+        private featuresApi: CourseFeaturesApi = api.courseFeatures,
+        private hydroApi: HydroApi = api.hydro,
+    ) {}
 
     /** Open the wizard for a course (coordinates are already EPSG:3006 —
      * no georeference step, unlike the SVG wizard). */
@@ -108,6 +175,8 @@ export class GeojsonImportService {
             this.built.set(null);
             this.summary.set(null);
             this.progress.set(null);
+            this.fetching.set(false);
+            this.fetchError.set(null);
         });
     }
 
@@ -118,12 +187,39 @@ export class GeojsonImportService {
         });
     }
 
+    /**
+     * One-click Lantmäteriet fetch (T50): call the server's Hydrografi
+     * Direkt proxy for this course's map area, buffer the returned creek
+     * centerlines into ribbons, and feed the result into the SAME
+     * mapping/preview/accept flow a picked file goes through.
+     */
+    async fetchFromLantmateriet(): Promise<void> {
+        const courseId = this.courseId;
+        if (!courseId || this.fetching.peek()) return;
+        this.fetching.set(true);
+        this.fetchError.set(null);
+        try {
+            const result = await this.hydroApi.fetchHydro({ courseId });
+            const collection = hydroToFeatureCollection(result);
+            if (collection.features.length === 0) {
+                this.fetchError.set('No water or creeks found within the course map area.');
+                return;
+            }
+            this.loadGeojsonText(JSON.stringify(collection), HYDRO_FETCH_FILENAME);
+        } catch (e) {
+            this.fetchError.set(e instanceof Error ? e.message : String(e));
+        } finally {
+            this.fetching.set(false);
+        }
+    }
+
     /** Parse GeoJSON text into buckets; prefill assignments from suggestions. */
     loadGeojsonText(text: string, fileName: string): void {
         batch(() => {
             this.fileName.set(fileName);
             this.built.set(null);
             this.summary.set(null);
+            this.fetchError.set(null);
             try {
                 const parsed = parseGeojsonDocument(text);
                 // Pipeline convention: `type` (always sorted first when

@@ -1,5 +1,6 @@
 import { test, expect, describe } from 'bun:test';
-import { GeojsonImportService, provenanceFromProperties } from '../src/import/geojson-import.service';
+import { GeojsonImportService, provenanceFromProperties, hydroToFeatureCollection, HYDRO_FETCH_FILENAME } from '../src/import/geojson-import.service';
+import type { HydroApi, HydroFetchResult } from '../../shared/api/hydro.gen';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 // Pipeline-shaped draft (fetch-water convention): EPSG:3006 crs member,
@@ -232,5 +233,138 @@ describe('GeojsonImportService provenance (T49)', () => {
         expect(water.source).toBe('lantmateriet-marktacke');
         expect(water.license).toBeUndefined();
         expect(water.sourceRef).toBeUndefined();
+    });
+});
+
+// T50 — one-click Lantmäteriet fetch: the wizard's second source variant
+// calls the server's Hydrografi Direkt proxy, buffers creek centerlines
+// into ribbons client-side, and feeds the SAME mapping/preview/accept flow.
+describe('GeojsonImportService.fetchFromLantmateriet (T50)', () => {
+    const HYDRO_RESULT: HydroFetchResult = {
+        bbox: { west: 15.53, south: 58.39, east: 15.58, north: 58.42 },
+        source: 'lantmateriet-hydrografi',
+        attribution: '© Lantmäteriet, Hydrografi Direkt',
+        suggestedCreekWidthM: 2,
+        water: [
+            // Pond with an island hole, per-feature OGC provenance.
+            { sourceRef: 'StandingWater/123', rings: [square(531500, 6473000, 100), square(531500, 6473000, 20)] },
+            // The API can omit feature ids — no source_ref then.
+            { sourceRef: null, rings: [square(532500, 6473500, 80)] },
+        ],
+        creeks: [
+            { sourceRef: 'WatercourseLine/9', points: [[531200, 6473200], [531200, 6474200]] },
+        ],
+    };
+
+    function fakeHydroApi(result: HydroFetchResult | Error = HYDRO_RESULT) {
+        const calls: Array<{ courseId: string }> = [];
+        const hydro: HydroApi = {
+            fetchHydro: async input => {
+                calls.push(input);
+                if (result instanceof Error) throw result;
+                return result;
+            },
+        };
+        return { hydro, calls };
+    }
+
+    test('hydroToFeatureCollection formats water + buffered creek ribbons with provenance', () => {
+        const fc = hydroToFeatureCollection(HYDRO_RESULT);
+        expect(fc.crs.properties.name).toBe('urn:ogc:def:crs:EPSG::3006');
+        expect(fc.attribution).toBe('© Lantmäteriet, Hydrografi Direkt');
+        expect(fc.features.length).toBe(3);
+
+        const [pond, unref, creek] = fc.features as Array<{
+            properties: Record<string, unknown>;
+            geometry: { type: string; coordinates: number[][][] };
+        }>;
+        expect(pond.properties).toEqual({ type: 'water', source: 'lantmateriet-hydrografi', source_ref: 'StandingWater/123' });
+        expect(pond.geometry.coordinates.length).toBe(2); // island hole preserved
+        expect(unref.properties).toEqual({ type: 'water', source: 'lantmateriet-hydrografi' });
+
+        // 1 km straight creek × 2 m suggested width → closed 2 m ribbon.
+        expect(creek.properties['type']).toBe('water_creek');
+        expect(creek.properties['source_ref']).toBe('WatercourseLine/9');
+        const ring = creek.geometry.coordinates[0];
+        expect(ring[0]).toEqual(ring[ring.length - 1]);
+        for (const [x] of ring) expect(Math.abs(x - 531200)).toBeCloseTo(1, 6);
+    });
+
+    test('degenerate creek runs are dropped, not imported', () => {
+        const fc = hydroToFeatureCollection({
+            ...HYDRO_RESULT,
+            water: [],
+            creeks: [{ sourceRef: 'WatercourseLine/1', points: [[531200, 6473200]] }],
+        });
+        expect(fc.features.length).toBe(0);
+    });
+
+    test('fetch feeds the normal mapping flow: buckets, prefill, provenance on create', async () => {
+        const { api, created } = fakeApi();
+        const { hydro, calls } = fakeHydroApi();
+        const svc = new GeojsonImportService(api, hydro);
+        svc.openFor('course-1');
+
+        await svc.fetchFromLantmateriet();
+
+        expect(calls).toEqual([{ courseId: 'course-1' }]);
+        expect(svc.fetching.get()).toBe(false);
+        expect(svc.fetchError.get()).toBeNull();
+        expect(svc.parseError.get()).toBeNull();
+        expect(svc.fileName.get()).toBe(HYDRO_FETCH_FILENAME);
+        expect(svc.propertyKey.get()).toBe('type');
+        const buckets = svc.buckets.get();
+        expect(buckets.map(b => b.value).sort()).toEqual(['water', 'water_creek']);
+        const a = svc.assignments.get();
+        expect(a['water']).toBe('water');
+        expect(a['water_creek']).toBe('water_creek');
+        expect(svc.assignedFeatureCount.get()).toBe(3);
+
+        const summary = (await svc.confirmImport())!;
+        expect(summary.error).toBeNull();
+        expect(summary.created).toEqual({ water: 2, water_creek: 1 });
+        const pond = created.find(c => (c as Record<string, unknown>).sourceRef === 'StandingWater/123') as Record<string, unknown>;
+        expect(pond.source).toBe('lantmateriet-hydrografi');
+        expect(pond.license).toBeUndefined(); // Hydrografi Direkt is not ODbL
+        const creek = created.find(c => c.type === 'water_creek') as Record<string, unknown>;
+        expect(creek.sourceRef).toBe('WatercourseLine/9');
+    });
+
+    test('fetch failure surfaces fetchError and leaves the wizard usable', async () => {
+        const { api } = fakeApi();
+        const { hydro } = fakeHydroApi(new Error('Hydrografi Direkt returned 401 for StandingWater: …Geotorget.'));
+        const svc = new GeojsonImportService(api, hydro);
+        svc.openFor('course-1');
+
+        await svc.fetchFromLantmateriet();
+
+        expect(svc.fetching.get()).toBe(false);
+        expect(svc.fetchError.get()).toMatch(/401/);
+        expect(svc.parsed.get()).toBeNull();
+
+        // A later file pick clears the stale fetch error.
+        svc.loadGeojsonText(GEOJSON, 'water.geojson');
+        expect(svc.fetchError.get()).toBeNull();
+        expect(svc.parsed.get()).not.toBeNull();
+    });
+
+    test('empty fetch result explains itself instead of a parse error', async () => {
+        const { api } = fakeApi();
+        const { hydro } = fakeHydroApi({ ...HYDRO_RESULT, water: [], creeks: [] });
+        const svc = new GeojsonImportService(api, hydro);
+        svc.openFor('course-1');
+
+        await svc.fetchFromLantmateriet();
+
+        expect(svc.fetchError.get()).toMatch(/No water or creeks/);
+        expect(svc.parseError.get()).toBeNull();
+        expect(svc.parsed.get()).toBeNull();
+    });
+
+    test('provenanceFromProperties: explicit source_ref wins over the osm composite', () => {
+        expect(provenanceFromProperties({ source: 'lantmateriet-hydrografi', source_ref: 'StandingWater/123' }))
+            .toEqual({ source: 'lantmateriet-hydrografi', sourceRef: 'StandingWater/123' });
+        expect(provenanceFromProperties({ source: 'osm', source_ref: 'explicit/1', osm_type: 'way', osm_id: 2 }))
+            .toEqual({ source: 'osm', sourceRef: 'explicit/1', license: 'ODbL' });
     });
 });

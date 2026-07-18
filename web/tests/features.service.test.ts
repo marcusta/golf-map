@@ -135,6 +135,30 @@ describe('load', () => {
         await svc.load('c1');
         expect(svc.error.get()?.code).toBe('server');
     });
+
+    // T50 regression: importing into a course whose store never loaded
+    // (⋯ → Import GeoJSON without ever activating the draw tool) used to
+    // refresh via reload(), which no-ops when nothing is loaded — features
+    // landed in the DB but nothing rendered until a full page reload.
+    test('reloadOrLoad loads an unloaded store', async () => {
+        const { api, calls } = fakeApi([feature('a'), feature('b')]);
+        const svc = new FeaturesService(api);
+
+        await svc.reloadOrLoad('c1'); // never load()ed — must NOT no-op
+        expect(calls.list).toBe(1);
+        expect(svc.store.items.get().map(f => f.id)).toEqual(['a', 'b']);
+    });
+
+    test('reloadOrLoad re-fetches an already-loaded course', async () => {
+        const { api, calls, rows } = fakeApi([feature('a')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        rows.set('imported', feature('imported'));
+        await svc.reloadOrLoad('c1'); // loaded → bypasses the per-course cache
+        expect(calls.list).toBe(2);
+        expect(svc.store.items.get().map(f => f.id)).toEqual(['a', 'imported']);
+    });
 });
 
 describe('create', () => {

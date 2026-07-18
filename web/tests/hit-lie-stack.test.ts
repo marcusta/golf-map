@@ -36,7 +36,7 @@ function square(half: number, cx = base.x, cy = base.y): FeatureGeometry {
 }
 
 function feature(id: string, type: string, geometry: FeatureGeometry, sortOrder: number, holeId: string | null = null): CourseFeature {
-    return { id, courseId: 'c1', holeId, type, geometry, geojson: null, sortOrder, version: 1 };
+    return { id, courseId: 'c1', holeId, type, geometry, geojson: null, sortOrder, source: null, sourceRef: null, license: null, version: 1 };
 }
 
 /** Register CourseDetailService (FeaturesService reads hole numbers for stackKey). */

@@ -12,6 +12,7 @@ import { createGamePlansClient } from '../../shared/api/game-plans.gen';
 import { createRoundsClient } from '../../shared/api/rounds.gen';
 import { createAssetsClient } from '../../shared/api/assets.gen';
 import { createMapBuildClient } from '../../shared/api/map-build.gen';
+import { createHydroClient } from '../../shared/api/hydro.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
@@ -30,4 +31,5 @@ export const api = {
     rounds: createRoundsClient('/api'),
     assets: createAssetsClient('/api'),
     mapBuild: createMapBuildClient('/api'),
+    hydro: createHydroClient('/api'),
 };

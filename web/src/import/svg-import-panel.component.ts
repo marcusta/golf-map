@@ -270,7 +270,11 @@ export class SvgImportPanelComponent extends Component {
                 disabled: () => this.svc.importing.get() || this.svc.assignedPathCount.get() === 0,
                 onclick: async () => {
                     const summary = await this.svc.confirmImport();
-                    if (summary) await this.features.reload();
+                    // reloadOrLoad, not reload(): the store may never have
+                    // loaded (import before the draw tool ever activated) —
+                    // reload() would no-op and nothing would render (T50 fix).
+                    const courseId = this.svc.targetCourseId;
+                    if (summary && courseId) await this.features.reloadOrLoad(courseId);
                 },
             },
             summarySection: { className: () => this.svc.summary.get() ? 'svg-import__section' : 'svg-import__section hidden' },

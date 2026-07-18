@@ -59,7 +59,7 @@ function greenFeature(id: string, holeId: string): CourseFeature {
     return {
         id, courseId: 'c1', holeId, type: 'green',
         geometry: square(15, GREEN_CENTER_XY.x, GREEN_CENTER_XY.y),
-        geojson: null, sortOrder: 0, version: 1,
+        geojson: null, sortOrder: 0, source: null, sourceRef: null, license: null, version: 1,
     };
 }
 
