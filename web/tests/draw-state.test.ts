@@ -66,12 +66,14 @@ describe('DrawState', () => {
         expect(state.mode.get()).toBe('draw');
     });
 
-    test('closeDraft returns the ring and resets to select mode', () => {
+    test('closeDraft returns the ring and stays armed (sticky chain-draw)', () => {
         const state = new DrawState();
         state.arm();
         state.addPoint({ x: 0, y: 0 });
         state.addPoint({ x: 10, y: 0 });
         state.addPoint({ x: 10, y: 10 });
+        state.addPoint({ x: 0, y: 10 });
+        state.undoPoint(); // parks a point on the ephemeral redo stack
 
         const ring = state.closeDraft();
         expect(ring!.points).toEqual([
@@ -80,6 +82,38 @@ describe('DrawState', () => {
             { x: 10, y: 10 },
         ]);
         expect(ring!.points.length).toBeGreaterThanOrEqual(MIN_RING_POINTS);
+        // Sticky: stay in draw mode with a cleared draft + redo stack so the
+        // next click begins the next shape of the same type.
+        expect(state.mode.get()).toBe('draw');
+        expect(state.isDrawing.get()).toBe(true);
+        expect(state.draft.get()).toEqual([]);
+        expect(state.redoPoint()).toBe(false); // redo stack cleared on close
+    });
+
+    test('close then addPoint starts ring 2 (chain-draw)', () => {
+        const state = new DrawState();
+        state.arm();
+        state.addPoint({ x: 0, y: 0 });
+        state.addPoint({ x: 10, y: 0 });
+        state.addPoint({ x: 10, y: 10 });
+        state.closeDraft();
+
+        // Still armed: the next point begins a fresh draft.
+        state.addPoint({ x: 100, y: 100 });
+        expect(state.mode.get()).toBe('draw');
+        expect(state.draft.get()).toEqual([{ x: 100, y: 100 }]);
+    });
+
+    test('Esc after a sticky close exits draw mode', () => {
+        const state = new DrawState();
+        state.arm();
+        state.addPoint({ x: 0, y: 0 });
+        state.addPoint({ x: 10, y: 0 });
+        state.addPoint({ x: 10, y: 10 });
+        state.closeDraft();
+        expect(state.isDrawing.get()).toBe(true);
+
+        expect(state.handleEscape()).toBe(true);
         expect(state.mode.get()).toBe('select');
         expect(state.draft.get()).toEqual([]);
     });

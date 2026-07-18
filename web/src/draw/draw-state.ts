@@ -125,12 +125,16 @@ export class DrawState {
 
     /**
      * Close the draft into a ring and return it (null when below the
-     * 3-anchor minimum). Resets to select mode on success.
+     * 3-anchor minimum). Sticky chain-draw: on success the draft and the
+     * mid-draw redo stack are cleared but drawing mode is RETAINED, so the
+     * next click starts the next shape of the same type. Exits (Esc / 'B' /
+     * deactivate) all route through `disarm`.
      */
     closeDraft(): { points: AnchorPoint[] } | null {
         const points = this.draft.peek();
         if (points.length < MIN_RING_POINTS) return null;
-        this.disarm();
+        this.draft.set([]);
+        this.redoPoints = [];
         return { points };
     }
 

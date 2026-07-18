@@ -877,9 +877,15 @@ export class DrawToolService {
         if (meta && (e.key === 'z' || e.key === 'Z')) {
             e.preventDefault();
             if (this.state.isDrawing.peek()) {
-                // Mid-draw point undo/redo — separate ephemeral stack.
-                if (e.shiftKey) this.state.redoPoint();
-                else this.state.undoPoint();
+                // Mid-draw point undo/redo — separate ephemeral stack. When it
+                // has nothing to do (e.g. an empty draft just re-armed by a
+                // sticky close), fall through to committed history so the
+                // just-created feature is undoable without leaving chain mode.
+                if (e.shiftKey) {
+                    if (!this.state.redoPoint()) this.redo();
+                } else if (!this.state.undoPoint()) {
+                    this.undo();
+                }
             } else if (e.shiftKey) {
                 this.redo();
             } else {
@@ -887,8 +893,9 @@ export class DrawToolService {
             }
         } else if (meta && (e.key === 'y' || e.key === 'Y')) {
             e.preventDefault();
-            if (this.state.isDrawing.peek()) this.state.redoPoint();
-            else this.redo();
+            if (this.state.isDrawing.peek()) {
+                if (!this.state.redoPoint()) this.redo();
+            } else this.redo();
         } else if (meta && (e.key === 'd' || e.key === 'D')) {
             e.preventDefault();
             this.duplicateSelection();
