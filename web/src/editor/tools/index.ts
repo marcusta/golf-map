@@ -17,6 +17,7 @@ import { furnitureTool } from '../../furniture/furniture-tool';
 import { measureTool } from '../../measure/measure-tool';
 import { analysisTool } from '../../analysis/analysis-tool';
 import { samTool } from '../../sam/sam-tool';
+import { terrainEditTool } from '../../terrain-edit/terrain-edit-tool';
 
 export const EDITOR_TOOLS: EditorTool[] = [
     drawTool, // course-feature drawing (batch C1)
@@ -24,4 +25,5 @@ export const EDITOR_TOOLS: EditorTool[] = [
     measureTool, // click-click multi-segment distance + elevation profile (batch C3)
     analysisTool, // green + surrounds height/slope analysis (batch C4)
     samTool, // SAM click-to-feature assist (T45)
+    terrainEditTool, // DEM smooth/flatten edit polygons (T55b)
 ];

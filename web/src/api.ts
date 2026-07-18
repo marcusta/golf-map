@@ -14,6 +14,7 @@ import { createAssetsClient } from '../../shared/api/assets.gen';
 import { createMapBuildClient } from '../../shared/api/map-build.gen';
 import { createHydroClient } from '../../shared/api/hydro.gen';
 import { createOsmClient } from '../../shared/api/osm.gen';
+import { createTerrainEditsClient } from '../../shared/api/terrain-edits.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
@@ -34,4 +35,5 @@ export const api = {
     mapBuild: createMapBuildClient('/api'),
     hydro: createHydroClient('/api'),
     osm: createOsmClient('/api'),
+    terrainEdits: createTerrainEditsClient('/api'),
 };
