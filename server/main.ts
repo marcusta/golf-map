@@ -23,6 +23,7 @@ import { createGreenCalibrationApi } from './api/green-calibration.api';
 import { createPuttEstimateApi } from './api/putt-estimate.api';
 import { createMapBuildApi } from './api/map-build.api';
 import { createHydroApi } from './api/hydro.api';
+import { createOsmApi } from './api/osm.api';
 import { createTileRoutes, cachingTileKeyLookup } from './services/tiles';
 
 const { app, db, bootstrapAuth } = await createApp<Database>(path.join(import.meta.dir, 'db/migrations'));
@@ -48,6 +49,7 @@ const {
     puttEstimateService,
     mapBuildService,
     hydroService,
+    osmService,
 } = services;
 
 // Clear any builds left `running` by a prior process (their in-memory runner
@@ -77,6 +79,7 @@ mount(app, '/api', createGreenCalibrationApi(greenCalibrationService));
 mount(app, '/api', createPuttEstimateApi(puttEstimateService));
 mount(app, '/api', createMapBuildApi(mapBuildService));
 mount(app, '/api', createHydroApi(hydroService));
+mount(app, '/api', createOsmApi(osmService));
 
 // Tile routes are deliberately unauthenticated (map clients fetch tiles
 // directly without session cookies) — mounted at the root, not under /api.

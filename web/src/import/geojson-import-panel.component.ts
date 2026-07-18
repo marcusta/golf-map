@@ -13,7 +13,7 @@ import { s, btn, primaryBtn, glassPanel, panelTitle, metric, OVERLAY_W, OVERLAY_
 import { MapService } from '../map/map.service';
 import { FeaturesService, geometryToWgs84Rings } from '../draw/features.service';
 import { FEATURE_TYPES, FEATURE_STYLES, typeColorExpression } from '../draw/feature-palette';
-import { GeojsonImportService } from './geojson-import.service';
+import { GeojsonImportService, OSM_FETCH_FILENAME } from './geojson-import.service';
 import type { BuildResult } from './svg-import.service';
 import type { GeojsonBucket } from './geojson-parse';
 import { icon } from '../ui/icons';
@@ -35,6 +35,8 @@ const tpl = template(`
             <h4 class="section-title">1 &middot; Source (EPSG:3006)</h4>
             <input bind="file" type="file" accept=".geojson,.json,application/geo+json" />
             <button bind="fetchHydro" type="button" class="fetch-btn" data-testid="geojson-fetch-hydro-btn"></button>
+            <button bind="fetchOsm" type="button" class="fetch-btn" data-testid="geojson-fetch-osm-btn"></button>
+            <div bind="odblNote" class="license-note"></div>
             <div bind="fetchError" class="error"></div>
             <div bind="fileInfo" class="hint"></div>
             <div bind="parseError" class="error"></div>
@@ -133,6 +135,7 @@ export class GeojsonImportPanelComponent extends Component {
             }
 
             & .hint { font-size: 0.72rem; color: ${t('color-text-secondary')}; }
+            & .license-note { font-size: 0.72rem; color: ${t('color-text-secondary')}; &:empty { display: none; } }
             & .error { font-size: 0.75rem; color: ${t('color-status-negative')}; &:empty { display: none; } }
 
             & .fetch-btn {
@@ -212,19 +215,33 @@ export class GeojsonImportPanelComponent extends Component {
                     this.svc.loadGeojsonText(await file.text(), file.name);
                 },
             },
-            // One-click variant (T50): server-proxied Hydrografi Direkt
-            // fetch for the course map area — no manual file step.
+            // One-click variants: server-proxied Hydrografi Direkt (T50)
+            // and OSM/Overpass (T53) fetches for the course map area — no
+            // manual file step. One fetch at a time; the in-flight
+            // variant's button carries the progress label.
             fetchHydro: {
-                textContent: () => this.svc.fetching.get()
+                textContent: () => this.svc.fetching.get() && this.svc.fetchSource.get() === 'lantmateriet'
                     ? 'Fetching from Lantmäteriet…'
                     : 'Fetch from Lantmäteriet (water + creeks)',
                 disabled: () => this.svc.fetching.get(),
                 onclick: () => void this.svc.fetchFromLantmateriet(),
             },
+            fetchOsm: {
+                textContent: () => this.svc.fetching.get() && this.svc.fetchSource.get() === 'osm'
+                    ? 'Fetching from OpenStreetMap…'
+                    : 'Fetch from OpenStreetMap',
+                disabled: () => this.svc.fetching.get(),
+                onclick: () => void this.svc.fetchFromOsm(),
+            },
+            // ODbL notice (T49 posture) — shown while the OSM fetch is the
+            // wizard's loaded source.
+            odblNote: () => this.svc.fileName.get() === OSM_FETCH_FILENAME
+                ? 'OSM data is ODbL — imported features mark this course\'s map data ODbL until removed.'
+                : '',
             fetchError: () => this.svc.fetchError.get() ?? '',
             fileInfo: () => {
                 const p = parsed();
-                if (!p) return this.svc.fileName.get() ?? 'Choose a pipeline draft (fetch-water / fetch-osm / detect-trees output), or fetch directly from Lantmäteriet.';
+                if (!p) return this.svc.fileName.get() ?? 'Choose a pipeline draft (fetch-water / fetch-osm / detect-trees output), or fetch directly from Lantmäteriet or OpenStreetMap.';
                 const skipped = p.skipped.length > 0 ? ` (${p.skipped.join('; ')})` : '';
                 return `${this.svc.fileName.get()} — ${p.features.length} importable features${skipped}`;
             },

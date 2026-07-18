@@ -35,7 +35,8 @@ Opus:1 — derived from the cost column above):
 | T50 | One-click water import (wizard fetch) | Fable | M | 8 |
 | T51 | Keep lidar .laz; manual delete | Opus | M | 2 |
 | T52 | GeoJSON imports land as smooth b-splines | Fable | S | 4 |
-| **Σ** | | | | **108** |
+| T53 | One-click OSM import (wizard fetch) | Fable | M | 8 |
+| **Σ** | | | | **116** |
 
 **Kickoff prompt (paste into a fresh session, fill in the task number):**
 
@@ -307,3 +308,38 @@ fall back to all-corner controls — the exact source polygon, never a
 dropped feature. SVG import untouched. Vreta numbers: ponds ≤ 2.1 m worst
 deviation (typ. 1.2–1.5 m), creeks ≤ 1.8 m, whole file ~0.9 s.
 **Done:** see docs/reports/T52-report.md.
+
+### T53 · One-click OSM import in the web editor — **Fable**
+
+*(Added 2026-07-18. **Decision (Marcus, binding):** the GeoJSON import
+wizard's source picker gains a third variant, "Fetch from OpenStreetMap",
+alongside the file input and the Lantmäteriet button — same downstream
+bucket → preview → accept flow. The full fetch-osm flow moves into the UI;
+the pipeline command remains for offline use.)*
+
+Scope as built, mirroring T50. **Server:** `OsmService`
+(server/services/osm.service.ts) + descriptor `POST
+/course-features/fetch-osm` (server/api/osm.api.ts, generated client
+shared/api/osm.gen.ts) taking `courseId`. A TypeScript port of
+pipeline/golfpipe/osm.py: Overpass QL over the course's WGS84 bbox (bbox
+authority chain now shared with HydroService via the extracted
+server/services/course-bbox.ts — georeference_json else tile-manifest
+bounds else 409), the same tag→type table (golf tags win; natural=water,
+natural=wood/landuse=forest), closed-way ring assembly + multipolygon
+relation stitching with holes (stitchRings + a hand-rolled point-in-ring
+hole assignment replacing shapely), WGS84→EPSG:3006 via services/geo.ts,
+cm rounding. Unlike osm.py, polygons are CLIPPED to the course bbox
+(hydro's clipPolygonToBbox — Overpass returns full geometry of anything
+touching the bbox and forests can be enormous). Overpass is public/no
+creds: descriptive User-Agent, 429/504 map to clear rate-limit/busy
+errors, fetch behind a fetchImpl seam (offline tests incl.
+multipolygon-with-holes and split-way stitching fixtures). Every feature
+carries T49 provenance: source 'osm', sourceRef `way/<id>`/`relation/<id>`,
+license 'ODbL'. **Web:** third source-picker button calling the endpoint;
+`osmToFeatureCollection` feeds the SAME `loadGeojsonText` flow (post-T52
+that path b-spline-fits every ring), `source_ref`/`license` properties line
+up with what `provenanceFromProperties` composes from fetch-osm FILES. An
+inline ODbL note shows while the OSM fetch is the loaded source: "OSM data
+is ODbL — imported features mark this course's map data ODbL until
+removed."
+**Done:** see docs/reports/T53-report.md.

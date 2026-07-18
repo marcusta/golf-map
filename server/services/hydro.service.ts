@@ -34,7 +34,7 @@ import polygonClipping from 'polygon-clipping';
 import { ConflictError } from '@basics/core/server/auth';
 import * as path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { sweref99tmToWgs84, wgs84ToSweref99tm } from './geo';
+import { resolveCourseMapBbox, type Bbox3006, type BboxWgs84 } from './course-bbox';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
 
@@ -179,8 +179,6 @@ export function defaultHydroCredentials(): HydroCredentials {
     }
     return { user, pass };
 }
-
-type Bbox3006 = [minX: number, minY: number, maxX: number, maxY: number];
 
 /** Close a ring explicitly (GeoJSON convention) unless already closed. */
 function closeRing(ring: number[][]): number[][] {
@@ -373,56 +371,10 @@ export class HydroService {
      * The course's map-area bbox, WGS84 (for the API's default CRS84 bbox
      * filter) + EPSG:3006 (for clipping): course georeference_json when
      * present, else the site's tile-manifest bounds (site owns the map).
+     * Shared with OsmService (T53) via course-bbox.ts.
      */
-    private async courseBbox(courseId: string): Promise<{ wgs84: HydroBbox; sweref: Bbox3006 }> {
-        const course = await this.courses.get(courseId);
-
-        const georef = parseGeoreferenceBbox(course.georeferenceJson);
-        if (georef) {
-            const corners = [
-                sweref99tmToWgs84(georef[0], georef[1]),
-                sweref99tmToWgs84(georef[2], georef[1]),
-                sweref99tmToWgs84(georef[2], georef[3]),
-                sweref99tmToWgs84(georef[0], georef[3]),
-            ];
-            return {
-                wgs84: {
-                    west: Math.min(...corners.map(c => c.lon)),
-                    south: Math.min(...corners.map(c => c.lat)),
-                    east: Math.max(...corners.map(c => c.lon)),
-                    north: Math.max(...corners.map(c => c.lat)),
-                },
-                sweref: georef,
-            };
-        }
-
-        if (course.siteId) {
-            const assets = await this.assets.listBySite(course.siteId);
-            const manifest = assets.find(a => a.kind === 'tile_manifest');
-            const bounds = parseManifestBounds(manifest?.metaJson);
-            if (bounds) {
-                const corners = [
-                    wgs84ToSweref99tm(bounds.south, bounds.west),
-                    wgs84ToSweref99tm(bounds.south, bounds.east),
-                    wgs84ToSweref99tm(bounds.north, bounds.east),
-                    wgs84ToSweref99tm(bounds.north, bounds.west),
-                ];
-                return {
-                    wgs84: bounds,
-                    sweref: [
-                        Math.min(...corners.map(c => c.x)),
-                        Math.min(...corners.map(c => c.y)),
-                        Math.max(...corners.map(c => c.x)),
-                        Math.max(...corners.map(c => c.y)),
-                    ],
-                };
-            }
-        }
-
-        throw new ConflictError(
-            'Course has no map area to fetch water for: no georeference bbox and its site has '
-            + 'no tile manifest. Build the course map (Set map area) first.',
-        );
+    private courseBbox(courseId: string): Promise<{ wgs84: BboxWgs84; sweref: Bbox3006 }> {
+        return resolveCourseMapBbox(this.courses, this.assets, courseId, 'fetch water for');
     }
 
     /**
@@ -469,37 +421,4 @@ export class HydroService {
             + '(next-link loop, or the bbox is far larger than a course)',
         );
     }
-}
-
-/** `{ bbox: [minX, minY, maxX, maxY] }` (EPSG:3006) from georeference_json. */
-function parseGeoreferenceBbox(georeferenceJson: string | null): Bbox3006 | null {
-    if (!georeferenceJson) return null;
-    try {
-        const parsed = JSON.parse(georeferenceJson) as { bbox?: unknown };
-        const bbox = parsed.bbox;
-        if (Array.isArray(bbox) && bbox.length === 4 && bbox.every(n => typeof n === 'number')) {
-            return [bbox[0], bbox[1], bbox[2], bbox[3]];
-        }
-    } catch {
-        // fall through
-    }
-    return null;
-}
-
-/** WGS84 `bounds` from a tile_manifest asset's metaJson. */
-function parseManifestBounds(metaJson: string | null | undefined): HydroBbox | null {
-    if (!metaJson) return null;
-    try {
-        const parsed = JSON.parse(metaJson) as { bounds?: Record<string, unknown> };
-        const b = parsed.bounds;
-        if (
-            b && typeof b.west === 'number' && typeof b.south === 'number'
-            && typeof b.east === 'number' && typeof b.north === 'number'
-        ) {
-            return { west: b.west, south: b.south, east: b.east, north: b.north };
-        }
-    } catch {
-        // fall through
-    }
-    return null;
 }

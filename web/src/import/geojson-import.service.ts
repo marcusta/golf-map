@@ -16,6 +16,7 @@ import { Signal, Computed, batch } from '@basics/core/client/core';
 import { api } from '../api';
 import type { CourseFeaturesApi } from '../../../shared/api/course-features.gen';
 import type { HydroApi, HydroFetchResult } from '../../../shared/api/hydro.gen';
+import type { OsmApi, OsmFetchResult } from '../../../shared/api/osm.gen';
 import type { BucketAssignment, BuiltFeature, BuildResult, ImportSummary } from './svg-import.service';
 import { bufferPolyline } from '../geo/polyline-buffer';
 import {
@@ -112,6 +113,42 @@ export function hydroToFeatureCollection(result: HydroFetchResult): {
     };
 }
 
+/** Wizard-facing filename for the one-click OSM fetch (T53). */
+export const OSM_FETCH_FILENAME = 'openstreetmap.geojson';
+
+/**
+ * Format a fetch-osm response as the pipeline-shaped GeoJSON document the
+ * wizard already understands (EPSG:3006 crs member, `properties.type` per
+ * feature, provenance properties per T49). The server returns typed,
+ * clipped EPSG:3006 polygons with composite sourceRefs (`way/<id>` /
+ * `relation/<id>` — the same value provenanceFromProperties composes from
+ * a fetch-osm FILE's `osm_type`+`osm_id`), so `source_ref` carries them
+ * verbatim; `license: 'ODbL'` is explicit. Pure — exported for tests.
+ */
+export function osmToFeatureCollection(result: OsmFetchResult): {
+    type: 'FeatureCollection';
+    crs: { type: 'name'; properties: { name: string } };
+    attribution: string;
+    features: unknown[];
+} {
+    return {
+        type: 'FeatureCollection',
+        crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
+        attribution: result.attribution,
+        features: result.features.map(feature => ({
+            type: 'Feature',
+            properties: {
+                type: feature.type,
+                source: result.source,
+                source_ref: feature.sourceRef,
+                license: result.license,
+                fetched: result.fetched,
+            },
+            geometry: { type: 'Polygon', coordinates: feature.rings },
+        })),
+    };
+}
+
 export class GeojsonImportService {
     /** Wizard visible? (Toggled by the command bar's "Import GeoJSON".) */
     readonly open = new Signal(false);
@@ -127,8 +164,10 @@ export class GeojsonImportService {
     readonly importing = new Signal(false);
     readonly progress = new Signal<{ done: number; total: number } | null>(null);
     readonly summary = new Signal<ImportSummary | null>(null);
-    /** One-click Lantmäteriet fetch (T50) in flight / failed. */
+    /** One-click fetch (T50 Lantmäteriet / T53 OSM) in flight / failed. */
     readonly fetching = new Signal(false);
+    /** Which fetch variant is in flight (labels the right button). */
+    readonly fetchSource = new Signal<'lantmateriet' | 'osm' | null>(null);
     readonly fetchError = new Signal<string | null>(null);
 
     private courseId: string | null = null;
@@ -159,6 +198,7 @@ export class GeojsonImportService {
     constructor(
         private featuresApi: CourseFeaturesApi = api.courseFeatures,
         private hydroApi: HydroApi = api.hydro,
+        private osmApi: OsmApi = api.osm,
     ) {}
 
     /** Open the wizard for a course (coordinates are already EPSG:3006 —
@@ -176,6 +216,7 @@ export class GeojsonImportService {
             this.summary.set(null);
             this.progress.set(null);
             this.fetching.set(false);
+            this.fetchSource.set(null);
             this.fetchError.set(null);
         });
     }
@@ -194,11 +235,7 @@ export class GeojsonImportService {
      * mapping/preview/accept flow a picked file goes through.
      */
     async fetchFromLantmateriet(): Promise<void> {
-        const courseId = this.courseId;
-        if (!courseId || this.fetching.peek()) return;
-        this.fetching.set(true);
-        this.fetchError.set(null);
-        try {
+        await this.runFetch('lantmateriet', async courseId => {
             const result = await this.hydroApi.fetchHydro({ courseId });
             const collection = hydroToFeatureCollection(result);
             if (collection.features.length === 0) {
@@ -206,10 +243,43 @@ export class GeojsonImportService {
                 return;
             }
             this.loadGeojsonText(JSON.stringify(collection), HYDRO_FETCH_FILENAME);
+        });
+    }
+
+    /**
+     * One-click OSM fetch (T53): call the server's Overpass proxy for this
+     * course's map area and feed the typed, ODbL-tagged result into the
+     * SAME mapping/preview/accept flow a picked file goes through.
+     */
+    async fetchFromOsm(): Promise<void> {
+        await this.runFetch('osm', async courseId => {
+            const result = await this.osmApi.fetchOsm({ courseId });
+            const collection = osmToFeatureCollection(result);
+            if (collection.features.length === 0) {
+                this.fetchError.set('No OSM golf or terrain features found within the course map area.');
+                return;
+            }
+            this.loadGeojsonText(JSON.stringify(collection), OSM_FETCH_FILENAME);
+        });
+    }
+
+    /** Shared fetch-variant plumbing: single-flight, error capture. */
+    private async runFetch(
+        source: 'lantmateriet' | 'osm',
+        action: (courseId: string) => Promise<void>,
+    ): Promise<void> {
+        const courseId = this.courseId;
+        if (!courseId || this.fetching.peek()) return;
+        this.fetching.set(true);
+        this.fetchSource.set(source);
+        this.fetchError.set(null);
+        try {
+            await action(courseId);
         } catch (e) {
             this.fetchError.set(e instanceof Error ? e.message : String(e));
         } finally {
             this.fetching.set(false);
+            this.fetchSource.set(null);
         }
     }
 

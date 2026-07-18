@@ -1,6 +1,14 @@
 import { test, expect, describe } from 'bun:test';
-import { GeojsonImportService, provenanceFromProperties, hydroToFeatureCollection, HYDRO_FETCH_FILENAME } from '../src/import/geojson-import.service';
+import {
+    GeojsonImportService,
+    provenanceFromProperties,
+    hydroToFeatureCollection,
+    osmToFeatureCollection,
+    HYDRO_FETCH_FILENAME,
+    OSM_FETCH_FILENAME,
+} from '../src/import/geojson-import.service';
 import type { HydroApi, HydroFetchResult } from '../../shared/api/hydro.gen';
+import type { OsmApi, OsmFetchResult } from '../../shared/api/osm.gen';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 // Pipeline-shaped draft (fetch-water convention): EPSG:3006 crs member,
@@ -372,5 +380,147 @@ describe('GeojsonImportService.fetchFromLantmateriet (T50)', () => {
             .toEqual({ source: 'lantmateriet-hydrografi', sourceRef: 'StandingWater/123' });
         expect(provenanceFromProperties({ source: 'osm', source_ref: 'explicit/1', osm_type: 'way', osm_id: 2 }))
             .toEqual({ source: 'osm', sourceRef: 'explicit/1', license: 'ODbL' });
+    });
+});
+
+// T53 — one-click OSM fetch: the wizard's third source variant calls the
+// server's Overpass proxy and feeds the SAME mapping/preview/accept flow;
+// every created feature carries ODbL provenance (T49).
+describe('GeojsonImportService.fetchFromOsm (T53)', () => {
+    const OSM_RESULT: OsmFetchResult = {
+        bbox: { west: 15.70, south: 58.34, east: 15.75, north: 58.37 },
+        source: 'osm',
+        license: 'ODbL',
+        attribution: '© OpenStreetMap contributors, ODbL (opendatacommons.org/licenses/odbl)',
+        fetched: '2026-07-18',
+        features: [
+            { type: 'green', sourceRef: 'way/111', rings: [square(531500, 6473000, 20)] },
+            // Multipolygon relation with an island hole.
+            {
+                type: 'water',
+                sourceRef: 'relation/222',
+                rings: [square(532000, 6474000, 100), square(532000, 6474000, 20)],
+            },
+            { type: 'trees', sourceRef: 'way/333', rings: [square(533000, 6475000, 50)] },
+        ],
+        skipped: [],
+    };
+
+    function fakeOsmApi(result: OsmFetchResult | Error = OSM_RESULT) {
+        const calls: Array<{ courseId: string }> = [];
+        const osm: OsmApi = {
+            fetchOsm: async input => {
+                calls.push(input);
+                if (result instanceof Error) throw result;
+                return result;
+            },
+        };
+        return { osm, calls };
+    }
+
+    function osmService(result: OsmFetchResult | Error = OSM_RESULT) {
+        const { api, created } = fakeApi();
+        const { osm, calls } = fakeOsmApi(result);
+        const hydro: HydroApi = { fetchHydro: () => Promise.reject(new Error('not under test')) };
+        const svc = new GeojsonImportService(api, hydro, osm);
+        svc.openFor('course-1');
+        return { svc, created, calls };
+    }
+
+    test('osmToFeatureCollection formats typed polygons with ODbL provenance', () => {
+        const fc = osmToFeatureCollection(OSM_RESULT);
+        expect(fc.crs.properties.name).toBe('urn:ogc:def:crs:EPSG::3006');
+        expect(fc.attribution).toContain('OpenStreetMap');
+        expect(fc.features.length).toBe(3);
+
+        const [green, water] = fc.features as Array<{
+            properties: Record<string, unknown>;
+            geometry: { type: string; coordinates: number[][][] };
+        }>;
+        expect(green.properties).toEqual({
+            type: 'green', source: 'osm', source_ref: 'way/111', license: 'ODbL', fetched: '2026-07-18',
+        });
+        expect(green.geometry.type).toBe('Polygon');
+        expect(water.properties['source_ref']).toBe('relation/222');
+        expect(water.geometry.coordinates.length).toBe(2); // island hole preserved
+    });
+
+    test('fetch feeds the normal mapping flow: buckets, prefill, ODbL provenance on create', async () => {
+        const { svc, created, calls } = osmService();
+
+        await svc.fetchFromOsm();
+
+        expect(calls).toEqual([{ courseId: 'course-1' }]);
+        expect(svc.fetching.get()).toBe(false);
+        expect(svc.fetchSource.get()).toBeNull();
+        expect(svc.fetchError.get()).toBeNull();
+        expect(svc.parseError.get()).toBeNull();
+        expect(svc.fileName.get()).toBe(OSM_FETCH_FILENAME);
+        expect(svc.propertyKey.get()).toBe('type');
+        const buckets = svc.buckets.get();
+        expect(buckets.map(b => b.value).sort()).toEqual(['green', 'trees', 'water']);
+        const a = svc.assignments.get();
+        expect(a['green']).toBe('green');
+        expect(a['water']).toBe('water');
+        expect(a['trees']).toBe('trees');
+        expect(svc.assignedFeatureCount.get()).toBe(3);
+
+        const summary = (await svc.confirmImport())!;
+        expect(summary.error).toBeNull();
+        expect(summary.created).toEqual({ green: 1, water: 1, trees: 1 });
+        // The fetch path's source_ref matches what provenanceFromProperties
+        // composes from a fetch-osm FILE's osm_type/osm_id — same values
+        // land on the create either way.
+        for (const c of created as Array<Record<string, unknown>>) {
+            expect(c.source).toBe('osm');
+            expect(c.license).toBe('ODbL');
+        }
+        const green = created.find(c => c.type === 'green') as Record<string, unknown>;
+        expect(green.sourceRef).toBe('way/111');
+        const water = created.find(c => c.type === 'water') as Record<string, unknown>;
+        expect(water.sourceRef).toBe('relation/222');
+    });
+
+    test('fetch failure (Overpass rate limit) surfaces fetchError, wizard stays usable', async () => {
+        const { svc } = osmService(new Error('Overpass is rate-limiting requests (HTTP 429) — …'));
+
+        await svc.fetchFromOsm();
+
+        expect(svc.fetching.get()).toBe(false);
+        expect(svc.fetchError.get()).toMatch(/429/);
+        expect(svc.parsed.get()).toBeNull();
+
+        // A later file pick clears the stale fetch error.
+        svc.loadGeojsonText(GEOJSON, 'water.geojson');
+        expect(svc.fetchError.get()).toBeNull();
+        expect(svc.parsed.get()).not.toBeNull();
+    });
+
+    test('empty fetch result explains itself instead of a parse error', async () => {
+        const { svc } = osmService({ ...OSM_RESULT, features: [] });
+
+        await svc.fetchFromOsm();
+
+        expect(svc.fetchError.get()).toMatch(/No OSM golf or terrain features/);
+        expect(svc.parseError.get()).toBeNull();
+        expect(svc.parsed.get()).toBeNull();
+    });
+
+    test('fetchSource labels the in-flight variant', async () => {
+        let resolveFetch: (r: OsmFetchResult) => void;
+        const osm: OsmApi = {
+            fetchOsm: () => new Promise(resolve => { resolveFetch = resolve; }),
+        };
+        const hydro: HydroApi = { fetchHydro: () => Promise.reject(new Error('not under test')) };
+        const svc = new GeojsonImportService(fakeApi().api, hydro, osm);
+        svc.openFor('course-1');
+
+        const pending = svc.fetchFromOsm();
+        expect(svc.fetching.get()).toBe(true);
+        expect(svc.fetchSource.get()).toBe('osm');
+        resolveFetch!(OSM_RESULT);
+        await pending;
+        expect(svc.fetching.get()).toBe(false);
+        expect(svc.fetchSource.get()).toBeNull();
     });
 });

@@ -13,6 +13,7 @@ import { createRoundsClient } from '../../shared/api/rounds.gen';
 import { createAssetsClient } from '../../shared/api/assets.gen';
 import { createMapBuildClient } from '../../shared/api/map-build.gen';
 import { createHydroClient } from '../../shared/api/hydro.gen';
+import { createOsmClient } from '../../shared/api/osm.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
@@ -32,4 +33,5 @@ export const api = {
     assets: createAssetsClient('/api'),
     mapBuild: createMapBuildClient('/api'),
     hydro: createHydroClient('/api'),
+    osm: createOsmClient('/api'),
 };
