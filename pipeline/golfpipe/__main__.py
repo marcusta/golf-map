@@ -5,6 +5,7 @@ Commands:
   fetch-ortho       STAC search + download best-coverage ortho COG(s) -> ortho.tif
   fetch-lidar       STAC search + download classified lidar COPC point cloud(s)
   fetch-water       Marktäcke vector water -> typed GeoJSON (water / water_creek)
+  fetch-hydro       Hydrografi Direkt water + creeks -> typed GeoJSON (water / water_creek)
   fetch-osm         Overpass OSM golf/terrain polygons -> typed GeoJSON (ODbL)
   grid-dem          Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
@@ -29,6 +30,7 @@ from golfpipe import commands
 from golfpipe import detect_trees
 from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
+from golfpipe import hydro
 from golfpipe import osm
 from golfpipe import water
 from golfpipe.aoi import AoiError, resolve_bbox
@@ -83,6 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--creek-width", dest="creek_width", type=float, default=water.DEFAULT_CREEK_WIDTH_M,
         help=f"total buffered width in metres for watercourse lines (default {water.DEFAULT_CREEK_WIDTH_M})",
+    )
+
+    p = sub.add_parser("fetch-hydro", help="Fetch Hydrografi Direkt water surfaces + watercourse lines as typed GeoJSON (EPSG:3006)")
+    _add_area_args(p)
+    p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
+    p.add_argument(
+        "--creek-width", dest="creek_width", type=float, default=water.DEFAULT_CREEK_WIDTH_M,
+        help=f"total buffered width in metres for watercourse centerlines (default {water.DEFAULT_CREEK_WIDTH_M})",
     )
 
     p = sub.add_parser("fetch-osm", help="Query Overpass for OSM golf/terrain polygons -> typed GeoJSON (EPSG:3006, ODbL)")
@@ -272,6 +282,10 @@ def main(argv: list[str] | None = None) -> int:
             bbox = _resolve_area(args)
             commands.cmd_fetch_water(bbox, Path(args.workdir), Path(args.out), creek_width_m=args.creek_width)
 
+        elif args.command == "fetch-hydro":
+            bbox = _resolve_area(args)
+            commands.cmd_fetch_hydro(bbox, Path(args.out), creek_width_m=args.creek_width)
+
         elif args.command == "fetch-osm":
             bbox = _resolve_area(args)
             commands.cmd_fetch_osm(bbox, Path(args.out), overpass_url=args.overpass_url)
@@ -370,6 +384,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except water.WaterError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except hydro.HydroError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except osm.OsmError as exc:

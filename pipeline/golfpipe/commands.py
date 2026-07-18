@@ -20,6 +20,7 @@ from golfpipe import detect_common
 from golfpipe import detect_trees as detect_trees_mod
 from golfpipe import detect_water as detect_water_mod
 from golfpipe import grid_dem as grid_dem_mod
+from golfpipe import hydro as hydro_mod
 from golfpipe import osm as osm_mod
 from golfpipe import stac
 from golfpipe import water as water_mod
@@ -302,6 +303,52 @@ def cmd_fetch_osm(
             print(f"  … and {len(skipped) - 10} more")
     if not collection["features"]:
         print("(no golf/terrain polygons found in bbox — is the course mapped in OSM?)")
+    print(f"Wrote {out}")
+    return out
+
+
+def cmd_fetch_hydro(
+    bbox: tuple[float, float, float, float],
+    out: Path,
+    creek_width_m: float = water_mod.DEFAULT_CREEK_WIDTH_M,
+    session=None,
+) -> Path:
+    """Fetches Lantmäteriet Hydrografi Direkt (OGC API Features, basic auth)
+    features intersecting bbox (WGS84) and writes one EPSG:3006 GeoJSON
+    FeatureCollection to `out`: StandingWater + WatercoursePolygon surfaces
+    → properties.type 'water'; WatercourseLine centerlines buffered to
+    creek_width_m total width → 'water_creek'. The file is importable by
+    the web GeoJSON draft-import wizard.
+
+    This is the authoritative creek source — Marktäcke (fetch-water) has no
+    watercourse lines at all in some areas (verified at Landeryd), while
+    the hydrography network carries them everywhere.
+    """
+    surface_geoms: list = []
+    for collection_id in hydro_mod.WATER_SURFACE_COLLECTIONS:
+        geoms = hydro_mod.fetch_collection_geometries(collection_id, bbox, session=session)
+        print(f"{collection_id}: {len(geoms)} feature(s) intersecting bbox")
+        surface_geoms.extend(geoms)
+    line_geoms = hydro_mod.fetch_collection_geometries(
+        hydro_mod.WATERCOURSE_LINE_COLLECTION, bbox, session=session,
+    )
+    print(f"{hydro_mod.WATERCOURSE_LINE_COLLECTION}: {len(line_geoms)} feature(s) intersecting bbox")
+
+    bbox_3006 = cmd_reproject_bbox(bbox)
+    polygons = hydro_mod.clip_geometries(surface_geoms, bbox_3006, "polygon")
+    lines = hydro_mod.clip_geometries(line_geoms, bbox_3006, "line")
+
+    collection = hydro_mod.build_hydro_geojson(polygons, lines, creek_width_m=creek_width_m)
+    hydro_mod.write_geojson(collection, out)
+
+    counts: dict[str, int] = {}
+    for feature in collection["features"]:
+        t = feature["properties"]["type"]
+        counts[t] = counts.get(t, 0) + 1
+    print(f"Water surfaces in bbox: {len(polygons)} source, {counts.get('water', 0)} merged")
+    print(f"Watercourse lines in bbox: {len(lines)} source, {counts.get('water_creek', 0)} buffered ribbons (width {creek_width_m} m)")
+    if not collection["features"]:
+        print("(no hydrography found in bbox — is it on land in Sweden?)")
     print(f"Wrote {out}")
     return out
 
