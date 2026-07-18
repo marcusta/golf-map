@@ -16,10 +16,12 @@ import { drawTool } from '../../draw/draw-tool';
 import { furnitureTool } from '../../furniture/furniture-tool';
 import { measureTool } from '../../measure/measure-tool';
 import { analysisTool } from '../../analysis/analysis-tool';
+import { samTool } from '../../sam/sam-tool';
 
 export const EDITOR_TOOLS: EditorTool[] = [
     drawTool, // course-feature drawing (batch C1)
     furnitureTool, // tees / pins / aim-points placement (batch C2)
     measureTool, // click-click multi-segment distance + elevation profile (batch C3)
     analysisTool, // green + surrounds height/slope analysis (batch C4)
+    samTool, // SAM click-to-feature assist (T45)
 ];
