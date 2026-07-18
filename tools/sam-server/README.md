@@ -52,12 +52,30 @@ SAM_WEIGHTS=/Users/marcust/dev/SAM-test/sam3.pt venv/bin/python server.py
 Listens on `http://127.0.0.1:8000` (override the port with `SAM_PORT`).
 First inference loads the model lazily (slow); subsequent clicks are fast.
 
+## Compute device (GPU)
+
+Both capabilities (SAM segmentation + LaMa inpaint) auto-select a device using
+golfpipe's shared policy: **Apple MPS if available → CUDA → CPU**. Force one
+with `ASSIST_DEVICE=cpu|cuda|mps`. The resolved device is reported per
+capability in `/health` (`point_device` and `inpaint.device`) so the UI/logs
+show what's actually running.
+
+LaMa's Fourier convolutions occasionally hit an op that's unsupported on MPS at
+runtime. The runner catches that, warns once, and finishes the run on CPU
+rather than crashing mid-batch — so you never lose a long clean. For a softer,
+per-op automatic fallback (stay on MPS, spill only the unsupported op to CPU),
+set `PYTORCH_ENABLE_MPS_FALLBACK=1` when launching the sidecar.
+
 ## API
 
 - `GET /health` → `{ "status": "healthy", "point_model": "loaded" | "mock",
-  "inpaint": { "available": bool, "weights": "present" | "missing", "detail"?: str } }`
+  "point_device": "mps" | "cuda" | "cpu" | null,
+  "inpaint": { "available": bool, "weights": "present" | "missing",
+  "device"?: "mps" | "cuda" | "cpu", "detail"?: str } }`
   Per-capability readiness: the web editor gates the SAM tool on the server
-  answering at all, and the Clean tool on `inpaint.available`.
+  answering at all, and the Clean tool on `inpaint.available`. `point_device`
+  is null when SAM is running the mock; `inpaint.device` is present only when
+  inpaint is available.
 - `POST /segment` with `{ "image": "<base64 jpeg>", "offset_x": 0, "offset_y": 0 }`
   → `{ "polygons": [[[x, y], …], …], "confidence": 0.0–1.0 }`
   Segments the object at the crop CENTER (point prompt). Polygons are
@@ -67,8 +85,9 @@ First inference loads the model lazily (slow); subsequent clicks are fast.
   (mask same size, >127 = inpaint) →
   `{ "image": "<base64 png>", "masked_pixels": n, "elapsed_ms": n }`.
   Pixels outside the mask come back byte-identical (golfpipe's
-  `inpaint_tiled` invariant). A 512 px crop takes ~8 s on CPU (M-series);
-  the first call lazily loads the model. 503 when weights/torch are absent.
+  `inpaint_tiled` invariant). A 512 px crop takes ~8 s on CPU (M-series) and
+  ~1 s on MPS; the first call lazily loads the model. 503 when weights/torch
+  are absent.
 
 CORS allows any localhost/127.0.0.1 origin, so the vite dev server (any
 port) can call it directly.

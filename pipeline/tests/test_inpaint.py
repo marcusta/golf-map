@@ -20,6 +20,8 @@ from golfpipe.inpaint import (
     feather_weights,
     inpaint_tiled,
     iter_crop_windows,
+    resolve_device,
+    torch_device,
 )
 
 
@@ -157,6 +159,58 @@ def test_progress_callback_reports_each_crop():
                   progress=lambda done, total: seen.append((done, total)))
     assert seen
     assert seen[-1][0] == seen[-1][1] == len(seen)
+
+
+# --- device resolution --------------------------------------------------------
+
+
+def test_resolve_device_honors_explicit_override():
+    # An explicit request wins regardless of what hardware is available.
+    assert resolve_device("cpu", mps_available=True, cuda_available=True) == "cpu"
+    assert resolve_device("cuda", mps_available=True, cuda_available=False) == "cuda"
+    assert resolve_device("mps", mps_available=False, cuda_available=False) == "mps"
+
+
+def test_resolve_device_prefers_mps_then_cuda_then_cpu():
+    # Auto (no override): mps > cuda > cpu.
+    assert resolve_device(None, mps_available=True, cuda_available=True) == "mps"
+    assert resolve_device(None, mps_available=False, cuda_available=True) == "cuda"
+    assert resolve_device(None, mps_available=False, cuda_available=False) == "cpu"
+
+
+def test_resolve_device_treats_empty_override_as_auto():
+    # "" is falsy — the sidecar/library pass None-or-empty through to auto.
+    assert resolve_device("", mps_available=True, cuda_available=False) == "mps"
+
+
+def test_torch_device_maps_backend_probes(monkeypatch):
+    """torch_device wires resolve_device to torch's live probes; a fake torch
+    exercises it without importing the real one (base run stays torch-free)."""
+    import types
+
+    fake = types.ModuleType("torch")
+    fake.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True))
+    fake.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    assert torch_device() == "mps"
+    assert torch_device("cpu") == "cpu"  # override still wins
+
+
+def test_torch_device_handles_torch_without_mps_backend(monkeypatch):
+    # Older torch builds have no torch.backends.mps attribute at all.
+    import types
+
+    fake = types.ModuleType("torch")
+    fake.backends = types.SimpleNamespace()  # no `mps`
+    fake.cuda = types.SimpleNamespace(is_available=lambda: True)
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    assert torch_device() == "cuda"
+
+
+def test_torch_device_reports_missing_torch(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", None)
+    with pytest.raises(InpaintDependencyError, match="requirements-inpaint.txt"):
+        torch_device()
 
 
 # --- lazy import + weights errors ----------------------------------------------

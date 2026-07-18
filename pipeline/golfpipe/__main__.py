@@ -204,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--crop", type=int, default=512, help="inpaint crop size in pixels (default 512)")
     p.add_argument("--overlap", type=int, default=64, help="crop overlap in pixels for the feathered stitch (default 64)")
     p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS; see pipeline/README.md)")
-    p.add_argument("--device", help="torch device (default: cuda if available, else cpu; pass mps to try Apple GPU)")
+    p.add_argument("--device", help="torch device (default: auto — mps if available, else cuda, else cpu; pass cpu/cuda/mps to force)")
     p.add_argument("--out", help="output GeoTIFF path (default: <ortho stem>.clean.tif alongside the source)")
     p.add_argument("--mask-out", dest="mask_out", help="optional: also write the rasterized mask as a GeoTIFF for eyeballing")
 

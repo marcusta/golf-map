@@ -29,6 +29,7 @@ Array conventions (shared with every InpaintFn):
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -39,6 +40,7 @@ __all__ = [
     "InpaintFn", "WEIGHTS_ENV_VAR", "BIG_LAMA_JIT_URL",
     "DEFAULT_CROP_SIZE", "DEFAULT_OVERLAP",
     "feather_weights", "iter_crop_windows", "inpaint_tiled", "LamaInpainter",
+    "resolve_device", "torch_device",
 ]
 
 
@@ -82,6 +84,47 @@ def _import_torch():
             "  cd pipeline && ./.venv/bin/pip install -r requirements-inpaint.txt"
         ) from exc
     return torch
+
+
+def resolve_device(
+    requested: str | None,
+    *,
+    mps_available: bool,
+    cuda_available: bool,
+) -> str:
+    """Pure device-resolution policy shared by the LaMa runner and the
+    editor-assist sidecar (kept torch-free so it is trivially testable):
+
+        explicit override  ->  the requested string, verbatim
+        else mps if available  ->  "mps"  (Apple-silicon GPU)
+        else cuda if available ->  "cuda"
+        else                   ->  "cpu"
+
+    `mps_available` / `cuda_available` are injected so callers can pass
+    torch's real probes (see `torch_device`) while tests exercise every
+    branch without importing torch at all.
+    """
+    if requested:
+        return requested
+    if mps_available:
+        return "mps"
+    if cuda_available:
+        return "cuda"
+    return "cpu"
+
+
+def torch_device(requested: str | None = None) -> str:
+    """`resolve_device` wired to torch's live availability probes. Imports
+    torch lazily (with the usual install hint on failure); `torch.backends.mps`
+    is absent on older torch builds, hence the getattr guard."""
+    torch = _import_torch()
+    mps_backend = getattr(torch.backends, "mps", None)
+    mps_available = bool(mps_backend is not None and mps_backend.is_available())
+    return resolve_device(
+        requested,
+        mps_available=mps_available,
+        cuda_available=bool(torch.cuda.is_available()),
+    )
 
 
 def feather_weights(height: int, width: int, overlap: int) -> np.ndarray:
@@ -187,9 +230,12 @@ class LamaInpainter:
     weights fail fast with a download hint before any heavy import); torch is
     imported and the model loaded lazily on the first call.
 
-    device: None → cuda if available, else cpu. Pass "mps" explicitly to try
-    Apple-silicon GPU — LaMa's Fourier convolutions need torch's MPS FFT
-    support (torch >= 2.1); cpu is the safe fallback and plenty for batch use.
+    device: None → auto (`resolve_device`): mps if available, else cuda, else
+    cpu. Pass an explicit string to force one. On Apple silicon LaMa's Fourier
+    convolutions lean on torch's MPS FFT support (torch >= 2.1); if any op is
+    unsupported at runtime the call is caught and re-run on CPU (a one-line
+    warning, no mid-batch crash — set PYTORCH_ENABLE_MPS_FALLBACK=1 for torch's
+    softer per-op fallback instead).
     """
 
     def __init__(self, weights: str | Path | None = None, device: str | None = None):
@@ -214,12 +260,7 @@ class LamaInpainter:
 
     def _load(self) -> None:
         torch = _import_torch()
-        if self._requested_device:
-            device = self._requested_device
-        elif torch.cuda.is_available():
-            device = "cuda"
-        else:
-            device = "cpu"
+        device = torch_device(self._requested_device)
         model = torch.jit.load(str(self.weights_path), map_location="cpu")
         model.eval()
         model.to(device)
@@ -239,6 +280,27 @@ class LamaInpainter:
         img_t = torch.from_numpy(img.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
         msk_t = torch.from_numpy(msk.astype(np.float32)).unsqueeze(0).unsqueeze(0)
         with torch.inference_mode():
-            out_t = self._model(img_t.to(self._device), msk_t.to(self._device))
+            out_t = self._run(img_t, msk_t)
         out = out_t[0].permute(1, 2, 0).detach().cpu().numpy()
         return np.clip(out * 255.0, 0, 255).astype(np.uint8)[:h, :w]
+
+    def _run(self, img_t, msk_t):
+        """Run the jitted model on the current device. On a GPU device (mps in
+        particular) an op may be unsupported at runtime; catch it once, drop the
+        model to CPU for the rest of this run, and retry — so a long batch never
+        dies on one bad crop."""
+        try:
+            return self._model(img_t.to(self._device), msk_t.to(self._device))
+        except (RuntimeError, NotImplementedError) as exc:
+            if self._device == "cpu":
+                raise
+            print(
+                f"warning: LaMa hit an unsupported op on '{self._device}' "
+                f"({str(exc).splitlines()[0]}); falling back to CPU for the rest "
+                f"of this run (set PYTORCH_ENABLE_MPS_FALLBACK=1 for torch's "
+                f"softer per-op fallback).",
+                file=sys.stderr,
+            )
+            self._model.to("cpu")
+            self._device = "cpu"
+            return self._model(img_t.to("cpu"), msk_t.to("cpu"))

@@ -46,6 +46,7 @@ from golfpipe.inpaint import (  # noqa: E402  (needs the sys.path insert above)
     LamaInpainter,
     WEIGHTS_ENV_VAR,
     inpaint_tiled,
+    torch_device,
 )
 
 app = FastAPI(title="Golf Course Segmentation Sidecar")
@@ -70,28 +71,49 @@ WEIGHTS_PATH = os.environ.get("SAM_WEIGHTS", "sam3.pt")
 # $GOLFPIPE_LAMA_WEIGHTS wins, else the conventional repo location.
 LAMA_WEIGHTS_PATH = os.environ.get(WEIGHTS_ENV_VAR) or str(REPO_ROOT / "data" / "models" / "big-lama.pt")
 
+# Compute device for BOTH capabilities (SAM + LaMa). $ASSIST_DEVICE forces one
+# (cpu/cuda/mps); otherwise auto per golfpipe's shared policy: mps > cuda > cpu.
+ASSIST_DEVICE = os.environ.get("ASSIST_DEVICE") or None
+
 # Global model instances (lazy loaded).
 _point_model = None
 _lama = None
+_resolved_device = None
+
+
+def resolved_device() -> str:
+    """Resolved torch device for assist inference ($ASSIST_DEVICE override,
+    else mps > cuda > cpu). Cached; if torch can't be imported at all we report
+    the requested override or 'cpu' so /health still answers."""
+    global _resolved_device
+    if _resolved_device is None:
+        try:
+            _resolved_device = torch_device(ASSIST_DEVICE)
+        except Exception:
+            _resolved_device = ASSIST_DEVICE or "cpu"
+    return _resolved_device
 
 
 def get_lama() -> LamaInpainter:
-    """Lazy LamaInpainter. Raises InpaintError when weights are missing or
-    torch is not installed — /health reports the same conditions up front."""
+    """Lazy LamaInpainter on the resolved device. Raises InpaintError when
+    weights are missing or torch is not installed — /health reports the same
+    conditions up front."""
     global _lama
     if _lama is None:
-        _lama = LamaInpainter(weights=LAMA_WEIGHTS_PATH)
+        _lama = LamaInpainter(weights=LAMA_WEIGHTS_PATH, device=resolved_device())
     return _lama
 
 
 def get_point_model():
-    """Lazy load the SAM 3 model for point prompts."""
+    """Lazy load the SAM 3 model for point prompts, moved to the resolved
+    device (mps/cuda/cpu)."""
     global _point_model
     if _point_model is None:
         try:
             from ultralytics import SAM
             _point_model = SAM(WEIGHTS_PATH)
-            print(f"SAM 3 point model loaded from {WEIGHTS_PATH}")
+            _point_model.to(resolved_device())
+            print(f"SAM 3 point model loaded from {WEIGHTS_PATH} on {resolved_device()}")
         except Exception as e:
             print(f"Failed to load SAM 3 point model from {WEIGHTS_PATH}: {e}")
             _point_model = "mock"
@@ -179,6 +201,7 @@ def segment_with_point(image: np.ndarray) -> tuple[list[np.ndarray], float]:
         source=temp_path,
         points=[[center_x, center_y]],
         labels=[1],
+        device=resolved_device(),
         verbose=False
     )
     print(f"[point] Inference: {time.time()-t0:.3f}s")
@@ -291,16 +314,20 @@ def _inpaint_readiness() -> dict:
             return {"available": False, "weights": "present", "detail": "torch is not installed in this venv"}
     except Exception:
         return {"available": False, "weights": "present", "detail": "torch is not importable"}
-    return {"available": True, "weights": "present"}
+    return {"available": True, "weights": "present", "device": resolved_device()}
 
 
 @app.get("/health")
 async def health_check():
-    """Per-capability readiness: SAM point model (T45) + LaMa inpaint (T55)."""
+    """Per-capability readiness: SAM point model (T45) + LaMa inpaint (T55).
+    Each capability reports the resolved compute device (mps/cuda/cpu) so the
+    UI/logs show what's actually running."""
     point_model = get_point_model()
+    real_sam = point_model != "mock"
     return {
         "status": "healthy",
-        "point_model": "loaded" if point_model != "mock" else "mock",
+        "point_model": "loaded" if real_sam else "mock",
+        "point_device": resolved_device() if real_sam else None,
         "inpaint": _inpaint_readiness(),
     }
 
