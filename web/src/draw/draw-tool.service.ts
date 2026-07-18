@@ -17,8 +17,11 @@ import {
     type Point,
 } from '../geo/bezier';
 import { bsplineRingToBezierWithMap } from '../geo/bspline';
+import { fitClosedBspline } from '../geo/spline-fit';
 import {
     DrawState,
+    MIN_RING_POINTS,
+    TraceGesture,
     moveAnchor,
     moveHandle,
     setSymmetricHandles,
@@ -101,6 +104,11 @@ const MARQUEE_MIN_PX = 5;
 export const DUPLICATE_OFFSET_M = 10;
 /** Expand/contract preset distances in meters (prototype table). */
 export const OFFSET_PRESETS = [0.5, 1, 2, 5] as const;
+/**
+ * Freehand-trace fit tolerance in meters (T40): the fitted b-spline stays
+ * within this of the traced stroke (control count adapts 8 → 20).
+ */
+export const TRACE_TOLERANCE_M = 0.75;
 
 interface DragTarget {
     kind: 'anchor' | 'handle' | 'newHandles';
@@ -239,7 +247,12 @@ interface Marquee {
  *   (Shift+click = sharp corner), Enter / click-on-first to close,
  *   Cmd/Ctrl+Z removes the last placed point (first point cancels). ESC
  *   cancels. Double-click is swallowed as an accidental duplicate point, not
- *   as a close gesture.
+ *   as a close gesture. Press-DRAG (fresh shape, empty draft) freehand-
+ *   traces instead: the stroke is sampled, least-squares fitted to a
+ *   ~8-20-control closed b-spline (geo/spline-fit.ts, TRACE_TOLERANCE_M)
+ *   and committed through the same closeDraft funnel — a sub-threshold
+ *   drag decays to the plain click. Middle-button (and ⌘-drag) still pans;
+ *   once click-placement has begun, left-drag keeps the native pan.
  */
 /**
  * Visible features containing `p`, preserving the given topmost-first stack
@@ -330,6 +343,14 @@ export class DrawToolService {
     private moveDrag: MoveDrag | null = null;
     /** Active Alt-duplicate-drag / repeat-stamp gesture (T42). */
     private stampDrag: StampDrag | null = null;
+    /** Active freehand press-drag trace while armed (T40), or null. */
+    private traceGesture: TraceGesture | null = null;
+    /**
+     * The live trace stroke for the preview overlay (EPSG:3006). Mirrors
+     * `traceGesture.points` but only updates when a sample is KEPT, so the
+     * preview re-renders at trace-sample granularity, not every mousemove.
+     */
+    private trace = new Signal<Point[] | null>(null);
     /** Armed repeat-stamp template, or null when stamp mode is inactive. */
     private stampMode: StampTemplate | null = null;
     private suppressClick = false;
@@ -504,6 +525,7 @@ export class DrawToolService {
         this.endDrag();
         this.cancelMoveDrag();
         this.cancelStampDrag();
+        this.cancelTrace();
         this.stampMode = null;
         this.marquee.set(null);
         this.state.disarm();
@@ -518,11 +540,17 @@ export class DrawToolService {
     }
 
     /**
-     * ESC chain: cancel drawing → exit repeat-stamp mode → cancel
-     * marquee/armed preview → clear vertex selection → drop feature
-     * selection → (unconsumed) deactivate.
+     * ESC chain: discard a mid-trace stroke (stays armed) → cancel drawing
+     * → exit repeat-stamp mode → cancel marquee/armed preview → clear
+     * vertex selection → drop feature selection → (unconsumed) deactivate.
      */
     onEscape(): boolean {
+        // ESC mid-trace discards the stroke only — the tool stays armed for
+        // the next trace/click (a second ESC then disarms via handleEscape).
+        if (this.traceGesture) {
+            this.cancelTrace();
+            return true;
+        }
         if (this.state.handleEscape()) return true;
         // Exit repeat-stamp mode (T42) before the marquee: cancel any live
         // stamp/duplicate ghost and disarm further stamping.
@@ -628,6 +656,15 @@ export class DrawToolService {
         if (!this.isMyClaim()) return;
 
         if (this.state.isDrawing.peek()) {
+            const trace = this.traceGesture;
+            if (trace) {
+                // Refresh the stroke preview only when the spacing gate
+                // keeps the sample (≥ TRACE_SAMPLE_PX apart on screen).
+                if (trace.sample(e.point, lngLatToSweref99tm(e.lngLat))) {
+                    this.trace.set([...trace.points]);
+                }
+                return;
+            }
             this.cursor.set(e.lngLat);
             return;
         }
@@ -726,7 +763,10 @@ export class DrawToolService {
     private onMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
         if (!this.isMyClaim()) return;
         if (e.originalEvent.button !== 0) return;
-        if (this.state.mode.peek() !== 'select') return;
+        if (this.state.mode.peek() === 'draw') {
+            this.onDrawMouseDown(e, map);
+            return;
+        }
         const features = this.features;
         if (!features) return;
 
@@ -874,6 +914,33 @@ export class DrawToolService {
     }
 
     /**
+     * Left-press while the draw tool is armed (T40): start a freehand
+     * trace. The gesture claims the drag (preventDefault + dragPan off —
+     * the marquee pattern) and onMouseMove samples the stroke at
+     * ≥ TRACE_SAMPLE_PX screen spacing; a sub-threshold release decays to
+     * the plain click (click-to-place / Shift-corner / close-ring hit all
+     * unchanged via onClick).
+     *
+     * Pan escape hatches while armed: middle-button (map.service) and
+     * ⌘/Ctrl-drag — returning without preventDefault keeps MapLibre's
+     * native dragPan engaged, exactly like the select-mode meta-pan below.
+     * And once click-placement has begun (non-empty draft) a left-drag
+     * keeps the native pan too: a trace always starts a FRESH shape, so
+     * mid-draft panning behaves exactly as before.
+     */
+    private onDrawMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
+        if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
+        if (this.state.draft.peek().length > 0) return;
+        e.preventDefault();
+        map.dragPan.disable();
+        this.traceGesture = new TraceGesture(
+            { x: e.point.x, y: e.point.y },
+            lngLatToSweref99tm(e.lngLat),
+        );
+        this.trace.set([...this.traceGesture.points]);
+    }
+
+    /**
      * Begin a repeat-stamp drag from the armed template. The copy is anchored
      * under the cursor immediately (grab point = the template `anchor`, the
      * previous drop point) and tracks pointer moves; the drop always creates.
@@ -900,6 +967,20 @@ export class DrawToolService {
     }
 
     private onMouseUp(e: MapMouseEvent, map: MaplibreMap): void {
+        const trace = this.traceGesture;
+        if (trace) {
+            this.traceGesture = null;
+            this.trace.set(null);
+            map.dragPan.enable();
+            // Sub-threshold press decays to a plain click: do NOT suppress
+            // the click MapLibre synthesizes — onClick places the point
+            // (Shift-corner / close-ring hit included) exactly as before.
+            if (!trace.moved) return;
+            this.suppressNextClick();
+            this.commitTrace(trace.finish(lngLatToSweref99tm(e.lngLat)));
+            return;
+        }
+
         const stamp = this.stampDrag;
         if (stamp) {
             this.stampDrag = null;
@@ -1179,6 +1260,24 @@ export class DrawToolService {
                 this.history.push([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
             }
         });
+    }
+
+    /**
+     * Fit a traced freehand stroke (EPSG:3006) to a closed b-spline and
+     * commit it through the normal closeDraft funnel — a regular editable
+     * spline feature of the armed type, ONE create history entry
+     * (`before: null`), chain-draw keeps the tool armed. Returns false when
+     * the fit degenerated (< 3 controls) and the stroke was discarded.
+     * Public: it is the trace gesture's testable commit seam (the pointer
+     * wiring needs a live MaplibreMap — same rationale as `stampClones`).
+     */
+    commitTrace(stroke: Point[]): boolean {
+        if (this.state.mode.peek() !== 'draw') return false;
+        const { controls } = fitClosedBspline(stroke, TRACE_TOLERANCE_M);
+        if (controls.length < MIN_RING_POINTS) return false;
+        this.state.draft.set(controls.map(p => ({ x: p.x, y: p.y })));
+        this.closeDraft();
+        return true;
     }
 
     /** Toggle the hovered vertex smooth↔corner ('C' key / panel button). */
@@ -1509,6 +1608,14 @@ export class DrawToolService {
         this.ctx?.map.map.peek()?.dragPan.enable();
     }
 
+    /** Discard an in-progress freehand trace (ESC / deactivate). */
+    private cancelTrace(): void {
+        if (!this.traceGesture) return;
+        this.traceGesture = null;
+        this.trace.set(null);
+        this.ctx?.map.map.peek()?.dragPan.enable();
+    }
+
     /** Abort an in-progress duplicate-drag / stamp-drag without committing. */
     private cancelStampDrag(): void {
         if (!this.stampDrag) return;
@@ -1708,6 +1815,21 @@ export class DrawToolService {
         };
 
         if (this.state.isDrawing.get()) {
+            // Live freehand-trace stroke (T40): the raw sampled polyline as
+            // the familiar dashed draft line (samples are plain points, so
+            // no flattening is needed).
+            const trace = this.trace.get();
+            if (trace) {
+                if (trace.length >= 2) {
+                    features.push({
+                        type: 'Feature',
+                        properties: { role: 'draft-line' },
+                        geometry: { type: 'LineString', coordinates: trace.map(p => toLngLat(p)) },
+                    });
+                }
+                return { type: 'FeatureCollection', features };
+            }
+
             const draft = this.state.draft.get();
             const cursor = this.cursor.get();
             // Preview controls: placed points + the cursor as a provisional

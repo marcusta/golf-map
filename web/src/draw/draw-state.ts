@@ -153,6 +153,65 @@ export class DrawState {
     }
 }
 
+// ─── Freehand trace gesture (press-drag, T40) ─────────────────────────────
+
+/** Screen px: minimum spacing between kept trace samples. */
+export const TRACE_SAMPLE_PX = 3;
+/**
+ * Screen px: a press-drag whose pointer never strays this far from its
+ * start decays to a plain click (existing click-to-place handles it).
+ */
+export const TRACE_CLICK_DECAY_PX = 5;
+
+/**
+ * Pure state of one press-drag freehand trace while the draw tool is
+ * armed: screen-spaced stroke sampling plus the click-decay flag. The
+ * service feeds it pointer events; on release the stroke is fitted
+ * (geo/spline-fit.ts) and committed through the normal closeDraft funnel.
+ */
+export class TraceGesture {
+    /** Sampled stroke in EPSG:3006 meters (≥ TRACE_SAMPLE_PX apart on screen). */
+    readonly points: Point[] = [];
+    /**
+     * Latched true once the pointer has strayed ≥ TRACE_CLICK_DECAY_PX
+     * from its start — deliberately NOT the start→end distance, which
+     * returns to ~0 on a closed-loop trace.
+     */
+    moved = false;
+    private last: { x: number; y: number };
+
+    constructor(
+        private readonly startScreen: { x: number; y: number },
+        first: Point,
+    ) {
+        this.points.push({ x: first.x, y: first.y });
+        this.last = { x: startScreen.x, y: startScreen.y };
+    }
+
+    /**
+     * Feed a pointer move (screen px + the same position in EPSG:3006).
+     * Returns true when the sample was KEPT (spacing gate passed) — the
+     * caller refreshes the live preview only then.
+     */
+    sample(screen: { x: number; y: number }, p: Point): boolean {
+        if (!this.moved
+            && Math.hypot(screen.x - this.startScreen.x, screen.y - this.startScreen.y) >= TRACE_CLICK_DECAY_PX) {
+            this.moved = true;
+        }
+        if (Math.hypot(screen.x - this.last.x, screen.y - this.last.y) < TRACE_SAMPLE_PX) return false;
+        this.last = { x: screen.x, y: screen.y };
+        this.points.push({ x: p.x, y: p.y });
+        return true;
+    }
+
+    /** The full stroke including the release point (deduped against the last sample). */
+    finish(p: Point): Point[] {
+        const last = this.points[this.points.length - 1];
+        if (last.x !== p.x || last.y !== p.y) this.points.push({ x: p.x, y: p.y });
+        return this.points;
+    }
+}
+
 // ─── Pure geometry edit operations ────────────────────────────────────────
 //
 // All operations return a NEW FeatureGeometry (identity change drives the
