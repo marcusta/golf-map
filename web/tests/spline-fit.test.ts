@@ -169,6 +169,37 @@ describe('fitClosedBspline closed-ring correctness', () => {
     });
 });
 
+// T52 — optional maxControls cap: the default preserves T40's 8→12→16→20
+// ladder exactly; import callers raise it with ring perimeter.
+describe('fitClosedBspline maxControls cap (T52)', () => {
+    test('omitted cap behaves byte-identically to an explicit 20', () => {
+        for (const stroke of [kidneyStroke(300), polarStroke(t => 14 + 2.5 * Math.cos(5 * t), 400)]) {
+            const implicit = fitClosedBspline(stroke, TOL);
+            const explicit = fitClosedBspline(stroke, TOL, 20);
+            expect(explicit.controls).toEqual(implicit.controls);
+            expect(explicit.maxDeviation).toBe(implicit.maxDeviation);
+        }
+    });
+
+    test('a raised cap converges where 20 controls cannot', () => {
+        // Twelve 4 m lobes on a 30 m blob: under two controls per lobe.
+        const stroke = polarStroke(t => 30 + 4 * Math.cos(12 * t), 720);
+        const capped = fitClosedBspline(stroke, TOL);
+        expect(capped.controls.length).toBeLessThanOrEqual(20);
+        expect(capped.maxDeviation).toBeGreaterThan(TOL);
+        const raised = fitClosedBspline(stroke, TOL, 64);
+        expect(raised.controls.length).toBeGreaterThan(20);
+        expect(raised.controls.length).toBeLessThanOrEqual(64);
+        expect(raised.maxDeviation).toBeLessThanOrEqual(TOL);
+        expect(recomputeMaxDeviation(stroke, raised.controls)).toBeLessThanOrEqual(TOL);
+    });
+
+    test('control count never exceeds the cap (even below 20)', () => {
+        const stroke = polarStroke(t => 30 + 4 * Math.cos(12 * t), 720);
+        expect(fitClosedBspline(stroke, TOL, 12).controls.length).toBeLessThanOrEqual(12);
+    });
+});
+
 describe('fitClosedBspline degenerate strokes', () => {
     test('under 3 distinct points returns them as-is (caller discards)', () => {
         const fit = fitClosedBspline([{ x: CX, y: CY }, { x: CX + 1, y: CY }], TOL);

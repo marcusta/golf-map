@@ -17,11 +17,19 @@
 //      chosen property (the wizard default is `type`, the pipeline output
 //      convention). Buckets carry a `suggestedType` when the value matches
 //      a FEATURE_TYPE (exactly, or via the svg-import name tokens).
-//   3. `polygonToGeometry(rings)` — one polygon's rings → a straight-
-//      segment bezier FeatureGeometry (corner anchors, no handles; lines
-//      arrive pre-buffered from the pipeline, so no buffering here).
+//   3. `polygonToGeometry(rings)` — one polygon's rings → a smooth
+//      `curveType:'bspline'` FeatureGeometry (T52): each ring is fitted
+//      through fitClosedBspline (T40) so generalized, angular source
+//      polygons (Hydrografi, OSM, detected drafts) land as shoreline-
+//      smooth splines instead of straight-segment polygons. Rings whose
+//      fit is unusable fall back to the straight-segment conversion,
+//      expressed as all-corner b-spline controls (corner triplication
+//      renders exactly the source polygon) — a feature is never dropped
+//      for fit reasons. Lines arrive pre-buffered from the pipeline, so
+//      no buffering here.
 
 import type { AnchorPoint, FeatureGeometry } from '../geo/bezier';
+import { fitClosedBspline } from '../geo/spline-fit';
 import { FEATURE_TYPES, type FeatureType } from '../draw/feature-palette';
 import { suggestType } from './svg-parse';
 
@@ -222,12 +230,61 @@ export function bucketByProperty(parsed: ParsedGeojson, property: string | null)
 /** Positions closer than this (metres) are treated as the same vertex. */
 const CLOSE_EPS_M = 1e-6;
 
+// B-spline fit of imported rings (T52). National vector sources are
+// generalized — sparse, angular vertices sampled off a smooth shoreline —
+// so the fit is deliberately looser than the freehand trace's 0.75 m: the
+// spline should smooth THROUGH the corners, not reproduce them. Tuned on
+// the Vreta Hydrografi Direkt export (docs/reports/T52-report.md):
+// 1.5 m keeps every pond within ~1.3 m of the source vertices while
+// rounding the generalization corners away.
+export const IMPORT_FIT_TOLERANCE_M = 1.5;
+/** One spline control per this many metres of ring perimeter. */
+export const IMPORT_METERS_PER_CONTROL = 10;
+/** Perimeter-scaled control cap, clamped: floor = the fitter's base 8; the
+ * ceiling covers ~2.6 km creek ribbons (at 64 they deviate 5.6 m; ~10 m per
+ * control converges to the ribbons' ~1 m half-width rounding floor). */
+export const IMPORT_MIN_CONTROLS = 8;
+export const IMPORT_MAX_CONTROLS = 256;
+
+/** Perimeter-scaled fitClosedBspline cap for an imported ring (T52). */
+export function importControlCap(perimeterM: number): number {
+    const target = Math.round(perimeterM / IMPORT_METERS_PER_CONTROL);
+    return Math.min(IMPORT_MAX_CONTROLS, Math.max(IMPORT_MIN_CONTROLS, target));
+}
+
 /**
- * One polygon's rings → a straight-segment bezier FeatureGeometry: every
- * vertex becomes a plain corner anchor (no handles), the GeoJSON closing
- * vertex is dropped (the draw model's rings are implicitly closed).
- * Degenerate rings (< 3 distinct vertices) are dropped with a warning; a
- * degenerate OUTER ring drops the whole polygon (geometry = null).
+ * Fit one imported ring as smooth b-spline controls; fall back to the
+ * exact straight-segment representation (all-corner controls) when the
+ * fit is unusable (< 3 controls or non-finite output).
+ */
+function fitImportRing(points: AnchorPoint[]): AnchorPoint[] {
+    let perimeter = 0;
+    for (let i = 0; i < points.length; i++) {
+        const a = points[i];
+        const b = points[(i + 1) % points.length];
+        perimeter += Math.hypot(b.x - a.x, b.y - a.y);
+    }
+    const fit = fitClosedBspline(
+        points.map(p => ({ x: p.x, y: p.y })),
+        IMPORT_FIT_TOLERANCE_M,
+        importControlCap(perimeter),
+    );
+    const usable =
+        fit.controls.length >= 3 &&
+        fit.controls.every(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (!usable) return points.map(p => ({ x: p.x, y: p.y, corner: true }));
+    return fit.controls.map(p => ({ x: p.x, y: p.y }));
+}
+
+/**
+ * One polygon's rings → a smooth `curveType:'bspline'` FeatureGeometry:
+ * each ring (outer AND holes) is least-squares fitted through
+ * fitClosedBspline with a perimeter-scaled control cap; unusable fits
+ * fall back to all-corner controls (exactly the source polygon). The
+ * GeoJSON closing vertex is dropped (the draw model's rings are
+ * implicitly closed). Degenerate rings (< 3 distinct vertices) are
+ * dropped with a warning; a degenerate OUTER ring drops the whole
+ * polygon (geometry = null).
  */
 export function polygonToGeometry(
     rings: number[][][],
@@ -248,9 +305,9 @@ export function polygonToGeometry(
             return;
         }
         if (ringIdx > 0 && outRings.length === 0) return; // outer already dropped
-        outRings.push({ points });
+        outRings.push({ points: fitImportRing(points) });
     });
 
     if (outRings.length === 0) return { geometry: null, warnings };
-    return { geometry: { crs: 'EPSG:3006', rings: outRings }, warnings };
+    return { geometry: { crs: 'EPSG:3006', curveType: 'bspline', rings: outRings }, warnings };
 }

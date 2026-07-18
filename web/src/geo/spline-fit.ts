@@ -18,9 +18,11 @@
 // window has sample support, and solved via the normal equations (one
 // small dense Gaussian solve per axis, coordinates centered on the
 // centroid for conditioning — EPSG:3006 northings are ~7 digits). The
-// control count adapts: 8 → 12 → 16 → 20, stepping up until the max
+// control count adapts: 8 → 12 → 16 → …, stepping up until the max
 // distance from the ORIGINAL stroke samples to the fitted curve is within
-// tolerance (capped at 20 — the best fit so far is returned regardless).
+// tolerance (capped at `maxControls`, default 20 — the best fit so far is
+// returned regardless). GeoJSON import (T52) raises the cap with ring
+// perimeter so long shorelines keep enough controls to follow the shape.
 
 import { flattenRing, type Point } from './bezier';
 import { rdpSimplify } from '../draw/draw-state';
@@ -36,8 +38,26 @@ export interface ClosedBsplineFit {
     maxDeviation: number;
 }
 
-/** Adaptive control-count ladder (start low, step up until within tolerance). */
-const CONTROL_COUNTS = [8, 12, 16, 20] as const;
+/** Default adaptive-ladder cap — the T40 trace / T45 SAM behavior. */
+const DEFAULT_MAX_CONTROLS = 20;
+
+/**
+ * Adaptive control-count ladder: 8 → 12 → 16 → 20 (T40's exact ladder when
+ * the cap is the default 20), then geometric ×1.4 rungs (rounded up to a
+ * multiple of 4) so large caps stay a dozen solves, always ending exactly
+ * at the cap.
+ */
+function controlLadder(maxControls: number): number[] {
+    const cap = Math.max(3, Math.floor(maxControls));
+    const counts: number[] = [];
+    let m = Math.min(8, cap);
+    while (m < cap) {
+        counts.push(m);
+        m = m < 20 ? m + 4 : Math.min(cap, Math.ceil((m * 1.4) / 4) * 4);
+    }
+    counts.push(cap);
+    return counts;
+}
 
 /** Consecutive stroke samples closer than this (m) collapse into one. */
 const DEDUPE_EPS_M = 1e-9;
@@ -49,8 +69,16 @@ const DEDUPE_EPS_M = 1e-9;
  * (a partial trace completes itself smoothly). Degenerate strokes (< 3
  * distinct points) return the points as-is with deviation 0 — callers
  * discard fits with fewer than 3 controls.
+ *
+ * `maxControls` caps the adaptive ladder (default 20, the freehand-trace
+ * behavior); callers fitting long shorelines (GeoJSON import) raise it in
+ * proportion to ring perimeter.
  */
-export function fitClosedBspline(stroke: Point[], toleranceM: number): ClosedBsplineFit {
+export function fitClosedBspline(
+    stroke: Point[],
+    toleranceM: number,
+    maxControls: number = DEFAULT_MAX_CONTROLS,
+): ClosedBsplineFit {
     const pts = dedupeClosed(stroke);
     if (pts.length < 3) {
         return { controls: pts.map(p => ({ x: p.x, y: p.y })), maxDeviation: 0 };
@@ -63,7 +91,7 @@ export function fitClosedBspline(stroke: Point[], toleranceM: number): ClosedBsp
     const ring = simplified.length >= 3 ? simplified : pts;
 
     let best: ClosedBsplineFit | null = null;
-    for (const m of CONTROL_COUNTS) {
+    for (const m of controlLadder(maxControls)) {
         const controls = solveControls(ring, m);
         const maxDeviation = maxStrokeDeviation(pts, controls, toleranceM);
         if (!best || maxDeviation < best.maxDeviation) best = { controls, maxDeviation };

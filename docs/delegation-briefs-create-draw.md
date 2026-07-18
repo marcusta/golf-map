@@ -34,7 +34,8 @@ Opus:1 — derived from the cost column above):
 | T49 | Feature provenance + ODbL posture | Fable | M | 8 |
 | T50 | One-click water import (wizard fetch) | Fable | M | 8 |
 | T51 | Keep lidar .laz; manual delete | Opus | M | 2 |
-| **Σ** | | | | **104** |
+| T52 | GeoJSON imports land as smooth b-splines | Fable | S | 4 |
+| **Σ** | | | | **108** |
 
 **Kickoff prompt (paste into a fresh session, fill in the task number):**
 
@@ -284,3 +285,25 @@ ConfirmService result notice (freed bytes / error). Added a `trash-2` icon and a
 `formatBytes` helper. **Pipeline:** detect-trees/detect-water can now be pointed
 at `data/sources/<mapKey>/lidar/` (no pipeline changes this task).
 **Done:** see docs/reports/T51-report.md.
+
+### T52 · Imported GeoJSON polygons land as smooth b-splines — **Fable**
+
+*(Added 2026-07-18 from live feedback on an imported Vreta pond: T43's
+straight-segment conversion looks like a pure polygon — imports should be
+b-splines, with enough point density to follow the shoreline. Superseded
+stopgap: T43 predated T40's fitter.)*
+
+Scope as built, web-only. `fitClosedBspline` gains an optional
+`maxControls` (default 20 = T40's exact ladder, byte-identical for the
+trace/SAM callers; geometric rungs above 20). `polygonToGeometry`
+(geojson-parse.ts) now fits every imported ring — outer and holes, both
+wizard variants incl. T50's bufferPolyline creek ribbons — into
+`curveType:'bspline'` geometry: tolerance 1.5 m (looser than trace's
+0.75 m — generalized sources should be smoothed THROUGH, not reproduced),
+control cap = perimeter / 10 m clamped [8, 256] (the brief's 64 ceiling
+left the 2.3–2.6 km Vreta creek ribbons 4–6 m off their own 2 m bed; 256
+converges them to ~1.4 m). Unusable fits (< 3 distinct vertices/non-finite)
+fall back to all-corner controls — the exact source polygon, never a
+dropped feature. SVG import untouched. Vreta numbers: ponds ≤ 2.1 m worst
+deviation (typ. 1.2–1.5 m), creeks ≤ 1.8 m, whole file ~0.9 s.
+**Done:** see docs/reports/T52-report.md.

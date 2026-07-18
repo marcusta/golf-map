@@ -3,9 +3,14 @@ import {
     parseGeojsonDocument,
     bucketByProperty,
     polygonToGeometry,
+    importControlCap,
+    IMPORT_FIT_TOLERANCE_M,
+    IMPORT_MIN_CONTROLS,
+    IMPORT_MAX_CONTROLS,
     crsEpsgCode,
     MISSING_VALUE,
 } from '../src/import/geojson-parse';
+import { flattenRing, type PathRing, type Point } from '../src/geo/bezier';
 
 const CRS_3006 = { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } };
 
@@ -136,22 +141,109 @@ describe('bucketByProperty', () => {
     });
 });
 
-describe('polygonToGeometry', () => {
-    test('drops the closing vertex, holes become extra rings', () => {
-        const { geometry, warnings } = polygonToGeometry(
-            [square(0, 0, 100), square(0, 0, 20)],
-            'water feature 1',
-        );
+// --- T52: imported rings land as smooth b-splines -----------------------
+
+/** Closed angular ring from a polar radius function (GeoJSON closure appended). */
+function polarRing(
+    r: (theta: number) => number,
+    n: number,
+    cx = 531500,
+    cy = 6473000,
+): number[][] {
+    const ring: number[][] = [];
+    for (let i = 0; i < n; i++) {
+        const t = (i / n) * 2 * Math.PI;
+        ring.push([cx + r(t) * Math.cos(t), cy + r(t) * Math.sin(t)]);
+    }
+    ring.push([...ring[0]]); // explicit GeoJSON closure
+    return ring;
+}
+
+/** Max distance from each source vertex to the flattened fitted ring. */
+function maxVertexDeviation(source: number[][], fitted: PathRing): number {
+    const flat = flattenRing({ points: fitted.points.map(p => ({ ...p })) }, 0.02, 'bspline');
+    let worst = 0;
+    for (const [x, y] of source.slice(0, -1)) {
+        worst = Math.max(worst, distToClosed({ x, y }, flat));
+    }
+    return worst;
+}
+
+function distToClosed(p: Point, poly: Array<[number, number]>): number {
+    let best = Infinity;
+    for (let i = 0; i < poly.length; i++) {
+        const [ax, ay] = poly[i];
+        const [bx, by] = poly[(i + 1) % poly.length];
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len2 = dx * dx + dy * dy;
+        let t = len2 === 0 ? 0 : ((p.x - ax) * dx + (p.y - ay) * dy) / len2;
+        t = Math.max(0, Math.min(1, t));
+        best = Math.min(best, Math.hypot(p.x - (ax + t * dx), p.y - (ay + t * dy)));
+    }
+    return best;
+}
+
+describe('polygonToGeometry (T52: fitted b-splines)', () => {
+    test('an angular pond lands as a smooth bspline within tolerance of its vertices', () => {
+        // Generalized-shoreline stand-in: a 12-gon, radius 40 m.
+        const source = polarRing(() => 40, 12);
+        const { geometry, warnings } = polygonToGeometry([source], 'water feature 1');
         expect(warnings).toEqual([]);
         expect(geometry!.crs).toBe('EPSG:3006');
-        expect(geometry!.curveType).toBeUndefined(); // bezier default
-        expect(geometry!.rings.length).toBe(2);
-        expect(geometry!.rings[0].points.length).toBe(4); // closure dropped
-        // Straight segments: corner anchors, no handles.
+        expect(geometry!.curveType).toBe('bspline');
+        // Smooth controls: no handles, no corner flags.
         for (const p of geometry!.rings[0].points) {
             expect(p.hIn).toBeUndefined();
             expect(p.hOut).toBeUndefined();
+            expect(p.corner).toBeUndefined();
         }
+        expect(maxVertexDeviation(source, geometry!.rings[0])).toBeLessThanOrEqual(IMPORT_FIT_TOLERANCE_M);
+    });
+
+    test('holes are fitted too and preserved (closing vertex dropped)', () => {
+        const outer = square(0, 0, 100);
+        const hole = polarRing(() => 20, 10, 0, 0);
+        const { geometry, warnings } = polygonToGeometry([outer, hole], 'water feature 1');
+        expect(warnings).toEqual([]);
+        expect(geometry!.rings.length).toBe(2);
+        for (const ring of geometry!.rings) {
+            expect(ring.points.length).toBeGreaterThanOrEqual(8);
+            for (const p of ring.points) expect(p.corner).toBeUndefined();
+        }
+        expect(maxVertexDeviation(hole, geometry!.rings[1])).toBeLessThanOrEqual(IMPORT_FIT_TOLERANCE_M);
+    });
+
+    test('importControlCap scales with perimeter, clamped', () => {
+        expect(importControlCap(50)).toBe(IMPORT_MIN_CONTROLS);
+        expect(importControlCap(100)).toBe(10);
+        expect(importControlCap(1000)).toBe(100);
+        expect(importControlCap(1e6)).toBe(IMPORT_MAX_CONTROLS);
+    });
+
+    test('a long wiggly shoreline gets more controls than the trace cap of 20', () => {
+        // ~950 m shoreline with 10 m lobes — needs the perimeter-scaled cap.
+        const long = polarRing(t => 150 + 10 * Math.sin(12 * t), 240);
+        const small = polarRing(() => 25, 10);
+        const longGeom = polygonToGeometry([long], 'creek').geometry!;
+        const smallGeom = polygonToGeometry([small], 'pond').geometry!;
+        expect(longGeom.rings[0].points.length).toBeGreaterThan(20);
+        expect(smallGeom.rings[0].points.length).toBeLessThanOrEqual(20);
+        expect(maxVertexDeviation(long, longGeom.rings[0])).toBeLessThanOrEqual(IMPORT_FIT_TOLERANCE_M);
+    });
+
+    test('a ring the fitter cannot use falls back to exact corner controls', () => {
+        // 3 points, two coincident: survives the <3-point drop, but the
+        // fitter dedupes to 2 distinct points and reports an unusable fit.
+        const sliver = [[531000, 6473000], [531000, 6473000], [531002, 6473001], [531000, 6473000]];
+        const { geometry, warnings } = polygonToGeometry([sliver], 'water feature 2');
+        expect(warnings).toEqual([]);
+        expect(geometry).not.toBeNull(); // never dropped for fit reasons
+        expect(geometry!.curveType).toBe('bspline');
+        const points = geometry!.rings[0].points;
+        expect(points.map(p => [p.x, p.y])).toEqual(sliver.slice(0, -1));
+        // All-corner controls render exactly the source polygon.
+        for (const p of points) expect(p.corner).toBe(true);
     });
 
     test('degenerate hole is dropped with a warning, outer survives', () => {

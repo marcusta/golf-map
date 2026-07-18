@@ -134,9 +134,15 @@ describe('GeojsonImportService', () => {
         // water: lake (with hole) + degenerate sliver dropped; creek square.
         expect(built.features.length).toBe(2);
         const lake = built.features.find(f => f.type === 'water')!;
+        // T52: imported rings are fitted b-splines, not straight polygons.
+        expect(lake.geometry.curveType).toBe('bspline');
         expect(lake.geometry.rings.length).toBe(2); // island hole preserved
-        expect(lake.geometry.rings[0].points.length).toBe(4);
-        expect(lake.geometry.rings[0].points[0]).toEqual({ x: 531400, y: 6472900 });
+        expect(lake.geometry.rings[0].points.length).toBeGreaterThanOrEqual(8);
+        // Fitted controls stay near the 100 m source square.
+        for (const p of lake.geometry.rings[0].points) {
+            expect(Math.abs(p.x - 531500)).toBeLessThan(110);
+            expect(Math.abs(p.y - 6473000)).toBeLessThan(110);
+        }
         // Warnings: LineString parse skip + degenerate sliver.
         expect(built.warnings.some(w => /LineString/.test(w))).toBe(true);
         expect(built.warnings.some(w => /dropped ring/.test(w))).toBe(true);
