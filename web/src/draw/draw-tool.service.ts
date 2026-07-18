@@ -35,6 +35,7 @@ import {
     bakeBsplineToBezier,
     translateGeometry,
     offsetGeometry,
+    mergedSurroundGeometries,
     simplifyGeometry,
     deleteVertices,
     insertBetweenVertices,
@@ -282,6 +283,70 @@ export function advanceAltCycle(
         && prev.ids.length === ids.length
         && prev.ids.every((id, i) => id === ids[i]);
     return { ids, index: same ? (prev!.index + 1) % ids.length : 0 };
+}
+
+/** One auto-surround source (or intermediate ring the chain walks from). */
+export interface SurroundSource {
+    type: FeatureType;
+    holeId: string | null;
+    geometry: FeatureGeometry;
+}
+
+/**
+ * Pure auto-surround planner (T41). Each pass applies one level of
+ * SURROUND_PAIRINGS to `current`: sources sharing a target type merge into
+ * ONE surround (`mergedSurroundGeometries` — union → offset →
+ * straight-segment rings; one output per disjoint polygon of the union),
+ * lone sources expand via `offset` (default `offsetGeometry`, injectable
+ * for tests). `holeId` = the group's common source holeId, else null. With
+ * `chain` the walk repeats on each level's OUTPUT until the pairings are
+ * exhausted (e.g. green → fairway(+0.5) → semi_rough(+1) → rough(+5) →
+ * deep_rough(+8)); chain + merge compose because merging happens per ring
+ * level. A step whose offset collapses (null / empty merge) truncates that
+ * branch — earlier rings are kept. Returns the creates in walk order.
+ */
+export function planSurrounds(
+    sources: SurroundSource[],
+    chain: boolean,
+    offset: (geometry: FeatureGeometry, distance: number) => FeatureGeometry | null = offsetGeometry,
+): SurroundSource[] {
+    const creates: SurroundSource[] = [];
+    let current = sources;
+    do {
+        const jobs = current
+            .map(s => ({ source: s, pairing: SURROUND_PAIRINGS[s.type] ?? null }))
+            .filter((j): j is { source: SurroundSource; pairing: { targetType: FeatureType; expandAmount: number } } => j.pairing !== null);
+        if (jobs.length === 0) break;
+        const groups = new Map<FeatureType, typeof jobs>();
+        for (const j of jobs) {
+            const group = groups.get(j.pairing.targetType);
+            if (group) group.push(j);
+            else groups.set(j.pairing.targetType, [j]);
+        }
+        const next: SurroundSource[] = [];
+        for (const [targetType, group] of groups) {
+            const holeId = new Set(group.map(j => j.source.holeId)).size === 1
+                ? group[0].source.holeId
+                : null;
+            const geometries: FeatureGeometry[] = [];
+            if (group.length === 1) {
+                const expanded = offset(group[0].source.geometry, group[0].pairing.expandAmount);
+                if (expanded) geometries.push(expanded);
+            } else {
+                // Mixed expand amounts inside one group (tee +0.5 and
+                // fairway +1 both target semi_rough) take the group max.
+                const amount = Math.max(...group.map(j => j.pairing.expandAmount));
+                geometries.push(...mergedSurroundGeometries(group.map(j => j.source.geometry), amount));
+            }
+            for (const geometry of geometries) {
+                const created = { type: targetType, holeId, geometry };
+                creates.push(created);
+                next.push(created);
+            }
+        }
+        current = next;
+    } while (chain);
+    return creates;
 }
 
 export class DrawToolService {
@@ -1376,51 +1441,61 @@ export class DrawToolService {
     }
 
     /**
-     * Auto-surround: clone each selected feature that has a golf pairing
-     * (SURROUND_PAIRINGS), convert the clone to the paired type, expand it
-     * by the paired amount and insert it as a new feature (the fixed
-     * type z-order renders it behind the original). Selection moves to
-     * the new surrounds. ONE history entry.
+     * Auto-surround (T41): insert the surround feature(s) golf implies for
+     * the selection (the fixed type z-order renders them behind the
+     * sources). Plain click = one level of SURROUND_PAIRINGS; Shift
+     * (`chain`) walks the pairings to exhaustion (green → fairway →
+     * semi_rough → rough → deep_rough), each ring offset from the PREVIOUS
+     * ring. Selected features sharing a target type union into ONE merged
+     * surround instead of N overlapping clones (see `planSurrounds`).
+     * ONE history entry; selection moves to all new rings.
      */
-    autoSurroundSelection(): void {
+    async autoSurroundSelection(chain = false): Promise<void> {
         const features = this.features;
         const items = features?.selectedFeatures.peek() ?? [];
         if (!features || items.length === 0) return;
-        const jobs = items
-            .map(f => ({ feature: f, pairing: SURROUND_PAIRINGS[f.type as FeatureType] ?? null }))
-            .filter((j): j is { feature: CourseFeature; pairing: { targetType: FeatureType; expandAmount: number } } => j.pairing !== null);
-        if (jobs.length === 0) {
-            this.actionNotice.set('No surround pairing for the selected type(s).');
+        const sources: SurroundSource[] = items.map(f => ({
+            type: f.type as FeatureType,
+            holeId: f.holeId,
+            geometry: f.geometry,
+        }));
+        const plan = planSurrounds(sources, chain);
+        if (plan.length === 0) {
+            this.actionNotice.set(sources.some(s => SURROUND_PAIRINGS[s.type])
+                ? 'Surround collapsed — nothing created.'
+                : 'No surround pairing for the selected type(s).');
             return;
         }
         this.actionNotice.set(null);
-        void (async () => {
-            const entry: HistoryEntry = [];
-            const ids: string[] = [];
-            for (const { feature, pairing } of jobs) {
-                const expanded = offsetGeometry(feature.geometry, pairing.expandAmount);
-                if (!expanded) continue;
-                const created = await features.create({
-                    type: pairing.targetType,
-                    holeId: feature.holeId,
-                    geometry: expanded,
-                });
-                if (!created) return;
-                entry.push({ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null });
-                ids.push(created.id);
-            }
-            if (ids.length === 0) return;
-            features.setSelection(ids);
-            this.history.push(entry);
-        })();
+        const entry: HistoryEntry = [];
+        const ids: string[] = [];
+        for (const create of plan) {
+            const created = await features.create(create);
+            if (!created) return; // save failed — history dropped via saveError watcher
+            entry.push({ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null });
+            ids.push(created.id);
+        }
+        features.setSelection(ids);
+        this.history.push(entry);
     }
 
-    /** Surround pairing for the current selection (panel button label). */
-    selectionSurroundPairing(): { targetType: FeatureType; expandAmount: number } | null {
+    /**
+     * Surround pairing for the current selection (panel button label),
+     * plus the terminal type a Shift-chain would walk to. `chainEnd`
+     * equals `targetType` when the target itself has no further pairing
+     * (no chain hint to show).
+     */
+    selectionSurroundPairing(): { targetType: FeatureType; expandAmount: number; chainEnd: FeatureType } | null {
         const items = this.features?.selectedFeatures.get() ?? [];
         for (const f of items) {
             const pairing = SURROUND_PAIRINGS[f.type as FeatureType];
-            if (pairing) return pairing;
+            if (pairing) {
+                let chainEnd = pairing.targetType;
+                while (SURROUND_PAIRINGS[chainEnd]) {
+                    chainEnd = SURROUND_PAIRINGS[chainEnd]!.targetType;
+                }
+                return { ...pairing, chainEnd };
+            }
         }
         return null;
     }

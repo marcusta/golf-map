@@ -270,13 +270,17 @@ export class SelectionPanelComponent extends Component {
             simplifyApplyBtn: { onclick: () => this.tool.applySimplify() },
             simplifyCancelBtn: { onclick: () => this.tool.setSimplifyActive(false) },
             surroundBtn: {
-                onclick: () => this.tool.autoSurroundSelection(),
+                // Shift-click chains the surround pairings to exhaustion (T41).
+                onclick: (e: Event) => void this.tool.autoSurroundSelection((e as MouseEvent).shiftKey),
                 className: () => this.tool.selectionSurroundPairing() ? 'op-btn surround-btn show' : 'op-btn surround-btn',
                 textContent: () => {
                     const pairing = this.tool.selectionSurroundPairing();
                     if (!pairing) return '';
                     const label = FEATURE_STYLES[pairing.targetType]?.label ?? pairing.targetType;
-                    return `Surround with ${label} (+${pairing.expandAmount} m)`;
+                    const base = `Surround with ${label} (+${pairing.expandAmount} m)`;
+                    if (pairing.chainEnd === pairing.targetType) return base;
+                    const endLabel = FEATURE_STYLES[pairing.chainEnd]?.label ?? pairing.chainEnd;
+                    return `${base} · ⇧ chain to ${endLabel}`;
                 },
             },
             duplicateBtn: {

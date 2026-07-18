@@ -3,7 +3,8 @@
 // these to actual map events.
 
 import { Signal, Computed } from '@basics/core/client/core';
-import { ringBbox, splitSegment, type AnchorPoint, type Bbox, type FeatureGeometry, type PathRing, type Point } from '../geo/bezier';
+import polygonClipping from 'polygon-clipping';
+import { flattenRing, ringBbox, splitSegment, type AnchorPoint, type Bbox, type FeatureGeometry, type PathRing, type Point } from '../geo/bezier';
 import { bsplineRingToBezier } from '../geo/bspline';
 
 /**
@@ -541,32 +542,40 @@ export function rdpSimplify<T extends Point>(points: T[], epsilon: number): T[] 
 }
 
 /**
+ * RDP for a CLOSED ring: the ring is split at its two most distant points
+ * so no single "endpoint" is privileged, then each half is simplified.
+ * Rings at or below MIN_RING_POINTS pass through unchanged.
+ */
+export function rdpSimplifyClosed<T extends Point>(pts: T[], epsilon: number): T[] {
+    if (pts.length <= MIN_RING_POINTS) return pts;
+    // Anchor the split at the two mutually farthest of (0, farthest-from-0).
+    let split = 1;
+    let best = -1;
+    for (let i = 1; i < pts.length; i++) {
+        const d = Math.hypot(pts[i].x - pts[0].x, pts[i].y - pts[0].y);
+        if (d > best) {
+            best = d;
+            split = i;
+        }
+    }
+    const half1 = rdpSimplify(pts.slice(0, split + 1), epsilon);
+    const half2 = rdpSimplify([...pts.slice(split), pts[0]], epsilon);
+    return [...half1.slice(0, -1), ...half2.slice(0, -1)];
+}
+
+/**
  * Simplify a geometry's CONTROL/ANCHOR points with RDP (closed-ring
- * variant: the ring is split at its two most distant points so no single
- * "endpoint" is privileged, then each half is simplified). This simplifies
- * the control polygon, not the flattened curve — a mild approximation on
- * curved features, in line with the offset op. Rings that would fall below
- * 3 points keep their 3 extremes. Surviving points keep handles/corner
- * flags.
+ * variant — see `rdpSimplifyClosed`). This simplifies the control polygon,
+ * not the flattened curve — a mild approximation on curved features, in
+ * line with the offset op. Rings that would fall below 3 points keep their
+ * 3 extremes. Surviving points keep handles/corner flags.
  */
 export function simplifyGeometry(geometry: FeatureGeometry, epsilon: number): FeatureGeometry {
     const next = cloneGeometry(geometry);
     next.rings = next.rings.map(ring => {
         const pts = ring.points;
         if (pts.length <= MIN_RING_POINTS) return ring;
-        // Anchor the split at the two mutually farthest of (0, farthest-from-0).
-        let split = 1;
-        let best = -1;
-        for (let i = 1; i < pts.length; i++) {
-            const d = Math.hypot(pts[i].x - pts[0].x, pts[i].y - pts[0].y);
-            if (d > best) {
-                best = d;
-                split = i;
-            }
-        }
-        const half1 = rdpSimplify(pts.slice(0, split + 1), epsilon);
-        const half2 = rdpSimplify([...pts.slice(split), pts[0]], epsilon);
-        const merged = [...half1.slice(0, -1), ...half2.slice(0, -1)];
+        const merged = rdpSimplifyClosed(pts, epsilon);
         if (merged.length < MIN_RING_POINTS) return ring;
         return { points: merged };
     });
@@ -675,6 +684,72 @@ export function offsetGeometry(geometry: FeatureGeometry, distance: number): Fea
         points: offsetRingPoints(ring.points, i === 0 ? distance : -distance),
     }));
     return next;
+}
+
+// ─── Merged surrounds (T41) ────────────────────────────────────────────────
+
+/** Curve-flattening tolerance for the union input (meters). */
+const MERGE_FLATTEN_TOLERANCE_M = 0.25;
+/** Post-offset RDP epsilon for the merged output rings (meters). */
+const MERGE_SIMPLIFY_EPSILON_M = 0.25;
+
+/**
+ * One merged surround outline around N feature outlines: each source is
+ * flattened (`flattenRing`, so bezier/bspline curves participate exactly),
+ * the flat polygons are unioned with polygon-clipping, and every ring of
+ * the union is offset by `distance` along per-vertex normals
+ * (`offsetRingPoints`; interior rings offset the OPPOSITE way, mirroring
+ * `offsetGeometry` — expanding the surround also shrinks its holes'
+ * cutouts). Output rings are RDP-simplified and rebuilt as
+ * STRAIGHT-SEGMENT bezier rings (plain corner anchors, no handles, no
+ * curveType — the geojson-import convention), one FeatureGeometry per
+ * disjoint polygon of the union; interior rings become holes.
+ *
+ * Degenerate inputs/outputs (< MIN_RING_POINTS) are dropped: a degenerate
+ * source outline contributes nothing, a degenerate output hole is skipped
+ * and a degenerate output outer drops its whole polygon. An empty result
+ * is the merge-path collapse signal (callers stop chaining there).
+ */
+export function mergedSurroundGeometries(
+    geometries: FeatureGeometry[],
+    distance: number,
+): FeatureGeometry[] {
+    const inputs: Array<Array<Array<[number, number]>>> = [];
+    for (const g of geometries) {
+        if (g.rings.length === 0) continue;
+        const flat = g.rings.map(r => flattenRing(r, MERGE_FLATTEN_TOLERANCE_M, g.curveType));
+        if (flat[0].length < MIN_RING_POINTS) continue; // degenerate outline
+        inputs.push(flat.filter(r => r.length >= MIN_RING_POINTS));
+    }
+    if (inputs.length === 0) return [];
+
+    const unioned = polygonClipping.union(inputs[0], ...inputs.slice(1));
+
+    const out: FeatureGeometry[] = [];
+    for (const polygon of unioned) {
+        const rings: PathRing[] = [];
+        for (let i = 0; i < polygon.length; i++) {
+            let pts: AnchorPoint[] = polygon[i].map(([x, y]) => ({ x, y }));
+            const first = pts[0];
+            const last = pts[pts.length - 1];
+            if (pts.length > 1 && first.x === last.x && first.y === last.y) {
+                pts = pts.slice(0, -1); // drop the GeoJSON closing vertex
+            }
+            if (pts.length < MIN_RING_POINTS) {
+                if (i === 0) break; // degenerate outer: drop the polygon
+                continue;
+            }
+            const offset = offsetRingPoints(pts, i === 0 ? distance : -distance);
+            const simplified = rdpSimplifyClosed(offset, MERGE_SIMPLIFY_EPSILON_M);
+            if (simplified.length < MIN_RING_POINTS) {
+                if (i === 0) break;
+                continue;
+            }
+            rings.push({ points: simplified });
+        }
+        if (rings.length > 0) out.push({ crs: 'EPSG:3006', rings });
+    }
+    return out;
 }
 
 // ─── Marquee-selection hit math ────────────────────────────────────────────
