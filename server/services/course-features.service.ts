@@ -30,6 +30,14 @@ export const FEATURE_TYPES = [
 export type FeatureType = (typeof FEATURE_TYPES)[number];
 
 /**
+ * T49 course-level ODbL posture: a course containing ANY feature with
+ * `license === 'ODbL'` (OSM-derived imports) is ODbL for its map data —
+ * surfaced course-by-course with this attribution, never a publish blocker.
+ */
+export const ODBL_LICENSE = 'ODbL';
+export const ODBL_ATTRIBUTION = '© OpenStreetMap contributors, ODbL';
+
+/**
  * Fixed golf z-ordering, bottom -> top (duplicated from web's
  * draw/feature-palette.ts — server and web keep independent copies, same as
  * FEATURE_TYPES above). Per D26 this survives ONLY as the insertion
@@ -86,13 +94,28 @@ export interface CourseFeature {
     geometry: FeatureGeometry;
     geojson: GeoJsonPolygon | null;
     sortOrder: number;
+    /** Import provenance (T49): producer id (e.g. 'osm'), null = hand-drawn. */
+    source: string | null;
+    /** Source-local ref (e.g. 'way/123456'). */
+    sourceRef: string | null;
+    /** License short name (e.g. 'ODbL'). */
+    license: string | null;
     version: number;
 }
 
 export interface CourseFeatureGeoJsonFeature {
     type: 'Feature';
     id: string;
-    properties: { courseId: string; holeId: string | null; type: string; sortOrder: number; stackKey: number };
+    properties: {
+        courseId: string;
+        holeId: string | null;
+        type: string;
+        sortOrder: number;
+        stackKey: number;
+        source: string | null;
+        sourceRef: string | null;
+        license: string | null;
+    };
     /** MultiPolygon only in `resolved` output (clipping can split a polygon). */
     geometry: GeoJsonPolygon | GeoJsonMultiPolygon;
 }
@@ -100,6 +123,12 @@ export interface CourseFeatureGeoJsonFeature {
 export interface CourseFeatureFeatureCollection {
     type: 'FeatureCollection';
     features: CourseFeatureGeoJsonFeature[];
+    /**
+     * Present when any feature is ODbL-licensed (OSM-derived) so course
+     * bundles carry the required attribution (T49). GeoJSON allows foreign
+     * top-level members.
+     */
+    attribution?: string;
 }
 
 // --- Row mapping ---
@@ -115,6 +144,9 @@ function toCourseFeature(row: FeatureRow): CourseFeature {
         geometry: JSON.parse(row.geometry_json) as FeatureGeometry,
         geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
         sortOrder: row.sort_order,
+        source: row.source,
+        sourceRef: row.source_ref,
+        license: row.license,
         version: row.version,
     };
 }
@@ -197,6 +229,9 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
         geometry,
         geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
         sortOrder: row.sort_order,
+        source: row.source,
+        sourceRef: row.source_ref,
+        license: row.license,
         version: row.version,
     };
 }
@@ -247,6 +282,9 @@ export class CourseFeaturesService {
             geometry_json: string;
             geojson: string | null;
             sort_order: number;
+            source: string | null;
+            source_ref: string | null;
+            license: string | null;
             version?: number;
         },
         trx: Kysely<Database> = this.db,
@@ -306,6 +344,9 @@ export class CourseFeaturesService {
                 'course_features.geometry_json',
                 'course_features.geojson',
                 'course_features.sort_order',
+                'course_features.source',
+                'course_features.source_ref',
+                'course_features.license',
                 'course_features.version',
                 'holes.number as hole_number',
             ])
@@ -328,19 +369,29 @@ export class CourseFeaturesService {
                     type: feature.type,
                     sortOrder: feature.sortOrder,
                     stackKey,
+                    source: feature.source,
+                    sourceRef: feature.sourceRef,
+                    license: feature.license,
                 },
                 geometry: geojson,
             });
         }
-        const collection: CourseFeatureFeatureCollection = { type: 'FeatureCollection', features };
-        if (!opts.resolved) return collection;
-        // Render-only variant: clip lower surfaces out from under higher ones
-        // so semi-transparent fills blend with the ortho exactly once. NOT for
-        // analysis consumers — a green overlapped by a higher feature comes
-        // back clipped.
-        return resolveSurfaceStack(
-            collection as unknown as FeatureCollection,
-        ) as unknown as CourseFeatureFeatureCollection;
+        let collection: CourseFeatureFeatureCollection = { type: 'FeatureCollection', features };
+        if (opts.resolved) {
+            // Render-only variant: clip lower surfaces out from under higher
+            // ones so semi-transparent fills blend with the ortho exactly
+            // once. NOT for analysis consumers — a green overlapped by a
+            // higher feature comes back clipped.
+            collection = resolveSurfaceStack(
+                collection as unknown as FeatureCollection,
+            ) as unknown as CourseFeatureFeatureCollection;
+        }
+        // T49: any ODbL feature makes the course's map data ODbL — the
+        // collection (and thus every course bundle) carries the attribution.
+        if (features.some((f) => f.properties.license === ODBL_LICENSE)) {
+            collection.attribution = ODBL_ATTRIBUTION;
+        }
+        return collection;
     }
 
     async create(input: {
@@ -348,12 +399,19 @@ export class CourseFeaturesService {
         holeId?: string | null;
         type: string;
         geometry: FeatureGeometry;
+        /** Import provenance (T49) — omitted for hand-drawn features. */
+        source?: string | null;
+        sourceRef?: string | null;
+        license?: string | null;
     }): Promise<CourseFeature> {
         assertValidType(input.type);
         assertValidGeometry(input.geometry);
 
         const id = crypto.randomUUID();
         const holeId = input.holeId ?? null;
+        const source = input.source ?? null;
+        const sourceRef = input.sourceRef ?? null;
+        const license = input.license ?? null;
         const geojson = toGeoJson(input.geometry);
 
         const sortOrder = await this.db.transaction().execute(async (trx) => {
@@ -377,6 +435,9 @@ export class CourseFeaturesService {
                     geometry_json: JSON.stringify(input.geometry),
                     geojson: JSON.stringify(geojson),
                     sort_order: pos,
+                    source,
+                    source_ref: sourceRef,
+                    license,
                 },
                 trx,
             ).execute();
@@ -392,6 +453,9 @@ export class CourseFeaturesService {
             geometry: input.geometry,
             geojson,
             sortOrder,
+            source,
+            sourceRef,
+            license,
             version: 1,
         };
     }

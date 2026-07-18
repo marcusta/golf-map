@@ -32,6 +32,12 @@ export type BucketAssignment = FeatureType | 'skip';
 export interface BuiltFeature {
     type: FeatureType;
     geometry: FeatureGeometry;
+    /** Import provenance (T49) — forwarded to the create API when present.
+     * Set by the GeoJSON wizard from source properties (e.g. fetch-osm);
+     * SVG imports carry none. */
+    source?: string;
+    sourceRef?: string;
+    license?: string;
 }
 
 export interface BuildResult {

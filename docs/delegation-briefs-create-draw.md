@@ -31,7 +31,8 @@ Opus:1 — derived from the cost column above):
 | T46 | Lidar tree-canopy drafts | Fable | L | 16 |
 | T47 | Lidar water drafts (class 9) | Fable | S | 4 |
 | T48 | Hydrografi Direkt creeks + water | Fable | S | 4 |
-| **Σ** | | | | **86** |
+| T49 | Feature provenance + ODbL posture | Fable | M | 8 |
+| **Σ** | | | | **94** |
 
 **Kickoff prompt (paste into a fresh session, fill in the task number):**
 
@@ -200,3 +201,26 @@ seam style as water.py/osm.py; pytest offline with fixture pages (including a mu
 response). Live smoke against the Landeryd bbox in the report (expect the pond set fetch-water
 found, plus creek ribbons if present).
 **Done:** `fetch-hydro` yields wizard-importable water + water_creek GeoJSON for Landeryd; pytest green offline.
+
+### T49 · Durable feature provenance + course-level ODbL posture — **Fable**
+
+*(Added 2026-07-18, resolving the wave-level open decision flagged by T44.
+**Decision (Marcus, binding):** OSM-derived features ARE allowed in published
+courses. A course containing any ODbL feature becomes ODbL for its map data,
+surfaced course-by-course with attribution — no publish blocking.)*
+
+Scope as built: migration `011_feature_provenance.ts` adds nullable
+`source`/`source_ref`/`license` TEXT columns to `course_features`;
+`CourseFeaturesService.create()` accepts and rows expose
+`source`/`sourceRef`/`license`; `geojsonByCourse` carries them in feature
+properties and, when any feature has `license === 'ODbL'`, adds a top-level
+`attribution` member ("© OpenStreetMap contributors, ODbL") to the
+FeatureCollection so course bundles carry it (raw and resolved). Course
+posture is DERIVED, never stored: `FeaturesService.hasOdblFeatures` (web)
+drives an "ODbL map data" command-bar pill, an ODbL note in the publish
+confirm dialog, and "© OpenStreetMap contributors" in the editor map's
+status-bar attribution. The GeoJSON import wizard maps fetch-osm properties
+(`source`/`osm_type`+`osm_id`→`sourceRef`) onto creates and defaults
+`license` to 'ODbL' for `source: "osm"` when the file carries no license
+property. iOS attribution display deferred (gap noted in the report).
+**Done:** see docs/reports/T49-report.md.

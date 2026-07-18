@@ -48,6 +48,11 @@ const CreateFeatureInput = Type.Object({
     holeId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     type: Type.String(),
     geometry: FeatureGeometrySchema,
+    // Import provenance (T49) — set by the GeoJSON draft-import wizard for
+    // pipeline output (e.g. fetch-osm: source 'osm', license 'ODbL').
+    source: Type.Optional(Type.String()),
+    sourceRef: Type.Optional(Type.String()),
+    license: Type.Optional(Type.String()),
 });
 
 const UpdateFeatureInput = Type.Object({
@@ -105,6 +110,9 @@ export function createCourseFeaturesApi(svc: CourseFeaturesService) {
                     holeId: input.holeId,
                     type: input.type,
                     geometry: input.geometry,
+                    source: input.source,
+                    sourceRef: input.sourceRef,
+                    license: input.license,
                 }),
             schema: CreateFeatureInput,
             middleware: mw,

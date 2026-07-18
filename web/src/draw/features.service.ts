@@ -104,6 +104,16 @@ export class FeaturesService {
         return this.store.items.get().find(f => f.id === id) ?? null;
     });
 
+    /**
+     * T49 course-level ODbL posture, derived live from the loaded features:
+     * a course containing ANY ODbL-licensed feature (OSM-derived imports)
+     * is ODbL for its map data. Drives the command-bar pill, the publish
+     * confirm note, and the map status-bar attribution. Cheap (one scan per
+     * store change) and always current while editing — no server flag.
+     */
+    readonly hasOdblFeatures = new Computed<boolean>(() =>
+        this.store.items.get().some(f => f.license === 'ODbL'));
+
     /** All currently selected features (store order). */
     readonly selectedFeatures = new Computed<CourseFeature[]>(() => {
         const ids = this.selectedIds.get();

@@ -7,6 +7,7 @@ import { MapService } from './map.service';
 import { ElevationService } from './elevation.service';
 import { EditorToolbarComponent } from '../editor/toolbar.component';
 import { MapBuildClientService } from '../map-build/map-build.service';
+import { FeaturesService } from '../draw/features.service';
 
 const vintageTpl = template(`<button bind="row" type="button" class="vintage-btn"></button>`);
 
@@ -348,6 +349,7 @@ export class EditorCanvasComponent extends Component {
     `;
 
     private tileset = this.inject(TilesetService);
+    private features = this.inject(FeaturesService);
     private mapSvc = this.inject(MapService);
     private elevation = this.inject(ElevationService);
     private mapBuild = this.inject(MapBuildClientService);
@@ -367,8 +369,18 @@ export class EditorCanvasComponent extends Component {
 
     /** Whether the attribution credit is pinned open (tapped, vs. hover). */
     private attributionOpen = new Signal(false);
-    /** Data attribution from the tile manifest (e.g. "© Lantmäteriet, CC BY 4.0"). */
-    private attributionText = new Computed(() => this.tileset.manifest.get()?.attribution ?? null);
+    /**
+     * Data attribution: tile manifest credit (e.g. "© Lantmäteriet, CC BY
+     * 4.0") plus, when the loaded course contains OSM-derived (ODbL)
+     * features, the OpenStreetMap credit (T49).
+     */
+    private attributionText = new Computed(() => {
+        const parts = [
+            this.tileset.manifest.get()?.attribution ?? null,
+            this.features.hasOdblFeatures.get() ? '© OpenStreetMap contributors' : null,
+        ].filter((part): part is string => part !== null);
+        return parts.length > 0 ? parts.join(' · ') : null;
+    });
 
     /** Ortho vintages available to switch between (only shown when >1). */
     private vintages = new Computed<OrthoVintage[]>(() => this.tileset.manifest.get()?.orthoVintages ?? []);

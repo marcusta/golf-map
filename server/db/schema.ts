@@ -140,6 +140,9 @@ export interface CourseFeaturesTable {
     geometry_json: string; // native path/bezier geometry in projected CRS
     geojson: string | null; // derived WGS84 GeoJSON
     sort_order: number; // per-group (course_id, hole_id) stack z-order; higher = on top (D23)
+    source: string | null; // import provenance: producer id (e.g. 'osm'), null = hand-drawn (T49)
+    source_ref: string | null; // source-local ref (e.g. 'way/123456')
+    license: string | null; // license short name (e.g. 'ODbL') — any ODbL feature makes the course's map data ODbL
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

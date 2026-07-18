@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test';
-import { GeojsonImportService } from '../src/import/geojson-import.service';
+import { GeojsonImportService, provenanceFromProperties } from '../src/import/geojson-import.service';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 // Pipeline-shaped draft (fetch-water convention): EPSG:3006 crs member,
@@ -168,5 +168,69 @@ describe('GeojsonImportService', () => {
         svc.close();
         expect(svc.open.get()).toBe(false);
         expect(svc.built.get()).toBeNull();
+    });
+});
+
+// T49 — durable provenance: the wizard forwards source/sourceRef/license to
+// the create API so licensing survives past the import file (fetch-osm output
+// is ODbL).
+describe('GeojsonImportService provenance (T49)', () => {
+    const OSM_GEOJSON = JSON.stringify({
+        type: 'FeatureCollection',
+        crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
+        attribution: '© OpenStreetMap contributors, ODbL (opendatacommons.org/licenses/odbl)',
+        features: [
+            {
+                type: 'Feature',
+                // fetch-osm property shape (pipeline/golfpipe/osm.py): no
+                // per-feature `license` — the wizard defaults osm → ODbL.
+                properties: { type: 'green', source: 'osm', osm_type: 'way', osm_id: 123456, fetched: '2026-07-18' },
+                geometry: { type: 'Polygon', coordinates: [square(531500, 6473000, 20)] },
+            },
+            {
+                type: 'Feature',
+                properties: { type: 'water', source: 'osm', osm_type: 'relation', osm_id: 42, fetched: '2026-07-18' },
+                geometry: { type: 'Polygon', coordinates: [square(532000, 6474000, 50)] },
+            },
+        ],
+    });
+
+    test('provenanceFromProperties maps osm properties and defaults ODbL', () => {
+        expect(provenanceFromProperties({ source: 'osm', osm_type: 'way', osm_id: 123456 }))
+            .toEqual({ source: 'osm', sourceRef: 'way/123456', license: 'ODbL' });
+        // Explicit license wins over the osm default.
+        expect(provenanceFromProperties({ source: 'osm', osm_id: 7, license: 'CC0' }))
+            .toEqual({ source: 'osm', sourceRef: '7', license: 'CC0' });
+        // Non-osm sources get no license default.
+        expect(provenanceFromProperties({ source: 'lantmateriet-marktacke' }))
+            .toEqual({ source: 'lantmateriet-marktacke' });
+        // Hand-shaped files without provenance stay clean.
+        expect(provenanceFromProperties({ type: 'water' })).toEqual({});
+    });
+
+    test('confirmImport forwards osm provenance on every create', async () => {
+        const { api, created } = fakeApi();
+        const svc = new GeojsonImportService(api);
+        svc.openFor('course-1');
+        svc.loadGeojsonText(OSM_GEOJSON, 'osm.geojson');
+        const summary = (await svc.confirmImport())!;
+        expect(summary.error).toBeNull();
+        expect(created.length).toBe(2);
+        const green = created.find(c => c.type === 'green') as Record<string, unknown>;
+        expect(green.source).toBe('osm');
+        expect(green.sourceRef).toBe('way/123456');
+        expect(green.license).toBe('ODbL');
+        const water = created.find(c => c.type === 'water') as Record<string, unknown>;
+        expect(water.sourceRef).toBe('relation/42');
+    });
+
+    test('non-osm sources import without a license; missing provenance stays undefined', async () => {
+        const { svc, created } = loadedService();
+        await svc.confirmImport();
+        // Fixture water features carry source but no license property.
+        const water = created.find(c => c.type === 'water') as Record<string, unknown>;
+        expect(water.source).toBe('lantmateriet-marktacke');
+        expect(water.license).toBeUndefined();
+        expect(water.sourceRef).toBeUndefined();
     });
 });

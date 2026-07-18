@@ -25,6 +25,7 @@ const tpl = template(`
             <a bind="courses" class="cmdbar__courses" href="/">&#8249; Courses</a>
             <span bind="name" class="cmdbar__name" data-testid="course-name"></span>
             <span bind="status" class="cmdbar__pill"></span>
+            <span bind="odbl" class="cmdbar__pill odbl" data-testid="course-odbl-pill"></span>
             <span bind="infoHost" class="cmdbar__slot"></span>
         </span>
         <span class="cmdbar__divider"></span>
@@ -147,6 +148,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 &:empty { display: none; }
                 &.published { ${statusTag(t('color-status-positive'))} }
                 &.draft { ${statusTag('var(--data-risk)')} }
+                /* T49: course contains OSM-derived (ODbL) map data. */
+                &.odbl { ${statusTag(t('color-status-info'))} text-transform: none; }
             }
 
             & .cmdbar__divider {
@@ -486,6 +489,14 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             status: {
                 textContent: () => this.svc.course.get()?.status ?? '',
                 className: () => `cmdbar__pill ${this.svc.course.get()?.status ?? ''}`,
+            },
+            // ODbL posture pill (T49) — derived live from the loaded
+            // features; :empty hides it on courses without OSM-derived data.
+            odbl: {
+                textContent: () => this.features.hasOdblFeatures.get() ? 'ODbL map data' : '',
+                title: () => this.features.hasOdblFeatures.get()
+                    ? 'Contains OpenStreetMap-derived features — map data licensed ODbL, © OpenStreetMap contributors'
+                    : '',
             },
             zone3Divider: { style: () => (isCreate ? '' : 'display:none') },
         });
@@ -862,10 +873,14 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             const course = this.svc.course.peek();
             close();
             if (!course) return;
+            // T49: ODbL is surfaced, never a publish blocker — a course with
+            // any OSM-derived feature publishes its map data under ODbL.
+            const odbl = this.features.hasOdblFeatures.peek();
             const ok = await this.confirm.confirm({
                 title: `Publish ${course.name}?`,
                 body: `Publishing bumps revision ${course.revision} to ${course.revision + 1} for device sync.`,
-                detail: 'Players already on the course keep their current local copy until they refresh.',
+                detail: 'Players already on the course keep their current local copy until they refresh.'
+                    + (odbl ? ' This course contains OpenStreetMap-derived features, so its map data is published under the ODbL license with "© OpenStreetMap contributors" attribution.' : ''),
                 confirmLabel: 'Publish course',
                 cancelLabel: 'Keep editing',
                 tone: 'primary',

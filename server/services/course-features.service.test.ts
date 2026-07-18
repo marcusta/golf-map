@@ -3,7 +3,7 @@ import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID, TEST_HOLE_1_ID, TEST_HOLE_2_ID } from '../db/seeds/course';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { ConflictError } from '@basics/core/server/auth';
-import { CourseFeaturesService, InvalidFeatureError } from './course-features.service';
+import { CourseFeaturesService, InvalidFeatureError, ODBL_ATTRIBUTION } from './course-features.service';
 import type { FeatureGeometry } from './geo';
 
 function squareGeometry(cx = 0, cy = 0, half = 5): FeatureGeometry {
@@ -561,5 +561,102 @@ describe('CourseFeaturesService.geojsonByCourse — D24 stackKey', () => {
         expect(byId.get(hole1Fairway.id)?.stackKey).toBe(1 * 4096 + hole1Fairway.sortOrder);
         // Any hole-1 feature outranks any course-level feature (D24 composition order).
         expect(byId.get(hole1Fairway.id)!.stackKey).toBeGreaterThan(byId.get(courseLevel.id)!.stackKey);
+    });
+});
+
+describe('CourseFeaturesService — feature provenance (T49)', () => {
+    test('create stores provenance and rows expose it everywhere', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const created = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_1_ID,
+            type: 'water',
+            geometry: squareGeometry(),
+            source: 'osm',
+            sourceRef: 'way/123456',
+            license: 'ODbL',
+        });
+        expect(created.source).toBe('osm');
+        expect(created.sourceRef).toBe('way/123456');
+        expect(created.license).toBe('ODbL');
+
+        const listed = (await svc.listByCourse(TEST_COURSE_ID)).find((f) => f.id === created.id)!;
+        expect(listed.source).toBe('osm');
+        expect(listed.sourceRef).toBe('way/123456');
+        expect(listed.license).toBe('ODbL');
+
+        const fetched = await svc.findById(created.id);
+        expect(fetched.sourceRef).toBe('way/123456');
+    });
+
+    test('provenance defaults to null for hand-drawn features', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const created = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_1_ID,
+            type: 'bunker',
+            geometry: squareGeometry(),
+        });
+        expect(created.source).toBeNull();
+        expect(created.sourceRef).toBeNull();
+        expect(created.license).toBeNull();
+
+        // Pre-migration rows (the shared seed's green) read back as null too.
+        const seeded = (await svc.listByCourse(TEST_COURSE_ID)).find((f) => f.type === 'green')!;
+        expect(seeded.source).toBeNull();
+        expect(seeded.license).toBeNull();
+    });
+
+    test('geojsonByCourse carries provenance properties and the ODbL attribution', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const osmWater = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: null,
+            type: 'water',
+            geometry: squareGeometry(100, 100, 20),
+            source: 'osm',
+            sourceRef: 'relation/42',
+            license: 'ODbL',
+        });
+
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        expect(fc.attribution).toBe(ODBL_ATTRIBUTION);
+        const props = fc.features.find((f) => f.id === osmWater.id)!.properties;
+        expect(props.source).toBe('osm');
+        expect(props.sourceRef).toBe('relation/42');
+        expect(props.license).toBe('ODbL');
+        // Hand-drawn features carry explicit nulls.
+        const seeded = fc.features.find((f) => f.properties.type === 'green')!;
+        expect(seeded.properties.source).toBeNull();
+        expect(seeded.properties.license).toBeNull();
+
+        // Resolved (bundle) output carries the attribution too.
+        const resolved = await svc.geojsonByCourse(TEST_COURSE_ID, { resolved: true });
+        expect(resolved.attribution).toBe(ODBL_ATTRIBUTION);
+    });
+
+    test('geojsonByCourse has no attribution member without ODbL features', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        // Non-ODbL provenance (e.g. Lantmäteriet CC BY) does not trigger it.
+        await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: null,
+            type: 'water',
+            geometry: squareGeometry(100, 100, 20),
+            source: 'lantmateriet-marktacke',
+            license: 'CC BY 4.0',
+        });
+
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        expect(fc.attribution).toBeUndefined();
+        expect('attribution' in fc).toBe(false);
     });
 });

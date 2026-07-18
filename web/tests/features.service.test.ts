@@ -64,6 +64,9 @@ function fakeApi(initial: CourseFeature[] = []) {
                 geometry: structuredClone(input.geometry),
                 geojson: null,
                 sortOrder: 0,
+                source: input.source ?? null,
+                sourceRef: input.sourceRef ?? null,
+                license: input.license ?? null,
                 version: 1,
             };
             rows.set(feature.id, feature);
@@ -104,7 +107,8 @@ function fakeApi(initial: CourseFeature[] = []) {
 function feature(id: string, type = 'bunker', version = 1, opts: { holeId?: string | null; sortOrder?: number } = {}): CourseFeature {
     return {
         id, courseId: 'c1', holeId: opts.holeId ?? null, type,
-        geometry: squareGeometry(), geojson: null, sortOrder: opts.sortOrder ?? 0, version,
+        geometry: squareGeometry(), geojson: null, sortOrder: opts.sortOrder ?? 0,
+        source: null, sourceRef: null, license: null, version,
     };
 }
 
@@ -610,5 +614,29 @@ describe('raise/lower/raiseToTop/lowerToBottom (D27 reorder ops)', () => {
 
         await Bun.sleep(0); // reload() fires async
         expect(svc.stackFor(null).map(f => f.id)).toEqual(['a', 'b']); // reverted to server truth
+    });
+});
+
+describe('hasOdblFeatures (T49)', () => {
+    test('true only while an ODbL-licensed feature is loaded', async () => {
+        const odbl: CourseFeature = { ...feature('osm1', 'water'), source: 'osm', sourceRef: 'way/1', license: 'ODbL' };
+        const { api } = fakeApi([feature('a'), odbl]);
+        const svc = new FeaturesService(api);
+        expect(svc.hasOdblFeatures.get()).toBe(false); // nothing loaded yet
+
+        await svc.load('c1');
+        expect(svc.hasOdblFeatures.get()).toBe(true);
+
+        // Removing the ODbL feature drops the course's ODbL posture live.
+        await svc.removeFeature('osm1');
+        expect(svc.hasOdblFeatures.get()).toBe(false);
+    });
+
+    test('non-ODbL licenses do not trigger it', async () => {
+        const ccby: CourseFeature = { ...feature('lm1', 'water'), source: 'lantmateriet-marktacke', license: 'CC BY 4.0' };
+        const { api } = fakeApi([ccby]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        expect(svc.hasOdblFeatures.get()).toBe(false);
     });
 });

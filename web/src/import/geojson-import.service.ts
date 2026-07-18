@@ -27,6 +27,35 @@ import {
 /** Parallel create requests during confirm (matches SvgImportService). */
 const CREATE_CONCURRENCY = 6;
 
+/**
+ * Durable provenance (T49): map a source feature's properties onto the
+ * create API's provenance fields. fetch-osm output carries
+ * `source: "osm"` + `osm_type`/`osm_id` (see pipeline/golfpipe/osm.py);
+ * OSM data is ODbL, so when the file lacks an explicit `license` property
+ * an `osm` source defaults to 'ODbL'.
+ */
+export function provenanceFromProperties(
+    props: Record<string, unknown>,
+): { source?: string; sourceRef?: string; license?: string } {
+    const source = typeof props['source'] === 'string' ? (props['source'] as string) : undefined;
+
+    let sourceRef: string | undefined;
+    const osmId = props['osm_id'];
+    if (typeof osmId === 'string' || typeof osmId === 'number') {
+        const osmType = props['osm_type'];
+        sourceRef = typeof osmType === 'string' ? `${osmType}/${osmId}` : String(osmId);
+    }
+
+    let license = typeof props['license'] === 'string' ? (props['license'] as string) : undefined;
+    if (license === undefined && source === 'osm') license = 'ODbL';
+
+    const result: { source?: string; sourceRef?: string; license?: string } = {};
+    if (source !== undefined) result.source = source;
+    if (sourceRef !== undefined) result.sourceRef = sourceRef;
+    if (license !== undefined) result.license = license;
+    return result;
+}
+
 export class GeojsonImportService {
     /** Wizard visible? (Toggled by the command bar's "Import GeoJSON".) */
     readonly open = new Signal(false);
@@ -154,11 +183,12 @@ export class GeojsonImportService {
             const type = assignments[bucket.key];
             if (!type || type === 'skip') continue;
             for (const feature of bucket.features) {
+                const provenance = provenanceFromProperties(feature.properties);
                 feature.polygons.forEach((rings, polyIdx) => {
                     const label = `${bucket.value} feature ${feature.index + 1}${feature.polygons.length > 1 ? `.${polyIdx + 1}` : ''}`;
                     const { geometry, warnings: ringWarnings } = polygonToGeometry(rings, label);
                     warnings.push(...ringWarnings);
-                    if (geometry) features.push({ type, geometry });
+                    if (geometry) features.push({ type, geometry, ...provenance });
                 });
             }
         }
@@ -191,7 +221,14 @@ export class GeojsonImportService {
                 const item = queue.shift();
                 if (!item || error) return;
                 try {
-                    await this.featuresApi.create({ courseId, type: item.type, geometry: item.geometry });
+                    await this.featuresApi.create({
+                        courseId,
+                        type: item.type,
+                        geometry: item.geometry,
+                        source: item.source,
+                        sourceRef: item.sourceRef,
+                        license: item.license,
+                    });
                     created[item.type] = (created[item.type] ?? 0) + 1;
                     done++;
                     this.progress.set({ done, total: built.features.length });

@@ -42,6 +42,9 @@ function fakeApi(initial: CourseFeature[] = []) {
                 geometry: structuredClone(input.geometry),
                 geojson: null,
                 sortOrder: 0,
+                source: input.source ?? null,
+                sourceRef: input.sourceRef ?? null,
+                license: input.license ?? null,
                 version: 1,
             };
             rows.set(feature.id, feature);
@@ -71,7 +74,7 @@ function fakeApi(initial: CourseFeature[] = []) {
 }
 
 function feature(id: string, type = 'bunker', version = 1, geometry = squareGeometry()): CourseFeature {
-    return { id, courseId: 'c1', holeId: null, type, geometry, geojson: null, sortOrder: 0, version };
+    return { id, courseId: 'c1', holeId: null, type, geometry, geojson: null, sortOrder: 0, source: null, sourceRef: null, license: null, version };
 }
 
 async function makeService(initial: CourseFeature[]) {
