@@ -347,6 +347,33 @@ export class MapService {
         }
     }
 
+    /**
+     * Add a georeferenced IMAGE overlay (e.g. the Clean tool's inpaint
+     * preview): a data-URL/URL drawn at four WGS84 corners, ordered
+     * top-left, top-right, bottom-right, bottom-left. Same lifecycle rules
+     * as addOverlayLayer (requires `ready`; gone after destroy). Remove via
+     * removeOverlayLayer(id).
+     */
+    addImageOverlay(
+        id: string,
+        url: string,
+        coordinates: [[number, number], [number, number], [number, number], [number, number]],
+        opts: { opacity?: number } = {},
+    ): void {
+        const map = this.requireMap();
+        map.addSource(id, { type: 'image', url, coordinates });
+        map.addLayer({
+            id,
+            type: 'raster',
+            source: id,
+            paint: {
+                'raster-fade-duration': 0,
+                ...(opts.opacity !== undefined ? { 'raster-opacity': opts.opacity } : {}),
+            },
+        });
+        this.overlays.set(id, [id]);
+    }
+
     /** Remove an overlay's layers and source. No-op if absent. */
     removeOverlayLayer(id: string): void {
         const map = this.map.get();

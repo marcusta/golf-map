@@ -37,7 +37,8 @@ Opus:1 — derived from the cost column above):
 | T52 | GeoJSON imports land as smooth b-splines | Fable | S | 4 |
 | T53 | One-click OSM import (wizard fetch) | Fable | M | 8 |
 | T54 | Batch ortho cleaning (LaMa inpaint) | Fable | L | 16 |
-| **Σ** | | | | **132** |
+| T55 | Interactive photo cleaning (click→inpaint→bake) | Fable | L | 16 |
+| **Σ** | | | | **148** |
 
 **Kickoff prompt (paste into a fresh session, fill in the task number):**
 
@@ -377,3 +378,39 @@ crop/stitch round-trips with fake inpaint impls, CLI wiring, lazy-import +
 weights error paths. Live smoke on Landeryd's 2025 ortho ran green (real
 crown + shadow removed; see report).
 **Done:** see docs/reports/T54-report.md.
+
+### T55 · Interactive photo cleaning in the web editor — **Fable**
+
+*(Added 2026-07-18, on top of T45's sidecar/crop machinery and T54's
+reusable inpaint runner. Numbering note: this task was briefed and built as
+T55 per its delegation brief while the terrain-edit wave concurrently used
+T55a/T55b labels — reconcile in the next wave doc.)*
+
+Scope as built. New `clean` EditorTool ("Clean photo", order 70): click a
+blemish (player, cart, shadow, stray object) → SAM mask via the existing
+`/segment`, dilated ~0.5 m — or drag an ellipse (SAM-free fallback with a
+live dashed outline). The crop is composed from ortho tiles via T45's
+sam-crop georeferencing (PNG, lossless), inpainted by the sidecar's NEW
+`POST /inpaint` (tools/sam-server extended — ONE process for the assist
+session, `/health` now per-capability incl. LaMa-weights presence; it
+imports golfpipe.inpaint straight off pipeline/ via sys.path, weights from
+$GOLFPIPE_LAMA_WEIGHTS defaulting to data/models/big-lama.pt), and shown as
+a georeferenced image-overlay PREVIEW (new `MapService.addImageOverlay`)
+with accept/discard. **Accept** posts the RGBA patch (alpha = mask) with
+the crop's EXACT EPSG:3857 frame (+ informational EPSG:3006 bbox) to
+`POST /ortho-patches/apply` (`OrthoPatchesService`): patches land as a
+REPLAYABLE LOG under `data/sources/<mapKey>/patches/` (`<n>.png` +
+`patches.json`; the pristine ortho is never modified), each apply/revert
+runs the new `golfpipe apply-ortho-patches` — full-log replay onto the
+pristine active-vintage source into `<stem>.patched.tif` (the future
+Unity-export input), then retile of ONLY the affected pyramid subtree
+(`patches.affected_tiles` + the `generate_tiles` explicit-list refactor) —
+and bumps the tile-manifest `generatedAt` (ms-ISO, strictly monotonic) in
+BOTH manifest.json and the asset metaJson so `?v=` changes and clients
+refetch (web: `tileset.reload` + camera restore). Revert v1 = drop last
+log entry, re-replay, retile the reverted bounds via `--extra-bounds`
+(panel shows patch count + "Revert last patch"). Live smoke ran end-to-end
+on real Landeryd data (real SAM + real LaMa: bunker → grass; 237 MB replay
++ 19-tile retile in 9.5 s; revert restored). Suites: pipeline +19, server
++8, web +33 — all green.
+**Done:** see docs/reports/T55-report.md.

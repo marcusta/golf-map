@@ -12,6 +12,7 @@ import { createGamePlansClient } from '../../shared/api/game-plans.gen';
 import { createRoundsClient } from '../../shared/api/rounds.gen';
 import { createAssetsClient } from '../../shared/api/assets.gen';
 import { createMapBuildClient } from '../../shared/api/map-build.gen';
+import { createOrthoPatchesClient } from '../../shared/api/ortho-patches.gen';
 import { createHydroClient } from '../../shared/api/hydro.gen';
 import { createOsmClient } from '../../shared/api/osm.gen';
 import { createTerrainEditsClient } from '../../shared/api/terrain-edits.gen';
@@ -33,6 +34,7 @@ export const api = {
     rounds: createRoundsClient('/api'),
     assets: createAssetsClient('/api'),
     mapBuild: createMapBuildClient('/api'),
+    orthoPatches: createOrthoPatchesClient('/api'),
     hydro: createHydroClient('/api'),
     osm: createOsmClient('/api'),
     terrainEdits: createTerrainEditsClient('/api'),

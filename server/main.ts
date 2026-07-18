@@ -22,6 +22,7 @@ import { createAnalysisApi } from './api/analysis.api';
 import { createGreenCalibrationApi } from './api/green-calibration.api';
 import { createPuttEstimateApi } from './api/putt-estimate.api';
 import { createMapBuildApi } from './api/map-build.api';
+import { createOrthoPatchesApi } from './api/ortho-patches.api';
 import { createHydroApi } from './api/hydro.api';
 import { createOsmApi } from './api/osm.api';
 import { createTerrainEditsApi } from './api/terrain-edits.api';
@@ -49,6 +50,7 @@ const {
     greenCalibrationService,
     puttEstimateService,
     mapBuildService,
+    orthoPatchesService,
     hydroService,
     osmService,
     terrainEditsService,
@@ -80,6 +82,7 @@ mount(app, '/api', createAnalysisApi(analysisService, courseFeaturesService));
 mount(app, '/api', createGreenCalibrationApi(greenCalibrationService));
 mount(app, '/api', createPuttEstimateApi(puttEstimateService));
 mount(app, '/api', createMapBuildApi(mapBuildService));
+mount(app, '/api', createOrthoPatchesApi(orthoPatchesService));
 mount(app, '/api', createHydroApi(hydroService));
 mount(app, '/api', createOsmApi(osmService));
 mount(app, '/api', createTerrainEditsApi(terrainEditsService));

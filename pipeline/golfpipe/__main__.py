@@ -12,6 +12,7 @@ Commands:
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor -> .clean.tif
+  apply-ortho-patches  Replay logged inpaint patches onto the pristine ortho + retile the affected subtree
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   manifest          Write manifest.json for a tiled course
@@ -36,6 +37,7 @@ from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro
 from golfpipe import osm
+from golfpipe import patches
 from golfpipe import water
 from golfpipe.aoi import AoiError, resolve_bbox
 from golfpipe.bbox_course import bbox_from_course
@@ -205,6 +207,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", help="torch device (default: cuda if available, else cpu; pass mps to try Apple GPU)")
     p.add_argument("--out", help="output GeoTIFF path (default: <ortho stem>.clean.tif alongside the source)")
     p.add_argument("--mask-out", dest="mask_out", help="optional: also write the rasterized mask as a GeoTIFF for eyeballing")
+
+    p = sub.add_parser(
+        "apply-ortho-patches",
+        help="Replay logged inpaint patches onto the pristine ortho and retile the affected pyramid subtree",
+    )
+    p.add_argument("--ortho", required=True, help="PRISTINE source ortho GeoTIFF (EPSG:3006) — never modified")
+    p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json + <n>.png (see golfpipe/patches.py)")
+    p.add_argument("--out", help="output patched GeoTIFF (default: <ortho stem>.patched.tif alongside the source; must differ from --ortho)")
+    p.add_argument("--tiles-out", dest="tiles_out", help="installed ortho tile tree to rewrite affected tiles in (omit to skip retiling)")
+    p.add_argument("--minzoom", type=int, default=commands.DEFAULT_ORTHO_MINZOOM)
+    p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_ORTHO_MAXZOOM)
+    p.add_argument(
+        "--extra-bounds", dest="extra_bounds", action="append", default=[],
+        help="extra west,south,east,north EPSG:3857 bounds to retile (repeatable) — pass a reverted patch's bounds so its tiles rewrite too",
+    )
+    p.add_argument("--webp-quality", type=int, default=80)
 
     p = sub.add_parser("tile-ortho", help="Tile an orthophoto GeoTIFF into an XYZ WebP pyramid")
     p.add_argument("--input", required=True, help="input orthophoto GeoTIFF (any CRS)")
@@ -397,6 +415,22 @@ def main(argv: list[str] | None = None) -> int:
                 mask_out=Path(args.mask_out) if args.mask_out else None,
             )
 
+        elif args.command == "apply-ortho-patches":
+            extra_bounds = []
+            for raw in args.extra_bounds:
+                parts = tuple(float(v) for v in raw.split(","))
+                if len(parts) != 4:
+                    parser.error("--extra-bounds must be west,south,east,north in EPSG:3857 metres")
+                extra_bounds.append(parts)
+            commands.cmd_apply_ortho_patches(
+                Path(args.ortho), Path(args.patches_dir),
+                out=Path(args.out) if args.out else None,
+                tiles_out=Path(args.tiles_out) if args.tiles_out else None,
+                minzoom=args.minzoom, maxzoom=args.maxzoom,
+                extra_bounds_3857=extra_bounds,
+                webp_quality=args.webp_quality,
+            )
+
         elif args.command == "tile-ortho":
             commands.cmd_tile_ortho(
                 Path(args.input), Path(args.out),
@@ -465,6 +499,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except clean_ortho.CleanOrthoError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except patches.PatchError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except dem_edit.DemEditError as exc:

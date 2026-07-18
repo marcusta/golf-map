@@ -18,6 +18,7 @@ import { AnalysisService } from './analysis.service';
 import { GreenCalibrationService } from './green-calibration.service';
 import { PuttEstimateService } from './putt-estimate.service';
 import { MapBuildService } from './map-build.service';
+import { OrthoPatchesService } from './ortho-patches.service';
 import { HydroService } from './hydro.service';
 import { OsmService } from './osm.service';
 import { TerrainEditsService } from './terrain-edits.service';
@@ -48,6 +49,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const greenCalibrationService = new GreenCalibrationService(db, analysisService);
     const puttEstimateService = new PuttEstimateService(db);
     const mapBuildService = new MapBuildService({ db, assets: assetsService, dataDir });
+    const orthoPatchesService = new OrthoPatchesService({ db, assets: assetsService, dataDir });
     const hydroService = new HydroService({ courses: coursesService, assets: assetsService });
     const osmService = new OsmService({ courses: coursesService, assets: assetsService });
     const terrainEditsService = new TerrainEditsService(db);
@@ -72,6 +74,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         greenCalibrationService,
         puttEstimateService,
         mapBuildService,
+        orthoPatchesService,
         hydroService,
         osmService,
         terrainEditsService,

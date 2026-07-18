@@ -1,4 +1,8 @@
-# SAM 3 segmentation sidecar for the editor's click-to-feature assist (T45).
+# Editor-assist sidecar: SAM 3 segmentation (T45 click-to-feature) + LaMa
+# inpainting (T55 interactive photo cleaning). ONE process serves the whole
+# assist session — /segment and /inpaint share the torch runtime the venv
+# already carries (ultralytics pulls torch in), and /health reports
+# per-capability readiness so the web editor can gate each tool separately.
 #
 # Vendored from the SAM-test prototype (~/dev/SAM-test/server.py), trimmed to
 # what the editor uses: POINT mode only (segment the object at the crop
@@ -6,14 +10,23 @@
 # and the static demo mount were dropped. Weights are NOT committed — point
 # SAM_WEIGHTS at a sam3.pt checkpoint (see README.md).
 #
+# Inpainting imports golfpipe.inpaint (pipeline/) directly — the pipeline dir
+# is put on sys.path below, and golfpipe/inpaint.py deliberately imports only
+# numpy/stdlib at module level, so this venv does not need the pipeline's
+# rasterio/laspy stack. LaMa weights resolve from $GOLFPIPE_LAMA_WEIGHTS,
+# defaulting to <repo>/data/models/big-lama.pt (see README.md).
+#
 # This is a developer-workstation tool, not part of the map pipeline
 # (pipeline/) or the API server (server/). The web editor health-gates on it:
-# when this process isn't running, the SAM tool panel shows a disabled state.
+# when this process isn't running, the SAM/Clean tool panels show a disabled
+# state.
 
 import base64
 import io
 import os
+import sys
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -21,6 +34,19 @@ from PIL import Image
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# tools/sam-server/ -> repo root; golfpipe lives under pipeline/.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+_PIPELINE_DIR = str(REPO_ROOT / "pipeline")
+if _PIPELINE_DIR not in sys.path:
+    sys.path.insert(0, _PIPELINE_DIR)
+
+from golfpipe.inpaint import (  # noqa: E402  (needs the sys.path insert above)
+    InpaintError,
+    LamaInpainter,
+    WEIGHTS_ENV_VAR,
+    inpaint_tiled,
+)
 
 app = FastAPI(title="Golf Course Segmentation Sidecar")
 
@@ -40,8 +66,22 @@ MAX_INFERENCE_SIZE = 512
 # Path to the SAM 3 checkpoint (3.5 GB, never committed).
 WEIGHTS_PATH = os.environ.get("SAM_WEIGHTS", "sam3.pt")
 
-# Global model instance (lazy loaded).
+# LaMa TorchScript weights for /inpaint (206 MB, never committed):
+# $GOLFPIPE_LAMA_WEIGHTS wins, else the conventional repo location.
+LAMA_WEIGHTS_PATH = os.environ.get(WEIGHTS_ENV_VAR) or str(REPO_ROOT / "data" / "models" / "big-lama.pt")
+
+# Global model instances (lazy loaded).
 _point_model = None
+_lama = None
+
+
+def get_lama() -> LamaInpainter:
+    """Lazy LamaInpainter. Raises InpaintError when weights are missing or
+    torch is not installed — /health reports the same conditions up front."""
+    global _lama
+    if _lama is None:
+        _lama = LamaInpainter(weights=LAMA_WEIGHTS_PATH)
+    return _lama
 
 
 def get_point_model():
@@ -187,13 +227,81 @@ async def segment_image(request: SegmentRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class InpaintRequest(BaseModel):
+    image: str  # Base64 RGB image (the ortho crop; PNG preferred — lossless)
+    mask: str  # Base64 grayscale/RGB mask image, same size; >127 = inpaint
+
+
+class InpaintResponse(BaseModel):
+    image: str  # Base64 PNG, same size as the input; unmasked pixels byte-identical
+    masked_pixels: int
+    elapsed_ms: int
+
+
+@app.post("/inpaint", response_model=InpaintResponse)
+async def inpaint_image(request: InpaintRequest):
+    """LaMa-inpaint the masked pixels of an image crop (T55 photo cleaning).
+
+    Runs golfpipe's inpaint_tiled + LamaInpainter — the exact same runner as
+    the batch clean-ortho command — so pixels OUTSIDE the mask come back
+    byte-identical (the web preview can overlay the whole result).
+    """
+    try:
+        lama = get_lama()
+    except InpaintError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    try:
+        image = decode_image(request.image)
+        mask_img = decode_image(request.mask)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"could not decode image/mask: {e}")
+    mask = mask_img[:, :, 0] > 127
+    if mask.shape != image.shape[:2]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"mask size {mask.shape[::-1]} does not match image {image.shape[1::-1]}",
+        )
+
+    t0 = time.time()
+    try:
+        result = inpaint_tiled(image, mask, lama)
+    except InpaintError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    elapsed_ms = int((time.time() - t0) * 1000)
+    print(f"[inpaint] {int(mask.sum())} px in {elapsed_ms} ms")
+
+    buf = io.BytesIO()
+    Image.fromarray(result).save(buf, format="PNG")
+    return InpaintResponse(
+        image=base64.b64encode(buf.getvalue()).decode("ascii"),
+        masked_pixels=int(mask.sum()),
+        elapsed_ms=elapsed_ms,
+    )
+
+
+def _inpaint_readiness() -> dict:
+    """Weights/torch presence WITHOUT loading the model (cheap health)."""
+    if not Path(LAMA_WEIGHTS_PATH).is_file():
+        return {"available": False, "weights": "missing", "detail": f"no LaMa weights at {LAMA_WEIGHTS_PATH}"}
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("torch") is None:
+            return {"available": False, "weights": "present", "detail": "torch is not installed in this venv"}
+    except Exception:
+        return {"available": False, "weights": "present", "detail": "torch is not importable"}
+    return {"available": True, "weights": "present"}
+
+
 @app.get("/health")
 async def health_check():
-    """Check if the server and model are ready."""
+    """Per-capability readiness: SAM point model (T45) + LaMa inpaint (T55)."""
     point_model = get_point_model()
     return {
         "status": "healthy",
         "point_model": "loaded" if point_model != "mock" else "mock",
+        "inpaint": _inpaint_readiness(),
     }
 
 

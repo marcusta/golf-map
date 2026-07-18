@@ -68,8 +68,24 @@ def generate_tile_pyramid(
     encode_tile should return None to signal "skip this tile" (e.g.
     fully-nodata ortho tiles). Returns the number of tiles written.
     """
+    return generate_tiles(
+        vrt, tiles_for_bbox(bbox_wgs84, minzoom, maxzoom), out_dir, encode_tile, file_ext,
+    )
+
+
+def generate_tiles(
+    vrt,
+    tiles,
+    out_dir: Path,
+    encode_tile: Callable[[np.ndarray], bytes | None],
+    file_ext: str,
+) -> int:
+    """Tiles an explicit iterable of mercantile.Tile addresses (the shared
+    body of generate_tile_pyramid). apply-ortho-patches uses this directly to
+    rewrite only the pyramid subtree its patches touch.
+    """
     written = 0
-    for tile in tiles_for_bbox(bbox_wgs84, minzoom, maxzoom):
+    for tile in tiles:
         bounds_3857 = mercantile.xy_bounds(tile)
         data = read_window_bounds(
             vrt,

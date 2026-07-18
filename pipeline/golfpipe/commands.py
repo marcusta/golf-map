@@ -10,6 +10,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+import mercantile
 import numpy as np
 import rasterio
 import requests
@@ -25,13 +26,14 @@ from golfpipe import detect_water as detect_water_mod
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro as hydro_mod
 from golfpipe import osm as osm_mod
+from golfpipe import patches as patches_mod
 from golfpipe import stac
 from golfpipe import water as water_mod
 from golfpipe.hillshade import write_hillshade_geotiff
 from golfpipe.manifest import build_manifest, write_manifest
 from golfpipe.raster import edge_pad_dem, mosaic_and_crop, open_warped_to_mercator
 from golfpipe.terrain_rgb import encode_terrain_rgb
-from golfpipe.tiling import generate_tile_pyramid, pyramid_bounds_3857, raster_bounds_wgs84
+from golfpipe.tiling import generate_tile_pyramid, generate_tiles, pyramid_bounds_3857, raster_bounds_wgs84
 
 DEFAULT_ORTHO_MINZOOM = 14
 DEFAULT_ORTHO_MAXZOOM = 20
@@ -679,6 +681,34 @@ def cmd_clean_ortho(
     return out
 
 
+def _ortho_webp_encoder(nodata, webp_quality: int):
+    """Tile encoder shared by cmd_tile_ortho and cmd_apply_ortho_patches:
+    RGB (grayscale replicated) -> WebP bytes; fully-nodata tiles -> None."""
+
+    def encode(data: np.ndarray):
+        bands = data.shape[0]
+        if bands < 3:
+            # Grayscale source: replicate to RGB.
+            rgb = np.repeat(data[0:1], 3, axis=0)
+        else:
+            rgb = data[:3]
+
+        if nodata is not None and np.all(rgb == nodata):
+            return None
+        if nodata is None and np.all(rgb == 0):
+            return None
+
+        img_array = np.moveaxis(rgb, 0, -1).astype(np.uint8)
+        img = Image.fromarray(img_array)
+        from io import BytesIO
+
+        buf = BytesIO()
+        img.save(buf, format="WEBP", quality=webp_quality)
+        return buf.getvalue()
+
+    return encode
+
+
 def cmd_tile_ortho(input_path: Path, out_dir: Path, minzoom: int = DEFAULT_ORTHO_MINZOOM, maxzoom: int = DEFAULT_ORTHO_MAXZOOM, webp_quality: int = 80) -> int:
     """Reprojects input_path to EPSG:3857 (WarpedVRT), cuts 256px XYZ tiles,
     saves WebP at {out_dir}/{z}/{x}/{y}.webp. Skips fully-nodata tiles.
@@ -687,35 +717,66 @@ def cmd_tile_ortho(input_path: Path, out_dir: Path, minzoom: int = DEFAULT_ORTHO
     pyramid_bounds = pyramid_bounds_3857(bbox_wgs84, minzoom, maxzoom)
     vrt = open_warped_to_mercator(input_path, Resampling.bilinear, extra_bounds_3857=pyramid_bounds)
     try:
-        nodata = vrt.nodata
-
-        def encode(data: np.ndarray):
-            bands = data.shape[0]
-            if bands < 3:
-                # Grayscale source: replicate to RGB.
-                rgb = np.repeat(data[0:1], 3, axis=0)
-            else:
-                rgb = data[:3]
-
-            if nodata is not None and np.all(rgb == nodata):
-                return None
-            if nodata is None and np.all(rgb == 0):
-                return None
-
-            img_array = np.moveaxis(rgb, 0, -1).astype(np.uint8)
-            img = Image.fromarray(img_array)
-            from io import BytesIO
-
-            buf = BytesIO()
-            img.save(buf, format="WEBP", quality=webp_quality)
-            return buf.getvalue()
-
+        encode = _ortho_webp_encoder(vrt.nodata, webp_quality)
         count = generate_tile_pyramid(vrt, bbox_wgs84, minzoom, maxzoom, out_dir, encode, "webp")
     finally:
         vrt.close()
 
     print(f"Wrote {count} ortho tiles to {out_dir}")
     return count
+
+
+def default_patched_out_path(ortho_path: Path) -> Path:
+    """ortho-orto-l2-2025.tif -> ortho-orto-l2-2025.patched.tif, alongside
+    the source (the pristine source is never overwritten)."""
+    return ortho_path.with_name(ortho_path.stem + ".patched" + ortho_path.suffix)
+
+
+def cmd_apply_ortho_patches(
+    ortho_path: Path,
+    patches_dir: Path,
+    out: Path | None = None,
+    tiles_out: Path | None = None,
+    minzoom: int = DEFAULT_ORTHO_MINZOOM,
+    maxzoom: int = DEFAULT_ORTHO_MAXZOOM,
+    extra_bounds_3857: list[tuple[float, float, float, float]] | None = None,
+    webp_quality: int = 80,
+) -> Path:
+    """Replays ALL logged ortho patches (patches_dir/patches.json — see
+    golfpipe.patches) onto the PRISTINE source ortho into a working
+    `.patched.tif`, then rewrites only the tile-pyramid subtree the patch
+    bounds touch (skipped without --tiles-out).
+
+    The retiled subtree covers every logged patch (idempotent — re-running
+    always converges the tile tree onto the current log) plus any
+    `extra_bounds_3857`, which the server passes for a just-REVERTED patch:
+    its bounds leave the log, but its tiles must still be rewritten from the
+    reverted raster.
+    """
+    entries = patches_mod.load_patch_log(patches_dir)
+    out = out or default_patched_out_path(ortho_path)
+    patches_mod.apply_patches_to_ortho(ortho_path, patches_dir, entries, out)
+    print(f"Replayed {len(entries)} patch(es) from {patches_dir} -> {out}")
+
+    bounds_list = [e.bounds3857 for e in entries] + list(extra_bounds_3857 or [])
+    if tiles_out is None or not bounds_list:
+        print("(no retile: " + ("no --tiles-out given" if tiles_out is None else "no affected bounds") + ")")
+        return out
+
+    tiles = patches_mod.affected_tiles(bounds_list, minzoom, maxzoom)
+    xy = [mercantile.xy_bounds(t) for t in tiles]
+    subtree_bounds = (
+        min(b.left for b in xy), min(b.bottom for b in xy),
+        max(b.right for b in xy), max(b.top for b in xy),
+    )
+    vrt = open_warped_to_mercator(out, Resampling.bilinear, extra_bounds_3857=subtree_bounds)
+    try:
+        encode = _ortho_webp_encoder(vrt.nodata, webp_quality)
+        written = generate_tiles(vrt, tiles, tiles_out, encode, "webp")
+    finally:
+        vrt.close()
+    print(f"Retiled {written}/{len(tiles)} affected tiles (z{minzoom}-z{maxzoom}) into {tiles_out}")
+    return out
 
 
 def cmd_tile_hillshade(

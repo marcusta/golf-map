@@ -18,6 +18,7 @@ import { measureTool } from '../../measure/measure-tool';
 import { analysisTool } from '../../analysis/analysis-tool';
 import { samTool } from '../../sam/sam-tool';
 import { terrainEditTool } from '../../terrain-edit/terrain-edit-tool';
+import { cleanTool } from '../../clean/clean-tool';
 
 export const EDITOR_TOOLS: EditorTool[] = [
     drawTool, // course-feature drawing (batch C1)
@@ -26,4 +27,5 @@ export const EDITOR_TOOLS: EditorTool[] = [
     analysisTool, // green + surrounds height/slope analysis (batch C4)
     samTool, // SAM click-to-feature assist (T45)
     terrainEditTool, // DEM smooth/flatten edit polygons (T55b)
+    cleanTool, // interactive ortho photo cleaning (T55)
 ];
