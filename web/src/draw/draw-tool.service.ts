@@ -144,6 +144,47 @@ interface GhostFeature {
     geometry: FeatureGeometry;
 }
 
+/** A source feature captured for cloning (Alt-duplicate-drag / repeat stamp). */
+interface StampSource {
+    /** Original feature id — the ghost borrows its stackKey for z-order. */
+    id: string;
+    type: string;
+    holeId: string | null;
+    geometry: FeatureGeometry;
+}
+
+/**
+ * Alt-duplicate-drag or repeat-stamp gesture (T42). Both create clones on
+ * drop; they differ only in the reference point the translation is measured
+ * from and in what a sub-threshold press means:
+ * - `duplicate`: Alt+press inside the selection. `refEpsg` is the grab point;
+ *   a sub-threshold drag decays to the Alt-cycle click (no clone).
+ * - `stamp`: press on empty ground while stamp mode is armed. `refEpsg` is the
+ *   template anchor (the previous drop point) so the copy sits under the
+ *   cursor immediately; every drop — even a click — stamps a copy.
+ */
+interface StampDrag {
+    kind: 'duplicate' | 'stamp';
+    refEpsg: Point;
+    startScreen: { x: number; y: number };
+    sources: StampSource[];
+    moved: boolean;
+    /** Cumulative EPSG:3006 translation from `refEpsg` (drives the ghost). */
+    dx: number;
+    dy: number;
+}
+
+/**
+ * Armed repeat-stamp template (set after an Alt-duplicate-drag drop). Each
+ * subsequent empty-ground drag stamps another copy of `templates`, grabbed at
+ * the same relative point (`anchor`, the previous drop point). Cleared on Esc,
+ * tool deactivate, or arming a draw.
+ */
+interface StampTemplate {
+    anchor: Point;
+    templates: StampSource[];
+}
+
 /**
  * History entry for committing a whole-selection move: each feature's
  * pre-drag snapshot vs its snapshot translated by the drag total (dx, dy)
@@ -189,6 +230,10 @@ interface Marquee {
  *   features additionally: alt-drag pulls out symmetric handles, alt-click
  *   straightens, handle dots bend segments. Delete/Backspace deletes the
  *   selected feature(s) (confirm). Cmd/Ctrl+D duplicates (+10 m offset).
+ *   Alt+drag INSIDE the selection clones it in one gesture (a stationary
+ *   Alt-click still cycles the hit stack); the drop arms repeat-stamp mode,
+ *   where each empty-ground drag stamps another copy (one undo per stamp)
+ *   until Esc, deactivate, or arming a draw.
  *   Cmd/Ctrl+Z / Shift+Z / Y = undo / redo (snapshot history, autosaved).
  * - draw (N or panel button): click to place B-SPLINE control points
  *   (Shift+click = sharp corner), Enter / click-on-first to close,
@@ -283,6 +328,10 @@ export class DrawToolService {
     private features: FeaturesService | null = null;
     private drag: DragTarget | null = null;
     private moveDrag: MoveDrag | null = null;
+    /** Active Alt-duplicate-drag / repeat-stamp gesture (T42). */
+    private stampDrag: StampDrag | null = null;
+    /** Armed repeat-stamp template, or null when stamp mode is inactive. */
+    private stampMode: StampTemplate | null = null;
     private suppressClick = false;
     private previewAdded = false;
 
@@ -383,6 +432,18 @@ export class DrawToolService {
             untrack(() => this.bindRawHandlers(map, ctx));
         }));
 
+        // Arming a draw exits repeat-stamp mode (T42): a fresh draw supersedes
+        // repeat placement. `stampMode` is a plain field, so clearing it is not
+        // a signal write — no reactive cascade.
+        ctx.track(effect(() => {
+            const drawing = this.state.isDrawing.get();
+            if (!drawing) return;
+            untrack(() => {
+                this.cancelStampDrag();
+                this.stampMode = null;
+            });
+        }));
+
         // Selection changes invalidate all selection-scoped transient
         // state (vertex selection, hover target, armed previews).
         let lastSelection = ctx.features.selectedIds.peek();
@@ -442,6 +503,8 @@ export class DrawToolService {
     deactivate(): void {
         this.endDrag();
         this.cancelMoveDrag();
+        this.cancelStampDrag();
+        this.stampMode = null;
         this.marquee.set(null);
         this.state.disarm();
         this.state.boxSelect.set(false);
@@ -455,11 +518,19 @@ export class DrawToolService {
     }
 
     /**
-     * ESC chain: cancel drawing → cancel marquee/armed preview → clear
-     * vertex selection → drop feature selection → (unconsumed) deactivate.
+     * ESC chain: cancel drawing → exit repeat-stamp mode → cancel
+     * marquee/armed preview → clear vertex selection → drop feature
+     * selection → (unconsumed) deactivate.
      */
     onEscape(): boolean {
         if (this.state.handleEscape()) return true;
+        // Exit repeat-stamp mode (T42) before the marquee: cancel any live
+        // stamp/duplicate ghost and disarm further stamping.
+        if (this.stampDrag || this.stampMode) {
+            this.cancelStampDrag();
+            this.stampMode = null;
+            return true;
+        }
         if (this.marquee.peek()) {
             this.marquee.set(null);
             this.ctx?.map.map.peek()?.dragPan.enable();
@@ -564,6 +635,24 @@ export class DrawToolService {
         const marquee = this.marquee.peek();
         if (marquee) {
             this.marquee.set({ ...marquee, current: lngLatToSweref99tm(e.lngLat) });
+            return;
+        }
+
+        const stamp = this.stampDrag;
+        if (stamp && this.features) {
+            // A duplicate-drag is threshold-gated (sub-threshold decays to the
+            // Alt-cycle click); a stamp shows its copy under the cursor at once.
+            if (stamp.kind === 'duplicate' && !stamp.moved
+                && this.pxDist(stamp.startScreen, e.point) < MOVE_THRESHOLD_PX) return;
+            stamp.moved = true;
+            const p = lngLatToSweref99tm(e.lngLat);
+            stamp.dx = p.x - stamp.refEpsg.x;
+            stamp.dy = p.y - stamp.refEpsg.y;
+            this.dragGhost.set(stamp.sources.map(s => ({
+                id: s.id,
+                type: s.type,
+                geometry: translateGeometry(s.geometry, stamp.dx, stamp.dy),
+            })));
             return;
         }
 
@@ -712,6 +801,30 @@ export class DrawToolService {
 
         const p = lngLatToSweref99tm(e.lngLat);
 
+        // 1b. Alt+press inside the selection (not on a vertex/handle — those
+        //     were consumed above): start a duplicate-drag over CLONES (T42).
+        //     A sub-threshold drag decays to the Alt-cycle click in onMouseUp,
+        //     so a stationary Alt-click still cycles the hit stack as before.
+        if (e.originalEvent.altKey && !shift) {
+            const selectedFeatures = features.selectedFeatures.peek();
+            if (selectedFeatures.some(f => pointInGeometry(p, f.geometry))) {
+                e.preventDefault();
+                map.dragPan.disable();
+                this.stampDrag = {
+                    kind: 'duplicate',
+                    refEpsg: p,
+                    startScreen: { x: e.point.x, y: e.point.y },
+                    sources: selectedFeatures.map(f => ({
+                        id: f.id, type: f.type, holeId: f.holeId, geometry: f.geometry,
+                    })),
+                    moved: false,
+                    dx: 0,
+                    dy: 0,
+                };
+                return;
+            }
+        }
+
         // 2. Shift+drag with exactly one selected feature: vertex marquee
         //    (axis-aligned, only that feature's control/anchor points).
         if (shift) {
@@ -745,17 +858,77 @@ export class DrawToolService {
             return;
         }
 
-        // 4. Drag on empty ground (no visible feature): feature marquee.
+        // 4. Drag on empty ground (no visible feature): stamp a repeat copy
+        //    (T42) when stamp mode is armed, else a feature marquee.
         //    (A drag starting inside an UNSELECTED feature stays with the
         //    map's default pan; plain clicks still select it.)
         if (!this.hitFeature(p)) {
             e.preventDefault();
             map.dragPan.disable();
-            this.marquee.set({ kind: 'features', start: p, current: p, startScreen: { x: e.point.x, y: e.point.y } });
+            if (this.stampMode) {
+                this.startStampDrag(p, { x: e.point.x, y: e.point.y });
+            } else {
+                this.marquee.set({ kind: 'features', start: p, current: p, startScreen: { x: e.point.x, y: e.point.y } });
+            }
         }
     }
 
+    /**
+     * Begin a repeat-stamp drag from the armed template. The copy is anchored
+     * under the cursor immediately (grab point = the template `anchor`, the
+     * previous drop point) and tracks pointer moves; the drop always creates.
+     */
+    private startStampDrag(p: Point, startScreen: { x: number; y: number }): void {
+        const mode = this.stampMode;
+        if (!mode) return;
+        const dx = p.x - mode.anchor.x;
+        const dy = p.y - mode.anchor.y;
+        this.stampDrag = {
+            kind: 'stamp',
+            refEpsg: mode.anchor,
+            startScreen,
+            sources: mode.templates,
+            moved: false,
+            dx,
+            dy,
+        };
+        this.dragGhost.set(mode.templates.map(s => ({
+            id: s.id,
+            type: s.type,
+            geometry: translateGeometry(s.geometry, dx, dy),
+        })));
+    }
+
     private onMouseUp(e: MapMouseEvent, map: MaplibreMap): void {
+        const stamp = this.stampDrag;
+        if (stamp) {
+            this.stampDrag = null;
+            map.dragPan.enable();
+            this.dragGhost.set(null);
+            // Sub-threshold duplicate-drag: decay to the Alt-cycle click. Do
+            // NOT suppress the synthesized click — onClick's Alt path cycles
+            // the hit stack exactly as a stationary Alt-click always has.
+            if (stamp.kind === 'duplicate' && !stamp.moved) return;
+            this.suppressNextClick();
+            const p = lngLatToSweref99tm(e.lngLat);
+            const dx = p.x - stamp.refEpsg.x;
+            const dy = p.y - stamp.refEpsg.y;
+            void (async () => {
+                const created = await this.stampClones(stamp.sources, dx, dy);
+                // A duplicate-drag drop arms repeat-stamp mode: the fresh clones
+                // become the template, grabbed at this drop point.
+                if (created && stamp.kind === 'duplicate') {
+                    this.stampMode = {
+                        anchor: p,
+                        templates: created.map(c => ({
+                            id: c.id, type: c.type, holeId: c.holeId, geometry: c.geometry,
+                        })),
+                    };
+                }
+            })();
+            return;
+        }
+
         const marquee = this.marquee.peek();
         if (marquee) {
             this.marquee.set(null);
@@ -1334,6 +1507,41 @@ export class DrawToolService {
             this.features?.setDragging(move.features.map(f => f.id), false);
         }
         this.ctx?.map.map.peek()?.dragPan.enable();
+    }
+
+    /** Abort an in-progress duplicate-drag / stamp-drag without committing. */
+    private cancelStampDrag(): void {
+        if (!this.stampDrag) return;
+        this.stampDrag = null;
+        this.dragGhost.set(null);
+        this.ctx?.map.map.peek()?.dragPan.enable();
+    }
+
+    /**
+     * Commit a set of clones translated by (dx, dy) as ONE history entry and
+     * select them — the shared drop-commit for the Alt-duplicate-drag and each
+     * repeat stamp (T42). Mirrors `duplicateSelection`'s create-diff shape
+     * (`before: null`, `beforeVersion: null`). Returns the created features, or
+     * null if a save failed (history is dropped via the saveError watcher).
+     */
+    async stampClones(sources: StampSource[], dx: number, dy: number): Promise<CourseFeature[] | null> {
+        const features = this.features;
+        if (!features || sources.length === 0) return null;
+        const entry: HistoryEntry = [];
+        const created: CourseFeature[] = [];
+        for (const s of sources) {
+            const c = await features.create({
+                type: s.type,
+                holeId: s.holeId,
+                geometry: translateGeometry(s.geometry, dx, dy),
+            });
+            if (!c) return null; // save failed
+            entry.push({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null });
+            created.push(c);
+        }
+        features.setSelection(created.map(c => c.id));
+        this.history.push(entry);
+        return created;
     }
 
     // ── Hit testing ───────────────────────────────────────────────────────
