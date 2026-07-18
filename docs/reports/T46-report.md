@@ -85,6 +85,43 @@ unmodified against the extended `grid_lidar_points`.
   constraint); a live run is `fetch-lidar` → `detect-trees --lidar … 
   --bbox-3006 …` on the same box grid-dem uses.
 
+## Real-data fix (addendum, same day)
+
+The first real-data smoke (Landeryd half-tile, `m21c011-646_54.copc.laz`,
+bbox-3006 `541140,6467550,543440,6469850`) exposed a bug the synthetic tests
+missed: 1,697,094 raw canopy cells collapsed to 38,665 (15 polygons, ~9.7k m²)
+— a ~98% kill on real forest. Root cause: Laserdata Skog is ~1–2 pts/m², so at
+the 0.5 m default resolution ~30–40% of forest cells hold no surface return;
+the thresholded mask is salt-and-pepper and running binary **opening first**
+annihilates it (a 3×3 erosion needs a full 9-cell true neighborhood:
+0.65⁹ ≈ 2% survival — matching the observed 2.3%). Fixed in a follow-up
+commit:
+
+- `canopy_mask` now runs **closing first** (bridge sampling holes, dissolve
+  crowns), **then opening** (noise kill); doc comments updated.
+- detect-trees' default `--resolution` is now **1.0 m**
+  (`detect_trees.DEFAULT_RESOLUTION`; ≈1–2 pts per 1 m² cell) — grid-dem's
+  own 0.5 m default is untouched.
+- New regression tests: a sparse mask at 65% fill must survive morphology
+  ≥85% consolidated (old order left 90/900 cells), and an end-to-end LAS
+  fixture sampled at ~1.4 pts/m² (35% empty cells, deterministic seed) must
+  yield ONE crown polygon of ≈484 m² — both fail on the opening-first order.
+
+Re-run on the same real half-tile after the fix: **1,040,369 raw canopy
+cells → 1,392,375 after morphology (~1.39 km², 26% of the 5.29 km² bbox);
+2,651 polygons, 1,545 kept ≥ 25 m²** (961 at 25–100 m² — individual
+crowns/clusters along fairways, 116 ≥ 1,000 m² forest blocks, largest
+0.34 km²; 2,937 interior clearings preserved as holes). Note: total canopy
+came out an order above the smoke's ~10⁵ m² guess — 26% cover is plausible
+for this forest-ringed tile, and the raw (pre-morphology) count already sits
+at 1.04×10⁶ m², so the mass is real returns ≥ 2 m, not morphology invention
+(closing adds ~34% over raw, opening pulls edge dilation back).
+
+Suite after fix: **105 passed** offline (the concurrently-built T47
+detect-water + shared `detect_common.py` refactor landed in the working tree
+meanwhile; its tests are included in that count and stay green — the fix was
+applied on top of the refactored `canopy_mask` without breaking it).
+
 ## Working-tree caveat (for the reviewer)
 
 Other active sessions have uncommitted changes in this tree (round-stimp work
@@ -92,3 +129,13 @@ in `server/`, `ios/`, `shared/`, `web/tests/round-sg.test.ts`,
 `docs/reports/T35-report.md`, untracked migration `010_round_stimp.ts`) and a
 T40 agent is working in `web/src/`. Those were left untouched; only T46's
 files were staged explicitly by path.
+
+The fix's code hunks landed via T47's commit `88281c77`, not a standalone
+T46 commit: the concurrent detect-water session refactored the same three
+files (`detect_common.py` extraction) and committed while this fix was
+in flight in the shared working tree; its commit message explicitly notes
+it "carries the entangled concurrent T46 follow-up in the same files
+(closing-before-opening canopy mask, DEFAULT_RESOLUTION 1.0,
+sparse-sampling regression test)". The `T46: fix` commit therefore
+contains this report addendum only; blame for the canopy-mask fix points
+at `88281c77`.
