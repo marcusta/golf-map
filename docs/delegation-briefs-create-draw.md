@@ -36,7 +36,8 @@ Opus:1 — derived from the cost column above):
 | T51 | Keep lidar .laz; manual delete | Opus | M | 2 |
 | T52 | GeoJSON imports land as smooth b-splines | Fable | S | 4 |
 | T53 | One-click OSM import (wizard fetch) | Fable | M | 8 |
-| **Σ** | | | | **116** |
+| T54 | Batch ortho cleaning (LaMa inpaint) | Fable | L | 16 |
+| **Σ** | | | | **132** |
 
 **Kickoff prompt (paste into a fresh session, fill in the task number):**
 
@@ -343,3 +344,36 @@ inline ODbL note shows while the OSM fetch is the loaded source: "OSM data
 is ODbL — imported features mark this course's map data ODbL until
 removed."
 **Done:** see docs/reports/T53-report.md.
+
+### T54 · Batch ortho cleaning for game-engine textures (LaMa inpaint) — **Fable**
+
+*(Added 2026-07-18. Marcus exports course orthos as Unity/GSPro textures and
+today stamps trees/shadows/players out in Photoshop. We hold data Photoshop
+doesn't: lidar canopy polygons (detect-trees), typed course-feature polygons,
+georeferenced everything — so the corridor can be cleaned in batch.)*
+
+Scope as built, pipeline-only. New `clean-ortho` command: inputs are the
+source ortho GeoTIFF (EPSG:3006), a trees/canopy GeoJSON (detect-trees output
+or exported features), a typed course-features GeoJSON for the corridor
+(shared 3006 contract OR the server's WGS84 features.geojson — detected and
+reprojected), and an optional `--manual-mask`. Mask (golfpipe/clean_ortho.py,
+pure + tested): `((canopy ∪ shadow) ∩ corridor) ∪ manual`, dilated `--margin`
+(0.5 m); shadow = canopy translated toward `--shadow-azimuth` in ≤3 m
+sub-offsets up to `--shadow-length` (default 15 m) so the penumbra band is
+solid; corridor = union of `--corridor-types` (default
+fairway,semi_rough,rough,tee,green); manual mask deliberately NOT clipped to
+the corridor. Rasterization via rasterio transforms only (no GDAL binary).
+Inpainting (golfpipe/inpaint.py, REUSABLE and CLI-free — T55's interactive
+editor cleaning consumes it): `inpaint_tiled(image, mask, inpaint_fn)` runs
+any InpaintFn over overlapping crops (512 px / 64 px feathered stitch,
+bounded memory, unmasked pixels byte-identical) + `LamaInpainter`, the
+TorchScript big-lama checkpoint behind a lazy torch import — torch lives in
+requirements-inpaint.txt (NOT the base env, crisp install-hint error) and
+weights come from `--weights`/$GOLFPIPE_LAMA_WEIGHTS (not committed; download
+URL in README). Output `<stem>.clean.tif` alongside the source (never
+overwrites; CRS/transform/compression preserved, so tile-ortho can be pointed
+at it), plus optional `--mask-out`. Tests offline/no-torch: mask geometry,
+crop/stitch round-trips with fake inpaint impls, CLI wiring, lazy-import +
+weights error paths. Live smoke on Landeryd's 2025 ortho ran green (real
+crown + shadow removed; see report).
+**Done:** see docs/reports/T54-report.md.

@@ -63,6 +63,50 @@ See "STAC findings" below for why this searches across all collections
 rather than pinning one. Source assets are 4-band RGBI; only the first 3
 bands (RGB) are kept in the output.
 
+### `clean-ortho` — inpaint canopy + shadows out of the playable corridor
+
+```sh
+python -m golfpipe clean-ortho \
+    --ortho data/sources/<mapKey>/ortho-orto-l2-2025.tif \
+    --trees trees.geojson \            # detect-trees output, or an exported features file
+    --features features.geojson \      # typed course features (EPSG:3006 contract or WGS84 export)
+    --shadow-azimuth 15 --shadow-length 18
+```
+
+Batch orthophoto cleaning for game-engine (Unity/GSPro) texture export:
+replaces tree crowns and the shadows they cast — plus anything in an
+optional `--manual-mask` GeoJSON (players, carts, blemishes) — with
+LaMa-inpainted grass, but **only inside the playable corridor** (union of
+`--corridor-types`, default `fairway,semi_rough,rough,tee,green`). Real
+forest outside the corridor stays as flown. The mask is
+`((canopy ∪ shadow) ∩ corridor) ∪ manual`, dilated `--margin` (default
+0.5 m); the shadow band is the canopy offset toward `--shadow-azimuth`
+(compass degrees the shadow falls toward — measure a tree in the source
+image) in sub-offsets up to `--shadow-length` metres, so the whole penumbra
+is covered. Output is written **alongside** the source as
+`<stem>.clean.tif` (never overwrites; same CRS/transform/compression, so
+`tile-ortho` can be pointed straight at it). `--mask-out mask.tif` writes
+the rasterized mask for eyeballing before a long run.
+
+Heavy deps are opt-in — the base env has no torch:
+
+```sh
+./.venv/bin/pip install -r requirements-inpaint.txt
+curl -LO https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt
+export GOLFPIPE_LAMA_WEIGHTS=$PWD/big-lama.pt     # or pass --weights
+```
+
+The weights are the TorchScript export of the official big-lama checkpoint
+(Suvorov et al., WACV 2022; original training checkpoint at
+`https://huggingface.co/smartywu/big-lama` — the TorchScript export above is
+the same artifact lama-cleaner/IOPaint run). Inpainting processes the mask
+as overlapping crops (`--crop` 512, `--overlap` 64) with a feathered stitch,
+so memory stays bounded for arbitrary-size orthos. Device: cuda if
+available, else CPU (fine for batch use; `--device mps` tries the Apple GPU,
+which needs torch's MPS FFT support, torch ≥ 2.1). The reusable seam lives
+in `golfpipe/inpaint.py` (`inpaint_tiled(image, mask, inpaint_fn)`), kept
+CLI-free so interactive editor cleaning can consume it directly.
+
 ### `tile-ortho` — orthophoto GeoTIFF → JPEG XYZ pyramid
 
 ```sh

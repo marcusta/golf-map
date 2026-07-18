@@ -16,6 +16,7 @@ from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 
+from golfpipe import clean_ortho as clean_ortho_mod
 from golfpipe import detect_common
 from golfpipe import detect_trees as detect_trees_mod
 from golfpipe import detect_water as detect_water_mod
@@ -512,6 +513,116 @@ def cmd_detect_water(
     water_mod.write_geojson(collection, out)
     if not collection["features"]:
         print("(no water found — class 9 may be absent here; creeks rarely carry class-9 returns)")
+    print(f"Wrote {out}")
+    return out
+
+
+def default_clean_out_path(ortho_path: Path) -> Path:
+    """ortho-orto-l2-2025.tif -> ortho-orto-l2-2025.clean.tif, alongside the
+    source (the source is never overwritten)."""
+    return ortho_path.with_name(ortho_path.stem + ".clean" + ortho_path.suffix)
+
+
+def cmd_clean_ortho(
+    ortho_path: Path,
+    trees_path: Path,
+    features_path: Path,
+    out: Path | None = None,
+    manual_mask_path: Path | None = None,
+    shadow_azimuth_deg: float = clean_ortho_mod.DEFAULT_SHADOW_AZIMUTH_DEG,
+    shadow_length_m: float = clean_ortho_mod.DEFAULT_SHADOW_LENGTH_M,
+    corridor_types: tuple[str, ...] = clean_ortho_mod.DEFAULT_CORRIDOR_TYPES,
+    margin_m: float = clean_ortho_mod.DEFAULT_MARGIN_M,
+    crop_size: int = 512,
+    overlap: int = 64,
+    weights: str | None = None,
+    device: str | None = None,
+    mask_out: Path | None = None,
+    inpaint_fn=None,
+) -> Path:
+    """Batch orthophoto cleaning for game-engine texture export: LaMa-inpaints
+    tree canopy + cast shadows (and any manual-mask extras) out of the playable
+    corridor, writing a cleaned GeoTIFF ALONGSIDE the source (never overwrites;
+    default `<stem>.clean.tif`).
+
+    Mask = ((canopy ∪ shadow) ∩ corridor) ∪ manual, dilated margin_m — see
+    golfpipe.clean_ortho. Inpainting runs as overlapping crops with a feathered
+    stitch (golfpipe.inpaint), so memory stays bounded for arbitrary-size
+    orthos. `inpaint_fn` is injectable for tests; by default a LamaInpainter
+    is constructed lazily, and only if the mask is non-empty — torch/weights
+    are never touched for an empty mask.
+
+    The cleaned GeoTIFF keeps the source CRS/transform/compression, so
+    tile-ortho can be pointed at it directly.
+    """
+    from golfpipe.inpaint import LamaInpainter, inpaint_tiled
+
+    out = out or default_clean_out_path(ortho_path)
+    if out.resolve() == ortho_path.resolve():
+        raise clean_ortho_mod.CleanOrthoError(
+            f"refusing to overwrite the source ortho ({ortho_path}) — pass a different --out"
+        )
+
+    canopy = clean_ortho_mod.select_polygons(
+        clean_ortho_mod.load_typed_polygons(trees_path), ("trees",), include_untyped=True,
+    )
+    corridor = clean_ortho_mod.select_polygons(
+        clean_ortho_mod.load_typed_polygons(features_path), corridor_types,
+    )
+    if not corridor:
+        raise clean_ortho_mod.CleanOrthoError(
+            f"no corridor features of type {', '.join(corridor_types)} in {features_path} "
+            "— check --corridor-types against the file's properties.type values"
+        )
+    manual = []
+    if manual_mask_path is not None:
+        manual = [geom for _, geom in clean_ortho_mod.load_typed_polygons(manual_mask_path)]
+    print(f"Canopy polygons: {len(canopy)}, corridor polygons: {len(corridor)}, manual: {len(manual)}")
+
+    mask_geom = clean_ortho_mod.build_mask_geometry(
+        canopy, corridor, manual,
+        shadow_azimuth_deg=shadow_azimuth_deg,
+        shadow_length_m=shadow_length_m,
+        margin_m=margin_m,
+    )
+
+    with rasterio.open(ortho_path) as src:
+        if src.count < 3:
+            raise clean_ortho_mod.CleanOrthoError(
+                f"{ortho_path} has {src.count} band(s); clean-ortho needs an RGB ortho"
+            )
+        profile = src.profile.copy()
+        image = np.moveaxis(src.read([1, 2, 3]), 0, -1)
+        mask = clean_ortho_mod.rasterize_mask(mask_geom, src.transform, (src.height, src.width))
+        pixel_area = abs(src.transform.a * src.transform.e)
+
+    masked_px = int(np.count_nonzero(mask))
+    print(f"Mask: {masked_px:,} px (~{masked_px * pixel_area:,.0f} m², "
+          f"shadow azimuth {shadow_azimuth_deg}°, length {shadow_length_m} m, margin {margin_m} m)")
+
+    if mask_out is not None:
+        mask_profile = profile.copy()
+        mask_profile.update(count=1, dtype="uint8", nodata=None)
+        with rasterio.open(mask_out, "w", **mask_profile) as dst:
+            dst.write((mask * 255).astype(np.uint8), 1)
+        print(f"Wrote mask {mask_out}")
+
+    if masked_px == 0:
+        print("(mask is empty — writing an unmodified copy; nothing to inpaint)")
+        cleaned = image
+    else:
+        fn = inpaint_fn or LamaInpainter(weights=weights, device=device)
+
+        def progress(done: int, total: int) -> None:
+            print(f"  inpainted crop {done}/{total}", end="\r" if done < total else "\n", flush=True)
+
+        cleaned = inpaint_tiled(
+            image, mask, fn, crop_size=crop_size, overlap=overlap, progress=progress,
+        )
+
+    profile.update(count=3, dtype="uint8")
+    with rasterio.open(out, "w", **profile) as dst:
+        dst.write(np.moveaxis(cleaned, -1, 0))
     print(f"Wrote {out}")
     return out
 

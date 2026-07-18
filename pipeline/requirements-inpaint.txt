@@ -1,0 +1,10 @@
+# Optional extras for `golfpipe clean-ortho` (LaMa inpainting). Deliberately
+# NOT part of requirements.txt — torch is heavy and the base pipeline must
+# stay slim. Install on demand:
+#
+#   cd pipeline && ./.venv/bin/pip install -r requirements-inpaint.txt
+#
+# Weights are not committed either: download the big-lama TorchScript
+# checkpoint (~196 MB) once and point $GOLFPIPE_LAMA_WEIGHTS (or --weights)
+# at it — see the clean-ortho section in README.md.
+torch>=2.2,<3

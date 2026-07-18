@@ -10,6 +10,7 @@ Commands:
   grid-dem          Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
+  clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor -> .clean.tif
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   manifest          Write manifest.json for a tiled course
@@ -26,6 +27,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from golfpipe import clean_ortho
 from golfpipe import commands
 from golfpipe import detect_trees
 from golfpipe import detect_water
@@ -35,6 +37,7 @@ from golfpipe import osm
 from golfpipe import water
 from golfpipe.aoi import AoiError, resolve_bbox
 from golfpipe.bbox_course import bbox_from_course
+from golfpipe.inpaint import InpaintError
 from golfpipe.install import build_register_payloads, install_course_tiles, post_payloads, print_payloads
 from golfpipe.stac import MissingCredentialsError
 
@@ -155,6 +158,40 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
+
+    p = sub.add_parser(
+        "clean-ortho",
+        help="LaMa-inpaint tree canopy + shadows (and manual-mask extras) out of the playable corridor",
+    )
+    p.add_argument("--ortho", required=True, help="source ortho GeoTIFF (EPSG:3006) — never overwritten")
+    p.add_argument("--trees", required=True, help="trees/canopy GeoJSON (detect-trees output or exported features)")
+    p.add_argument("--features", required=True, help="course-features GeoJSON defining the corridor (typed like the shared contract; EPSG:3006 or WGS84)")
+    p.add_argument("--manual-mask", dest="manual_mask", help="optional extra mask GeoJSON, honored verbatim (not clipped to the corridor)")
+    p.add_argument(
+        "--shadow-azimuth", dest="shadow_azimuth", type=float, default=clean_ortho.DEFAULT_SHADOW_AZIMUTH_DEG,
+        help=(
+            "compass direction the shadows FALL TOWARD, degrees (0 = north, 90 = east; "
+            f"default {clean_ortho.DEFAULT_SHADOW_AZIMUTH_DEG} — measure a tree in the source ortho)"
+        ),
+    )
+    p.add_argument(
+        "--shadow-length", dest="shadow_length", type=float, default=clean_ortho.DEFAULT_SHADOW_LENGTH_M,
+        help=f"shadow offset in metres (default {clean_ortho.DEFAULT_SHADOW_LENGTH_M}; 0 disables the shadow band)",
+    )
+    p.add_argument(
+        "--corridor-types", dest="corridor_types", default=",".join(clean_ortho.DEFAULT_CORRIDOR_TYPES),
+        help=f"comma-separated feature types forming the playable corridor (default {','.join(clean_ortho.DEFAULT_CORRIDOR_TYPES)})",
+    )
+    p.add_argument(
+        "--margin", type=float, default=clean_ortho.DEFAULT_MARGIN_M,
+        help=f"mask dilation in metres (default {clean_ortho.DEFAULT_MARGIN_M})",
+    )
+    p.add_argument("--crop", type=int, default=512, help="inpaint crop size in pixels (default 512)")
+    p.add_argument("--overlap", type=int, default=64, help="crop overlap in pixels for the feathered stitch (default 64)")
+    p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS; see pipeline/README.md)")
+    p.add_argument("--device", help="torch device (default: cuda if available, else cpu; pass mps to try Apple GPU)")
+    p.add_argument("--out", help="output GeoTIFF path (default: <ortho stem>.clean.tif alongside the source)")
+    p.add_argument("--mask-out", dest="mask_out", help="optional: also write the rasterized mask as a GeoTIFF for eyeballing")
 
     p = sub.add_parser("tile-ortho", help="Tile an orthophoto GeoTIFF into an XYZ WebP pyramid")
     p.add_argument("--input", required=True, help="input orthophoto GeoTIFF (any CRS)")
@@ -325,6 +362,25 @@ def main(argv: list[str] | None = None) -> int:
                 flatness_spread_m=args.flatness_spread,
             )
 
+        elif args.command == "clean-ortho":
+            corridor_types = tuple(t.strip() for t in args.corridor_types.split(",") if t.strip())
+            if not corridor_types:
+                parser.error("--corridor-types must name at least one feature type")
+            commands.cmd_clean_ortho(
+                Path(args.ortho), Path(args.trees), Path(args.features),
+                out=Path(args.out) if args.out else None,
+                manual_mask_path=Path(args.manual_mask) if args.manual_mask else None,
+                shadow_azimuth_deg=args.shadow_azimuth,
+                shadow_length_m=args.shadow_length,
+                corridor_types=corridor_types,
+                margin_m=args.margin,
+                crop_size=args.crop,
+                overlap=args.overlap,
+                weights=args.weights,
+                device=args.device,
+                mask_out=Path(args.mask_out) if args.mask_out else None,
+            )
+
         elif args.command == "tile-ortho":
             commands.cmd_tile_ortho(
                 Path(args.input), Path(args.out),
@@ -390,6 +446,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except osm.OsmError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except clean_ortho.CleanOrthoError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except InpaintError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except AoiError as exc:
