@@ -20,6 +20,7 @@ const HELP: HelpSection[] = [
             { keys: 'Esc', desc: 'Cancel drawing' },
             { keys: 'Click', desc: 'Place a smooth point' },
             { keys: 'Shift-click', desc: 'Place a corner point' },
+            { keys: '1–9, 0', desc: 'Arm a feature type (or retype the selection) — tee…water, 0 = creek' },
         ],
     },
     {

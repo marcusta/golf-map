@@ -22,6 +22,35 @@ export const FEATURE_TYPES = [
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
 
+/**
+ * Keyboard digit → draw feature type. Digits follow panel order
+ * (`FEATURE_TYPES` above): `1`–`9` arm the first nine types (tee…water) and
+ * `0` arms the tenth (water_creek). The remaining rules/misc types
+ * (penalty_yellow, penalty_red, oob, path, outside) stay panel-only — no
+ * digit binding. Shared by the command-bar feature panel (digit badges) and
+ * `DrawToolService.onKeyDown` (bare-digit arm/retype) so the two never drift.
+ */
+export const DIGIT_FEATURE_TYPES: Readonly<Record<string, FeatureType>> = {
+    '1': 'tee',
+    '2': 'fairway',
+    '3': 'green',
+    '4': 'bunker',
+    '5': 'semi_rough',
+    '6': 'rough',
+    '7': 'deep_rough',
+    '8': 'trees',
+    '9': 'water',
+    '0': 'water_creek',
+};
+
+/** Reverse of {@link DIGIT_FEATURE_TYPES}: feature type → its digit badge, if any. */
+export function digitForFeatureType(type: FeatureType): string | undefined {
+    for (const [digit, mapped] of Object.entries(DIGIT_FEATURE_TYPES)) {
+        if (mapped === type) return digit;
+    }
+    return undefined;
+}
+
 export interface FeatureStyle {
     /** Human label for pickers. */
     label: string;

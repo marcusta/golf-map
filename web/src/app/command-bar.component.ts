@@ -10,7 +10,7 @@ import { FeaturesService } from '../draw/features.service';
 import { HelpModalService } from '../editor/help-modal.component';
 import { DrawToolService, DRAW_TOOL_ID } from '../draw/draw-tool.service';
 import { drawTool } from '../draw/draw-tool';
-import { FEATURE_TYPES, FEATURE_STYLES, type FeatureType } from '../draw/feature-palette';
+import { FEATURE_TYPES, FEATURE_STYLES, digitForFeatureType, type FeatureType } from '../draw/feature-palette';
 import { EditorModeService } from '../editor/editor-mode.service';
 import { EDITOR_TOOLS } from '../editor/tools/index';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
@@ -397,6 +397,20 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 border-radius: 4px;
                 border: 1px solid rgba(0, 0, 0, 0.25);
             }
+            & .cmd-ft__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+            /* Digit hotkey badge (1–9, 0) for the keyboard-armable types. */
+            & .cmd-ft__digit {
+                flex: none;
+                min-width: 16px;
+                padding: 1px 4px;
+                border-radius: 4px;
+                border: 1px solid ${t('color-border-subtle')};
+                background: color-mix(in srgb, ${t('color-text-primary')} 5%, transparent);
+                font-size: 0.7rem;
+                font-variant-numeric: tabular-nums;
+                text-align: center;
+                color: ${t('color-text-secondary')};
+            }
         }
         /* Per-type visibility toggle: appears on row hover (always when the
            type is hidden); a hidden type dims its select row. */
@@ -712,7 +726,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             btn.type = 'button';
             btn.className = 'cmd-ft';
             btn.title = style.label;
-            btn.innerHTML = `<span class="cmd-ft__sw"></span><span class="cmd-ft__name">${style.label}</span>`;
+            const digit = digitForFeatureType(type);
+            const badge = digit ? `<span class="cmd-ft__digit" aria-hidden="true">${digit}</span>` : '';
+            btn.innerHTML = `<span class="cmd-ft__sw"></span><span class="cmd-ft__name">${style.label}</span>${badge}`;
             const sw = btn.querySelector<HTMLElement>('.cmd-ft__sw')!;
             sw.style.background = style.fill;
             sw.style.borderColor = style.outline;

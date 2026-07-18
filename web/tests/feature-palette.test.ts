@@ -1,6 +1,8 @@
 import { test, expect, describe } from 'bun:test';
 import {
     FEATURE_TYPES,
+    DIGIT_FEATURE_TYPES,
+    digitForFeatureType,
     DRAW_FILL_OPACITY,
     NICE_FILL_OPACITY,
     SURROUND_PAIRINGS,
@@ -61,6 +63,48 @@ describe('SURROUND_PAIRINGS (ported prototype table)', () => {
             if (!pairing) continue;
             expect(TYPE_Z_ORDER.indexOf(pairing.targetType)).toBeLessThan(TYPE_Z_ORDER.indexOf(type));
         }
+    });
+});
+
+describe('DIGIT_FEATURE_TYPES (keyboard type switching)', () => {
+    test('exact digit → type mapping, panel order (T39)', () => {
+        expect(DIGIT_FEATURE_TYPES).toEqual({
+            '1': 'tee',
+            '2': 'fairway',
+            '3': 'green',
+            '4': 'bunker',
+            '5': 'semi_rough',
+            '6': 'rough',
+            '7': 'deep_rough',
+            '8': 'trees',
+            '9': 'water',
+            '0': 'water_creek',
+        });
+    });
+
+    test('digits 1–9 then 0 follow FEATURE_TYPES panel order', () => {
+        const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+        keys.forEach((k, i) => expect(DIGIT_FEATURE_TYPES[k]).toBe(FEATURE_TYPES[i]));
+    });
+
+    test('the five rules/misc types stay panel-only (no digit)', () => {
+        for (const type of ['penalty_yellow', 'penalty_red', 'oob', 'path', 'outside'] as const) {
+            expect(digitForFeatureType(type)).toBeUndefined();
+            expect(Object.values(DIGIT_FEATURE_TYPES)).not.toContain(type);
+        }
+    });
+
+    test('digitForFeatureType is the inverse of the mapping', () => {
+        for (const [digit, type] of Object.entries(DIGIT_FEATURE_TYPES)) {
+            expect(digitForFeatureType(type)).toBe(digit);
+        }
+    });
+
+    test('every mapped type is a real feature type; ten distinct types', () => {
+        const mapped = Object.values(DIGIT_FEATURE_TYPES);
+        expect(mapped.length).toBe(10);
+        expect(new Set(mapped).size).toBe(10);
+        for (const type of mapped) expect(FEATURE_TYPES).toContain(type);
     });
 });
 

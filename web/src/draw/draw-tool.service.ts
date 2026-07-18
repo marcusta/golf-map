@@ -44,6 +44,7 @@ import {
 import { EditHistory, snapshotOf, type HistoryEntry } from './history';
 import { CAT, MARKER_FILL, OVERLAY_TEXT, STATUS_RISK } from '../map/map-palette';
 import {
+    DIGIT_FEATURE_TYPES,
     DRAW_FILL_OPACITY,
     SELECTION_COLOR,
     SURROUND_PAIRINGS,
@@ -940,6 +941,16 @@ export class DrawToolService {
                 e.preventDefault();
                 void this.reorderSelected(e.key as 'PageUp' | 'PageDown' | 'Home' | 'End');
             }
+        } else if (!meta && !e.altKey && DIGIT_FEATURE_TYPES[e.key]) {
+            // Bare digit = arm a draw feature type without opening the palette
+            // dropdown (⌘/Ctrl/Alt-digit is browser tab switching etc. — never
+            // preventDefault there). Mirrors the palette button exactly:
+            // selection non-empty → retype, else set the draw type (which also
+            // recolors an in-progress draft, since there's no selection then).
+            e.preventDefault();
+            const type = DIGIT_FEATURE_TYPES[e.key];
+            if ((this.features?.selectedIds.peek().size ?? 0) > 0) this.retypeSelection(type);
+            else this.drawType.set(type);
         }
     }
 
