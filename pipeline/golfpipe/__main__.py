@@ -4,6 +4,7 @@ Commands:
   fetch-dem         STAC search + download DTM COG(s), mosaic/crop -> dem.tif
   fetch-ortho       STAC search + download best-coverage ortho COG(s) -> ortho.tif
   fetch-lidar       STAC search + download classified lidar COPC point cloud(s)
+  fetch-water       Marktäcke vector water -> typed GeoJSON (water / water_creek)
   grid-dem          Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
@@ -23,6 +24,7 @@ from pathlib import Path
 
 from golfpipe import commands
 from golfpipe import grid_dem as grid_dem_mod
+from golfpipe import water
 from golfpipe.aoi import AoiError, resolve_bbox
 from golfpipe.bbox_course import bbox_from_course
 from golfpipe.install import build_register_payloads, install_course_tiles, post_payloads, print_payloads
@@ -67,6 +69,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_area_args(p)
     p.add_argument("--workdir", help="alias for --out-dir (kept for symmetry with fetch-dem/fetch-ortho)")
     p.add_argument("--out-dir", help="directory to download .copc.laz assets into")
+
+    p = sub.add_parser("fetch-water", help="Download Marktäcke vector data and extract water as typed GeoJSON (EPSG:3006)")
+    _add_area_args(p)
+    p.add_argument("--workdir", required=True, help="directory to download/extract source GeoPackages into")
+    p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
+    p.add_argument(
+        "--creek-width", dest="creek_width", type=float, default=water.DEFAULT_CREEK_WIDTH_M,
+        help=f"total buffered width in metres for watercourse lines (default {water.DEFAULT_CREEK_WIDTH_M})",
+    )
 
     p = sub.add_parser("grid-dem", help="Bin classified lidar points into a regular-grid DEM GeoTIFF")
     p.add_argument("--lidar", required=True, nargs="+", help="one or more .laz/.copc.laz point cloud files")
@@ -200,6 +211,10 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("fetch-lidar requires --out-dir (or --workdir)")
             commands.cmd_fetch_lidar(bbox, Path(out_dir), Path(out_dir))
 
+        elif args.command == "fetch-water":
+            bbox = _resolve_area(args)
+            commands.cmd_fetch_water(bbox, Path(args.workdir), Path(args.out), creek_width_m=args.creek_width)
+
         elif args.command == "grid-dem":
             bbox_3006 = tuple(float(v) for v in args.bbox_3006.split(","))
             if len(bbox_3006) != 4:
@@ -266,6 +281,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"Unknown command: {args.command}")
 
     except MissingCredentialsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except water.WaterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except AoiError as exc:

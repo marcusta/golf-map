@@ -4,6 +4,7 @@ import { s, btn } from '../css';
 import { CourseDetailService } from './course-detail.service';
 import { EditorCanvasComponent } from '../map/editor-canvas.component';
 import { SvgImportPanelComponent } from '../import/svg-import-panel.component';
+import { GeojsonImportPanelComponent } from '../import/geojson-import-panel.component';
 import { HoleInfoPanelComponent } from './hole-info-panel.component';
 import { HoleSidebarComponent } from './hole-sidebar.component';
 import { ContextDockComponent } from '../draw/feature-dock.component';
@@ -110,6 +111,9 @@ export class CourseDetailComponent extends Component {
         // shares the editor-canvas positioning context so it docks over
         // the map's right edge (the map stays visible for the preview).
         this.spawn(SvgImportPanelComponent, this.ref(frag, 'editorCanvas'));
+        // GeoJSON draft-import wizard (pipeline fetch-water / fetch-osm /
+        // detect-trees output) — same dock-over-the-map behavior.
+        this.spawn(GeojsonImportPanelComponent, this.ref(frag, 'editorCanvas'));
 
         // Right contextual dock — permanent across all Create sub-modes; its
         // body follows the active sub-mode (draw selection + stack, or the

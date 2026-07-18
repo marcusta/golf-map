@@ -1,0 +1,214 @@
+// GeoJSON draft-import wizard state (T43). Mirrors SvgImportService — the
+// import flow for one course at a time: load .geojson text → parse +
+// CRS-validate (geojson-parse.ts) → bucket features by a chosen property →
+// user assigns each bucket a feature type (or skip) → build straight-segment
+// FeatureGeometries (preview overlay rendered by GeojsonImportPanelComponent
+// from `built`) → bulk-create through the course-features API.
+//
+// Strictly feature-source-agnostic: fetch-water (T43), fetch-osm (T44) and
+// detect-trees (T46) all feed it the same EPSG:3006 typed-polygon files.
+//
+// DI singleton; the panel component (geojson-import-panel.component.ts) is
+// the only UI. Testable headlessly: constructor takes the features API
+// client.
+
+import { Signal, Computed, batch } from '@basics/core/client/core';
+import { api } from '../api';
+import type { CourseFeaturesApi } from '../../../shared/api/course-features.gen';
+import type { BucketAssignment, BuiltFeature, BuildResult, ImportSummary } from './svg-import.service';
+import {
+    parseGeojsonDocument,
+    bucketByProperty,
+    polygonToGeometry,
+    type ParsedGeojson,
+    type GeojsonBucket,
+} from './geojson-parse';
+
+/** Parallel create requests during confirm (matches SvgImportService). */
+const CREATE_CONCURRENCY = 6;
+
+export class GeojsonImportService {
+    /** Wizard visible? (Toggled by the command bar's "Import GeoJSON".) */
+    readonly open = new Signal(false);
+    readonly fileName = new Signal<string | null>(null);
+    readonly parsed = new Signal<ParsedGeojson | null>(null);
+    readonly parseError = new Signal<string | null>(null);
+    /** Property the features are bucketed by (null = one bucket for all). */
+    readonly propertyKey = new Signal<string | null>(null);
+    /** bucket key → assignment. Prefilled from suggestions on load. */
+    readonly assignments = new Signal<Record<string, BucketAssignment>>({});
+    /** Built features awaiting preview/confirm — set by `build()`. */
+    readonly built = new Signal<BuildResult | null>(null);
+    readonly importing = new Signal(false);
+    readonly progress = new Signal<{ done: number; total: number } | null>(null);
+    readonly summary = new Signal<ImportSummary | null>(null);
+
+    private courseId: string | null = null;
+
+    /** Current mapping rows (re-binned whenever the property changes). */
+    readonly buckets = new Computed<GeojsonBucket[]>(() => {
+        const parsed = this.parsed.get();
+        if (!parsed) return [];
+        return bucketByProperty(parsed, this.propertyKey.get());
+    });
+
+    /** Number of features `build()` would create with the current mapping. */
+    readonly assignedFeatureCount = new Computed(() => {
+        const assignments = this.assignments.get();
+        let n = 0;
+        for (const bucket of this.buckets.get()) {
+            const a = assignments[bucket.key];
+            if (a && a !== 'skip') n += bucket.polygonCount;
+        }
+        return n;
+    });
+
+    constructor(private featuresApi: CourseFeaturesApi = api.courseFeatures) {}
+
+    /** Open the wizard for a course (coordinates are already EPSG:3006 —
+     * no georeference step, unlike the SVG wizard). */
+    openFor(courseId: string): void {
+        batch(() => {
+            this.courseId = courseId;
+            this.open.set(true);
+            this.fileName.set(null);
+            this.parsed.set(null);
+            this.parseError.set(null);
+            this.propertyKey.set(null);
+            this.assignments.set({});
+            this.built.set(null);
+            this.summary.set(null);
+            this.progress.set(null);
+        });
+    }
+
+    close(): void {
+        batch(() => {
+            this.open.set(false);
+            this.built.set(null); // kills the preview overlay
+        });
+    }
+
+    /** Parse GeoJSON text into buckets; prefill assignments from suggestions. */
+    loadGeojsonText(text: string, fileName: string): void {
+        batch(() => {
+            this.fileName.set(fileName);
+            this.built.set(null);
+            this.summary.set(null);
+            try {
+                const parsed = parseGeojsonDocument(text);
+                // Pipeline convention: `type` (always sorted first when
+                // present); otherwise the most common property key.
+                const key = parsed.propertyKeys[0] ?? null;
+                this.parsed.set(parsed);
+                this.propertyKey.set(key);
+                this.assignments.set(this.prefill(parsed, key));
+                this.parseError.set(null);
+            } catch (e) {
+                this.parsed.set(null);
+                this.propertyKey.set(null);
+                this.assignments.set({});
+                this.parseError.set(e instanceof Error ? e.message : String(e));
+            }
+        });
+    }
+
+    /** Re-bin by another property; assignments re-prefill from suggestions. */
+    setPropertyKey(key: string | null): void {
+        const parsed = this.parsed.peek();
+        if (!parsed) return;
+        batch(() => {
+            this.propertyKey.set(key);
+            this.assignments.set(this.prefill(parsed, key));
+            this.built.set(null); // mapping changed — stale preview
+        });
+    }
+
+    private prefill(parsed: ParsedGeojson, key: string | null): Record<string, BucketAssignment> {
+        const assignments: Record<string, BucketAssignment> = {};
+        for (const bucket of bucketByProperty(parsed, key)) {
+            assignments[bucket.key] = bucket.suggestedType ?? 'skip';
+        }
+        return assignments;
+    }
+
+    assign(bucketKey: string, assignment: BucketAssignment): void {
+        this.assignments.set({ ...this.assignments.peek(), [bucketKey]: assignment });
+        this.built.set(null); // mapping changed — stale preview
+    }
+
+    /**
+     * Build FeatureGeometries from the current mapping. Sets `built` (the
+     * panel renders it as the dashed preview overlay) and returns it.
+     * Degenerate rings are dropped with warnings; parse-time skips (non-
+     * polygon geometries) are carried into the warnings too.
+     */
+    build(): BuildResult | null {
+        const parsed = this.parsed.peek();
+        if (!parsed) return null;
+        const assignments = this.assignments.peek();
+        const features: BuiltFeature[] = [];
+        const warnings: string[] = [...parsed.skipped];
+
+        for (const bucket of this.buckets.peek()) {
+            const type = assignments[bucket.key];
+            if (!type || type === 'skip') continue;
+            for (const feature of bucket.features) {
+                feature.polygons.forEach((rings, polyIdx) => {
+                    const label = `${bucket.value} feature ${feature.index + 1}${feature.polygons.length > 1 ? `.${polyIdx + 1}` : ''}`;
+                    const { geometry, warnings: ringWarnings } = polygonToGeometry(rings, label);
+                    warnings.push(...ringWarnings);
+                    if (geometry) features.push({ type, geometry });
+                });
+            }
+        }
+
+        const result: BuildResult = { features, warnings };
+        this.built.set(result);
+        return result;
+    }
+
+    /**
+     * Bulk-create the built features (building first if needed). Reports
+     * progress; on a failed request the remaining queue is abandoned and
+     * `summary.error` is set (already-created features stay). Returns the
+     * summary. The CALLER refreshes FeaturesService (`reload()`).
+     */
+    async confirmImport(): Promise<ImportSummary | null> {
+        const courseId = this.courseId;
+        const built = this.built.peek() ?? this.build();
+        if (!courseId || !built || built.features.length === 0) return null;
+
+        this.importing.set(true);
+        this.progress.set({ done: 0, total: built.features.length });
+        const created: Record<string, number> = {};
+        let done = 0;
+        let error: string | null = null;
+
+        const queue = [...built.features];
+        const worker = async () => {
+            for (;;) {
+                const item = queue.shift();
+                if (!item || error) return;
+                try {
+                    await this.featuresApi.create({ courseId, type: item.type, geometry: item.geometry });
+                    created[item.type] = (created[item.type] ?? 0) + 1;
+                    done++;
+                    this.progress.set({ done, total: built.features.length });
+                } catch (e) {
+                    error = e instanceof Error ? e.message : String(e);
+                    return;
+                }
+            }
+        };
+        await Promise.all(Array.from({ length: CREATE_CONCURRENCY }, worker));
+
+        const summary: ImportSummary = { created, warnings: built.warnings, error };
+        batch(() => {
+            this.summary.set(summary);
+            this.importing.set(false);
+            this.built.set(null); // imported — preview off, real features take over
+        });
+        return summary;
+    }
+}

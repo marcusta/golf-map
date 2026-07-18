@@ -11,12 +11,14 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
+import requests
 from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import stac
+from golfpipe import water as water_mod
 from golfpipe.hillshade import write_hillshade_geotiff
 from golfpipe.manifest import build_manifest, write_manifest
 from golfpipe.raster import edge_pad_dem, mosaic_and_crop, open_warped_to_mercator
@@ -170,6 +172,74 @@ def cmd_fetch_lidar(bbox: tuple[float, float, float, float], workdir: Path, out_
         downloaded.append(dest)
 
     return downloaded
+
+
+def cmd_fetch_water(
+    bbox: tuple[float, float, float, float],
+    workdir: Path,
+    out: Path,
+    creek_width_m: float = water_mod.DEFAULT_CREEK_WIDTH_M,
+    session=None,
+) -> Path:
+    """STAC-searches the open vector catalog's Marktäcke collection
+    (Topografi 10 land cover, one zipped GeoPackage per kommun) for bbox,
+    downloads the zip asset(s) with basic auth into workdir, extracts the
+    GeoPackages, and writes one EPSG:3006 GeoJSON FeatureCollection to
+    `out`: water polygons (objekttyp Sjö/Anlagt vatten/Vattendragsyta/Hav)
+    → properties.type 'water'; watercourse lines (where the product carries
+    them) buffered to creek_width_m total width → 'water_creek'. The file
+    is importable by the web GeoJSON draft-import wizard.
+
+    NOTE: downloading requires the LANTMATERIET_USER/PASS account to have
+    the Marktäcke product activated in Geotorget — without it dl1 responds
+    403 even though the anonymous STAC search succeeds.
+    """
+    items = stac.search_marktacke(bbox, session=session)
+    if not items:
+        print(f"No marktacke items found for bbox {bbox}", file=sys.stderr)
+        raise SystemExit(1)
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    gpkg_paths: list[Path] = []
+    for item in items:
+        href = item.data_href
+        dest = workdir / href.rsplit("/", 1)[-1]
+        print(f"Fetching marktacke item {item.id} -> {dest}")
+        try:
+            stac.download_asset_with_progress(href, dest, session=session)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 403:
+                raise water_mod.WaterError(
+                    "Marktäcke download returned 403 Forbidden: the "
+                    "LANTMATERIET_USER account has not activated the "
+                    "'Marktäcke Nedladdning, vektor' product in Geotorget "
+                    "(the anonymous STAC search works without it, the "
+                    "dl1.lantmateriet.se download does not)."
+                ) from exc
+            raise
+        gpkg_paths.extend(water_mod.extract_geopackages(dest, workdir))
+
+    bbox_3006 = cmd_reproject_bbox(bbox)
+    polygons = []
+    lines = []
+    for gpkg in gpkg_paths:
+        polys, creek_lines = water_mod.read_water_features(gpkg, bbox_3006)
+        polygons.extend(polys)
+        lines.extend(creek_lines)
+
+    collection = water_mod.build_water_geojson(polygons, lines, creek_width_m=creek_width_m)
+    water_mod.write_geojson(collection, out)
+
+    counts: dict[str, int] = {}
+    for feature in collection["features"]:
+        t = feature["properties"]["type"]
+        counts[t] = counts.get(t, 0) + 1
+    print(f"Water polygons in bbox: {len(polygons)} source, {counts.get('water', 0)} merged")
+    print(f"Watercourse lines in bbox: {len(lines)} source, {counts.get('water_creek', 0)} buffered ribbons (width {creek_width_m} m)")
+    if not lines:
+        print("(no watercourse lines found — the open Marktäcke product may not carry them for this area)")
+    print(f"Wrote {out}")
+    return out
 
 
 def cmd_grid_dem(

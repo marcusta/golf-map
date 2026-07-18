@@ -14,6 +14,7 @@ import { FEATURE_TYPES, FEATURE_STYLES, digitForFeatureType, type FeatureType } 
 import { EditorModeService } from '../editor/editor-mode.service';
 import { EDITOR_TOOLS } from '../editor/tools/index';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
+import { GeojsonImportService } from '../import/geojson-import.service';
 
 type CommandBarMode = 'create' | 'plan';
 
@@ -455,6 +456,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private tool = this.inject(DrawToolService);
     private mode = this.inject(EditorModeService);
     private importSvc = this.inject(SvgImportService);
+    private geojsonImportSvc = this.inject(GeojsonImportService);
     private confirm = this.inject(ConfirmService);
     private helpModal = this.inject(HelpModalService);
     private auth = this.inject(AuthService);
@@ -831,6 +833,20 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 close();
             };
             host.appendChild(importBtn);
+
+            // Import GeoJSON — the draft-import wizard for pipeline output
+            // (fetch-water / fetch-osm / detect-trees), EPSG:3006 only.
+            const geojsonBtn = document.createElement('button');
+            geojsonBtn.type = 'button';
+            geojsonBtn.className = 'menu-item';
+            geojsonBtn.dataset.testid = 'course-import-geojson-btn';
+            geojsonBtn.innerHTML = `<span class="menu-item__icon">${icon('upload', 16)}</span><span class="menu-item__label">Import GeoJSON</span>`;
+            geojsonBtn.onclick = () => {
+                const course = this.svc.course.peek();
+                if (course) this.geojsonImportSvc.openFor(course.id);
+                close();
+            };
+            host.appendChild(geojsonBtn);
 
             const divider = document.createElement('div');
             divider.className = 'menu-divider';

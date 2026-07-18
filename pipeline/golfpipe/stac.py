@@ -22,9 +22,15 @@ import requests
 
 DEM_STAC_URL = "https://api.lantmateriet.se/stac-hojd/v1"
 ORTHO_STAC_URL = "https://api.lantmateriet.se/stac-bild/v1"
+# Open vector data (CC BY 4.0): per-kommun GeoPackage downloads. The
+# Marktäcke collection is the Topografi 10 land-cover layer, which carries
+# the water surfaces (objekttyp Sjö / Anlagt vatten / Vattendragsyta / Hav)
+# used by fetch-water.
+VEKTOR_STAC_URL = "https://api.lantmateriet.se/stac-vektor/v1"
 
 DEM_COLLECTION = "dtm-cog"
 LIDAR_COLLECTION = "dsm-skoglig-copc"
+MARKTACKE_COLLECTION = "marktacke"
 
 # Basic-auth error surfaced to the user when credentials are missing. Kept as
 # a constant so tests can assert on the exact message.
@@ -121,6 +127,19 @@ def search_lidar(
     optimized point cloud) .copc.laz file — see download_asset for fetching.
     """
     return search(DEM_STAC_URL, bbox, collections=[LIDAR_COLLECTION], limit=limit, session=session)
+
+
+def search_marktacke(
+    bbox: tuple[float, float, float, float],
+    limit: int = 10,
+    session: requests.Session | None = None,
+) -> list[StacItem]:
+    """Searches the open vector catalog's Marktäcke collection (Topografi 10
+    land cover, kommun-split GeoPackages inside zip assets — one item per
+    kommun). Items' 'data' asset is an application/zip containing the
+    kommun's .gpkg; see golfpipe.water for reading water features out of it.
+    """
+    return search(VEKTOR_STAC_URL, bbox, collections=[MARKTACKE_COLLECTION], limit=limit, session=session)
 
 
 def search_ortho(
