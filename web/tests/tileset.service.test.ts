@@ -180,6 +180,29 @@ test('load is cached per courseId; a new id refetches and replaces signals', asy
     expect(svc.hasTiles.get()).toBe(true);
 });
 
+test('refreshTiles re-fetches and propagates the server-bumped tileVersion', async () => {
+    // A Clean-tool bake bumps the manifest generatedAt server-side; refreshTiles
+    // must pick it up so `?v=` (tileVersion) tracks the new tiles.
+    const manifestAsset = asset('s1', 'tile_manifest', MANIFEST_JSON);
+    const { assetsApi, coursesApi, courseCalls } = fakeApis({ c1: 's1' }, { s1: [manifestAsset] });
+    const svc = new TilesetService(assetsApi, coursesApi);
+
+    await svc.load('c1');
+    expect(svc.tileVersion.get()).toBe('20260704T082859Z');
+    expect(courseCalls()).toBe(1);
+
+    // Server bakes a patch → generatedAt bumped (ms precision).
+    manifestAsset.metaJson = JSON.stringify({
+        ...JSON.parse(MANIFEST_JSON),
+        generatedAt: '2026-07-04T09:00:00.123Z',
+    });
+
+    await svc.refreshTiles('c1'); // bypasses the per-courseId cache
+    expect(courseCalls()).toBe(2);
+    expect(svc.tileVersion.get()).toBe('20260704T090000123Z');
+    expect(svc.hasTiles.get()).toBe(true);
+});
+
 test('load failure sets error, keeps courseId unset, and is not cached', async () => {
     let fail = true;
     const coursesApi = {

@@ -164,6 +164,18 @@ export class TilesetService {
     }
 
     /**
+     * Re-fetch the manifest after an ortho-ONLY change (Clean-tool bake/revert)
+     * so `tileVersion` tracks the server's bumped `generatedAt`. Behaves like
+     * `reload` (bypasses the per-courseId cache), but callers pair it with
+     * `MapService.refreshOrthoTiles()` for a seam-free in-place tile swap
+     * instead of the full map re-init `reload` drives via the editor canvas —
+     * the manifest is structurally unchanged, only the ortho pixels moved.
+     */
+    async refreshTiles(courseId: string): Promise<void> {
+        await this.reload(courseId);
+    }
+
+    /**
      * Resolve a course's map: course → site → tile_manifest asset. A course with
      * no site (`siteId == null`) has no map — `hasTiles` stays false and the
      * editor shows the empty "Set map area" state. Cached per courseId.

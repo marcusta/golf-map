@@ -361,7 +361,6 @@ export class EditorCanvasComponent extends Component {
     private cursor = new Signal<{ lng: number; lat: number } | null>(null);
     private cursorElevation = new Signal<number | null>(null);
     private mapHost!: HTMLElement;
-    private initializedVersion: string | null = null;
     private elevationSeq = 0;
 
     /** Whether the bottom-left "Layers" popover (hillshade/exaggeration/vintage) is open. */
@@ -499,12 +498,16 @@ export class EditorCanvasComponent extends Component {
             const mapKey = this.tileset.mapKey.get();
             if (!manifest || !version || !mapKey) return;
             if (this.tileset.courseId.get() !== courseId) return; // stale manifest from previous course
-            if (this.initializedVersion === version) return; // already showing this tile version
-            this.initializedVersion = version;
+            // The live map already shows this version — either it was just
+            // built for it, or a Clean-tool bake/revert applied the new ortho
+            // tiles IN PLACE (MapService.refreshOrthoTiles) and resynced the
+            // manifest afterwards. Peek so this guard doesn't re-run the effect.
+            if (this.mapSvc.displayedVersion.peek() === version) return;
             untrack(() => {
                 // The map is addressed by the site's mapKey (shared across the
                 // site's courses). init() destroys any existing map first, so a
-                // version change (e.g. switching ortho vintage) re-inits fresh.
+                // structural version change (rebuild) re-inits fresh; ortho-only
+                // patches never reach here (handled in place above).
                 this.mapSvc.init(this.mapHost, mapKey, manifest, version);
                 this.elevation.configure({
                     mapKey,

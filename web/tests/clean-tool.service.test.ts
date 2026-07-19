@@ -13,6 +13,7 @@ import {
     CLEAN_PREVIEW_OVERLAY_ID,
     type CleanImaging,
 } from '../src/clean/clean-tool.service';
+import { deriveTileVersion } from '../src/map/tileset.service';
 import type { OrthoPatchesApi } from '../../shared/api/ortho-patches.gen';
 
 // T55 — Clean-photo tool. The pointer/canvas wiring needs a live map +
@@ -61,6 +62,11 @@ interface Harness {
     maskCalls: Array<{ area: number; size: number; mask: Uint8Array }>;
     applyCalls: Array<Parameters<OrthoPatchesApi['applyOrthoPatch']>[0]>;
     revertCalls: number[];
+    /** courseIds passed to the (seamless) tileset.refreshTiles resync. */
+    refreshes: string[];
+    /** tile versions pushed to the live map's in-place ortho refresh. */
+    orthoRefreshes: string[];
+    /** courseIds passed to the full tileset.reload (must stay empty here). */
     reloads: string[];
     imageOverlays: Array<{ id: string; url: string; coords: number[][]; beforeId?: string }>;
     removedOverlays: string[];
@@ -140,6 +146,8 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
     const clickHandlers: Harness['clickHandlers'] = [];
     const imageOverlays: Harness['imageOverlays'] = [];
     const removedOverlays: string[] = [];
+    const refreshes: string[] = [];
+    const orthoRefreshes: string[] = [];
     const reloads: string[] = [];
     const manifest = {
         bounds: { west: 15.5, south: 58.3, east: 15.7, north: 58.5 },
@@ -165,6 +173,9 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
             removeOverlayLayer: (id: string) => {
                 removedOverlays.push(id);
             },
+            refreshOrthoTiles: (version: string) => {
+                orthoRefreshes.push(version);
+            },
         } as never,
         elevation: null as never,
         tileset: {
@@ -173,6 +184,9 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
             tileVersion: new Signal('20260714T102511864Z'),
             reload: async (courseId: string) => {
                 reloads.push(courseId);
+            },
+            refreshTiles: async (courseId: string) => {
+                refreshes.push(courseId);
             },
         } as never,
         courseDetail: null as never,
@@ -184,7 +198,8 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
     await tick(); // settle the activation health + info probes
     return {
         svc, interactionMode, clickHandlers, requests, cropCalls, maskCalls,
-        applyCalls, revertCalls, reloads, imageOverlays, removedOverlays, sidecar,
+        applyCalls, revertCalls, refreshes, orthoRefreshes, reloads,
+        imageOverlays, removedOverlays, sidecar,
     };
 }
 
@@ -378,9 +393,13 @@ describe('preview accept/discard', () => {
         expect(call.boundsSweref.north).toBeCloseTo(Math.max(...corners.map(p => p.y)), 6);
         expect(call.boundsSweref.west).toBeLessThan(call.boundsSweref.east);
 
-        // Overlay removed; tiles reloaded so the new ?v= takes effect.
+        // Overlay removed; the new ?v= is applied to the LIVE map in place
+        // (seamless — no full reload / map re-init), then the manifest signal
+        // is resynced. The version comes from the server's bumped generatedAt.
         expect(h.removedOverlays).toContain(CLEAN_PREVIEW_OVERLAY_ID);
-        expect(h.reloads).toEqual(['course-1']);
+        expect(h.orthoRefreshes).toEqual([deriveTileVersion('2026-07-18T12:00:01.000Z')]);
+        expect(h.refreshes).toEqual(['course-1']);
+        expect(h.reloads).toHaveLength(0); // never the flicker-inducing full reload
     });
 
     test('an ellipse-mode accept is logged with tool "ellipse"', async () => {
@@ -400,7 +419,8 @@ describe('preview accept/discard', () => {
         expect(h.svc.phase.get()).toBe('idle');
         expect(h.removedOverlays).toContain(CLEAN_PREVIEW_OVERLAY_ID);
         expect(h.applyCalls).toHaveLength(0);
-        expect(h.reloads).toHaveLength(0);
+        expect(h.refreshes).toHaveLength(0);
+        expect(h.orthoRefreshes).toHaveLength(0);
     });
 
     test('a second click while previewing is refused until accept/discard', async () => {
@@ -433,7 +453,8 @@ test('a failed bake keeps the preview and reports the error', async () => {
     expect(await h.svc.accept()).toBe(false);
     expect(h.svc.phase.get()).toBe('preview'); // still previewable
     expect(h.svc.notice.get()).toContain('server exploded');
-    expect(h.reloads).toHaveLength(0);
+    expect(h.refreshes).toHaveLength(0);
+    expect(h.orthoRefreshes).toHaveLength(0);
 });
 
 // ─── bake pre-flight (legacy courses) ───────────────────────────────────────
@@ -460,7 +481,8 @@ describe('bake pre-flight', () => {
         expect(h.applyCalls).toHaveLength(0);
         expect(h.svc.phase.get()).toBe('preview');
         expect(h.svc.notice.get()).toContain('rebuilt');
-        expect(h.reloads).toHaveLength(0);
+        expect(h.refreshes).toHaveLength(0);
+        expect(h.orthoRefreshes).toHaveLength(0);
     });
 });
 
@@ -473,7 +495,10 @@ describe('revert last patch', () => {
         expect(await h.svc.revertLast()).toBe(true);
         expect(h.revertCalls).toEqual([2]);
         expect(h.svc.patchCount.get()).toBe(1);
-        expect(h.reloads).toEqual(['course-1']);
+        // Seamless in-place refresh, not the full reload.
+        expect(h.orthoRefreshes).toEqual([deriveTileVersion('2026-07-18T12:59:59.000Z')]);
+        expect(h.refreshes).toEqual(['course-1']);
+        expect(h.reloads).toHaveLength(0);
         expect(h.svc.phase.get()).toBe('idle');
     });
 

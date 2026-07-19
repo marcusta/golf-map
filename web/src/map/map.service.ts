@@ -9,8 +9,11 @@ import {
     EDITOR_MAX_ZOOM,
     HILLSHADE_LAYER_ID,
     ORTHO_LAYER_ID,
+    ORTHO_SOURCE_ID,
     TERRAIN_SOURCE_ID,
     orthoLayerId,
+    orthoSourceId,
+    tileUrlTemplate,
 } from './map-style';
 import { InteractionClaims } from './interaction';
 
@@ -54,6 +57,13 @@ export class MapService {
     readonly map = new Signal<maplibregl.Map | null>(null);
     /** True once the style has loaded and terrain is applied. */
     readonly ready = new Signal(false);
+    /**
+     * The tile `?v=` version the LIVE map is currently showing — set on
+     * `init()` and updated by `refreshOrthoTiles()`. The editor canvas reads
+     * this to decide whether a manifest version change needs a full re-init
+     * (structural rebuild) or was already applied in place (ortho patch).
+     */
+    readonly displayedVersion = new Signal<string | null>(null);
     /** Current zoom level, updated live (status bars, LOD decisions). */
     readonly zoom = new Signal(0);
     /**
@@ -72,6 +82,14 @@ export class MapService {
     readonly activeOrtho = new Signal<string | null>(null);
     /** collection → ortho layer id, in manifest order. Empty until init. */
     private orthoLayers: Array<{ collection: string; layerId: string }> = [];
+    /**
+     * Ortho raster SOURCES, in manifest order — the in-place refresh target.
+     * `collection` is set only for non-active vintages (served from
+     * `ortho/<collection>/` via `?c=`); the active/flat source has none.
+     */
+    private orthoSources: Array<{ sourceId: string; collection?: string }> = [];
+    /** The site id (tile-URL key) the live map was built for. */
+    private mapKey: string | null = null;
 
     private claims = new InteractionClaims();
     /** Current exclusive interaction mode (see interaction.ts contract). */
@@ -96,10 +114,18 @@ export class MapService {
         // Ortho vintages → layer ids (mirrors buildEditorStyle). >1 vintage
         // means one layer per collection; otherwise the single flat ortho layer.
         const vintages = manifest.orthoVintages ?? [];
+        const active = manifest.activeOrtho ?? vintages[0]?.collection;
         this.orthoLayers = vintages.length > 1
             ? vintages.map(v => ({ collection: v.collection, layerId: orthoLayerId(v.collection) }))
-            : [{ collection: manifest.activeOrtho ?? vintages[0]?.collection ?? '', layerId: ORTHO_LAYER_ID }];
-        this.activeOrtho.set(manifest.activeOrtho ?? vintages[0]?.collection ?? null);
+            : [{ collection: active ?? '', layerId: ORTHO_LAYER_ID }];
+        this.orthoSources = vintages.length > 1
+            ? vintages.map(v => ({
+                sourceId: orthoSourceId(v.collection),
+                ...(v.collection === active ? {} : { collection: v.collection }),
+            }))
+            : [{ sourceId: ORTHO_SOURCE_ID }];
+        this.mapKey = mapKey;
+        this.activeOrtho.set(active ?? null);
 
         const map = new maplibregl.Map({
             container,
@@ -208,6 +234,7 @@ export class MapService {
         });
 
         this.map.set(map);
+        this.displayedVersion.set(version);
         // QA hook (same as the Phase 2 demo): expose the instance for
         // scripted/visual verification tooling. Not part of the public API.
         (window as any).__map = map;
@@ -219,11 +246,14 @@ export class MapService {
         this.disposers = [];
         this.overlays.clear();
         this.tiles = null;
+        this.orthoSources = [];
+        this.mapKey = null;
         const map = this.map.get();
         if (!map) return;
         batch(() => {
             this.ready.set(false);
             this.map.set(null);
+            this.displayedVersion.set(null);
         });
         map.remove();
     }
@@ -292,6 +322,72 @@ export class MapService {
     setActiveOrtho(collection: string): void {
         if (!this.orthoLayers.some(l => l.collection === collection)) return;
         this.activeOrtho.set(collection);
+    }
+
+    /**
+     * Re-fetch the ortho raster tiles at a new `?v=` version IN PLACE — the
+     * seam-free path after an ortho-only change (Clean-tool bake/revert). The
+     * live map keeps rendering: no re-init, no camera move. Each ortho source
+     * is pointed at the new versioned URL and MapLibre streams the new tiles
+     * over the current ones. Terrain and hillshade sources are deliberately
+     * untouched — ortho patches never change elevation. Updates
+     * `displayedVersion` so the editor canvas knows the live map already shows
+     * this version and skips a full re-init. No-op before `init()`.
+     */
+    refreshOrthoTiles(version: string): void {
+        if (!this.map.get() || !this.mapKey) return;
+        for (const { sourceId, collection } of this.orthoSources) {
+            this.setRasterTileUrl(sourceId, tileUrlTemplate(this.mapKey, 'ortho', 'jpg', version, collection));
+        }
+        this.displayedVersion.set(version);
+    }
+
+    /**
+     * Point a live raster tile source at a new URL template in place. Prefers
+     * `RasterTileSource.setTiles` (MapLibre re-fetches tiles and re-renders,
+     * layer/camera untouched); falls back to swapping the source and re-adding
+     * its layers at the same document positions on runtimes without setTiles.
+     * No-op when the source is absent (map mid-teardown / not built yet).
+     */
+    setRasterTileUrl(sourceId: string, template: string): void {
+        const map = this.map.get();
+        if (!map) return;
+        const source = map.getSource(sourceId) as maplibregl.RasterTileSource | undefined;
+        if (!source) return;
+        if (typeof source.setTiles === 'function') {
+            source.setTiles([template]);
+            return;
+        }
+        this.swapRasterSource(map, sourceId, template);
+    }
+
+    /**
+     * Fallback for `setRasterTileUrl` on older MapLibre without setTiles:
+     * remove the source's layers, re-create the source at the new template,
+     * and re-add the layers at their original positions (each before the first
+     * following layer that is NOT part of the swapped group, so stacking is
+     * preserved). Still no map re-init — the camera is never touched.
+     */
+    private swapRasterSource(map: maplibregl.Map, sourceId: string, template: string): void {
+        const style = map.getStyle();
+        const sourceSpec = style.sources[sourceId];
+        if (!sourceSpec) return;
+        const layers = style.layers;
+        const isDependent = (l: LayerSpecification) => 'source' in l && l.source === sourceId;
+        const dependents = layers
+            .map((layer, i) => ({
+                layer,
+                // The first following layer not itself being swapped — survives
+                // the removal and marks where this layer must be re-inserted.
+                beforeId: layers.slice(i + 1).find(next => !isDependent(next))?.id,
+            }))
+            .filter(x => isDependent(x.layer));
+        for (const { layer } of dependents) if (map.getLayer(layer.id)) map.removeLayer(layer.id);
+        if (map.getSource(sourceId)) map.removeSource(sourceId);
+        map.addSource(sourceId, { ...sourceSpec, tiles: [template] } as typeof sourceSpec);
+        for (const { layer, beforeId } of dependents) {
+            map.addLayer(layer, beforeId && map.getLayer(beforeId) ? beforeId : undefined);
+        }
     }
 
     // ── Event plumbing for tools ──────────────────────────────────────────

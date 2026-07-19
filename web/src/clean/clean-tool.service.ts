@@ -16,7 +16,7 @@
 //   both   → /inpaint(crop, mask) → preview overlay → accept/discard
 //   accept → mask png (white = inpaint) + exact EPSG:3857 crop bounds
 //          → POST /ortho-patches/apply (server-side windowed bake)
-//          → tileset.reload (new ?v=)
+//          → in-place ortho tile refresh at the new ?v= (no map re-init)
 //
 // All I/O sits behind constructor seams (sidecar clients' fetch, the
 // imaging canvas work, the patches API) so the whole state machine runs
@@ -28,6 +28,7 @@ import type { GeoJSON } from 'geojson';
 import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent } from '../map/map.service';
 import { tileUrlTemplate } from '../map/map-style';
+import { deriveTileVersion } from '../map/tileset.service';
 import type { OrthoPatchesApi } from '../../../shared/api/ortho-patches.gen';
 import { api } from '../api';
 import { SamClient, largestPolygon, SAM_CROP_SIZE } from '../sam/sam-client';
@@ -555,7 +556,7 @@ export class CleanToolService {
             this.removePreviewOverlay();
             this.preview = null;
             this.phase.set('idle');
-            await this.reloadTiles();
+            await this.refreshTiles(result.generatedAt);
             return true;
         } catch (err) {
             // Keep the preview so the user can retry or discard.
@@ -576,7 +577,7 @@ export class CleanToolService {
             const result = await this.patchesApi.revertLastOrthoPatch({ courseId: ctx.courseId });
             this.patchCount.set(result.count);
             this.phase.set('idle');
-            await this.reloadTiles();
+            await this.refreshTiles(result.generatedAt);
             return true;
         } catch (err) {
             this.phase.set('idle');
@@ -586,29 +587,22 @@ export class CleanToolService {
     }
 
     /**
-     * After a bake/revert the tile version changed: reload the manifest so
-     * the editor canvas re-inits the map against the new `?v=` (tiles carry
-     * year-long immutable cache headers — same-URL refetches would serve
-     * stale bytes). The camera is captured first and restored once the new
-     * map is ready, so the user stays where they were working.
+     * After a bake/revert the tile version changed. A bake/revert is an
+     * ortho-ONLY change (terrain/hillshade are untouched), so refresh the map
+     * seamlessly IN PLACE instead of re-creating it: point the live ortho
+     * raster source at the new `?v=` (tiles carry year-long immutable cache
+     * headers — same-URL refetches would serve stale bytes) and let MapLibre
+     * stream the new tiles over the current view. No re-init, no camera move.
+     *
+     * The server returns the bumped `generatedAt` it just wrote into the tile
+     * manifest, so we apply the new version to the map FIRST, then resync the
+     * tileset manifest signal — with `displayedVersion` already matching, the
+     * editor canvas sees no version drift and skips its full re-init path.
      */
-    private async reloadTiles(): Promise<void> {
+    private async refreshTiles(generatedAt: string): Promise<void> {
         const ctx = this.ctx;
         if (!ctx) return;
-        const map = ctx.map.map.peek() as MaplibreMap | null;
-        const camera = map
-            ? { center: map.getCenter(), zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() }
-            : null;
-        await ctx.tileset.reload(ctx.courseId);
-        if (!camera) return;
-        let restored = false;
-        const stop = effect(() => {
-            if (restored || !ctx.map.ready.get()) return;
-            restored = true;
-            (ctx.map.map.peek() as MaplibreMap | null)?.jumpTo(camera);
-            queueMicrotask(() => stop());
-        });
-        // Don't leak the effect if the new map never becomes ready.
-        setTimeout(() => { if (!restored) stop(); }, 15_000);
+        ctx.map.refreshOrthoTiles(deriveTileVersion(generatedAt));
+        await ctx.tileset.refreshTiles(ctx.courseId);
     }
 }
