@@ -59,7 +59,6 @@ interface Harness {
     requests: Array<{ url: string; body: unknown }>;
     cropCalls: Array<{ urls: string[]; size: number }>;
     maskCalls: Array<{ area: number; size: number; mask: Uint8Array }>;
-    patchCalls: Array<{ result: string; area: number; size: number }>;
     applyCalls: Array<Parameters<OrthoPatchesApi['applyOrthoPatch']>[0]>;
     revertCalls: number[];
     reloads: string[];
@@ -98,7 +97,6 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
 
     const cropCalls: Harness['cropCalls'] = [];
     const maskCalls: Harness['maskCalls'] = [];
-    const patchCalls: Harness['patchCalls'] = [];
     const imaging: CleanImaging = {
         composeCropPng: async (tiles, size) => {
             cropCalls.push({ urls: tiles.map(t => t.url), size });
@@ -107,10 +105,6 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
         encodeMaskPng: async (mask, size) => {
             maskCalls.push({ area: maskArea(mask), size, mask });
             return 'MASKPNG';
-        },
-        buildPatchPng: async (result, mask, size) => {
-            patchCalls.push({ result, area: maskArea(mask), size });
-            return 'PATCHPNG';
         },
     };
 
@@ -189,7 +183,7 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
     svc.activate(ctx);
     await tick(); // settle the activation health + info probes
     return {
-        svc, interactionMode, clickHandlers, requests, cropCalls, maskCalls, patchCalls,
+        svc, interactionMode, clickHandlers, requests, cropCalls, maskCalls,
         applyCalls, revertCalls, reloads, imageOverlays, removedOverlays, sidecar,
     };
 }
@@ -345,7 +339,7 @@ describe('ellipse mode', () => {
 // ─── preview → accept / discard ─────────────────────────────────────────────
 
 describe('preview accept/discard', () => {
-    test('accept sends the RGBA patch with the crop\'s exact 3857 frame, then reloads tiles', async () => {
+    test('accept sends the MASK png (never fill pixels) with the crop\'s exact 3857 frame, then reloads tiles', async () => {
         const h = await harness();
         await h.svc.clickAt(CLICK);
         expect(h.svc.phase.get()).toBe('preview');
@@ -354,13 +348,14 @@ describe('preview accept/discard', () => {
         expect(h.svc.phase.get()).toBe('idle');
         expect(h.svc.patchCount.get()).toBe(1);
 
-        expect(h.patchCalls).toHaveLength(1);
-        expect(h.patchCalls[0].result).toBe('RESULTPNG');
-
         expect(h.applyCalls).toHaveLength(1);
         const call = h.applyCalls[0];
         expect(call.courseId).toBe('course-1');
-        expect(call.pngBase64).toBe('PATCHPNG');
+        // The bake payload is the encoded mask — the sidecar's inpainted
+        // preview ('RESULTPNG') must never be uploaded (its tile-provenance
+        // pixels are what caused the visible patch seam).
+        expect(call.maskPngBase64).toBe('MASKPNG');
+        expect(JSON.stringify(call)).not.toContain('RESULTPNG');
         expect(call.tool).toBe('sam');
 
         // bounds3857 must be EXACTLY the planned crop's frame.

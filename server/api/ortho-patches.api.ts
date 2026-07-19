@@ -13,9 +13,10 @@ const BoundsSchema = Type.Object({
 
 const ApplyPatchInput = Type.Object({
     courseId: Type.String(),
-    /** RGBA PNG, alpha = pixels to bake, base64 (no data-URL prefix). */
-    pngBase64: Type.String(),
-    /** The patch crop's exact EPSG:3857 frame. */
+    /** MASK PNG (white/opaque = inpaint), base64 (no data-URL prefix). The
+     * fill is computed server-side by LaMa against the pristine source. */
+    maskPngBase64: Type.String(),
+    /** The mask crop's exact EPSG:3857 frame. */
     bounds3857: BoundsSchema,
     /** Same area as an EPSG:3006 bbox (informational, logged). */
     boundsSweref: BoundsSchema,
@@ -33,13 +34,13 @@ export function createOrthoPatchesApi(svc: OrthoPatchesService) {
     const mw = [requireAuth()];
     return {
         // Interactive photo cleaning (T55). apply/revert are synchronous:
-        // replay + subtree retile take seconds, and the response's fresh
-        // generatedAt is what tells the client to refetch tiles.
+        // the windowed bake / replay + subtree retile take seconds, and the
+        // response's fresh generatedAt is what tells the client to refetch.
         applyOrthoPatch: {
             method: 'POST' as const,
             path: '/ortho-patches/apply',
             fn: (input: Static<typeof ApplyPatchInput>) => svc.apply(input.courseId, {
-                pngBase64: input.pngBase64,
+                maskPngBase64: input.maskPngBase64,
                 bounds3857: input.bounds3857,
                 boundsSweref: input.boundsSweref,
                 tool: input.tool,

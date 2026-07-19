@@ -1,18 +1,22 @@
-// "Clean photo" tool (T55) — interactive ortho blemish removal. Click a
-// player/cart/shadow/stray object (SAM mask, dilated ~0.5 m) or drag an
-// ellipse over it (no SAM needed), the sidecar LaMa-inpaints the 512 px
-// crop, and the result shows as a georeferenced PREVIEW overlay on the map.
-// Accept bakes it: the server appends the patch to a replayable log under
-// data/sources/<mapKey>/patches/, replays ALL patches onto the PRISTINE
-// source ortho, retiles only the affected pyramid subtree, and bumps the
-// tile version so the map refetches. The pristine ortho is never modified.
+// "Clean photo" tool (T55, reworked to seam-free baking) — interactive
+// ortho blemish removal. Click a player/cart/shadow/stray object (SAM mask,
+// dilated ~0.5 m) or drag an ellipse over it (no SAM needed), the sidecar
+// LaMa-inpaints the 512 px crop, and the result shows as a georeferenced
+// PREVIEW overlay on the map. Accept sends only the MASK: the server logs
+// it (replayable mask log under data/sources/<mapKey>/patches/) and bakes
+// it with a windowed LaMa inpaint against the PRISTINE source ortho —
+// the preview's fill pixels are never baked (they are composed from
+// WebP-lossy, mercator-resampled tiles and would leave a provenance seam
+// against the pristine raster). The server fill is computed from source
+// pixels, so it lands seamless; it can differ subtly from the preview.
 //
 //   click  → planCrop → compose crop (tiles, never the MapLibre canvas)
 //          → /segment → largestPolygon → fillPolygonMask + dilate
 //   ellipse→ drag defines the mask directly (works without SAM weights)
 //   both   → /inpaint(crop, mask) → preview overlay → accept/discard
-//   accept → RGBA patch png (alpha = mask) + exact EPSG:3857 crop bounds
-//          → POST /ortho-patches/apply → tileset.reload (new ?v=)
+//   accept → mask png (white = inpaint) + exact EPSG:3857 crop bounds
+//          → POST /ortho-patches/apply (server-side windowed bake)
+//          → tileset.reload (new ?v=)
 //
 // All I/O sits behind constructor seams (sidecar clients' fetch, the
 // imaging canvas work, the patches API) so the whole state machine runs
@@ -69,11 +73,9 @@ export interface CleanImaging {
     /** Compose the ortho crop from tiles → base64 PNG (lossless — unmasked
      * result pixels stay byte-identical through the sidecar round trip). */
     composeCropPng(tiles: Array<{ url: string; dx: number; dy: number }>, size: number): Promise<string>;
-    /** Mask bitmap → base64 PNG (white = inpaint) for the sidecar. */
+    /** Mask bitmap → base64 PNG (white = inpaint) — sent to the sidecar for
+     * the preview AND to the server on accept (the bake payload). */
     encodeMaskPng(mask: Uint8Array, size: number): Promise<string>;
-    /** Inpainted result → base64 RGBA PNG with alpha 255 exactly on mask
-     * pixels — the patch the server bakes (only masked pixels land). */
-    buildPatchPng(resultBase64: string, mask: Uint8Array, size: number): Promise<string>;
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -84,13 +86,6 @@ async function blobToBase64(blob: Blob): Promise<string> {
         reader.readAsDataURL(blob);
     });
     return dataUrl.slice(dataUrl.indexOf(',') + 1);
-}
-
-function base64ToBlob(base64: string, type: string): Blob {
-    const bin = atob(base64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new Blob([bytes], { type });
 }
 
 /** Real canvas implementation of the imaging seam. */
@@ -128,25 +123,14 @@ export const browserCleanImaging: CleanImaging = {
         ctx.putImageData(img, 0, 0);
         return blobToBase64(await canvas.convertToBlob({ type: 'image/png' }));
     },
-
-    async buildPatchPng(resultBase64, mask, size) {
-        const bitmap = await createImageBitmap(base64ToBlob(resultBase64, 'image/png'));
-        const canvas = new OffscreenCanvas(size, size);
-        const ctx = canvas.getContext('2d')!;
-        ctx.drawImage(bitmap, 0, 0);
-        bitmap.close();
-        const img = ctx.getImageData(0, 0, size, size);
-        for (let i = 0; i < mask.length; i++) {
-            img.data[i * 4 + 3] = mask[i] ? 255 : 0;
-        }
-        ctx.putImageData(img, 0, 0);
-        return blobToBase64(await canvas.convertToBlob({ type: 'image/png' }));
-    },
 };
 
 interface PreviewState {
     plan: CropPlan;
     mask: Uint8Array;
+    /** The encoded mask png — the ONLY pixel payload the accept sends. */
+    maskPngBase64: string;
+    /** Sidecar inpaint of the tile crop — preview overlay only, never baked. */
     resultBase64: string;
     tool: string; // 'sam' | 'ellipse'
     /** Ground m²-ish size of the mask, for the panel line. */
@@ -485,7 +469,7 @@ export class CleanToolService {
         }
         const maskPng = await this.imaging.encodeMaskPng(mask, plan.size);
         const resultBase64 = await this.client.inpaint(cropBase64, maskPng);
-        this.preview = { plan, mask, resultBase64, tool, maskPixels: pixels };
+        this.preview = { plan, mask, maskPngBase64: maskPng, resultBase64, tool, maskPixels: pixels };
         this.addPreviewOverlay(plan, resultBase64);
         this.phase.set('preview');
         return true;
@@ -526,9 +510,11 @@ export class CleanToolService {
 
     /**
      * Accept: bake the previewed patch into the course ortho + tiles. Sends
-     * the RGBA patch (alpha = mask) with the crop's EXACT EPSG:3857 frame;
-     * the server logs it, replays the full log, retiles the affected
-     * subtree, and bumps the tile version — then the map reloads tiles.
+     * only the MASK png with the crop's EXACT EPSG:3857 frame; the server
+     * logs it, LaMa-inpaints a window of the pristine-based working raster
+     * (seam-free — the preview's tile-provenance pixels are never baked),
+     * retiles the affected subtree, and bumps the tile version — then the
+     * map reloads tiles.
      */
     async accept(): Promise<boolean> {
         const ctx = this.ctx;
@@ -543,8 +529,7 @@ export class CleanToolService {
         this.phase.set('applying');
         this.notice.set(null);
         try {
-            const { plan, mask, resultBase64, tool } = preview;
-            const pngBase64 = await this.imaging.buildPatchPng(resultBase64, mask, plan.size);
+            const { plan, maskPngBase64, tool } = preview;
             const sweref = [
                 cropPixelToSweref(plan, 0, 0),
                 cropPixelToSweref(plan, plan.size, 0),
@@ -553,7 +538,7 @@ export class CleanToolService {
             ];
             const result = await this.patchesApi.applyOrthoPatch({
                 courseId: ctx.courseId,
-                pngBase64,
+                maskPngBase64,
                 bounds3857: planBounds3857(plan),
                 boundsSweref: {
                     west: Math.min(...sweref.map(p => p.x)),

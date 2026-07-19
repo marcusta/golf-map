@@ -15,7 +15,7 @@ export interface OrthoPatchesInfo {
 }
 
 export interface OrthoPatchesApi {
-    applyOrthoPatch(input: { courseId: string; pngBase64: string; bounds3857: { west: number; south: number; east: number; north: number }; boundsSweref: { west: number; south: number; east: number; north: number }; tool: string }): Promise<OrthoPatchResult>;
+    applyOrthoPatch(input: { courseId: string; maskPngBase64: string; bounds3857: { west: number; south: number; east: number; north: number }; boundsSweref: { west: number; south: number; east: number; north: number }; tool: string }): Promise<OrthoPatchResult>;
     revertLastOrthoPatch(input: { courseId: string }): Promise<OrthoPatchResult>;
     orthoPatchesInfo(input: { courseId: string }): Promise<OrthoPatchesInfo>;
 }

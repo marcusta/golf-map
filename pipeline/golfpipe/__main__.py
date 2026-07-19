@@ -12,7 +12,8 @@ Commands:
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor -> .clean.tif
-  apply-ortho-patches  Replay logged inpaint patches onto the pristine ortho + retile the affected subtree
+  bake-ortho-patch  Windowed LaMa-inpaint of ONE logged mask into the working .patched.tif + retile its subtree
+  apply-ortho-patches  Full replay: re-inpaint every logged mask onto the pristine ortho + retile the affected subtree
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   manifest          Write manifest.json for a tiled course
@@ -210,10 +211,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "apply-ortho-patches",
-        help="Replay logged inpaint patches onto the pristine ortho and retile the affected pyramid subtree",
+        help="Full replay: re-inpaint every logged mask onto the pristine ortho and retile the affected pyramid subtree",
     )
     p.add_argument("--ortho", required=True, help="PRISTINE source ortho GeoTIFF (EPSG:3006) — never modified")
-    p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json + <n>.png (see golfpipe/patches.py)")
+    p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json + <n>.png mask files (see golfpipe/patches.py)")
     p.add_argument("--out", help="output patched GeoTIFF (default: <ortho stem>.patched.tif alongside the source; must differ from --ortho)")
     p.add_argument("--tiles-out", dest="tiles_out", help="installed ortho tile tree to rewrite affected tiles in (omit to skip retiling)")
     p.add_argument("--minzoom", type=int, default=commands.DEFAULT_ORTHO_MINZOOM)
@@ -223,6 +224,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="extra west,south,east,north EPSG:3857 bounds to retile (repeatable) — pass a reverted patch's bounds so its tiles rewrite too",
     )
     p.add_argument("--webp-quality", type=int, default=80)
+    p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS; unused when the log is empty)")
+    p.add_argument("--device", help="torch device (default: auto — mps if available, else cuda, else cpu)")
+
+    p = sub.add_parser(
+        "bake-ortho-patch",
+        help="Incremental accept: windowed LaMa-inpaint of ONE logged mask into the working .patched.tif + retile its subtree",
+    )
+    p.add_argument("--ortho", required=True, help="PRISTINE source ortho GeoTIFF (EPSG:3006) — never modified")
+    p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json + <n>.png mask files (see golfpipe/patches.py)")
+    p.add_argument("--seq", type=int, help="log seq of the mask to bake (default: the last entry)")
+    p.add_argument("--out", help="working patched GeoTIFF (default: <ortho stem>.patched.tif; created by full replay when missing/stale)")
+    p.add_argument("--tiles-out", dest="tiles_out", help="installed ortho tile tree to rewrite affected tiles in (omit to skip retiling)")
+    p.add_argument("--minzoom", type=int, default=commands.DEFAULT_ORTHO_MINZOOM)
+    p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_ORTHO_MAXZOOM)
+    p.add_argument("--webp-quality", type=int, default=80)
+    p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS)")
+    p.add_argument("--device", help="torch device (default: auto — mps if available, else cuda, else cpu)")
 
     p = sub.add_parser("tile-ortho", help="Tile an orthophoto GeoTIFF into an XYZ WebP pyramid")
     p.add_argument("--input", required=True, help="input orthophoto GeoTIFF (any CRS)")
@@ -429,6 +447,18 @@ def main(argv: list[str] | None = None) -> int:
                 minzoom=args.minzoom, maxzoom=args.maxzoom,
                 extra_bounds_3857=extra_bounds,
                 webp_quality=args.webp_quality,
+                weights=args.weights, device=args.device,
+            )
+
+        elif args.command == "bake-ortho-patch":
+            commands.cmd_bake_ortho_patch(
+                Path(args.ortho), Path(args.patches_dir),
+                seq=args.seq,
+                out=Path(args.out) if args.out else None,
+                tiles_out=Path(args.tiles_out) if args.tiles_out else None,
+                minzoom=args.minzoom, maxzoom=args.maxzoom,
+                webp_quality=args.webp_quality,
+                weights=args.weights, device=args.device,
             )
 
         elif args.command == "tile-ortho":
