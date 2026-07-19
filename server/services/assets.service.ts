@@ -212,6 +212,24 @@ export class AssetsService {
         );
     }
 
+    /**
+     * Candidate paths for a SIM-overlay ortho tile (dual photo state: cleaned
+     * imagery for golf-simulator export lives in a sparse copy-on-write
+     * `ortho-sim/` tree holding only patch-affected tiles). Candidates are
+     * the overlay tile first, then the pristine flat-tree tile — the caller
+     * serves the first that exists, so an untouched coordinate transparently
+     * falls back to the original photo. Same sanitization as resolveTilePath.
+     */
+    resolveSimTilePathCandidates(courseId: string, z: number, x: number, y: number): string[] {
+        // Pristine candidates run the full sanitization; the sim overlay is
+        // the sibling `ortho-sim/<z>/<x>/<y>.<ext>` dir with the same names.
+        const pristine = this.resolveTilePathCandidates(courseId, 'ortho', z, x, y);
+        const sim = TILE_EXTENSIONS_BY_LAYER.ortho.map((ext) =>
+            path.join(this.dataDir, 'tiles', courseId, 'ortho-sim', String(z), String(x), `${y}.${ext}`),
+        );
+        return [...sim, ...pristine];
+    }
+
     private tilePathForExt(courseId: string, layer: TileLayer, z: number, x: number, y: number, ext: string, collection?: string): string {
         if (!SAFE_ID_RE.test(courseId)) {
             throw new Error(`Invalid courseId: ${courseId}`);

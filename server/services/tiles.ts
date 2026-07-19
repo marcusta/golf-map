@@ -26,6 +26,13 @@ const CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
 const VALID_LAYERS = new Set<TileLayer>(['ortho', 'terrain', 'hillshade']);
 
+// Dual photo state: `ortho-sim` serves the cleaned-photo overlay (sparse
+// copy-on-write tree of patch-affected tiles) with a per-tile fallback to
+// the pristine flat ortho tree. Valid for single-tile requests ONLY — the
+// archive route (iOS bundles) deliberately rejects it so bundles never
+// include sim imagery (planning/playing always uses the original photo).
+const SIM_LAYER = 'ortho-sim';
+
 function parseTileCoordinate(raw: string): number | null {
     if (!/^\d+$/.test(raw)) return null;
     return Number(raw);
@@ -83,7 +90,7 @@ export function createTileRoutes(assetsService: AssetsService, tileKeyLookup?: T
         const { courseId, layer, z, x } = c.req.param();
         const yParam = c.req.param('y');
 
-        if (!VALID_LAYERS.has(layer as TileLayer)) {
+        if (!VALID_LAYERS.has(layer as TileLayer) && layer !== SIM_LAYER) {
             return c.json({ error: 'Invalid layer' }, 400);
         }
 
@@ -107,7 +114,9 @@ export function createTileRoutes(assetsService: AssetsService, tileKeyLookup?: T
 
         let candidates: string[];
         try {
-            candidates = assetsService.resolveTilePathCandidates(tileKey, layer as TileLayer, zNum, xNum, y, collection);
+            candidates = layer === SIM_LAYER
+                ? assetsService.resolveSimTilePathCandidates(tileKey, zNum, xNum, y)
+                : assetsService.resolveTilePathCandidates(tileKey, layer as TileLayer, zNum, xNum, y, collection);
         } catch {
             return c.json({ error: 'Invalid tile request' }, 400);
         }

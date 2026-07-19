@@ -23,6 +23,19 @@ Version 1 stored pre-rendered RGBA fill pixels (the seam-y design); a
 non-empty version-1 log is refused with a clear error instead of being
 misread as masks.
 
+Version 2 carries TWO entry kinds (`kind`, absent = "mask"):
+
+  * mask  — a mask PNG; the fill is LaMa-inpainted (torch needed).
+  * stamp — a clone-stamp STROKE: brush params (sizeM/opacity/flow/
+    hardness), a source→dest offset in EPSG:3006 metres, the dest polyline
+    (EPSG:3006), and the aligned/tone-match capture state. The stroke is
+    re-rendered here with the pure numpy brush engine (golfpipe.stamp) —
+    source pixels read from the CURRENT patched raster shifted by the
+    offset — so stamp entries need NO torch and replay byte-identically.
+
+A log with only stamp entries is therefore fully bakeable without LaMa
+weights or torch; the inpaint_fn is only required when mask entries exist.
+
 Two bake paths (commands.py):
 
   * `bake-ortho-patch` — incremental accept: ONE windowed inpaint into the
@@ -64,9 +77,11 @@ from rasterio.warp import reproject, transform_bounds
 from rasterio.windows import Window
 
 from .inpaint import InpaintFn, inpaint_tiled
+from .stamp import render_stamp
 
 WEB_MERCATOR = CRS.from_epsg(3857)
 WGS84 = CRS.from_epsg(4326)
+SWEREF99_TM = CRS.from_epsg(3006)
 
 PATCH_LOG_NAME = "patches.json"
 PATCH_LOG_VERSION = 2
@@ -93,6 +108,34 @@ class PatchEntry:
     created_at: str
 
 
+@dataclass(frozen=True)
+class StampEntry:
+    """One clone-stamp STROKE (see the module header). No pixel payload —
+    the stroke is re-rendered deterministically from these parameters."""
+
+    seq: int
+    bounds3857: tuple[float, float, float, float]
+    """Dest stroke bbox + brush radius in EPSG:3857 — the retile frame."""
+    size_m: float
+    """Brush DIAMETER in ground metres."""
+    opacity: float
+    flow: float
+    hardness: float
+    offset_m: tuple[float, float]
+    """source = dest + offset, EPSG:3006 metres (dx east, dy north)."""
+    path: tuple[tuple[float, float], ...]
+    """Dest polyline, EPSG:3006 metres (easting, northing)."""
+    aligned: bool
+    """Aligned-clone flag state at capture (informational for replay —
+    the offset above is already resolved per stroke)."""
+    tone_match: bool
+    tool: str
+    created_at: str
+
+
+LogEntry = PatchEntry | StampEntry
+
+
 def _parse_bounds(raw: object, context: str) -> tuple[float, float, float, float]:
     if not isinstance(raw, dict):
         raise PatchError(f"{context}: bounds3857 must be an object with west/south/east/north")
@@ -105,11 +148,68 @@ def _parse_bounds(raw: object, context: str) -> tuple[float, float, float, float
     return (w, s, e, n)
 
 
-def load_patch_log(patches_dir: Path) -> list[PatchEntry]:
+def _parse_stamp(raw: dict, context: str) -> StampEntry:
+    stamp = raw.get("stamp")
+    if not isinstance(stamp, dict):
+        raise PatchError(f"{context}: stamp entry needs a `stamp` object")
+    brush = stamp.get("brush")
+    if not isinstance(brush, dict):
+        raise PatchError(f"{context}: stamp entry needs `stamp.brush`")
+    try:
+        size_m = float(brush["sizeM"])
+        opacity = float(brush["opacity"])
+        flow = float(brush["flow"])
+        hardness = float(brush["hardness"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PatchError(f"{context}: stamp.brush needs numeric sizeM/opacity/flow/hardness") from exc
+    if not (math.isfinite(size_m) and size_m > 0):
+        raise PatchError(f"{context}: stamp.brush.sizeM must be a positive number")
+    for name, v in (("opacity", opacity), ("flow", flow), ("hardness", hardness)):
+        if not (math.isfinite(v) and 0.0 <= v <= 1.0):
+            raise PatchError(f"{context}: stamp.brush.{name} must be in [0, 1]")
+    offset = stamp.get("offsetM")
+    if not isinstance(offset, dict):
+        raise PatchError(f"{context}: stamp entry needs `stamp.offsetM` (dx/dy metres)")
+    try:
+        dx, dy = float(offset["dx"]), float(offset["dy"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PatchError(f"{context}: stamp.offsetM needs numeric dx/dy") from exc
+    if not (math.isfinite(dx) and math.isfinite(dy)):
+        raise PatchError(f"{context}: stamp.offsetM must be finite")
+    raw_path = stamp.get("path")
+    if not isinstance(raw_path, list) or not raw_path:
+        raise PatchError(f"{context}: stamp entry needs a non-empty `stamp.path`")
+    path: list[tuple[float, float]] = []
+    for p in raw_path:
+        try:
+            x, y = float(p[0]), float(p[1])
+        except (TypeError, ValueError, IndexError, KeyError) as exc:
+            raise PatchError(f"{context}: stamp.path points must be [easting, northing] pairs") from exc
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise PatchError(f"{context}: stamp.path points must be finite")
+        path.append((x, y))
+    return StampEntry(
+        seq=int(raw["seq"]),
+        bounds3857=_parse_bounds(raw.get("bounds3857"), context),
+        size_m=size_m,
+        opacity=opacity,
+        flow=flow,
+        hardness=hardness,
+        offset_m=(dx, dy),
+        path=tuple(path),
+        aligned=bool(stamp.get("aligned", False)),
+        tone_match=bool(stamp.get("toneMatch", True)),
+        tool=str(raw.get("tool", "stamp")),
+        created_at=str(raw.get("createdAt", "")),
+    )
+
+
+def load_patch_log(patches_dir: Path) -> list[LogEntry]:
     """Reads and validates `patches.json` from a patches dir, sorted by seq.
     A missing file (course never patched) is an empty log, not an error.
     A NON-empty version-1 log (pre-rendered fill pixels, the retired format)
     is refused: its payloads are not masks and must not be baked as such.
+    Entries are mask entries unless `kind` is "stamp" (see module header).
     """
     log_path = patches_dir / PATCH_LOG_NAME
     if not log_path.is_file():
@@ -131,11 +231,21 @@ def load_patch_log(patches_dir: Path) -> list[PatchEntry]:
             "legacy patches (or delete the patches dir) before baking"
         )
 
-    entries: list[PatchEntry] = []
+    entries: list[LogEntry] = []
     for i, raw in enumerate(raw_patches):
         context = f"{log_path} entry {i}"
         if not isinstance(raw, dict):
             raise PatchError(f"{context}: not an object")
+        kind = raw.get("kind", "mask")
+        if kind == "stamp":
+            try:
+                int(raw["seq"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PatchError(f"{context}: needs an integer `seq`") from exc
+            entries.append(_parse_stamp(raw, context))
+            continue
+        if kind != "mask":
+            raise PatchError(f"{context}: unknown entry kind {kind!r}")
         try:
             seq = int(raw["seq"])
             file = str(raw["file"])
@@ -286,26 +396,110 @@ def inpaint_entry_into(
     return True
 
 
+def stamp_entry_into(dataset, entry: StampEntry) -> bool:
+    """Windowed in-place render of one clone-stamp stroke into `dataset` (a
+    rasterio dataset opened "r+"): reads the dest window around the stroke
+    path plus the offset-shifted source window (a snapshot BEFORE the stroke
+    composites), runs the pure numpy brush engine (golfpipe.stamp), and
+    writes the dest window back. Pixels whose shifted source falls off the
+    raster are left untouched. Returns False (writing nothing) when the
+    stroke misses the raster entirely. Deterministic — byte-reproducible on
+    replay, no torch involved.
+    """
+    xs = [p[0] for p in entry.path]
+    ys = [p[1] for p in entry.path]
+    sx0, sy0 = xs[0] + entry.offset_m[0], ys[0] + entry.offset_m[1]
+    if dataset.crs != SWEREF99_TM:
+        from rasterio.warp import transform as warp_transform
+
+        xs, ys = warp_transform(SWEREF99_TM, dataset.crs, xs, ys)
+        (sx0,), (sy0,) = warp_transform(SWEREF99_TM, dataset.crs, [sx0], [sy0])
+
+    inv = ~dataset.transform
+    path_px = np.array([inv * (x, y) for x, y in zip(xs, ys)], dtype=np.float64)
+    radius_px = (entry.size_m / 2.0) / abs(dataset.transform.a)
+    # The clone offset as an integer pixel shift (≤ half a pixel of rounding
+    # — centimetres at ortho resolution), measured at the stroke's start.
+    scol, srow = inv * (sx0, sy0)
+    shift_c = round(scol - path_px[0][0])
+    shift_r = round(srow - path_px[0][1])
+
+    pad = int(math.ceil(radius_px)) + 2
+    r0 = max(0, int(math.floor(path_px[:, 1].min())) - pad)
+    r1 = min(dataset.height, int(math.ceil(path_px[:, 1].max())) + pad)
+    c0 = max(0, int(math.floor(path_px[:, 0].min())) - pad)
+    c1 = min(dataset.width, int(math.ceil(path_px[:, 0].max())) + pad)
+    if r1 <= r0 or c1 <= c0:
+        return False
+
+    dest = np.moveaxis(dataset.read([1, 2, 3], window=Window(c0, r0, c1 - c0, r1 - r0)), 0, -1)
+    src = np.zeros_like(dest)
+    valid = np.zeros(dest.shape[:2], dtype=bool)
+    sr0, sc0 = r0 + shift_r, c0 + shift_c
+    ir0 = max(sr0, 0)
+    ir1 = min(r1 + shift_r, dataset.height)
+    ic0 = max(sc0, 0)
+    ic1 = min(c1 + shift_c, dataset.width)
+    if ir1 > ir0 and ic1 > ic0:
+        data = dataset.read([1, 2, 3], window=Window(ic0, ir0, ic1 - ic0, ir1 - ir0))
+        src[ir0 - sr0:ir1 - sr0, ic0 - sc0:ic1 - sc0] = np.moveaxis(data, 0, -1)
+        valid[ir0 - sr0:ir1 - sr0, ic0 - sc0:ic1 - sc0] = True
+
+    local_path = path_px - np.array([c0, r0], dtype=np.float64)
+    result = render_stamp(
+        dest, src, valid, local_path, radius_px,
+        entry.opacity, entry.flow, entry.hardness, entry.tone_match,
+    )
+    if np.array_equal(result, dest):
+        return False
+    dataset.write(np.moveaxis(result, -1, 0), window=Window(c0, r0, c1 - c0, r1 - r0), indexes=[1, 2, 3])
+    return True
+
+
+def bake_entry_into(
+    dataset,
+    patches_dir: Path,
+    entry: LogEntry,
+    inpaint_fn: InpaintFn | None,
+    context_px: int = DEFAULT_CONTEXT_PX,
+) -> bool:
+    """Bakes ONE log entry (mask or stamp) into an open "r+" dataset."""
+    if isinstance(entry, StampEntry):
+        return stamp_entry_into(dataset, entry)
+    if inpaint_fn is None:
+        raise PatchError(f"baking mask entry seq {entry.seq} needs an inpaint_fn (LaMa)")
+    mask = load_patch_mask(patches_dir, entry)
+    return inpaint_entry_into(dataset, mask, entry.bounds3857, inpaint_fn, context_px=context_px)
+
+
+def needs_inpaint(entries: list[LogEntry]) -> bool:
+    """True when any entry is a mask (LaMa/torch required); a stamp-only log
+    is fully bakeable without torch."""
+    return any(isinstance(e, PatchEntry) for e in entries)
+
+
 def apply_patches_to_ortho(
     ortho_path: Path,
     patches_dir: Path,
-    entries: list[PatchEntry],
+    entries: list[LogEntry],
     out_path: Path,
     inpaint_fn: InpaintFn | None = None,
     context_px: int = DEFAULT_CONTEXT_PX,
 ) -> None:
     """Full replay: copies the pristine ortho at `ortho_path` to `out_path`
-    and windowed-inpaints every entry (in seq order) into the copy. The
-    pristine source is never modified. An empty log writes an unmodified
-    copy (and needs no `inpaint_fn` — the empty-log path stays torch-free).
+    and windowed-bakes every entry (in seq order) into the copy — masks are
+    LaMa-inpainted, stamp strokes are re-rendered by the brush engine. The
+    pristine source is never modified. An empty or stamp-only log needs no
+    `inpaint_fn` (those paths stay torch-free).
 
-    Fills are regenerated by the model, so two replays are visually
-    equivalent but not guaranteed byte-identical (see the module header).
+    Mask fills are regenerated by the model, so two replays of a mask-bearing
+    log are visually equivalent but not guaranteed byte-identical; stamp
+    strokes replay byte-identically (see the module header).
     """
     if out_path.resolve() == ortho_path.resolve():
         raise PatchError(f"refusing to overwrite the source ortho ({ortho_path}) — pass a different --out")
-    if entries and inpaint_fn is None:
-        raise PatchError("replaying a non-empty patch log needs an inpaint_fn (LaMa)")
+    if needs_inpaint(entries) and inpaint_fn is None:
+        raise PatchError("replaying a patch log with mask entries needs an inpaint_fn (LaMa)")
 
     with rasterio.open(ortho_path) as src:
         if src.count < 3:
@@ -317,8 +511,7 @@ def apply_patches_to_ortho(
         return
     with rasterio.open(out_path, "r+") as dst:
         for entry in entries:
-            mask = load_patch_mask(patches_dir, entry)
-            inpaint_entry_into(dst, mask, entry.bounds3857, inpaint_fn, context_px=context_px)
+            bake_entry_into(dst, patches_dir, entry, inpaint_fn, context_px=context_px)
 
 
 def affected_tiles(

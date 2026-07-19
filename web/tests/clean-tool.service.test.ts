@@ -5,22 +5,25 @@ import type { ToolContext } from '../src/editor/tool';
 import type { FetchLike } from '../src/sam/sam-client';
 import { SamClient, SAM_CROP_SIZE } from '../src/sam/sam-client';
 import { planCrop, cropPixelToSweref } from '../src/sam/sam-crop';
+import { lngLatToSweref99tm } from '../src/geo/transform';
+import { deriveTileVersion } from '../src/map/tileset.service';
 import { CleanClient } from '../src/clean/clean-client';
 import { maskArea, planBounds3857 } from '../src/clean/clean-mask';
 import {
     CleanToolService,
     CLEAN_TOOL_ID,
     CLEAN_PREVIEW_OVERLAY_ID,
+    CLEAN_SOURCE_OVERLAY_ID,
     type CleanImaging,
 } from '../src/clean/clean-tool.service';
-import { deriveTileVersion } from '../src/map/tileset.service';
 import type { OrthoPatchesApi } from '../../shared/api/ortho-patches.gen';
 
-// T55 — Clean-photo tool. The pointer/canvas wiring needs a live map +
-// sidecar, so these tests drive the mask-mode state machine and the
-// clickAt/finishEllipse/accept/discard/revert seams with canned sidecar
-// responses, a fake imaging seam (no OffscreenCanvas in happy-dom), and a
-// fake patches API (sam-tool.service.test.ts pattern).
+// Clean-photo tool — mask modes (T55) + clone stamp + pending queue + batch
+// baking into the dual-state sim photo. The pointer/canvas wiring needs a
+// live map + sidecar, so these tests drive the mask/stroke state machine and
+// the clickAt/finishEllipse/pickSource/beginStroke/accept/bakeAll seams with
+// canned sidecar responses, a fake imaging seam (no OffscreenCanvas in
+// happy-dom), and a fake patches API (sam-tool.service.test.ts pattern).
 
 let cleanups: Array<() => void> = [];
 
@@ -53,27 +56,42 @@ interface SidecarOpts {
     inpaintStatus?: number;
 }
 
+type ApplyEditsInput = Parameters<OrthoPatchesApi['applyOrthoEdits']>[0];
+
 interface Harness {
     svc: CleanToolService;
     interactionMode: Signal<string>;
     clickHandlers: Array<(e: { lngLat: { lng: number; lat: number } }) => void>;
     requests: Array<{ url: string; body: unknown }>;
     cropCalls: Array<{ urls: string[]; size: number }>;
+    pixelCropCalls: Array<{ urls: string[]; size: number }>;
     maskCalls: Array<{ area: number; size: number; mask: Uint8Array }>;
-    applyCalls: Array<Parameters<OrthoPatchesApi['applyOrthoPatch']>[0]>;
+    applyCalls: ApplyEditsInput[];
     revertCalls: number[];
-    /** courseIds passed to the (seamless) tileset.refreshTiles resync. */
+    /** courseIds passed to the tileset.refreshTiles resync. */
     refreshes: string[];
     /** tile versions pushed to the live map's in-place ortho refresh. */
     orthoRefreshes: string[];
+    /** dual-photo-state switches on the live map. */
+    photoStates: Array<{ layer: string; version: string }>;
     /** courseIds passed to the full tileset.reload (must stay empty here). */
     reloads: string[];
     imageOverlays: Array<{ id: string; url: string; coords: number[][]; beforeId?: string }>;
     removedOverlays: string[];
+    confirms: string[];
     sidecar: SidecarOpts;
+    mapReady: Signal<boolean>;
 }
 
-async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boolean } = {}): Promise<Harness> {
+async function harness(opts: SidecarOpts & {
+    patchCount?: number;
+    bakeable?: boolean;
+    stampBakeable?: boolean;
+    patchesGeneratedAt?: string | null;
+    mapReady?: boolean;
+    confirmAnswer?: boolean;
+    failApply?: boolean;
+} = {}): Promise<Harness> {
     const sidecar: SidecarOpts = {
         online: opts.online ?? true,
         inpaintAvailable: opts.inpaintAvailable ?? true,
@@ -102,6 +120,7 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
     };
 
     const cropCalls: Harness['cropCalls'] = [];
+    const pixelCropCalls: Harness['pixelCropCalls'] = [];
     const maskCalls: Harness['maskCalls'] = [];
     const imaging: CleanImaging = {
         composeCropPng: async (tiles, size) => {
@@ -112,34 +131,49 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
             maskCalls.push({ area: maskArea(mask), size, mask });
             return 'MASKPNG';
         },
+        composeCropPixels: async (tiles, size) => {
+            pixelCropCalls.push({ urls: tiles.map(t => t.url), size });
+            const px = new Uint8ClampedArray(size * size * 4);
+            px.fill(128);
+            return px;
+        },
+        pixelsToPngDataUrl: async () => 'data:image/png;base64,SURFACE',
     };
 
     const applyCalls: Harness['applyCalls'] = [];
     const revertCalls: number[] = [];
     let count = opts.patchCount ?? 0;
     const patchesApi: OrthoPatchesApi = {
-        applyOrthoPatch: async input => {
+        applyOrthoEdits: async input => {
+            if (opts.failApply) throw new Error('server exploded');
             applyCalls.push(input);
-            count += 1;
-            return { count, generatedAt: `2026-07-18T12:00:0${count}.000Z` };
+            count += input.edits.length;
+            return { count, patchesGeneratedAt: `2026-07-18T12:00:0${count}.000Z` };
         },
         revertLastOrthoPatch: async () => {
             revertCalls.push(count);
             count = Math.max(0, count - 1);
-            return { count, generatedAt: '2026-07-18T12:59:59.000Z' };
+            return { count, patchesGeneratedAt: '2026-07-18T12:59:59.000Z' };
         },
         orthoPatchesInfo: async () => ({
             count, lastCreatedAt: null, lastTool: null,
             bakeable: opts.bakeable ?? true,
+            stampBakeable: opts.stampBakeable ?? opts.bakeable ?? true,
             reason: (opts.bakeable ?? true) ? undefined : 'rebuild the map first',
+            patchesGeneratedAt: opts.patchesGeneratedAt ?? null,
         }),
     };
 
+    const confirms: string[] = [];
     const svc = new CleanToolService(
         new CleanClient('http://sam.test', fetchFn),
         new SamClient('http://sam.test', fetchFn),
         imaging,
         patchesApi,
+        message => {
+            confirms.push(message);
+            return opts.confirmAnswer ?? true;
+        },
     );
 
     const interactionMode = new Signal<string>(CLEAN_TOOL_ID);
@@ -148,7 +182,9 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
     const removedOverlays: string[] = [];
     const refreshes: string[] = [];
     const orthoRefreshes: string[] = [];
+    const photoStates: Harness['photoStates'] = [];
     const reloads: string[] = [];
+    const mapReady = new Signal(opts.mapReady ?? false);
     const manifest = {
         bounds: { west: 15.5, south: 58.3, east: 15.7, north: 58.5 },
         layers: { ortho: { minzoom: 14, maxzoom: ZOOM }, terrain: { minzoom: 12, maxzoom: 16 } },
@@ -158,15 +194,15 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
     const ctx: ToolContext = {
         map: {
             interactionMode,
-            ready: new Signal(false),
+            ready: mapReady,
             map: new Signal(null),
             onClick: (h: Harness['clickHandlers'][number]) => {
                 clickHandlers.push(h);
                 return () => {};
             },
             onMouseMove: () => () => {},
-            addImageOverlay: (id: string, url: string, coords: number[][], opts?: { beforeId?: string }) => {
-                imageOverlays.push({ id, url, coords, beforeId: opts?.beforeId });
+            addImageOverlay: (id: string, url: string, coords: number[][], overlayOpts?: { beforeId?: string }) => {
+                imageOverlays.push({ id, url, coords, beforeId: overlayOpts?.beforeId });
             },
             addOverlayLayer: () => {},
             updateOverlayData: () => {},
@@ -175,6 +211,9 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
             },
             refreshOrthoTiles: (version: string) => {
                 orthoRefreshes.push(version);
+            },
+            setOrthoPhotoState: (layer: string, version: string) => {
+                photoStates.push({ layer, version });
             },
         } as never,
         elevation: null as never,
@@ -197,9 +236,9 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
     svc.activate(ctx);
     await tick(); // settle the activation health + info probes
     return {
-        svc, interactionMode, clickHandlers, requests, cropCalls, maskCalls,
-        applyCalls, revertCalls, refreshes, orthoRefreshes, reloads,
-        imageOverlays, removedOverlays, sidecar,
+        svc, interactionMode, clickHandlers, requests, cropCalls, pixelCropCalls, maskCalls,
+        applyCalls, revertCalls, refreshes, orthoRefreshes, photoStates, reloads,
+        imageOverlays, removedOverlays, confirms, sidecar, mapReady,
     };
 }
 
@@ -229,6 +268,15 @@ describe('health gating', () => {
         expect(h.cropCalls).toHaveLength(0);
     });
 
+    test('the STAMP mode never needs the sidecar: strokes work while offline', async () => {
+        const h = await harness({ online: false });
+        h.svc.mode.set('stamp');
+        h.svc.pickSource({ lng: CLICK.lng + 0.0002, lat: CLICK.lat });
+        expect(await h.svc.beginStroke(CLICK)).toBe(true);
+        expect(await h.svc.endStroke()).toBe(true);
+        expect(h.svc.pendingCount.get()).toBe(1);
+    });
+
     test('retry flips the gate once the sidecar comes up', async () => {
         const h = await harness({ online: false });
         h.sidecar.online = true;
@@ -246,11 +294,12 @@ describe('click mode', () => {
         expect(await h.svc.clickAt(CLICK)).toBe(true);
         expect(h.svc.phase.get()).toBe('preview');
 
-        // Crop composed from direct ortho tile URLs at maxzoom.
+        // Crop composed from SIM-layer tile URLs at maxzoom (cleaning is
+        // cumulative on the cleaned photo; the route falls back per-tile).
         expect(h.cropCalls).toHaveLength(1);
         expect(h.cropCalls[0].size).toBe(SAM_CROP_SIZE);
         for (const url of h.cropCalls[0].urls) {
-            expect(url).toMatch(/^\/tiles\/site-1\/ortho\/20\/\d+\/\d+\.jpg\?v=20260714T102511864Z$/);
+            expect(url).toMatch(/^\/tiles\/site-1\/ortho-sim\/20\/\d+\/\d+\.jpg\?v=20260714T102511864Z$/);
         }
 
         // /inpaint contract: PNG crop + encoded mask, JSON body pinned.
@@ -278,6 +327,14 @@ describe('click mode', () => {
         expect(tl[1]).toBeGreaterThan(bl[1]); // north of
         expect(br[0]).toBeCloseTo(tr[0], 12);
         expect(br[1]).toBeCloseTo(bl[1], 12);
+    });
+
+    test('the sim crop template uses the sim version once known', async () => {
+        const h = await harness({ patchesGeneratedAt: '2026-07-18T09:00:00.000Z' });
+        await h.svc.clickAt(CLICK);
+        for (const url of h.cropCalls[0].urls) {
+            expect(url).toContain(`?v=${deriveTileVersion('2026-07-18T09:00:00.000Z')}`);
+        }
     });
 
     test('SAM finding nothing sets a notice and never calls /inpaint', async () => {
@@ -354,73 +411,43 @@ describe('ellipse mode', () => {
     });
 });
 
-// ─── preview → accept / discard ─────────────────────────────────────────────
+// ─── candidate preview → pending queue ──────────────────────────────────────
 
-describe('preview accept/discard', () => {
-    test('accept sends the MASK png (never fill pixels) with the crop\'s exact 3857 frame, then reloads tiles', async () => {
+describe('accept queues (no server call)', () => {
+    test('accept moves the candidate into the pending queue with its overlay kept', async () => {
         const h = await harness();
         await h.svc.clickAt(CLICK);
         expect(h.svc.phase.get()).toBe('preview');
 
-        expect(await h.svc.accept()).toBe(true);
+        expect(h.svc.accept()).toBe(true);
         expect(h.svc.phase.get()).toBe('idle');
-        expect(h.svc.patchCount.get()).toBe(1);
+        expect(h.svc.pendingCount.get()).toBe(1);
+        expect(h.svc.patchCount.get()).toBe(0); // nothing baked yet
+        expect(h.applyCalls).toHaveLength(0); // NO server call on accept
 
-        expect(h.applyCalls).toHaveLength(1);
-        const call = h.applyCalls[0];
-        expect(call.courseId).toBe('course-1');
-        // The bake payload is the encoded mask — the sidecar's inpainted
-        // preview ('RESULTPNG') must never be uploaded (its tile-provenance
-        // pixels are what caused the visible patch seam).
-        expect(call.maskPngBase64).toBe('MASKPNG');
-        expect(JSON.stringify(call)).not.toContain('RESULTPNG');
-        expect(call.tool).toBe('sam');
-
-        // bounds3857 must be EXACTLY the planned crop's frame.
-        const plan = planCrop(CLICK.lng, CLICK.lat, ZOOM)!;
-        expect(call.bounds3857).toEqual(planBounds3857(plan));
-
-        // boundsSweref is the EPSG:3006 bbox of the crop corners.
-        const corners = [
-            cropPixelToSweref(plan, 0, 0),
-            cropPixelToSweref(plan, plan.size, 0),
-            cropPixelToSweref(plan, plan.size, plan.size),
-            cropPixelToSweref(plan, 0, plan.size),
-        ];
-        expect(call.boundsSweref.west).toBeCloseTo(Math.min(...corners.map(p => p.x)), 6);
-        expect(call.boundsSweref.east).toBeCloseTo(Math.max(...corners.map(p => p.x)), 6);
-        expect(call.boundsSweref.south).toBeCloseTo(Math.min(...corners.map(p => p.y)), 6);
-        expect(call.boundsSweref.north).toBeCloseTo(Math.max(...corners.map(p => p.y)), 6);
-        expect(call.boundsSweref.west).toBeLessThan(call.boundsSweref.east);
-
-        // Overlay removed; the new ?v= is applied to the LIVE map in place
-        // (seamless — no full reload / map re-init), then the manifest signal
-        // is resynced. The version comes from the server's bumped generatedAt.
+        // The preview re-anchors under a per-edit id (still below the fills)
+        // and the candidate slot frees up.
+        const pendingOverlay = h.imageOverlays[h.imageOverlays.length - 1];
+        expect(pendingOverlay.id).toMatch(/^clean-pending-/);
+        expect(pendingOverlay.url).toBe('data:image/png;base64,RESULTPNG');
+        expect(pendingOverlay.beforeId).toBe('features-fill');
         expect(h.removedOverlays).toContain(CLEAN_PREVIEW_OVERLAY_ID);
-        expect(h.orthoRefreshes).toEqual([deriveTileVersion('2026-07-18T12:00:01.000Z')]);
-        expect(h.refreshes).toEqual(['course-1']);
-        expect(h.reloads).toHaveLength(0); // never the flicker-inducing full reload
+
+        // A second candidate can start right away and queue behind it.
+        expect(await h.svc.clickAt(CLICK)).toBe(true);
+        expect(h.svc.accept()).toBe(true);
+        expect(h.svc.pendingCount.get()).toBe(2);
     });
 
-    test('an ellipse-mode accept is logged with tool "ellipse"', async () => {
-        const h = await harness();
-        h.svc.mode.set('ellipse');
-        const a = { lng: CLICK.lng - 0.00005, lat: CLICK.lat - 0.00002 };
-        const b = { lng: CLICK.lng + 0.00005, lat: CLICK.lat + 0.00002 };
-        await h.svc.finishEllipse(a, b);
-        await h.svc.accept();
-        expect(h.applyCalls[0].tool).toBe('ellipse');
-    });
-
-    test('discard drops the overlay and stores nothing', async () => {
+    test('discard drops the candidate and stores nothing', async () => {
         const h = await harness();
         await h.svc.clickAt(CLICK);
         h.svc.discard();
         expect(h.svc.phase.get()).toBe('idle');
+        expect(h.svc.pendingCount.get()).toBe(0);
         expect(h.removedOverlays).toContain(CLEAN_PREVIEW_OVERLAY_ID);
         expect(h.applyCalls).toHaveLength(0);
         expect(h.refreshes).toHaveLength(0);
-        expect(h.orthoRefreshes).toHaveLength(0);
     });
 
     test('a second click while previewing is refused until accept/discard', async () => {
@@ -431,74 +458,392 @@ describe('preview accept/discard', () => {
         expect(h.cropCalls).toHaveLength(1);
     });
 
-    test('esc discards the preview', async () => {
+    test('esc discards the candidate preview first, then prompts for the queue', async () => {
         const h = await harness();
         await h.svc.clickAt(CLICK);
-        expect(h.svc.onEscape()).toBe(true);
+        h.svc.accept();
+        await h.svc.clickAt(CLICK);
+        expect(h.svc.onEscape()).toBe(true); // candidate discarded
         expect(h.svc.phase.get()).toBe('idle');
+        expect(h.svc.pendingCount.get()).toBe(1);
+        expect(h.svc.onEscape()).toBe(true); // queue prompt (confirm=true → discard all)
+        expect(h.confirms).toHaveLength(1);
+        expect(h.svc.pendingCount.get()).toBe(0);
         expect(h.svc.onEscape()).toBe(false); // nothing left to consume
     });
-});
 
-test('a failed bake keeps the preview and reports the error', async () => {
-    const h = await harness();
-    await h.svc.clickAt(CLICK);
-    // Swap the injected patches API for a throwing one mid-test.
-    const svcAny = h.svc as unknown as { patchesApi: OrthoPatchesApi };
-    svcAny.patchesApi = {
-        applyOrthoPatch: async () => { throw new Error('server exploded'); },
-        revertLastOrthoPatch: async () => ({ count: 0, generatedAt: '' }),
-        orthoPatchesInfo: async () => ({ count: 0, lastCreatedAt: null, lastTool: null, bakeable: true }),
-    };
-    expect(await h.svc.accept()).toBe(false);
-    expect(h.svc.phase.get()).toBe('preview'); // still previewable
-    expect(h.svc.notice.get()).toContain('server exploded');
-    expect(h.refreshes).toHaveLength(0);
-    expect(h.orthoRefreshes).toHaveLength(0);
-});
-
-// ─── bake pre-flight (legacy courses) ───────────────────────────────────────
-
-describe('bake pre-flight', () => {
-    test('bakeable course: info flips the gate on, accept is allowed', async () => {
+    test('discardLastPending removes the newest pending mask edit and its overlay', async () => {
         const h = await harness();
-        expect(h.svc.bakeable.get()).toBe(true);
-        expect(h.svc.bakeReason.get()).toBeNull();
+        await h.svc.clickAt(CLICK);
+        h.svc.accept();
+        const overlayId = h.imageOverlays[h.imageOverlays.length - 1].id;
+        expect(h.svc.discardLastPending()).toBe(true);
+        expect(h.svc.pendingCount.get()).toBe(0);
+        expect(h.removedOverlays).toContain(overlayId);
+    });
+});
+
+// ─── batch bake ─────────────────────────────────────────────────────────────
+
+describe('bakeAll', () => {
+    test('sends the whole ordered queue in ONE call with exact frames, then refreshes ONLY the sim photo', async () => {
+        const h = await harness({ mapReady: true });
+        h.photoStates.length = 0; // drop the activation-time switch
+        await h.svc.clickAt(CLICK);
+        h.svc.accept();
+        h.svc.mode.set('ellipse');
+        const a = { lng: CLICK.lng - 0.00005, lat: CLICK.lat - 0.00002 };
+        const b = { lng: CLICK.lng + 0.00005, lat: CLICK.lat + 0.00002 };
+        await h.svc.finishEllipse(a, b);
+        h.svc.accept();
+        expect(h.svc.pendingCount.get()).toBe(2);
+
+        expect(await h.svc.bakeAll()).toBe(true);
+        expect(h.svc.phase.get()).toBe('idle');
+        expect(h.svc.pendingCount.get()).toBe(0);
+        expect(h.svc.patchCount.get()).toBe(2);
+
+        expect(h.applyCalls).toHaveLength(1);
+        const call = h.applyCalls[0];
+        expect(call.courseId).toBe('course-1');
+        expect(call.edits).toHaveLength(2);
+        expect(call.edits.map(e => e.kind)).toEqual(['mask', 'mask']);
+        expect(call.edits.map(e => (e as { tool?: string }).tool)).toEqual(['sam', 'ellipse']);
+
+        // The bake payload is the encoded mask — the sidecar's inpainted
+        // preview ('RESULTPNG') must never be uploaded (its tile-provenance
+        // pixels are what caused the visible patch seam).
+        const first = call.edits[0] as { maskPngBase64: string; bounds3857: unknown; boundsSweref: { west: number; east: number; south: number; north: number } };
+        expect(first.maskPngBase64).toBe('MASKPNG');
+        expect(JSON.stringify(call)).not.toContain('RESULTPNG');
+
+        // bounds3857 must be EXACTLY the planned crop's frame.
+        const plan = planCrop(CLICK.lng, CLICK.lat, ZOOM)!;
+        expect(first.bounds3857).toEqual(planBounds3857(plan));
+        const corners = [
+            cropPixelToSweref(plan, 0, 0),
+            cropPixelToSweref(plan, plan.size, 0),
+            cropPixelToSweref(plan, plan.size, plan.size),
+            cropPixelToSweref(plan, 0, plan.size),
+        ];
+        expect(first.boundsSweref.west).toBeCloseTo(Math.min(...corners.map(p => p.x)), 6);
+        expect(first.boundsSweref.east).toBeCloseTo(Math.max(...corners.map(p => p.x)), 6);
+
+        // Dual photo state: the SIM source refetches at the response's
+        // patchesGeneratedAt; the pristine version is never touched (no
+        // refreshOrthoTiles, no full reload), then the manifest resyncs.
+        const last = h.photoStates[h.photoStates.length - 1];
+        expect(last.layer).toBe('ortho-sim');
+        expect(last.version).toBe(deriveTileVersion('2026-07-18T12:00:02.000Z'));
+        expect(h.orthoRefreshes).toHaveLength(0);
+        expect(h.reloads).toHaveLength(0);
+        expect(h.refreshes).toEqual(['course-1']);
     });
 
-    test('non-bakeable course: preview still works, but accept refuses without touching the server', async () => {
-        const h = await harness({ bakeable: false });
-        // info() on activation surfaced the reason up front.
-        expect(h.svc.bakeable.get()).toBe(false);
-        expect(h.svc.bakeReason.get()).toContain('rebuild the map');
-
-        // Previewing is genuinely useful — the click pipeline still runs.
-        expect(await h.svc.clickAt(CLICK)).toBe(true);
-        expect(h.svc.phase.get()).toBe('preview');
-
-        // But baking is blocked before any patch is sent; preview is kept.
-        expect(await h.svc.accept()).toBe(false);
-        expect(h.applyCalls).toHaveLength(0);
-        expect(h.svc.phase.get()).toBe('preview');
-        expect(h.svc.notice.get()).toContain('rebuilt');
+    test('a failed bake keeps the whole queue (and previews) for retry', async () => {
+        const h = await harness({ failApply: true });
+        await h.svc.clickAt(CLICK);
+        h.svc.accept();
+        expect(await h.svc.bakeAll()).toBe(false);
+        expect(h.svc.phase.get()).toBe('idle');
+        expect(h.svc.pendingCount.get()).toBe(1); // still queued
+        expect(h.svc.notice.get()).toContain('server exploded');
         expect(h.refreshes).toHaveLength(0);
-        expect(h.orthoRefreshes).toHaveLength(0);
+    });
+
+    test('bakeAll with an empty queue is a no-op', async () => {
+        const h = await harness();
+        expect(await h.svc.bakeAll()).toBe(false);
+        expect(h.applyCalls).toHaveLength(0);
+    });
+});
+
+// ─── clone stamp ────────────────────────────────────────────────────────────
+
+describe('stamp mode', () => {
+    // ~11 m east of CLICK at this latitude.
+    const SOURCE = { lng: CLICK.lng + 0.0002, lat: CLICK.lat };
+
+    async function stampHarness(opts: Parameters<typeof harness>[0] = {}) {
+        const h = await harness(opts);
+        h.svc.mode.set('stamp');
+        return h;
+    }
+
+    test('alt-click picks the source (ring overlay); strokes without a source refuse', async () => {
+        const h = await stampHarness();
+        expect(await h.svc.beginStroke(CLICK)).toBe(false);
+        expect(h.svc.notice.get()).toContain('pick a clone source');
+
+        h.svc.pickSource(SOURCE);
+        expect(h.svc.hasStampSource.get()).toBe(true);
+        expect(h.svc.notice.get()).toBeNull();
+        expect(await h.svc.beginStroke(CLICK)).toBe(true);
+        expect(await h.svc.endStroke()).toBe(true);
+        expect(h.svc.pendingCount.get()).toBe(1);
+    });
+
+    test('a stroke composes ONE surface from sim tiles and paints it below the feature fills', async () => {
+        const h = await stampHarness();
+        h.svc.pickSource(SOURCE);
+        await h.svc.beginStroke(CLICK);
+        h.svc.extendStroke({ lng: CLICK.lng + 0.00004, lat: CLICK.lat });
+        await h.svc.endStroke();
+
+        expect(h.pixelCropCalls).toHaveLength(1);
+        expect(h.pixelCropCalls[0].size).toBe(SAM_CROP_SIZE);
+        for (const url of h.pixelCropCalls[0].urls) {
+            expect(url).toMatch(/^\/tiles\/site-1\/ortho-sim\/20\//);
+        }
+        const surface = h.imageOverlays.find(o => o.id.startsWith('clean-stamp-'))!;
+        expect(surface.url).toBe('data:image/png;base64,SURFACE');
+        expect(surface.beforeId).toBe('features-fill');
+
+        // A second stroke in the same area re-uses the surface (one compose).
+        await h.svc.beginStroke({ lng: CLICK.lng + 0.00002, lat: CLICK.lat });
+        await h.svc.endStroke();
+        expect(h.pixelCropCalls).toHaveLength(1);
+        expect(h.svc.pendingCount.get()).toBe(2);
+    });
+
+    test('ALIGNED: the source offset persists across strokes', async () => {
+        const h = await stampHarness();
+        h.svc.stampAligned.set(true);
+        h.svc.pickSource(SOURCE);
+        const d1 = CLICK;
+        const d2 = { lng: CLICK.lng - 0.0001, lat: CLICK.lat + 0.00003 };
+        await h.svc.beginStroke(d1);
+        await h.svc.endStroke();
+        await h.svc.beginStroke(d2);
+        await h.svc.endStroke();
+        await h.svc.bakeAll();
+
+        const edits = h.applyCalls[0].edits as Array<{ kind: string; offsetM: { dx: number; dy: number }; path: Array<{ x: number; y: number }>; aligned: boolean }>;
+        expect(edits.map(e => e.kind)).toEqual(['stamp', 'stamp']);
+        const s = lngLatToSweref99tm(SOURCE);
+        const p1 = lngLatToSweref99tm(d1);
+        // Stroke 1 establishes offset = source − firstDest…
+        expect(edits[0].offsetM.dx).toBeCloseTo(s.x - p1.x, 6);
+        expect(edits[0].offsetM.dy).toBeCloseTo(s.y - p1.y, 6);
+        // …and stroke 2 KEEPS that offset (its source follows the brush).
+        expect(edits[1].offsetM.dx).toBeCloseTo(edits[0].offsetM.dx, 9);
+        expect(edits[1].offsetM.dy).toBeCloseTo(edits[0].offsetM.dy, 9);
+        expect(edits[0].aligned).toBe(true);
+        // Paths are dest geo coords (EPSG:3006) starting at each stroke's start.
+        expect(edits[0].path[0].x).toBeCloseTo(p1.x, 6);
+        expect(edits[0].path[0].y).toBeCloseTo(p1.y, 6);
+    });
+
+    test('NON-aligned: every stroke restarts from the picked source', async () => {
+        const h = await stampHarness();
+        h.svc.stampAligned.set(false);
+        h.svc.pickSource(SOURCE);
+        const d1 = CLICK;
+        const d2 = { lng: CLICK.lng - 0.0001, lat: CLICK.lat + 0.00003 };
+        await h.svc.beginStroke(d1);
+        await h.svc.endStroke();
+        await h.svc.beginStroke(d2);
+        await h.svc.endStroke();
+        await h.svc.bakeAll();
+
+        const edits = h.applyCalls[0].edits as Array<{ offsetM: { dx: number; dy: number }; aligned: boolean }>;
+        const s = lngLatToSweref99tm(SOURCE);
+        const p1 = lngLatToSweref99tm(d1);
+        const p2 = lngLatToSweref99tm(d2);
+        expect(edits[0].offsetM.dx).toBeCloseTo(s.x - p1.x, 6);
+        expect(edits[1].offsetM.dx).toBeCloseTo(s.x - p2.x, 6);
+        expect(edits[1].offsetM.dx).not.toBeCloseTo(edits[0].offsetM.dx, 4);
+        expect(edits[0].aligned).toBe(false);
+    });
+
+    test('the stamp payload carries brush params, tone-match state, and a radius-padded 3857 frame', async () => {
+        const h = await stampHarness();
+        h.svc.stampSizeM.set(4);
+        h.svc.stampOpacity.set(0.8);
+        h.svc.stampFlow.set(0.5);
+        h.svc.stampHardness.set(0.6);
+        h.svc.stampToneMatch.set(false);
+        h.svc.pickSource(SOURCE);
+        await h.svc.beginStroke(CLICK);
+        h.svc.extendStroke({ lng: CLICK.lng + 0.00008, lat: CLICK.lat });
+        await h.svc.endStroke();
+        await h.svc.bakeAll();
+
+        const edit = h.applyCalls[0].edits[0] as {
+            kind: string;
+            brush: { sizeM: number; opacity: number; flow: number; hardness: number };
+            toneMatch: boolean;
+            path: Array<{ x: number; y: number }>;
+            bounds3857: { west: number; east: number; south: number; north: number };
+            boundsSweref: { west: number; east: number };
+        };
+        expect(edit.kind).toBe('stamp');
+        expect(edit.brush).toEqual({ sizeM: 4, opacity: 0.8, flow: 0.5, hardness: 0.6 });
+        expect(edit.toneMatch).toBe(false);
+        expect(edit.path.length).toBeGreaterThan(1);
+        // The 3857 frame pads the path bbox by the brush radius (in mercator
+        // metres — ground metres / cos(lat)).
+        const rMerc = 2 / Math.cos((CLICK.lat * Math.PI) / 180);
+        expect(edit.bounds3857.east - edit.bounds3857.west).toBeGreaterThan(2 * rMerc);
+        expect(edit.bounds3857.north - edit.bounds3857.south).toBeCloseTo(2 * rMerc, 3);
+        // The sweref frame pads by the plain ground radius.
+        const sw = lngLatToSweref99tm(CLICK);
+        expect(edit.boundsSweref.west).toBeCloseTo(sw.x - 2, 1);
+    });
+
+    test('discardLastPending peels the newest stroke; the surface re-renders or disappears', async () => {
+        const h = await stampHarness();
+        h.svc.pickSource(SOURCE);
+        await h.svc.beginStroke(CLICK);
+        await h.svc.endStroke();
+        await h.svc.beginStroke({ lng: CLICK.lng + 0.00003, lat: CLICK.lat });
+        await h.svc.endStroke();
+        expect(h.svc.pendingCount.get()).toBe(2);
+
+        expect(h.svc.discardLastPending()).toBe(true);
+        expect(h.svc.pendingCount.get()).toBe(1);
+        const surfaceId = h.imageOverlays.find(o => o.id.startsWith('clean-stamp-'))!.id;
+        expect(h.removedOverlays.filter(id => id === surfaceId).length).toBeGreaterThan(0); // re-render path
+
+        // Dropping the last stroke removes the surface overlay entirely.
+        expect(h.svc.discardLastPending()).toBe(true);
+        expect(h.svc.pendingCount.get()).toBe(0);
+        expect(h.removedOverlays[h.removedOverlays.length - 1]).toBe(surfaceId);
+    });
+
+    test('escape cancels a live stroke without queueing it', async () => {
+        const h = await stampHarness();
+        h.svc.pickSource(SOURCE);
+        await h.svc.beginStroke(CLICK);
+        expect(h.svc.onEscape()).toBe(true);
+        expect(await h.svc.endStroke()).toBe(false);
+        expect(h.svc.pendingCount.get()).toBe(0);
+    });
+
+    test('shift-click strokes a straight line from the last dab', async () => {
+        const h = await stampHarness();
+        h.svc.pickSource(SOURCE);
+        await h.svc.beginStroke(CLICK);
+        await h.svc.endStroke();
+        const to = { lng: CLICK.lng + 0.0001, lat: CLICK.lat + 0.00002 };
+        expect(await h.svc.strokeLine(CLICK, to)).toBe(true);
+        expect(h.svc.pendingCount.get()).toBe(2);
+        await h.svc.bakeAll();
+        const line = h.applyCalls[0].edits[1] as { path: Array<{ x: number; y: number }> };
+        expect(line.path.length).toBeGreaterThan(2); // sampled along the segment
+        const first = line.path[0];
+        const last = line.path[line.path.length - 1];
+        const a = lngLatToSweref99tm(CLICK);
+        const b = lngLatToSweref99tm(to);
+        expect(first.x).toBeCloseTo(a.x, 4);
+        expect(last.x).toBeCloseTo(b.x, 0);
+    });
+
+    test('a stamp-only queue bakes even when MASK baking is blocked (no LaMa deps)', async () => {
+        const h = await stampHarness({ bakeable: false, stampBakeable: true });
+        expect(h.svc.stampBakeable.get()).toBe(true);
+        h.svc.pickSource(SOURCE);
+        await h.svc.beginStroke(CLICK);
+        await h.svc.endStroke();
+        expect(await h.svc.bakeAll()).toBe(true);
+        expect(h.applyCalls).toHaveLength(1);
+    });
+
+    test('a queue WITH masks refuses to bake while mask baking is blocked', async () => {
+        const h = await harness({ bakeable: false, stampBakeable: true });
+        await h.svc.clickAt(CLICK);
+        h.svc.accept();
+        expect(await h.svc.bakeAll()).toBe(false);
+        expect(h.applyCalls).toHaveLength(0);
+        expect(h.svc.pendingCount.get()).toBe(1);
+        expect(h.svc.notice.get()).toContain('rebuild the map');
+    });
+
+    test('pickSource resets the aligned offset (a new source re-anchors)', async () => {
+        const h = await stampHarness();
+        h.svc.stampAligned.set(true);
+        h.svc.pickSource(SOURCE);
+        await h.svc.beginStroke(CLICK);
+        await h.svc.endStroke();
+        const source2 = { lng: CLICK.lng - 0.0003, lat: CLICK.lat };
+        h.svc.pickSource(source2);
+        await h.svc.beginStroke(CLICK);
+        await h.svc.endStroke();
+        await h.svc.bakeAll();
+        const edits = h.applyCalls[0].edits as Array<{ offsetM: { dx: number } }>;
+        const s2 = lngLatToSweref99tm(source2);
+        const p = lngLatToSweref99tm(CLICK);
+        expect(edits[1].offsetM.dx).toBeCloseTo(s2.x - p.x, 6);
+        expect(edits[1].offsetM.dx).not.toBeCloseTo(edits[0].offsetM.dx, 4);
+    });
+});
+
+// ─── dual photo state ───────────────────────────────────────────────────────
+
+describe('photo state (sim vs pristine)', () => {
+    test('activation switches the ready map to the sim layer; toggle flips back; deactivate restores pristine', async () => {
+        const h = await harness({ mapReady: true, patchesGeneratedAt: '2026-07-18T09:00:00.000Z' });
+        // Activation (map ready) pointed the flat source at ortho-sim.
+        expect(h.photoStates.length).toBeGreaterThan(0);
+        expect(h.photoStates[h.photoStates.length - 1]).toEqual({
+            layer: 'ortho-sim',
+            version: deriveTileVersion('2026-07-18T09:00:00.000Z'),
+        });
+
+        h.svc.setShowCleaned(false);
+        expect(h.photoStates[h.photoStates.length - 1]).toEqual({
+            layer: 'ortho',
+            version: '20260714T102511864Z',
+        });
+        h.svc.setShowCleaned(true);
+        expect(h.photoStates[h.photoStates.length - 1].layer).toBe('ortho-sim');
+
+        h.svc.deactivate();
+        expect(h.photoStates[h.photoStates.length - 1]).toEqual({
+            layer: 'ortho',
+            version: '20260714T102511864Z',
+        });
+    });
+
+    test('before any bake the sim ?v= falls back to the pristine version', async () => {
+        const h = await harness({ mapReady: true, patchesGeneratedAt: null });
+        const first = h.photoStates.find(p => p.layer === 'ortho-sim')!;
+        expect(first.version).toBe('20260714T102511864Z');
+    });
+
+    test('deactivate with pending edits prompts: confirm bakes, cancel discards', async () => {
+        const h = await harness({ confirmAnswer: false });
+        await h.svc.clickAt(CLICK);
+        h.svc.accept();
+        h.svc.deactivate();
+        expect(h.confirms).toHaveLength(1);
+        expect(h.confirms[0]).toContain('pending');
+        expect(h.applyCalls).toHaveLength(0); // declined → discarded
+        expect(h.svc.pendingCount.get()).toBe(0);
+
+        const h2 = await harness({ confirmAnswer: true });
+        await h2.svc.clickAt(CLICK);
+        h2.svc.accept();
+        h2.svc.deactivate();
+        await tick();
+        expect(h2.applyCalls).toHaveLength(1); // confirmed → baked
     });
 });
 
 // ─── revert ─────────────────────────────────────────────────────────────────
 
 describe('revert last patch', () => {
-    test('reverts, updates the count, and reloads tiles', async () => {
-        const h = await harness({ patchCount: 2 });
+    test('reverts, updates the count, and refreshes the sim photo only', async () => {
+        const h = await harness({ patchCount: 2, mapReady: true });
+        h.photoStates.length = 0;
         expect(h.svc.patchCount.get()).toBe(2);
         expect(await h.svc.revertLast()).toBe(true);
         expect(h.revertCalls).toEqual([2]);
         expect(h.svc.patchCount.get()).toBe(1);
-        // Seamless in-place refresh, not the full reload.
-        expect(h.orthoRefreshes).toEqual([deriveTileVersion('2026-07-18T12:59:59.000Z')]);
         expect(h.refreshes).toEqual(['course-1']);
         expect(h.reloads).toHaveLength(0);
+        expect(h.orthoRefreshes).toHaveLength(0); // pristine version untouched
+        expect(h.photoStates[h.photoStates.length - 1].layer).toBe('ortho-sim');
         expect(h.svc.phase.get()).toBe('idle');
     });
 
@@ -545,5 +890,9 @@ describe('CleanClient contract', () => {
 
         const dead = new CleanClient('http://sam.test', async () => { throw new Error('down'); });
         expect((await dead.health()).online).toBe(false);
+    });
+
+    test('the source ring overlay id is stable (regression pin)', () => {
+        expect(CLEAN_SOURCE_OVERLAY_ID).toBe('clean-stamp-source');
     });
 });

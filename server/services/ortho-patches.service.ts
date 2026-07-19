@@ -16,11 +16,24 @@ export interface PatchBounds {
     north: number;
 }
 
-export interface OrthoPatchInput {
+/** Clone-stamp brush parameters (normal brush-engine semantics — see
+ * pipeline/golfpipe/stamp.py, the authoritative renderer). */
+export interface StampBrush {
+    /** Brush DIAMETER in ground metres. */
+    sizeM: number;
+    /** Whole-stroke alpha cap, (0, 1]. */
+    opacity: number;
+    /** Per-dab alpha + dab spacing driver, (0, 1]. */
+    flow: number;
+    /** Fully-opaque core fraction of the radius, [0, 1]. */
+    hardness: number;
+}
+
+export interface OrthoMaskEditInput {
+    kind: 'mask';
     /** MASK PNG (white/opaque = pixel to inpaint), base64 (no data-URL
-     * prefix). The fill is computed server-side by LaMa against the pristine
-     * source — the client's locally-inpainted preview pixels are never
-     * baked (they carry WebP-lossy tile provenance and would seam). */
+     * prefix). The fill is computed server-side by LaMa against the working
+     * patched raster — client preview pixels are never baked. */
     maskPngBase64: string;
     /** The mask's EXACT frame: the tile crop's EPSG:3857 rectangle. */
     bounds3857: PatchBounds;
@@ -30,34 +43,72 @@ export interface OrthoPatchInput {
     tool: string;
 }
 
+export interface OrthoStampEditInput {
+    kind: 'stamp';
+    brush: StampBrush;
+    /** source = dest + offset, EPSG:3006 metres (dx east, dy north). */
+    offsetM: { dx: number; dy: number };
+    /** Dest stroke polyline, EPSG:3006 metres. */
+    path: Array<{ x: number; y: number }>;
+    /** Aligned-clone flag state at capture (stored for the log). */
+    aligned: boolean;
+    /** Tone-match toggle state for this stroke (default on client-side). */
+    toneMatch: boolean;
+    /** Dest stroke bbox + brush radius in EPSG:3857 — the retile frame. */
+    bounds3857: PatchBounds;
+    boundsSweref: PatchBounds;
+}
+
+export type OrthoEditInput = OrthoMaskEditInput | OrthoStampEditInput;
+
 export interface OrthoPatchesInfo {
     count: number;
     lastCreatedAt: string | null;
     lastTool: string | null;
-    /** Whether accepted patches can be baked onto the pristine ortho + tiles
-     * right now (false on legacy courses with no persisted source). */
+    /** Whether MASK edits can bake right now (pristine source resolvable AND
+     * the LaMa/torch inpaint deps are present). */
     bakeable: boolean;
-    /** Human reason cleaning can only preview (present when !bakeable). */
+    /** Whether STAMP edits can bake (pristine source resolvable — stamps are
+     * pure pixel math and never need torch). */
+    stampBakeable: boolean;
+    /** Human reason cleaning can't (fully) bake (present when !bakeable). */
     reason?: string;
+    /** The SIM layer's version stamp (null before the first bake). */
+    patchesGeneratedAt: string | null;
 }
 
 export interface OrthoPatchResult {
     count: number;
-    /** The bumped tile-manifest generatedAt (drives the ?v= cache-buster). */
-    generatedAt: string;
+    /** The bumped SIM-layer version stamp (drives the ortho-sim ?v=). The
+     * pristine tree's generatedAt is deliberately NOT touched by bakes. */
+    patchesGeneratedAt: string;
+}
+
+interface StampLogPayload {
+    brush: StampBrush;
+    offsetM: { dx: number; dy: number };
+    path: number[][];
+    aligned: boolean;
+    toneMatch: boolean;
 }
 
 interface PatchLogEntry {
     seq: number;
-    file: string;
+    /** Absent = 'mask' (pre-stamp logs). */
+    kind?: 'mask' | 'stamp';
+    /** Mask entries only: the mask PNG file name. */
+    file?: string;
     bounds3857: PatchBounds;
     boundsSweref: PatchBounds;
     tool: string;
     createdAt: string;
+    /** Stamp entries only. */
+    stamp?: StampLogPayload;
 }
 
-/** Version 2: entries are MASKS (server-side inpaint). Version 1 stored
- * pre-rendered fill pixels; a non-empty v1 log is refused, never misread. */
+/** Version 2: entries are MASKS (server-side inpaint) or STAMP strokes
+ * (server-side brush-engine render). Version 1 stored pre-rendered fill
+ * pixels; a non-empty v1 log is refused, never misread. */
 interface PatchLog {
     version: 2;
     patches: PatchLogEntry[];
@@ -81,6 +132,10 @@ export interface OrthoPatchesDeps {
 
 const MAX_PATCH_PNG_BYTES = 24 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MAX_EDITS_PER_BATCH = 50;
+const MAX_STAMP_PATH_POINTS = 4000;
+const MAX_STAMP_OFFSET_M = 10_000;
+const MAX_STAMP_SIZE_M = 100;
 
 // Ortho tiles are built z14..z20 (map-build.service.ts) — retile the same range.
 const ORTHO_MINZOOM = 14;
@@ -118,29 +173,46 @@ function boundsArg(b: PatchBounds): string {
 }
 
 /**
- * Interactive ortho photo cleaning (T55, reworked to seam-free windowed
- * baking): stores accepted patches as a REPLAYABLE LOG of MASKS under
- * `data/sources/<siteId>/patches/` (`<n>.png` mask + `patches.json`,
- * version 2) — the pristine source ortho is never modified.
+ * Interactive ortho photo cleaning: stores accepted edits as a REPLAYABLE
+ * LOG under `data/sources/<siteId>/patches/` (`patches.json`, version 2) —
+ * the pristine source ortho is never modified. Two entry kinds:
  *
- * The client previews a locally-inpainted crop but on accept sends only the
- * MASK; the fill is computed server-side by `golfpipe bake-ortho-patch`,
- * which LaMa-inpaints a context window of the working `.patched.tif`
- * (pristine + prior patches, created lazily) and rewrites only that mask's
- * tile-pyramid subtree — no full-raster rewrite per accept. Baking against
- * source pixels (instead of pasting the client's WebP-lossy, mercator-
- * resampled tile pixels) is what eliminates the visible patch seam.
+ *  - MASK (`<n>.png` + entry): the fill is LaMa-inpainted server-side by
+ *    golfpipe against the working `.patched.tif` (seam-free by provenance;
+ *    needs torch + weights).
+ *  - STAMP (entry only — brush params, source→dest offset, dest polyline):
+ *    re-rendered by golfpipe's pure numpy brush engine. Torch-free and
+ *    byte-reproducible on replay.
  *
- * Revert (and any rebuild after a vintage change) runs the FULL replay
- * (`golfpipe apply-ortho-patches`): pristine copy + every logged mask
- * re-inpainted in order. Because fills are regenerated by the model, a
- * replay is visually equivalent — NOT byte-identical — to the bakes it
- * replaces; the mask log, not the fill bytes, is the source of truth
- * (accepted by design).
+ * ## Dual photo state (sim layer)
  *
- * Every apply/revert bumps the tile manifest's `generatedAt` so the `?v=`
- * cache-buster changes and clients refetch (tile responses carry year-long
- * immutable cache headers).
+ * Cleaning is for GOLF-SIMULATOR EXPORT ONLY — the planning/playing imagery
+ * (web planner, draw mode, iOS tile bundles) must keep showing the ORIGINAL
+ * photo. Bakes therefore NEVER touch the pristine flat tile tree
+ * (`tiles/<siteId>/ortho/`). Instead they retile the affected subtree into a
+ * parallel copy-on-write overlay `tiles/<siteId>/ortho-sim/` holding ONLY
+ * patch-affected tiles; the tile route serves an `ortho-sim` request from
+ * that overlay when the file exists and falls back to the pristine tile
+ * otherwise. The overlay carries its OWN version stamp
+ * (`patchesGeneratedAt` in the manifest/asset meta) so pristine tile caches
+ * are never invalidated by cleaning; the pristine `generatedAt` stops
+ * changing on bake/revert. The working `.patched.tif` alongside the source
+ * remains the Unity/GSPro export source of truth. Reverting the last
+ * remaining patch empties the sim tree entirely (pure pristine fallback).
+ *
+ * ## Batch baking
+ *
+ * `applyEdits` accepts the client's whole PENDING QUEUE in one call: all
+ * entries are appended to the log, then ONE `golfpipe bake-ortho-patch`
+ * invocation bakes them in order against the evolving patched raster and
+ * retiles the UNION of affected subtrees in a single pass — a batch of N
+ * edits pays for one process start, one raster open, one retile, one
+ * version bump. A single accept is just a batch of one (no parallel paths).
+ *
+ * Revert (revert-last, one LOG ENTRY at a time) runs the FULL replay
+ * (`golfpipe apply-ortho-patches`): pristine copy + every remaining logged
+ * edit re-baked in order. Mask fills are regenerated by the model (visually
+ * equivalent, not byte-identical); stamp strokes replay byte-identically.
  */
 export class OrthoPatchesService {
     private readonly db: Kysely<Database>;
@@ -172,19 +244,21 @@ export class OrthoPatchesService {
     // --- Public API ---
 
     /**
-     * Patch count + last-entry summary for the course's map (site), plus a
-     * pre-flight `bakeable` flag (+ `reason`) computed by the SAME source
-     * resolution the bake uses — so the Clean panel can gate "Accept & bake"
-     * up front instead of failing late (legacy/unbuilt courses can only
-     * preview).
+     * Patch count + last-entry summary for the course's map (site), plus the
+     * pre-flight `bakeable` (mask edits) / `stampBakeable` (stamp edits)
+     * flags computed by the SAME source resolution the bake uses — so the
+     * Clean panel can gate "Bake" up front instead of failing late. Stamps
+     * only need the source (pure pixel math); masks additionally need the
+     * LaMa weights + torch.
      */
     async info(courseId: string): Promise<OrthoPatchesInfo> {
         const siteId = await this.siteIdForCourse(courseId);
         if (!siteId) {
             return {
                 count: 0, lastCreatedAt: null, lastTool: null,
-                bakeable: false,
+                bakeable: false, stampBakeable: false,
                 reason: `Course ${courseId} has no map (no site) — build the map first`,
+                patchesGeneratedAt: null,
             };
         }
         const log = await this.readLog(siteId);
@@ -195,36 +269,39 @@ export class OrthoPatchesService {
             lastCreatedAt: last?.createdAt ?? null,
             lastTool: last?.tool ?? null,
             ...bake,
+            patchesGeneratedAt: await this.readSimGeneratedAt(siteId),
         };
     }
 
     /**
-     * Pre-flight for the Clean panel: can accepted patches actually bake?
-     * Runs the same resolution the bake uses (manifest present + a pristine
-     * ortho source resolvable) PLUS the server-side inpaint requirements
-     * (LaMa weights on disk, torch importable in the pipeline venv),
-     * reporting the blocking reason rather than failing late at accept.
+     * Pre-flight for the Clean panel. Source-resolution failures block BOTH
+     * kinds; missing inpaint deps (LaMa weights / torch) block only masks —
+     * a stamp-only queue stays bakeable without them.
      */
-    private async checkBakeable(siteId: string): Promise<{ bakeable: boolean; reason?: string }> {
+    private async checkBakeable(siteId: string): Promise<{ bakeable: boolean; stampBakeable: boolean; reason?: string }> {
         const manifestAsset = (await this.assets.listBySite(siteId)).find(a => a.kind === 'tile_manifest');
         if (!manifestAsset?.metaJson) {
-            return { bakeable: false, reason: `Site ${siteId} has no tile manifest — build the map first` };
+            return {
+                bakeable: false, stampBakeable: false,
+                reason: `Site ${siteId} has no tile manifest — build the map first`,
+            };
         }
         const resolved = await this.resolveOrthoSource(siteId, manifestAsset.metaJson);
-        if ('reason' in resolved) return { bakeable: false, reason: resolved.reason };
-        return this.checkInpaintDeps();
+        if ('reason' in resolved) return { bakeable: false, stampBakeable: false, reason: resolved.reason };
+        const inpaint = await this.checkInpaintDeps();
+        return { bakeable: inpaint.ok, stampBakeable: true, reason: inpaint.reason };
     }
 
     /**
-     * The bake now inpaints server-side, so the pipeline venv needs the
+     * Mask bakes inpaint server-side, so the pipeline venv needs the
      * optional torch extra and the big-lama checkpoint. Torch's import probe
      * costs a couple of seconds, so it is cached for the process lifetime;
      * the weights file is re-checked each time (downloadable while running).
      */
-    private async checkInpaintDeps(): Promise<{ bakeable: boolean; reason?: string }> {
+    private async checkInpaintDeps(): Promise<{ ok: boolean; reason?: string }> {
         if (!(await Bun.file(this.lamaWeights).exists())) {
             return {
-                bakeable: false,
+                ok: false,
                 reason: `LaMa weights missing at ${this.lamaWeights} — download big-lama.pt (see pipeline/README.md)`,
             };
         }
@@ -233,72 +310,151 @@ export class OrthoPatchesService {
         }).then(r => r.code === 0, () => false);
         if (!(await this.torchCheck)) {
             return {
-                bakeable: false,
+                ok: false,
                 reason: 'Inpaint dependencies (torch) missing in the pipeline venv — '
                     + 'cd pipeline && ./.venv/bin/pip install -r requirements-inpaint.txt',
             };
         }
-        return { bakeable: true };
+        return { ok: true };
     }
 
     /**
-     * Stores one accepted mask (png + log entry) and bakes it INCREMENTALLY:
-     * `golfpipe bake-ortho-patch` runs one windowed LaMa inpaint into the
-     * working `.patched.tif` (created lazily from pristine on first patch)
-     * and retiles only that mask's subtree, then the tile version bumps. On
-     * pipeline failure the stored mask is rolled back — the log only ever
-     * describes what the tiles show.
+     * Batch accept: appends every edit (in order) to the log — mask edits
+     * store their png, stamp edits are log-only — then bakes them with ONE
+     * `golfpipe bake-ortho-patch --seq a --seq b …` call: each entry's
+     * window is processed in seq order against the evolving `.patched.tif`
+     * and the UNION of affected subtrees is retiled once, into the SIM
+     * overlay tree (the pristine flat tree is never touched). On pipeline
+     * failure every stored edit of the batch is rolled back — the log only
+     * ever describes what the sim tiles show.
      */
-    async apply(courseId: string, input: OrthoPatchInput): Promise<OrthoPatchResult> {
-        return this.enqueue(courseId, async (site) => {
-            const png = this.decodeMaskPng(input.maskPngBase64);
-            if (!validBounds(input.bounds3857) || !validBounds(input.boundsSweref)) {
-                throw new Error('Patch bounds are degenerate (need finite west < east, south < north)');
-            }
-            if (!input.tool || input.tool.length > 40) throw new Error('Patch tool label is missing/too long');
+    async applyEdits(courseId: string, edits: OrthoEditInput[]): Promise<OrthoPatchResult> {
+        if (!Array.isArray(edits) || edits.length === 0) {
+            throw new Error('No edits to bake');
+        }
+        if (edits.length > MAX_EDITS_PER_BATCH) {
+            throw new Error(`Too many edits in one batch (${edits.length}, max ${MAX_EDITS_PER_BATCH})`);
+        }
+        // Validate/decode everything up front — nothing is stored on error.
+        const prepared = edits.map(e => this.prepareEdit(e));
 
+        return this.enqueue(courseId, async (site) => {
             const dir = this.patchesDir(site.siteId);
             await mkdir(dir, { recursive: true });
             const log = await this.readLog(site.siteId);
-            const seq = (log.patches[log.patches.length - 1]?.seq ?? 0) + 1;
-            const file = `${seq}.png`;
-            const entry: PatchLogEntry = {
-                seq,
-                file,
-                bounds3857: input.bounds3857,
-                boundsSweref: input.boundsSweref,
-                tool: input.tool,
-                createdAt: new Date().toISOString(),
-            };
-            await writeFile(path.join(dir, file), png);
-            await this.writeLog(site.siteId, { ...log, patches: [...log.patches, entry] });
+            let seq = log.patches[log.patches.length - 1]?.seq ?? 0;
+
+            const newEntries: PatchLogEntry[] = [];
+            const writtenFiles: string[] = [];
+            for (const p of prepared) {
+                seq += 1;
+                const entry: PatchLogEntry = { ...p.entry, seq, createdAt: new Date().toISOString() };
+                if (p.png) {
+                    entry.file = `${seq}.png`;
+                    await writeFile(path.join(dir, entry.file), p.png);
+                    writtenFiles.push(entry.file);
+                }
+                newEntries.push(entry);
+            }
+            await this.writeLog(site.siteId, { ...log, patches: [...log.patches, ...newEntries] });
 
             try {
-                await this.bakeOne(site, seq);
+                await this.bakeSeqs(site, newEntries.map(e => e.seq));
             } catch (err) {
-                // Roll back: the failed patch must not linger in the log.
+                // Roll back: a failed batch must not linger in the log.
                 await this.writeLog(site.siteId, log).catch(() => {});
-                await rm(path.join(dir, file), { force: true }).catch(() => {});
+                for (const file of writtenFiles) {
+                    await rm(path.join(dir, file), { force: true }).catch(() => {});
+                }
                 throw err;
             }
 
-            const generatedAt = await this.bumpTileVersion(site.siteId);
-            return { count: log.patches.length + 1, generatedAt };
+            const patchesGeneratedAt = await this.bumpSimVersion(site.siteId);
+            return { count: log.patches.length + newEntries.length, patchesGeneratedAt };
         });
     }
 
+    /** Validates one edit; returns the (seq-less) log entry + mask png. */
+    private prepareEdit(edit: OrthoEditInput): { entry: Omit<PatchLogEntry, 'seq' | 'createdAt'>; png: Buffer | null } {
+        if (!validBounds(edit.bounds3857) || !validBounds(edit.boundsSweref)) {
+            throw new Error('Edit bounds are degenerate (need finite west < east, south < north)');
+        }
+        if (edit.kind === 'mask') {
+            const png = this.decodeMaskPng(edit.maskPngBase64);
+            if (!edit.tool || edit.tool.length > 40) throw new Error('Edit tool label is missing/too long');
+            return {
+                entry: {
+                    kind: 'mask',
+                    bounds3857: edit.bounds3857,
+                    boundsSweref: edit.boundsSweref,
+                    tool: edit.tool,
+                },
+                png,
+            };
+        }
+        if (edit.kind !== 'stamp') {
+            throw new Error(`Unknown edit kind ${(edit as { kind?: string }).kind}`);
+        }
+        const { brush, offsetM, path: strokePath } = edit;
+        if (!Number.isFinite(brush?.sizeM) || brush.sizeM <= 0 || brush.sizeM > MAX_STAMP_SIZE_M) {
+            throw new Error(`Stamp brush sizeM must be in (0, ${MAX_STAMP_SIZE_M}] metres`);
+        }
+        for (const [name, v, min] of [
+            ['opacity', brush.opacity, 0.01],
+            ['flow', brush.flow, 0.01],
+            ['hardness', brush.hardness, 0],
+        ] as const) {
+            if (!Number.isFinite(v) || v < min || v > 1) {
+                throw new Error(`Stamp brush ${name} must be in [${min}, 1]`);
+            }
+        }
+        if (!Number.isFinite(offsetM?.dx) || !Number.isFinite(offsetM?.dy)
+            || Math.abs(offsetM.dx) > MAX_STAMP_OFFSET_M || Math.abs(offsetM.dy) > MAX_STAMP_OFFSET_M) {
+            throw new Error(`Stamp offset must be finite and within ±${MAX_STAMP_OFFSET_M} m`);
+        }
+        if (!Array.isArray(strokePath) || strokePath.length === 0 || strokePath.length > MAX_STAMP_PATH_POINTS) {
+            throw new Error(`Stamp path needs 1..${MAX_STAMP_PATH_POINTS} points`);
+        }
+        for (const p of strokePath) {
+            if (!Number.isFinite(p?.x) || !Number.isFinite(p?.y)) {
+                throw new Error('Stamp path points must be finite {x, y}');
+            }
+        }
+        return {
+            entry: {
+                kind: 'stamp',
+                bounds3857: edit.bounds3857,
+                boundsSweref: edit.boundsSweref,
+                tool: 'stamp',
+                stamp: {
+                    brush: {
+                        sizeM: brush.sizeM, opacity: brush.opacity,
+                        flow: brush.flow, hardness: brush.hardness,
+                    },
+                    offsetM: { dx: offsetM.dx, dy: offsetM.dy },
+                    path: strokePath.map(p => [p.x, p.y]),
+                    aligned: !!edit.aligned,
+                    toneMatch: !!edit.toneMatch,
+                },
+            },
+            png: null,
+        };
+    }
+
     /**
-     * Revert v1: drops the LAST log entry, re-replays the remaining log
-     * (full replay from pristine — remaining fills are REGENERATED by LaMa,
-     * visually equivalent but not byte-identical to the original bakes), and
-     * retiles the reverted patch's bounds too (its tiles must rewrite from
-     * the now-unpatched raster). No-op result when the log is empty.
+     * Revert v1: drops the LAST log entry (one entry, not one batch), re-
+     * replays the remaining log (full replay from pristine — remaining mask
+     * fills are REGENERATED by LaMa; stamp strokes replay byte-identically)
+     * into the sim overlay, and retiles the reverted entry's bounds too (its
+     * sim tiles must rewrite from the now-unpatched raster). When the log
+     * becomes empty the whole sim tree is deleted — every ortho-sim request
+     * then falls back to the pristine tile. No-op result on an empty log.
      */
     async revertLast(courseId: string): Promise<OrthoPatchResult> {
         return this.enqueue(courseId, async (site) => {
             const log = await this.readLog(site.siteId);
             const last = log.patches[log.patches.length - 1];
-            if (!last) return { count: 0, generatedAt: await this.readGeneratedAt(site.siteId) };
+            if (!last) return { count: 0, patchesGeneratedAt: (await this.readSimGeneratedAt(site.siteId)) ?? '' };
 
             const remaining: PatchLog = { ...log, patches: log.patches.slice(0, -1) };
             await this.writeLog(site.siteId, remaining);
@@ -308,10 +464,16 @@ export class OrthoPatchesService {
                 await this.writeLog(site.siteId, log).catch(() => {});
                 throw err;
             }
-            await rm(path.join(this.patchesDir(site.siteId), last.file), { force: true }).catch(() => {});
+            if (last.file) {
+                await rm(path.join(this.patchesDir(site.siteId), last.file), { force: true }).catch(() => {});
+            }
+            if (remaining.patches.length === 0) {
+                // Nothing baked anymore: pure pristine fallback everywhere.
+                await rm(this.simTilesDir(site.siteId), { recursive: true, force: true }).catch(() => {});
+            }
 
-            const generatedAt = await this.bumpTileVersion(site.siteId);
-            return { count: remaining.patches.length, generatedAt };
+            const patchesGeneratedAt = await this.bumpSimVersion(site.siteId);
+            return { count: remaining.patches.length, patchesGeneratedAt };
         });
     }
 
@@ -418,13 +580,17 @@ export class OrthoPatchesService {
 
     // --- Bake / replay + versioning ---
 
-    /** Common args shared by the incremental bake and the full replay. */
+    /** Common args shared by the incremental bake and the full replay: bakes
+     * land in the SIM overlay tree; the pristine flat tree is read-only (the
+     * retile derives lower-zoom parents from it where the sim overlay has no
+     * child tile of its own). */
     private bakeArgs(site: { siteId: string; sourcePath: string }): string[] {
         return [
             '--ortho', site.sourcePath,
             '--patches-dir', this.patchesDir(site.siteId),
             '--out', site.sourcePath.replace(/\.tif$/i, '.patched.tif'),
-            '--tiles-out', path.join(this.dataDir, 'tiles', site.siteId, 'ortho'),
+            '--tiles-out', this.simTilesDir(site.siteId),
+            '--pristine-tiles', path.join(this.dataDir, 'tiles', site.siteId, 'ortho'),
             '--minzoom', String(ORTHO_MINZOOM),
             '--maxzoom', String(ORTHO_MAXZOOM),
             '--weights', this.lamaWeights,
@@ -441,9 +607,11 @@ export class OrthoPatchesService {
         }
     }
 
-    /** Incremental accept: windowed inpaint of ONE mask + subtree retile. */
-    private async bakeOne(site: { siteId: string; sourcePath: string }, seq: number): Promise<void> {
-        await this.runGolfpipe(['bake-ortho-patch', ...this.bakeArgs(site), '--seq', String(seq)]);
+    /** Batch accept: windowed bakes of the given seqs + ONE union retile. */
+    private async bakeSeqs(site: { siteId: string; sourcePath: string }, seqs: number[]): Promise<void> {
+        const args = ['bake-ortho-patch', ...this.bakeArgs(site)];
+        for (const seq of seqs) args.push('--seq', String(seq));
+        await this.runGolfpipe(args);
     }
 
     /** Full replay from pristine (revert / rebuild convergence). */
@@ -457,36 +625,36 @@ export class OrthoPatchesService {
     }
 
     /**
-     * Bumps the tile version: rewrites `generatedAt` (ms precision, so two
-     * bakes in the same second still differ) in BOTH the on-disk
-     * manifest.json and the tile_manifest asset's metaJson — the web derives
-     * the `?v=` cache-buster from the asset copy.
+     * Bumps the SIM layer's version: rewrites `patchesGeneratedAt` (ms
+     * precision, strictly monotonic) in BOTH the on-disk manifest.json and
+     * the tile_manifest asset's metaJson — the web derives the ortho-sim
+     * `?v=` cache-buster from it. The pristine `generatedAt` is deliberately
+     * NEVER touched here: cleaning must not invalidate pristine tile caches
+     * (web planner / iOS bundles keep their immutable URLs).
      */
-    private async bumpTileVersion(siteId: string): Promise<string> {
+    private async bumpSimVersion(siteId: string): Promise<string> {
         const manifestPath = this.manifestPath(siteId);
         const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
-        // Strictly monotonic: two bakes inside one millisecond must still
-        // mint distinct versions or the second one never reaches clients.
-        const prev = typeof manifest.generatedAt === 'string' ? Date.parse(manifest.generatedAt) : NaN;
+        const prev = typeof manifest.patchesGeneratedAt === 'string' ? Date.parse(manifest.patchesGeneratedAt) : NaN;
         let ts = Date.now();
         if (Number.isFinite(prev) && ts <= prev) ts = prev + 1;
-        const generatedAt = new Date(ts).toISOString();
-        manifest.generatedAt = generatedAt;
+        const patchesGeneratedAt = new Date(ts).toISOString();
+        manifest.patchesGeneratedAt = patchesGeneratedAt;
         const json = JSON.stringify(manifest);
         await writeFile(manifestPath, json);
 
         // Re-read the asset for a fresh optimistic-lock version.
         const asset = (await this.assets.listBySite(siteId)).find(a => a.kind === 'tile_manifest');
         if (asset) await this.assets.update(asset.id, asset.version, { metaJson: json });
-        return generatedAt;
+        return patchesGeneratedAt;
     }
 
-    private async readGeneratedAt(siteId: string): Promise<string> {
+    private async readSimGeneratedAt(siteId: string): Promise<string | null> {
         try {
-            const manifest = JSON.parse(await readFile(this.manifestPath(siteId), 'utf8')) as { generatedAt?: string };
-            return manifest.generatedAt ?? '';
+            const manifest = JSON.parse(await readFile(this.manifestPath(siteId), 'utf8')) as { patchesGeneratedAt?: string };
+            return manifest.patchesGeneratedAt ?? null;
         } catch {
-            return '';
+            return null;
         }
     }
 
@@ -494,6 +662,11 @@ export class OrthoPatchesService {
 
     private patchesDir(siteId: string): string {
         return path.join(this.dataDir, 'sources', siteId, 'patches');
+    }
+
+    /** The copy-on-write sim overlay tree (only patch-affected tiles). */
+    private simTilesDir(siteId: string): string {
+        return path.join(this.dataDir, 'tiles', siteId, 'ortho-sim');
     }
 
     private manifestPath(siteId: string): string {

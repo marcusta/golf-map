@@ -379,7 +379,7 @@ def test_bake_appends_incrementally_into_the_existing_working_raster(ortho: Path
         out_img[mask] = CYAN
         return out_img
 
-    cmd_bake_ortho_patch(ortho, patches_dir, seq=2, out=out, inpaint_fn=cyan_once)
+    cmd_bake_ortho_patch(ortho, patches_dir, seqs=[2], out=out, inpaint_fn=cyan_once)
     assert len(calls) == 1  # one windowed inpaint, not a replay
     with rasterio.open(out) as dst:
         after_second = np.moveaxis(dst.read(), 0, -1)
@@ -403,7 +403,7 @@ def test_bake_falls_back_to_full_replay_when_working_raster_is_stale(ortho: Path
     old = ortho.stat().st_mtime - 100
     os.utime(out, (old, old))
 
-    cmd_bake_ortho_patch(ortho, patches_dir, seq=2, out=out, inpaint_fn=solid_fill_fn(CYAN))
+    cmd_bake_ortho_patch(ortho, patches_dir, seqs=[2], out=out, inpaint_fn=solid_fill_fn(CYAN))
     with rasterio.open(out) as dst:
         patched = np.moveaxis(dst.read(), 0, -1)
     # Full replay: BOTH masks are filled, not just seq 2.
@@ -420,7 +420,7 @@ def test_bake_retiles_only_the_target_masks_subtree(ortho: Path, tmp_path: Path)
     write_log(patches_dir, [entry(1, "1.png", b1), entry(2, "2.png", b2, tool="ellipse")])
     tiles_out = tmp_path / "tiles" / "ortho"
     cmd_bake_ortho_patch(
-        ortho, patches_dir, seq=2, out=out, tiles_out=tiles_out,
+        ortho, patches_dir, seqs=[2], out=out, tiles_out=tiles_out,
         minzoom=14, maxzoom=17, inpaint_fn=solid_fill_fn(CYAN),
     )
     expected = patches.affected_tiles([b2], 14, 17)
@@ -441,7 +441,7 @@ def test_bake_errors_on_empty_log_and_unknown_seq(ortho: Path, tmp_path: Path):
 
     patches_dir2, b1, _ = bake_setup(ortho, tmp_path)
     with pytest.raises(patches.PatchError, match="no logged patch with seq 9"):
-        cmd_bake_ortho_patch(ortho, patches_dir2, seq=9, inpaint_fn=solid_fill_fn(MAGENTA))
+        cmd_bake_ortho_patch(ortho, patches_dir2, seqs=[9], inpaint_fn=solid_fill_fn(MAGENTA))
 
 
 # --- affected_tiles ----------------------------------------------------------

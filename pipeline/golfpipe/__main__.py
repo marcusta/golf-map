@@ -12,8 +12,8 @@ Commands:
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor -> .clean.tif
-  bake-ortho-patch  Windowed LaMa-inpaint of ONE logged mask into the working .patched.tif + retile its subtree
-  apply-ortho-patches  Full replay: re-inpaint every logged mask onto the pristine ortho + retile the affected subtree
+  bake-ortho-patch  Windowed bake of logged entries (--seq repeatable: LaMa masks + clone-stamp strokes) into the working .patched.tif + one union-subtree retile
+  apply-ortho-patches  Full replay: re-bake every logged entry onto the pristine ortho + retile the affected subtree
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   manifest          Write manifest.json for a tiled course
@@ -216,7 +216,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ortho", required=True, help="PRISTINE source ortho GeoTIFF (EPSG:3006) — never modified")
     p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json + <n>.png mask files (see golfpipe/patches.py)")
     p.add_argument("--out", help="output patched GeoTIFF (default: <ortho stem>.patched.tif alongside the source; must differ from --ortho)")
-    p.add_argument("--tiles-out", dest="tiles_out", help="installed ortho tile tree to rewrite affected tiles in (omit to skip retiling)")
+    p.add_argument("--tiles-out", dest="tiles_out", help="ortho tile tree to rewrite affected tiles in (the sparse ortho-sim overlay under the dual-photo-state model; omit to skip retiling)")
+    p.add_argument("--pristine-tiles", dest="pristine_tiles", help="read-only pristine flat ortho tree — lower-zoom parents read missing children from it when --tiles-out is a sparse sim overlay")
     p.add_argument("--minzoom", type=int, default=commands.DEFAULT_ORTHO_MINZOOM)
     p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_ORTHO_MAXZOOM)
     p.add_argument(
@@ -229,13 +230,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "bake-ortho-patch",
-        help="Incremental accept: windowed LaMa-inpaint of ONE logged mask into the working .patched.tif + retile its subtree",
+        help="Incremental accept: windowed bake of the given logged entries (LaMa for masks, brush engine for stamp strokes) into the working .patched.tif + one retile of their union subtree",
     )
     p.add_argument("--ortho", required=True, help="PRISTINE source ortho GeoTIFF (EPSG:3006) — never modified")
     p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json + <n>.png mask files (see golfpipe/patches.py)")
-    p.add_argument("--seq", type=int, help="log seq of the mask to bake (default: the last entry)")
+    p.add_argument("--seq", type=int, action="append", default=None,
+                   help="log seq to bake (repeatable — a batch bakes in seq order with ONE retile pass; default: the last entry)")
     p.add_argument("--out", help="working patched GeoTIFF (default: <ortho stem>.patched.tif; created by full replay when missing/stale)")
-    p.add_argument("--tiles-out", dest="tiles_out", help="installed ortho tile tree to rewrite affected tiles in (omit to skip retiling)")
+    p.add_argument("--tiles-out", dest="tiles_out", help="ortho tile tree to rewrite affected tiles in (the sparse ortho-sim overlay under the dual-photo-state model; omit to skip retiling)")
+    p.add_argument("--pristine-tiles", dest="pristine_tiles", help="read-only pristine flat ortho tree — lower-zoom parents read missing children from it when --tiles-out is a sparse sim overlay")
     p.add_argument("--minzoom", type=int, default=commands.DEFAULT_ORTHO_MINZOOM)
     p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_ORTHO_MAXZOOM)
     p.add_argument("--webp-quality", type=int, default=80)
@@ -448,17 +451,19 @@ def main(argv: list[str] | None = None) -> int:
                 extra_bounds_3857=extra_bounds,
                 webp_quality=args.webp_quality,
                 weights=args.weights, device=args.device,
+                pristine_tiles=Path(args.pristine_tiles) if args.pristine_tiles else None,
             )
 
         elif args.command == "bake-ortho-patch":
             commands.cmd_bake_ortho_patch(
                 Path(args.ortho), Path(args.patches_dir),
-                seq=args.seq,
+                seqs=args.seq,
                 out=Path(args.out) if args.out else None,
                 tiles_out=Path(args.tiles_out) if args.tiles_out else None,
                 minzoom=args.minzoom, maxzoom=args.maxzoom,
                 webp_quality=args.webp_quality,
                 weights=args.weights, device=args.device,
+                pristine_tiles=Path(args.pristine_tiles) if args.pristine_tiles else None,
             )
 
         elif args.command == "tile-ortho":

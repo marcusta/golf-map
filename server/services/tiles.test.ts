@@ -394,3 +394,69 @@ test('archive.tar resolves a course id to its site tile directory via the lookup
     expect(parsed.map((e) => e.name)).toEqual(['14/1/1.webp']);
     expect(parsed[0]!.data.toString()).toBe('site-tile');
 });
+
+// --- Dual photo state: the ortho-sim overlay layer -------------------------
+
+test('ortho-sim serves the sim overlay tile when it exists', async () => {
+    const { app } = await setup();
+    writeFakeTile(TEST_COURSE_ID, 'ortho', 18, 5, 6, 'webp', 'pristine-tile');
+    writeFakeTile(TEST_COURSE_ID, 'ortho-sim', 18, 5, 6, 'webp', 'sim-tile');
+
+    const res = await app.request(`/tiles/${TEST_COURSE_ID}/ortho-sim/18/5/6.jpg`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('sim-tile');
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=31536000, immutable');
+});
+
+test('ortho-sim falls back to the pristine tile when no sim tile exists', async () => {
+    const { app } = await setup();
+    writeFakeTile(TEST_COURSE_ID, 'ortho', 18, 5, 7, 'webp', 'pristine-tile');
+
+    const res = await app.request(`/tiles/${TEST_COURSE_ID}/ortho-sim/18/5/7.jpg`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('pristine-tile');
+
+    // And a coordinate that exists nowhere is still a 404.
+    const missing = await app.request(`/tiles/${TEST_COURSE_ID}/ortho-sim/18/5/8.jpg`);
+    expect(missing.status).toBe(404);
+});
+
+test('the plain ortho layer NEVER serves sim tiles (planning imagery stays pristine)', async () => {
+    const { app } = await setup();
+    writeFakeTile(TEST_COURSE_ID, 'ortho', 18, 5, 9, 'webp', 'pristine-tile');
+    writeFakeTile(TEST_COURSE_ID, 'ortho-sim', 18, 5, 9, 'webp', 'sim-tile');
+
+    const res = await app.request(`/tiles/${TEST_COURSE_ID}/ortho/18/5/9.jpg`);
+    expect(await res.text()).toBe('pristine-tile');
+});
+
+test('archive.tar (iOS bundles) rejects ortho-sim and never includes sim tiles in the ortho archive', async () => {
+    const { app } = await setup();
+    writeFakeTile(TEST_COURSE_ID, 'ortho', 14, 1, 1, 'webp', 'pristine-tile');
+    writeFakeTile(TEST_COURSE_ID, 'ortho-sim', 14, 1, 1, 'webp', 'sim-tile');
+    writeFakeTile(TEST_COURSE_ID, 'ortho-sim', 14, 1, 2, 'webp', 'sim-only-tile');
+
+    // The sim layer has no archive endpoint at all.
+    const simArchive = await app.request(`/tiles/${TEST_COURSE_ID}/ortho-sim/archive.tar?v=v1`);
+    expect(simArchive.status).toBe(400);
+
+    // The ortho archive contains ONLY pristine tiles (ortho-sim is a sibling
+    // dir the layer walk never enters), with pristine bytes.
+    const res = await app.request(`/tiles/${TEST_COURSE_ID}/ortho/archive.tar?v=v1`);
+    expect(res.status).toBe(200);
+    const parsed = parseTar(Buffer.from(await res.arrayBuffer()));
+    expect(parsed.map((e) => e.name)).toEqual(['14/1/1.webp']);
+    expect(parsed[0]!.data.toString()).toBe('pristine-tile');
+});
+
+test('ortho-sim resolves a course id to its site tile directory via the lookup', async () => {
+    const ctx = await createTestDb(seedCourse);
+    const assetsService = new AssetsService(ctx.db, dataDir);
+    const app = createTileRoutes(assetsService, async (id) =>
+        id === TEST_COURSE_ID ? 'site-owning-the-map' : null);
+    writeFakeTile('site-owning-the-map', 'ortho-sim', 18, 2, 3, 'webp', 'site-sim-tile');
+
+    const res = await app.request(`/tiles/${TEST_COURSE_ID}/ortho-sim/18/2/3.jpg`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('site-sim-tile');
+});

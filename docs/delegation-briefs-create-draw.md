@@ -414,3 +414,28 @@ on real Landeryd data (real SAM + real LaMa: bunker → grass; 237 MB replay
 + 19-tile retile in 9.5 s; revert restored). Suites: pipeline +19, server
 +8, web +33 — all green.
 **Done:** see docs/reports/T55-report.md.
+
+---
+
+## Clean-photo addendum — clone stamp, batch baking, dual photo state (built)
+
+Unnumbered follow-on to the T55 interactive cleaner, built in one wave with two
+mid-task scope extensions. Three pieces: (1) a **clone-stamp mode** — strokes logged
+as parameters (brush sizeM/opacity/flow/hardness, EPSG:3006 source→dest offset, dest
+polyline, aligned + tone-match flags) and re-rendered by a pure numpy brush engine
+(`golfpipe/stamp.py`, TS mirror `web/src/clean/clean-stamp.ts`) — torch-free and
+byte-reproducible on replay, unlike LaMa masks; (2) **batch baking** — accepted edits
+(masks AND strokes) accumulate as a pending queue and bake in ONE
+`bake-ortho-patch --seq …` call (windowed ops in order against the evolving
+`.patched.tif`, one union-subtree retile, one version bump) — live on Linkan: batch
+of 5 strokes 0.67 s vs 2.85 s as singles vs 2.31 s/edit under the old per-accept
+design; (3) the **dual photo state** — bakes retile a sparse copy-on-write
+`tiles/<mapKey>/ortho-sim/` overlay (own `patchesGeneratedAt` stamp, per-tile
+pristine fallback in the tile route); the pristine flat tree and its `?v=` are never
+touched by cleaning, iOS bundle archives reject/exclude the sim tree, and the editor
+switches the live ortho source per a panel toggle. `.patched.tif` stays the
+Unity/GSPro export input. Linkan's contaminated flat tree was migrated back to
+pristine (92 tiles, byte-identical verify) with the cleaned state re-homed into the
+sim overlay. Seam check on baked strokes: boundary/baseline gradient ratio 1.00.
+Parked v2 ideas: stamp source rotation, cross-vintage donor sources.
+**Done:** see docs/reports/clean-stamp-report.md.

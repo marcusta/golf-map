@@ -343,6 +343,23 @@ export class MapService {
     }
 
     /**
+     * Dual photo state: point the FLAT ortho source at the pristine tree
+     * (`ortho`) or the cleaned copy-on-write overlay (`ortho-sim`, served
+     * with per-tile pristine fallback). A presentation toggle for the Clean
+     * tool — `displayedVersion` (the pristine build-version guard the editor
+     * canvas re-init keys on) is deliberately NOT touched, and per-vintage
+     * collection sources always keep showing pristine imagery. `version` is
+     * the ?v= for the chosen layer (the sim layer has its own stamp).
+     */
+    setOrthoPhotoState(layer: 'ortho' | 'ortho-sim', version: string): void {
+        if (!this.map.get() || !this.mapKey) return;
+        for (const { sourceId, collection } of this.orthoSources) {
+            if (collection) continue;
+            this.setRasterTileUrl(sourceId, tileUrlTemplate(this.mapKey, layer, 'jpg', version));
+        }
+    }
+
+    /**
      * Point a live raster tile source at a new URL template in place. Prefers
      * `RasterTileSource.setTiles` (MapLibre re-fetches tiles and re-renders,
      * layer/camera untouched); falls back to swapping the source and re-adding

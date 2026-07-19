@@ -740,20 +740,28 @@ def _lama_inpaint_fn(weights: str | None, device: str | None):
     return LamaInpainter(weights=weights, device=device)
 
 
-def _derive_parent_tile(tile, tiles_out: Path, webp_quality: int) -> bytes | None:
+def _derive_parent_tile(tile, tiles_out: Path, webp_quality: int,
+                        fallback_tiles: Path | None = None) -> bytes | None:
     """Composes one parent tile from its four child tiles ON DISK (2x2 of
     256 px -> box-downsampled 256 px). Children are current by construction:
     the affected ones were just rewritten one zoom deeper, the rest are
-    untouched build output. Missing children (nodata-skipped / outside
-    coverage) stay black — the same content a raster render gives there.
-    Returns None when no child exists at all (fully-nodata parent)."""
+    untouched build output. When `fallback_tiles` is given (the sim-overlay
+    case: `tiles_out` is a sparse copy-on-write tree holding only
+    patch-affected tiles), a child missing from `tiles_out` is read from the
+    pristine fallback tree instead. Missing children everywhere
+    (nodata-skipped / outside coverage) stay black — the same content a
+    raster render gives there. Returns None when no child exists at all
+    (fully-nodata parent)."""
     from io import BytesIO
 
     canvas = Image.new("RGB", (512, 512))
     found = False
     for dx in (0, 1):
         for dy in (0, 1):
-            child = tiles_out / str(tile.z + 1) / str(2 * tile.x + dx) / f"{2 * tile.y + dy}.webp"
+            rel = Path(str(tile.z + 1)) / str(2 * tile.x + dx) / f"{2 * tile.y + dy}.webp"
+            child = tiles_out / rel
+            if not child.is_file() and fallback_tiles is not None:
+                child = fallback_tiles / rel
             if child.is_file():
                 with Image.open(child) as img:
                     canvas.paste(img.convert("RGB"), (dx * 256, dy * 256))
@@ -772,9 +780,18 @@ def _retile_affected(
     minzoom: int,
     maxzoom: int,
     webp_quality: int,
+    pristine_tiles: Path | None = None,
 ) -> int:
     """Rewrites only the tile-pyramid subtree intersecting `bounds_list`, in
-    place inside the installed tile tree.
+    place inside `tiles_out`.
+
+    With `pristine_tiles` (the dual-photo-state model), `tiles_out` is the
+    sparse SIM overlay (`ortho-sim/`, only patch-affected tiles) and the
+    pristine flat tree is READ-ONLY: lower-zoom parents derive from sim
+    children where they exist and pristine children otherwise, so a sim
+    parent composites correctly even when only one of its four children was
+    affected. Without it (legacy single-tree mode), `tiles_out` is the
+    installed tree itself.
 
     Only the DEEPEST zoom is rendered from the patched raster (native-
     resolution windows — cheap). Every lower zoom is derived by
@@ -803,7 +820,7 @@ def _retile_affected(
         for tile in tiles:
             if tile.z != z:
                 continue
-            encoded = _derive_parent_tile(tile, tiles_out, webp_quality)
+            encoded = _derive_parent_tile(tile, tiles_out, webp_quality, fallback_tiles=pristine_tiles)
             if encoded is None:
                 continue
             tile_path = tiles_out / str(tile.z) / str(tile.x) / f"{tile.y}.webp"
@@ -827,6 +844,7 @@ def cmd_apply_ortho_patches(
     weights: str | None = None,
     device: str | None = None,
     inpaint_fn=None,
+    pristine_tiles: Path | None = None,
 ) -> Path:
     """FULL replay: re-inpaints ALL logged masks (patches_dir/patches.json —
     see golfpipe.patches) onto a fresh copy of the PRISTINE source ortho
@@ -847,7 +865,7 @@ def cmd_apply_ortho_patches(
     """
     entries = patches_mod.load_patch_log(patches_dir)
     out = out or default_patched_out_path(ortho_path)
-    if entries and inpaint_fn is None:
+    if patches_mod.needs_inpaint(entries) and inpaint_fn is None:
         inpaint_fn = _lama_inpaint_fn(weights, device)
     patches_mod.apply_patches_to_ortho(ortho_path, patches_dir, entries, out, inpaint_fn=inpaint_fn)
     print(f"Replayed {len(entries)} patch(es) from {patches_dir} -> {out}")
@@ -856,14 +874,15 @@ def cmd_apply_ortho_patches(
     if tiles_out is None or not bounds_list:
         print("(no retile: " + ("no --tiles-out given" if tiles_out is None else "no affected bounds") + ")")
         return out
-    _retile_affected(out, bounds_list, tiles_out, minzoom, maxzoom, webp_quality)
+    _retile_affected(out, bounds_list, tiles_out, minzoom, maxzoom, webp_quality,
+                     pristine_tiles=pristine_tiles)
     return out
 
 
 def cmd_bake_ortho_patch(
     ortho_path: Path,
     patches_dir: Path,
-    seq: int | None = None,
+    seqs: list[int] | None = None,
     out: Path | None = None,
     tiles_out: Path | None = None,
     minzoom: int = DEFAULT_ORTHO_MINZOOM,
@@ -872,48 +891,60 @@ def cmd_bake_ortho_patch(
     weights: str | None = None,
     device: str | None = None,
     inpaint_fn=None,
+    pristine_tiles: Path | None = None,
 ) -> Path:
-    """INCREMENTAL accept: bakes ONE just-appended mask entry (`--seq`,
-    default the last) with a single windowed inpaint into the EXISTING
-    working `.patched.tif` and rewrites only that mask's tile subtree — no
-    full-raster rewrite per accept.
+    """INCREMENTAL accept: bakes the just-appended log entries (`--seq`,
+    repeatable; default the last entry) in seq order into the EXISTING
+    working `.patched.tif` — windowed LaMa inpaints for mask entries,
+    torch-free brush-engine renders for stamp strokes — then rewrites the
+    tile-pyramid subtree of the UNION of their bounds in ONE retile pass.
+    No full-raster rewrite per accept; a batch of N edits pays for one
+    process start, one raster open, and one retile.
+
+    LaMa is only constructed when a mask entry is actually being baked (or
+    replayed): a stamp-only accept works without torch or weights.
 
     The working file is created lazily: when it is missing, or older than
     the pristine source (a rebuild replaced the vintage underneath it), the
     command falls back to a FULL replay of the whole log so the raster
-    always converges onto pristine + every logged mask.
+    always converges onto pristine + every logged edit.
     """
     entries = patches_mod.load_patch_log(patches_dir)
     if not entries:
         raise patches_mod.PatchError(f"nothing to bake: {patches_dir} has no logged patches")
-    if seq is None:
-        entry = entries[-1]
+    if not seqs:
+        selected = [entries[-1]]
     else:
         by_seq = {e.seq: e for e in entries}
-        if seq not in by_seq:
-            raise patches_mod.PatchError(f"no logged patch with seq {seq} in {patches_dir}")
-        entry = by_seq[seq]
+        missing = [s for s in seqs if s not in by_seq]
+        if missing:
+            raise patches_mod.PatchError(
+                f"no logged patch with seq {missing[0]} in {patches_dir}")
+        selected = sorted((by_seq[s] for s in set(seqs)), key=lambda e: e.seq)
     out = out or default_patched_out_path(ortho_path)
 
     stale = not out.exists() or out.stat().st_mtime < ortho_path.stat().st_mtime
-    if inpaint_fn is None:
+    if inpaint_fn is None and patches_mod.needs_inpaint(entries if stale else selected):
         inpaint_fn = _lama_inpaint_fn(weights, device)
     if stale:
         patches_mod.apply_patches_to_ortho(ortho_path, patches_dir, entries, out, inpaint_fn=inpaint_fn)
         bounds_list = [e.bounds3857 for e in entries]
         print(f"Working raster was missing/stale — fully replayed {len(entries)} patch(es) -> {out}")
     else:
-        mask = patches_mod.load_patch_mask(patches_dir, entry)
+        baked = 0
         with rasterio.open(out, "r+") as dst:
-            baked = patches_mod.inpaint_entry_into(dst, mask, entry.bounds3857, inpaint_fn)
-        bounds_list = [entry.bounds3857]
-        print(f"Baked patch seq {entry.seq} into {out}"
-              + ("" if baked else " (mask misses the raster — nothing written)"))
+            for entry in selected:
+                if patches_mod.bake_entry_into(dst, patches_dir, entry, inpaint_fn):
+                    baked += 1
+        bounds_list = [e.bounds3857 for e in selected]
+        print(f"Baked {baked}/{len(selected)} patch entr(y/ies) "
+              f"(seq {', '.join(str(e.seq) for e in selected)}) into {out}")
 
     if tiles_out is None:
         print("(no retile: no --tiles-out given)")
         return out
-    _retile_affected(out, bounds_list, tiles_out, minzoom, maxzoom, webp_quality)
+    _retile_affected(out, bounds_list, tiles_out, minzoom, maxzoom, webp_quality,
+                     pristine_tiles=pristine_tiles)
     return out
 
 

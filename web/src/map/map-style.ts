@@ -41,7 +41,7 @@ export function orthoLayerId(collection: string): string {
  */
 export function tileUrlTemplate(
     mapKey: string,
-    layer: 'ortho' | 'terrain' | 'hillshade',
+    layer: 'ortho' | 'ortho-sim' | 'terrain' | 'hillshade',
     ext: 'jpg' | 'png' | 'webp',
     version: string,
     collection?: string,

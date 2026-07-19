@@ -3,7 +3,7 @@ import { apiFetch } from '@basics/core/client/fetch';
 
 export interface OrthoPatchResult {
     count: number;
-    generatedAt: string;
+    patchesGeneratedAt: string;
 }
 
 export interface OrthoPatchesInfo {
@@ -11,18 +11,20 @@ export interface OrthoPatchesInfo {
     lastCreatedAt: null | string;
     lastTool: null | string;
     bakeable: boolean;
+    stampBakeable: boolean;
     reason?: string;
+    patchesGeneratedAt: null | string;
 }
 
 export interface OrthoPatchesApi {
-    applyOrthoPatch(input: { courseId: string; maskPngBase64: string; bounds3857: { west: number; south: number; east: number; north: number }; boundsSweref: { west: number; south: number; east: number; north: number }; tool: string }): Promise<OrthoPatchResult>;
+    applyOrthoEdits(input: { courseId: string; edits: ({ kind: 'mask'; maskPngBase64: string; bounds3857: { west: number; south: number; east: number; north: number }; boundsSweref: { west: number; south: number; east: number; north: number }; tool: string } | { kind: 'stamp'; bounds3857: { west: number; south: number; east: number; north: number }; boundsSweref: { west: number; south: number; east: number; north: number }; brush: { sizeM: number; opacity: number; flow: number; hardness: number }; offsetM: { dx: number; dy: number }; path: { x: number; y: number }[]; aligned: boolean; toneMatch: boolean })[] }): Promise<OrthoPatchResult>;
     revertLastOrthoPatch(input: { courseId: string }): Promise<OrthoPatchResult>;
     orthoPatchesInfo(input: { courseId: string }): Promise<OrthoPatchesInfo>;
 }
 
 export function createOrthoPatchesClient(baseUrl: string): OrthoPatchesApi {
     return {
-        async applyOrthoPatch(input) {
+        async applyOrthoEdits(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/ortho-patches/apply`, body: input });
         },
         async revertLastOrthoPatch(input) {
