@@ -62,7 +62,7 @@ interface Harness {
     applyCalls: Array<Parameters<OrthoPatchesApi['applyOrthoPatch']>[0]>;
     revertCalls: number[];
     reloads: string[];
-    imageOverlays: Array<{ id: string; url: string; coords: number[][] }>;
+    imageOverlays: Array<{ id: string; url: string; coords: number[][]; beforeId?: string }>;
     removedOverlays: string[];
     sidecar: SidecarOpts;
 }
@@ -157,8 +157,8 @@ async function harness(opts: SidecarOpts & { patchCount?: number; bakeable?: boo
                 return () => {};
             },
             onMouseMove: () => () => {},
-            addImageOverlay: (id: string, url: string, coords: number[][]) => {
-                imageOverlays.push({ id, url, coords });
+            addImageOverlay: (id: string, url: string, coords: number[][], opts?: { beforeId?: string }) => {
+                imageOverlays.push({ id, url, coords, beforeId: opts?.beforeId });
             },
             addOverlayLayer: () => {},
             updateOverlayData: () => {},
@@ -254,6 +254,9 @@ describe('click mode', () => {
         const overlay = h.imageOverlays[0];
         expect(overlay.id).toBe(CLEAN_PREVIEW_OVERLAY_ID);
         expect(overlay.url).toBe('data:image/png;base64,RESULTPNG');
+        // Below the vector feature fills — the preview replaces photo pixels
+        // only; water/bunker tints must stay visible across it.
+        expect(overlay.beforeId).toBe('features-fill');
         expect(overlay.coords).toHaveLength(4);
         const [tl, tr, br, bl] = overlay.coords;
         expect(tl[0]).toBeLessThan(tr[0]); // west of

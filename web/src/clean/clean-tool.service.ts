@@ -488,6 +488,9 @@ export class CleanToolService {
                 CLEAN_PREVIEW_OVERLAY_ID,
                 `data:image/png;base64,${resultBase64}`,
                 [corner(0, 0), corner(plan.size, 0), corner(plan.size, plan.size), corner(0, plan.size)],
+                // Below the feature fills: the preview replaces PHOTO pixels
+                // only — water/bunker tints must stay visible across it.
+                { beforeId: 'features-fill' },
             );
         } catch {
             // Map not ready (teardown race) — accept still works; the

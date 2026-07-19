@@ -358,10 +358,14 @@ export class MapService {
         id: string,
         url: string,
         coordinates: [[number, number], [number, number], [number, number], [number, number]],
-        opts: { opacity?: number } = {},
+        opts: { opacity?: number; beforeId?: string } = {},
     ): void {
         const map = this.requireMap();
         map.addSource(id, { type: 'image', url, coordinates });
+        // beforeId slots the raster below an existing layer (e.g. the Clean
+        // preview goes under the vector feature fills so water/bunker tints
+        // stay visible across it). Silently topmost when that layer is absent.
+        const before = opts.beforeId && map.getLayer(opts.beforeId) ? opts.beforeId : undefined;
         map.addLayer({
             id,
             type: 'raster',
@@ -370,7 +374,7 @@ export class MapService {
                 'raster-fade-duration': 0,
                 ...(opts.opacity !== undefined ? { 'raster-opacity': opts.opacity } : {}),
             },
-        });
+        }, before);
         this.overlays.set(id, [id]);
     }
 
