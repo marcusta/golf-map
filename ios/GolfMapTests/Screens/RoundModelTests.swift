@@ -132,6 +132,139 @@ final class RoundModelTests: XCTestCase {
         XCTAssertEqual(edited?.syncState, .dirty)
     }
 
+    // MARK: - Sync interplay
+    //
+    // Regression: the model's in-memory snapshot predates the sync engine's
+    // serverId/syncState assignment (sync writes the DB row only). Mutators
+    // used to save the stale snapshot back full-row, resetting the row to
+    // `.pending`/nil serverId — the next flush POSTed a duplicate
+    // `rounds/start` and the real server round never got its `rounds/end`.
+
+    private func makeSyncService(database: AppDatabase) -> RoundSyncService {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = GolfAPIClient(
+            baseURL: URL(string: "http://mock.local")!,
+            session: URLSession(configuration: config)
+        )
+        return RoundSyncService(client: client, database: database)
+    }
+
+    private func roundBody(id: String, endedAt: String? = nil, version: Int = 1) -> Data {
+        let ended = endedAt.map { "\"\($0)\"" } ?? "null"
+        return Data("""
+        {"id":"\(id)","courseId":"course-1","userId":"u1",
+         "startedAt":"2026-07-25T09:00:00Z","endedAt":\(ended),"notes":null,
+         "gamePlanId":null,"windSpeedMps":null,"windDirectionDeg":null,
+         "version":\(version),"createdAt":"2026-07-25T09:00:01Z",
+         "updatedAt":"2026-07-25T09:00:01Z"}
+        """.utf8)
+    }
+
+    private func shotBody(id: String, version: Int = 1) -> Data {
+        Data("""
+        {"id":"\(id)","roundId":"srv-r1","holeNumber":1,"sortOrder":0,
+         "lat":58.351,"lon":15.721,"clubId":"club-7i","lie":null,
+         "shotType":"full","targetLat":null,"targetLon":null,
+         "penaltyStrokes":0,"recordedAt":"2026-07-25T09:10:00Z",
+         "version":\(version),"createdAt":"2026-07-25T09:10:01Z",
+         "updatedAt":"2026-07-25T09:10:01Z"}
+        """.utf8)
+    }
+
+    /// The request log is a process-wide singleton — assert on deltas.
+    private func requestCount(_ pathPart: String) -> Int {
+        MockURLProtocol.shared.log().filter { $0.contains(pathPart) }.count
+    }
+
+    func testFinishAfterSyncKeepsServerIdentityAndEndsTheSameServerRound() async throws {
+        let database = try AppDatabase.inMemory()
+        let model = makeModel(database: database) // no sync wired — flushes are driven manually
+        let service = makeSyncService(database: database)
+        await model.startRound()
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: roundBody(id: "srv-r1"))],
+            forPathContaining: "/rounds/start"
+        )
+        let startsBefore = requestCount("/rounds/start")
+        // Sync assigns the server identity to the DB row behind the model's back.
+        await service.flush()
+
+        // Mid-round edit + finish, both through the model's stale snapshot.
+        await model.setStimp(10.5)
+        await model.finishRound()
+
+        let storedRounds = try await database.rounds(courseId: "course-1")
+        let stored = try XCTUnwrap(storedRounds.first)
+        XCTAssertEqual(stored.serverId, "srv-r1", "sync identity survives capture-side mutators")
+        XCTAssertEqual(stored.syncState, .dirty, "queued for rounds/end — not a fresh rounds/start")
+        XCTAssertEqual(stored.stimpFt, 10.5)
+        XCTAssertNotNil(stored.endedAt)
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: roundBody(id: "srv-r1", endedAt: stored.endedAt, version: 2))],
+            forPathContaining: "/rounds/end"
+        )
+        let endsBefore = requestCount("/rounds/end")
+        await service.flush()
+
+        XCTAssertEqual(
+            requestCount("/rounds/start") - startsBefore, 1,
+            "exactly one server round across both flushes — no duplicate start"
+        )
+        XCTAssertEqual(requestCount("/rounds/end") - endsBefore, 1, "the original round was ended")
+        let finalRounds = try await database.rounds(courseId: "course-1")
+        let final = try XCTUnwrap(finalRounds.first)
+        XCTAssertEqual(final.syncState, .synced)
+        XCTAssertEqual(final.serverVersion, 2)
+    }
+
+    func testShotEditAfterSyncKeepsServerIdentityAndPushesAnUpdate() async throws {
+        let database = try AppDatabase.inMemory()
+        let model = makeModel(database: database)
+        let service = makeSyncService(database: database)
+        await model.startRound()
+        let recorded = await model.recordStroke(
+            holeNumber: 1, position: LatLon(lat: 58.351, lon: 15.721),
+            clubId: "club-7i", shotType: .full, target: nil
+        )
+        let shot = try XCTUnwrap(recorded)
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: roundBody(id: "srv-r1"))],
+            forPathContaining: "/rounds/start"
+        )
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: shotBody(id: "srv-s1"))],
+            forPathContaining: "/rounds/shots/add"
+        )
+        let addsBefore = requestCount("/rounds/shots/add")
+        await service.flush()
+
+        // Edit through the model's stale snapshot (in-memory serverId is nil).
+        let penalized = await model.addPenalty(shotId: shot.id)
+        let edited = try XCTUnwrap(penalized)
+        XCTAssertEqual(edited.serverId, "srv-s1", "model adopted the fresh row")
+        XCTAssertEqual(edited.syncState, .dirty, "queued as an update — not a re-add")
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: shotBody(id: "srv-s1", version: 2))],
+            forPathContaining: "/rounds/shots/update"
+        )
+        await service.flush()
+
+        XCTAssertEqual(
+            requestCount("/rounds/shots/add") - addsBefore, 1,
+            "the stroke reached the server exactly once"
+        )
+        let stored = try await database.shots(roundId: shot.roundId)
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored[0].serverVersion, 2)
+        XCTAssertEqual(stored[0].syncState, .synced)
+        XCTAssertEqual(stored[0].penaltyStrokes, 1)
+    }
+
     func testDeleteStrokeUpdatesScorecard() async throws {
         let database = try AppDatabase.inMemory()
         let model = makeModel(database: database)
