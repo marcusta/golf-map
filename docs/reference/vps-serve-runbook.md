@@ -5,6 +5,16 @@ and troubleshoot a `SERVER_MODE=serve` box. Design and rationale live in
 [feature-local-builder-vps-serve.md](../feature-local-builder-vps-serve.md); this
 document is the one you follow with a terminal open.
 
+> **Deploying to the Sweden Indoor Golf VPS?** That box is managed by sig-infra
+> and serves golf-map under a **path** —
+> `https://app.swedenindoorgolf.se/golf-map/`, not its own host — which changes
+> the install, the unit, and how the client builds URLs. Follow
+> [sig-infra-deploy.md](./sig-infra-deploy.md) for those parts and use this
+> document for everything else (data layout, publish, backup, troubleshooting).
+> The manual `useradd`/systemd/Caddy setup below describes a **standalone** box
+> at the origin root; sig-infra's `service_create` and generated Caddyfile
+> replace §1, §3 and §4(b).
+
 Two boxes, one codebase:
 
 | | **builder** (local Mac) | **serve** (VPS) |
@@ -38,8 +48,14 @@ Install dependencies and build the web app (both entries — desktop and mobile)
 
 ```sh
 cd /srv/golf-map/server && sudo -u golfmap bun install
-cd /srv/golf-map/web    && sudo -u golfmap bun install && sudo -u golfmap bun run build
+cd /srv/golf-map/web    && sudo -u golfmap bun install && sudo -u golfmap WEB_BASE=/ bun run build
 ```
+
+`WEB_BASE=/` is required **on a standalone box**: the build defaults to the
+sig-infra deploy prefix (`/golf-map/`, see
+[sig-infra-deploy.md](./sig-infra-deploy.md) §1), which would make every asset
+URL 404 when the app is served from the origin root. Drop it only on the
+path-routed SIG box, where the prefix is what you want.
 
 `web/dist/` now holds `index.html`, `mobile.html` and `assets/`. The server
 serves it in serve mode (§4).

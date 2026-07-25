@@ -17,6 +17,17 @@
  *
  * Mount it LAST, after /api and /tiles, so a real route always wins over the
  * fallback.
+ *
+ * DEPLOY PREFIX (T66): behind the sig-infra Caddy route the app lives at
+ * https://app.swedenindoorgolf.se/golf-map/, but that block uses `handle_path`,
+ * which STRIPS `/golf-map` before proxying. So this file needs no prefix
+ * awareness and deliberately has none: the browser asks for
+ * `/golf-map/assets/main-<hash>.js`, Caddy forwards `/assets/main-<hash>.js`,
+ * and `resolveStaticFile` finds it under dist/ exactly as it does on a
+ * root-mounted box. Same for `/golf-map/m/...` → `/m/...`, which still hits
+ * `isMobileRoute` and the mobile entry. The prefix lives ONLY in the built
+ * bundle (web/vite.config.ts `base` → BASE_PATH). If someone ever switches the
+ * Caddy block to `handle` (stripPath: false), THIS is the file that breaks.
  */
 import { Hono } from 'hono';
 import { existsSync, realpathSync, statSync } from 'node:fs';
