@@ -44,6 +44,7 @@ export const cleanTool: EditorTool = {
     label: 'Clean photo',
     icon: 'eraser',
     order: 70,
+    builderOnly: true,
     panel: CleanPanelComponent,
     help: HELP,
     activate: ctx => di.get(CleanToolService).activate(ctx),

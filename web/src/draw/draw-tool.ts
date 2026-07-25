@@ -79,6 +79,7 @@ export const drawTool: EditorTool = {
     label: 'Draw',
     icon: 'pencil',
     order: 10,
+    builderOnly: true,
     help: HELP,
     attach: ctx => di.get(DrawToolService).attach(ctx),
     activate: ctx => di.get(DrawToolService).activate(ctx),

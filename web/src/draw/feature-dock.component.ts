@@ -3,6 +3,8 @@ import { t } from '../theme';
 import { s, panelTitle } from '../css';
 import { icon } from '../ui/icons';
 import { EditorModeService } from '../editor/editor-mode.service';
+import type { EditorTool } from '../editor/tool';
+import { ServerModeService, visibleEditorTools } from '../app/server-mode.service';
 import { DRAW_TOOL_ID, DrawToolService } from './draw-tool.service';
 import { FeaturesService } from './features.service';
 import { drawTool } from './draw-tool';
@@ -203,6 +205,9 @@ export class ContextDockComponent extends Component<ContextDockProps> {
     private _tool?: DrawToolService;
     private get tool(): DrawToolService { return (this._tool ??= this.inject(DrawToolService)); }
 
+    /** App-level (already resolved before the first render) — safe to inject eagerly. */
+    private serverMode = this.inject(ServerModeService);
+
     private collapsed = new Signal(loadCollapsed());
 
     /** Current draw stack panel (draw sub-mode only) — publishes the rail badge count. */
@@ -212,9 +217,20 @@ export class ContextDockComponent extends Component<ContextDockProps> {
     private mountedToolId: string | null = null;
     private body!: HTMLElement;
 
-    /** Active tool, defaulting to draw before the canvas auto-activates it. */
-    private activeTool() {
-        return this.mode.activeTool() ?? drawTool;
+    /**
+     * Active tool, with a fallback for the window where nothing is armed —
+     * before the canvas auto-activates a tool, and after Escape/deactivate.
+     *
+     * The fallback must respect the server mode: Draw's panels write features
+     * through APIs that ARE mounted in serve mode, so falling back to it there
+     * would hand a VPS visitor a working editor. Serve mode falls back to the
+     * first tool it actually offers instead.
+     */
+    private activeTool(): EditorTool {
+        const active = this.mode.activeTool();
+        if (active) return active;
+        const offered = visibleEditorTools(this.serverMode.mode.get());
+        return offered.includes(drawTool) ? drawTool : offered[0] ?? drawTool;
     }
 
     render(): DocumentFragment {

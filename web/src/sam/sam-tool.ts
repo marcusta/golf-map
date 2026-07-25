@@ -27,6 +27,7 @@ export const samTool: EditorTool = {
     label: 'SAM assist',
     icon: 'circle-dot',
     order: 50,
+    builderOnly: true,
     panel: SamPanelComponent,
     help: HELP,
     activate: ctx => di.get(SamToolService).activate(ctx),

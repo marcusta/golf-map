@@ -7,6 +7,7 @@ import { MapService } from './map.service';
 import { ElevationService } from './elevation.service';
 import { EditorToolbarComponent } from '../editor/toolbar.component';
 import { MapBuildClientService } from '../map-build/map-build.service';
+import { ServerModeService } from '../app/server-mode.service';
 import { FeaturesService } from '../draw/features.service';
 
 const vintageTpl = template(`<button bind="row" type="button" class="vintage-btn"></button>`);
@@ -353,6 +354,7 @@ export class EditorCanvasComponent extends Component {
     private mapSvc = this.inject(MapService);
     private elevation = this.inject(ElevationService);
     private mapBuild = this.inject(MapBuildClientService);
+    private serverMode = this.inject(ServerModeService);
     private router = this.inject(Router);
     // courseId is the second path segment on every route hosting this canvas
     // (/course/:courseId for the builder, /planner/:courseId for the planner).
@@ -381,8 +383,16 @@ export class EditorCanvasComponent extends Component {
         return parts.length > 0 ? parts.join(' · ') : null;
     });
 
-    /** Ortho vintages available to switch between (only shown when >1). */
-    private vintages = new Computed<OrthoVintage[]>(() => this.tileset.manifest.get()?.orthoVintages ?? []);
+    /**
+     * Ortho vintages available to switch between (only shown when >1).
+     *
+     * Empty in serve mode: switching a vintage that isn't tiled yet calls the
+     * builder-only map-build API to tile it on demand, and the VPS has neither
+     * that API nor the source imagery. The published bundle ships the active
+     * flight, which is what the map already shows.
+     */
+    private vintages = new Computed<OrthoVintage[]>(() =>
+        this.serverMode.isBuilder() ? this.tileset.manifest.get()?.orthoVintages ?? [] : []);
 
     render(): DocumentFragment {
         const showMessage = () => this.messageText() !== null;
@@ -392,7 +402,9 @@ export class EditorCanvasComponent extends Component {
             message: { className: () => showMessage() ? 'map-canvas__message show' : 'map-canvas__message' },
             messageText: () => this.messageText() ?? '',
             setArea: {
-                className: () => this.isNoTiles() ? 'map-canvas__set-area show' : 'map-canvas__set-area',
+                // Builder only — /set-area runs the pipeline.
+                className: () => this.isNoTiles() && this.serverMode.isBuilder()
+                    ? 'map-canvas__set-area show' : 'map-canvas__set-area',
                 onclick: () => this.router.navigate(`/set-area/${this.params.get().courseId}`),
             },
             controls: { className: () => this.mapSvc.ready.get() ? 'map-canvas__controls show' : 'map-canvas__controls' },

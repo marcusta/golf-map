@@ -12,7 +12,7 @@ import { DrawToolService, DRAW_TOOL_ID } from '../draw/draw-tool.service';
 import { drawTool } from '../draw/draw-tool';
 import { FEATURE_TYPES, FEATURE_STYLES, digitForFeatureType, type FeatureType } from '../draw/feature-palette';
 import { EditorModeService } from '../editor/editor-mode.service';
-import { EDITOR_TOOLS } from '../editor/tools/index';
+import { ServerModeService, visibleEditorTools } from './server-mode.service';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
 import { GeojsonImportService } from '../import/geojson-import.service';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
@@ -464,6 +464,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private mapBuild = this.inject(MapBuildClientService);
     private confirm = this.inject(ConfirmService);
     private helpModal = this.inject(HelpModalService);
+    private serverMode = this.inject(ServerModeService);
     private auth = this.inject(AuthService);
     private router = this.inject(Router);
     // courseId/hole live in the route (the same param on both host routes).
@@ -537,17 +538,21 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             }));
         }
 
-        // Zone 4: actions + avatar.
-        this.spawn(PopoverComponent, this.ref(frag, 'actionsHost'), {
-            align: 'right',
-            ariaLabel: 'Actions',
-            triggerClassName: 'cmdbar__actions-btn',
-            trigger: (host) => {
-                host.dataset.testid = 'actions-menu-trigger';
-                host.innerHTML = icon('more-horizontal', 20);
-            },
-            panel: (host, ctx) => this.buildActionsPanel(host, ctx.track, ctx.close),
-        });
+        // Zone 4: actions + avatar. Every entry in the actions menu authors
+        // something (imports, lidar cleanup, publish revision), so serve mode
+        // gets no ⋯ trigger at all rather than an empty popover.
+        if (this.serverMode.isBuilder()) {
+            this.spawn(PopoverComponent, this.ref(frag, 'actionsHost'), {
+                align: 'right',
+                ariaLabel: 'Actions',
+                triggerClassName: 'cmdbar__actions-btn',
+                trigger: (host) => {
+                    host.dataset.testid = 'actions-menu-trigger';
+                    host.innerHTML = icon('more-horizontal', 20);
+                },
+                panel: (host, ctx) => this.buildActionsPanel(host, ctx.track, ctx.close),
+            });
+        }
         this.spawn(PopoverComponent, this.ref(frag, 'avatarHost'), {
             align: 'right',
             ariaLabel: 'Account',
@@ -696,8 +701,13 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         return hole ? `Hole ${hole.number} (par ${hole.par})` : 'Selected hole';
     }
 
-    /** The draw tool is the active sub-mode (or none is armed yet → treat as draw). */
+    /**
+     * The draw tool is the active sub-mode (or none is armed yet → treat as
+     * draw). Never in serve mode: the draw tool isn't registered there, so the
+     * "nothing armed yet" fallback must not reveal the drawing controls.
+     */
     private isDrawSubmode(): boolean {
+        if (!this.serverMode.isBuilder()) return false;
         const active = this.mode.activeTool();
         return active ? active.id === DRAW_TOOL_ID : true;
     }
@@ -710,7 +720,10 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     }
 
     private buildSubmodePanel(host: HTMLElement, track: (d: () => void) => void, close: () => void): void {
-        for (const editorTool of [...EDITOR_TOOLS].sort((a, b) => a.order - b.order)) {
+        // Serve mode drops the map-editing tools (draw, furniture, SAM,
+        // terrain edit, clean) — their APIs are not mounted on the VPS.
+        const tools = visibleEditorTools(this.serverMode.mode.peek());
+        for (const editorTool of [...tools].sort((a, b) => a.order - b.order)) {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'menu-item';
@@ -818,6 +831,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             }
             geo.className = 'cmd-info__geo--warn';
             geo.innerHTML = `<div class="cmd-info__geo-row">${icon('triangle-alert', 16)}<span>No georeference</span></div>`;
+            // Setting the georeference means running the map-build wizard —
+            // builder only. Serve mode states the fact without the dead end.
+            if (!this.serverMode.isBuilder()) return;
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'cmd-info__geo-btn';
@@ -833,8 +849,10 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     // ── Zone 4: actions + avatar ──────────────────────────────────────────
 
     private buildActionsPanel(host: HTMLElement, track: (d: () => void) => void, close: () => void): void {
-        // Import SVG — Create only (matches today's availability).
-        if (this.props.mode === 'create') {
+        // Import SVG — Create only (matches today's availability), and builder
+        // only: both importers author geometry, and the lidar entry below calls
+        // a builder-only API that 404s on the VPS.
+        if (this.props.mode === 'create' && this.serverMode.isBuilder()) {
             const importBtn = document.createElement('button');
             importBtn.type = 'button';
             importBtn.className = 'menu-item';
@@ -872,7 +890,13 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             host.appendChild(divider);
         }
 
-        // Publish revision — same ConfirmService + publish flow as the old header.
+        // Publish revision — same ConfirmService + publish flow as the old
+        // header. Builder only: the courses API is mounted in serve mode, so
+        // this button really would bump the revision on the VPS — but a
+        // revision is an AUTHORING act (it tells devices to re-sync), and on a
+        // serve box the authored truth arrives by publish/ingest from the
+        // builder. Bumping it here would desync the two.
+        if (!this.serverMode.isBuilder()) return;
         const publishBtn = document.createElement('button');
         publishBtn.type = 'button';
         publishBtn.className = 'menu-item cmd-menu-accent';

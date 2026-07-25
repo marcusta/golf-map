@@ -10,6 +10,7 @@ import { PlayerSettingsComponent } from '../player/player-settings.component';
 import { NewCourseWizardComponent } from '../map-build/new-course-wizard.component';
 import { SetMapAreaComponent } from '../map-build/set-map-area.component';
 import { ConfirmDialogComponent } from './confirm-dialog.component';
+import { ServerModeService, type ServerMode } from './server-mode.service';
 import { icon } from '../ui/icons';
 
 const tpl = template(`
@@ -25,6 +26,30 @@ const tpl = template(`
         <div bind="confirmHost"></div>
     </div>
 `);
+
+/**
+ * Route → component map for the shell, by server mode.
+ *
+ * The map-build wizard routes (/new, /set-area) drive the pipeline and only
+ * exist on a builder box; in serve mode they are not mounted at all, so a
+ * direct hit falls through to $swap's default (the course list) exactly like
+ * any other unknown route. guardRoute rewrites the URL alongside it — this
+ * keeps the wizard components from ever being constructed.
+ */
+export function routeComponents(mode: ServerMode): Record<string, new () => Component<any>> {
+    const routes: Record<string, new () => Component<any>> = {
+        '/': CourseListComponent,
+        '/course': CourseDetailComponent,
+        '/planner': PlannerComponent,
+        '/player': PlayerSettingsComponent,
+        '/login': LoginComponent,
+    };
+    if (mode === 'builder') {
+        routes['/new'] = NewCourseWizardComponent;
+        routes['/set-area'] = SetMapAreaComponent;
+    }
+    return routes;
+}
 
 export class AppComponent extends Component {
     static styles = `
@@ -107,6 +132,7 @@ export class AppComponent extends Component {
 
     private auth = this.inject(AuthService);
     private router = this.inject(Router);
+    private serverMode = this.inject(ServerModeService);
 
     render(): DocumentFragment {
         // The unified command bar (command-bar.component.ts) IS the header on
@@ -141,15 +167,12 @@ export class AppComponent extends Component {
             },
         });
 
-        this.$swap(this.ref(frag, 'content'), this.router.route, {
-            '/': CourseListComponent,
-            '/new': NewCourseWizardComponent,
-            '/set-area': SetMapAreaComponent,
-            '/course': CourseDetailComponent,
-            '/planner': PlannerComponent,
-            '/player': PlayerSettingsComponent,
-            '/login': LoginComponent,
-        }, CourseListComponent);
+        this.$swap(
+            this.ref(frag, 'content'),
+            this.router.route,
+            routeComponents(this.serverMode.mode.get()),
+            CourseListComponent,
+        );
 
         this.spawn(ConfirmDialogComponent, this.ref(frag, 'confirmHost'));
 

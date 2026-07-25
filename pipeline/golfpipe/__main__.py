@@ -9,6 +9,7 @@ Commands:
   fetch-osm         Overpass OSM golf/terrain polygons -> typed GeoJSON (ODbL)
   grid-dem          Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
   apply-dem-edits   Replay vector terrain edits (plane/smooth + feather) onto a DEM
+  dem-analysis      Publishable analysis DEM: 0.5 m greens + 1 m background mosaic
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor -> .clean.tif
@@ -32,6 +33,7 @@ from pathlib import Path
 
 from golfpipe import clean_ortho
 from golfpipe import commands
+from golfpipe import dem_analysis
 from golfpipe import dem_edit
 from golfpipe import detect_trees
 from golfpipe import detect_water
@@ -128,6 +130,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="edits GeoJSON FeatureCollection (WGS84; per-feature properties op/featherM/radiusM/flat, createdAt order)",
     )
     p.add_argument("--out", required=True, help="output edited DEM GeoTIFF path (must differ from --input)")
+
+    p = sub.add_parser(
+        "dem-analysis",
+        help="Build the publishable analysis DEM: 0.5 m around greens + a 1 m background, one tiled deflate GeoTIFF",
+    )
+    p.add_argument(
+        "--input", required=True,
+        help="builder DEM GeoTIFF — dem-edited.tif when the site has terrain edits, else dem.tif",
+    )
+    p.add_argument("--greens", required=True, help="green polygons as a WGS84 GeoJSON FeatureCollection")
+    p.add_argument("--out", required=True, help="output analysis DEM path (must differ from --input)")
+    p.add_argument(
+        "--green-buffer", dest="green_buffer", type=float, default=dem_analysis.DEFAULT_GREEN_BUFFER_M,
+        help=f"metres of full-resolution margin around each green (default {dem_analysis.DEFAULT_GREEN_BUFFER_M:g})",
+    )
+    p.add_argument(
+        "--coarse-factor", dest="coarse_factor", type=int, default=dem_analysis.DEFAULT_COARSE_FACTOR,
+        help=f"block factor for the background (default {dem_analysis.DEFAULT_COARSE_FACTOR} = 1 m from a 0.5 m DEM)",
+    )
 
     p = sub.add_parser("detect-trees", help="Derive tree-canopy polygons from classified lidar via nDSM -> typed GeoJSON")
     p.add_argument("--lidar", required=True, nargs="+", help="one or more .laz/.copc.laz point cloud files (from fetch-lidar)")
@@ -391,6 +412,12 @@ def main(argv: list[str] | None = None) -> int:
 
         elif args.command == "apply-dem-edits":
             commands.cmd_apply_dem_edits(Path(args.input), Path(args.edits), Path(args.out))
+
+        elif args.command == "dem-analysis":
+            commands.cmd_dem_analysis(
+                Path(args.input), Path(args.greens), Path(args.out),
+                buffer_m=args.green_buffer, coarse_factor=args.coarse_factor,
+            )
 
         elif args.command == "detect-trees":
             bbox_3006 = tuple(float(v) for v in args.bbox_3006.split(","))
