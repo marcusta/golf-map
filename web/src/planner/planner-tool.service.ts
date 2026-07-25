@@ -21,10 +21,13 @@ import {
     type CaddyRule,
     type DistanceTarget,
     type FeatureDistance,
+    type ChainScoreContext,
     type FlatRing,
     type GreenSlopeSummary,
+    type HoleHazard,
     type StrategyPoint,
     type Vec2,
+    type VariantHoleContext,
 } from '../../../shared/strategy';
 // The caddy rules are re-exported from the caddy barrel but not (yet) from the
 // strategy index — that index line is owned by another task this wave, so we
@@ -50,14 +53,17 @@ import {
     PLAN_OVERLAY_ID,
     GATE_DEFAULT_HALF_WIDTH_M,
     autoGatesForPlan,
+    branchChainLegs,
     buildHolePlan,
     buildOptionChips,
     buildPlanGeojson,
+    chainScoreContext,
     enrichPlanStrategy,
     ghostAimForLeg,
     nearestLegFoot,
     planarBearingDeg,
     planLayers,
+    shotDepthInPlan,
     type EffectiveWind,
     type GhostAim,
     type HolePlan,
@@ -87,6 +93,18 @@ import type { AnalysisView } from '../analysis/analysis-tool.service';
 import { createAnalysisClient, type AnalysisApi, type SampleGrid } from '../../../shared/api/analysis.gen';
 import { puttLabelDescriptors } from './putt-labels';
 import { summarizeGreenSlope, type GreenRefPoint } from './green-slope';
+import { HoleSimService, PRIMARY_BRANCH_ID, type SimBranchRequest } from './hole-sim.service';
+import {
+    SCATTER_BEFORE_LAYER_ID,
+    SIM_SCATTER_OVERLAY_ID,
+    VARIANT_OVERLAY_ID,
+    buildScatterGeojson,
+    buildVariantGeojson,
+    scatterLayers,
+    variantLayers,
+    type GhostVariant,
+    type ScatterPoint,
+} from './sim-overlay';
 
 /** Interaction-claim id for the planner's single tool. */
 export const PLANNER_TOOL_ID = 'planner';
@@ -321,6 +339,8 @@ export class PlannerToolService {
     private confirm = di.get(ConfirmService);
     /** Putt-read state (feature-putting-green-reading §5.1). Shared with the panel. */
     readonly puttRead = di.get(PuttReadService);
+    /** Hole simulator + suggest-lines state (feature-hole-sim-and-variants). */
+    readonly sim = di.get(HoleSimService);
 
     /** Injectable for tests (green-slope fetch, D10 seam) — real default hits `/api`. */
     constructor(private analysisApi: AnalysisApi = createAnalysisClient('/api')) {}
@@ -727,6 +747,281 @@ export class PlannerToolService {
         const enriched = this.enrichedPlan.get();
         return enriched && enriched.base === live ? enriched.enriched : live;
     });
+
+    // ── Hole simulation (feature-hole-sim-and-variants Phase B/C) ──────────
+
+    /**
+     * Signature of the live plan for SIM invalidation (V8). Unlike
+     * `strategyInputs` this deliberately INCLUDES shot positions: any plan
+     * edit — a drag frame included — must grey the histogram. Nothing
+     * recomputes off this; it is compared, not reacted to.
+     */
+    private readonly simPlanSignature = new Computed<string>(() => {
+        const hole = this.selectedHole.get();
+        const shots = this.holeShots.get()
+            .map(s => `${s.id}:${s.parentShotId ?? 'root'}:${s.sortOrder}:${s.clubId ?? ''}`
+                + `:${s.lat.toFixed(7)}:${s.lon.toFixed(7)}`)
+            .join(',');
+        const wind = this.effectiveWind.get();
+        return `${hole?.id ?? ''}|${hole?.par ?? ''}|${this.originTee.get()?.id ?? ''}`
+            + `|${wind ? `${wind.speedMps}/${wind.directionDeg}` : 'calm'}|${shots}`;
+    });
+
+    /**
+     * Branch ids queued for the next simulate run — option shot ids, or the
+     * single sentinel `PRIMARY_BRANCH_ID` for the hole's main line. Two or
+     * more sibling ids is the comparison case (§5).
+     */
+    readonly simSelection = new Signal<readonly string[]>([]);
+
+    /** Compact branch label — "1A" style, matching the shot list's index. */
+    private branchLabel(shot: PlanShot): string {
+        const siblings = this.plan.childShots(shot.gamePlanHoleId, shot.parentShotId);
+        const rank = siblings.findIndex(candidate => candidate.id === shot.id);
+        const suffix = siblings.length > 1 ? String.fromCharCode(65 + Math.max(0, rank)) : '';
+        const plan = this.holePlan.peek();
+        const depth = plan ? shotDepthInPlan(plan, shot.id) : 0;
+        const authored = shot.label?.trim();
+        return authored ? `${depth + 1}${suffix} ${authored}` : `${depth + 1}${suffix}`;
+    }
+
+    /**
+     * Turn branch ids into simulate requests off the ENRICHED plan (so legs
+     * carry the recommended bearings the EV chips were priced with, and the
+     * two numbers stay comparable — §5 "they should agree; that's the point").
+     * Silently drops branches whose chain can't be resolved.
+     */
+    private buildSimRequests(branchIds: readonly string[]): SimBranchRequest[] {
+        const plan = this.overlayPlan.peek();
+        const greenCenter = this.greenCenterVec();
+        const hole = this.selectedHole.peek();
+        if (!plan || !greenCenter || !hole) return [];
+        const ctx: ChainScoreContext = chainScoreContext({
+            lieMap: this.lieMap.peek(),
+            greenCenter,
+            wind: this.effectiveWind.peek(),
+        });
+        const par = hole.par ?? 4;
+        const shotsById = new Map(this.holeShots.peek().map(shot => [shot.id, shot]));
+        const requests: SimBranchRequest[] = [];
+        for (const branchId of branchIds) {
+            const startShotId = branchId === PRIMARY_BRANCH_ID ? null : branchId;
+            const legs = branchChainLegs(plan, startShotId);
+            if (!legs || legs.length === 0) continue;
+            const shot = startShotId ? shotsById.get(startShotId) : undefined;
+            requests.push({
+                branchId,
+                label: shot ? this.branchLabel(shot) : 'Primary line',
+                par,
+                strokesBefore: shot ? shotDepthInPlan(plan, shot.id) : 0,
+                legs,
+                ctx,
+            });
+        }
+        return requests;
+    }
+
+    /**
+     * Run the simulation for the queued branches (falling back to the primary
+     * line when nothing is queued). This is the ONLY entry point — it is
+     * called from the explicit "Simulate" action and from branch selection,
+     * never from an effect on plan geometry, which is what keeps distributions
+     * out of the enrich/drag cadence (V8).
+     */
+    async simulateNow(): Promise<void> {
+        const queued = this.simSelection.peek();
+        const branchIds = queued.length > 0 ? queued : [PRIMARY_BRANCH_ID];
+        const requests = this.buildSimRequests(branchIds);
+        if (requests.length === 0) {
+            this.notice.set('Nothing to simulate yet — the hole needs a tee, a green, and a shot.');
+            return;
+        }
+        this.notice.set(null);
+        await this.sim.simulate(requests);
+    }
+
+    /** Add/remove a branch from the comparison set (panel checkbox / chip). */
+    toggleSimBranch(shotId: string): void {
+        const current = this.simSelection.peek();
+        this.simSelection.set(current.includes(shotId)
+            ? current.filter(id => id !== shotId)
+            : [...current, shotId]);
+    }
+
+    /**
+     * Auto-simulate on BRANCH SELECT (V8's second trigger). Deliberately not
+     * an effect on the plan: it fires only when the *selection* lands on an
+     * option at a decision point, and never while a drag is in flight (a
+     * mousedown on a marker selects it before dragging — simulating there
+     * would put 800 rollouts on the gesture's critical path). Coalesced onto a
+     * microtask and deduped on (branch set, plan signature) so re-selecting
+     * the same option under an unchanged plan is free.
+     */
+    private simAutoScheduled = false;
+    private simAutoKey: string | null = null;
+
+    private scheduleAutoSimulate(): void {
+        if (this.simAutoScheduled) return;
+        this.simAutoScheduled = true;
+        queueMicrotask(() => {
+            this.simAutoScheduled = false;
+            if (this.drag) return; // never on the drag path
+            const shot = this.selectedShot.peek();
+            if (!shot) return;
+            const siblings = this.plan.childShots(shot.gamePlanHoleId, shot.parentShotId);
+            if (siblings.length < 2) return; // not a decision point — nothing to compare
+            const branchIds = siblings.map(s => s.id);
+            const key = `${branchIds.join(',')}|${this.simPlanSignature.peek()}`;
+            if (key === this.simAutoKey) return;
+            this.simAutoKey = key;
+            this.simSelection.set(branchIds);
+            void this.simulateNow();
+        });
+    }
+
+    // ── Suggest lines (V7) ────────────────────────────────────────────────
+
+    /**
+     * The hole's variant-discovery context: tee, green, aim points, the
+     * flattened lie map, and the hazard rings tagged with stable ids (the
+     * signature labels map those ids back to feature kinds).
+     */
+    private variantContext(): { ctx: VariantHoleContext; hazardKindById: Map<string, string> } | null {
+        const hole = this.selectedHole.peek();
+        const plan = this.holePlan.peek();
+        const greenCenter = this.greenCenterVec();
+        if (!hole || !plan || !greenCenter) return null;
+        const teeNode = plan.nodes.find(n => n.kind === 'tee');
+        if (!teeNode) return null;
+        const lieMap = this.lieMap.peek();
+        const hazardKindById = new Map<string, string>();
+        const hazards: HoleHazard[] = lieMap.hazardRings().map((ring, index) => {
+            const id = `hazard-${index}`;
+            hazardKindById.set(id, ring.kind);
+            return { ...ring, id };
+        });
+        const wind = this.effectiveWind.peek();
+        const aimPoints = this.furniture.aimsForHole(hole.id)
+            .map(aim => wgs84ToSweref99tm(aim.lat, aim.lon));
+        return {
+            hazardKindById,
+            ctx: {
+                tee: { x: teeNode.x, y: teeNode.y },
+                greenCenter,
+                aimPoints,
+                surfaces: lieMap.surfaces(),
+                hazards,
+                clubs: this.orderedClubs.peek(),
+                ...(wind ? { wind: { speedMps: wind.speedMps, directionDeg: wind.directionDeg } } : {}),
+            },
+        };
+    }
+
+    /** Toolbar action: enumerate the hole's distinct lines as ghost branches. */
+    async suggestLines(): Promise<number> {
+        const built = this.variantContext();
+        if (!built) {
+            this.notice.set('Suggest lines needs a tee and a mapped green on this hole.');
+            return 0;
+        }
+        this.notice.set(null);
+        const count = await this.sim.discover(built.ctx, built.hazardKindById);
+        if (count === 0) this.notice.set('No distinct lines found for this hole.');
+        return count;
+    }
+
+    /**
+     * Accept a ghost: materialise it as an ordinary option branch through the
+     * EXISTING addShot(parentShotId) chain (V7). Provenance ends at creation —
+     * once written it is an authored option like any other, and the ghost is
+     * forgotten. Returns the shots created.
+     */
+    async acceptVariant(id: string): Promise<number> {
+        const hole = this.selectedHole.peek();
+        const ghost = this.sim.variants.peek().find(g => g.id === id);
+        if (!hole || !ghost) return 0;
+        // The graph path is tee → landings… → green; only the intermediate
+        // landings become shots (the tee and the green are not plan rows).
+        const landings = ghost.variant.nodes.slice(1, -1);
+        if (landings.length === 0) {
+            this.notice.set('That line has no landing points to place.');
+            return 0;
+        }
+        // Branch from the CURRENT decision point: a selected shot becomes the
+        // parent (a sibling option under it), otherwise it is a root option.
+        let parentShotId: string | null = this.selectedShot.peek()?.parentShotId ?? null;
+        const teeNode = ghost.variant.nodes[0];
+        let origin = sweref99tmToWgs84(teeNode.point.x, teeNode.point.y);
+        let created = 0;
+        for (const [index, node] of landings.entries()) {
+            const { lat, lon } = sweref99tmToWgs84(node.point.x, node.point.y);
+            // Club from THIS variant's own previous node, not the live plan's
+            // last shot — the ghost is a parallel chain until it is written.
+            const clubId = this.autoClubForShot(
+                { lng: lon, lat }, null, { lat: origin.lat, lon: origin.lon, elevation: null });
+            origin = { lat, lon };
+            const shot = await this.plan.addShot(hole.number, {
+                lat,
+                lon,
+                elevation: null,
+                // Only the branch head carries the signature label; the
+                // continuation shots stay unlabelled like hand-placed ones.
+                label: index === 0 ? ghost.label : null,
+                parentShotId,
+                ...(clubId ? { clubId } : {}),
+            });
+            if (!shot) break;
+            parentShotId = shot.id;
+            created++;
+        }
+        this.sim.dismissVariant(id);
+        if (created > 0) this.refreshStrategy();
+        return created;
+    }
+
+    /** Forget a ghost without writing anything (V7 dismiss). */
+    dismissVariant(id: string): void {
+        this.sim.dismissVariant(id);
+    }
+
+    /** Hover a ghost to preview its corridor (paint-only, no geometry rebuild). */
+    hoverVariant(id: string | null): void {
+        this.sim.hoveredVariantId.set(id);
+    }
+
+    // ── Sim overlays ──────────────────────────────────────────────────────
+
+    private simScatterAdded = false;
+    private variantOverlayAdded = false;
+
+    /**
+     * Sampled landings from the current result, classified by lie for colour.
+     * Empty (so the overlay renders nothing) while the toggle is off or the
+     * result is stale — a dot cloud drawn against a plan it no longer matches
+     * is the most misleading thing this feature could put on the map.
+     */
+    private readonly scatterPoints = new Computed<readonly ScatterPoint[]>(() => {
+        if (!this.sim.scatterVisible.get()) return [];
+        if (this.sim.stale.get()) return [];
+        const lieMap = this.lieMap.get();
+        const points: ScatterPoint[] = [];
+        for (const branch of this.sim.branches.get()) {
+            branch.perLegLandings.forEach((landings, depth) => {
+                for (const point of landings) {
+                    points.push({ depth, lie: lieMap.classifyLie(point), point });
+                }
+            });
+        }
+        return points;
+    });
+
+    private readonly simScatterData = new Computed<FeatureCollection>(
+        () => buildScatterGeojson(this.scatterPoints.get()));
+
+    private readonly variantOverlayData = new Computed<FeatureCollection>(
+        () => buildVariantGeojson(this.sim.variants.get(), {
+            hoveredId: this.sim.hoveredVariantId.get(),
+        }));
 
     /**
      * Green-slope summary for the selected hole's green (D10 shape), or null.
@@ -1477,6 +1772,81 @@ export class PlannerToolService {
             this.greenSlopeSummary.get();
             this.refreshStrategy();
         }));
+
+        // ── Hole simulation (V7/V8) ───────────────────────────────────────
+        // Push the live plan signature at the sim service. This is the ONLY
+        // plan-geometry subscription the simulator has, and it does not
+        // compute anything: it just lets `sim.stale` flip so the panel greys.
+        track(effect(() => {
+            this.sim.planSignature.set(this.simPlanSignature.get());
+        }));
+
+        // Auto-simulate when the SELECTION lands on a decision point (V8's
+        // second trigger). Subscribes to the selection only — never to plan
+        // geometry — and the handler bails while a drag is live.
+        track(effect(() => {
+            this.selection.get();
+            this.scheduleAutoSimulate();
+        }));
+
+        // Ghosts and distributions are per-hole and transient: switching holes
+        // forgets both (V7 "ghosts clear on hole switch", V8 derived state).
+        track(effect(() => {
+            this.selectedHole.get();
+            untrack(() => {
+                this.sim.reset();
+                this.simSelection.set([]);
+                this.simAutoKey = null;
+            });
+        }));
+
+        // Landing scatter — slotted under the vector feature fills so the
+        // course still reads through the cloud.
+        track(effect(() => {
+            const ready = this.map.ready.get();
+            const data = this.simScatterData.get();
+            if (!ready) {
+                this.simScatterAdded = false;
+                return;
+            }
+            if (!this.simScatterAdded) {
+                this.map.addOverlayLayer(SIM_SCATTER_OVERLAY_ID, data, scatterLayers(),
+                    { beforeId: SCATTER_BEFORE_LAYER_ID });
+                this.simScatterAdded = true;
+            } else {
+                this.map.updateOverlayData(SIM_SCATTER_OVERLAY_ID, data);
+            }
+        }));
+        track(() => {
+            if (this.simScatterAdded) {
+                this.map.removeOverlayLayer(SIM_SCATTER_OVERLAY_ID);
+                this.simScatterAdded = false;
+            }
+        });
+
+        // Suggest-lines ghost branches — topmost, like the plan overlay, since
+        // they are things to click, not context to read through.
+        track(effect(() => {
+            const ready = this.map.ready.get();
+            const data = this.variantOverlayData.get();
+            if (!ready) {
+                this.variantOverlayAdded = false;
+                return;
+            }
+            if (!this.variantOverlayAdded) {
+                this.map.addOverlayLayer(VARIANT_OVERLAY_ID, data, variantLayers());
+                this.variantOverlayAdded = true;
+            } else {
+                this.map.updateOverlayData(VARIANT_OVERLAY_ID, data);
+            }
+        }));
+        track(() => {
+            if (this.variantOverlayAdded) {
+                this.map.removeOverlayLayer(VARIANT_OVERLAY_ID);
+                this.variantOverlayAdded = false;
+            }
+        });
+        track(() => this.sim.reset());
 
         // Crosshair cursor while an add mode is armed.
         track(effect(() => {

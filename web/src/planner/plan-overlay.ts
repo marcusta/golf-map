@@ -34,6 +34,7 @@ import {
     segmentStats,
     windEffect,
     type ChainLeg,
+    type ChainScoreContext,
     type DispersionEllipse,
     type FlatRing,
     type Lie,
@@ -647,6 +648,69 @@ export function buildOptionChips(plan: HolePlan, ctx: LegStrategyContext): Optio
         });
     }
     return chips;
+}
+
+/**
+ * The `ChainLeg[]` for ONE branch of the option tree: the leg landing on
+ * `startShotId`, then its rank-0 descendants — i.e. exactly the chain
+ * `buildOptionChips` prices, extracted so the simulator (which needs the same
+ * chain, just a distribution instead of an EV) cannot drift from it.
+ *
+ * `startShotId === null` walks the hole's PRIMARY line from the tee. Returns
+ * null when a leg can't be resolved (e.g. no tee yet), which is the caller's
+ * cue that there is nothing to simulate.
+ */
+export function branchChainLegs(plan: HolePlan, startShotId: string | null): ChainLeg[] | null {
+    const shots = plan.allNodes
+        .filter(node => node.kind === 'shot' && node.shot !== undefined)
+        .map(node => node.shot!);
+    const legByShotId = new Map(
+        plan.allLegs
+            .filter(leg => leg.to.kind === 'shot' && leg.to.shot !== undefined)
+            .map(leg => [leg.to.shot!.id, leg]));
+    const children = orderedChildren(shots);
+
+    let current: PlanShot | undefined = startShotId === null
+        ? children.get(null)?.[0]
+        : shots.find(shot => shot.id === startShotId);
+    if (!current) return null;
+
+    const legs: ChainLeg[] = [];
+    while (current) {
+        const leg = legByShotId.get(current.id);
+        if (!leg) return null;
+        const groundSlope = leg.playsLikeM !== undefined && leg.horizontalM > 0
+            ? (leg.playsLikeM - leg.horizontalM) / leg.horizontalM
+            : 0;
+        legs.push({
+            origin: { x: leg.from.x, y: leg.from.y },
+            landing: { x: leg.to.x, y: leg.to.y },
+            club: leg.club,
+            groundSlope,
+            ...(leg.recommendedBearingDeg !== undefined
+                ? { recommendedBearingDeg: leg.recommendedBearingDeg }
+                : {}),
+        });
+        current = children.get(current.id)?.[0];
+    }
+    return legs;
+}
+
+/** The strategy context in `scoreOptionChain`/`simulateChain` shape (one place). */
+export function chainScoreContext(ctx: LegStrategyContext): ChainScoreContext {
+    return {
+        surfaces: ctx.lieMap.surfaces(),
+        greenCenter: ctx.greenCenter,
+        ...(ctx.wind !== null
+            ? { wind: { speedMps: ctx.wind.speedMps, directionDeg: ctx.wind.directionDeg } }
+            : {}),
+    };
+}
+
+/** Tree depth of `shotId` in the plan (0 = a root option), or 0 when unknown. */
+export function shotDepthInPlan(plan: HolePlan, shotId: string): number {
+    const node = plan.allNodes.find(n => n.shot?.id === shotId);
+    return node?.depth ?? 0;
 }
 
 // ── Corridor-gate geometry ─────────────────────────────────────────────────

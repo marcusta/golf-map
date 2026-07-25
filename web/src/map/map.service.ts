@@ -442,11 +442,22 @@ export class MapService {
      * Requires `ready` to be true (throws otherwise). Overlays do not
      * survive `destroy()`; re-add when `ready` turns true again.
      */
-    addOverlayLayer(id: string, data: GeoJSON, layers: OverlayLayerSpec[]): void {
+    addOverlayLayer(
+        id: string,
+        data: GeoJSON,
+        layers: OverlayLayerSpec[],
+        opts: { beforeId?: string } = {},
+    ): void {
         const map = this.requireMap();
         map.addSource(id, { type: 'geojson', data });
+        // `beforeId` slots the overlay UNDER an existing layer (e.g. the vector
+        // feature fills) for derived clouds that must not hide the course.
+        // Unknown ids are ignored rather than thrown: style layer sets differ
+        // between the editor and viewer styles, and a missing anchor should
+        // degrade to "on top", not break the tool.
+        const beforeId = opts.beforeId && map.getLayer(opts.beforeId) ? opts.beforeId : undefined;
         for (const layer of layers) {
-            map.addLayer({ ...layer, source: id } as LayerSpecification);
+            map.addLayer({ ...layer, source: id } as LayerSpecification, beforeId);
         }
         this.overlays.set(id, layers.map(l => l.id));
     }

@@ -56,3 +56,24 @@ export const CAT = {
 /** Feature fills markers may take (guide §03 "green/tee markers"). */
 export const MAP_GREEN_FILL = '#7FC489'; // --map-green-fill
 export const MAP_TEE_FILL = '#5FA76E'; // --map-tee-fill
+
+/**
+ * Strategy LIE classes (shared/strategy `Lie`) → the cartography token for the
+ * feature type that lie comes from, so a sampled-landing dot reads as "this
+ * landed in that thing on the map". Theme-invariant by construction: every
+ * value is one of the `--map-*-fill` tokens above, which are the same in light
+ * and dark (design-tokens.css §map). No new token needed — this is a mapping,
+ * not a palette.
+ */
+export const LIE_FILL: Record<string, string> = {
+    tee: MAP_TEE_FILL, // --map-tee-fill
+    fairway: '#4C9256', // --map-fairway-fill
+    rough: '#566E3A', // --map-rough-fill
+    sand: '#E1CC93', // --map-bunker-fill
+    recovery: '#24402B', // --map-trees-fill
+    green: MAP_GREEN_FILL, // --map-green-fill
+    penalty: '#4C8FBE', // --map-water-fill
+};
+
+/** Fallback dot colour for an unclassified lie. */
+export const LIE_FILL_DEFAULT = STATUS_NEUTRAL;

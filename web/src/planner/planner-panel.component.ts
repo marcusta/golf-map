@@ -21,6 +21,8 @@ import {
     type PlanLeg,
     type PlanNode,
 } from './plan-overlay';
+import { formatPercent, meanLabel, onScriptLabel } from './sim-histogram';
+import { variantChipText } from './sim-overlay';
 import { ElevationService } from '../map/elevation.service';
 import { ElevationProfileService } from '../profile/elevation-profile.service';
 import { ElevationProfileComponent, signedMeters } from '../profile/elevation-profile.component';
@@ -166,6 +168,19 @@ const tpl = template(`
         <div bind="caddySection" class="plan-panel__section" data-testid="planner-caddy-section">
             <h4 class="section-title">Caddy</h4>
             <div bind="caddyBody" class="caddy-body" data-testid="planner-caddy-body"></div>
+        </div>
+
+        <div bind="simSection" class="plan-panel__section" data-testid="planner-sim-section">
+            <h4 class="section-title">Simulate</h4>
+            <div class="sim-actions">
+                <button bind="simulateBtn" type="button" class="mini-btn" data-testid="planner-simulate">Simulate</button>
+                <button bind="suggestBtn" type="button" class="mini-btn" data-testid="planner-suggest-lines">Suggest lines</button>
+                <label class="sim-toggle" title="Show sampled landings on the map">
+                    <input bind="scatterToggle" type="checkbox" data-testid="planner-sim-scatter" /> Landings
+                </label>
+            </div>
+            <div bind="simBody" class="sim-body" data-testid="planner-sim-body"></div>
+            <div bind="variantList" class="variant-list" data-testid="planner-variant-list"></div>
         </div>
 
         <div bind="shotsSection" class="plan-panel__section" data-testid="planner-shots-section">
@@ -526,6 +541,77 @@ export class PlannerPanelComponent extends Component {
             & .caddy-headline { font-size: 0.78rem; font-weight: 600; color: ${t('color-text-primary')}; }
             & .caddy-why { font-size: 0.72rem; line-height: 1.5; color: ${t('color-text-secondary')}; margin-top: 2px; }
 
+            /* ── Hole simulation (feature-hole-sim-and-variants §5) ──────── */
+            & .sim-actions { display: flex; gap: ${s('xs')}; align-items: center; flex-wrap: wrap; }
+            & .sim-toggle {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                font-size: 0.72rem;
+                color: ${t('color-text-secondary')};
+            }
+            & .sim-body { display: flex; flex-direction: column; gap: 6px; margin-top: ${s('xs')}; }
+            /* Stale = the plan moved under the result. Dimmed, never hidden and
+               never silently recomputed (V8): an old distribution still informs. */
+            & .sim-card {
+                padding: 4px 8px;
+                background: ${t('color-surface-sunken')};
+                border-radius: 3px;
+                border-left: 3px solid ${t('color-accent-primary')};
+                &.stale { opacity: 0.45; }
+            }
+            & .sim-card__head {
+                display: flex;
+                justify-content: space-between;
+                gap: ${s('xs')};
+                font-size: 0.74rem;
+                font-weight: 600;
+                color: ${t('color-text-primary')};
+            }
+            & .sim-card__mean { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+            & .sim-card__survives { font-size: 0.7rem; color: ${t('color-text-secondary')}; }
+            & .sim-bucket {
+                display: grid;
+                grid-template-columns: 4.6rem 1fr 2.4rem;
+                gap: 4px;
+                align-items: center;
+                font-size: 0.7rem;
+                color: ${t('color-text-secondary')};
+            }
+            & .sim-bucket__bar {
+                height: 6px;
+                border-radius: 3px;
+                background: ${t('color-border-default')};
+                overflow: hidden;
+            }
+            & .sim-bucket__fill { display: block; height: 100%; background: ${t('color-accent-primary')}; }
+            & .sim-bucket__pct {
+                text-align: right;
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
+            }
+            & .sim-note { font-size: 0.72rem; color: ${t('color-text-secondary')}; }
+            & .sim-note.error { color: ${t('color-status-negative')}; }
+
+            & .variant-list { display: flex; flex-direction: column; gap: 2px; margin-top: ${s('xs')}; }
+            & .variant-row {
+                display: grid;
+                grid-template-columns: 1fr auto auto;
+                gap: 4px;
+                align-items: center;
+                padding: 2px 4px;
+                border-radius: ${t('radius-sm')};
+                border-left: 2px dashed ${t('color-border-default')};
+                font-size: 0.72rem;
+                color: ${t('color-text-secondary')};
+                &:hover { background: ${t('color-surface-sunken')}; }
+            }
+            & .variant-row__label { color: ${t('color-text-primary')}; }
+            & .variant-row__chip {
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
+            }
+
             & .shot-list, & .gate-list { display: flex; flex-direction: column; gap: 2px; }
             & .empty-note { display: none; font-size: 0.72rem; color: ${t('color-text-secondary')}; &.show { display: block; } }
 
@@ -763,6 +849,19 @@ export class PlannerPanelComponent extends Component {
             legsBody: { textContent: () => '' }, // filled via effect (multiline)
             caddySection: { style: () => this.tool.caddyAdvice.get().length > 0 ? '' : 'display:none' },
             caddyBody: { textContent: () => '' }, // filled via effect (multiline)
+            simSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
+            simulateBtn: {
+                onclick: () => void this.tool.simulateNow(),
+                disabled: () => this.tool.sim.running.get(),
+                textContent: () => this.tool.sim.running.get() ? 'Simulating…' : 'Simulate',
+            },
+            suggestBtn: {
+                onclick: () => void this.tool.suggestLines(),
+                disabled: () => this.tool.sim.discovering.get(),
+                textContent: () => this.tool.sim.discovering.get() ? 'Finding lines…' : 'Suggest lines',
+            },
+            simBody: { textContent: () => '' }, // filled via effect (multiline)
+            variantList: { textContent: () => '' }, // filled via effect (multiline)
             shotsSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
             noShots: { className: () => this.tool.holeShots.get().length === 0 ? 'empty-note show' : 'empty-note' },
             applyAim: {
@@ -829,6 +928,40 @@ export class PlannerPanelComponent extends Component {
         // Caddy advice (green-slope-half + future rules), ranked highest first.
         const caddyBody = this.ref(frag, 'caddyBody');
         this.track(effect(() => { caddyBody.innerHTML = this.caddyHtml(); }));
+
+        // ── Hole simulation (§5) ─────────────────────────────────────────
+        const scatterToggle = this.ref(frag, 'scatterToggle') as HTMLInputElement;
+        this.track(effect(() => { scatterToggle.checked = this.tool.sim.scatterVisible.get(); }));
+        const onScatter = (): void => this.tool.sim.scatterVisible.set(scatterToggle.checked);
+        scatterToggle.addEventListener('change', onScatter);
+        this.track(() => scatterToggle.removeEventListener('change', onScatter));
+
+        const simBody = this.ref(frag, 'simBody');
+        this.track(effect(() => { simBody.innerHTML = this.simHtml(); }));
+
+        // Ghost branches: hovering a row previews its corridor on the map,
+        // accept materialises it as ordinary shots, dismiss just forgets it.
+        const variantList = this.ref(frag, 'variantList');
+        this.track(effect(() => { variantList.innerHTML = this.variantsHtml(); }));
+        const variantId = (event: Event): string | null =>
+            (event.target as HTMLElement).closest<HTMLElement>('[data-variant]')?.dataset.variant ?? null;
+        const onVariantClick = (event: Event): void => {
+            const action = (event.target as HTMLElement).closest<HTMLElement>('[data-variant-action]');
+            const id = variantId(event);
+            if (!action || !id) return;
+            if (action.dataset.variantAction === 'accept') void this.tool.acceptVariant(id);
+            else this.tool.dismissVariant(id);
+        };
+        const onVariantOver = (event: Event): void => this.tool.hoverVariant(variantId(event));
+        const onVariantOut = (): void => this.tool.hoverVariant(null);
+        variantList.addEventListener('click', onVariantClick);
+        variantList.addEventListener('mouseover', onVariantOver);
+        variantList.addEventListener('mouseleave', onVariantOut);
+        this.track(() => {
+            variantList.removeEventListener('click', onVariantClick);
+            variantList.removeEventListener('mouseover', onVariantOver);
+            variantList.removeEventListener('mouseleave', onVariantOut);
+        });
 
         // Elevation profile along the hole route (tee → shots → green) — the
         // iOS profile sheet's web home. Sampled through the shared
@@ -1493,6 +1626,66 @@ export class PlannerPanelComponent extends Component {
             return `<div class="caddy-card" data-testid="planner-caddy-card">`
                 + `<div class="caddy-headline">${escapeHtml(a.headline)}</div>${why}</div>`;
         }).join('');
+    }
+
+    /**
+     * The simulate readout: one card per simulated branch (two or more when
+     * comparing siblings — they stack, sharing the same bucket rows so the
+     * shapes line up), each with its mean beside the label, "plan survives",
+     * and the five par-relative buckets as bars.
+     *
+     * When the result is stale the whole block is DIMMED and says so — V8 is
+     * explicit that a plan edit greys the distribution and waits for the user
+     * to ask again rather than recomputing itself.
+     */
+    private simHtml(): string {
+        const sim = this.tool.sim;
+        const error = sim.error.get();
+        if (error) return `<div class="sim-note error" data-testid="planner-sim-error">${escapeHtml(error)}</div>`;
+        const branches = sim.branches.get();
+        if (branches.length === 0) {
+            return '<div class="sim-note">No distribution yet — hit Simulate, or select an option at a '
+                + 'decision point.</div>';
+        }
+        const stale = sim.stale.get();
+        const staleNote = stale
+            ? '<div class="sim-note" data-testid="planner-sim-stale">Plan changed — simulate again.</div>'
+            : '';
+        const cards = branches.map(branch => {
+            const rows = branch.buckets.map(bucket =>
+                `<div class="sim-bucket" data-testid="planner-sim-bucket" data-bucket="${escapeHtml(bucket.label)}">`
+                + `<span>${escapeHtml(bucket.label)}</span>`
+                + `<span class="sim-bucket__bar">`
+                + `<span class="sim-bucket__fill" style="width:${(bucket.prob * 100).toFixed(1)}%"></span></span>`
+                + `<span class="sim-bucket__pct">${formatPercent(bucket.prob)}</span></div>`).join('');
+            return `<div class="sim-card${stale ? ' stale' : ''}" data-testid="planner-sim-card"`
+                + ` data-branch="${escapeHtml(branch.branchId)}" data-stale="${stale ? '1' : '0'}">`
+                + `<div class="sim-card__head"><span>${escapeHtml(branch.label)}</span>`
+                + `<span class="sim-card__mean" data-testid="planner-sim-mean">${escapeHtml(meanLabel(branch.mean))}</span></div>`
+                + `<div class="sim-card__survives" data-testid="planner-sim-survives">`
+                + `${escapeHtml(onScriptLabel(branch.onScriptRate))}</div>${rows}</div>`;
+        }).join('');
+        return staleNote + cards;
+    }
+
+    /**
+     * Suggest-lines ghosts (V7): signature label + the same ChainScore
+     * vocabulary the option chips use, with accept / dismiss. Purely transient —
+     * accepting is what turns one into real plan shots.
+     */
+    private variantsHtml(): string {
+        const ghosts = this.tool.sim.variants.get();
+        if (ghosts.length === 0) return '';
+        return ghosts.map(ghost =>
+            `<div class="variant-row" data-testid="planner-variant-row" data-variant="${escapeHtml(ghost.id)}">`
+            + `<span class="variant-row__label">${escapeHtml(ghost.label)}</span>`
+            + `<span class="variant-row__chip" data-testid="planner-variant-chip">`
+            + `${escapeHtml(variantChipText(ghost))}</span>`
+            + `<span class="shot-actions">`
+            + `<button type="button" class="mini-btn" data-variant-action="accept" `
+            + `data-testid="planner-variant-accept">Accept</button>`
+            + `<button type="button" class="mini-btn" data-variant-action="dismiss" `
+            + `data-testid="planner-variant-dismiss">Dismiss</button></span></div>`).join('');
     }
 
     private statusText(): string {
