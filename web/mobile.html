@@ -11,6 +11,16 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Golf Map</title>
+    <!-- PWA: installable to the home screen, standalone (no browser chrome).
+         Deliberately NO service worker — offline is a later slice, and a
+         half-built cache would serve stale tiles on course. Linked from
+         mobile.html ONLY; the desktop app is not installable. NOTE: a
+         standalone launch gets its OWN storage partition, so nothing the
+         server should own may live in localStorage here. -->
+    <link rel="manifest" href="/m/manifest.webmanifest">
+    <meta name="theme-color" content="#14281c">
+    <link rel="apple-touch-icon" href="/m/icon-192.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/m/icon-192.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
