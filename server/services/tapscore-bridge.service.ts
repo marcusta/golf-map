@@ -114,10 +114,13 @@ export class TapscoreBridgeService {
     ) {}
 
     // --- Link management (deliberate client actions; may throw) ---
+    //
+    // These take the requesting user's id and refuse to touch a round owned by
+    // someone else. Cross-user access reads as 404 (not 403) so a caller can't
+    // probe which round ids exist — per @basics/core NotFoundError doc.
 
-    async status(roundId: string): Promise<TapscoreLinkStatus> {
-        const row = await this.linkRow(roundId);
-        if (!row) throw new NotFoundError(`Round ${roundId} not found`);
+    async status(roundId: string, userId: string): Promise<TapscoreLinkStatus> {
+        const row = await this.ownedLinkRow(roundId, userId);
         return toStatus(roundId, row.token, row.ballId);
     }
 
@@ -129,9 +132,13 @@ export class TapscoreBridgeService {
      * (>1) or all-pending round is rejected. On success, current scores are
      * pushed immediately (best effort — the push never fails the link).
      */
-    async link(roundId: string, token: string, ballId?: string): Promise<TapscoreLinkStatus> {
-        const exists = await this.linkRow(roundId);
-        if (!exists) throw new NotFoundError(`Round ${roundId} not found`);
+    async link(
+        roundId: string,
+        userId: string,
+        token: string,
+        ballId?: string,
+    ): Promise<TapscoreLinkStatus> {
+        await this.ownedLinkRow(roundId, userId);
 
         const balls = await this.fetchBallsOrThrow(token);
         const resolvedBallId = resolveBallId(balls, ballId);
@@ -169,9 +176,8 @@ export class TapscoreBridgeService {
         return toStatus(roundId, token, resolvedBallId);
     }
 
-    async unlink(roundId: string): Promise<TapscoreLinkStatus> {
-        const exists = await this.linkRow(roundId);
-        if (!exists) throw new NotFoundError(`Round ${roundId} not found`);
+    async unlink(roundId: string, userId: string): Promise<TapscoreLinkStatus> {
+        await this.ownedLinkRow(roundId, userId);
         await this.db
             .updateTable('rounds')
             .set({
@@ -359,6 +365,27 @@ export class TapscoreBridgeService {
             .where('id', '=', roundId)
             .executeTakeFirst();
         if (!row) return null;
+        return { token: row.tapscore_round_token, ballId: row.ball_id };
+    }
+
+    /**
+     * Like `linkRow`, but for user-initiated calls: throws NotFoundError when
+     * the round doesn't exist OR belongs to another user (404 either way, so
+     * existence never leaks). Rounds from the single-user era (user_id null)
+     * stay accessible to any authenticated user.
+     */
+    private async ownedLinkRow(
+        roundId: string,
+        userId: string,
+    ): Promise<{ token: string | null; ballId: string | null }> {
+        const row = await this.db
+            .selectFrom('rounds')
+            .select(['tapscore_round_token', 'ball_id', 'user_id'])
+            .where('id', '=', roundId)
+            .executeTakeFirst();
+        if (!row || (row.user_id !== null && row.user_id !== userId)) {
+            throw new NotFoundError(`Round ${roundId} not found`);
+        }
         return { token: row.tapscore_round_token, ballId: row.ball_id };
     }
 

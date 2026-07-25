@@ -1,5 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox';
-import { requireAuth } from '@basics/core/server/auth';
+import { requireAuth, requireUser } from '@basics/core/server/auth';
+import type { Context } from 'hono';
 import type { TapscoreBridgeService } from '../services/tapscore-bridge.service';
 
 // --- Input schemas ---
@@ -33,21 +34,24 @@ export function createTapscoreBridgeApi(svc: TapscoreBridgeService) {
         status: {
             method: 'GET' as const,
             path: '/rounds/tapscore-link',
-            fn: (input: Static<typeof StatusInput>) => svc.status(input.roundId),
+            fn: (input: Static<typeof StatusInput>, c: Context) =>
+                svc.status(input.roundId, requireUser(c).id),
             schema: StatusInput,
             middleware: mw,
         },
         link: {
             method: 'POST' as const,
             path: '/rounds/tapscore-link',
-            fn: (input: Static<typeof LinkInput>) => svc.link(input.roundId, input.token, input.ballId),
+            fn: (input: Static<typeof LinkInput>, c: Context) =>
+                svc.link(input.roundId, requireUser(c).id, input.token, input.ballId),
             schema: LinkInput,
             middleware: mw,
         },
         unlink: {
             method: 'POST' as const,
             path: '/rounds/tapscore-unlink',
-            fn: (input: Static<typeof UnlinkInput>) => svc.unlink(input.roundId),
+            fn: (input: Static<typeof UnlinkInput>, c: Context) =>
+                svc.unlink(input.roundId, requireUser(c).id),
             schema: UnlinkInput,
             middleware: mw,
         },
