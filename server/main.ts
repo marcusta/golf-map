@@ -6,6 +6,7 @@ import { log } from '@basics/core/server/logger';
 import { createServices } from './services/index';
 import { mountApiRoutes } from './routes';
 import { createTileRoutes, cachingTileKeyLookup } from './services/tiles';
+import { createStaticRoutes } from './services/static';
 import { serverMode } from './mode';
 
 const { app, db, bootstrapAuth } = await createApp<Database>(path.join(import.meta.dir, 'db/migrations'));
@@ -42,6 +43,16 @@ app.route('/', createTileRoutes(assetsService, cachingTileKeyLookup(async (id) =
     return course?.siteId ?? null;
 })));
 
+// Serve mode also hosts the built web app (desktop + the /m/* mobile entry).
+// Mounted last so /api and /tiles always win over the SPA fallback. Caddy in
+// front is still the recommended setup (TLS, HTTP/2); this is the built-in
+// fallback for a box with nothing in front of it. In builder mode the web app
+// is served by `vite dev`, so this stays unmounted.
+const webDistDir = process.env.WEB_DIST_DIR ?? path.resolve(import.meta.dir, '../web/dist');
+if (mode === 'serve') {
+    app.route('/', createStaticRoutes(webDistDir));
+}
+
 Bun.serve({ port: config.port, fetch: app.fetch });
 
-log.info({ msg: 'server started', port: config.port, mode });
+log.info({ msg: 'server started', port: config.port, mode, ...(mode === 'serve' ? { webDistDir } : {}) });
