@@ -92,7 +92,7 @@ export type PipelineRunner = (
     opts: { cwd: string; env: Record<string, string | undefined> },
 ) => Promise<PipelineRunResult>;
 
-function defaultRunner(python: string): PipelineRunner {
+export function defaultRunner(python: string): PipelineRunner {
     return async (args, opts) => {
         const proc = Bun.spawn([python, ...args], {
             cwd: opts.cwd,

@@ -19,6 +19,7 @@ from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 
 from golfpipe import clean_ortho as clean_ortho_mod
+from golfpipe import dem_analysis as dem_analysis_mod
 from golfpipe import dem_edit as dem_edit_mod
 from golfpipe import detect_common
 from golfpipe import detect_trees as detect_trees_mod
@@ -398,6 +399,86 @@ def cmd_grid_dem(
     print(f"Spike cells (8-neighbour max diff > {grid_dem_mod.SPIKE_THRESHOLD_M} m): {spikes:,}")
 
     grid_dem_mod.write_dem_geotiff(dem, transform, out_path)
+    print(f"Wrote {out_path}")
+    return out_path
+
+
+def cmd_dem_analysis(
+    input_path: Path,
+    greens_path: Path,
+    out_path: Path,
+    buffer_m: float = dem_analysis_mod.DEFAULT_GREEN_BUFFER_M,
+    coarse_factor: int = dem_analysis_mod.DEFAULT_COARSE_FACTOR,
+) -> Path:
+    """Builds the publishable analysis DEM (deploy-split §6, option b): full
+    0.5 m detail within `buffer_m` of every green polygon, a `coarse_factor`
+    block-mean (1 m) background everywhere else, written as ONE deflate
+    GeoTIFF on the input's grid.
+
+    `input_path` MUST be the DEM the builder itself analyses — that is
+    `sources/<siteId>/dem-edited.tif` when the site has terrain edits, else
+    `dem.tif`. The publish CLI picks it; passing the raw DEM for an edited
+    site would publish green reads that disagree with the visible terrain.
+
+    `greens_path` is a WGS84 GeoJSON FeatureCollection of green polygons
+    (same handoff shape as apply-dem-edits, D-TE5). No greens at all is
+    allowed but warned about — the whole raster then goes coarse, which is
+    unusable for putt reading.
+    """
+    if out_path.resolve() == input_path.resolve():
+        raise dem_analysis_mod.DemAnalysisError(
+            f"refusing to overwrite the input DEM {input_path} — the builder DEM stays "
+            "the source of truth; pass a different --out"
+        )
+    if coarse_factor < 1:
+        raise dem_analysis_mod.DemAnalysisError("--coarse-factor must be >= 1")
+
+    geometries = dem_analysis_mod.load_green_geometries(greens_path)
+    if not geometries:
+        print(f"warning: no green polygons in {greens_path} — the whole raster will be coarsened")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(input_path) as src:
+        dem = src.read(1)
+        profile = src.profile.copy()
+        reprojected = dem_analysis_mod.reproject_geometries(geometries, src.crs)
+        analysis, mask = dem_analysis_mod.build_analysis_dem(
+            dem, src.transform, src.nodata, reprojected,
+            buffer_m=buffer_m, coarse_factor=coarse_factor,
+        )
+        cell_x = abs(src.transform.a)
+        cell_y = abs(src.transform.e)
+
+    # Same profile hygiene as cmd_apply_dem_edits, then force the compressed
+    # tiled layout: DEFLATE + floating-point predictor is what makes the
+    # replicated coarse background nearly free.
+    profile.pop("blockxsize", None)
+    profile.pop("blockysize", None)
+    profile.pop("tiled", None)
+    profile.update(
+        count=1,
+        dtype="float32",
+        compress="deflate",
+        predictor=3,
+        zlevel=9,
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
+    )
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(analysis, 1)
+
+    full_res_cells = int(np.count_nonzero(mask))
+    total_cells = int(mask.size)
+    pct = 100.0 * full_res_cells / total_cells if total_cells else 0.0
+    src_bytes = input_path.stat().st_size
+    out_bytes = out_path.stat().st_size
+    print(
+        f"{len(geometries)} green polygon(s), {buffer_m:g} m buffer -> "
+        f"{full_res_cells:,} full-res cell(s) ({pct:.1f}% of the raster), "
+        f"background at {cell_x * coarse_factor:g}x{cell_y * coarse_factor:g} m"
+    )
+    print(f"Size {out_bytes / 1e6:.1f} MB (source {src_bytes / 1e6:.1f} MB, {100.0 * out_bytes / max(src_bytes, 1):.0f}%)")
     print(f"Wrote {out_path}")
     return out_path
 
