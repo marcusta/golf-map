@@ -71,6 +71,14 @@ export interface ChainLeg {
     club?: ClubSpec | null;
     /** Ground slope along the shot line (see ellipse.ts groundSlope). */
     groundSlope?: number;
+    /**
+     * Enriched aim bearing for this leg (optimizeAim's bestBearingDeg), set by
+     * the plan-overlay enrich pass. Ignored by scoreOptionChain (it re-derives
+     * the aim from origin→landing); consumed by simulateChain (§V1 step 1) so
+     * a rollout samples around the SAME aim the branch was priced at. Absent ⇒
+     * the sim aims naively at origin→landing.
+     */
+    recommendedBearingDeg?: number;
 }
 
 /** Shared pricing context for every leg of the chain. */

@@ -104,6 +104,22 @@ export {
     type ChainScore,
     scoreOptionChain,
 } from './option-chain';
+// Whole-hole simulation & score distributions (feature-hole-sim-and-variants.md
+// V1/V2/V3/V4). Closeout pmf whose mean is pinned to the Broadie table, and a
+// hybrid Monte-Carlo rollout that turns one authored branch into a score
+// distribution. Derived, never persisted (O4/V8).
+export {
+    OVERDISPERSION_BY_LIE,
+    strokesDistribution,
+    distributionMean,
+} from './score-distribution';
+export {
+    type SimulateChainOptions,
+    type SimulateChainResult,
+    DEFAULT_SIM_SEED,
+    DEFAULT_ROLLOUTS,
+    simulateChain,
+} from './simulate-chain';
 // Smart-caddy advice layer. NOTE: GreenSlopeSummary is still
 // FORWARD-DECLARED (see caddy/rule.ts) until the slope adapter (T9) exports
 // the canonical type. FeatureDistance is now sourced from feature-distances.ts
