@@ -1,6 +1,8 @@
 import type { Kysely } from 'kysely';
 import type { Database } from '../db/schema';
+import { type ServerMode, serverMode } from '../mode';
 import { MetaService } from './meta.service';
+import { IngestService } from './ingest.service';
 import { UserService } from './user.service';
 import { SitesService } from './sites.service';
 import { CoursesService } from './courses.service';
@@ -34,13 +36,16 @@ export interface ServicesConfig {
      * then empty (bridge stays inert — unlinked rounds never call out).
      */
     tapscoreBaseUrl?: string;
+    /** Server run mode. Defaults to the SERVER_MODE env (via `serverMode()`). */
+    mode?: ServerMode;
 }
 
 export function createServices(db: Kysely<Database>, config: ServicesConfig = {}) {
     const dataDir = config.dataDir ?? process.env.DATA_DIR ?? './data';
     const tapscoreBaseUrl = config.tapscoreBaseUrl ?? process.env.TAPSCORE_BASE_URL ?? '';
+    const mode = config.mode ?? serverMode();
 
-    const metaService = new MetaService();
+    const metaService = new MetaService(mode);
     const userService = new UserService(db);
     const sitesService = new SitesService(db);
     const coursesService = new CoursesService(db);
@@ -67,9 +72,13 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const hydroService = new HydroService({ courses: coursesService, assets: assetsService });
     const osmService = new OsmService({ courses: coursesService, assets: assetsService });
     const terrainEditsService = new TerrainEditsService(db);
+    // Serve-mode ingest endpoint (§8); the service is cheap to construct in
+    // either mode — only its API is mounted (serve only) by main.ts.
+    const ingestService = new IngestService({ db, dataDir });
 
     return {
         db,
+        mode,
         metaService,
         userService,
         sitesService,
@@ -93,5 +102,6 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         osmService,
         terrainEditsService,
         tapscoreBridgeService,
+        ingestService,
     };
 }

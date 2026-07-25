@@ -4,6 +4,7 @@ import { apiFetch } from '@basics/core/client/fetch';
 export interface Meta {
     name: string;
     version: string;
+    mode: 'builder' | 'serve';
 }
 
 export interface MetaApi {
