@@ -353,6 +353,17 @@ public struct AppDatabase: Sendable {
             }
         }
 
+        // v10 (T65): local MIRROR of the round's Tapscore link
+        // (docs/feature-tapscore-bridge.md). The server owns the link — these
+        // columns are a read-through cache so the scorecard can still say
+        // "linked" with no network, and are never pushed by `RoundSyncService`.
+        migrator.registerMigration("v10") { db in
+            try db.alter(table: "round") { t in
+                t.add(column: "tapscoreToken", .text)
+                t.add(column: "tapscoreBallId", .text)
+            }
+        }
+
         return migrator
     }
 

@@ -626,6 +626,37 @@ final class BundleDownloaderTests: XCTestCase {
         XCTAssertNotNil(retainedFurniture)
     }
 
+    // MARK: - Published ortho cap (deploy split §9)
+
+    /// A VPS that publishes ortho capped below the device ceiling rewrites its
+    /// `manifest.json`; the archive request must follow it down rather than
+    /// asking for levels the server does not have.
+    func testCappedManifestLowersTheOrthoArchiveRequest() async throws {
+        serveArchives()
+
+        _ = try await downloader.download(
+            makeRequest(furniture: StoreFixtures.furniture(orthoMaxZoom: 18))
+        )
+
+        let urls = StoreMockURLProtocol.requestedURLs
+        let ortho = try XCTUnwrap(urls.first { $0.path().contains("/ortho/") })
+        XCTAssertEqual(ortho.query(), "v=ver1&maxzoom=18")
+    }
+
+    /// A manifest that declares no usable ortho maxzoom (pre-cap bundles) keeps
+    /// the device ceiling — the behavior before the cap existed.
+    func testUndeclaredManifestMaxzoomFallsBackToTheDeviceCeiling() async throws {
+        serveArchives()
+
+        _ = try await downloader.download(
+            makeRequest(furniture: StoreFixtures.furniture(orthoMaxZoom: 0))
+        )
+
+        let urls = StoreMockURLProtocol.requestedURLs
+        let ortho = try XCTUnwrap(urls.first { $0.path().contains("/ortho/") })
+        XCTAssertEqual(ortho.query(), "v=ver1&maxzoom=19")
+    }
+
     // MARK: - Archive request URL
 
     func testArchiveRequestURLCarriesVersionAndOptionalMaxzoom() {

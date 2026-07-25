@@ -66,6 +66,18 @@ final class MapStyleBuilderTests: XCTestCase {
         XCTAssertEqual(ortho["maxzoom"] as? Int, 17, "cap does not raise a lower manifest maxzoom")
     }
 
+    /// A manifest that declares no ortho maxzoom (0 = "not declared" after the
+    /// lenient decode) must NOT collapse the raster source to z0 — it falls
+    /// back to the device ceiling, i.e. the pre-cap behavior.
+    func testOrthoSourceFallsBackToCeilingWhenManifestDeclaresNoMaxZoom() throws {
+        var config = configuration
+        config.orthoMaxZoom = 0
+        let style = try MapStyleBuilder.styleDictionary(configuration: config, featuresGeoJSON: tinyGeoJSON)
+        let sources = try XCTUnwrap(style["sources"] as? [String: Any])
+        let ortho = try XCTUnwrap(sources[MapStyleIDs.orthoSource] as? [String: Any])
+        XCTAssertEqual(ortho["maxzoom"] as? Int, OrthoZoomPolicy.deviceMaxZoom)
+    }
+
     func testOrthoSourceUsesInjectedExtension() throws {
         let style = try MapStyleBuilder.styleDictionary(
             configuration: configuration,

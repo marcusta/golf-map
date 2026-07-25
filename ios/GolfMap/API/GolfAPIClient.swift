@@ -544,6 +544,56 @@ public actor GolfAPIClient {
         let version: Int
     }
 
+    // MARK: - Tapscore scoring bridge
+
+    /// Current Tapscore link of a round (`GET /api/rounds/tapscore-link`).
+    /// 404 when the round id is unknown to the server.
+    public func tapscoreLink(roundId: String) async throws -> TapscoreLink {
+        try await request(path: "rounds/tapscore-link", query: ["roundId": roundId])
+    }
+
+    /// Links a round to a Tapscore friendly round by its share token
+    /// (`POST /api/rounds/tapscore-link`). Deliberately throwing — this is the
+    /// one place bridge failure surfaces to the user
+    /// (docs/feature-tapscore-bridge.md §3.1):
+    ///  - **404** — the token resolves to no Tapscore round (or the golf-map
+    ///    round is unknown to the server).
+    ///  - **409** — ball resolution failed: several claimed balls (pass an
+    ///    explicit `ballId`), an unclaimed placeholder seat, or a `ballId` that
+    ///    is not part of the round.
+    ///
+    /// After a successful link the server pushes the current scorecard straight
+    /// away and every later shot write publishes automatically.
+    @discardableResult
+    public func linkTapscore(
+        roundId: String,
+        token: String,
+        ballId: String? = nil
+    ) async throws -> TapscoreLink {
+        try await postJSON(path: "rounds/tapscore-link", body: LinkTapscoreRequest(
+            roundId: roundId, token: token, ballId: ballId
+        ))
+    }
+
+    /// Unlinks a round (`POST /api/rounds/tapscore-unlink`). Already-published
+    /// Tapscore scores stay put — golf-map just stops writing (§6).
+    @discardableResult
+    public func unlinkTapscore(roundId: String) async throws -> TapscoreLink {
+        try await postJSON(path: "rounds/tapscore-unlink", body: UnlinkTapscoreRequest(roundId: roundId))
+    }
+
+    private struct LinkTapscoreRequest: Encodable {
+        let roundId: String
+        let token: String
+        /// Omitted when nil — the server then auto-picks the round's single
+        /// claimed ball (and 409s if there is more than one).
+        let ballId: String?
+    }
+
+    private struct UnlinkTapscoreRequest: Encodable {
+        let roundId: String
+    }
+
     // MARK: - Green calibration (scan upload)
 
     /// Uploads one green scan to `POST /api/green-calibration/scans`.

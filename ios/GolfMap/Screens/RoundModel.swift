@@ -112,6 +112,60 @@ final class RoundModel {
         return record
     }
 
+    /// Mirrors the round's Tapscore link onto the local row (T65). The SERVER
+    /// owns the link — this is a read-through cache so the scorecard can still
+    /// report "linked · scores syncing" with no signal.
+    ///
+    /// Like `setStimp` the `syncState` is deliberately NOT flipped:
+    /// `RoundSyncService` never pushes these columns (nothing on `rounds/start`
+    /// or `rounds/end` carries them), so dirtying the row would queue a
+    /// pointless push. No-op when unchanged or no round is active.
+    /// The write is a TARGETED column update rather than the usual full-row
+    /// `saveRound`: `round` is a snapshot, and the sync engine writes `serverId`
+    /// straight to the row, so upserting the whole snapshot here could roll that
+    /// back.
+    @discardableResult
+    func setTapscoreLink(token: String?, ballId: String?) async -> RoundRecord? {
+        guard var record = round else { return nil }
+        guard record.tapscoreToken != token || record.tapscoreBallId != ballId else { return round }
+        record.tapscoreToken = token
+        record.tapscoreBallId = ballId
+        round = record
+        do {
+            try await database.updateRoundTapscoreLink(
+                roundId: record.id, token: token, ballId: ballId
+            )
+        } catch {
+            print("Round store Tapscore link write failed (kept in memory): \(error)")
+        }
+        return record
+    }
+
+    /// Adopts the SERVER identity (`serverId`/`serverVersion`) of the active
+    /// round from the store.
+    ///
+    /// `round` is an in-memory snapshot taken when the screen opened or the
+    /// round started; `RoundSyncService` pushes the round on its own task and
+    /// writes the assigned `serverId` to the DB ROW only (App/RoundSync.swift).
+    /// A round started in THIS screen session therefore keeps a nil `serverId`
+    /// in memory forever — which anything server-addressed (the Tapscore link)
+    /// reads as "not on the server yet". Re-reading the row fixes that.
+    ///
+    /// Merges the two sync-assigned fields only, and writes nothing back: the
+    /// capture-owned fields in memory are the fresher copy, and `syncState` is
+    /// left alone so a local edit that hasn't been persisted can't be masked.
+    func adoptSyncedIdentity() async {
+        guard let snapshot = round, snapshot.serverId == nil else { return }
+        guard let stored = try? await database.round(id: snapshot.id),
+              stored.serverId != nil else { return }
+        // The round may have been finished/replaced while the read was in
+        // flight — only merge into the same round.
+        guard var latest = round, latest.id == stored.id, latest.serverId == nil else { return }
+        latest.serverId = stored.serverId
+        latest.serverVersion = stored.serverVersion
+        round = latest
+    }
+
     /// Finishes the active round (sets `endedAt`, flags it for the server's
     /// `rounds/end`). The scorecard keeps showing it until the screen closes.
     func finishRound() async {

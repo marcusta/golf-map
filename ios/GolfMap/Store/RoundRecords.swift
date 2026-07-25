@@ -80,6 +80,14 @@ public struct RoundRecord: Codable, Sendable, Equatable, FetchableRecord, Persis
     /// Server optimistic-lock version from the last sync response.
     public var serverVersion: Int?
     public var syncState: RoundSyncState
+    /// Local MIRROR of the round's Tapscore link (T65,
+    /// docs/feature-tapscore-bridge.md): the share token the scores publish
+    /// under, and the Tapscore ball they land on. The SERVER owns this link —
+    /// these columns exist only so the scorecard can report "linked" offline,
+    /// and `RoundSyncService` deliberately never pushes them. Nil = unlinked as
+    /// far as this device last knew.
+    public var tapscoreToken: String?
+    public var tapscoreBallId: String?
 
     public init(
         id: String = UUID().uuidString,
@@ -92,7 +100,9 @@ public struct RoundRecord: Codable, Sendable, Equatable, FetchableRecord, Persis
         windDirectionDeg: Double? = nil,
         stimpFt: Double? = nil,
         serverVersion: Int? = nil,
-        syncState: RoundSyncState = .pending
+        syncState: RoundSyncState = .pending,
+        tapscoreToken: String? = nil,
+        tapscoreBallId: String? = nil
     ) {
         self.id = id
         self.serverId = serverId
@@ -105,7 +115,12 @@ public struct RoundRecord: Codable, Sendable, Equatable, FetchableRecord, Persis
         self.stimpFt = stimpFt
         self.serverVersion = serverVersion
         self.syncState = syncState
+        self.tapscoreToken = tapscoreToken
+        self.tapscoreBallId = tapscoreBallId
     }
+
+    /// True when this device last knew the round to be published to Tapscore.
+    public var isTapscoreLinked: Bool { tapscoreToken != nil }
 }
 
 /// One stroke, recorded AT the position it was played FROM (§2 — the landing

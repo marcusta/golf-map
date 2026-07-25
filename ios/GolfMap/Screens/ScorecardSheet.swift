@@ -12,6 +12,9 @@ struct ScorecardSheet: View {
     let roundModel: RoundModel
     /// The cached bag (club names for the stroke editor).
     let clubs: [ClubRecord]
+    /// Tapscore scoring-bridge link for the active round (T65). Optional so the
+    /// sheet still builds in contexts without an API client.
+    var tapscore: TapscoreLinkModel?
     let onClose: () -> Void
 
     var body: some View {
@@ -98,6 +101,15 @@ struct ScorecardSheet: View {
                 summaryRow("Total", card.total)
             }
 
+            // Scoring bridge: link this round to a Tapscore round and the
+            // server publishes each hole's gross score by itself from then on
+            // (docs/feature-tapscore-bridge.md).
+            if let tapscore {
+                Section("Scoring") {
+                    TapscoreLinkRow(model: tapscore)
+                }
+            }
+
             Section {
                 Button(role: .destructive) {
                     Task { await roundModel.finishRound() }
@@ -107,6 +119,7 @@ struct ScorecardSheet: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .task { await tapscore?.syncFromLocalRound() }
     }
 
     private var holeHeader: some View {
