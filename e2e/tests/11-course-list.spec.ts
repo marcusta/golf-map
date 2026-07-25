@@ -3,11 +3,13 @@ import { TEST_COURSE_ID, tid } from './fixtures';
 
 /**
  * Flow (k) — the Courses list screen (redesign: course-list.component.ts,
- * courses.service.ts query/sortBy/groupBy). The seeded DB has exactly one
- * course, "Linkan" (course-1, draft, 2 holes — server/db/seeds/course.ts),
- * belonging to the "E2E Site" site (server/db/seed-e2e.ts) — so these specs
- * only need to prove the row renders correctly and that the toolbar
- * (search/sort/group) wiring works, not multi-course ordering.
+ * courses.service.ts query/sortBy/groupBy). The seeded DB has "Linkan"
+ * (course-1, draft, 2 holes — server/db/seeds/course.ts, "E2E Site") plus the
+ * course-2 mutation sandbox (server/db/seed-e2e.ts) — every assertion here is
+ * scoped to course-1's row by id, proving the row renders correctly and the
+ * toolbar (search/sort/group) wiring works, not multi-course ordering.
+ * course-1's 2-hole shape is invariant across the whole run: structural
+ * mutations happen only on the sandbox course (07-furniture-editor).
  */
 
 const ROW = `${tid('course-row')}[data-course-id="${TEST_COURSE_ID}"]`;

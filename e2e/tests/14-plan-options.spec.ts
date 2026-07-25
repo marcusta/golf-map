@@ -56,45 +56,16 @@ async function updateLabel(page: Page, row: ReturnType<Page['locator']>, label: 
     await saved;
 }
 
-async function clearHoleShots(page: Page, holeNumber: number): Promise<void> {
-    await page.evaluate(async ({ courseId, number }) => {
-        const planResponse = await fetch(
-            `/api/game-plans/by-course?courseId=${encodeURIComponent(courseId)}`,
-        );
-        if (!planResponse.ok) throw new Error(`load plan → ${planResponse.status}`);
-        const plan = await planResponse.json() as {
-            holes?: Array<{
-                holeNumber: number;
-                shots: Array<{
-                    id: string;
-                    parentShotId: string | null;
-                    version: number;
-                }>;
-            }>;
-        };
-        const roots = plan.holes
-            ?.find(hole => hole.holeNumber === number)
-            ?.shots.filter(shot => shot.parentShotId === null) ?? [];
-        for (const shot of roots) {
-            const response = await fetch('/api/game-plans/shots/remove', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: shot.id, version: shot.version, mode: 'cascade' }),
-            });
-            if (!response.ok) throw new Error(`clear shot ${shot.id} → ${response.status}`);
-        }
-    }, { courseId: TEST_COURSE_ID, number: holeNumber });
-}
-
 test('author driver vs 4-iron options with continuations, promote one, and survive reload', async ({ page }) => {
+    // The suite is serial over one shared plan; seedPlanViaApi clears the
+    // hole's existing shots, so this authoring journey starts from an empty
+    // hole regardless of file order.
     await seedPlanViaApi(page, {
         courseId: TEST_COURSE_ID,
         holeNumber: HOLE_1,
         teeId: TEE_HOLE_1,
+        shots: [],
     });
-    // The E2E suite is deliberately serial and shares one plan. Start this
-    // authoring journey from an empty hole without relying on file order.
-    await clearHoleShots(page, HOLE_1);
     const fourIron = await page.evaluate(async () => {
         const response = await fetch('/api/clubs/create', {
             method: 'POST',

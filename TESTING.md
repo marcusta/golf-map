@@ -69,6 +69,33 @@ runs once (`auth.setup.ts`) and persists a session; the specs run serially
 elements by `data-*` ids via the `tid()` helper in `e2e/tests/fixtures.ts` —
 not by CSS.
 
+Because the DB is shared across the whole run, specs must stay
+**order-independent**. Two rules keep them that way:
+
+- **Structural mutations go to the sandbox course.** A spec that adds holes or
+  moves furniture must target `FURNITURE_COURSE_ID` (`course-2`, seeded by
+  `seedSandboxCourse` in `server/db/seed-e2e.ts`), never `course-1` — later
+  specs assert `course-1`'s seeded 2-hole shape (`11-course-list`,
+  `15-mobile-companion`).
+- **Plan state is reset by its own setup.** `seedPlanViaApi` clears the hole's
+  existing shots before adding the ones a spec asks for, so a hole's leg shape
+  never depends on what an earlier file authored. Use it rather than assuming
+  an empty hole.
+
+Prove it after touching the suite — run it in two different file orders and
+expect the same result both times:
+
+```bash
+bun run e2e && bun run e2e:reordered
+```
+
+`e2e:reordered` copies the specs into `e2e/.tests-reordered/` with their
+numeric prefixes reversed (`bun e2e/reorder-specs.ts --shift=N` rotates
+instead) and runs that copy via the config's `E2E_TEST_DIR` hook — Playwright
+orders spec files alphabetically, so renaming is the only way to reorder them.
+Both runs use the harness ports; set `E2E_API_PORT`/`E2E_WEB_PORT` (e.g.
+3200/5474) when the defaults are busy.
+
 ## Known gaps
 
 - **No CI.** There is no `.github/workflows`; all suites are run manually. Green

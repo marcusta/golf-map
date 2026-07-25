@@ -29,7 +29,9 @@ test('course list renders and a row navigates into the hole screen', async ({ pa
     const list = page.locator(tid('m-courses'));
     await expect(list).toBeVisible();
 
-    const row = page.locator(tid('m-course-row')).first();
+    // Target the seeded course by id — the DB also seeds the course-2
+    // mutation sandbox (server/db/seed-e2e.ts), so "first row" is ambiguous.
+    const row = page.locator(`${tid('m-course-row')}[data-course-id="${TEST_COURSE_ID}"]`);
     await expect(row).toBeVisible();
     await expect(row).toContainText('Linkan');
 
