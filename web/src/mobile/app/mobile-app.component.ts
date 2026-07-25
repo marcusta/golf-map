@@ -1,8 +1,10 @@
-import { Component, Router, template } from '@basics/core/client/core';
+import { Component, Computed, Router, template } from '@basics/core/client/core';
 import { t } from '../../theme';
 import { MobileLoginComponent } from './mobile-login.component';
 import { MobileCourseListComponent } from '../course/mobile-course-list.component';
 import { MobileHoleComponent } from '../course/mobile-hole.component';
+import { MobileGreenComponent } from '../green/mobile-green.component';
+import { swapKey } from './route-key';
 
 const tpl = template(`
     <div bind="root" class="m-app"></div>
@@ -19,6 +21,9 @@ const tpl = template(`
  *   /m               → course list
  *   /m/login         → login
  *   /m/course/:id/hole/:n → hole screen (matched by the /m/course prefix)
+ *   /m/course/:id/hole/:n/green → green screen (see route-key.ts: the green
+ *       suffix is rewritten to a /m/green prefix, since $swap matches prefixes
+ *       and the green route is otherwise a strict extension of /m/course)
  */
 export class MobileAppComponent extends Component {
     static styles = `
@@ -31,12 +36,15 @@ export class MobileAppComponent extends Component {
 
     private router = this.inject(Router);
 
+    private key = new Computed<string>(() => swapKey(this.router.route.get()));
+
     render(): DocumentFragment {
         const frag = this.wire(tpl, {});
-        this.$swap(this.ref(frag, 'root'), this.router.route, {
+        this.$swap(this.ref(frag, 'root'), this.key, {
             '/m': MobileCourseListComponent,
             '/m/login': MobileLoginComponent,
             '/m/course': MobileHoleComponent,
+            '/m/green': MobileGreenComponent,
         }, MobileCourseListComponent);
         return frag;
     }

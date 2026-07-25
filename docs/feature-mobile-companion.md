@@ -161,3 +161,49 @@ Playwright e2e (S4.4).
    green screen need a "move pin locally" affordance for the day's cut?
 3. Wave numbering: next free is T57 per the decision register — verify at kickoff
    (T54/T55 were double-booked once already).
+
+## 9. Interim HTTPS for phone testing (S4.3)
+
+Safari gives **no geolocation** (and no wake lock, and no Add-to-Home-Screen worth
+having) outside a secure context, and `http://<lan-ip>:5173` is not one. Until the VPS
+in the deploy split exists, use one of these to reach the dev server from a real phone.
+`localhost` is already a secure origin, so the simulator/desktop needs none of this.
+
+### Tailscale Serve (recommended — zero cert work)
+
+```bash
+# once, on the Mac and the phone: install Tailscale, sign into the same tailnet
+cd web && PORT=5173 bunx vite --host          # bind on all interfaces
+tailscale serve --bg 5173                     # HTTPS front for the dev server
+tailscale serve status                        # prints https://<machine>.<tailnet>.ts.net
+```
+
+Open that URL's `/m` on the phone. The cert is issued by Tailscale, so iOS trusts it
+with no profile to install. `/api` and `/tiles` ride the same origin through vite's
+proxy, so nothing else changes. Stop with `tailscale serve --https=443 off`.
+
+Vite refuses requests whose `Host` it does not know; if the page 403s with a
+host-not-allowed message, start it as `bunx vite --host --allowedHosts .ts.net`
+(a CLI flag, deliberately not baked into `vite.config.ts`).
+
+### mkcert + LAN (no Tailscale)
+
+```bash
+brew install mkcert nss
+mkcert -install
+mkcert 192.168.1.42            # the Mac's LAN IP → .pem + -key.pem
+```
+
+Then point vite at the pair (`server.https: { key, cert }` in a LOCAL, uncommitted
+config override) and start with `--host`. The phone must also trust the mkcert root:
+AirDrop `"$(mkcert -CAROOT)"/rootCA.pem` to it, install the profile, then enable it
+under *Settings → General → About → Certificate Trust Settings*. More moving parts
+than Tailscale, and the cert dies with the IP lease — prefer the option above.
+
+### What still will not work
+
+- **Add to Home Screen** installs the PWA (manifest + icons ship in `web/public/m`),
+  but there is no service worker, so a dropped connection means no map. On course,
+  stay on 4G.
+- A standalone (home-screen) launch has its **own storage partition** — the session
+  stimp and any future local state do not carry over from the Safari tab. Test both.

@@ -33,6 +33,7 @@ import { fillColorExpression, outlineColorExpression, typeSortKeyExpression } fr
 import { frameHole, type LngLatPoint } from './hole-frame';
 import { hazardRingsFromGeojson } from './hazard-rings';
 import { HoleOverrideService, suggestedHole } from './hole-override.service';
+import { greenRoute } from '../app/route-key';
 import { buildHoleReadouts, pointDistance, type HoleReadouts } from '../gps/distances';
 import { t } from '../../theme';
 import { s } from '../../css';
@@ -67,6 +68,8 @@ const tpl = template(`
                 <div class="m-hole__green-cell m-hole__green-cell--mid"><span class="m-hole__green-lbl">Middle</span><span class="m-hole__green-val" bind="mid">—</span><span class="m-hole__green-plays" bind="midPlays"></span></div>
                 <div class="m-hole__green-cell"><span class="m-hole__green-lbl">Back</span><span class="m-hole__green-val" bind="back">—</span><span class="m-hole__green-plays" bind="backPlays"></span></div>
             </div>
+
+            <button class="m-hole__green-link" bind="greenLink" data-testid="m-hole-green-link">Green view &amp; putt read</button>
 
             <div class="m-hole__gps" bind="gpsline"></div>
 
@@ -294,6 +297,22 @@ export class MobileHoleComponent extends Component {
                 font-size: 0.7rem;
                 font-variant-numeric: tabular-nums;
                 color: ${t('color-text-tertiary')};
+            }
+
+            /* Entry to the green screen — full-width so it is a 44px target
+               even on the narrowest phone. */
+            & .m-hole__green-link {
+                display: block;
+                width: 100%;
+                min-height: 44px;
+                margin-bottom: ${s('sm')};
+                border: 1px solid ${t('color-border-default')};
+                border-radius: ${t('radius-pill')};
+                background: ${t('color-surface-raised')};
+                color: ${t('color-text-primary')};
+                font-size: 0.9rem;
+                font-weight: 600;
+                cursor: pointer;
             }
 
             & .m-hole__gps {
@@ -547,6 +566,10 @@ export class MobileHoleComponent extends Component {
             frontPlays: () => this.fmtPlays(this.greenNumbers.get().front),
             midPlays: () => this.fmtPlays(this.greenNumbers.get().mid),
             backPlays: () => this.fmtPlays(this.greenNumbers.get().back),
+            greenLink: {
+                onclick: () => this.router.navigate(
+                    greenRoute(this.courseId.peek(), this.holeNo.peek())),
+            },
             gpsline: () => this.gpsLineText(),
             tapPill: {
                 className: () => this.tapReadout.get() ? 'm-hole__tap-pill show' : 'm-hole__tap-pill',
@@ -781,12 +804,18 @@ export class MobileHoleComponent extends Component {
         this.wake.enable();
 
         // Teardown — $swap destroys this component on every navigation.
-        this.track(() => {
+        // Untracked: this teardown runs inside the parent's $swap effect, and
+        // MapService.destroy READS this.map. Tracked, that read would make the
+        // router's swap effect a dependent of the map signals — the NEXT
+        // screen's map.set(map) would then re-enter $swap mid-mount and remount
+        // it recursively (two live maps over one container). See the same guard
+        // on the green screen.
+        this.track(() => untrack(() => {
             this.mapSvc.destroy();
             this.elevation.configure(null);
             this.geo.stop();
             this.wake.release();
-        });
+        }));
     }
 
     private planData(): ReturnType<typeof buildPlanGeojson> {
