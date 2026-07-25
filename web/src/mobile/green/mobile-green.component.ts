@@ -19,6 +19,14 @@ import {
     type PuttContext,
     type PuttOverlayMode,
 } from '../../planner/putt-read.service';
+import { seedBallFromFix } from './ball-seed';
+import {
+    confidenceText,
+    greenMessage,
+    readAimText,
+    readNoteText,
+    readPaceText,
+} from './green-copy';
 import { PUTT_OVERLAY_ID, buildPuttGeojson, puttLayers } from '../../planner/putt-overlay';
 import {
     computeSlopeGrid,
@@ -360,15 +368,15 @@ export class MobileGreenComponent extends Component {
                 textContent: () => this.messageText() ?? '',
             },
             title: () => `Hole ${this.holeNo.get()} · Green`,
-            aim: () => this.putt.display.get().verbal?.aim ?? '',
-            pace: () => this.putt.display.get().verbal?.pace ?? '',
+            aim: () => readAimText(this.putt.display.get()),
+            pace: () => readPaceText(this.putt.display.get()),
             note: {
                 className: () => {
                     const status = this.putt.display.get().status;
                     return status === 'soft' || status === 'unavailable'
                         ? 'm-green__note warn' : 'm-green__note';
                 },
-                textContent: () => this.noteText(),
+                textContent: () => readNoteText(this.putt.display.get()),
             },
             conf: {
                 className: () => {
@@ -376,7 +384,7 @@ export class MobileGreenComponent extends Component {
                     return c && c.confidence < MIN_READ_CONFIDENCE
                         ? 'm-green__conf warn' : 'm-green__conf';
                 },
-                textContent: () => this.confidenceText(),
+                textContent: () => confidenceText(this.putt.display.get()),
             },
             placeBall: {
                 className: () => this.segClass(this.putt.placing.get() === 'ball'),
@@ -418,31 +426,15 @@ export class MobileGreenComponent extends Component {
         return active ? 'm-green__segbtn active' : 'm-green__segbtn';
     }
 
-    /** The guidance/withhold line straight from the shared display model. */
-    private noteText(): string {
-        const d = this.putt.display.get();
-        if (d.message) return d.message;
-        if (d.status === 'pending') return 'Reading…';
-        return '';
-    }
-
-    private confidenceText(): string {
-        const c = this.putt.display.get().confidence;
-        if (!c) return '';
-        const pct = Math.round(c.confidence * 100);
-        return c.confidence < MIN_READ_CONFIDENCE
-            ? `Green data ${pct}% — rough read`
-            : `Green data ${pct}%`;
-    }
-
     private messageText(): string | null {
-        const error = this.tileset.error.get();
-        if (error) return `Could not load tiles — ${error.message}`;
-        if (this.tileset.loading.get()) return 'Loading course…';
-        if (this.courseDetail.holes.get().length > 0 && this.context.get() === null) {
-            return 'This hole has no green drawn yet — nothing to read.';
-        }
-        return null;
+        return greenMessage({
+            tileError: this.tileset.error.get()?.message ?? null,
+            tilesLoading: this.tileset.loading.get(),
+            holesLoaded: this.courseDetail.holes.get().length > 0,
+            holeExists: this.currentHole.get() !== null,
+            holeNumber: this.holeNo.get(),
+            hasGreen: this.context.get() !== null,
+        });
     }
 
     private stepStimp(delta: number): void {
@@ -540,8 +532,9 @@ export class MobileGreenComponent extends Component {
             this.scheduleAnalysisRender();
         }));
 
-        // Seed the ball from the GPS fix ONCE, and only when the player is
-        // actually standing on this green (otherwise the tap places it).
+        // Seed the BALL from the GPS fix ONCE, and only when the player is
+        // actually standing on this green (otherwise the tap places it). Never
+        // the hole — see `seedBallFromFix`.
         this.track(effect(() => {
             const fix = this.geo.fix.get();
             const ctx = this.context.get();
@@ -549,8 +542,7 @@ export class MobileGreenComponent extends Component {
             if (this.putt.ball.peek() !== null) return;
             const p = { x: fix.sweref.x, y: fix.sweref.y };
             if (!pointInGeometry(p, ctx.geometry)) return;
-            this.gpsSeeded = true;
-            untrack(() => this.putt.placeNext(p));
+            this.gpsSeeded = untrack(() => seedBallFromFix(this.putt, p));
         }));
 
         // Tap-to-place (the ball first, then the hole — the shared service
@@ -636,22 +628,35 @@ export class MobileGreenComponent extends Component {
         const grid = this.putt.grid.peek();
         const ctx = this.putt.context.peek();
 
-        this.clearAnalysis();
-        if (!ctx) return;
+        // Vector layers are cheap GeoJSON — always redone. The heat image is
+        // NOT: it is a per-cell canvas encoded to a data URL, so it is kept
+        // whenever (grid, mode) is unchanged (the desktop guards the same way
+        // in analysis-overlay). A features/pins refresh must not re-encode it.
+        this.clearVectors();
+        if (!ctx) {
+            this.clearHeat();
+            return;
+        }
 
         this.mapSvc.addOverlayLayer(GREEN_BOUNDARY_ID, boundaryGeojson(ctx.geometry), boundaryLayers());
         this.boundaryAdded = true;
+        // Re-adding the boundary put it above a retained heat image, which is
+        // the order the beforeId below establishes on a fresh render too.
 
         if (grid && mode !== 'none') {
             const derived = this.derivedFor(grid);
-            const url = heatImageUrl(grid, mode as Exclude<PuttOverlayMode, 'none'>, derived.slope, derived.stats);
-            if (url) {
-                this.mapSvc.addImageOverlay(GREEN_HEAT_ID, url, gridCorners(grid), {
-                    opacity: 0.9,
-                    beforeId: `${GREEN_BOUNDARY_ID}-casing`,
-                });
-                this.heatAdded = true;
-                this.renderedFor = { grid, mode };
+            if (!this.heatAdded || this.renderedFor?.grid !== grid || this.renderedFor.mode !== mode) {
+                this.clearHeat();
+                const url = heatImageUrl(
+                    grid, mode as Exclude<PuttOverlayMode, 'none'>, derived.slope, derived.stats);
+                if (url) {
+                    this.mapSvc.addImageOverlay(GREEN_HEAT_ID, url, gridCorners(grid), {
+                        opacity: 0.9,
+                        beforeId: `${GREEN_BOUNDARY_ID}-casing`,
+                    });
+                    this.heatAdded = true;
+                    this.renderedFor = { grid, mode };
+                }
             }
             if (mode === 'slope') {
                 const arrows = sampleFallLines(grid, derived.slope);
@@ -659,6 +664,8 @@ export class MobileGreenComponent extends Component {
                     GREEN_ARROWS_ID, arrowsGeojson(arrows, arrowLengthM(grid)), arrowLayers());
                 this.arrowsAdded = true;
             }
+        } else {
+            this.clearHeat();
         }
         this.raisePuttGeometry();
     }
@@ -671,7 +678,7 @@ export class MobileGreenComponent extends Component {
         return this.derivedCache;
     }
 
-    private clearAnalysis(): void {
+    private clearVectors(): void {
         if (this.arrowsAdded) {
             this.mapSvc.removeOverlayLayer(GREEN_ARROWS_ID);
             this.arrowsAdded = false;
@@ -680,11 +687,14 @@ export class MobileGreenComponent extends Component {
             this.mapSvc.removeOverlayLayer(GREEN_BOUNDARY_ID);
             this.boundaryAdded = false;
         }
+    }
+
+    private clearHeat(): void {
         if (this.heatAdded) {
             this.mapSvc.removeOverlayLayer(GREEN_HEAT_ID);
             this.heatAdded = false;
-            this.renderedFor = null;
         }
+        this.renderedFor = null;
     }
 
     /** Keep the read (path, aim line, markers) above the analysis field. */
