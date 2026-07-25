@@ -11,7 +11,8 @@
         "test:server": "bun test .",
         "create-user": "DB_PATH=../data/app.sqlite bun db/create-user.ts",
         "import": "DB_PATH=../data/app.sqlite bun db/import.ts",
-        "publish": "DATA_DIR=../data DB_PATH=../data/app.sqlite bun scripts/publish.ts"
+        "publish": "DATA_DIR=../data DB_PATH=../data/app.sqlite bun scripts/publish.ts",
+        "obs:rotate": "OBS_DB_PATH=${OBS_DB_PATH:-../data/obs.sqlite} bun scripts/obs-rotate.ts"
     },
     "dependencies": {
         "@basics/core": "file:../../mackans-client-fw/core",

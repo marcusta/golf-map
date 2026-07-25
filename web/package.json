@@ -4,6 +4,7 @@
     "type": "module",
     "scripts": {
         "dev": "bunx vite",
+        "build": "bunx vite build",
         "demo": "bun run demo/serve.ts",
         "check:client": "tsc --noEmit",
         "check:test": "tsc -p tsconfig.test.json --noEmit",
