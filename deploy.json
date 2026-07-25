@@ -1,0 +1,10 @@
+{
+    "database": {
+        "path": "data/app.sqlite",
+        "migrate": "bun run db:migrate",
+        "validate": "bun run db:health",
+        "migrationsDir": "server/db/migrations"
+    },
+    "install": "bun install && bun run --cwd web build",
+    "healthCheck": "curl -f http://localhost:3801/api/meta"
+}
