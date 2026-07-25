@@ -159,8 +159,13 @@ export class TapscoreBridgeService {
         this.itineraryCache.delete(roundId);
 
         // Push whatever is already recorded so an in-progress round shows up in
-        // Tapscore straight away. syncAll never throws.
-        await this.syncAll(roundId);
+        // Tapscore straight away — but route it through the SAME per-round drain
+        // chain as the shot-write hook, so an in-flight drain and this initial
+        // sync can't interleave a version read-modify-write. Best effort: the
+        // drain never throws, so the link can't fail on a publish error.
+        const holes = await this.holesWithShots(roundId);
+        this.syncHoles(roundId, holes);
+        await this.settle(roundId);
         return toStatus(roundId, token, resolvedBallId);
     }
 
@@ -240,26 +245,32 @@ export class TapscoreBridgeService {
         const set = this.pending.get(roundId);
         if (!set || set.size === 0) return;
         const holes = Array.from(set).sort((a, b) => a - b);
+        // Claim the holes BEFORE the await. A concurrent addShot for the same
+        // hole during the in-flight publish then re-queues a FRESH entry (and
+        // chains a new flush) instead of one we would delete post-await — so the
+        // newer value is never lost.
+        for (const h of holes) set.delete(h);
+        if (set.size === 0) this.pending.delete(roundId);
         try {
             const link = await this.linkRow(roundId);
-            if (!link?.token || !link.ballId) {
-                this.pending.delete(roundId); // unlinked → drop, nothing to publish
-                return;
-            }
+            if (!link?.token || !link.ballId) return; // unlinked → drop
             await this.publish(roundId, link.token, link.ballId, holes);
-            // Success: remove exactly the holes we handled; holes queued while we
-            // were publishing stay for the next drain.
-            for (const h of holes) set.delete(h);
-            if (set.size === 0) this.pending.delete(roundId);
         } catch (err) {
-            // Leave the holes in `pending` so the next syncHoles retries them;
+            // Re-queue the claimed holes so the next syncHoles retries them;
             // per-hole state (synced=0) makes the replay idempotent.
+            this.requeue(roundId, holes);
             log.error({
-                msg: 'tapscore bridge: publish failed (holes stay queued for retry)',
+                msg: 'tapscore bridge: publish failed (holes re-queued for retry)',
                 roundId,
                 error: err instanceof Error ? err.message : String(err),
             });
         }
+    }
+
+    private requeue(roundId: string, holes: readonly number[]): void {
+        const set = this.pending.get(roundId) ?? new Set<number>();
+        for (const h of holes) set.add(h);
+        if (set.size > 0) this.pending.set(roundId, set);
     }
 
     private async publish(

@@ -46,6 +46,31 @@ class FakeTapscore {
     /** Current scorecard cell per (ballId, playHoleId) — mutated only on insert. */
     private cellMap = new Map<string, FakeEvent>();
 
+    // Test seam: hold the FIRST /score response open until `release()` so a test
+    // can deterministically interleave work while one drain is mid-POST.
+    private gate?: Promise<void>;
+    private releaseGate?: () => void;
+    private firstPostSeen = false;
+    /** Resolves once the server has received the first (gated) /score POST. */
+    firstPostReceived!: Promise<void>;
+    private signalFirstPost!: () => void;
+
+    /** Arm the gate: the next /score POST blocks until `release()`. */
+    blockFirstPost(): void {
+        this.firstPostSeen = false;
+        this.gate = new Promise((res) => {
+            this.releaseGate = res;
+        });
+        this.firstPostReceived = new Promise((res) => {
+            this.signalFirstPost = res;
+        });
+    }
+
+    /** Let the held /score POST complete. */
+    release(): void {
+        this.releaseGate?.();
+    }
+
     addRound(token: string, round: FakeRound): void {
         this.rounds.set(token, round);
     }
@@ -77,6 +102,12 @@ class FakeTapscore {
         app.post('/api/friendly-rounds/score', async (c) => {
             const body = (await c.req.json()) as FakeEvent & { token: string };
             if (!this.rounds.has(body.token)) return c.json({ error: 'not found' }, 404);
+            // Hold the first POST open (if armed) so a test can interleave.
+            if (this.gate && !this.firstPostSeen) {
+                this.firstPostSeen = true;
+                this.signalFirstPost();
+                await this.gate;
+            }
             const ev: FakeEvent = {
                 ballId: body.ballId,
                 playHoleId: body.playHoleId,
@@ -311,6 +342,32 @@ test('incremental play advances the cell through monotonic versioned ids', async
     await ctx.tapscoreBridgeService.syncAll(round.id);
     expect(fake.posts.length).toBe(before);
     expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(4);
+});
+
+test('a hole re-queued DURING an in-flight drain still lands its newer value', async () => {
+    const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
+    const ctx = await setup(fake.baseUrl);
+    const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
+    await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+
+    // Arm the fake to hold the first /score POST open.
+    fake.blockFirstPost();
+
+    // Shot 1 → drain A starts and blocks mid-POST (having read strokes = 1).
+    await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
+    await fake.firstPostReceived;
+
+    // While drain A is stuck in its POST, a second shot lands on the SAME hole
+    // and re-queues it. This is the reentrancy window: the claimed hole must NOT
+    // be deleted out from under this fresh entry.
+    await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
+
+    // Let drain A finish (posts strokes = 1); drain B then reads strokes = 2.
+    fake.release();
+    await ctx.tapscoreBridgeService.settle(round.id);
+
+    // The newer value must win — a lost update would leave the cell at 1.
+    expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(2);
 });
 
 test('moving a shot to another hole updates BOTH holes', async () => {

@@ -66,8 +66,10 @@ A client links a golf-map round to a Tapscore round with the **share token**
    are refused up front because Tapscore's own `append` throws `seat_unclaimed`
    for them — linking to one would silently never sync.
 3. The token + resolved ball are stored on the round, and current scores are
-   pushed immediately (`syncAll`, best-effort) so an in-progress round appears
-   in Tapscore right away.
+   pushed immediately (best-effort) so an in-progress round appears in Tapscore
+   right away. This initial push is routed through the **same per-round drain
+   chain** as the shot-write hook (`syncHoles` + `settle`), so a link concurrent
+   with an in-flight drain can't interleave a version read-modify-write.
 
 Linking is a deliberate action, so it *may* throw (bad token, ambiguous ball,
 Tapscore unreachable). This is the one place failure surfaces to the caller.
@@ -203,7 +205,9 @@ token / unknown ball / pending-seat rejection / pending-seat ignored in
 auto-pick), publish with a versioned id, an **incremental-play regression**
 (shot → shot → penalty each advancing the cell through distinct monotonic
 versions, with an unchanged re-sync producing no POST), publish being **off the
-write path** (cell empty until `settle`), a moved shot updating both holes, cell
-clearing, an unlinked round staying silent, and **Tapscore unreachable → shot
-write still succeeds.** Plus focused unit tests for `computeHoleStrokes`. Full
-server suite: 493 pass.
+write path** (cell empty until `settle`), a **drain-reentrancy** case (a hole
+re-queued while a drain is mid-POST still lands its newer value — proven with a
+gated fake that holds the first POST open), a moved shot updating both holes,
+cell clearing, an unlinked round staying silent, and **Tapscore unreachable →
+shot write still succeeds.** Plus focused unit tests for `computeHoleStrokes`.
+Full server suite: 494 pass.
