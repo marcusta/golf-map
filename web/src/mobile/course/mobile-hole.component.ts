@@ -29,9 +29,10 @@ import { GeolocationService, type GpsFix } from '../gps/geolocation.service';
 import { GPS_OVERLAY_ID, buildGpsGeojson, gpsLayers } from '../gps/gps-overlay';
 import { WakeLock } from '../gps/wake-lock';
 import { FeaturesGeojsonService } from './features-geojson.service';
-import { fillColorExpression, outlineColorExpression } from './feature-colors';
+import { fillColorExpression, outlineColorExpression, typeSortKeyExpression } from './feature-colors';
 import { frameHole, type LngLatPoint } from './hole-frame';
 import { hazardRingsFromGeojson } from './hazard-rings';
+import { HoleOverrideService, suggestedHole } from './hole-override.service';
 import { buildHoleReadouts, pointDistance, type HoleReadouts } from '../gps/distances';
 import { t } from '../../theme';
 import { s } from '../../css';
@@ -62,9 +63,9 @@ const tpl = template(`
             </header>
 
             <div class="m-hole__greens" data-testid="m-hole-greens">
-                <div class="m-hole__green-cell"><span class="m-hole__green-lbl">Front</span><span class="m-hole__green-val" bind="front">—</span></div>
-                <div class="m-hole__green-cell m-hole__green-cell--mid"><span class="m-hole__green-lbl">Middle</span><span class="m-hole__green-val" bind="mid">—</span></div>
-                <div class="m-hole__green-cell"><span class="m-hole__green-lbl">Back</span><span class="m-hole__green-val" bind="back">—</span></div>
+                <div class="m-hole__green-cell"><span class="m-hole__green-lbl">Front</span><span class="m-hole__green-val" bind="front">—</span><span class="m-hole__green-plays" bind="frontPlays"></span></div>
+                <div class="m-hole__green-cell m-hole__green-cell--mid"><span class="m-hole__green-lbl">Middle</span><span class="m-hole__green-val" bind="mid">—</span><span class="m-hole__green-plays" bind="midPlays"></span></div>
+                <div class="m-hole__green-cell"><span class="m-hole__green-lbl">Back</span><span class="m-hole__green-val" bind="back">—</span><span class="m-hole__green-plays" bind="backPlays"></span></div>
             </div>
 
             <div class="m-hole__gps" bind="gpsline"></div>
@@ -80,6 +81,7 @@ const targetRowTpl = template(`
     <li class="m-trow" bind="row">
         <span class="m-trow__label" bind="label"></span>
         <span class="m-trow__val" bind="val"></span>
+        <span class="m-trow__plays" bind="plays"></span>
     </li>
 `);
 const legRowTpl = template(`
@@ -89,7 +91,26 @@ const legRowTpl = template(`
     </li>
 `);
 
-interface GreenNumbers { front: number | null; mid: number | null; back: number | null }
+/** A plan-target / hazard row as displayed: raw distance + plays-like aside. */
+interface TargetRow { id: string; label: string; value: string; plays: string }
+
+/** One green readout: the raw line distance plus its plays-like companion. */
+interface GreenCell { lineM: number | null; playsAsM: number | null }
+interface GreenNumbers { front: GreenCell; mid: GreenCell; back: GreenCell }
+
+const NO_CELL: GreenCell = { lineM: null, playsAsM: null };
+
+/**
+ * The "plays N" companion shown beside a raw distance — the same idiom (and
+ * the same 1 m threshold) as the tap pill, so elevation-adjusted numbers read
+ * identically wherever they appear. Empty string when the adjustment rounds
+ * away, keeping the raw number visually primary.
+ */
+function playsLabel(lineM: number | null, playsAsM: number | null): string {
+    if (lineM === null || playsAsM === null) return '';
+    if (Math.abs(playsAsM - lineM) < 1) return '';
+    return `plays ${Math.round(playsAsM)}`;
+}
 
 /**
  * The on-course hole screen: a fullscreen map framed tee→green, a top hole
@@ -173,7 +194,7 @@ export class MobileHoleComponent extends Component {
                 display: none;
                 align-items: center;
                 gap: ${s('xs')};
-                min-height: 40px;
+                min-height: 44px;
                 padding: ${s('xs')} ${s('md')};
                 border: none;
                 border-radius: ${t('radius-pill')};
@@ -266,6 +287,15 @@ export class MobileHoleComponent extends Component {
             }
             & .m-hole__green-cell--mid .m-hole__green-val { color: ${t('color-accent-primary')}; }
 
+            /* Plays-like sits UNDER the raw number, small and muted — the raw
+               distance stays the primary read; this is the elevation aside. */
+            & .m-hole__green-plays {
+                min-height: 1em;
+                font-size: 0.7rem;
+                font-variant-numeric: tabular-nums;
+                color: ${t('color-text-tertiary')};
+            }
+
             & .m-hole__gps {
                 min-height: 1.2em;
                 margin-bottom: ${s('sm')};
@@ -290,11 +320,22 @@ export class MobileHoleComponent extends Component {
                 padding: ${s('xs')} 0;
                 border-top: 1px solid ${t('color-border-subtle')};
             }
-            & .m-trow__label { color: ${t('color-text-secondary')}; }
+            /* label | raw | plays-like — the label takes the slack so the two
+               numbers stay clustered on the right, raw first and dominant. */
+            & .m-trow__label { flex: 1; color: ${t('color-text-secondary')}; }
             & .m-trow__val {
+                flex: 0 0 auto;
                 font-weight: 600;
                 font-variant-numeric: tabular-nums;
                 color: ${t('color-text-primary')};
+            }
+            & .m-trow__plays {
+                flex: 0 0 auto;
+                min-width: 4.5em;
+                text-align: right;
+                font-size: 0.75rem;
+                font-variant-numeric: tabular-nums;
+                color: ${t('color-text-tertiary')};
             }
             & .m-leg__n {
                 flex: 0 0 auto;
@@ -320,12 +361,11 @@ export class MobileHoleComponent extends Component {
     private clubs = this.inject(ClubsService);
     private features = this.inject(FeaturesGeojsonService);
     private geo = this.inject(GeolocationService);
+    private overrides = this.inject(HoleOverrideService);
 
     private readonly wake = new WakeLock();
     private mapHost!: HTMLElement;
 
-    /** True once the user has picked a hole by hand — suppresses auto-suggest. */
-    private manualOverride = new Signal(false);
     /** Last tapped map point (WGS84), or null. */
     private tapPoint = new Signal<LngLatPoint | null>(null);
     private gpsRefreshScheduled = false;
@@ -426,9 +466,10 @@ export class MobileHoleComponent extends Component {
 
     private greenNumbers = new Computed<GreenNumbers>(() => {
         const rows = this.readouts.get()?.green ?? [];
-        const by = (kind: string) => {
+        const by = (kind: string): GreenCell => {
             const row = rows.find(r => r.kind === kind);
-            return row ? Math.round(row.lineM) : null;
+            if (!row) return NO_CELL;
+            return { lineM: Math.round(row.lineM), playsAsM: row.playsAsM };
         };
         return { front: by('green_front'), mid: by('green_center'), back: by('green_back') };
     });
@@ -479,11 +520,12 @@ export class MobileHoleComponent extends Component {
         return best?.number ?? null;
     });
 
-    private suggestion = new Computed<number | null>(() => {
-        if (this.manualOverride.get()) return null;
-        const nearest = this.nearestHole.get();
-        return nearest !== null && nearest !== this.holeNo.get() ? nearest : null;
-    });
+    private suggestion = new Computed<number | null>(() => suggestedHole({
+        courseId: this.courseId.get(),
+        currentHole: this.holeNo.get(),
+        nearestHole: this.nearestHole.get(),
+        override: this.overrides.override.get(),
+    }));
 
     // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -499,9 +541,12 @@ export class MobileHoleComponent extends Component {
             },
             prev: { onclick: () => this.step(-1) },
             next: { onclick: () => this.step(1) },
-            front: () => this.fmtGreen(this.greenNumbers.get().front),
-            mid: () => this.fmtGreen(this.greenNumbers.get().mid),
-            back: () => this.fmtGreen(this.greenNumbers.get().back),
+            front: () => this.fmtGreen(this.greenNumbers.get().front.lineM),
+            mid: () => this.fmtGreen(this.greenNumbers.get().mid.lineM),
+            back: () => this.fmtGreen(this.greenNumbers.get().back.lineM),
+            frontPlays: () => this.fmtPlays(this.greenNumbers.get().front),
+            midPlays: () => this.fmtPlays(this.greenNumbers.get().mid),
+            backPlays: () => this.fmtPlays(this.greenNumbers.get().back),
             gpsline: () => this.gpsLineText(),
             tapPill: {
                 className: () => this.tapReadout.get() ? 'm-hole__tap-pill show' : 'm-hole__tap-pill',
@@ -564,10 +609,11 @@ export class MobileHoleComponent extends Component {
         return btn;
     }
 
-    private renderTargetRow(row: { id: string; label: string; value: string }): HTMLElement {
+    private renderTargetRow(row: TargetRow): HTMLElement {
         return this.wireEl(targetRowTpl, {
             label: () => row.label,
             val: () => row.value,
+            plays: () => row.plays,
             row: { 'data-target-id': row.id },
         });
     }
@@ -581,22 +627,36 @@ export class MobileHoleComponent extends Component {
     }
 
     /** Plan targets + hazard carries as flat display rows, nearest first. */
-    private targetRows(): Array<{ id: string; label: string; value: string }> {
+    private targetRows(): TargetRow[] {
         const r = this.readouts.get();
         if (!r) return [];
-        const rows: Array<{ id: string; label: string; value: string }> = [];
+        const rows: TargetRow[] = [];
         for (const row of r.targets) {
-            rows.push({ id: row.id, label: row.label, value: `${Math.round(row.lineM)} m` });
+            rows.push({
+                id: row.id,
+                label: row.label,
+                value: `${Math.round(row.lineM)} m`,
+                plays: playsLabel(row.lineM, row.playsAsM),
+            });
         }
         for (const row of r.hazards) {
             const edge = row.kind === 'hazard_carry' ? 'carry' : 'front';
-            rows.push({ id: row.id, label: `${row.label} (${edge})`, value: `${Math.round(row.lineM)} m` });
+            rows.push({
+                id: row.id,
+                label: `${row.label} (${edge})`,
+                value: `${Math.round(row.lineM)} m`,
+                plays: playsLabel(row.lineM, row.playsAsM),
+            });
         }
         return rows;
     }
 
     private fmtGreen(value: number | null): string {
         return value === null ? '—' : String(value);
+    }
+
+    private fmtPlays(cell: GreenCell): string {
+        return playsLabel(cell.lineM, cell.playsAsM);
     }
 
     private gpsLineText(): string {
@@ -625,7 +685,10 @@ export class MobileHoleComponent extends Component {
     }
 
     private goHole(num: number): void {
-        this.manualOverride.set(true);
+        // Remember the choice in the DI singleton, NOT on this component —
+        // $swap destroys us on the very navigation below, so component-local
+        // state could never survive to suppress the banner it dismissed.
+        this.overrides.note(this.courseId.peek(), this.nearestHole.peek());
         this.tapPoint.set(null);
         this.router.navigate(`/m/course/${this.courseId.peek()}/hole/${num}`);
     }
@@ -780,17 +843,25 @@ function emptyFc(): ReturnType<typeof buildGpsGeojson> {
     return { type: 'FeatureCollection', features: [] };
 }
 
-/** Read-only surface fills + outlines (colours by feature `type`). */
+/**
+ * Read-only surface fills + outlines (colours by feature `type`). Both layers
+ * carry the type z-order as a MapLibre sort key, so overlapping surfaces stack
+ * the way they do in the desktop editor (bunkers and water over fairway, not in
+ * arbitrary GeoJSON order) without needing a layer per type.
+ */
 function featureLayers(): OverlayLayerSpec[] {
+    const sortKey = typeSortKeyExpression();
     return [
         {
             id: `${FEATURES_OVERLAY_ID}-fill`,
             type: 'fill',
+            layout: { 'fill-sort-key': sortKey as never },
             paint: { 'fill-color': fillColorExpression() as never, 'fill-opacity': 0.5 },
         },
         {
             id: `${FEATURES_OVERLAY_ID}-outline`,
             type: 'line',
+            layout: { 'line-sort-key': sortKey as never },
             paint: { 'line-color': outlineColorExpression() as never, 'line-width': 1, 'line-opacity': 0.7 },
         },
     ];
