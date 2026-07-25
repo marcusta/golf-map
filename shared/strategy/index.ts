@@ -120,6 +120,30 @@ export {
     DEFAULT_ROLLOUTS,
     simulateChain,
 } from './simulate-chain';
+// Variant discovery (feature-hole-sim-and-variants.md V5): the candidate-
+// landing graph, topological signatures, and the "distinct ways to play the
+// hole" enumerator. Derived, never persisted (O4/V7).
+export {
+    MAX_VARIANT_NODES,
+    MAX_VARIANT_LEGS,
+    LATERAL_OFFSET_M,
+    LATERAL_MARGIN_M,
+    MIN_LATERAL_OFFSET_M,
+    SIGNATURE_CORRIDOR_M,
+    TOP_VARIANTS,
+    type HoleHazard,
+    type VariantHoleContext,
+    type HazardRelation,
+    type HazardEngagement,
+    type VariantSignature,
+    type GraphNode,
+    type GraphEdge,
+    type VariantGraph,
+    type ScoredVariant,
+    buildVariantGraph,
+    computeSignature,
+    discoverVariants,
+} from './variant-graph';
 // Smart-caddy advice layer. NOTE: GreenSlopeSummary is still
 // FORWARD-DECLARED (see caddy/rule.ts) until the slope adapter (T9) exports
 // the canonical type. FeatureDistance is now sourced from feature-distances.ts
