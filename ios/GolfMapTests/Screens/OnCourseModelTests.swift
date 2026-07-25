@@ -370,6 +370,52 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertEqual(model.origin, LatLon(lat: 58.3600, lon: 15.7100), "falls back to tee")
     }
 
+    // MARK: - Far-from-course gate
+
+    func testFarFixFallsBackToTeeAndFlagsFarFromCourse() {
+        let model = makeModel()
+        // Simulator default location (Cupertino) — ~8,000 km from the course.
+        model.updateUserLocation(LatLon(lat: 37.3349, lon: -122.0090))
+        XCTAssertTrue(model.isFarFromCourse)
+        XCTAssertFalse(model.isUsingGPS, "implausible fix never becomes the origin")
+        XCTAssertEqual(model.origin, LatLon(lat: 58.3600, lon: 15.7100), "falls back to tee")
+
+        // Distances are tee-based course-scale figures, not thousands of km.
+        let expectedCenter = Int(Distance.planarMeters(
+            LatLon(lat: 58.3600, lon: 15.7100), LatLon(lat: 58.3640, lon: 15.7080)
+        ).rounded())
+        XCTAssertEqual(model.distances?.center, expectedCenter)
+    }
+
+    func testNearbyFixOutsideBoundsWithinThresholdStillUsed() {
+        let model = makeModel()
+        // ~1.2 km west of the manifest's west edge (15.70) — parking lot /
+        // clubhouse territory, well inside the 3 km fence.
+        let fix = LatLon(lat: 58.3600, lon: 15.6800)
+        model.updateUserLocation(fix)
+        XCTAssertFalse(model.isFarFromCourse)
+        XCTAssertTrue(model.isUsingGPS)
+        XCTAssertEqual(model.origin, fix)
+    }
+
+    func testMetersOutsideBoundsIsZeroInsideAndGrowsOutside() {
+        let bounds = MapCoordinateBounds(west: 15.70, south: 58.35, east: 15.72, north: 58.37)
+        XCTAssertEqual(
+            OnCourseModel.metersOutsideBounds(LatLon(lat: 58.36, lon: 15.71), bounds), 0
+        )
+        // 0.01° north of the north edge ≈ 1,113 m.
+        let north = OnCourseModel.metersOutsideBounds(LatLon(lat: 58.38, lon: 15.71), bounds)
+        XCTAssertEqual(north, 1_113, accuracy: 5)
+    }
+
+    func testFarFromCourseIsFalseInBrowseModeAndWithoutFix() {
+        let model = makeModel()
+        XCTAssertFalse(model.isFarFromCourse, "no fix yet")
+        model.updateUserLocation(LatLon(lat: 37.3349, lon: -122.0090))
+        model.setGPSEnabled(false)
+        XCTAssertFalse(model.isFarFromCourse, "browse mode ignores the fix entirely")
+    }
+
     func testUserElevationComesFromSampler() async {
         let model = makeModel()
         model.elevationSampler = { _ in 42.5 }

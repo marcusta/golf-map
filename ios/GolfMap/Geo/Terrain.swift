@@ -95,8 +95,12 @@ public struct TerrainTile: Sendable {
     /// to the tile edge (samples within half a pixel of a border skip
     /// cross-tile interpolation). Mirrors the web `bilinearElevation`.
     public func elevation(atPx px: Double, py: Double) -> Double {
-        let x = min(max(px - 0.5, 0), Double(width - 1))
-        let y = min(max(py - 0.5, 0), Double(height - 1))
+        // A non-finite coordinate clamps like any other out-of-bounds input
+        // (`min`/`max` pass NaN through, and the Int conversions below would
+        // trap on it). Unreachable via `tilePixel`, which sanitizes its
+        // pixel offsets — this guards direct callers.
+        let x = min(max(px.isFinite ? px - 0.5 : 0, 0), Double(width - 1))
+        let y = min(max(py.isFinite ? py - 0.5 : 0, 0), Double(height - 1))
         let x0 = Int(floor(x))
         let y0 = Int(floor(y))
         let x1 = min(x0 + 1, width - 1)

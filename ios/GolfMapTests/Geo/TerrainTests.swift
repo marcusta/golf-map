@@ -101,6 +101,18 @@ final class TerrainTests: XCTestCase {
         XCTAssertEqual(tile.elevation(atPx: 0.75, py: 0.5), 2.5, accuracy: 1e-6)
     }
 
+    func testBilinearNonFinitePixelClampsInsteadOfTrapping() {
+        // Regression companion to the tilePixel NaN guard: a direct caller
+        // passing a non-finite pixel must clamp to the tile edge (the
+        // documented out-of-bounds behavior), not trap in `Int(floor(NaN))`.
+        let r = 1, g = 137, b = 174 // → 78.2 m
+        var rgba = [UInt8]()
+        for _ in 0..<(4 * 4) { rgba.append(contentsOf: [UInt8(r), UInt8(g), UInt8(b), 255]) }
+        let tile = TerrainTile(width: 4, height: 4, rgba: rgba)!
+        XCTAssertEqual(tile.elevation(atPx: .nan, py: .nan), 78.2, accuracy: 1e-9)
+        XCTAssertEqual(tile.elevation(atPx: .infinity, py: -.infinity), 78.2, accuracy: 1e-9)
+    }
+
     // MARK: elevationAt over a provider closure
 
     func testElevationAtOverProviderMatchesFixture() async throws {
@@ -125,5 +137,22 @@ final class TerrainTests: XCTestCase {
         // Outside coverage → nil.
         let miss = await elevationAt(LatLon(lat: 0, lon: 0), zoom: z, provider: provider)
         XCTAssertNil(miss)
+    }
+
+    func testElevationAtOutOfDomainCoordinateReturnsNil() async {
+        // The pure Geo sampler (unlike TerrainElevationService, which
+        // pre-filters coordinates) leans on tilePixel's degrade path: an
+        // out-of-domain coordinate resolves to an off-pyramid address, the
+        // provider misses, and the sample is nil — never a trap.
+        let provider: TerrainTileProvider = { _, _, _ in nil }
+        let garbage: [LatLon] = [
+            LatLon(lat: 553.8846391427445, lon: -600.508342142558),
+            LatLon(lat: .nan, lon: 15.7),
+            LatLon(lat: 58.4, lon: .infinity),
+        ]
+        for coord in garbage {
+            let sample = await elevationAt(coord, zoom: 16, provider: provider)
+            XCTAssertNil(sample, "\(coord) must sample nil, not trap")
+        }
     }
 }

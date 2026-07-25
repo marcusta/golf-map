@@ -58,14 +58,31 @@ public enum WebMercatorTiles {
         return (x, y)
     }
 
-    /// Integer XYZ tile containing a WGS84 position at zoom `z`.
+    /// `floor` → `Int` that cannot trap. An out-of-projection-domain WGS84
+    /// input (|lat| ≥ 90 makes the mercator Y non-finite; live crash: a layup
+    /// landing point interpolated from a far-off GPS origin came back as
+    /// lat 553.9) must degrade to an address no pyramid contains — a missing
+    /// tile — never `Int(floor(NaN))`. The clamp also covers finite values
+    /// beyond Int's range; it cannot engage for any on-globe coordinate at
+    /// any real zoom.
+    private static func flooredTileIndex(_ v: Double) -> Int {
+        guard v.isFinite else { return -1 }
+        return Int(min(max(v.rounded(.down), -1e15), 1e15))
+    }
+
+    /// Integer XYZ tile containing a WGS84 position at zoom `z`. Positions
+    /// outside the Web-Mercator domain resolve to an off-pyramid address
+    /// (see `flooredTileIndex`) rather than trapping.
     public static func tile(lon: Double, lat: Double, zoom: Int) -> Tile {
         let f = fractionalTile(lon: lon, lat: lat, zoom: zoom)
-        return Tile(z: zoom, x: Int(floor(f.x)), y: Int(floor(f.y)))
+        return Tile(z: zoom, x: flooredTileIndex(f.x), y: flooredTileIndex(f.y))
     }
 
     /// WGS84 → containing tile + fractional pixel position (Web Mercator).
-    /// `px`/`py` are fractional pixel coordinates within the tile (`[0, tileSize)`).
+    /// `px`/`py` are fractional pixel coordinates within the tile
+    /// (`[0, tileSize)`). Positions outside the Web-Mercator domain resolve
+    /// to an off-pyramid tile with a zero pixel offset (see
+    /// `flooredTileIndex`) rather than trapping.
     public static func tilePixel(
         lon: Double,
         lat: Double,
@@ -73,13 +90,13 @@ public enum WebMercatorTiles {
         tileSize: Int = 256
     ) -> TilePixel {
         let f = fractionalTile(lon: lon, lat: lat, zoom: zoom)
-        let tileX = Int(floor(f.x))
-        let tileY = Int(floor(f.y))
+        let tileX = flooredTileIndex(f.x)
+        let tileY = flooredTileIndex(f.y)
         return TilePixel(
             tileX: tileX,
             tileY: tileY,
-            px: (f.x - Double(tileX)) * Double(tileSize),
-            py: (f.y - Double(tileY)) * Double(tileSize)
+            px: f.x.isFinite ? (f.x - Double(tileX)) * Double(tileSize) : 0,
+            py: f.y.isFinite ? (f.y - Double(tileY)) * Double(tileSize) : 0
         )
     }
 

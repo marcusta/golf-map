@@ -3381,6 +3381,7 @@ private struct DistanceCardView: View {
     private var locationLabel: String {
         if model.isBrowseMode { return "Browse" }
         if model.isUsingGPS { return "GPS" }
+        if model.isFarFromCourse { return "Far from course · from tee" }
         return model.isLocationDenied ? "No location · from tee" : "From tee"
     }
 }

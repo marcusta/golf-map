@@ -27,6 +27,9 @@ final class OnCourseModel {
 
     let courseId: String
     let courseName: String
+    /// Tile-manifest coverage bounds — the plausibility fence for the live GPS
+    /// fix (`isFarFromCourse`).
+    private let courseBounds: MapCoordinateBounds
     /// Holes sorted by number.
     private(set) var holes: [HoleData]
 
@@ -377,6 +380,12 @@ final class OnCourseModel {
     ) {
         self.courseId = furniture.course.id
         self.courseName = furniture.course.name
+        self.courseBounds = MapCoordinateBounds(
+            west: furniture.manifest.west,
+            south: furniture.manifest.south,
+            east: furniture.manifest.east,
+            north: furniture.manifest.north
+        )
         self.defaults = defaults
         self.now = now
 
@@ -1613,8 +1622,40 @@ final class OnCourseModel {
 
     // MARK: - Derived: origin
 
-    /// The live fix, gated by the GPS switch and corrected by a live GPS-bias
-    /// calibration: nil in browse mode.
+    /// A live fix farther than this outside the course's tile-manifest bounds
+    /// is implausible as an on-course origin (course opened from home, or the
+    /// simulator's default location): every raw distance against it is a
+    /// meaningless multi-km figure and the layup engine rungs a ~28,000 km
+    /// "hole". Such a fix is dropped in `effectiveUserLocation`, so the screen
+    /// falls back to tee-based distances exactly like the no-fix case.
+    static let farFromCourseThresholdM = 3_000.0
+
+    /// Flat-earth meters from `point` to the nearest edge of `bounds`
+    /// (0 inside). Deliberately NOT SWEREF99TM planar math: a far-from-course
+    /// fix can be anywhere on the globe, far outside the projection's valid
+    /// zone where the round-trip degrades to garbage. The equirectangular
+    /// approximation is exact enough at threshold scale (km) and only grows
+    /// more obviously "far" beyond it, which is all the gate needs.
+    static func metersOutsideBounds(_ point: LatLon, _ bounds: MapCoordinateBounds) -> Double {
+        let clampedLat = min(max(point.lat, bounds.south), bounds.north)
+        let clampedLon = min(max(point.lon, bounds.west), bounds.east)
+        let metersPerDegreeLat = 111_320.0
+        let dLat = (point.lat - clampedLat) * metersPerDegreeLat
+        let cosLat = max(cos(clampedLat * .pi / 180), 0.01)
+        let dLon = (point.lon - clampedLon) * metersPerDegreeLat * cosLat
+        return (dLat * dLat + dLon * dLon).squareRoot()
+    }
+
+    /// True when GPS is on and the live fix is implausibly far from the course
+    /// (see `farFromCourseThresholdM`) — the UI explains the tee fallback with
+    /// a "Far from course" state instead of showing absurd raw distances.
+    var isFarFromCourse: Bool {
+        guard gpsEnabled, let fix = userLocation else { return false }
+        return Self.metersOutsideBounds(fix, courseBounds) > Self.farFromCourseThresholdM
+    }
+
+    /// The live fix, gated by the GPS switch and the far-from-course fence,
+    /// and corrected by a live GPS-bias calibration: nil in browse mode.
     ///
     /// Correction seam (spec §6.1 / L4): this is the SINGLE insertion point the
     /// whole model inherits, because every distance derives from
@@ -1625,7 +1666,7 @@ final class OnCourseModel {
     /// correction (spec §6.4). Correction never nils a non-nil fix, so
     /// `isUsingGPS` and the `originElevation` presence checks are unaffected.
     private var effectiveUserLocation: LatLon? {
-        guard gpsEnabled, let fix = userLocation else { return nil }
+        guard gpsEnabled, let fix = userLocation, !isFarFromCourse else { return nil }
         return Self.corrected(fix, with: originCalibration, now: now())
     }
 

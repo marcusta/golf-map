@@ -51,6 +51,52 @@ final class WebMercatorTilesTests: XCTestCase {
         XCTAssertEqual(a.south, southNeighbor.north, accuracy: 1e-9)
     }
 
+    func testTilePixelOutOfDomainCoordinatesDegradeInsteadOfTrapping() {
+        // Regression (live crash opening Landeryd Masters/Classic): with the
+        // GPS origin far off-course, layup landing points interpolated
+        // through the SWEREF99TM round-trip came back as garbage like
+        // (lat 553.88, lon -600.51). The mercator Y of such a latitude is
+        // NaN and `Int(floor(NaN))` trapped in `tilePixel`. Every
+        // out-of-domain input must resolve to a harmless address with finite
+        // pixel offsets — reaching the assertions at all is the point.
+        let cases: [(lon: Double, lat: Double)] = [
+            (-600.508342142558, 553.8846391427445), // the live crash landing point
+            (15.7, .nan),
+            (.nan, 58.4),
+            (15.7, .infinity),
+            (-.infinity, 58.4),
+            (500_110, 6_470_190),                   // SWEREF planar meters as degrees
+        ]
+        for c in cases {
+            let tp = WebMercatorTiles.tilePixel(lon: c.lon, lat: c.lat, zoom: 17)
+            _ = WebMercatorTiles.tile(lon: c.lon, lat: c.lat, zoom: 17)
+            XCTAssertTrue(tp.px.isFinite, "px must stay finite for \(c)")
+            XCTAssertTrue(tp.py.isFinite, "py must stay finite for \(c)")
+        }
+    }
+
+    func testTilePixelNonFiniteAxisMapsOffPyramid() {
+        // A NaN latitude must not alias onto a real tile: the Y axis resolves
+        // to -1, an address that exists on no pyramid, so lookups degrade to
+        // a missing-tile nil exactly like an off-coverage query.
+        let tp = WebMercatorTiles.tilePixel(lon: 15.7, lat: .nan, zoom: 17)
+        XCTAssertEqual(tp.tileY, -1)
+        XCTAssertEqual(tp.py, 0)
+        let t = WebMercatorTiles.tile(lon: .nan, lat: 58.4, zoom: 17)
+        XCTAssertEqual(t.x, -1)
+    }
+
+    func testTilePixelValidInputUnchangedByGuard() {
+        // The degrade path must not disturb in-domain math: same
+        // decomposition as the raw fractional-tile floor.
+        let f = WebMercatorTiles.fractionalTile(lon: 15.5658, lat: 58.4015, zoom: 17)
+        let tp = WebMercatorTiles.tilePixel(lon: 15.5658, lat: 58.4015, zoom: 17)
+        XCTAssertEqual(tp.tileX, Int(floor(f.x)))
+        XCTAssertEqual(tp.tileY, Int(floor(f.y)))
+        XCTAssertEqual(tp.px, (f.x - floor(f.x)) * 256, accuracy: 1e-9)
+        XCTAssertEqual(tp.py, (f.y - floor(f.y)) * 256, accuracy: 1e-9)
+    }
+
     func testWorldCornerTileZero() {
         // z0 is a single tile covering the whole Web-Mercator world.
         let bb = WebMercatorTiles.boundingBox(z: 0, x: 0, y: 0)
