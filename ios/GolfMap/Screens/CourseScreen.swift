@@ -22,6 +22,9 @@ struct CourseScreen: View {
     @State private var measure: MeasureModel?
     @State private var profile: ElevationProfileModel?
     @State private var roundModel: RoundModel?
+    /// Tapscore scoring-bridge link for the active round (T65). Built with the
+    /// round model; nil until the course finishes loading.
+    @State private var tapscore: TapscoreLinkModel?
     @State private var capture: CaptureModel?
     @State private var greenPolygons: GreenPolygonStore?
     @State private var mapInputs: MapInputs?
@@ -50,6 +53,7 @@ struct CourseScreen: View {
                     measure: measure,
                     profile: profile,
                     roundModel: roundModel,
+                    tapscore: tapscore,
                     capture: capture,
                     greenPolygons: greenPolygons,
                     greenCalibrations: greenCalibrations,
@@ -258,6 +262,10 @@ struct CourseScreen: View {
                 sync: env.roundSync
             )
             await newRoundModel.loadActiveRound()
+            // Tapscore scoring bridge (T65): manages the round's link only —
+            // once linked, the SERVER publishes each hole's score on every shot
+            // write. Seeded from the local mirror so it reads correctly offline.
+            let newTapscore = TapscoreLinkModel(roundModel: newRoundModel, api: env.client)
             // Seed the playing state (round loop R1) from the resumed round;
             // OnCourseContentView keeps it in sync on every capture / edit.
             newModel.setActiveRound(strokes: roundLoopStrokes(of: newRoundModel))
@@ -407,6 +415,7 @@ struct CourseScreen: View {
             measure = newMeasure
             profile = newProfile
             roundModel = newRoundModel
+            tapscore = newTapscore
             capture = CaptureModel()
         } catch {
             loadError = "Failed to load the course bundle: \(error.localizedDescription)"
@@ -554,6 +563,8 @@ private struct OnCourseContentView: View {
     let measure: MeasureModel
     let profile: ElevationProfileModel
     let roundModel: RoundModel
+    /// Tapscore link for the active round — the scorecard's "Scoring" section.
+    let tapscore: TapscoreLinkModel?
     let capture: CaptureModel
     let greenPolygons: GreenPolygonStore?
     /// Per-green calibration (greenId → calibration) for the putt read, synced
@@ -997,6 +1008,7 @@ private struct OnCourseContentView: View {
             ScorecardSheet(
                 roundModel: roundModel,
                 clubs: model.clubs,
+                tapscore: tapscore,
                 onClose: { showScorecard = false }
             )
         }

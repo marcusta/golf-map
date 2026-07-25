@@ -24,6 +24,29 @@ public struct Round: Codable, Sendable, Equatable {
     public let updatedAt: String
 }
 
+/// The Tapscore scoring-bridge link of one round — the response of
+/// `GET/POST /api/rounds/tapscore-link` and `POST /api/rounds/tapscore-unlink`
+/// (`shared/api/tapscore-bridge.gen.ts`, `TapscoreLinkStatus`).
+///
+/// Linking is the ONLY thing a client does: once a round carries a token, the
+/// server's shot-write hook publishes per-hole gross strokes automatically
+/// (docs/feature-tapscore-bridge.md §3.2). There is no sync endpoint to call.
+public struct TapscoreLink: Codable, Sendable, Equatable {
+    public let roundId: String
+    public let linked: Bool
+    /// The Tapscore friendly-round share token; nil when unlinked.
+    public let token: String?
+    /// Which Tapscore ball (scorecard column) the scores land on; nil when unlinked.
+    public let ballId: String?
+
+    public init(roundId: String, linked: Bool, token: String?, ballId: String?) {
+        self.roundId = roundId
+        self.linked = linked
+        self.token = token
+        self.ballId = ballId
+    }
+}
+
 /// A shot row: `POST /api/rounds/shots/add` and `/update` response.
 public struct Shot: Codable, Sendable, Equatable {
     public let id: String

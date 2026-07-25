@@ -112,6 +112,29 @@ final class RoundModel {
         return record
     }
 
+    /// Mirrors the round's Tapscore link onto the local row (T65). The SERVER
+    /// owns the link — this is a read-through cache so the scorecard can still
+    /// report "linked · scores syncing" with no signal.
+    ///
+    /// Like `setStimp` the `syncState` is deliberately NOT flipped:
+    /// `RoundSyncService` never pushes these columns (nothing on `rounds/start`
+    /// or `rounds/end` carries them), so dirtying the row would queue a
+    /// pointless push. No-op when unchanged or no round is active.
+    @discardableResult
+    func setTapscoreLink(token: String?, ballId: String?) async -> RoundRecord? {
+        guard var record = round else { return nil }
+        guard record.tapscoreToken != token || record.tapscoreBallId != ballId else { return round }
+        record.tapscoreToken = token
+        record.tapscoreBallId = ballId
+        round = record
+        do {
+            try await database.saveRound(record)
+        } catch {
+            print("Round store Tapscore link write failed (kept in memory): \(error)")
+        }
+        return record
+    }
+
     /// Finishes the active round (sets `endedAt`, flags it for the server's
     /// `rounds/end`). The scorecard keeps showing it until the screen closes.
     func finishRound() async {
