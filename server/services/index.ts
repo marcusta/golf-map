@@ -1,6 +1,8 @@
 import type { Kysely } from 'kysely';
 import type { Database } from '../db/schema';
+import { type ServerMode, serverMode } from '../mode';
 import { MetaService } from './meta.service';
+import { IngestService } from './ingest.service';
 import { UserService } from './user.service';
 import { SitesService } from './sites.service';
 import { CoursesService } from './courses.service';
@@ -26,12 +28,15 @@ import { TerrainEditsService } from './terrain-edits.service';
 export interface ServicesConfig {
     /** Root directory for course assets/tiles on disk. Defaults to DATA_DIR env var, then './data'. */
     dataDir?: string;
+    /** Server run mode. Defaults to the SERVER_MODE env (via `serverMode()`). */
+    mode?: ServerMode;
 }
 
 export function createServices(db: Kysely<Database>, config: ServicesConfig = {}) {
     const dataDir = config.dataDir ?? process.env.DATA_DIR ?? './data';
+    const mode = config.mode ?? serverMode();
 
-    const metaService = new MetaService();
+    const metaService = new MetaService(mode);
     const userService = new UserService(db);
     const sitesService = new SitesService(db);
     const coursesService = new CoursesService(db);
@@ -53,9 +58,13 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const hydroService = new HydroService({ courses: coursesService, assets: assetsService });
     const osmService = new OsmService({ courses: coursesService, assets: assetsService });
     const terrainEditsService = new TerrainEditsService(db);
+    // Serve-mode ingest endpoint (§8); the service is cheap to construct in
+    // either mode — only its API is mounted (serve only) by main.ts.
+    const ingestService = new IngestService({ db, dataDir });
 
     return {
         db,
+        mode,
         metaService,
         userService,
         sitesService,
@@ -78,5 +87,6 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         hydroService,
         osmService,
         terrainEditsService,
+        ingestService,
     };
 }
