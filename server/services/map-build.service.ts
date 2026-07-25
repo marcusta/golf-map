@@ -116,7 +116,7 @@ export interface MapBuildDeps {
     dataDir: string;
     /** golfpipe checkout dir; defaults to `<cwd>/../pipeline` (MAP_PIPELINE_DIR overrides). */
     pipelineDir?: string;
-    /** Python interpreter; defaults to `<pipelineDir>/.venv/bin/python`. */
+    /** Python interpreter; defaults to `<pipelineDir>/.venv/bin/python` (MAP_PIPELINE_PYTHON overrides). */
     python?: string;
     /** Injected in tests to avoid spawning Python. */
     runner?: PipelineRunner;
@@ -179,7 +179,12 @@ export class MapBuildService {
         this.pipelineDir = deps.pipelineDir
             ?? process.env.MAP_PIPELINE_DIR
             ?? path.resolve(process.cwd(), '../pipeline');
-        this.python = deps.python ?? path.join(this.pipelineDir, '.venv', 'bin', 'python');
+        // Same seam as the publish CLI (scripts/publish.ts): one interpreter
+        // resolution for every golfpipe caller, so an override that works for
+        // a map build works for dem-analysis too.
+        this.python = deps.python
+            ?? process.env.MAP_PIPELINE_PYTHON
+            ?? path.join(this.pipelineDir, '.venv', 'bin', 'python');
         this.runner = deps.runner ?? defaultRunner(this.python);
         this.terrainEdits = deps.terrainEdits ?? new TerrainEditsService(deps.db);
     }

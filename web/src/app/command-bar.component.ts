@@ -538,17 +538,21 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             }));
         }
 
-        // Zone 4: actions + avatar.
-        this.spawn(PopoverComponent, this.ref(frag, 'actionsHost'), {
-            align: 'right',
-            ariaLabel: 'Actions',
-            triggerClassName: 'cmdbar__actions-btn',
-            trigger: (host) => {
-                host.dataset.testid = 'actions-menu-trigger';
-                host.innerHTML = icon('more-horizontal', 20);
-            },
-            panel: (host, ctx) => this.buildActionsPanel(host, ctx.track, ctx.close),
-        });
+        // Zone 4: actions + avatar. Every entry in the actions menu authors
+        // something (imports, lidar cleanup, publish revision), so serve mode
+        // gets no ⋯ trigger at all rather than an empty popover.
+        if (this.serverMode.isBuilder()) {
+            this.spawn(PopoverComponent, this.ref(frag, 'actionsHost'), {
+                align: 'right',
+                ariaLabel: 'Actions',
+                triggerClassName: 'cmdbar__actions-btn',
+                trigger: (host) => {
+                    host.dataset.testid = 'actions-menu-trigger';
+                    host.innerHTML = icon('more-horizontal', 20);
+                },
+                panel: (host, ctx) => this.buildActionsPanel(host, ctx.track, ctx.close),
+            });
+        }
         this.spawn(PopoverComponent, this.ref(frag, 'avatarHost'), {
             align: 'right',
             ariaLabel: 'Account',
@@ -886,7 +890,13 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             host.appendChild(divider);
         }
 
-        // Publish revision — same ConfirmService + publish flow as the old header.
+        // Publish revision — same ConfirmService + publish flow as the old
+        // header. Builder only: the courses API is mounted in serve mode, so
+        // this button really would bump the revision on the VPS — but a
+        // revision is an AUTHORING act (it tells devices to re-sync), and on a
+        // serve box the authored truth arrives by publish/ingest from the
+        // builder. Bumping it here would desync the two.
+        if (!this.serverMode.isBuilder()) return;
         const publishBtn = document.createElement('button');
         publishBtn.type = 'button';
         publishBtn.className = 'menu-item cmd-menu-accent';

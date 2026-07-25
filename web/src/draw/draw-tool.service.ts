@@ -458,13 +458,18 @@ export class DrawToolService {
 
     // ── EditorTool lifecycle (called via draw-tool.ts) ────────────────────
 
-    /** Canvas mount: load the course's features + persistent overlay. */
+    /**
+     * Canvas mount: bind to the feature store and reset edit history.
+     *
+     * The feature LOAD + map overlay do NOT live here: they are the /course
+     * page's content in every server mode (the green-analysis tool hit-tests
+     * the same stack), and this tool is builder-only, so the toolbar owns
+     * them (editor/toolbar.component.ts).
+     */
     attach(ctx: ToolContext): void {
         this.features = ctx.features;
         this.history.clear();
         this.history.notice.set(null);
-        void ctx.features.load(ctx.courseId);
-        ctx.track(ctx.features.attachOverlay(ctx.map));
 
         // Any failed save (optimistic-version conflict, network error)
         // re-syncs the store from the server — recorded diffs may no

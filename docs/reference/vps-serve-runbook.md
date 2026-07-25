@@ -186,11 +186,15 @@ golf.example.com {
 		file_server
 	}
 
-	# Hashed bundles never change in place; the HTML documents name them.
+	# Cache policy is decided on the REQUEST path, before try_files rewrites
+	# it — so matching /index.html would miss every SPA-fallback URL
+	# (/course/<id>, /m/round/<id>), which is most of the app's traffic.
+	# Match the hashed prefix, and treat everything else as a document.
 	@hashed path /assets/*
 	header @hashed Cache-Control "public, max-age=31536000, immutable"
-	header /index.html Cache-Control "no-cache"
-	header /mobile.html Cache-Control "no-cache"
+
+	@doc not path /assets/* /api/* /tiles/*
+	header @doc Cache-Control "no-cache"
 
 	log {
 		output file /var/log/caddy/golf-map.log
@@ -266,7 +270,8 @@ What happens, in order:
 1. **Preflight** — site exists, tile manifest present, no map-build job running,
    warnings for unbaked ortho patches.
 2. **Analysis DEM** — builds `dem-analysis.tif` (greens at 0.5 m + 1 m elsewhere,
-   one deflate COG) when stale, from `dem-edited.tif` if terrain edits exist,
+   one tiled deflate GeoTIFF — no overviews, nothing renders it) when stale,
+   from `dem-edited.tif` if terrain edits exist,
    else `dem.tif`. Cached at `sources/<siteId>/dem-analysis.tif`. If the pipeline
    is unavailable the publish does **not** fail: it warns and ships the full DEM
    instead (a bigger bundle, same behaviour on the VPS). `--full-dem` forces that
@@ -351,8 +356,11 @@ systemctl list-timers golf-map-obs-rotate
 Defaults: traces 3 days, everything else 30 days. Flags: `--trace-days`,
 `--event-days`, `--rollup-days`, `--error-days`, `--max-mb`, `--db`. Safe to run
 against the live server (bounded DELETEs; VACUUM holds a write lock for well
-under a second at this size). If the report says the size cap was hit, lower the
-TTLs rather than raising the cap — it means retention, not the cap, is wrong.
+under a second at this size). VACUUM needs that lock exclusively, so on a busy
+box the run can still fail with `SQLITE_BUSY` — it is not destructive and the
+deletes already committed, so just run it again (the timer's next fire is
+enough). If the report says the size cap was hit, lower the TTLs rather than
+raising the cap — it means retention, not the cap, is wrong.
 
 ## 9. Backups
 
@@ -421,10 +429,14 @@ du -sh /srv/golf-map-data/*
 - `incoming/` should be empty between publishes; the ingest deletes its upload
   in a `finally`. Leftovers mean a crash mid-ingest — safe to delete when no
   publish is running.
-- `tile-archives/<courseId>/` holds the tars iOS bundle downloads are served
-  from; serve mode keeps the latest version key per layer. Deleting the whole
-  directory is safe — the next download rebuilds it.
-- A stale `.trash` tile tree from an interrupted swap is likewise deletable.
+- `tile-archives/<id>/` holds the tars iOS bundle downloads are served from,
+  built lazily on the first device request and kept as a cache. Each ingest
+  deletes the whole directory for the published site **and** every course on
+  it, so the tars are rebuilt from the newly published tiles on the next
+  download — nothing accumulates across publishes for a site you keep
+  publishing. Deleting the directory by hand is always safe.
+- A stale `<site>.trash-*` tile tree from an interrupted swap is likewise
+  deletable; the next ingest for that site sweeps it as well.
 
 ## 11. Upgrades
 

@@ -47,6 +47,8 @@ __all__ = [
     "DemAnalysisError",
     "DEFAULT_GREEN_BUFFER_M",
     "DEFAULT_COARSE_FACTOR",
+    "FALLBACK_NODATA",
+    "output_nodata",
     "load_green_geometries",
     "reproject_geometries",
     "green_mask",
@@ -63,6 +65,17 @@ class DemAnalysisError(RuntimeError):
 DEFAULT_GREEN_BUFFER_M = 30.0
 #: Block factor for the coarse background: 2 turns a 0.5 m DEM into 1 m data.
 DEFAULT_COARSE_FACTOR = 2
+#: Nodata value used when the SOURCE declares none. A source without a nodata
+#: tag can still carry NaN cells (and a fully-invalid coarse block produces
+#: one), and those must not be written as 0.0 m — that is a real elevation, so
+#: the server would read sea level instead of "no data" over a hole in the
+#: lidar. The output always carries a nodata tag, so the hole stays a hole.
+FALLBACK_NODATA = -9999.0
+
+
+def output_nodata(nodata: float | None) -> float:
+    """Nodata value the mosaic is written with: the source's, or the sentinel."""
+    return FALLBACK_NODATA if nodata is None else nodata
 
 
 def load_green_geometries(path: Path, log=print) -> list[dict]:
@@ -198,6 +211,9 @@ def build_analysis_dem(
     it carries the block-mean background. Nodata cells stay nodata, so the
     raster's valid footprint is unchanged and `analysis.service` keeps
     returning `null` in exactly the same places.
+
+    Invalid cells are filled with `output_nodata(nodata)` — the caller MUST
+    tag the written raster with that same value (see `cmd_dem_analysis`).
     """
     source = dem.astype(np.float64)
     valid = np.isfinite(source)
@@ -210,6 +226,5 @@ def build_analysis_dem(
     out = np.where(mask, source, background)
     # A coarse block whose cells were all nodata yields NaN — and any cell that
     # was nodata in the source stays nodata, full-res or not.
-    fill = nodata if nodata is not None else 0.0
-    out = np.where(valid & np.isfinite(out), out, fill)
+    out = np.where(valid & np.isfinite(out), out, output_nodata(nodata))
     return out.astype(np.float32), mask

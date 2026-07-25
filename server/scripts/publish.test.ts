@@ -288,6 +288,26 @@ describe('publish analysis DEM (W4)', () => {
         expect(retry.analysisDem).toBe('mosaic');
     });
 
+    test('a missing pipeline interpreter falls back too (spawn throws, it does not exit non-zero)', async () => {
+        const dataDir = tmp('builder');
+        const db = await seedBuilder(dataDir);
+        await registerDem(db, dataDir, `sources/${SITE_ID}/dem.tif`);
+
+        // No injected runner: the REAL spawn seam against an interpreter that
+        // isn't there — a builder whose venv was never created. Bun.spawn
+        // rejects with ENOENT before any exit code exists.
+        const { stagingDir, analysisDem, warnings } = await buildBundle(
+            { db, dataDir, pipelineDir: dataDir, python: path.join(dataDir, 'no-such-python') },
+            { siteId: SITE_ID, outDir: tmp('stage') },
+        );
+
+        expect(analysisDem).toBe('full');
+        expect(shippedDem(stagingDir)).toBe('FULL-DEM');
+        expect(warnings.join(' ')).toMatch(/dem-analysis failed/);
+        expect(warnings.join(' ')).toMatch(/no-such-python/);
+        expect(existsSync(path.join(dataDir, 'sources', SITE_ID, 'dem-analysis.tif'))).toBe(false);
+    });
+
     test('no dem_cog asset ships no DEM and warns', async () => {
         const dataDir = tmp('builder');
         const db = await seedBuilder(dataDir);

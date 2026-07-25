@@ -20,6 +20,7 @@ from golfpipe import commands
 from golfpipe.dem_analysis import (
     DEFAULT_COARSE_FACTOR,
     DEFAULT_GREEN_BUFFER_M,
+    FALLBACK_NODATA,
     DemAnalysisError,
     build_analysis_dem,
     coarsen,
@@ -191,6 +192,33 @@ def test_nodata_footprint_is_unchanged(tmp_path, greens_geojson):
     # analysis.service returns null exactly where the source had nodata — no
     # more (a block mean must not bleed into a nodata cell), no less.
     assert np.array_equal(analysis == NODATA, heights == NODATA)
+
+
+def test_an_untagged_source_gets_the_nodata_sentinel_not_sea_level(tmp_path, greens_geojson):
+    """A source without a nodata tag can still carry NaN holes. Writing those
+    as 0.0 m would publish sea level over a lidar gap — and the server, seeing
+    no nodata tag, would return it as a real elevation."""
+    heights = _heights()
+    heights[0:40, 0:40] = np.nan  # NW corner, far from the green
+    profile_path = tmp_path / "dem-untagged.tif"
+    profile = {
+        "driver": "GTiff", "height": SIZE, "width": SIZE, "count": 1, "dtype": "float32",
+        "crs": SWEREF99_TM, "transform": from_origin(ORIGIN_X, ORIGIN_Y, PIXEL, PIXEL),
+        # No "nodata" key at all — this is the case under test.
+    }
+    with rasterio.open(profile_path, "w", **profile) as dst:
+        dst.write(heights, 1)
+
+    out = commands.cmd_dem_analysis(profile_path, greens_geojson, tmp_path / "dem-analysis.tif")
+    with rasterio.open(out) as dst:
+        analysis = dst.read(1)
+        assert dst.nodata == FALLBACK_NODATA
+
+    hole = np.isnan(heights)
+    assert np.array_equal(analysis == FALLBACK_NODATA, hole)
+    assert not np.any(analysis[hole] == 0.0)
+    # The real terrain is untouched by the sentinel choice.
+    assert np.all(analysis[~hole] > 40.0)
 
 
 def test_the_mosaic_is_smaller_than_the_full_dem(builder_dem, greens_geojson, tmp_path):

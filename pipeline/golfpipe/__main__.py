@@ -133,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "dem-analysis",
-        help="Build the publishable analysis DEM: 0.5 m around greens + a 1 m background, one deflate COG",
+        help="Build the publishable analysis DEM: 0.5 m around greens + a 1 m background, one tiled deflate GeoTIFF",
     )
     p.add_argument(
         "--input", required=True,

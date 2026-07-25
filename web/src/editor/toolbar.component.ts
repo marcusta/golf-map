@@ -57,6 +57,14 @@ export class EditorToolbarComponent extends Component {
         // also falls through to tool.onEscape/deactivate.
         this.spawn(HelpModalComponent, this.helpHost);
 
+        // Course features + their map overlay: the /course page's content in
+        // EVERY server mode. Not a tool concern — the green-analysis tool
+        // hit-tests the same stack, and it must not go dark on a serve box
+        // just because the (builder-only) draw tool isn't attached there.
+        const ctx = this.mode.makeContext(d => this.track(d));
+        void ctx.features.load(ctx.courseId);
+        this.track(ctx.features.attachOverlay(ctx.map));
+
         // One-time attach hooks (persistent overlays, data loads) — their
         // disposers live until this canvas unmounts. Serve mode attaches only
         // the tools it offers: a builder tool's `attach` loads from APIs that

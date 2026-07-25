@@ -441,9 +441,10 @@ def cmd_dem_analysis(
     with rasterio.open(input_path) as src:
         dem = src.read(1)
         profile = src.profile.copy()
+        src_nodata = src.nodata
         reprojected = dem_analysis_mod.reproject_geometries(geometries, src.crs)
         analysis, mask = dem_analysis_mod.build_analysis_dem(
-            dem, src.transform, src.nodata, reprojected,
+            dem, src.transform, src_nodata, reprojected,
             buffer_m=buffer_m, coarse_factor=coarse_factor,
         )
         cell_x = abs(src.transform.a)
@@ -458,6 +459,10 @@ def cmd_dem_analysis(
     profile.update(
         count=1,
         dtype="float32",
+        # The output ALWAYS carries a nodata tag, even when the source had
+        # none: invalid cells are filled with the sentinel, and an untagged
+        # -9999 would read as a real elevation.
+        nodata=dem_analysis_mod.output_nodata(src_nodata),
         compress="deflate",
         predictor=3,
         zlevel=9,

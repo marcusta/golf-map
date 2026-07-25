@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { Hono } from 'hono';
 import { createTestDb as createRawDb } from '@basics/core/server/testing';
 import type { Database } from '../db/schema';
@@ -143,6 +143,44 @@ describe('serve-mode static hosting', () => {
 
         const res = await app.request('/../secret.txt');
         expect(await res.text()).not.toContain('topsecret');
+    });
+
+    test('a symlink inside dist cannot serve a file from outside it', async () => {
+        const dist = fakeDist();
+        const secret = path.join(path.dirname(dist), 'secret.txt');
+        writeFileSync(secret, 'topsecret');
+        // Lexically contained, but it points out of the root — and statSync
+        // follows it, so the string check alone would happily serve it.
+        symlinkSync(secret, path.join(dist, 'leak.txt'));
+        symlinkSync(secret, path.join(dist, 'assets', 'leak-abc123.js'));
+        const app = await serveApp(dist);
+
+        expect(resolveStaticFile(dist, '/leak.txt')).toBe(null);
+        expect(resolveStaticFile(dist, '/assets/leak-abc123.js')).toBe(null);
+
+        const res = await app.request('/leak.txt');
+        expect(await res.text()).not.toContain('topsecret');
+        expect((await app.request('/assets/leak-abc123.js')).status).toBe(404);
+
+        // A symlink that stays INSIDE the root is still fine.
+        symlinkSync(path.join(dist, 'assets', 'main-abc123.js'), path.join(dist, 'alias.js'));
+        expect(resolveStaticFile(dist, '/alias.js')).toBe(path.join(dist, 'alias.js'));
+    });
+
+    test('a dist dir reached through a symlink still serves its own files', async () => {
+        // Deploy layouts commonly point `current -> releases/<n>`; resolving
+        // the candidate against a lexical root would reject every file there.
+        const real = fakeDist();
+        const link = path.join(mkdtempSync(path.join(os.tmpdir(), 'golf-link-')), 'current');
+        symlinkSync(real, link);
+
+        expect(resolveStaticFile(link, '/assets/main-abc123.js'))
+            .toBe(path.join(link, 'assets', 'main-abc123.js'));
+
+        const app = await serveApp(link);
+        const res = await app.request('/', { headers: HTML });
+        expect(res.status).toBe(200);
+        expect(await res.text()).toContain('desktop');
     });
 
     test('the mobile prefix matches the dev-server rule', () => {

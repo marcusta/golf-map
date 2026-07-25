@@ -19,7 +19,7 @@
  * fallback.
  */
 import { Hono } from 'hono';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 
 const CONTENT_TYPE_BY_EXT: Record<string, string> = {
@@ -82,11 +82,21 @@ function wantsHtmlDocument(accept: string, pathname: string): boolean {
     return accept.includes('text/html') || accept.includes('*/*') || accept === '';
 }
 
+/** True when `target` is `root` itself or lives underneath it. */
+function isInside(root: string, target: string): boolean {
+    return target === root || target.startsWith(root + path.sep);
+}
+
 /**
  * Resolves a URL path to a file inside `distDir`, or null if it escapes the
  * root or does not exist. Percent-encoding is decoded first (a real path can
  * contain spaces), and the resolved path is re-checked against the root, so
  * `/../../etc/passwd` and its encoded variants cannot escape.
+ *
+ * Lexical containment alone is NOT enough: a symlink inside dist/ pointing at
+ * /etc/passwd passes the string check and `statSync` follows it. So the real
+ * path (links resolved, on both sides) must land under the root too — the
+ * build only ever emits regular files, so nothing legitimate is lost.
  */
 export function resolveStaticFile(distDir: string, pathname: string): string | null {
     let decoded: string;
@@ -99,8 +109,17 @@ export function resolveStaticFile(distDir: string, pathname: string): string | n
 
     const root = path.resolve(distDir);
     const candidate = path.resolve(root, `.${path.posix.normalize(decoded)}`);
-    if (candidate !== root && !candidate.startsWith(root + path.sep)) return null;
+    if (!isInside(root, candidate)) return null;
     if (!existsSync(candidate) || !statSync(candidate).isFile()) return null;
+
+    try {
+        // realpathSync on the root as well: the dist dir itself may legitimately
+        // be reached through a symlink (a `current -> releases/N` deploy), and
+        // comparing a real path against a lexical root would reject everything.
+        if (!isInside(realpathSync(root), realpathSync(candidate))) return null;
+    } catch {
+        return null; // vanished or unreadable between the checks
+    }
     return candidate;
 }
 
@@ -139,9 +158,15 @@ export function createStaticRoutes(distDir: string): Hono {
         // SPA fallback: /m/* belongs to the mobile entry, everything else to
         // the desktop entry. Each keeps its own address bar path, so the
         // client Router reads the right route on boot.
-        const entry = path.join(root, isMobileRoute(pathname) ? MOBILE_ENTRY : DESKTOP_ENTRY);
-        if (!existsSync(entry)) {
-            return c.text(`Web app not built: ${entry} is missing. Run \`bun run build\` in web/.`, 503);
+        // Resolved through the same containment check as any other file, so a
+        // symlinked entry can't smuggle a file from outside dist/ either.
+        const entryName = isMobileRoute(pathname) ? MOBILE_ENTRY : DESKTOP_ENTRY;
+        const entry = resolveStaticFile(root, `/${entryName}`);
+        if (!entry) {
+            return c.text(
+                `Web app not built: ${path.join(root, entryName)} is missing. Run \`bun run build\` in web/.`,
+                503,
+            );
         }
         return fileResponse(entry, NO_CACHE);
     });

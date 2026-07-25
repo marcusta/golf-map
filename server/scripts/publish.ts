@@ -47,7 +47,7 @@ import {
 } from '../services/bundle';
 import { createTarZst } from '../services/bundle-archive';
 import { toGeoJson, type FeatureGeometry } from '../services/geo';
-import { defaultRunner, type PipelineRunner } from '../services/map-build.service';
+import { defaultRunner, type PipelineRunner, type PipelineRunResult } from '../services/map-build.service';
 
 export interface PublishDeps {
     db: Kysely<Database>;
@@ -388,15 +388,25 @@ async function installAnalysisDem(
     const tmpPath = `${cachePath}.tmp`;
     rmSync(tmpPath, { force: true });
 
-    const result = await runner(
-        ['-m', 'golfpipe', 'dem-analysis', '--input', sourceDem, '--greens', greensPath, '--out', tmpPath],
-        { cwd: pipelineDir, env: { ...process.env } },
-    );
+    // A missing interpreter does NOT come back as a non-zero exit: Bun.spawn
+    // throws ENOENT before there is a process to exit. Both failures land in
+    // the same fallback — the publish must survive a builder whose venv was
+    // never created.
+    let result: PipelineRunResult;
+    try {
+        result = await runner(
+            ['-m', 'golfpipe', 'dem-analysis', '--input', sourceDem, '--greens', greensPath, '--out', tmpPath],
+            { cwd: pipelineDir, env: { ...process.env } },
+        );
+    } catch (err) {
+        result = { code: -1, stdout: '', stderr: err instanceof Error ? err.message : String(err) };
+    }
     if (result.code !== 0 || !existsSync(tmpPath)) {
         rmSync(tmpPath, { force: true });
         rmSync(greensPath, { force: true }); // don't let a failed run poison the staleness check
         warnings.push(
-            `golfpipe dem-analysis failed (exit ${result.code}) — shipping the full builder DEM instead. ${result.stderr.trim().split('\n').pop() ?? ''}`,
+            `golfpipe dem-analysis failed (exit ${result.code}) — shipping the full builder DEM instead. `
+            + `Check the pipeline venv (${python}). ${result.stderr.trim().split('\n').pop() ?? ''}`,
         );
         install(sourceDem);
         return 'full';
