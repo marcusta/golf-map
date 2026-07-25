@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <!-- viewport-fit=cover: draw under the notch/home indicator so the map is
+         truly fullscreen; safe-area insets (below) keep chrome off the bezels.
+         No user scaling — the map owns pinch/zoom, a double-tap zoom would
+         fight it. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Golf Map</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; height: 100%; }
+
+        body {
+            font-family: var(--font-sans, system-ui, -apple-system, 'Segoe UI', sans-serif);
+            background: var(--color-surface-app);
+            color: var(--color-text-primary);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            /* No rubber-band scroll of the whole page — screens manage their
+               own scroll regions so the fullscreen map never bounces. */
+            overscroll-behavior: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        *:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 2px var(--color-border-focus);
+        }
+
+        /* Safe-area inset custom properties, read by mobile components so a
+           single source drives all edge padding (notch, home indicator). */
+        :root {
+            --safe-top: env(safe-area-inset-top, 0px);
+            --safe-bottom: env(safe-area-inset-bottom, 0px);
+            --safe-left: env(safe-area-inset-left, 0px);
+            --safe-right: env(safe-area-inset-right, 0px);
+        }
+
+        #app { height: 100%; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <!-- Root-absolute so the entry resolves at any depth: mobile.html is served
+         for every /m/* deep link (see vite.config.ts mobileSpaFallback), and a
+         relative src would resolve against the deep URL and 404. -->
+    <script type="module" src="/src/mobile/main.ts"></script>
+</body>
+</html>
