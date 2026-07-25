@@ -193,6 +193,59 @@ describe('computeSignature — separation vs dedupe (§V5)', () => {
     });
 });
 
+describe('computeSignature — rotated (non-axis-aligned) hole (§V5 regression)', () => {
+    // A hole running due NE (bearing 45°): tee(0,0) → green(200,200), aim on the
+    // line at (115,115), a bunker centered ON that line. The axis-aligned holes
+    // above happen to hide the frame-mixing bug this module once had (route- vs
+    // path-chainage) and the left/right sign convention, because "left" collapses
+    // onto −x and chainage onto +y. On a rotated hole neither shortcut holds, so
+    // this is the real guard for: hazardChain measured on the ROUTE and the
+    // cross-sign giving the correct side FROM THE GOLFER'S PERSPECTIVE (facing NE,
+    // left = NW, right = SE).
+    const ROOT2 = Math.SQRT2;
+    function neHole(): VariantHoleContext {
+        const bunker = hazard('bunker', 'mid', 105, 105, 125, 125); // centroid (115,115), on the route
+        return {
+            tee: { x: 0, y: 0 },
+            greenCenter: { x: 200, y: 200 },
+            aimPoints: [{ x: 115, y: 115 }],
+            surfaces: [bunker, box('fairway', -100, -100, 300, 300)],
+            hazards: [bunker],
+            clubs: BAG,
+        };
+    }
+    // Route chainage along the NE hole = projection onto the (1,1)/√2 tangent.
+    const neChainage = (x: number, y: number) => (x + y) / ROOT2;
+    function neNode(x: number, y: number) {
+        return { id: `n${Math.round(x)}_${Math.round(y)}`, point: { x, y }, chainage: neChainage(x, y), kind: 'aim' as const };
+    }
+
+    const ctx = neHole();
+    const tee = { id: 'tee', point: { x: 0, y: 0 }, chainage: 0, kind: 'tee' as const };
+    const green = { id: 'green', point: ctx.greenCenter, chainage: neChainage(200, 200), kind: 'green' as const };
+
+    // NW of the line (golfer's LEFT) vs SE of the line (golfer's RIGHT), both at
+    // the bunker's chainage — a purely lateral ±30 m offset off (115,115).
+    const off = 30 / ROOT2; // component along each axis for a 30 m lateral step
+    const leftLand = neNode(115 - off, 115 + off);   // (93.8, 136.2)
+    const rightLand = neNode(115 + off, 115 - off);  // (136.2, 93.8)
+
+    test('golfer-LEFT (NW) and golfer-RIGHT (SE) come out correct and DISTINCT', () => {
+        const left = computeSignature([tee, leftLand, green], ctx);
+        const right = computeSignature([tee, rightLand, green], ctx);
+        expect(left.hazards).toEqual([{ hazardId: 'mid', relation: 'passed-left' }]);
+        expect(right.hazards).toEqual([{ hazardId: 'mid', relation: 'passed-right' }]);
+        expect(left.key).not.toBe(right.key);
+    });
+
+    test('jiggled same-side (NW) lines still DEDUPE on the rotated hole', () => {
+        const a = computeSignature([tee, leftLand, green], ctx);
+        const b = computeSignature([tee, neNode(90, 140), green], ctx); // also NW of the line
+        expect(b.hazards).toEqual([{ hazardId: 'mid', relation: 'passed-left' }]);
+        expect(a.key).toBe(b.key);
+    });
+});
+
 describe('discoverVariants — the reference hole yields distinct lines', () => {
     test('left/right of the fairway bunker surface as separate variants', () => {
         const variants = discoverVariants(refHole());
