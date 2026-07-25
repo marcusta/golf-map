@@ -18,6 +18,7 @@ public struct Round: Codable, Sendable, Equatable {
     public let gamePlanId: String?
     public let windSpeedMps: Double?
     public let windDirectionDeg: Double?
+    public let stimpFt: Double?
     public let version: Int
     public let createdAt: String
     public let updatedAt: String

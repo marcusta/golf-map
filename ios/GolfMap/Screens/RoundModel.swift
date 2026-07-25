@@ -93,9 +93,12 @@ final class RoundModel {
     /// stimp field, adjusted from the green view's stimp control). Persisted
     /// with the local round record; no-op when unchanged or no round is active.
     ///
-    /// The `syncState` is deliberately NOT flipped: stimp is device-local (no
-    /// server column yet), so a synced round stays synced and a stimp tweak
-    /// never queues a spurious push — the value degrades gracefully out of sync.
+    /// The `syncState` is deliberately NOT flipped: the seed value rides the
+    /// `rounds/start` push, and every finished round gets a `rounds/end` push
+    /// (`finishRound` flips synced→dirty) that carries the final stimp — so a
+    /// mid-round tweak never queues a spurious push and still reaches the
+    /// server. Stimp is only editable while the round is active, so there is
+    /// no post-end edit to lose.
     @discardableResult
     func setStimp(_ value: Double) async -> RoundRecord? {
         guard var record = round, record.stimpFt != value else { return round }

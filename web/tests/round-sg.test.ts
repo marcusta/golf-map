@@ -158,7 +158,7 @@ describe('groupShotsByHole / buildRoundForSg', () => {
     test('groups a multi-hole round by holeNumber, preserving sortOrder', () => {
         const round: RoundWithShots = {
             id: 'r1', courseId: 'c1', userId: null, startedAt: '', endedAt: null, notes: null,
-            gamePlanId: null, windSpeedMps: null, windDirectionDeg: null, version: 1,
+            gamePlanId: null, windSpeedMps: null, windDirectionDeg: null, stimpFt: null, version: 1,
             createdAt: '', updatedAt: '',
             shots: [
                 shot('h2s1', 2, 1, 0, 100),
@@ -181,7 +181,7 @@ describe('groupShotsByHole / buildRoundForSg', () => {
 
         const roundWithShots: RoundWithShots = {
             id: 'r1', courseId: 'c1', userId: null, startedAt: '', endedAt: null, notes: null,
-            gamePlanId: null, windSpeedMps: null, windDirectionDeg: null, version: 1,
+            gamePlanId: null, windSpeedMps: null, windDirectionDeg: null, stimpFt: null, version: 1,
             createdAt: '', updatedAt: '',
             shots: [
                 shot('s0', 1, 0, 0, 0),

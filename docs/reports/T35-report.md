@@ -133,6 +133,10 @@ exact `setPlan` + `setSurfaces` + `setActiveRound` path the app uses.
    forever). **Follow-up for the server side:** if plan-vs-actual/SG ever wants
    green speed, add a `stimp_ft` column to `rounds` + the `rounds/start` body,
    then thread it through `GolfAPIClient.startRound` and `RoundSync`.
+   *(Done 2026-07-17: server migration `010_round_stimp` adds `rounds.stimp_ft`;
+   `rounds/start` AND `rounds/end` accept `stimpFt`, and `RoundSync` sends it on
+   both pushes — the end push carries the final value, so `setStimp` still never
+   dirties the round.)*
 4. **Green card is not memoised.** Unlike `playingState`/`decideContent` it is a
    thin `Distance.planarMeters` over already-derived values (ball + activePin),
    cheap enough to compute per render — no key/cache needed.
@@ -168,5 +172,6 @@ exact `setPlan` + `setSurfaces` + `setActiveRound` path the app uses.
   next `targets` read with no extra wiring — the R6/R7 overlap is already live.
   `RoundRecord.stimpFt` + `RoundModel.setStimp` are additive; the laser flow
   doesn't touch them.
-- **Server gap (both):** per-round stimp is LOCAL-only (no `rounds` stimp
-  column). If a later task wants it server-side, see deviation 3 for the thread.
+- **Server gap (both):** ~~per-round stimp is LOCAL-only (no `rounds` stimp
+  column). If a later task wants it server-side, see deviation 3 for the
+  thread.~~ Closed 2026-07-17 — stimp now syncs (see deviation 3's addendum).

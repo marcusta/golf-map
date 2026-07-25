@@ -25,6 +25,7 @@ const StartRoundInput = Type.Object({
     gamePlanId: Type.Optional(Type.String()),
     windSpeedMps: Type.Optional(Type.Number()),
     windDirectionDeg: Type.Optional(Type.Number()),
+    stimpFt: Type.Optional(Type.Number()),
 });
 
 const EndRoundInput = Type.Object({
@@ -35,6 +36,7 @@ const EndRoundInput = Type.Object({
     gamePlanId: Type.Optional(Type.String()),
     windSpeedMps: Type.Optional(Type.Number()),
     windDirectionDeg: Type.Optional(Type.Number()),
+    stimpFt: Type.Optional(Type.Number()),
 });
 
 const RemoveRoundInput = Type.Object({
@@ -103,6 +105,7 @@ export function createRoundsApi(svc: RoundsService) {
                     gamePlanId: input.gamePlanId,
                     windSpeedMps: input.windSpeedMps,
                     windDirectionDeg: input.windDirectionDeg,
+                    stimpFt: input.stimpFt,
                 }),
             schema: StartRoundInput,
             middleware: mw,
@@ -114,6 +117,7 @@ export function createRoundsApi(svc: RoundsService) {
                 gamePlanId: input.gamePlanId,
                 windSpeedMps: input.windSpeedMps,
                 windDirectionDeg: input.windDirectionDeg,
+                stimpFt: input.stimpFt,
             }),
             schema: EndRoundInput,
             middleware: mw,

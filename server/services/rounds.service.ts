@@ -64,6 +64,7 @@ export interface Round {
     gamePlanId: string | null;
     windSpeedMps: number | null;
     windDirectionDeg: number | null;
+    stimpFt: number | null;
     version: number;
     createdAt: string;
     updatedAt: string;
@@ -89,6 +90,7 @@ function toRound(row: RoundRow): Round {
         gamePlanId: row.game_plan_id,
         windSpeedMps: row.wind_speed_mps,
         windDirectionDeg: row.wind_direction_deg,
+        stimpFt: row.stimp_ft,
         version: row.version,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -162,6 +164,7 @@ export class RoundsService {
         id: string; course_id: string; user_id: string | null;
         started_at: string; ended_at: string | null; notes: string | null;
         game_plan_id: string | null; wind_speed_mps: number | null; wind_direction_deg: number | null;
+        stimp_ft: number | null;
         version?: number;
     }, trx: Kysely<Database> = this.db) {
         return trx.insertInto('rounds').values({ ...values, version: values.version ?? 1 });
@@ -215,6 +218,7 @@ export class RoundsService {
         gamePlanId?: string;
         windSpeedMps?: number;
         windDirectionDeg?: number;
+        stimpFt?: number;
     }): Promise<Round> {
         const id = crypto.randomUUID();
         const values = {
@@ -227,6 +231,7 @@ export class RoundsService {
             game_plan_id: opts?.gamePlanId ?? null,
             wind_speed_mps: opts?.windSpeedMps ?? null,
             wind_direction_deg: opts?.windDirectionDeg ?? null,
+            stimp_ft: opts?.stimpFt ?? null,
         };
         await this.insertRound(values).execute();
         const row = await this.roundById(id).executeTakeFirstOrThrow();
@@ -237,6 +242,7 @@ export class RoundsService {
         gamePlanId?: string;
         windSpeedMps?: number;
         windDirectionDeg?: number;
+        stimpFt?: number;
     }): Promise<Round> {
         const row = await this.roundById(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Round ${id} not found`);
@@ -247,6 +253,7 @@ export class RoundsService {
         if (opts?.gamePlanId !== undefined) dbInput.game_plan_id = opts.gamePlanId;
         if (opts?.windSpeedMps !== undefined) dbInput.wind_speed_mps = opts.windSpeedMps;
         if (opts?.windDirectionDeg !== undefined) dbInput.wind_direction_deg = opts.windDirectionDeg;
+        if (opts?.stimpFt !== undefined) dbInput.stimp_ft = opts.stimpFt;
 
         await this.updateRoundById(id).set({
             ...dbInput,

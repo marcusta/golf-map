@@ -242,6 +242,31 @@ test('end can set game_plan_id and wind snapshot after the fact', async () => {
     expect(ended.windDirectionDeg).toBe(90);
 });
 
+// --- Per-round green speed (T35 follow-up) ---
+
+test('start defaults stimp_ft to null when omitted', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);
+    expect(round.stimpFt).toBeNull();
+});
+
+test('start accepts stimp_ft', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID, undefined, { stimpFt: 10.5 });
+    expect(round.stimpFt).toBe(10.5);
+});
+
+test('end can update stimp_ft and leaves it untouched when omitted', async () => {
+    const svc = await setup();
+    const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID, undefined, { stimpFt: 9 });
+    const ended = await svc.end(round.id, 1, '2026-01-01T14:00:00.000Z', undefined, { stimpFt: 11 });
+    expect(ended.stimpFt).toBe(11);
+
+    const second = await svc.start(TEST_COURSE_ID, TEST_USER_ID, undefined, { stimpFt: 9 });
+    const endedSecond = await svc.end(second.id, 1, '2026-01-01T15:00:00.000Z');
+    expect(endedSecond.stimpFt).toBe(9);
+});
+
 test('addShot defaults shot_type to full and penalty_strokes to 0, targets to null', async () => {
     const svc = await setup();
     const round = await svc.start(TEST_COURSE_ID, TEST_USER_ID);

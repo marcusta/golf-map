@@ -56,7 +56,8 @@ actor RoundSyncService {
                 startedAt: round.startedAt,
                 gamePlanId: round.gamePlanId,
                 windSpeedMps: round.windSpeedMps,
-                windDirectionDeg: round.windDirectionDeg
+                windDirectionDeg: round.windDirectionDeg,
+                stimpFt: round.stimpFt
             ) else { return } // offline/server error → whole round retries later
             round.serverId = started.id
             round.serverVersion = started.version
@@ -66,10 +67,14 @@ actor RoundSyncService {
 
         if round.syncState == .dirty, let serverId = round.serverId,
            let endedAt = round.endedAt {
+            // stimpFt rides every end push: mid-round stimp edits don't dirty
+            // the round (see RoundModel.setStimp) — the end push, which every
+            // finished round gets, carries the final value.
             if let ended = try? await client.endRound(
                 id: serverId,
                 version: round.serverVersion ?? 1,
-                endedAt: endedAt
+                endedAt: endedAt,
+                stimpFt: round.stimpFt
             ) {
                 round.serverVersion = ended.version
                 round.syncState = .synced

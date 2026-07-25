@@ -393,21 +393,31 @@ public actor GolfAPIClient {
         startedAt: String,
         gamePlanId: String? = nil,
         windSpeedMps: Double? = nil,
-        windDirectionDeg: Double? = nil
+        windDirectionDeg: Double? = nil,
+        stimpFt: Double? = nil
     ) async throws -> Round {
         try await postJSON(path: "rounds/start", body: StartRoundRequest(
             courseId: courseId,
             startedAt: startedAt,
             gamePlanId: gamePlanId,
             windSpeedMps: windSpeedMps,
-            windDirectionDeg: windDirectionDeg
+            windDirectionDeg: windDirectionDeg,
+            stimpFt: stimpFt
         ))
     }
 
-    /// Ends a round (`POST /api/rounds/end`, optimistic-locked).
-    public func endRound(id: String, version: Int, endedAt: String, notes: String? = nil) async throws -> Round {
+    /// Ends a round (`POST /api/rounds/end`, optimistic-locked). `stimpFt`
+    /// carries the round's final green-speed reading — the end push is the
+    /// one guaranteed sync point after mid-round stimp edits.
+    public func endRound(
+        id: String,
+        version: Int,
+        endedAt: String,
+        notes: String? = nil,
+        stimpFt: Double? = nil
+    ) async throws -> Round {
         try await postJSON(path: "rounds/end", body: EndRoundRequest(
-            id: id, version: version, endedAt: endedAt, notes: notes
+            id: id, version: version, endedAt: endedAt, notes: notes, stimpFt: stimpFt
         ))
     }
 
@@ -492,6 +502,7 @@ public actor GolfAPIClient {
         let gamePlanId: String?
         let windSpeedMps: Double?
         let windDirectionDeg: Double?
+        let stimpFt: Double?
     }
 
     private struct EndRoundRequest: Encodable {
@@ -499,6 +510,7 @@ public actor GolfAPIClient {
         let version: Int
         let endedAt: String
         let notes: String?
+        let stimpFt: Double?
     }
 
     private struct AddShotRequest: Encodable {
