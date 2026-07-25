@@ -5,7 +5,8 @@
     "scripts": {
         "e2e": "playwright test --config e2e/playwright.config.ts",
         "e2e:headed": "playwright test --config e2e/playwright.config.ts --headed",
-        "e2e:ui": "playwright test --config e2e/playwright.config.ts --ui"
+        "e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
+        "e2e:reordered": "bun e2e/reorder-specs.ts && E2E_TEST_DIR=e2e/.tests-reordered playwright test --config e2e/playwright.config.ts"
     },
     "devDependencies": {
         "@playwright/test": "^1.61.1"

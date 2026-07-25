@@ -5,6 +5,14 @@ import { expect, type Page } from '@playwright/test';
 export const TEST_USERNAME = 'marcus';
 export const TEST_PASSWORD = 'test-password-123';
 export const TEST_COURSE_ID = 'course-1';
+/**
+ * Mutation-sandbox course (server/db/seed-e2e.ts seedSandboxCourse): specs
+ * that mutate course STRUCTURE (add holes, move tees, add aim points) target
+ * this course so course-1's seeded 2-hole shape stays invariant for the whole
+ * serial run — hole-count assertions (11-course-list, 15-mobile-companion)
+ * must hold regardless of spec order.
+ */
+export const FURNITURE_COURSE_ID = 'course-2';
 /** Hole 1 is a par 4 — used for the shot-drag + apply-aim flows (has a shot). */
 export const HOLE_1 = 1;
 /**
@@ -164,6 +172,12 @@ export interface SeededPlan {
  * enrichment seams rather than that unrelated create bug.
  *
  * Call BEFORE navigating to the planner; the planner then loads this plan.
+ *
+ * The hole's EXISTING shots are cleared first. The suite is serial over one
+ * shared DB and the game plan is per-course, so a hole keeps whatever shots an
+ * earlier spec authored on it — leaving them would make each spec's leg shape
+ * (and therefore its DECADE/caddy/ghost-aim assertions) depend on file order.
+ * Clearing makes the seeded shot list the WHOLE list, every time.
  */
 export async function seedPlanViaApi(
     page: Page,
@@ -222,6 +236,31 @@ export async function seedPlanViaApi(
             ...(o.teeId ? { teeId: o.teeId } : {}),
             ...(o.preferredClubId ? { preferredClubId: o.preferredClubId } : {}),
         });
+        // Reset the hole to a shot-less state: read the CURRENT tree (the one
+        // fetched above predates set-hole) and cascade-remove every root shot,
+        // so whatever an earlier spec authored on this hole is gone.
+        const treeResponse = await fetch(
+            `/api/game-plans/by-course?courseId=${encodeURIComponent(o.courseId)}`,
+        );
+        if (!treeResponse.ok) throw new Error(`load plan → ${treeResponse.status}`);
+        const tree = await treeResponse.json() as {
+            holes?: Array<{
+                holeNumber: number;
+                shots: Array<{ id: string; parentShotId: string | null; version: number }>;
+            }>;
+        };
+        const staleRoots = tree.holes
+            ?.find((h) => h.holeNumber === o.holeNumber)
+            ?.shots.filter((shot) => shot.parentShotId === null) ?? [];
+        for (const shot of staleRoots) {
+            const removed = await fetch('/api/game-plans/shots/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: shot.id, version: shot.version, mode: 'cascade' }),
+            });
+            if (!removed.ok) throw new Error(`clear shot ${shot.id} → ${removed.status}`);
+        }
+
         const shotIds: string[] = [];
         for (const s of o.shots ?? []) {
             const shot = await post('/api/game-plans/shots/add', {

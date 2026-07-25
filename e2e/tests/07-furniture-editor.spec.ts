@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { TEST_COURSE_ID, HOLE_2_PAR3, tid, waitForMapReady, selectSubMode } from './fixtures';
+import { TEST_COURSE_ID, FURNITURE_COURSE_ID, HOLE_2_PAR3, tid, waitForMapReady, selectSubMode } from './fixtures';
 
 type Hole = { id: string; number: number };
 type Tee = { id: string; lat: number; lon: number };
@@ -15,7 +15,7 @@ async function apiGet<T>(page: Page, path: string): Promise<T> {
 }
 
 async function holes(page: Page): Promise<Hole[]> {
-    return apiGet<Hole[]>(page, `/api/holes?courseId=${TEST_COURSE_ID}`);
+    return apiGet<Hole[]>(page, `/api/holes?courseId=${FURNITURE_COURSE_ID}`);
 }
 
 async function teesForHole(page: Page, holeId: string): Promise<Tee[]> {
@@ -97,9 +97,16 @@ async function dragMapLngLat(page: Page, lon: number, lat: number, dx = 36, dy =
 /**
  * Furniture mode smoke: a real user can add/edit furniture on an existing
  * hole, then add a new hole and place tee / aim / green centre on it.
+ *
+ * Runs against the MUTATION-SANDBOX course (course-2, seedSandboxCourse in
+ * server/db/seed-e2e.ts), not course-1: this test permanently changes course
+ * structure (adds hole 3, moves a tee, adds aim points), and the serial suite
+ * shares one seeded DB — mutating course-1 here would break later specs that
+ * assert its seeded 2-hole shape (11-course-list, 15-mobile-companion)
+ * depending on file order.
  */
 test('furniture mode can place markers on existing and newly added holes', async ({ page }) => {
-    await page.goto(`/course/${TEST_COURSE_ID}?hole=${HOLE_2_PAR3}`);
+    await page.goto(`/course/${FURNITURE_COURSE_ID}?hole=${HOLE_2_PAR3}`);
     await expect(page.locator(tid('course-detail'))).toBeVisible();
     await waitForMapReady(page);
 

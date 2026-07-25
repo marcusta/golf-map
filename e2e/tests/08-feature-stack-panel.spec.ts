@@ -65,9 +65,34 @@ async function clickMapViewport(page: Page, dx: number, dy: number): Promise<voi
  */
 const SAFE_DX = 180;
 
+/**
+ * Arm the polygon tool if it isn't already. Chain-draw (draw-tool.service.ts
+ * `closeDraft`) deliberately keeps the tool ARMED after a ring closes, so for
+ * every square after the first the same toolbar button reads "Cancel drawing"
+ * with aria-pressed=true (command-bar.component.ts `newPoly`) — clicking it
+ * blindly would DISARM the tool and turn the next corner clicks into
+ * selection clicks.
+ */
+async function armDraw(page: Page): Promise<void> {
+    const btn = page.getByRole('button', { name: /New polygon|Cancel drawing/ });
+    await expect(btn).toBeVisible();
+    if ((await btn.getAttribute('aria-pressed')) !== 'true') await btn.click();
+}
+
+/**
+ * Leave draw mode. Needed before any map click meant to SELECT: chain-draw
+ * re-arms the tool after each close, and an armed tool treats a map click as
+ * the first point of the next polygon, not a hit-test.
+ */
+async function disarmDraw(page: Page): Promise<void> {
+    const btn = page.getByRole('button', { name: /New polygon|Cancel drawing/ });
+    if ((await btn.getAttribute('aria-pressed')) === 'true') await btn.click();
+    await expect(btn).toHaveAttribute('aria-pressed', 'false');
+}
+
 /** Draw a closed square (course-level, default draw type) via real clicks: 4 corners, then re-click the first to close the ring. */
 async function drawSquare(page: Page, halfSize: number): Promise<void> {
-    await page.getByRole('button', { name: /New polygon/ }).click();
+    await armDraw(page);
     const corners: Array<[number, number]> = [
         [SAFE_DX - halfSize, -halfSize],
         [SAFE_DX + halfSize, -halfSize],
@@ -103,6 +128,8 @@ test('feature-stack panel reorders and stays selection-synced with the map', asy
     await expect.poll(async () => (await courseLevelFeatures(page)).length).toBe(before + 1);
     await drawSquare(page, 50); // B — drawn second, fully inside A, ends up on top
     await expect.poll(async () => (await courseLevelFeatures(page)).length).toBe(before + 2);
+    // Done drawing — the map clicks below are hit-tests, not new points.
+    await disarmDraw(page);
 
     const rows = await courseLevelFeatures(page);
     const [featureA, featureB] = [...rows].sort((a, b) => a.sortOrder - b.sortOrder).slice(-2);

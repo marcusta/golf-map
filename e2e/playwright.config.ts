@@ -28,7 +28,14 @@ const E2E_OBS_DB = path.join(tmpDir, 'e2e-obs.sqlite');
 export const E2E_STORAGE_STATE = path.join(tmpDir, 'storage-state.json');
 
 export default defineConfig({
-    testDir: path.join(__dirname, 'tests'),
+    // E2E_TEST_DIR override (repo-root-relative or absolute): Playwright always
+    // runs spec files in alphabetical order, so proving the suite is
+    // order-INDEPENDENT (shared serial DB — see TESTING.md) needs a
+    // differently-ordered copy of the specs. `bun run e2e:reordered` builds one
+    // via e2e/reorder-specs.ts and points this at it; unset for normal runs.
+    testDir: process.env.E2E_TEST_DIR
+        ? path.resolve(repoRoot, process.env.E2E_TEST_DIR)
+        : path.join(__dirname, 'tests'),
     // Keep artifacts under e2e/ (gitignored) rather than the repo root.
     outputDir: path.join(__dirname, 'test-results'),
     // Serial: the flows share one seeded DB and mutate the plan (autosave).

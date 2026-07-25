@@ -158,6 +158,119 @@ function writeDemFixture(dataDir: string): string {
     return relPath;
 }
 
+// ─── Mutation-sandbox course (spec data isolation) ─────────────────────────
+//
+// Specs that MUTATE course structure (add holes, move tees, add aim points —
+// e2e/tests/07-furniture-editor.spec.ts) run against this dedicated second
+// course, NOT course-1. The suite is serial over one shared DB, so structural
+// edits to course-1 would leak into later specs that assert the seeded shape
+// (hole counts in 11-course-list / 15-mobile-companion) and make the suite
+// order-dependent. course-1 stays read-only-structural: plan/feature state may
+// churn (those flows self-isolate), but its 2-hole furniture skeleton is
+// invariant for the whole run.
+//
+// Mirrors the course-1 skeleton (same coords → same manifest bounds frame the
+// map) minus the putt-read/analysis extras (green polygon rewrite + DEM),
+// which stay course-1-only.
+
+/** Mutation-sandbox course id — e2e/tests/fixtures.ts FURNITURE_COURSE_ID mirrors this. */
+const SANDBOX_COURSE_ID = 'course-2';
+
+async function seedSandboxCourse(ctx: ReturnType<typeof createServices>): Promise<void> {
+    await ctx.db
+        .insertInto('courses')
+        .values({
+            id: SANDBOX_COURSE_ID,
+            name: 'Sandbox',
+            status: 'draft',
+            revision: 1,
+            crs: 'EPSG:3006',
+            georeference_json: null,
+            home_lat: HOME_LAT,
+            home_lon: HOME_LON,
+            notes: null,
+            version: 1,
+        })
+        .execute();
+
+    for (const hole of [
+        { id: `${SANDBOX_COURSE_ID}-hole-1`, number: 1, par: 4 },
+        { id: `${SANDBOX_COURSE_ID}-hole-2`, number: 2, par: 3 },
+    ]) {
+        await ctx.db
+            .insertInto('holes')
+            .values({
+                id: hole.id,
+                course_id: SANDBOX_COURSE_ID,
+                number: hole.number,
+                par: hole.par,
+                notes: null,
+                saved_region_json: null,
+                version: 1,
+            })
+            .execute();
+        await ctx.db
+            .insertInto('tees')
+            .values({
+                id: `${hole.id}-tee-yellow`,
+                hole_id: hole.id,
+                name: 'yellow',
+                color: 'yellow',
+                lat: 58.4012 + hole.number * 0.001,
+                lon: 15.5698 - hole.number * 0.001,
+                elevation: 78.28,
+                sort_order: 0,
+                version: 1,
+            })
+            .execute();
+        await ctx.db
+            .insertInto('aim_points')
+            .values({
+                id: `${hole.id}-aimpoint-1`,
+                hole_id: hole.id,
+                sort_order: 0,
+                lat: 58.4014 + hole.number * 0.001,
+                lon: 15.5664 - hole.number * 0.001,
+                elevation: 74.31,
+                label: null,
+                version: 1,
+            })
+            .execute();
+        await ctx.db
+            .insertInto('greens')
+            .values({
+                id: `${hole.id}-green`,
+                hole_id: hole.id,
+                boundary_json: null,
+                center_lat: 58.402 + hole.number * 0.001,
+                center_lon: 15.5649 - hole.number * 0.001,
+                front_lat: 58.4019 + hole.number * 0.001,
+                front_lon: 15.565 - hole.number * 0.001,
+                back_lat: 58.4021 + hole.number * 0.001,
+                back_lon: 15.5647 - hole.number * 0.001,
+                elevation: 75.94,
+                version: 1,
+            })
+            .execute();
+    }
+
+    // Same site + tile-manifest wiring as course-1 so its editor map boots.
+    await ctx.db.insertInto('sites').values({ id: SANDBOX_COURSE_ID, name: 'E2E Sandbox Site', version: 1 }).execute();
+    await ctx.db.updateTable('courses').where('id', '=', SANDBOX_COURSE_ID).set({ site_id: SANDBOX_COURSE_ID }).execute();
+    await ctx.db
+        .insertInto('course_assets')
+        .values({
+            id: `${SANDBOX_COURSE_ID}-tile-manifest`,
+            course_id: SANDBOX_COURSE_ID,
+            site_id: SANDBOX_COURSE_ID,
+            kind: 'tile_manifest',
+            filename: 'manifest.json',
+            meta_json: tileManifestJson(),
+            version: 1,
+        })
+        .execute();
+}
+
 export async function seedE2eDatabase(dbPath: string): Promise<{ courseId: string }> {
     // Fresh file every run — delete any stale sqlite + WAL/SHM siblings.
     for (const suffix of ['', '-wal', '-shm']) {
@@ -175,6 +288,7 @@ export async function seedE2eDatabase(dbPath: string): Promise<{ courseId: strin
     await seedUsers(ctx);
     await seedCourse(ctx);
     await seedClubs(ctx);
+    await seedSandboxCourse(ctx);
 
     // The map is site-scoped: give the course a 1:1 site (id == course id, so
     // on-disk tile paths are unchanged) and key its map assets by that site.
