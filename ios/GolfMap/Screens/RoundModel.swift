@@ -6,10 +6,14 @@ import Observation
 /// persistence of "active"), the in-memory stroke list the UI reads, and the
 /// local-first writes.
 ///
-/// Every mutation follows the same shape: update the in-memory state
-/// synchronously (the UI must never wait on I/O), persist to GRDB, then kick
-/// the sync engine. A failed DB write logs and keeps the in-memory value —
-/// capture is never blocked (docs/feature-shot-capture.md §4, offline-first).
+/// Inserts (start round, record stroke) write the in-memory record and save
+/// it. Mutations of EXISTING rows instead go through the store's column-level
+/// read-modify-write helpers and re-adopt the returned row — never a full-row
+/// save of the in-memory snapshot, which may predate the sync engine's
+/// serverId/syncState assignment (writing it back would reset the row to
+/// `.pending` and re-push a duplicate `rounds/start`). A failed DB write logs
+/// and keeps the in-memory value — capture is never blocked
+/// (docs/feature-shot-capture.md §4, offline-first).
 @MainActor
 @Observable
 final class RoundModel {
@@ -105,21 +109,41 @@ final class RoundModel {
         record.stimpFt = value
         round = record
         do {
-            try await database.saveRound(record)
+            if let updated = try await database.updateRoundStimp(id: record.id, stimpFt: value) {
+                // Adopt the fresh row — it carries any serverId/syncState the
+                // sync engine assigned since our snapshot.
+                if round?.id == updated.id { round = updated }
+            } else {
+                // Row missing (the start-time insert failed) — recreate it.
+                try await database.saveRound(record)
+            }
         } catch {
             print("Round store stimp write failed (kept in memory): \(error)")
         }
-        return record
+        return round
     }
 
     /// Finishes the active round (sets `endedAt`, flags it for the server's
     /// `rounds/end`). The scorecard keeps showing it until the screen closes.
     func finishRound() async {
-        guard var record = round else { return }
-        record.endedAt = Self.timestamp()
-        if record.syncState == .synced { record.syncState = .dirty }
+        guard let record = round else { return }
+        let endedAt = Self.timestamp()
         round = nil
-        await persistRound(record)
+        do {
+            // Column-level against the fresh row — our snapshot may predate
+            // sync's serverId assignment, and a full-row save would revert it
+            // (duplicating the round server-side, never ending the real one).
+            if try await database.finishRound(id: record.id, endedAt: endedAt) == nil {
+                // Row missing (the start-time insert failed) — recreate it.
+                var fallback = record
+                fallback.endedAt = endedAt
+                if fallback.syncState == .synced { fallback.syncState = .dirty }
+                try await database.saveRound(fallback)
+            }
+        } catch {
+            print("Round store write failed (kept in memory): \(error)")
+        }
+        kickSync()
     }
 
     // MARK: - Strokes
@@ -170,15 +194,35 @@ final class RoundModel {
         shotType: ShotType? = nil,
         penaltyStrokes: Int? = nil
     ) async -> ShotRecord? {
-        guard let index = shots.firstIndex(where: { $0.id == id }) else { return nil }
-        var shot = shots[index]
-        if let clubId { shot.clubId = clubId }
-        if let shotType { shot.shotType = shotType }
-        if let penaltyStrokes { shot.penaltyStrokes = max(0, penaltyStrokes) }
-        if shot.syncState == .synced { shot.syncState = .dirty }
-        shots[index] = shot
-        await persistShot(shot)
-        return shot
+        guard shots.contains(where: { $0.id == id }) else { return nil }
+        var result: ShotRecord?
+        do {
+            // Column-level against the fresh row — our snapshot may predate
+            // sync's serverId assignment, and a full-row save would revert it
+            // (re-adding the stroke server-side on the next flush).
+            result = try await database.updateShot(
+                id: id, clubId: clubId, shotType: shotType, penaltyStrokes: penaltyStrokes
+            )
+        } catch {
+            print("Shot store write failed (kept in memory): \(error)")
+        }
+        if result == nil {
+            // Degraded path (write threw, or the row is missing after a failed
+            // capture-time insert): apply to the snapshot and upsert so the
+            // edit still reaches disk when possible.
+            guard var shot = shots.first(where: { $0.id == id }) else { return nil }
+            if let clubId { shot.clubId = clubId }
+            if let shotType { shot.shotType = shotType }
+            if let penaltyStrokes { shot.penaltyStrokes = max(0, penaltyStrokes) }
+            if shot.syncState == .synced { shot.syncState = .dirty }
+            try? await database.saveShot(shot)
+            result = shot
+        }
+        guard let updated = result else { return nil }
+        // Re-find the index: the list can shift across the await.
+        if let index = shots.firstIndex(where: { $0.id == id }) { shots[index] = updated }
+        kickSync()
+        return updated
     }
 
     /// Deletes a stroke (scorecard editor). Later strokes on the hole keep

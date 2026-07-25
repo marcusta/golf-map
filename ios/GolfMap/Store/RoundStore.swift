@@ -25,11 +25,40 @@ extension AppDatabase {
         }
     }
 
-    /// Inserts or updates a round row (capture-side writes + sync-side
-    /// serverId/version/state updates share this).
+    /// Inserts a round row (round start). Existing rows are mutated through
+    /// the column-level helpers below, NOT by re-saving a caller's snapshot:
+    /// the sync engine assigns serverId/syncState to the row concurrently, and
+    /// a full-row upsert of a stale snapshot would revert them — the next
+    /// flush would POST a duplicate `rounds/start` and the real server round
+    /// would never get its `rounds/end`.
     public func saveRound(_ round: RoundRecord) async throws {
         try await dbQueue.write { db in
             try round.save(db)
+        }
+    }
+
+    /// Marks a round finished against the FRESH row (read-modify-write in one
+    /// transaction — see `saveRound` for why not a caller snapshot). Returns
+    /// the updated row, or nil when no such row exists.
+    public func finishRound(id: String, endedAt: String) async throws -> RoundRecord? {
+        try await dbQueue.write { db in
+            guard var round = try RoundRecord.fetchOne(db, key: id) else { return nil }
+            round.endedAt = endedAt
+            if round.syncState == .synced { round.syncState = .dirty }
+            try round.save(db)
+            return round
+        }
+    }
+
+    /// Sets a round's green speed against the FRESH row. `syncState` is
+    /// deliberately untouched — see `RoundModel.setStimp`. Returns the updated
+    /// row, or nil when no such row exists.
+    public func updateRoundStimp(id: String, stimpFt: Double?) async throws -> RoundRecord? {
+        try await dbQueue.write { db in
+            guard var round = try RoundRecord.fetchOne(db, key: id) else { return nil }
+            round.stimpFt = stimpFt
+            try round.save(db)
+            return round
         }
     }
 
@@ -58,10 +87,33 @@ extension AppDatabase {
         }
     }
 
-    /// Inserts or updates a stroke row.
+    /// Inserts or updates a stroke row (stroke capture — a freshly minted row
+    /// the sync engine hasn't seen yet). Edits to existing rows go through
+    /// `updateShot` for the same stale-snapshot reason as `saveRound`.
     public func saveShot(_ shot: ShotRecord) async throws {
         try await dbQueue.write { db in
             try shot.save(db)
+        }
+    }
+
+    /// After-the-fact stroke edit applied to the FRESH row (the caller's
+    /// snapshot may predate sync's serverId assignment — see `saveRound`).
+    /// Unspecified fields keep their stored value; a `.synced` row goes
+    /// `.dirty`. Returns the updated row, or nil when no such row exists.
+    public func updateShot(
+        id: String,
+        clubId: String?? = nil,
+        shotType: ShotType? = nil,
+        penaltyStrokes: Int? = nil
+    ) async throws -> ShotRecord? {
+        try await dbQueue.write { db in
+            guard var shot = try ShotRecord.fetchOne(db, key: id) else { return nil }
+            if let clubId { shot.clubId = clubId }
+            if let shotType { shot.shotType = shotType }
+            if let penaltyStrokes { shot.penaltyStrokes = max(0, penaltyStrokes) }
+            if shot.syncState == .synced { shot.syncState = .dirty }
+            try shot.save(db)
+            return shot
         }
     }
 
@@ -84,6 +136,87 @@ extension AppDatabase {
     public func hardDeleteShot(id: String) async throws {
         _ = try await dbQueue.write { db in
             try ShotRecord.deleteOne(db, key: id)
+        }
+    }
+
+    // MARK: - Sync-result adoption
+    //
+    // The sync engine's writes are column-level against the FRESH row for the
+    // mirror-image of the `saveRound` hazard: a capture write can land while a
+    // push is in flight, and a full-row save of the pre-push snapshot would
+    // silently revert it (e.g. un-end a round finished during its
+    // `rounds/start` call).
+
+    /// Records a successful `rounds/start`: server identity plus a syncState
+    /// derived from the FRESH row — ended while the call was in flight →
+    /// `.dirty`, so the end push follows in the same flush. Returns the
+    /// updated row, or nil when no such row exists.
+    public func adoptRoundStart(
+        id: String, serverId: String, serverVersion: Int
+    ) async throws -> RoundRecord? {
+        try await dbQueue.write { db in
+            guard var round = try RoundRecord.fetchOne(db, key: id) else { return nil }
+            round.serverId = serverId
+            round.serverVersion = serverVersion
+            round.syncState = round.endedAt == nil ? .synced : .dirty
+            try round.save(db)
+            return round
+        }
+    }
+
+    /// Records a successful `rounds/end`. Nothing capture-side can re-dirty a
+    /// finished round (stimp is only editable while active), so the row goes
+    /// straight to `.synced`.
+    public func adoptRoundEnd(id: String, serverVersion: Int) async throws -> RoundRecord? {
+        try await dbQueue.write { db in
+            guard var round = try RoundRecord.fetchOne(db, key: id) else { return nil }
+            round.serverVersion = serverVersion
+            round.syncState = .synced
+            try round.save(db)
+            return round
+        }
+    }
+
+    /// Records a successful shot add. The FRESH row keeps any edits made
+    /// while the add was in flight: content unchanged → `.synced`; edited →
+    /// `.dirty` (the follow-up update push carries the edit). A row
+    /// hard-deleted during the flight (nil-serverId deletes skip the
+    /// tombstone) is resurrected AS a tombstone so the next flush removes the
+    /// copy the server just created.
+    public func adoptShotAdd(
+        id: String, serverId: String, serverVersion: Int, pushed: ShotRecord
+    ) async throws -> ShotRecord {
+        try await dbQueue.write { db in
+            guard var shot = try ShotRecord.fetchOne(db, key: id) else {
+                var tombstone = pushed
+                tombstone.serverId = serverId
+                tombstone.serverVersion = serverVersion
+                tombstone.syncState = .deleted
+                try tombstone.save(db)
+                return tombstone
+            }
+            shot.serverId = serverId
+            shot.serverVersion = serverVersion
+            shot.syncState = shotContentEquals(shot, pushed) ? .synced : .dirty
+            try shot.save(db)
+            return shot
+        }
+    }
+
+    /// Records a successful shot update: the version is always adopted;
+    /// `.synced` only when the row still matches what was pushed and wasn't
+    /// tombstoned meanwhile.
+    public func adoptShotUpdate(
+        id: String, serverVersion: Int, pushed: ShotRecord
+    ) async throws -> ShotRecord? {
+        try await dbQueue.write { db in
+            guard var shot = try ShotRecord.fetchOne(db, key: id) else { return nil }
+            shot.serverVersion = serverVersion
+            if shot.syncState == .dirty, shotContentEquals(shot, pushed) {
+                shot.syncState = .synced
+            }
+            try shot.save(db)
+            return shot
         }
     }
 
@@ -119,4 +252,14 @@ extension AppDatabase {
                 .fetchAll(db)
         }
     }
+}
+
+/// Row equality ignoring sync bookkeeping — "did capture change this shot
+/// while its push was in flight?".
+private func shotContentEquals(_ a: ShotRecord, _ b: ShotRecord) -> Bool {
+    var a = a, b = b
+    a.serverId = nil; b.serverId = nil
+    a.serverVersion = nil; b.serverVersion = nil
+    a.syncState = .pending; b.syncState = .pending
+    return a == b
 }

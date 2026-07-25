@@ -59,10 +59,14 @@ actor RoundSyncService {
                 windDirectionDeg: round.windDirectionDeg,
                 stimpFt: round.stimpFt
             ) else { return } // offline/server error → whole round retries later
-            round.serverId = started.id
-            round.serverVersion = started.version
-            round.syncState = round.endedAt == nil ? .synced : .dirty
-            guard (try? await database.saveRound(round)) != nil else { return }
+            // Column-level adoption against the FRESH row (not this task's
+            // pre-flight snapshot): capture may have finished the round while
+            // the call was in flight, and a full-row save would revert it.
+            // The returned fresh row also drives the end push below.
+            guard let fresh = try? await database.adoptRoundStart(
+                id: round.id, serverId: started.id, serverVersion: started.version
+            ) else { return }
+            round = fresh
         }
 
         if round.syncState == .dirty, let serverId = round.serverId,
@@ -75,10 +79,10 @@ actor RoundSyncService {
                 version: round.serverVersion ?? 1,
                 endedAt: endedAt,
                 stimpFt: round.stimpFt
+            ), let fresh = try? await database.adoptRoundEnd(
+                id: round.id, serverVersion: ended.version
             ) {
-                round.serverVersion = ended.version
-                round.syncState = .synced
-                try? await database.saveRound(round)
+                round = fresh
             }
             // End failure is non-fatal for the shots below — they push
             // against the started round; the end retries next flush.
@@ -120,11 +124,11 @@ actor RoundSyncService {
             penaltyStrokes: shot.penaltyStrokes,
             recordedAt: shot.recordedAt
         ) else { return false }
-        var shot = shot
-        shot.serverId = added.id
-        shot.serverVersion = added.version
-        shot.syncState = .synced
-        return (try? await database.saveShot(shot)) != nil
+        // Column-level adoption: edits (or a delete) that landed while the
+        // add was in flight survive — see RoundStore.adoptShotAdd.
+        return (try? await database.adoptShotAdd(
+            id: shot.id, serverId: added.id, serverVersion: added.version, pushed: shot
+        )) != nil
     }
 
     private func push(update shot: ShotRecord) async {
@@ -141,10 +145,9 @@ actor RoundSyncService {
             targetLon: shot.targetLon,
             penaltyStrokes: shot.penaltyStrokes
         ) else { return }
-        var shot = shot
-        shot.serverVersion = updated.version
-        shot.syncState = .synced
-        try? await database.saveShot(shot)
+        _ = try? await database.adoptShotUpdate(
+            id: shot.id, serverVersion: updated.version, pushed: shot
+        )
     }
 
     private func push(delete shot: ShotRecord) async {
