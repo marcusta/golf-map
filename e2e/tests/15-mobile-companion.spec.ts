@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { TEST_COURSE_ID, HOLE_1, tid, waitForMapReady } from './fixtures';
 
 /**
@@ -67,6 +67,106 @@ test('hole screen frames the map, renders the strip + sheet, and reads a live GP
     // (not the placeholder em dash).
     await expect(page.locator(tid('m-hole-greens')).locator('.m-hole__green-val').nth(1))
         .toHaveText(/^\d+$/, { timeout: 20_000 });
+});
+
+/**
+ * Tap a WGS84 point by projecting it through the live map (same
+ * project-then-drive pattern as the desktop putt spec). `page.mouse.click`
+ * rather than `tap()`: the green screen listens to the map's pointer events,
+ * and a synthetic tap without a touch sequence does not produce one.
+ */
+async function tapMapAt(page: Page, lon: number, lat: number): Promise<void> {
+    const pt = await page.evaluate(({ lon, lat }) => {
+        const map = (window as unknown as {
+            __map?: {
+                project: (ll: [number, number]) => { x: number; y: number };
+                getCanvas: () => HTMLCanvasElement;
+            };
+        }).__map!;
+        const p = map.project([lon, lat]);
+        const rect = map.getCanvas().getBoundingClientRect();
+        return { x: rect.left + p.x, y: rect.top + p.y };
+    }, { lon, lat });
+    await page.mouse.click(pt.x, pt.y);
+}
+
+// An on-green WGS84 point inside hole 1's seeded green polygon (the same point
+// the desktop putt spec places the ball at — EPSG:3006 ≈ (532956, 6473703)),
+// offset from the active pin so the ball→hole line has real length + break.
+const BALL_LAT = 58.402873;
+const BALL_LON = 15.563897;
+// A SECOND on-green point ~17 m away (also borrowed from the desktop spec) —
+// far enough that dragging the ball there is unmistakably a different putt.
+const BALL2_LAT = 58.402804;
+const BALL2_LON = 15.563638;
+
+/** Screen position of a WGS84 point on the live map. */
+async function screenPoint(page: Page, lon: number, lat: number): Promise<{ x: number; y: number }> {
+    return page.evaluate(({ lon, lat }) => {
+        const map = (window as unknown as {
+            __map?: {
+                project: (ll: [number, number]) => { x: number; y: number };
+                getCanvas: () => HTMLCanvasElement;
+            };
+        }).__map!;
+        const p = map.project([lon, lat]);
+        const rect = map.getCanvas().getBoundingClientRect();
+        return { x: rect.left + p.x, y: rect.top + p.y };
+    }, { lon, lat });
+}
+
+/** The green screen's presentation-tier status hook. */
+async function greenStatus(page: Page): Promise<string | null> {
+    return page.locator(tid('m-green')).getAttribute('data-putt-status');
+}
+
+test('green screen: tap the ball, snap the hole to the pin, and a read renders', async ({ page }) => {
+    await page.goto(`/m/course/${TEST_COURSE_ID}/hole/${HOLE_1}`);
+    await expect(page.locator(tid('m-hole'))).toBeVisible();
+    await waitForMapReady(page);
+
+    // Entry from the hole sheet — the URL keeps the /green suffix (route-key.ts
+    // rewrites it only for $swap dispatch).
+    await page.locator(tid('m-hole-green-link')).click();
+    await expect(page).toHaveURL(new RegExp(`/m/course/${TEST_COURSE_ID}/hole/${HOLE_1}/green$`));
+    await expect(page.locator(tid('m-green'))).toBeVisible();
+    await waitForMapReady(page);
+
+    // Defaults: slope overlay armed, stimp 10 ft, waiting for the ball.
+    await expect(page.locator(tid('m-green-mode-slope'))).toHaveClass(/active/);
+    await expect(page.locator(tid('m-green-stimp'))).toHaveText('10 ft');
+    await expect.poll(() => greenStatus(page), { timeout: 20_000 }).toBe('place');
+
+    // Tap the ball on the green, then snap the hole to the active pin. The
+    // read settles to `ok` on the seeded tilted-plane surface.
+    await tapMapAt(page, BALL_LON, BALL_LAT);
+    await page.locator(tid('m-green-at-pin')).click();
+    await expect.poll(() => greenStatus(page), { timeout: 20_000 }).toBe('ok');
+
+    // The Tour Read verbal line renders (aim + pace), with the confidence
+    // provenance beside it.
+    await expect(page.locator(tid('m-green-aim'))).not.toHaveText('');
+    await expect(page.locator(tid('m-green-pace'))).not.toHaveText('');
+    await expect(page.locator(tid('m-green-confidence'))).toContainText('Green data');
+
+    // Stimp is a live input: a faster green re-reads (status stays ok).
+    await page.locator(tid('m-green-stimp-up')).click();
+    await expect(page.locator(tid('m-green-stimp'))).toHaveText('11 ft');
+    await expect.poll(() => greenStatus(page), { timeout: 20_000 }).toBe('ok');
+
+    // Drag the ball ~17 m to a different lie: grabbing the marker moves the
+    // read (not the camera), and the release commits a NEW read.
+    const before = await page.locator(tid('m-green-pace')).textContent();
+    const from = await screenPoint(page, BALL_LON, BALL_LAT);
+    const to = await screenPoint(page, BALL2_LON, BALL2_LAT);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 5 });
+    await page.mouse.move(to.x, to.y, { steps: 5 });
+    await page.mouse.up();
+
+    await expect.poll(() => greenStatus(page), { timeout: 20_000 }).toBe('ok');
+    await expect(page.locator(tid('m-green-pace'))).not.toHaveText(before ?? '');
 });
 
 test('the hole strip switches holes', async ({ page }) => {

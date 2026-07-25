@@ -10,7 +10,14 @@ const MOBILE_ROOT = join(import.meta.dir, '..', 'src', 'mobile');
  * machinery (editor, map-build, import), or the interactive planner tools
  * (planner-tool.service / planner-panel) — none belong in a read-only,
  * touch-first on-course view. Reusing the pure planner ENGINES (browse-ladder,
- * plan-overlay, plan.service) is allowed; the tool services are not.
+ * plan-overlay, plan.service, putt-read.service, putt-overlay, analysis-math)
+ * is allowed; the tool services are not.
+ *
+ * analysis-overlay is listed too: it is a RENDERER, not an engine — it imports
+ * maplibre-gl directly (DOM label markers) and draw/features.service, so
+ * pulling it in would breach the draw boundary transitively. The green screen
+ * rebuilds its thin geometry in mobile/green/green-overlay.ts and reuses the
+ * analysis MATH instead.
  */
 const FORBIDDEN = [
     /\/editor\//,
@@ -19,6 +26,7 @@ const FORBIDDEN = [
     /\/map-build\//,
     /\/planner-tool\.service/,
     /\/planner-panel/,
+    /\/analysis-overlay/,
 ];
 
 function walk(dir: string): string[] {
