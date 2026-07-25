@@ -29,3 +29,8 @@ gspro-files/
 
 # CodeGraph local index (indexing is per-developer, not shared)
 .codegraph/
+
+# sig-infra deploy scratch: db_pull drops a production DB snapshot here
+# (deploy-tmp/db.sqlite) for local migration rehearsal. Real user data —
+# must never be committed. deploy_preflight warns if this line is missing.
+deploy-tmp/

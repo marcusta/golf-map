@@ -48,14 +48,21 @@ Install dependencies and build the web app (both entries — desktop and mobile)
 
 ```sh
 cd /srv/golf-map/server && sudo -u golfmap bun install
-cd /srv/golf-map/web    && sudo -u golfmap bun install && sudo -u golfmap WEB_BASE=/ bun run build
+cd /srv/golf-map/web    && sudo -u golfmap bun install && sudo -u golfmap env WEB_BASE=/ bun run build
 ```
 
 `WEB_BASE=/` is required **on a standalone box**: the build defaults to the
 sig-infra deploy prefix (`/golf-map/`, see
 [sig-infra-deploy.md](./sig-infra-deploy.md) §1), which would make every asset
 URL 404 when the app is served from the origin root. Drop it only on the
-path-routed SIG box, where the prefix is what you want.
+path-routed SIG box, where the prefix is what you want. (Note the `env` — `sudo`
+takes `VAR=value` only via `env`, matching how the rest of this runbook passes
+`DB_PATH` and friends.)
+
+> This runbook's service user is **`golfmap`**; the SIG box's is **`golf-map`**,
+> because sig-infra derives the user from the folder name. The two documents
+> describe different machines — see the note at the top of
+> [sig-infra-deploy.md](./sig-infra-deploy.md).
 
 `web/dist/` now holds `index.html`, `mobile.html` and `assets/`. The server
 serves it in serve mode (§4).

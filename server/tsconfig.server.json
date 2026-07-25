@@ -6,5 +6,9 @@
         "strict": true,
         "skipLibCheck": true
     },
-    "include": ["main.ts", "api", "db", "services", "testing"]
+    // ../scripts holds the deploy-critical root scripts (db:migrate, db:health)
+    // that sig-infra runs on the server. They import server/db/schema.ts and the
+    // framework's migrator, so they belong to this program — and being outside
+    // any workspace they would otherwise never be typechecked at all.
+    "include": ["main.ts", "api", "db", "services", "testing", "../scripts"]
 }

@@ -42,6 +42,9 @@ const REQUIRED_TABLES = [
 
 console.log(`Validating DB at ${dbPath}...`);
 
+// bun:sqlite CREATES the file if it is missing rather than throwing, so a wrong
+// DB_PATH surfaces as "every table is missing" (correctly exit 1) plus a stray
+// empty .sqlite file at that path. Harmless, but don't be surprised by it.
 const db = new Database(dbPath);
 
 try {
