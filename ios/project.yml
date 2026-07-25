@@ -55,6 +55,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.marcusandersson.golfmap
+        # Paid Apple Developer team (active since 2026-07); automatic signing
+        # lets xcodebuild -allowProvisioningUpdates register devices and mint
+        # profiles on demand.
+        DEVELOPMENT_TEAM: AC979WJ4JA
+        CODE_SIGN_STYLE: Automatic
         # iPhone only.
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "6.0"
