@@ -201,10 +201,10 @@ test('link auto-picks the single ball and persists token + ballId on the round',
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
 
-    const status = await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    const status = await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
     expect(status).toEqual({ roundId: round.id, linked: true, token: TOKEN, ballId: 'ball-1' });
 
-    const stored = await ctx.tapscoreBridgeService.status(round.id);
+    const stored = await ctx.tapscoreBridgeService.status(round.id, TEST_USER_ID);
     expect(stored).toEqual(status);
 });
 
@@ -212,7 +212,7 @@ test('link rejects an unknown token with NotFoundError (404)', async () => {
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await expect(ctx.tapscoreBridgeService.link(round.id, 'no-such-token')).rejects.toBeInstanceOf(
+    await expect(ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, 'no-such-token')).rejects.toBeInstanceOf(
         NotFoundError,
     );
 });
@@ -229,11 +229,11 @@ test('link rejects an ambiguous multi-ball round without an explicit ballId', as
     );
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await expect(ctx.tapscoreBridgeService.link(round.id, TOKEN)).rejects.toBeInstanceOf(
+    await expect(ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN)).rejects.toBeInstanceOf(
         ConflictError,
     );
     // …but an explicit, valid ballId links.
-    const status = await ctx.tapscoreBridgeService.link(round.id, TOKEN, 'ball-2');
+    const status = await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN, 'ball-2');
     expect(status.ballId).toBe('ball-2');
 });
 
@@ -241,7 +241,7 @@ test('link rejects a ballId that is not part of the Tapscore round', async () =>
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await expect(ctx.tapscoreBridgeService.link(round.id, TOKEN, 'ghost')).rejects.toBeInstanceOf(
+    await expect(ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN, 'ghost')).rejects.toBeInstanceOf(
         ConflictError,
     );
 });
@@ -258,7 +258,7 @@ test('link auto-pick ignores unclaimed (pending) seats and picks the one claimed
     );
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    const status = await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    const status = await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
     expect(status.ballId).toBe('ball-1');
 });
 
@@ -272,13 +272,72 @@ test('link rejects a pending seat — explicit and when it is the only ball', as
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
     // Only ball is an unclaimed seat → nothing claimable to link.
-    await expect(ctx.tapscoreBridgeService.link(round.id, TOKEN)).rejects.toBeInstanceOf(
+    await expect(ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN)).rejects.toBeInstanceOf(
         ConflictError,
     );
     // Explicitly naming the pending seat is also refused.
-    await expect(ctx.tapscoreBridgeService.link(round.id, TOKEN, 'ball-1')).rejects.toBeInstanceOf(
+    await expect(ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN, 'ball-1')).rejects.toBeInstanceOf(
         ConflictError,
     );
+});
+
+// --- Ownership: link management is scoped to the round's owner --------------
+
+const OTHER_USER_ID = 'user-2';
+
+async function seedOtherUser(ctx: TestContext): Promise<void> {
+    await ctx.db
+        .insertInto('users')
+        .values({
+            id: OTHER_USER_ID,
+            username: 'intruder',
+            password_hash: await Bun.password.hash('other-password-456'),
+        })
+        .execute();
+}
+
+test("status/link/unlink reject another user's round with 404 (no existence leak)", async () => {
+    const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
+    const ctx = await setup(fake.baseUrl);
+    await seedOtherUser(ctx);
+    const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
+    await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
+
+    // Every user-facing entry point 404s for the non-owner…
+    await expect(ctx.tapscoreBridgeService.status(round.id, OTHER_USER_ID)).rejects.toBeInstanceOf(
+        NotFoundError,
+    );
+    await expect(
+        ctx.tapscoreBridgeService.link(round.id, OTHER_USER_ID, TOKEN),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(ctx.tapscoreBridgeService.unlink(round.id, OTHER_USER_ID)).rejects.toBeInstanceOf(
+        NotFoundError,
+    );
+
+    // …and the owner's link is untouched by the failed unlink attempt.
+    const stored = await ctx.tapscoreBridgeService.status(round.id, TEST_USER_ID);
+    expect(stored).toEqual({ roundId: round.id, linked: true, token: TOKEN, ballId: 'ball-1' });
+});
+
+test('owner can unlink their own round', async () => {
+    const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
+    const ctx = await setup(fake.baseUrl);
+    const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
+    await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
+
+    const status = await ctx.tapscoreBridgeService.unlink(round.id, TEST_USER_ID);
+    expect(status).toEqual({ roundId: round.id, linked: false, token: null, ballId: null });
+});
+
+test('a single-user-era round (user_id null) stays accessible to any user', async () => {
+    const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
+    const ctx = await setup(fake.baseUrl);
+    await seedOtherUser(ctx);
+    // No userId → user_id null, the pre-multi-user shape.
+    const round = await ctx.roundsService.start(TEST_COURSE_ID);
+
+    const status = await ctx.tapscoreBridgeService.link(round.id, OTHER_USER_ID, TOKEN);
+    expect(status.linked).toBe(true);
 });
 
 // --- Publish through the shot-write hook ------------------------------------
@@ -287,7 +346,7 @@ test('adding shots publishes the hole score with a versioned client_event_id', a
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
 
     await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
     await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
@@ -311,7 +370,7 @@ test('incremental play advances the cell through monotonic versioned ids', async
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
 
     // Shot by shot, settling between each — every value change must land.
     await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
@@ -348,7 +407,7 @@ test('a hole re-queued DURING an in-flight drain still lands its newer value', a
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
 
     // Arm the fake to hold the first /score POST open.
     fake.blockFirstPost();
@@ -374,7 +433,7 @@ test('moving a shot to another hole updates BOTH holes', async () => {
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
 
     const s1 = await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
     await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
@@ -395,7 +454,7 @@ test('removing the last shot on a hole clears the Tapscore cell', async () => {
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
 
     const shot = await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
     await ctx.tapscoreBridgeService.settle(round.id);
@@ -412,7 +471,7 @@ test('publishing is off the write path — shot write does not wait on the POST'
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
 
     // The write returns before the coalesced publish runs…
     await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
@@ -436,7 +495,7 @@ test('Tapscore being unreachable never breaks the round/shot write', async () =>
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
-    await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    await ctx.tapscoreBridgeService.link(round.id, TEST_USER_ID, TOKEN);
 
     // Bring Tapscore down; the base URL now refuses connections.
     fake.stop();
