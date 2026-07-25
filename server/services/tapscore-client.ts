@@ -72,12 +72,17 @@ interface ByTokenResponse {
     };
 }
 
+/** Default per-request timeout (ms). A black-holed Tapscore must not hang. */
+const DEFAULT_TIMEOUT_MS = 4000;
+
 export class HttpTapscoreClient implements TapscoreClient {
     private readonly base: string;
+    private readonly timeoutMs: number;
 
-    constructor(baseUrl: string) {
+    constructor(baseUrl: string, timeoutMs: number = DEFAULT_TIMEOUT_MS) {
         // Trim a trailing slash so `${base}/api/...` never doubles up.
         this.base = baseUrl.replace(/\/+$/, '');
+        this.timeoutMs = timeoutMs;
     }
 
     private url(path: string, query?: Record<string, string>): string {
@@ -95,6 +100,7 @@ export class HttpTapscoreClient implements TapscoreClient {
             res = await fetch(this.url(path, query), {
                 method: 'GET',
                 headers: { accept: 'application/json' },
+                signal: AbortSignal.timeout(this.timeoutMs),
             });
         } catch (err) {
             throw new TapscoreClientError(`GET ${path} failed: ${(err as Error).message}`);
@@ -127,6 +133,7 @@ export class HttpTapscoreClient implements TapscoreClient {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify(input),
+                signal: AbortSignal.timeout(this.timeoutMs),
             });
         } catch (err) {
             throw new TapscoreClientError(`POST /friendly-rounds/score failed: ${(err as Error).message}`);

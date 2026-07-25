@@ -14,6 +14,16 @@ import { type Kysely } from 'kysely';
  *
  * Both nullable; every pre-existing round and every round the player never
  * links stays null and is a bridge no-op.
+ *
+ * `tapscore_published_scores` tracks, per (round, hole), the LAST score event
+ * the bridge published to Tapscore: its monotonic `version`, the value
+ * (`strokes` + `event_type`), and whether that post was confirmed (`synced`).
+ * Tapscore's `append` is idempotent on `(round_id, client_event_id)` and
+ * mutates the scorecard cell ONLY on a fresh insert — so a fixed id would
+ * freeze the cell at its first value. The bridge therefore embeds this
+ * per-cell `version` in the id (`golfmap:{roundId}:{holeNumber}:{version}`)
+ * and bumps it whenever the value changes, while reusing the id for an
+ * unconfirmed re-post of the same value (idempotent retry).
  */
 export async function up(db: Kysely<any>): Promise<void> {
     await db.schema
@@ -23,5 +33,22 @@ export async function up(db: Kysely<any>): Promise<void> {
     await db.schema
         .alterTable('rounds')
         .addColumn('ball_id', 'text')
+        .execute();
+
+    await db.schema
+        .createTable('tapscore_published_scores')
+        .addColumn('round_id', 'text', (col) =>
+            col.notNull().references('rounds.id').onDelete('cascade'))
+        .addColumn('hole_number', 'integer', (col) => col.notNull())
+        .addColumn('version', 'integer', (col) => col.notNull())
+        // Last published value. `strokes` null = a cleared cell; `event_type`
+        // is the Tapscore event type, or '' as a "force re-post" sentinel set
+        // at link time so a re-link re-publishes under a fresh id.
+        .addColumn('strokes', 'integer')
+        .addColumn('event_type', 'text', (col) => col.notNull())
+        // 1 once Tapscore confirmed the post; 0 while a post is unconfirmed
+        // (never sent, or its ack was lost) so the next sync retries it.
+        .addColumn('synced', 'integer', (col) => col.notNull().defaultTo(0))
+        .addPrimaryKeyConstraint('tapscore_published_scores_pk', ['round_id', 'hole_number'])
         .execute();
 }

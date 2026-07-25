@@ -12,15 +12,29 @@ import { TapscoreClientError, type TapscoreClient, type TapscorePlayHole } from 
 // this service publishes per-hole gross strokes into that round after every
 // iOS shot-sync write.
 //
-// The publish is idempotent by construction: each hole's score event carries a
-// deterministic `client_event_id` = `golfmap:{roundId}:{holeNumber}`, and
-// Tapscore is last-write-wins per cell. Re-posts, out-of-order retries and
-// full re-syncs are therefore all safe — no new sync protocol is needed.
+// ## Idempotency — why a per-cell version
 //
-// Resilience is the load-bearing invariant: `syncHoles` NEVER throws. A
-// Tapscore that is down, slow, or returning errors must never break golf-map's
-// own round/shot writes — a failed publish is logged and retried on the next
-// shot-sync write (which re-posts the same deterministic ids).
+// Tapscore's `ScoreEventService.append` dedupes on `(round_id, client_event_id)`
+// and mutates the scorecard cell ONLY on a fresh insert (score-event.service.ts
+// + the migration-025 rebuild trigger). A *fixed* `client_event_id` per hole
+// would therefore freeze the cell at its FIRST value — later shots, penalties,
+// corrections and clears would be dropped. So the bridge keeps a monotonic
+// per-cell `version` (`tapscore_published_scores`) and embeds it in the id:
+//
+//     golfmap:{roundId}:{holeNumber}:{version}
+//
+// The version bumps whenever the hole's value changes (so the change inserts and
+// the cell updates), and is *reused* for an unconfirmed re-post of the SAME
+// value (so a retry is a genuine idempotent replay). A→B→A yields three distinct
+// versions, so the final A lands — unlike a value-hash, which would collapse it.
+//
+// ## Off the write path
+//
+// Publishing is fire-and-forget: `syncHoles` coalesces the changed holes per
+// round and drains them on a later microtask, so a healthy Tapscore adds ZERO
+// latency to a shot write and a sick one adds none either. The HTTP client also
+// carries a per-request timeout. The never-throw contract holds: a failed
+// publish is logged and left queued for the next sync (same deterministic ids).
 
 export interface TapscoreLinkStatus {
     roundId: string;
@@ -81,7 +95,19 @@ function holeIdMap(playHoles: readonly TapscorePlayHole[]): Map<number, string> 
     return new Map(Array.from(byHole.entries()).map(([n, p]) => [n, p.playHoleId]));
 }
 
+interface CellValue {
+    strokes: number | null;
+    eventType: string;
+}
+
 export class TapscoreBridgeService {
+    // Coalescing queue: holes awaiting publish per round, plus the tail of the
+    // per-round drain chain (so `settle` can await outstanding work in tests).
+    private pending = new Map<string, Set<number>>();
+    private tails = new Map<string, Promise<void>>();
+    // Itinerary (play-hole map) cached per linked round; invalidated on (un)link.
+    private itineraryCache = new Map<string, TapscorePlayHole[]>();
+
     constructor(
         private db: Kysely<Database>,
         private client: TapscoreClient,
@@ -98,10 +124,10 @@ export class TapscoreBridgeService {
     /**
      * Link a round to a Tapscore friendly round by share token. Validates the
      * token against Tapscore (must resolve to balls) and resolves which ball
-     * the scores land on: an explicit `ballId` must exist; when omitted, the
-     * round's single ball is auto-picked and an ambiguous (>1) or empty round
-     * is rejected. On success, current scores are pushed immediately (best
-     * effort — the push never fails the link).
+     * the scores land on: an explicit `ballId` must exist and be claimed; when
+     * omitted, the round's single CLAIMED ball is auto-picked and an ambiguous
+     * (>1) or all-pending round is rejected. On success, current scores are
+     * pushed immediately (best effort — the push never fails the link).
      */
     async link(roundId: string, token: string, ballId?: string): Promise<TapscoreLinkStatus> {
         const exists = await this.linkRow(roundId);
@@ -119,6 +145,18 @@ export class TapscoreBridgeService {
             })
             .where('id', '=', roundId)
             .execute();
+
+        // Force every already-published cell to re-post under a fresh id (the
+        // ball, and thus the target cell, may have changed): '' never matches a
+        // real event type, so the next publish bumps the version. Keeps the
+        // counter monotonic, so ids never collide across links.
+        await this.db
+            .updateTable('tapscore_published_scores')
+            .set({ event_type: '', synced: 0 })
+            .where('round_id', '=', roundId)
+            .execute();
+
+        this.itineraryCache.delete(roundId);
 
         // Push whatever is already recorded so an in-progress round shows up in
         // Tapscore straight away. syncAll never throws.
@@ -138,31 +176,48 @@ export class TapscoreBridgeService {
             })
             .where('id', '=', roundId)
             .execute();
+        this.itineraryCache.delete(roundId);
         return toStatus(roundId, null, null);
     }
 
-    // --- Publish (called from the rounds write hook; NEVER throws) ---
+    // --- Publish (called from the rounds write hook) ---
 
-    /** Recompute + publish the given holes for a round. No-op if unlinked. */
-    async syncHoles(roundId: string, holeNumbers: readonly number[]): Promise<void> {
-        try {
-            const holes = Array.from(new Set(holeNumbers));
-            if (holes.length === 0) return;
-            const link = await this.linkRow(roundId);
-            if (!link?.token || !link.ballId) return; // unlinked → nothing to do
-            await this.publish(roundId, link.token, link.ballId, holes);
-        } catch (err) {
-            // Resilience contract: a publish failure must never surface to the
-            // caller (which is in the middle of a round/shot write).
+    /**
+     * Queue the given holes for publish and return immediately — the HTTP work
+     * happens off the write path on a later microtask, coalesced per round.
+     * Fire-and-forget by design; failures are logged, never thrown, and the
+     * holes stay queued for the next drain.
+     */
+    syncHoles(roundId: string, holeNumbers: readonly number[]): void {
+        const set = this.pending.get(roundId) ?? new Set<number>();
+        for (const h of holeNumbers) set.add(h);
+        if (set.size === 0) return;
+        this.pending.set(roundId, set);
+
+        const prev = this.tails.get(roundId) ?? Promise.resolve();
+        const next = prev.then(() => this.flushPending(roundId)).catch((err) => {
             log.error({
-                msg: 'tapscore bridge: syncHoles failed',
+                msg: 'tapscore bridge: flush failed',
                 roundId,
                 error: err instanceof Error ? err.message : String(err),
             });
-        }
+        });
+        this.tails.set(roundId, next);
     }
 
-    /** Publish every hole that currently has shots. No-op if unlinked. */
+    /**
+     * Await all queued publishes for a round (or every round when omitted).
+     * Test seam — production callers fire-and-forget.
+     */
+    async settle(roundId?: string): Promise<void> {
+        if (roundId !== undefined) {
+            await (this.tails.get(roundId) ?? Promise.resolve());
+            return;
+        }
+        await Promise.all(Array.from(this.tails.values()));
+    }
+
+    /** Publish every hole that currently has shots. No-op if unlinked. Never throws. */
     async syncAll(roundId: string): Promise<void> {
         try {
             const link = await this.linkRow(roundId);
@@ -181,13 +236,39 @@ export class TapscoreBridgeService {
 
     // --- Internals ---
 
+    private async flushPending(roundId: string): Promise<void> {
+        const set = this.pending.get(roundId);
+        if (!set || set.size === 0) return;
+        const holes = Array.from(set).sort((a, b) => a - b);
+        try {
+            const link = await this.linkRow(roundId);
+            if (!link?.token || !link.ballId) {
+                this.pending.delete(roundId); // unlinked → drop, nothing to publish
+                return;
+            }
+            await this.publish(roundId, link.token, link.ballId, holes);
+            // Success: remove exactly the holes we handled; holes queued while we
+            // were publishing stay for the next drain.
+            for (const h of holes) set.delete(h);
+            if (set.size === 0) this.pending.delete(roundId);
+        } catch (err) {
+            // Leave the holes in `pending` so the next syncHoles retries them;
+            // per-hole state (synced=0) makes the replay idempotent.
+            log.error({
+                msg: 'tapscore bridge: publish failed (holes stay queued for retry)',
+                roundId,
+                error: err instanceof Error ? err.message : String(err),
+            });
+        }
+    }
+
     private async publish(
         roundId: string,
         token: string,
         ballId: string,
         holeNumbers: readonly number[],
     ): Promise<void> {
-        const playHoles = await this.client.playHolesByToken(token);
+        const playHoles = await this.itinerary(roundId, token);
         const map = holeIdMap(playHoles);
         const shots = await this.shotsForHoles(roundId, holeNumbers);
         const perHole = computeHoleStrokes(shots, holeNumbers);
@@ -202,16 +283,60 @@ export class TapscoreBridgeService {
                 });
                 continue;
             }
-            const cleared = strokes <= 0;
-            await this.client.postScore({
-                token,
-                ballId,
-                playHoleId,
-                strokes: cleared ? null : strokes,
-                eventType: cleared ? 'score_cleared' : 'score_entered',
-                clientEventId: `golfmap:${roundId}:${holeNumber}`,
-            });
+            await this.publishCell(roundId, token, ballId, holeNumber, playHoleId, strokes);
         }
+    }
+
+    /**
+     * Publish one hole's value with the versioned-id protocol (see the class
+     * doc). Persists the attempt (synced=0) BEFORE the POST so a lost ack still
+     * advances the counter, and confirms (synced=1) only after Tapscore accepts.
+     */
+    private async publishCell(
+        roundId: string,
+        token: string,
+        ballId: string,
+        holeNumber: number,
+        playHoleId: string,
+        strokes: number,
+    ): Promise<void> {
+        const cleared = strokes <= 0;
+        const value: CellValue = {
+            strokes: cleared ? null : strokes,
+            eventType: cleared ? 'score_cleared' : 'score_entered',
+        };
+
+        const row = await this.publishedRow(roundId, holeNumber);
+        const sameValue = row !== undefined
+            && row.strokes === value.strokes
+            && row.event_type === value.eventType;
+
+        // Already confirmed live with this exact value → nothing to do.
+        if (row && row.synced === 1 && sameValue) return;
+
+        // Reuse the id for an unconfirmed re-post of the SAME value (idempotent
+        // retry); bump the version for any value change (or first publish).
+        const version = row ? (sameValue ? row.version : row.version + 1) : 0;
+        const clientEventId = `golfmap:${roundId}:${holeNumber}:${version}`;
+
+        await this.upsertPublished(roundId, holeNumber, version, value, false);
+        await this.client.postScore({
+            token,
+            ballId,
+            playHoleId,
+            strokes: value.strokes,
+            eventType: value.eventType,
+            clientEventId,
+        });
+        await this.markSynced(roundId, holeNumber);
+    }
+
+    private async itinerary(roundId: string, token: string): Promise<TapscorePlayHole[]> {
+        const cached = this.itineraryCache.get(roundId);
+        if (cached) return cached;
+        const holes = await this.client.playHolesByToken(token);
+        this.itineraryCache.set(roundId, holes);
+        return holes;
     }
 
     private async linkRow(
@@ -224,6 +349,52 @@ export class TapscoreBridgeService {
             .executeTakeFirst();
         if (!row) return null;
         return { token: row.tapscore_round_token, ballId: row.ball_id };
+    }
+
+    private async publishedRow(roundId: string, holeNumber: number) {
+        return this.db
+            .selectFrom('tapscore_published_scores')
+            .select(['version', 'strokes', 'event_type', 'synced'])
+            .where('round_id', '=', roundId)
+            .where('hole_number', '=', holeNumber)
+            .executeTakeFirst();
+    }
+
+    private async upsertPublished(
+        roundId: string,
+        holeNumber: number,
+        version: number,
+        value: CellValue,
+        synced: boolean,
+    ): Promise<void> {
+        await this.db
+            .insertInto('tapscore_published_scores')
+            .values({
+                round_id: roundId,
+                hole_number: holeNumber,
+                version,
+                strokes: value.strokes,
+                event_type: value.eventType,
+                synced: synced ? 1 : 0,
+            })
+            .onConflict((oc) =>
+                oc.columns(['round_id', 'hole_number']).doUpdateSet({
+                    version,
+                    strokes: value.strokes,
+                    event_type: value.eventType,
+                    synced: synced ? 1 : 0,
+                }),
+            )
+            .execute();
+    }
+
+    private async markSynced(roundId: string, holeNumber: number): Promise<void> {
+        await this.db
+            .updateTable('tapscore_published_scores')
+            .set({ synced: 1 })
+            .where('round_id', '=', roundId)
+            .where('hole_number', '=', holeNumber)
+            .execute();
     }
 
     private async shotsForHoles(
@@ -270,18 +441,33 @@ export class TapscoreBridgeService {
 }
 
 function resolveBallId(
-    balls: readonly { id: string; label: string | null }[],
+    balls: readonly { id: string; label: string | null; pending: boolean }[],
     requested?: string,
 ): string {
     if (requested !== undefined) {
-        if (!balls.some((b) => b.id === requested)) {
+        const ball = balls.find((b) => b.id === requested);
+        if (!ball) {
             throw new ConflictError(`Ball ${requested} is not part of the Tapscore round`);
+        }
+        // Tapscore refuses to score an unclaimed placeholder seat
+        // (append → ConflictError 'seat_unclaimed'), so linking to one would
+        // silently never sync. Reject it up front.
+        if (ball.pending) {
+            throw new ConflictError(
+                `Ball ${requested} is an unclaimed seat in Tapscore; claim it there before linking`,
+            );
         }
         return requested;
     }
-    if (balls.length === 1) return balls[0].id;
+    const claimable = balls.filter((b) => !b.pending);
+    if (claimable.length === 1) return claimable[0].id;
+    if (claimable.length === 0) {
+        throw new ConflictError(
+            `Every ball in the Tapscore round is an unclaimed seat; claim one before linking`,
+        );
+    }
     throw new ConflictError(
-        `Tapscore round has ${balls.length} balls; specify which ballId to link`,
+        `Tapscore round has ${claimable.length} claimed balls; specify which ballId to link`,
     );
 }
 

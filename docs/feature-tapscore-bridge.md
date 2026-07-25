@@ -31,7 +31,9 @@ Friendly rounds via share token, server-side only:
 
 - **One migration** — `014_tapscore_link.ts` adds two nullable columns to
   `rounds`: `tapscore_round_token` (the share token; null = unlinked) and
-  `ball_id` (which Tapscore ball/scorecard-column the scores land on).
+  `ball_id` (which Tapscore ball/scorecard-column the scores land on). It also
+  creates `tapscore_published_scores` — one row per (round, hole) holding the
+  last-published value and a monotonic `version` (see §3.2).
 - **`services/tapscore-client.ts`** — a hand-written HTTP client (`fetch`, not
   `apiFetch`) against Tapscore's friendly-rounds-by-token endpoints. Base URL
   from `TAPSCORE_BASE_URL` (origin only; the client appends `/api/...`).
@@ -57,9 +59,12 @@ A client links a golf-map round to a Tapscore round with the **share token**
 
 1. `link(roundId, token, ballId?)` fetches the token's balls
    (`GET /api/friendly-rounds/balls`). An unknown token → `NotFoundError` (404).
-2. Ball resolution: an explicit `ballId` must be one of the round's balls (else
-   `ConflictError`); when omitted, a **single-ball** round auto-picks it, and a
-   multi-ball round is rejected as ambiguous (`ConflictError`).
+2. Ball resolution: an explicit `ballId` must be one of the round's **claimed**
+   balls (else `ConflictError`); when omitted, the round's single claimed ball
+   auto-picks, an ambiguous (>1 claimed) round is rejected, and an all-unclaimed
+   round is rejected (`ConflictError`). Unclaimed placeholder *seats* (`pending`)
+   are refused up front because Tapscore's own `append` throws `seat_unclaimed`
+   for them — linking to one would silently never sync.
 3. The token + resolved ball are stored on the round, and current scores are
    pushed immediately (`syncAll`, best-effort) so an in-progress round appears
    in Tapscore right away.
@@ -70,31 +75,50 @@ Tapscore unreachable). This is the one place failure surfaces to the caller.
 ### 3.2 Publishing (the hook)
 
 Every golf-map shot write (`addShot`/`updateShot`/`removeShot`) fires
-`onShotsChanged(roundId, holeNumbers)`. For an unlinked round this is one cheap
-DB read and a return — near-zero cost, which is the common case. For a linked
-round, `syncHoles`:
+`onShotsChanged(roundId, holeNumbers)`. `syncHoles` **coalesces** the changed
+holes into a per-round pending set and returns immediately — the HTTP work runs
+**off the write path** on a later microtask (a per-round drain chain). So a
+shot write never waits on Tapscore, healthy or sick; an unlinked round costs
+one cheap DB read at drain time. The drain:
 
 1. Fetches the round's **itinerary** via `GET /api/friendly-rounds/by-token`
-   (`round.playHoles`) and builds `courseHoleNumber → playHoleId`.
+   (`round.playHoles`) and builds `courseHoleNumber → playHoleId`. The itinerary
+   is **cached per linked round** (invalidated on link/unlink), so a burst of
+   shots is one GET, not N.
 2. Recomputes **gross strokes per changed hole** = shots played on the hole +
    Σ penalty strokes (`computeHoleStrokes`, a pure, unit-tested helper).
-3. POSTs one score event per hole to `POST /api/friendly-rounds/score` with a
-   **deterministic** `client_event_id` = `golfmap:{roundId}:{holeNumber}`, event
+3. POSTs one score event per hole to `POST /api/friendly-rounds/score`, event
    type `score_entered` (or `score_cleared` with `strokes: null` when a hole's
    last shot is removed).
 
+**Why a versioned `client_event_id`.** Tapscore's `append` dedupes on
+`(round_id, client_event_id)` and mutates the scorecard cell **only on a fresh
+insert**. A *fixed* id per hole would therefore freeze the cell at its first
+value — every later shot, penalty, correction, or clear would be dropped. So the
+bridge keeps a monotonic per-cell `version` in `tapscore_published_scores` and
+embeds it: `client_event_id = golfmap:{roundId}:{holeNumber}:{version}`. The
+version **bumps whenever the value changes** (so the change inserts and the cell
+updates) and is **reused for an unconfirmed re-post of the same value** (so a
+retry is a genuine idempotent replay). This is a version counter, *not* a
+value-hash: `A→B→A` yields three distinct versions, so the final `A` lands.
+The attempt is persisted (`synced=0`) **before** the POST and confirmed
+(`synced=1`) only after Tapscore accepts, so a lost ack still advances safely.
+
 `updateShot` that moves a shot between holes publishes **both** the old and new
-hole. Tapscore's idempotency (dedupe on `client_event_id`) plus last-write-wins
-per cell makes re-posts, out-of-order retries, and full re-syncs all safe.
+hole. A re-link stamps every existing published row stale (`event_type=''`) so
+the next drain re-posts under a fresh version to the (possibly new) ball's cell
+without id collision.
 
 ### 3.3 Resilience (load-bearing invariant)
 
-`syncHoles`/`syncAll` **never throw.** A Tapscore that is down, slow, or
-returning errors is caught and logged; the golf-map shot write always succeeds.
-The next shot-sync write re-posts the same deterministic ids, so a missed
-publish self-heals — no queue, no retry table needed for V1. The hook is
-awaited (making it deterministic to test) precisely *because* the bridge is
-guaranteed non-throwing; `RoundsService` also wraps the call defensively.
+`syncHoles` is fire-and-forget (returns `void`); the drain, `syncAll`, and the
+per-request timeout (`AbortSignal.timeout`, 4 s) mean a Tapscore that is down,
+slow, or erroring is caught and logged while the golf-map shot write always
+succeeds. On a failed drain the holes **stay queued** and the next `syncHoles`
+retries them under the same versioned ids (the `synced=0` state makes the replay
+idempotent) — self-healing without a separate retry table. Tests reach the
+otherwise-invisible queue through `settle(roundId?)`, which awaits the outstanding
+drain. `RoundsService` also wraps the hook call defensively.
 
 ### 3.4 Hole mapping — why `by-token`, not the scorecard
 
@@ -111,7 +135,7 @@ played twice), the map takes the first occurrence (lowest ordinal) — see §6.
 
 | File | Role |
 |------|------|
-| `server/db/migrations/014_tapscore_link.ts` | `tapscore_round_token` + `ball_id` on `rounds` |
+| `server/db/migrations/014_tapscore_link.ts` | `tapscore_round_token` + `ball_id` on `rounds`; `tapscore_published_scores` publish-state table |
 | `server/services/tapscore-client.ts` | Hand-written Tapscore HTTP client + typed shapes |
 | `server/services/tapscore-bridge.service.ts` | Link/unlink/status + publish + `computeHoleStrokes` |
 | `server/services/tapscore-bridge.service.test.ts` | Integration test (fake Tapscore Hono server) |
@@ -139,13 +163,20 @@ played twice), the map takes the first occurrence (lowest ordinal) — see §6.
 - **Repeated holes collapse.** A physical hole played twice in one Tapscore
   round maps to its first itinerary occurrence. golf-map's `hole_number` has no
   occurrence dimension in V1, so the second visit is not distinguished.
-- **No per-write coalescing.** A batch iOS sync of N shots produces N
-  by-token GETs + POSTs (idempotent, but chatty). Debounce/coalesce is a future
-  optimization, not correctness.
 - **No back-propagation.** Scores edited in Tapscore do not flow back to
   golf-map. golf-map is the writer; Tapscore is the record.
 - **Deletion is one-way.** Unlinking (or deleting a golf-map round) leaves the
-  already-published Tapscore scores in place.
+  already-published Tapscore scores in place — the bridge never issues a clear on
+  unlink. `tapscore_published_scores` rows for a round are removed only when the
+  round row is deleted (FK `ON DELETE CASCADE`).
+- **Whole-round delete does not clear Tapscore.** `RoundsService.remove` deletes
+  a round's shots in bulk without firing `onShotsChanged`, so its holes are not
+  cleared in Tapscore. Per-shot `removeShot` *does* clear. (Deleting the round
+  is treated like unlinking above: golf-map stops writing, the record stays.)
+- **In-memory queue.** The coalescing pending set + per-round drain chain live in
+  process memory. A crash mid-drain loses the *scheduling*, not the data: the
+  durable `tapscore_published_scores` state (with `synced=0` for anything
+  unconfirmed) means the next shot write re-publishes the affected holes.
 - **VPS deployment.** In the local-builder / VPS-serve split
   (`feature-local-builder-vps-serve.md`), the serve tier is the process that
   owns live rounds, so `TAPSCORE_BASE_URL` must be reachable from **that** tier.
@@ -165,9 +196,14 @@ played twice), the map takes the first occurrence (lowest ordinal) — see §6.
 
 Integration-first (`server/services/tapscore-bridge.service.test.ts`): a real
 migrated DB + a **real in-process Hono fake** of Tapscore's three endpoints
-(no mocking library), exercising link (auto-pick / ambiguous / unknown token /
-unknown ball), publish with deterministic ids, re-sync idempotency (same cell
-id, last-write-wins), a moved shot updating both holes, cell clearing, an
-unlinked round staying silent, and **Tapscore unreachable → shot write still
-succeeds.** Plus focused unit tests for `computeHoleStrokes`. Full server suite:
-490 pass.
+whose `/score` reproduces the true semantics — **dedupe-and-drop** on a repeated
+`client_event_id` and a scorecard cell (keyed by `ball × play-hole`) that moves
+**only on a fresh insert**. Tests cover link (auto-pick / ambiguous / unknown
+token / unknown ball / pending-seat rejection / pending-seat ignored in
+auto-pick), publish with a versioned id, an **incremental-play regression**
+(shot → shot → penalty each advancing the cell through distinct monotonic
+versions, with an unchanged re-sync producing no POST), publish being **off the
+write path** (cell empty until `settle`), a moved shot updating both holes, cell
+clearing, an unlinked round staying silent, and **Tapscore unreachable → shot
+write still succeeds.** Plus focused unit tests for `computeHoleStrokes`. Full
+server suite: 493 pass.

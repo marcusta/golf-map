@@ -24,6 +24,7 @@ export interface Database {
     putt_estimate_samples: PuttEstimateSamplesTable;
     map_build_jobs: MapBuildJobsTable;
     terrain_edits: TerrainEditsTable;
+    tapscore_published_scores: TapscorePublishedScoresTable;
 }
 
 // --- Auth ---
@@ -252,6 +253,20 @@ export interface RoundsTable {
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;
+}
+
+/**
+ * T60 bridge publish state, one row per (round, hole). See migration 014 —
+ * embeds a monotonic `version` in the Tapscore `client_event_id` so per-hole
+ * score changes propagate through Tapscore's insert-once idempotency.
+ */
+export interface TapscorePublishedScoresTable {
+    round_id: string;
+    hole_number: number;
+    version: number;
+    strokes: number | null;
+    event_type: string;
+    synced: number;
 }
 
 export interface ShotsTable {

@@ -10,8 +10,13 @@ import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 // --- Fake Tapscore server (a real in-process Hono app, not a mock) ----------
 //
 // Implements exactly the three friendly-rounds-by-token endpoints the bridge
-// touches, with Tapscore's real idempotency + last-write-wins-per-cell
-// semantics so re-posts and out-of-order retries are observable.
+// touches, with Tapscore's REAL score-event semantics:
+//   * `append` dedupes on `client_event_id` — a repeated id is dropped and
+//     mutates NOTHING (mirrors ScoreEventService returning {inserted:false});
+//   * the scorecard cell — keyed by (ballId, playHoleId) — is (re)written ONLY
+//     on a fresh insert (mirrors the on-INSERT rebuild trigger).
+// So a fixed id would freeze a cell after its first value; the bridge's
+// per-cell versioned id is what actually lets a hole's score change.
 
 interface FakeEvent {
     ballId: string;
@@ -26,17 +31,35 @@ interface FakeRound {
     balls: { id: string; label: string | null; pending: boolean }[];
 }
 
+function cellKey(ballId: string, playHoleId: string): string {
+    return `${ballId}|${playHoleId}`;
+}
+
 class FakeTapscore {
     private server?: ReturnType<typeof Bun.serve>;
     baseUrl = '';
     private rounds = new Map<string, FakeRound>();
-    /** Every POST body received (counts re-posts). */
+    /** clientEventIds already applied (Tapscore's idempotency ledger). */
+    private applied = new Set<string>();
+    /** Every POST body received, including deduped re-posts. */
     posts: FakeEvent[] = [];
-    /** Latest event per clientEventId — Tapscore's cell is last-write-wins. */
-    cells = new Map<string, FakeEvent>();
+    /** Current scorecard cell per (ballId, playHoleId) — mutated only on insert. */
+    private cellMap = new Map<string, FakeEvent>();
 
     addRound(token: string, round: FakeRound): void {
         this.rounds.set(token, round);
+    }
+
+    /** The current cell for a (ball, play hole), or undefined if never scored. */
+    cell(ballId: string, playHoleId: string): FakeEvent | undefined {
+        return this.cellMap.get(cellKey(ballId, playHoleId));
+    }
+
+    /** Number of cells that hold a live (non-cleared) score. */
+    get liveCellCount(): number {
+        let n = 0;
+        for (const ev of this.cellMap.values()) if (ev.strokes !== null) n++;
+        return n;
     }
 
     start(): this {
@@ -62,7 +85,12 @@ class FakeTapscore {
                 clientEventId: body.clientEventId,
             };
             this.posts.push(ev);
-            this.cells.set(body.clientEventId, ev); // last-write-wins
+            // Idempotency: a repeated client_event_id is accepted but changes
+            // nothing (inserted:false). The cell moves only on a fresh insert.
+            if (!this.applied.has(ev.clientEventId)) {
+                this.applied.add(ev.clientEventId);
+                this.cellMap.set(cellKey(ev.ballId, ev.playHoleId), ev);
+            }
             return c.json({ ok: true });
         });
         this.server = Bun.serve({ port: 0, fetch: app.fetch });
@@ -187,9 +215,44 @@ test('link rejects a ballId that is not part of the Tapscore round', async () =>
     );
 });
 
+test('link auto-pick ignores unclaimed (pending) seats and picks the one claimed ball', async () => {
+    const fake = startFake((f) =>
+        f.addRound(TOKEN, {
+            playHoles: singleBallRound().playHoles,
+            balls: [
+                { id: 'ball-1', label: 'Marcus', pending: false },
+                { id: 'ball-2', label: null, pending: true }, // unclaimed seat
+            ],
+        }),
+    );
+    const ctx = await setup(fake.baseUrl);
+    const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
+    const status = await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+    expect(status.ballId).toBe('ball-1');
+});
+
+test('link rejects a pending seat — explicit and when it is the only ball', async () => {
+    const fake = startFake((f) =>
+        f.addRound(TOKEN, {
+            playHoles: singleBallRound().playHoles,
+            balls: [{ id: 'ball-1', label: null, pending: true }],
+        }),
+    );
+    const ctx = await setup(fake.baseUrl);
+    const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
+    // Only ball is an unclaimed seat → nothing claimable to link.
+    await expect(ctx.tapscoreBridgeService.link(round.id, TOKEN)).rejects.toBeInstanceOf(
+        ConflictError,
+    );
+    // Explicitly naming the pending seat is also refused.
+    await expect(ctx.tapscoreBridgeService.link(round.id, TOKEN, 'ball-1')).rejects.toBeInstanceOf(
+        ConflictError,
+    );
+});
+
 // --- Publish through the shot-write hook ------------------------------------
 
-test('adding shots publishes per-hole scores with deterministic client_event_ids', async () => {
+test('adding shots publishes the hole score with a versioned client_event_id', async () => {
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
@@ -203,35 +266,51 @@ test('adding shots publishes per-hole scores with deterministic client_event_ids
         lon: 15.5,
         penaltyStrokes: 1,
     });
+    await ctx.tapscoreBridgeService.settle(round.id);
 
-    const cell = fake.cells.get(`golfmap:${round.id}:1`);
-    expect(cell).toEqual({
-        ballId: 'ball-1',
-        playHoleId: 'ph-1',
-        strokes: 4, // 3 shots + 1 penalty
-        eventType: 'score_entered',
-        clientEventId: `golfmap:${round.id}:1`,
-    });
+    const cell = fake.cell('ball-1', 'ph-1');
+    expect(cell?.strokes).toBe(4); // 3 shots + 1 penalty
+    expect(cell?.eventType).toBe('score_entered');
+    expect(cell?.playHoleId).toBe('ph-1');
+    // The id carries the per-cell version so the value could advance.
+    expect(cell?.clientEventId).toMatch(new RegExp(`^golfmap:${round.id}:1:\\d+$`));
 });
 
-test('re-syncing a hole re-posts the SAME client_event_id (idempotent cell)', async () => {
+test('incremental play advances the cell through monotonic versioned ids', async () => {
     const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
     const ctx = await setup(fake.baseUrl);
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
     await ctx.tapscoreBridgeService.link(round.id, TOKEN);
 
+    // Shot by shot, settling between each — every value change must land.
     await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
+    await ctx.tapscoreBridgeService.settle(round.id);
+    expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(1);
+    const idV0 = fake.cell('ball-1', 'ph-1')!.clientEventId;
+
     await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
+    await ctx.tapscoreBridgeService.settle(round.id);
+    expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(2);
+    const idV1 = fake.cell('ball-1', 'ph-1')!.clientEventId;
 
-    // Two shots → two publishes, both to the SAME cell id, last one wins at 2.
-    expect(fake.posts.filter((p) => p.clientEventId === `golfmap:${round.id}:1`)).toHaveLength(2);
-    expect(fake.cells.size).toBe(1);
-    expect(fake.cells.get(`golfmap:${round.id}:1`)?.strokes).toBe(2);
+    await ctx.roundsService.addShot(round.id, {
+        holeNumber: 1,
+        lat: 58.4,
+        lon: 15.5,
+        penaltyStrokes: 1,
+    });
+    await ctx.tapscoreBridgeService.settle(round.id);
+    expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(4); // 3 shots + 1 penalty
+    const idV2 = fake.cell('ball-1', 'ph-1')!.clientEventId;
 
-    // A manual full re-sync is safe and does not create new cells.
+    // A fixed id would have frozen the cell at 1; the versions must be distinct.
+    expect(new Set([idV0, idV1, idV2]).size).toBe(3);
+
+    // Re-syncing the SAME value is a true no-op: no new POST at all.
+    const before = fake.posts.length;
     await ctx.tapscoreBridgeService.syncAll(round.id);
-    expect(fake.cells.size).toBe(1);
-    expect(fake.cells.get(`golfmap:${round.id}:1`)?.strokes).toBe(2);
+    expect(fake.posts.length).toBe(before);
+    expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(4);
 });
 
 test('moving a shot to another hole updates BOTH holes', async () => {
@@ -242,15 +321,17 @@ test('moving a shot to another hole updates BOTH holes', async () => {
 
     const s1 = await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
     await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
-    expect(fake.cells.get(`golfmap:${round.id}:1`)?.strokes).toBe(2);
+    await ctx.tapscoreBridgeService.settle(round.id);
+    expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(2);
 
     // Move shot s1 from hole 1 to hole 2.
     await ctx.roundsService.updateShot(s1.id, s1.version, { holeNumber: 2 });
+    await ctx.tapscoreBridgeService.settle(round.id);
 
-    expect(fake.cells.get(`golfmap:${round.id}:1`)?.strokes).toBe(1);
-    const holdTwo = fake.cells.get(`golfmap:${round.id}:2`);
-    expect(holdTwo?.strokes).toBe(1);
-    expect(holdTwo?.playHoleId).toBe('ph-2');
+    expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(1);
+    const holeTwo = fake.cell('ball-1', 'ph-2');
+    expect(holeTwo?.strokes).toBe(1);
+    expect(holeTwo?.playHoleId).toBe('ph-2');
 });
 
 test('removing the last shot on a hole clears the Tapscore cell', async () => {
@@ -260,16 +341,28 @@ test('removing the last shot on a hole clears the Tapscore cell', async () => {
     await ctx.tapscoreBridgeService.link(round.id, TOKEN);
 
     const shot = await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
-    expect(fake.cells.get(`golfmap:${round.id}:1`)?.strokes).toBe(1);
+    await ctx.tapscoreBridgeService.settle(round.id);
+    expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(1);
 
     await ctx.roundsService.removeShot(shot.id, shot.version);
-    expect(fake.cells.get(`golfmap:${round.id}:1`)).toEqual({
-        ballId: 'ball-1',
-        playHoleId: 'ph-1',
-        strokes: null,
-        eventType: 'score_cleared',
-        clientEventId: `golfmap:${round.id}:1`,
-    });
+    await ctx.tapscoreBridgeService.settle(round.id);
+    const cleared = fake.cell('ball-1', 'ph-1');
+    expect(cleared?.strokes).toBe(null);
+    expect(cleared?.eventType).toBe('score_cleared');
+});
+
+test('publishing is off the write path — shot write does not wait on the POST', async () => {
+    const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
+    const ctx = await setup(fake.baseUrl);
+    const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
+    await ctx.tapscoreBridgeService.link(round.id, TOKEN);
+
+    // The write returns before the coalesced publish runs…
+    await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
+    expect(fake.cell('ball-1', 'ph-1')).toBeUndefined();
+    // …and lands once we let the queue drain.
+    await ctx.tapscoreBridgeService.settle(round.id);
+    expect(fake.cell('ball-1', 'ph-1')?.strokes).toBe(1);
 });
 
 test('an unlinked round never calls Tapscore', async () => {
@@ -278,6 +371,7 @@ test('an unlinked round never calls Tapscore', async () => {
     const round = await ctx.roundsService.start(TEST_COURSE_ID, TEST_USER_ID);
     // No link.
     await ctx.roundsService.addShot(round.id, { holeNumber: 1, lat: 58.4, lon: 15.5 });
+    await ctx.tapscoreBridgeService.settle(round.id);
     expect(fake.posts).toHaveLength(0);
 });
 
@@ -294,4 +388,6 @@ test('Tapscore being unreachable never breaks the round/shot write', async () =>
     const shot = await ctx.roundsService.addShot(round.id, { holeNumber: 2, lat: 58.4, lon: 15.5 });
     const stored = await ctx.roundsService.get(round.id);
     expect(stored.shots.map((s) => s.id)).toContain(shot.id);
+    // Draining the queue with Tapscore down must not throw either.
+    await ctx.tapscoreBridgeService.settle(round.id);
 });
