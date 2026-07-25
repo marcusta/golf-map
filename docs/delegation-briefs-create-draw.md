@@ -364,8 +364,9 @@ sub-offsets up to `--shadow-length` (default 15 m) so the penumbra band is
 solid; corridor = union of `--corridor-types` (default
 fairway,semi_rough,rough,tee,green); manual mask deliberately NOT clipped to
 the corridor. Rasterization via rasterio transforms only (no GDAL binary).
-Inpainting (golfpipe/inpaint.py, REUSABLE and CLI-free — T55's interactive
-editor cleaning consumes it): `inpaint_tiled(image, mask, inpaint_fn)` runs
+Inpainting (golfpipe/inpaint.py, REUSABLE and CLI-free — the future
+interactive editor-cleaning task consumes it; number it T57+ when briefed,
+T54–T56 are taken by the terrain-edit wave): `inpaint_tiled(image, mask, inpaint_fn)` runs
 any InpaintFn over overlapping crops (512 px / 64 px feathered stitch,
 bounded memory, unmasked pixels byte-identical) + `LamaInpainter`, the
 TorchScript big-lama checkpoint behind a lazy torch import — torch lives in
