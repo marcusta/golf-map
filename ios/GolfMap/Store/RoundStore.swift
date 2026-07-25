@@ -33,6 +33,34 @@ extension AppDatabase {
         }
     }
 
+    /// One round row by local id. The sync engine writes `serverId` straight to
+    /// the row, behind any in-memory copy a screen is holding — anything that
+    /// needs the server identity of a round started in this session re-reads it
+    /// with this (see `RoundModel.adoptSyncedIdentity`).
+    public func round(id: String) async throws -> RoundRecord? {
+        try await dbQueue.read { db in
+            try RoundRecord.filter(Column("id") == id).fetchOne(db)
+        }
+    }
+
+    /// Writes ONLY the Tapscore mirror columns (T65). Deliberately NOT a
+    /// `saveRound`: that upserts the whole row, so a caller holding a snapshot
+    /// taken before the sync engine's `serverId` write would silently roll it
+    /// back. The mirror is also not sync state — this never touches
+    /// `syncState`, so it cannot enqueue a push.
+    public func updateRoundTapscoreLink(
+        roundId: String,
+        token: String?,
+        ballId: String?
+    ) async throws {
+        try await dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE round SET tapscoreToken = ?, tapscoreBallId = ? WHERE id = ?",
+                arguments: [token, ballId, roundId]
+            )
+        }
+    }
+
     /// All finished + active rounds for a course, newest first (scorecard
     /// history — not used by capture itself).
     public func rounds(courseId: String) async throws -> [RoundRecord] {

@@ -35,6 +35,8 @@ public enum TapscoreLinkFailure: Equatable, Sendable {
     /// The session expired.
     case notSignedIn
     /// Anything else (5xx, Tapscore unreachable from the server, decode error).
+    /// The payload is DIAGNOSTIC — it is logged, never shown: raw server text
+    /// or a Swift error dump is noise to a player standing on a tee.
     case other(String)
 
     public var message: String {
@@ -53,9 +55,15 @@ public enum TapscoreLinkFailure: Equatable, Sendable {
             return serverMessage
         case .notSignedIn:
             return "Signed out. Sign in again to link this round."
-        case let .other(detail):
-            return "Couldn't link: \(detail)"
+        case .other:
+            return "Tapscore didn't answer. Try again in a moment — scores keep recording either way."
         }
+    }
+
+    /// Diagnostic text for the log, when there is any.
+    public var diagnostic: String? {
+        if case let .other(detail) = self { return detail }
+        return nil
     }
 
     /// Whether the UI should reveal the explicit ball-ID field.
@@ -117,9 +125,13 @@ final class TapscoreLinkModel {
     /// The active round's SERVER id, or nil while the round is device-only.
     private var serverRoundId: String? { roundModel.round?.serverId }
 
-    /// Recomputes `state` from the local mirror (no I/O) — call after the round
-    /// changes underneath (start/finish/resume).
-    func syncFromLocalRound() {
+    /// Recomputes `state` from the local round, first adopting a `serverId` the
+    /// sync engine may have assigned since the round was started — that write
+    /// lands on the DB row, not on the screen's in-memory snapshot, so without
+    /// this a round started in the current session would read as "not on the
+    /// server" for as long as the screen stays open. No network.
+    func syncFromLocalRound() async {
+        await roundModel.adoptSyncedIdentity()
         state = Self.localState(of: roundModel.round)
     }
 
@@ -138,7 +150,7 @@ final class TapscoreLinkModel {
     /// ask for this, and a mid-course signal drop is not an error worth a
     /// banner. Only the server's *authoritative* answer overwrites the mirror.
     func refresh() async {
-        syncFromLocalRound()
+        await syncFromLocalRound()
         guard let roundId = serverRoundId, !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
@@ -150,6 +162,9 @@ final class TapscoreLinkModel {
     /// Tapscore share URL. `ballId` is only needed after an ambiguous-ball 409.
     func link(rawToken: String, ballId: String? = nil) async {
         failure = nil
+        // The round may have been pushed since the sheet opened; the serverId
+        // that push assigned lives on the DB row (see `adoptSyncedIdentity`).
+        await roundModel.adoptSyncedIdentity()
         guard let round = roundModel.round else {
             state = .noActiveRound
             return
@@ -177,7 +192,7 @@ final class TapscoreLinkModel {
             await apply(link)
             needsBallChoice = false
         } catch {
-            let classified = Self.classify(error)
+            let classified = Self.report(error)
             failure = classified
             if classified.needsBallChoice { needsBallChoice = true }
         }
@@ -198,8 +213,17 @@ final class TapscoreLinkModel {
             await apply(link)
             needsBallChoice = false
         } catch {
-            failure = Self.classify(error)
+            failure = Self.report(error)
         }
+    }
+
+    /// `classify` plus the log line for the diagnostics it deliberately hides.
+    private static func report(_ error: any Error) -> TapscoreLinkFailure {
+        let classified = classify(error)
+        if let diagnostic = classified.diagnostic {
+            print("Tapscore link failed: \(diagnostic)")
+        }
+        return classified
     }
 
     /// Drops a stale ball-choice prompt (e.g. the player typed a new code).
@@ -263,11 +287,15 @@ final class TapscoreLinkModel {
                 // "Tapscore round not found for token" vs "Round <id> not found".
                 return lowered.contains("token") ? .unknownCode : .roundNotOnServer
             case 409:
-                if lowered.contains("ballid") || lowered.contains("claimed balls") {
-                    return .ambiguousBall(serverMessage: text)
-                }
+                // Verbatim wordings live in
+                // server/services/tapscore-bridge.service.ts (resolveBallId);
+                // the unclaimed-seat check runs FIRST so a ball id that happens
+                // to contain "ballid" can't steal the ambiguous branch.
                 if lowered.contains("unclaimed seat") {
                     return .unclaimedSeat(serverMessage: text)
+                }
+                if lowered.contains("ballid") || lowered.contains("claimed balls") {
+                    return .ambiguousBall(serverMessage: text)
                 }
                 return .conflict(serverMessage: text.isEmpty ? "Tapscore refused the link." : text)
             default:

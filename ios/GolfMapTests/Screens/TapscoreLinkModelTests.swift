@@ -6,6 +6,12 @@ import XCTest
 /// ball ambiguity, 409 unclaimed seat, offline), how a pasted share link reduces
 /// to its token, and the local mirror that keeps a linked round reading "linked"
 /// with no signal.
+///
+/// The 404/409 message strings below are VERBATIM from
+/// `server/services/tapscore-bridge.service.ts` (`status`, `resolveBallId`) —
+/// classification refines on their wording, so that file is the source of truth
+/// and a reword there must break these tests rather than silently degrade the
+/// remedy the player is offered.
 @MainActor
 final class TapscoreLinkModelTests: XCTestCase {
 
@@ -160,7 +166,7 @@ final class TapscoreLinkModelTests: XCTestCase {
         let roundModel = try await makeRoundModel(database: database)
         let bridge = FakeBridge()
         bridge.linkResult = .failure(APIError.http(
-            status: 404, message: "No Tapscore round found for that token"
+            status: 404, message: "Tapscore round not found for token"
         ))
         let model = TapscoreLinkModel(roundModel: roundModel, api: bridge)
 
@@ -176,7 +182,7 @@ final class TapscoreLinkModelTests: XCTestCase {
         let roundModel = try await makeRoundModel(database: database)
         let bridge = FakeBridge()
         bridge.linkResult = .failure(APIError.http(
-            status: 409, message: "Round has 3 claimed balls; specify ballId"
+            status: 409, message: "Tapscore round has 3 claimed balls; specify which ballId to link"
         ))
         let model = TapscoreLinkModel(roundModel: roundModel, api: bridge)
 
@@ -202,14 +208,84 @@ final class TapscoreLinkModelTests: XCTestCase {
         let roundModel = try await makeRoundModel(database: database)
         let bridge = FakeBridge()
         bridge.linkResult = .failure(APIError.http(
-            status: 409, message: "Ball ball-2 is an unclaimed seat"
+            status: 409, message: "Ball ball-2 is an unclaimed seat in Tapscore; claim it there before linking"
         ))
         let model = TapscoreLinkModel(roundModel: roundModel, api: bridge)
 
         await model.link(rawToken: "abc123", ballId: "ball-2")
 
-        XCTAssertEqual(model.failure, .unclaimedSeat(serverMessage: "Ball ball-2 is an unclaimed seat"))
+        XCTAssertEqual(model.failure, .unclaimedSeat(serverMessage: "Ball ball-2 is an unclaimed seat in Tapscore; claim it there before linking"))
         XCTAssertFalse(model.needsBallChoice, "naming a ball is not the fix here")
+    }
+
+    func testEveryBallUnclaimedIsAlsoTheSeatMessage() async throws {
+        let database = try AppDatabase.inMemory()
+        let roundModel = try await makeRoundModel(database: database)
+        let bridge = FakeBridge()
+        let message = "Every ball in the Tapscore round is an unclaimed seat; claim one before linking"
+        bridge.linkResult = .failure(APIError.http(status: 409, message: message))
+        let model = TapscoreLinkModel(roundModel: roundModel, api: bridge)
+
+        await model.link(rawToken: "abc123")
+
+        XCTAssertEqual(model.failure, .unclaimedSeat(serverMessage: message))
+    }
+
+    /// F1 regression: a round STARTED in this screen session gets its `serverId`
+    /// from the sync engine, which writes the DB row — not the model's in-memory
+    /// snapshot. Before the fix the sheet stayed "not synced" forever and Link
+    /// short-circuited without ever calling the server.
+    func testRoundSyncedAfterTheSheetOpenedBecomesLinkable() async throws {
+        let database = try AppDatabase.inMemory()
+        let roundModel = RoundModel(courseId: "course-1", holes: holes, database: database)
+        let started = await roundModel.startRound()
+        let bridge = FakeBridge()
+        let model = TapscoreLinkModel(roundModel: roundModel, api: bridge)
+        XCTAssertEqual(model.state, .roundNotSynced)
+
+        // The sync engine pushes the round and stamps the ROW (RoundSync.swift).
+        var pushed = try XCTUnwrap(started)
+        pushed.serverId = "srv-9"
+        pushed.serverVersion = 1
+        pushed.syncState = .synced
+        try await database.saveRound(pushed)
+
+        await model.refresh()
+        XCTAssertEqual(model.state, .unlinked, "the model adopts the row's serverId")
+        XCTAssertEqual(bridge.statusCalls, ["srv-9"])
+
+        bridge.linkResult = .success(TapscoreLink(
+            roundId: "srv-9", linked: true, token: "abc123", ballId: nil
+        ))
+        await model.link(rawToken: "abc123")
+        XCTAssertEqual(bridge.linkCalls.first?.roundId, "srv-9")
+        XCTAssertEqual(model.state, .linked(ballId: nil))
+    }
+
+    /// The mirror write must not roll back a `serverId` the sync engine stamped
+    /// on the row after the in-memory snapshot was taken (targeted UPDATE, not
+    /// a full-row upsert).
+    func testMirrorWriteDoesNotClobberTheRowsSyncFields() async throws {
+        let database = try AppDatabase.inMemory()
+        let roundModel = RoundModel(courseId: "course-1", holes: holes, database: database)
+        let startedRound = await roundModel.startRound()
+        let started = try XCTUnwrap(startedRound)
+
+        var pushed = started
+        pushed.serverId = "srv-9"
+        pushed.serverVersion = 3
+        pushed.syncState = .synced
+        try await database.saveRound(pushed)
+
+        // The model still holds the pre-push snapshot here.
+        await roundModel.setTapscoreLink(token: "abc123", ballId: nil)
+
+        let fetched = try await database.activeRound(courseId: "course-1")
+        let stored = try XCTUnwrap(fetched)
+        XCTAssertEqual(stored.serverId, "srv-9")
+        XCTAssertEqual(stored.serverVersion, 3)
+        XCTAssertEqual(stored.syncState, .synced)
+        XCTAssertEqual(stored.tapscoreToken, "abc123")
     }
 
     func testOfflineLinkAttemptSaysSoAndKeepsTheRoundUnlinked() async throws {
@@ -300,7 +376,7 @@ final class TapscoreLinkModelTests: XCTestCase {
             .notSignedIn
         )
         XCTAssertEqual(
-            TapscoreLinkModel.classify(APIError.http(status: 404, message: "Round r1 not found")),
+            TapscoreLinkModel.classify(APIError.http(status: 404, message: "Round srv-1 not found")),
             .roundNotOnServer
         )
         XCTAssertEqual(
@@ -309,8 +385,8 @@ final class TapscoreLinkModelTests: XCTestCase {
         )
         // An unrecognized 409 wording still surfaces the server's own text.
         XCTAssertEqual(
-            TapscoreLinkModel.classify(APIError.http(status: 409, message: "Ball nope is not in this round")),
-            .conflict(serverMessage: "Ball nope is not in this round")
+            TapscoreLinkModel.classify(APIError.http(status: 409, message: "Ball nope is not part of the Tapscore round")),
+            .conflict(serverMessage: "Ball nope is not part of the Tapscore round")
         )
     }
 

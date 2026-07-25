@@ -146,7 +146,7 @@ struct CourseScreen: View {
             let newModel = OnCourseModel(furniture: furniture)
             let terrain = TerrainElevationService(
                 bundleDirectory: bundleDirectory,
-                zoom: furniture.manifest.terrainMaxZoom
+                zoom: furniture.manifest.terrainQueryZoom
             )
             newModel.elevationSampler = { await terrain.elevation(at: $0) }
             newModel.isLocationDenied = locationProvider.isDenied

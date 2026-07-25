@@ -119,7 +119,7 @@ struct ScorecardSheet: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .task { tapscore?.syncFromLocalRound() }
+        .task { await tapscore?.syncFromLocalRound() }
     }
 
     private var holeHeader: some View {

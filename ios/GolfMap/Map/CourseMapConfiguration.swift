@@ -73,7 +73,9 @@ public struct CourseMapConfiguration: Equatable, Sendable {
     public init(bundleDirectory: URL, manifest: TileManifestRecord, attribution: String? = nil) {
         self.init(
             bundleDirectory: bundleDirectory,
-            orthoMinZoom: manifest.orthoMinZoom,
+            // Guarded (an undeclared min would render as z0); the MAXzoom stays
+            // raw because `OrthoZoomPolicy` applies its own fallback.
+            orthoMinZoom: manifest.orthoStyleMinZoom,
             orthoMaxZoom: manifest.orthoMaxZoom,
             bounds: MapCoordinateBounds(
                 west: manifest.west,

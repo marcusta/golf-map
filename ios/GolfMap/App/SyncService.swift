@@ -222,8 +222,16 @@ struct SyncService: Sendable {
         TileManifestRecord(
             courseId: course.id,
             west: m.bounds.west, south: m.bounds.south, east: m.bounds.east, north: m.bounds.north,
-            orthoMinZoom: m.layers.ortho.minzoom, orthoMaxZoom: m.layers.ortho.maxzoom,
-            terrainMinZoom: m.layers.terrain.minzoom, terrainMaxZoom: m.layers.terrain.maxzoom,
+            // Undeclared bounds (absent/null in the manifest) fall back to the
+            // historical defaults rather than to z0 — the stored record feeds
+            // the style's minzoom and the terrain sampler's query zoom raw.
+            // Ortho MAXzoom is the one exception: it stays as published (0 =
+            // undeclared) because `OrthoZoomPolicy` owns that fallback and must
+            // see whether the server actually capped the layer.
+            orthoMinZoom: m.layers.ortho.minzoom(or: TileManifest.ZoomDefaults.orthoMinZoom),
+            orthoMaxZoom: m.layers.ortho.maxzoom,
+            terrainMinZoom: m.layers.terrain.minzoom(or: TileManifest.ZoomDefaults.terrainMinZoom),
+            terrainMaxZoom: m.layers.terrain.maxzoom(or: TileManifest.ZoomDefaults.terrainMaxZoom),
             elevMin: m.elevation.min, elevMax: m.elevation.max,
             generatedAt: m.generatedAt, versionParam: m.versionParam
         )

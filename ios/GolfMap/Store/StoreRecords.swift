@@ -294,6 +294,22 @@ public struct TileManifestRecord: Codable, Sendable, Equatable, FetchableRecord,
         self.generatedAt = generatedAt
         self.versionParam = versionParam
     }
+
+    /// Fixed zoom the terrain sampler queries tiles at. Guards against a row
+    /// written from a manifest that never declared the bound (0 would sample
+    /// the world tile — see `TileManifest.ZoomRange.undeclared`).
+    public var terrainQueryZoom: Int {
+        terrainMaxZoom > TileManifest.ZoomRange.undeclared
+            ? terrainMaxZoom
+            : TileManifest.ZoomDefaults.terrainMaxZoom
+    }
+
+    /// Shallowest ortho level the style declares, guarded the same way.
+    public var orthoStyleMinZoom: Int {
+        orthoMinZoom > TileManifest.ZoomRange.undeclared
+            ? orthoMinZoom
+            : TileManifest.ZoomDefaults.orthoMinZoom
+    }
 }
 
 /// Everything that goes into GRDB for one course bundle ("furniture" — the

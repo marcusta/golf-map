@@ -272,12 +272,22 @@ public struct TileManifest: Codable, Sendable, Equatable {
         public let north: Double
     }
 
-    /// A layer's native zoom range. Decoded LENIENTLY: a published manifest
-    /// that omits either bound yields `0`, which downstream readers treat as
-    /// "not declared" (see `OrthoZoomPolicy.effectiveMaxZoom`) rather than as a
-    /// real ceiling. Without this a manifest missing one field would fail to
-    /// decode outright and the whole course would report "no tile manifest".
+    /// A layer's native zoom range.
+    ///
+    /// Decoded leniently for ABSENT-OR-NULL bounds ONLY — a present but
+    /// non-numeric value still fails the decode loudly, as before. A missing
+    /// bound becomes `undeclared` (0) instead of failing the whole manifest
+    /// decode, which would make the course report "no tile manifest" and block
+    /// download over one optional field.
+    ///
+    /// `undeclared` is NOT a usable zoom: every reader must substitute its own
+    /// default via `minzoom(or:)` / `maxzoom(or:)` (ortho maxzoom does so
+    /// inside `OrthoZoomPolicy.effectiveMaxZoom`). Passing 0 through raw would
+    /// silently mean "world tile", which is worse than the loud failure.
     public struct ZoomRange: Codable, Sendable, Equatable {
+        /// Sentinel: the manifest did not declare this bound.
+        public static let undeclared = 0
+
         public let minzoom: Int
         public let maxzoom: Int
 
@@ -292,9 +302,30 @@ public struct TileManifest: Codable, Sendable, Equatable {
 
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            minzoom = try container.decodeIfPresent(Int.self, forKey: .minzoom) ?? 0
-            maxzoom = try container.decodeIfPresent(Int.self, forKey: .maxzoom) ?? 0
+            minzoom = try container.decodeIfPresent(Int.self, forKey: .minzoom) ?? Self.undeclared
+            maxzoom = try container.decodeIfPresent(Int.self, forKey: .maxzoom) ?? Self.undeclared
         }
+
+        /// The declared lower bound, or the caller's default when undeclared.
+        public func minzoom(or fallback: Int) -> Int {
+            minzoom > Self.undeclared ? minzoom : fallback
+        }
+
+        /// The declared upper bound, or the caller's default when undeclared.
+        public func maxzoom(or fallback: Int) -> Int {
+            maxzoom > Self.undeclared ? maxzoom : fallback
+        }
+    }
+
+    /// What to assume for a bound the manifest doesn't declare. These are the
+    /// values the app shipped with before manifests carried zoom ranges (see
+    /// the placeholder configuration in `GolfMapApp`), so an incomplete
+    /// manifest degrades to the historical behaviour rather than to z0.
+    public enum ZoomDefaults {
+        public static let orthoMinZoom = 14
+        public static let orthoMaxZoom = 20
+        public static let terrainMinZoom = 12
+        public static let terrainMaxZoom = 17
     }
 
     public struct Layers: Codable, Sendable, Equatable {
