@@ -1,7 +1,7 @@
 import { Component, effect, template, untrack } from '@basics/core/client/core';
 import { MapService } from '../map/map.service';
 import { EditorModeService } from './editor-mode.service';
-import { EDITOR_TOOLS } from './tools/index';
+import { ServerModeService, visibleEditorTools } from '../app/server-mode.service';
 import { drawTool } from '../draw/draw-tool';
 import { HelpModalComponent } from './help-modal.component';
 
@@ -38,6 +38,7 @@ export class EditorToolbarComponent extends Component {
 
     private mapSvc = this.inject(MapService);
     private mode = this.inject(EditorModeService);
+    private serverMode = this.inject(ServerModeService);
 
     private helpHost!: HTMLElement;
 
@@ -57,15 +58,22 @@ export class EditorToolbarComponent extends Component {
         this.spawn(HelpModalComponent, this.helpHost);
 
         // One-time attach hooks (persistent overlays, data loads) — their
-        // disposers live until this canvas unmounts.
-        for (const tool of EDITOR_TOOLS) {
+        // disposers live until this canvas unmounts. Serve mode attaches only
+        // the tools it offers: a builder tool's `attach` loads from APIs that
+        // are unmounted there (terrain edits, ortho patches, SAM models).
+        const tools = visibleEditorTools(this.serverMode.mode.peek());
+        for (const tool of tools) {
             tool.attach?.(this.mode.makeContext(d => this.track(d)));
         }
 
         // Auto-activate Draw on entering the builder so the command bar's
         // sub-mode dropdown never shows an empty sub-mode. Only when nothing
-        // is armed yet — a re-mount that inherited a live claim keeps it.
-        if (!this.mode.activeToolId.peek()) this.mode.activate(drawTool);
+        // is armed yet — a re-mount that inherited a live claim keeps it. In
+        // serve mode Draw is gone, so the first offered tool takes its place.
+        if (!this.mode.activeToolId.peek()) {
+            const initial = tools.includes(drawTool) ? drawTool : tools[0];
+            if (initial) this.mode.activate(initial);
+        }
 
         // Deactivate when displaced: another claimant took the interaction
         // mode (contract in map/interaction.ts).

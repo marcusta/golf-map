@@ -41,6 +41,7 @@ export const furnitureTool: EditorTool = {
     label: 'Furniture',
     icon: 'flag',
     order: 20,
+    builderOnly: true,
     panel: FurniturePanelComponent,
     help: HELP,
     attach: ctx => di.get(FurnitureToolService).attach(ctx),

@@ -4,6 +4,7 @@ import { s, btn, primaryBtn, input, statusTag } from '../css';
 import { icon } from '../ui/icons';
 import { PopoverComponent } from '../ui/popover.component';
 import { CoursesService, type SortBy, type GroupBy } from './courses.service';
+import { ServerModeService, canAuthorCourses } from '../app/server-mode.service';
 import type { CourseSummary } from '../../../shared/api/courses.gen';
 import { renderCourseThumb, type RoutingHole } from './course-thumb';
 import { timeAgo, formatLength, formatPar, mappedPct, mappedLabel, pctLabel } from './course-format';
@@ -376,6 +377,7 @@ export class CourseListComponent extends Component {
 
     private svc = this.inject(CoursesService);
     private router = this.inject(Router);
+    private serverMode = this.inject(ServerModeService);
     private selectedId = new Signal<string | null>(this.readSelected());
 
     render(): DocumentFragment {
@@ -388,7 +390,12 @@ export class CourseListComponent extends Component {
             error: { className: () => this.svc.error.get() ? 'error show' : 'error' },
             errorText: () => this.svc.error.get()?.message ?? '',
             retry: { onclick: () => this.svc.load() },
-            newCourse: { onclick: () => this.router.navigate('/new') },
+            // Creating a course means running the map-build wizard, which only
+            // exists on a builder box — the button is absent in serve mode.
+            newCourse: {
+                onclick: () => this.router.navigate('/new'),
+                style: () => (canAuthorCourses(this.serverMode.mode.get()) ? '' : 'display:none'),
+            },
             search: {
                 oninput: (e: Event) => this.svc.query.set((e.target as HTMLInputElement).value),
             },

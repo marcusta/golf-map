@@ -32,6 +32,7 @@ export const terrainEditTool: EditorTool = {
     label: 'Terrain edit',
     icon: 'mountain',
     order: 60,
+    builderOnly: true,
     panel: TerrainEditPanelComponent,
     help: HELP,
     activate: ctx => di.get(TerrainEditToolService).activate(ctx, renderer),

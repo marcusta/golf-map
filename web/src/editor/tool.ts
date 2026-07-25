@@ -106,6 +106,12 @@ export interface EditorTool {
     icon: IconName;
     /** Toolbar sort order (draw=10, furniture=20, measure=30, analysis=40). */
     order: number;
+    /**
+     * Tool edits the map or needs a builder-only API (SAM models, ortho
+     * patching, terrain edits, the pipeline). Hidden in serve mode — see
+     * app/server-mode.service.ts `visibleEditorTools`.
+     */
+    builderOnly?: boolean;
     /** Optional side-panel component shown while active (see header doc). */
     panel?: new () => Component;
     /** Optional contextual-help sections shown by `?` (see header doc). */
