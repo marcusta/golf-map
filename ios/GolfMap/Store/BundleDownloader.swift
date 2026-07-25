@@ -121,10 +121,11 @@ public struct BundleDownloadHandle: Sendable {
 /// only after the files land, so `bundleState == .complete` implies a usable
 /// bundle on disk.
 public actor BundleDownloader {
-    /// Offline ortho cap: the archive requests `maxzoom=19` and the map style
-    /// overzooms z19 tiles past this at deeper view zooms. Deeper native ortho
-    /// levels balloon the bundle for little on-course benefit.
-    public static let orthoBundleMaxZoom = 19
+    /// The device's own offline ortho ceiling. The archive request is capped at
+    /// the LOWER of this and the manifest's published ortho maxzoom — see
+    /// `OrthoZoomPolicy`, which owns the decision for both the archive and the
+    /// map style.
+    public static let orthoBundleMaxZoom = OrthoZoomPolicy.deviceMaxZoom
 
     private static let streamBufferSize = 256 * 1024
 
@@ -208,8 +209,11 @@ public actor BundleDownloader {
                 let session = self.session
                 let baseURL = request.tileBaseURL
                 let bundlePaths = self.paths
+                // Never ask for ortho levels the server doesn't publish: a
+                // capped VPS (deploy split §9) rewrites the manifest's ortho
+                // maxzoom, and the archive request must respect it.
                 let layerSpecs: [(layer: TileLayer, maxzoom: Int?)] = [
-                    (.ortho, Self.orthoBundleMaxZoom),
+                    (.ortho, OrthoZoomPolicy.effectiveMaxZoom(publishedMaxZoom: manifest.orthoMaxZoom)),
                     (.terrain, nil),
                 ]
                 try await withThrowingTaskGroup(of: Int.self) { group in

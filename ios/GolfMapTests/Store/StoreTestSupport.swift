@@ -5,15 +5,18 @@ import XCTest
 // MARK: - Fixtures
 
 enum StoreFixtures {
-    /// A small two-hole course. Manifest bounds (0,0)-(10,10) with ortho z1-2
-    /// and terrain z1 yield exactly 6 tiles:
-    ///   ortho  z1: (1,0) (1,1)   z2: (2,1) (2,2)
-    ///   terrain z1: (1,0) (1,1)
+    /// A small two-hole course with manifest bounds (0,0)-(10,10). Tile
+    /// contents come from the mock archive the test scripts, not from the
+    /// manifest's zoom range.
+    /// `orthoMaxZoom` defaults to 20 — what an UNCAPPED builder publishes, so
+    /// the archive request lands on the device ceiling (19). Pass a lower value
+    /// to simulate a capped VPS manifest (deploy split §9).
     static func furniture(
         courseId: String = "course-1",
         siteId: String? = nil,
         revision: Int = 3,
-        versionParam: String = "ver1"
+        versionParam: String = "ver1",
+        orthoMaxZoom: Int = 20
     ) -> CourseFurniture {
         let course = CourseRecord(
             id: courseId,
@@ -63,7 +66,7 @@ enum StoreFixtures {
         let manifest = TileManifestRecord(
             courseId: courseId,
             west: 0.0, south: 0.0, east: 10.0, north: 10.0,
-            orthoMinZoom: 1, orthoMaxZoom: 2,
+            orthoMinZoom: 1, orthoMaxZoom: orthoMaxZoom,
             terrainMinZoom: 1, terrainMaxZoom: 1,
             elevMin: 12.5, elevMax: 87.0,
             generatedAt: "2026-06-30T08:00:00Z",

@@ -308,11 +308,14 @@ public enum MapStyleBuilder {
             configuration.bounds.east,
             configuration.bounds.north,
         ]
-        // Cap the raster source's maxzoom at the offline ortho ceiling so
-        // MapLibre overzooms z19 tiles at deeper view zooms (source maxzoom is
-        // the highest level with real tiles). Bundles built before the cap
-        // still declare a higher manifest maxzoom — clamp it here too.
-        let orthoSourceMaxZoom = min(configuration.orthoMaxZoom, BundleDownloader.orthoBundleMaxZoom)
+        // The raster source's maxzoom is the deepest level with REAL tiles;
+        // MapLibre overzooms past it rather than requesting deeper tiles. Take
+        // the manifest's published ortho cap (a capped VPS has nothing above
+        // it — deploy split §9) and the device's own ceiling, whichever is
+        // lower; a manifest that declares neither falls back to the ceiling.
+        let orthoSourceMaxZoom = OrthoZoomPolicy.effectiveMaxZoom(
+            publishedMaxZoom: configuration.orthoMaxZoom
+        )
         var orthoSource: [String: Any] = [
             "type": "raster",
             "tiles": [orthoTileURLTemplate(

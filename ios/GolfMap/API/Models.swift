@@ -272,9 +272,29 @@ public struct TileManifest: Codable, Sendable, Equatable {
         public let north: Double
     }
 
+    /// A layer's native zoom range. Decoded LENIENTLY: a published manifest
+    /// that omits either bound yields `0`, which downstream readers treat as
+    /// "not declared" (see `OrthoZoomPolicy.effectiveMaxZoom`) rather than as a
+    /// real ceiling. Without this a manifest missing one field would fail to
+    /// decode outright and the whole course would report "no tile manifest".
     public struct ZoomRange: Codable, Sendable, Equatable {
         public let minzoom: Int
         public let maxzoom: Int
+
+        public init(minzoom: Int, maxzoom: Int) {
+            self.minzoom = minzoom
+            self.maxzoom = maxzoom
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case minzoom, maxzoom
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            minzoom = try container.decodeIfPresent(Int.self, forKey: .minzoom) ?? 0
+            maxzoom = try container.decodeIfPresent(Int.self, forKey: .maxzoom) ?? 0
+        }
     }
 
     public struct Layers: Codable, Sendable, Equatable {
