@@ -246,6 +246,9 @@ export interface RoundsTable {
     wind_speed_mps: number | null;
     wind_direction_deg: number | null;
     stimp_ft: number | null;
+    // T60 Tapscore bridge: optional link to a Tapscore friendly round.
+    tapscore_round_token: string | null;
+    ball_id: string | null;
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

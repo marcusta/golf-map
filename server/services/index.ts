@@ -22,14 +22,23 @@ import { OrthoPatchesService } from './ortho-patches.service';
 import { HydroService } from './hydro.service';
 import { OsmService } from './osm.service';
 import { TerrainEditsService } from './terrain-edits.service';
+import { TapscoreBridgeService } from './tapscore-bridge.service';
+import { HttpTapscoreClient } from './tapscore-client';
 
 export interface ServicesConfig {
     /** Root directory for course assets/tiles on disk. Defaults to DATA_DIR env var, then './data'. */
     dataDir?: string;
+    /**
+     * Origin of the Tapscore server the scoring bridge (T60) publishes to,
+     * e.g. `http://localhost:3001`. Defaults to the TAPSCORE_BASE_URL env var,
+     * then empty (bridge stays inert — unlinked rounds never call out).
+     */
+    tapscoreBaseUrl?: string;
 }
 
 export function createServices(db: Kysely<Database>, config: ServicesConfig = {}) {
     const dataDir = config.dataDir ?? process.env.DATA_DIR ?? './data';
+    const tapscoreBaseUrl = config.tapscoreBaseUrl ?? process.env.TAPSCORE_BASE_URL ?? '';
 
     const metaService = new MetaService();
     const userService = new UserService(db);
@@ -43,7 +52,12 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const courseFeaturesService = new CourseFeaturesService(db);
     const clubsService = new ClubsService(db);
     const gamePlansService = new GamePlansService(db);
-    const roundsService = new RoundsService(db);
+    // The bridge is constructed before RoundsService so it can subscribe to the
+    // shot-change hook; it depends only on db + the Tapscore client (no cycle).
+    const tapscoreBridgeService = new TapscoreBridgeService(db, new HttpTapscoreClient(tapscoreBaseUrl));
+    const roundsService = new RoundsService(db, (roundId, holeNumbers) =>
+        tapscoreBridgeService.syncHoles(roundId, holeNumbers),
+    );
     const assetsService = new AssetsService(db, dataDir);
     const analysisService = new AnalysisService(db, dataDir);
     const greenCalibrationService = new GreenCalibrationService(db, analysisService);
@@ -78,5 +92,6 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         hydroService,
         osmService,
         terrainEditsService,
+        tapscoreBridgeService,
     };
 }

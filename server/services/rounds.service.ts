@@ -118,8 +118,29 @@ function toShot(row: ShotRow): Shot {
     };
 }
 
+/**
+ * Fired after every shot write lands, with the round and the hole(s) whose
+ * strokes may have changed. The Tapscore bridge subscribes to this to publish
+ * per-hole scores (T60). Awaited but contractually non-throwing — a
+ * misbehaving hook must never break a shot write.
+ */
+export type ShotsChangedHook = (roundId: string, holeNumbers: number[]) => void | Promise<void>;
+
 export class RoundsService {
-    constructor(private db: Kysely<Database>) {}
+    constructor(
+        private db: Kysely<Database>,
+        private onShotsChanged?: ShotsChangedHook,
+    ) {}
+
+    private async notifyShotsChanged(roundId: string, holeNumbers: number[]): Promise<void> {
+        if (!this.onShotsChanged) return;
+        try {
+            await this.onShotsChanged(roundId, holeNumbers);
+        } catch {
+            // Defence in depth — the hook (the Tapscore bridge) already swallows
+            // its own failures, but a shot write must succeed regardless.
+        }
+    }
 
     // --- Queries (read) ---
 
@@ -315,6 +336,7 @@ export class RoundsService {
         };
         await this.insertShot(values).execute();
         const row = await this.shotById(id).executeTakeFirstOrThrow();
+        await this.notifyShotsChanged(roundId, [values.hole_number]);
         return toShot(row);
     }
 
@@ -356,6 +378,11 @@ export class RoundsService {
         }).execute();
 
         const updated = await this.shotById(id).executeTakeFirstOrThrow();
+        // A hole change touches both the old and the new hole's per-hole score.
+        const holes = updated.hole_number === row.hole_number
+            ? [row.hole_number]
+            : [row.hole_number, updated.hole_number];
+        await this.notifyShotsChanged(row.round_id, holes);
         return toShot(updated);
     }
 
@@ -364,5 +391,6 @@ export class RoundsService {
         if (!row) throw new NotFoundError(`Shot ${id} not found`);
         if (row.version !== version) throw new VersionConflictError('shots', id);
         await this.deleteShotById(id).execute();
+        await this.notifyShotsChanged(row.round_id, [row.hole_number]);
     }
 }
