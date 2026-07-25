@@ -183,6 +183,35 @@ describe('ingest (serve-mode publish apply)', () => {
         expect(pins.map((p) => p.id)).toEqual(['user-pin']);
     });
 
+    test('recovers from a crashed swap: orphaned staging/trash cleared, live rebuilt with no prior live dir', async () => {
+        const builderDb = await freshDb();
+        const builderData = tmp('builder');
+        await seedBuilder(builderDb, builderData);
+        const bundlePath = await makeBundle(builderDb, builderData);
+
+        const vpsDb = await freshDb();
+        const vpsData = tmp('vps');
+        const tilesRoot = path.join(vpsData, 'tiles');
+        // Simulate a crash mid-swap: the live dir is ABSENT (moved to trash then
+        // the process died), leaving an orphaned trash copy + a staging copy.
+        const orphanStaging = path.join(tilesRoot, `.staging-${SITE_ID}-old`);
+        const orphanTrash = path.join(tilesRoot, `${SITE_ID}.trash-old`);
+        mkdirSync(orphanStaging, { recursive: true });
+        mkdirSync(orphanTrash, { recursive: true });
+        writeFileSync(path.join(orphanStaging, 'stale.jpg'), 'x');
+        writeFileSync(path.join(orphanTrash, 'stale.jpg'), 'x');
+        expect(existsSync(path.join(tilesRoot, SITE_ID))).toBe(false); // no live dir
+
+        const report = await new IngestService({ db: vpsDb, dataDir: vpsData }).ingestArchive(bundlePath);
+
+        // Live tiles rebuilt from the fresh bundle.
+        expect(report.tilesInstalled).toBe(4);
+        expect(existsSync(path.join(tilesRoot, SITE_ID, 'ortho/14/1/1.jpg'))).toBe(true);
+        // Orphaned scratch dirs swept.
+        expect(existsSync(orphanStaging)).toBe(false);
+        expect(existsSync(orphanTrash)).toBe(false);
+    });
+
     test('deleting a course that has user rounds is blocked with a 409 report', async () => {
         // Builder publishes site-1 with course-1 only.
         const builderDb = await freshDb();

@@ -326,12 +326,18 @@ export class IngestService {
         const tilesRoot = path.join(this.dataDir, 'tiles');
         mkdirSync(tilesRoot, { recursive: true });
 
+        // Sweep leftovers from a crashed prior swap for this site before starting
+        // a new one, so they never leak disk or collide with the fresh stamp.
+        this.cleanupTileLeftovers(tilesRoot, siteId);
+
         const live = path.join(tilesRoot, siteId);
         const stamp = `${Date.now()}-${process.pid}`;
         const staging = path.join(tilesRoot, `.staging-${siteId}-${stamp}`);
         const trash = `${live}.trash-${stamp}`;
 
         // Move the extracted tree onto the tiles filesystem, then swap into place.
+        // The swap tolerates a missing `live` dir (a crash mid-swap can leave it
+        // absent) — it simply skips the trash step and installs the fresh tree.
         renameSync(bundleTiles, staging);
         let hadTrash = false;
         if (existsSync(live) || this.isSymlink(live)) {
@@ -355,6 +361,24 @@ export class IngestService {
 
         const { count, bytes } = this.measureTiles(live);
         return { count, bytes, symlinks };
+    }
+
+    /**
+     * Removes this site's orphaned swap scratch dirs — `.staging-<site>-*` and
+     * `<site>.trash-*` — left behind by an ingest that crashed mid-swap. Runs
+     * before each swap so a crashed publish can't leak disk or leave a stale
+     * copy lying around; a live dir absent (crash after moving it to trash) is
+     * fine, the swap recreates it from the fresh bundle.
+     */
+    private cleanupTileLeftovers(tilesRoot: string, siteId: string): void {
+        if (!existsSync(tilesRoot)) return;
+        const stagingPrefix = `.staging-${siteId}-`;
+        const trashPrefix = `${siteId}.trash-`;
+        for (const name of readdirSync(tilesRoot)) {
+            if (name.startsWith(stagingPrefix) || name.startsWith(trashPrefix)) {
+                rmSync(path.join(tilesRoot, name), { recursive: true, force: true });
+            }
+        }
     }
 
     /** True if `p` exists as a path entry (including a dangling symlink, which
