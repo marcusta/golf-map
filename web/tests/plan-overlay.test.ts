@@ -1,8 +1,10 @@
 import { test, expect, describe } from 'bun:test';
 import {
     autoGatesForPlan,
+    branchChainLegs,
     buildHolePlan,
     buildOptionChips,
+    chainScoreContext,
     buildPlanGeojson,
     enrichLegStrategy,
     enrichPlanStrategy,
@@ -18,6 +20,7 @@ import {
     planarBearingDeg,
     planLayers,
     scoreRiskTriple,
+    shotDepthInPlan,
     type HolePlan,
     type HolePlanInput,
     type LegStrategyContext,
@@ -1002,5 +1005,88 @@ describe('compute cadence', () => {
         const nextFrame = buildHolePlan(northInput());
         expect(nextFrame).not.toBe(live);
         expect(overlayPlan(nextFrame, enriched).legs[0].expectedStrokes).toBeUndefined();
+    });
+});
+
+// ── Chain helpers shared by the EV chips and the simulator (T62) ────────────
+
+/**
+ * `branchChainLegs` / `chainScoreContext` are the ONE definition of "the chain
+ * an option is priced on" and "the context it is priced in": `buildOptionChips`
+ * calls them, and so does the hole simulator. If they drift, an EV chip and the
+ * distribution behind it silently describe different geometry — so they get
+ * direct tests, not just the coverage they inherit from the chips.
+ */
+describe('branchChainLegs / chainScoreContext', () => {
+    const fairway = rectFeature('fw1', 'fairway', BASE.x - 200, BASE.x + 200, BASE.y - 50, BASE.y + 400);
+    const greenCenter = { x: BASE.x, y: BASE.y + 350 };
+
+    test('null start walks the PRIMARY line from the tee, rank-0 all the way down', () => {
+        // tee → s1 (200 N, Driver) → s2 (300 N, 7 iron); the green is not a shot.
+        const s2 = shot('s2', at(300), { parentShotId: 's1', clubId: IRON7.id, sortOrder: 0 });
+        const plan = buildHolePlan(northInput({
+            shots: [shot('s1', at(200), { clubId: DRIVER.id, elevation: 5 }), s2],
+        }));
+        const legs = branchChainLegs(plan, null)!;
+        expect(legs).toHaveLength(2);
+        // The first leg starts AT THE TEE — what makes a root branch a tee shot.
+        const tee = plan.nodes.find(n => n.kind === 'tee')!;
+        expect(legs[0].origin.x).toBeCloseTo(tee.x, 6);
+        expect(legs[0].origin.y).toBeCloseTo(tee.y, 6);
+        expect(legs[0].club?.name).toBe('Driver');
+        expect(legs[1].origin).toEqual(legs[0].landing); // contiguous chain
+        expect(legs[1].club?.name).toBe(IRON7.name);
+    });
+
+    test('a shot id walks that option, then its rank-0 continuations', () => {
+        const driver = shot('driver', at(200, -15), { clubId: DRIVER.id, sortOrder: 0 });
+        const wedge = shot('wedge', at(320, -5), { parentShotId: driver.id, clubId: IRON7.id, sortOrder: 0 });
+        const iron = shot('iron', at(160, 20), { clubId: IRON7.id, sortOrder: 1 });
+        const plan = buildHolePlan(northInput({ shots: [driver, wedge, iron] }));
+
+        const driverBranch = branchChainLegs(plan, driver.id)!;
+        expect(driverBranch).toHaveLength(2); // the driver leg + its wedge continuation
+        const wedgeNode = plan.allNodes.find(n => n.shot?.id === wedge.id)!;
+        expect(driverBranch[1].landing).toEqual({ x: wedgeNode.x, y: wedgeNode.y });
+
+        // The sibling option has no continuation of its own — one leg only.
+        expect(branchChainLegs(plan, iron.id)).toHaveLength(1);
+        // An unknown shot is "nothing to price", not an empty chain.
+        expect(branchChainLegs(plan, 'nope')).toBeNull();
+    });
+
+    test('the chips and the simulator get the SAME legs for the same branch', () => {
+        const driver = shot('driver', at(200, -15), { clubId: DRIVER.id, sortOrder: 0 });
+        const iron = shot('iron', at(160, 20), { clubId: IRON7.id, sortOrder: 1 });
+        const legCtx: LegStrategyContext = { lieMap: buildLieMap([fairway]), greenCenter, wind: null };
+        const plan = enrichPlanStrategy(buildHolePlan(northInput({ shots: [driver, iron] })), legCtx);
+
+        const driverChip = buildOptionChips(plan, legCtx).find(chip => chip.shotId === driver.id)!;
+        // Pricing the helper's own chain reproduces the chip's number exactly.
+        const score = scoreOptionChain(branchChainLegs(plan, driver.id)!, chainScoreContext(legCtx));
+        expect(driverChip.probableScore).toBe(score.expectedStrokes);
+        expect(driverChip.penaltyProb).toBe(score.penaltyProb);
+    });
+
+    test('chainScoreContext flattens the lie map and includes wind only when it blows', () => {
+        const lieMap = buildLieMap([fairway]);
+        const calm = chainScoreContext({ lieMap, greenCenter, wind: null });
+        expect(calm.greenCenter).toEqual(greenCenter);
+        expect(calm.surfaces).toEqual(lieMap.surfaces());
+        expect('wind' in calm).toBe(false); // absent, not null — the engine reads presence
+
+        const windy = chainScoreContext({
+            lieMap, greenCenter, wind: { speedMps: 6, directionDeg: 270 },
+        });
+        expect(windy.wind).toEqual({ speedMps: 6, directionDeg: 270 });
+    });
+
+    test('shotDepthInPlan counts the strokes behind a branch (0 for a root option)', () => {
+        const driver = shot('driver', at(200, -15), { clubId: DRIVER.id, sortOrder: 0 });
+        const wedge = shot('wedge', at(320, -5), { parentShotId: driver.id, clubId: IRON7.id, sortOrder: 0 });
+        const plan = buildHolePlan(northInput({ shots: [driver, wedge] }));
+        expect(shotDepthInPlan(plan, driver.id)).toBe(0);
+        expect(shotDepthInPlan(plan, wedge.id)).toBe(1);
+        expect(shotDepthInPlan(plan, 'nope')).toBe(0);
     });
 });

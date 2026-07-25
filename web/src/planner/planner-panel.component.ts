@@ -1,4 +1,4 @@
-import { Component, Signal, Computed, effect, template } from '@basics/core/client/core';
+import { Component, Signal, Computed, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, field, panelTitle, metric, selectedRow, primaryBtn } from '../css';
 import { clubAdvice, mpsToMph, type BreakSide } from '../../../shared/strategy';
@@ -942,7 +942,14 @@ export class PlannerPanelComponent extends Component {
         // Ghost branches: hovering a row previews its corridor on the map,
         // accept materialises it as ordinary shots, dismiss just forgets it.
         const variantList = this.ref(frag, 'variantList');
-        this.track(effect(() => { variantList.innerHTML = this.variantsHtml(); }));
+        this.track(effect(() => {
+            const html = this.variantsHtml();
+            variantList.innerHTML = html;
+            // The rows the pointer was over no longer exist — mouseleave will
+            // never fire for them, so the corridor preview would stick on the
+            // map after an accept/dismiss/hole switch. Drop it with them.
+            if (html === '') untrack(() => this.tool.hoverVariant(null));
+        }));
         const variantId = (event: Event): string | null =>
             (event.target as HTMLElement).closest<HTMLElement>('[data-variant]')?.dataset.variant ?? null;
         const onVariantClick = (event: Event): void => {
@@ -953,14 +960,35 @@ export class PlannerPanelComponent extends Component {
             else this.tool.dismissVariant(id);
         };
         const onVariantOver = (event: Event): void => this.tool.hoverVariant(variantId(event));
-        const onVariantOut = (): void => this.tool.hoverVariant(null);
+        const onVariantOut = (event: Event): void => {
+            // mouseout fires per row (including row → row); only clear when the
+            // pointer actually left the list. mouseleave alone misses the case
+            // where the hovered row is removed from under the cursor.
+            const to = (event as MouseEvent).relatedTarget;
+            if (to instanceof Node && variantList.contains(to)) return;
+            this.tool.hoverVariant(null);
+        };
+        const onVariantBlur = (event: Event): void => {
+            // Keyboard parity: tabbing off the accept/dismiss buttons clears the
+            // preview the same way moving the pointer away does.
+            const to = (event as FocusEvent).relatedTarget;
+            if (to instanceof Node && variantList.contains(to)) return;
+            this.tool.hoverVariant(null);
+        };
+        const onVariantFocus = (event: Event): void => this.tool.hoverVariant(variantId(event));
         variantList.addEventListener('click', onVariantClick);
         variantList.addEventListener('mouseover', onVariantOver);
+        variantList.addEventListener('mouseout', onVariantOut);
         variantList.addEventListener('mouseleave', onVariantOut);
+        variantList.addEventListener('focusin', onVariantFocus);
+        variantList.addEventListener('focusout', onVariantBlur);
         this.track(() => {
             variantList.removeEventListener('click', onVariantClick);
             variantList.removeEventListener('mouseover', onVariantOver);
+            variantList.removeEventListener('mouseout', onVariantOut);
             variantList.removeEventListener('mouseleave', onVariantOut);
+            variantList.removeEventListener('focusin', onVariantFocus);
+            variantList.removeEventListener('focusout', onVariantBlur);
         });
 
         // Elevation profile along the hole route (tee → shots → green) — the
@@ -1640,12 +1668,17 @@ export class PlannerPanelComponent extends Component {
      */
     private simHtml(): string {
         const sim = this.tool.sim;
-        const error = sim.error.get();
-        if (error) return `<div class="sim-note error" data-testid="planner-sim-error">${escapeHtml(error)}</div>`;
+        // A failed run is reported ABOVE the results, never INSTEAD of them: the
+        // last good distribution is still the best information on screen, and
+        // blanking it would punish the user for a transient worker failure.
+        const error = sim.simError.get();
+        const errorNote = error
+            ? `<div class="sim-note error" data-testid="planner-sim-error">${escapeHtml(error)}</div>`
+            : '';
         const branches = sim.branches.get();
         if (branches.length === 0) {
-            return '<div class="sim-note">No distribution yet — hit Simulate, or select an option at a '
-                + 'decision point.</div>';
+            return errorNote || '<div class="sim-note">No distribution yet — hit Simulate, or select an '
+                + 'option at a decision point.</div>';
         }
         const stale = sim.stale.get();
         const staleNote = stale
@@ -1665,7 +1698,7 @@ export class PlannerPanelComponent extends Component {
                 + `<div class="sim-card__survives" data-testid="planner-sim-survives">`
                 + `${escapeHtml(onScriptLabel(branch.onScriptRate))}</div>${rows}</div>`;
         }).join('');
-        return staleNote + cards;
+        return errorNote + staleNote + cards;
     }
 
     /**

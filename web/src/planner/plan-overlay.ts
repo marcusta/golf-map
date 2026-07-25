@@ -595,43 +595,21 @@ export function buildOptionChips(plan: HolePlan, ctx: LegStrategyContext): Optio
             .filter(leg => leg.to.kind === 'shot' && leg.to.shot !== undefined)
             .map(leg => [leg.to.shot!.id, leg]));
     const children = orderedChildren(shots);
-
-    const chainLegFor = (shot: PlanShot): ChainLeg | null => {
-        const leg = legByShotId.get(shot.id);
-        if (!leg) return null;
-        const groundSlope = leg.playsLikeM !== undefined && leg.horizontalM > 0
-            ? (leg.playsLikeM - leg.horizontalM) / leg.horizontalM
-            : 0;
-        return {
-            origin: { x: leg.from.x, y: leg.from.y },
-            landing: { x: leg.to.x, y: leg.to.y },
-            club: leg.club,
-            groundSlope,
-        };
-    };
+    // ONE definition of "the chain an option is priced on" and "the context it
+    // is priced in" — the simulator calls the same two helpers, so an EV chip
+    // and its distribution can never be computed over different geometry.
+    const chainCtx = chainScoreContext(ctx);
 
     const chips: OptionChip[] = [];
     for (const siblings of children.values()) {
         if (siblings.length < 2) continue; // not a decision point
         siblings.forEach((shot, rank) => {
             // The option's planned line: this shot, then rank-0 descendants.
-            const legs: ChainLeg[] = [];
-            let current: PlanShot | undefined = shot;
-            while (current) {
-                const leg = chainLegFor(current);
-                if (!leg) return; // no origin resolved (e.g. missing tee) — no chip
-                legs.push(leg);
-                current = children.get(current.id)?.[0];
-            }
+            const legs = branchChainLegs(plan, shot.id);
+            if (!legs) return; // no origin resolved (e.g. missing tee) — no chip
             const node = nodeByShotId.get(shot.id);
             if (!node) return;
-            const score = scoreOptionChain(legs, {
-                surfaces: ctx.lieMap.surfaces(),
-                greenCenter: ctx.greenCenter,
-                ...(ctx.wind !== null
-                    ? { wind: { speedMps: ctx.wind.speedMps, directionDeg: ctx.wind.directionDeg } }
-                    : {}),
-            });
+            const score = scoreOptionChain(legs, chainCtx);
             const strokesBefore = node.depth; // shots played before this decision
             chips.push({
                 shotId: shot.id,

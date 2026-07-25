@@ -35,7 +35,7 @@ import type {
 import { DEFAULT_ROLLOUTS } from '../../../shared/strategy';
 import { createWorkerSimClient, type SimClient } from './sim-client';
 import { buildHistogram, shiftPmf, type ScoreBucket } from './sim-histogram';
-import { SCATTER_MAX_PER_LEG, subsample, variantSignatureLabel, type GhostVariant } from './sim-overlay';
+import { SCATTER_MAX_PER_LEG, variantSignatureLabel, type GhostVariant } from './sim-overlay';
 
 /**
  * Sentinel branch id for the hole's PRIMARY line (the rank-0 walk). Options
@@ -116,7 +116,19 @@ export class HoleSimService {
     });
 
     readonly running = new Signal<boolean>(false);
-    readonly error = new Signal<string | null>(null);
+
+    /**
+     * Failures are tracked PER HALF: a suggest-lines failure must not read as
+     * "your histogram is broken", and — more importantly — neither error may
+     * stand in for the results, which stay on screen (see the panel). Each is
+     * cleared when its own half starts a new run.
+     */
+    readonly simError = new Signal<string | null>(null);
+    readonly discoverError = new Signal<string | null>(null);
+
+    /** Either half's most recent failure — simulate first. */
+    readonly error = new Computed<string | null>(
+        () => this.simError.get() ?? this.discoverError.get());
 
     /** Landing-scatter overlay toggle (off by default — it's a lot of dots). */
     readonly scatterVisible = new Signal<boolean>(false);
@@ -137,7 +149,7 @@ export class HoleSimService {
         const seq = ++this.simSeq;
         const signature = this.planSignature.peek();
         this.running.set(true);
-        this.error.set(null);
+        this.simError.set(null);
         try {
             const branches = await Promise.all(requests.map(async request => {
                 const result = await this.client.simulate(request.legs, request.ctx, {
@@ -154,8 +166,10 @@ export class HoleSimService {
                     mean: result.mean + request.strokesBefore,
                     onScriptRate: result.onScriptRate,
                     buckets: buildHistogram(pmf, request.par),
-                    perLegLandings: result.perLegLandings.map(
-                        landings => subsample(landings, SCATTER_MAX_PER_LEG)),
+                    // Already capped at SCATTER_MAX_PER_LEG by the engine's own
+                    // `maxLandingsPerLeg` (above) — subsampling again here would
+                    // just re-stride an already-strided list.
+                    perLegLandings: result.perLegLandings.map(landings => [...landings]),
                     rollouts: result.rollouts,
                 } satisfies SimBranchResult;
             }));
@@ -163,7 +177,7 @@ export class HoleSimService {
             this.resultState.set({ signature, branches });
         } catch (error) {
             if (seq !== this.simSeq) return;
-            this.error.set(error instanceof Error ? error.message : String(error));
+            this.simError.set(error instanceof Error ? error.message : String(error));
         } finally {
             if (seq === this.simSeq) this.running.set(false);
         }
@@ -174,7 +188,7 @@ export class HoleSimService {
         this.simSeq++;
         this.resultState.set(null);
         this.running.set(false);
-        this.error.set(null);
+        this.simError.set(null);
     }
 
     // ── Suggest lines (V7) ─────────────────────────────────────────────────
@@ -201,7 +215,7 @@ export class HoleSimService {
     ): Promise<number> {
         const seq = ++this.discoverSeq;
         this.discovering.set(true);
-        this.error.set(null);
+        this.discoverError.set(null);
         try {
             const found: ScoredVariant[] = await this.client.discover(ctx);
             if (seq !== this.discoverSeq) return 0;
@@ -214,7 +228,7 @@ export class HoleSimService {
             return ghosts.length;
         } catch (error) {
             if (seq !== this.discoverSeq) return 0;
-            this.error.set(error instanceof Error ? error.message : String(error));
+            this.discoverError.set(error instanceof Error ? error.message : String(error));
             return 0;
         } finally {
             if (seq === this.discoverSeq) this.discovering.set(false);
@@ -233,6 +247,7 @@ export class HoleSimService {
         this.variants.set([]);
         this.hoveredVariantId.set(null);
         this.discovering.set(false);
+        this.discoverError.set(null);
     }
 
     /** Full reset — both halves. Used when the selected hole changes. */
@@ -241,6 +256,12 @@ export class HoleSimService {
         this.clearVariants();
     }
 
+    /**
+     * Reset AND terminate the worker. Called from the planner tool's teardown
+     * (`start()`'s track list), so the thread lives exactly as long as the
+     * planner is open, not as long as the tab is — the worker client re-creates
+     * it lazily on the next simulate.
+     */
     dispose(): void {
         this.reset();
         this.client.dispose();

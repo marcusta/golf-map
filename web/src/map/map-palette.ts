@@ -11,6 +11,8 @@
 // DOM-based map chrome (MapLibre Markers with HTML elements, IControls)
 // should keep using CSS vars / the css.ts `mapLabel()` recipe instead.
 
+import type { Lie } from '../../../shared/strategy';
+
 /** Shot/aim/leg lines (guide §03): 3px, round ("pill") line ends. */
 export const SHOT_LINE_COLOR = '#E4A15A'; // --map-shot-line
 export const SHOT_LINE_WIDTH = 3;
@@ -65,7 +67,7 @@ export const MAP_TEE_FILL = '#5FA76E'; // --map-tee-fill
  * and dark (design-tokens.css §map). No new token needed — this is a mapping,
  * not a palette.
  */
-export const LIE_FILL: Record<string, string> = {
+export const LIE_FILL: Record<Lie, string> = {
     tee: MAP_TEE_FILL, // --map-tee-fill
     fairway: '#4C9256', // --map-fairway-fill
     rough: '#566E3A', // --map-rough-fill

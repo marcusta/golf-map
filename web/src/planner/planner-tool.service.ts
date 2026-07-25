@@ -22,6 +22,7 @@ import {
     type DistanceTarget,
     type FeatureDistance,
     type ChainScoreContext,
+    type ClubSpec,
     type FlatRing,
     type GreenSlopeSummary,
     type HoleHazard,
@@ -755,6 +756,16 @@ export class PlannerToolService {
      * `strategyInputs` this deliberately INCLUDES shot positions: any plan
      * edit — a drag frame included — must grey the histogram. Nothing
      * recomputes off this; it is compared, not reacted to.
+     *
+     * THE RULE: everything `buildSimRequests` feeds `simulateChain` must be in
+     * here, or the panel would present a distribution computed from inputs the
+     * map no longer shows. That is the shot chain (ids/parents/order/clubs AND
+     * positions), the tee, the wind, the par — plus the two things that reach
+     * the engine indirectly: the CLUB SET (`orderedClubs` + the hole's
+     * preferred club, the same sources `strategyInputs` watches, since they
+     * decide each leg's dispersion) and the TARGET GEOMETRY (the green centre
+     * and the surface set behind `lieMap`). Nothing viewport-derived is in
+     * here, so pan/zoom can never flip it.
      */
     private readonly simPlanSignature = new Computed<string>(() => {
         const hole = this.selectedHole.get();
@@ -763,8 +774,26 @@ export class PlannerToolService {
                 + `:${s.lat.toFixed(7)}:${s.lon.toFixed(7)}`)
             .join(',');
         const wind = this.effectiveWind.get();
+        // Club IDENTITY is not enough here (it is for `strategyInputs`, which
+        // only needs to know the bag changed shape): the engine reads carry and
+        // dispersion off each club, so an edited club must grey the result too.
+        const clubs = this.orderedClubs.get()
+            .map(c => `${c.id}:${c.carryM}:${c.dispersionM}`).join(',');
+        const preferred = this.planHole.get()?.preferredClubId ?? '';
+        const green = this.holePlan.get()?.nodes.find(n => n.kind === 'green');
+        const greenSig = green ? `${green.x.toFixed(2)}/${green.y.toFixed(2)}` : 'none';
+        // Surface-set token: an edited feature bumps its `version`, an
+        // added/removed one changes the count. Numeric fold — no per-edit
+        // string building on a signature that recomputes every drag frame.
+        let featureCount = 0;
+        let featureVersions = 0;
+        for (const feature of this.features.store.items.get()) {
+            featureCount++;
+            featureVersions += feature.version;
+        }
         return `${hole?.id ?? ''}|${hole?.par ?? ''}|${this.originTee.get()?.id ?? ''}`
-            + `|${wind ? `${wind.speedMps}/${wind.directionDeg}` : 'calm'}|${shots}`;
+            + `|${wind ? `${wind.speedMps}/${wind.directionDeg}` : 'calm'}`
+            + `|${clubs}|${preferred}|${greenSig}|${featureCount}/${featureVersions}|${shots}`;
     });
 
     /**
@@ -851,11 +880,20 @@ export class PlannerToolService {
     /**
      * Auto-simulate on BRANCH SELECT (V8's second trigger). Deliberately not
      * an effect on the plan: it fires only when the *selection* lands on an
-     * option at a decision point, and never while a drag is in flight (a
-     * mousedown on a marker selects it before dragging — simulating there
-     * would put 800 rollouts on the gesture's critical path). Coalesced onto a
-     * microtask and deduped on (branch set, plan signature) so re-selecting
-     * the same option under an unchanged plan is free.
+     * option at a decision point. Coalesced onto a microtask and deduped on
+     * (branch set, plan signature) so re-selecting the same option under an
+     * unchanged plan is free.
+     *
+     * THE DRAG INTERACTION, which is subtle: a mousedown on a marker sets the
+     * selection AND opens `this.drag` in the same handler, and this microtask
+     * runs after it — so a plain "click a marker to select it" arrives here
+     * with a drag object already open. Bailing on `this.drag` alone would
+     * therefore make marker clicks NEVER auto-simulate (the bug); bailing on
+     * nothing would put 800 rollouts on the critical path of a gesture that is
+     * about to move the shot anyway. So: skip only once the gesture has
+     * actually MOVED, and let `onMouseUp` re-schedule the click case (a drag
+     * that moved is a plan EDIT — V8 says grey it and wait, never
+     * auto-recompute).
      */
     private simAutoScheduled = false;
     private simAutoKey: string | null = null;
@@ -865,7 +903,7 @@ export class PlannerToolService {
         this.simAutoScheduled = true;
         queueMicrotask(() => {
             this.simAutoScheduled = false;
-            if (this.drag) return; // never on the drag path
+            if (this.drag?.moved) return; // never DURING a live drag
             const shot = this.selectedShot.peek();
             if (!shot) return;
             const siblings = this.plan.childShots(shot.gamePlanHoleId, shot.parentShotId);
@@ -947,18 +985,25 @@ export class PlannerToolService {
             this.notice.set('That line has no landing points to place.');
             return 0;
         }
-        // Branch from the CURRENT decision point: a selected shot becomes the
-        // parent (a sibling option under it), otherwise it is a root option.
-        let parentShotId: string | null = this.selectedShot.peek()?.parentShotId ?? null;
+        // ROOT-LEVEL, always. Discovery anchors every variant at the TEE
+        // (`variantContext`), so the first landing's leg is a tee shot. Hanging
+        // it off whatever happens to be selected would draw that leg from a
+        // mid-chain landing instead — a line the user never saw and the chip
+        // never priced. The ghost is a whole alternative hole, so it becomes a
+        // root option; the current selection is irrelevant to it.
+        let parentShotId: string | null = null;
         const teeNode = ghost.variant.nodes[0];
         let origin = sweref99tmToWgs84(teeNode.point.x, teeNode.point.y);
         let created = 0;
         for (const [index, node] of landings.entries()) {
             const { lat, lon } = sweref99tmToWgs84(node.point.x, node.point.y);
-            // Club from THIS variant's own previous node, not the live plan's
-            // last shot — the ghost is a parallel chain until it is written.
-            const clubId = this.autoClubForShot(
-                { lng: lon, lat }, null, { lat: origin.lat, lon: origin.lon, elevation: null });
+            // The club the VARIANT was priced with (the graph's wind-adjusted
+            // reachability pick), not a fresh plays-like nearest — the accepted
+            // branch has to price like the chip the user clicked. Auto-club is
+            // only the fallback for a leg that carries none.
+            const clubId = this.clubIdForSpec(ghost.variant.legs[index]?.club)
+                ?? this.autoClubForShot(
+                    { lng: lon, lat }, null, { lat: origin.lat, lon: origin.lon, elevation: null });
             origin = { lat, lon };
             const shot = await this.plan.addShot(hole.number, {
                 lat,
@@ -977,6 +1022,20 @@ export class PlannerToolService {
         this.sim.dismissVariant(id);
         if (created > 0) this.refreshStrategy();
         return created;
+    }
+
+    /**
+     * The bag row a variant leg's `ClubSpec` came from. Discovery is handed
+     * `orderedClubs` directly, but the specs come back through a structured
+     * clone (worker) that strips identity, so match on name and fall back to
+     * carry — the same club, just a copy. Null when the leg was clubless or the
+     * bag changed under the ghost.
+     */
+    private clubIdForSpec(spec: ClubSpec | null | undefined): string | null {
+        if (!spec) return null;
+        const clubs = this.orderedClubs.peek();
+        const byName = spec.name ? clubs.find(club => club.name === spec.name) : undefined;
+        return (byName ?? clubs.find(club => club.carryM === spec.carryM))?.id ?? null;
     }
 
     /** Forget a ghost without writing anything (V7 dismiss). */
@@ -1846,7 +1905,9 @@ export class PlannerToolService {
                 this.variantOverlayAdded = false;
             }
         });
-        track(() => this.sim.reset());
+        // Leaving the planner drops the distributions AND the worker thread —
+        // it is only ever needed while this tool is on screen.
+        track(() => this.sim.dispose());
 
         // Crosshair cursor while an add mode is armed.
         track(effect(() => {

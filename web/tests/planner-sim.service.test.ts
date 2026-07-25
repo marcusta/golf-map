@@ -25,7 +25,10 @@ import { createInlineSimClient, type SimClient } from '../src/planner/sim-client
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { FeaturesService } from '../src/draw/features.service';
 import { FurnitureService } from '../src/furniture/furniture.service';
+import { ClubsService } from '../src/player/clubs.service';
+import { MapService } from '../src/map/map.service';
 import { sweref99tmToWgs84 } from '../src/geo/transform';
+import type { Club } from '../../shared/api/clubs.gen';
 import type { Hole } from '../../shared/api/holes.gen';
 import type { CourseFeature } from '../../shared/api/course-features.gen';
 import type { Tee } from '../../shared/api/tees.gen';
@@ -134,6 +137,52 @@ function seedPlanWithShots(shots: PlanShot[]): PlanService {
     return plan;
 }
 
+const DRIVER: Club =
+    { id: 'driver', userId: null, name: 'Driver', carryM: 235, dispersionM: 30, sortOrder: 0, version: 1 };
+const IRON5: Club =
+    { id: 'iron5', userId: null, name: '5 iron', carryM: 165, dispersionM: 18, sortOrder: 1, version: 1 };
+
+/** A two-club bag, so club auto-pick and the variant's own picks can differ. */
+function seedClubs(): void {
+    const clubs = new ClubsService();
+    clubs.store.set([DRIVER, IRON5]);
+    di.set(ClubsService, clubs);
+}
+
+/**
+ * A MapService whose map answers `project()` — enough for the tool's real
+ * `hitTest`, so tests can drive the ACTUAL mousedown/move/up path instead of
+ * setting `selection` by hand. Everything within 1 m of `target` projects onto
+ * the hit point; anything else lands far off screen.
+ */
+function useFakeMap(target: { lat: number; lon: number }): MapService {
+    const map = new MapService();
+    const fake = {
+        project: ([lon, lat]: [number, number]) =>
+            Math.abs(lat - target.lat) < 1e-5 && Math.abs(lon - target.lon) < 1e-5
+                ? { x: 100, y: 100 }
+                : { x: 9999, y: 9999 },
+        dragPan: { enable() {}, disable() {} },
+    };
+    map.map.set(fake as unknown as NonNullable<ReturnType<MapService['map']['peek']>>);
+    di.set(MapService, map);
+    return map;
+}
+
+/** The tool's private raw-input handlers — the path a real gesture takes. */
+interface MousePath {
+    onMouseDown(e: unknown, map: unknown): void;
+    onMouseMove(e: unknown): void;
+    onMouseUp(map: unknown): void;
+}
+const mouse = (svc: PlannerToolService): MousePath => svc as unknown as MousePath;
+const fakeMapHandle = { dragPan: { enable() {}, disable() {} } };
+const downEvent = (x: number, y: number) => ({
+    point: { x, y },
+    originalEvent: { button: 0, metaKey: false, ctrlKey: false },
+    preventDefault() {},
+});
+
 async function startTool(): Promise<{ svc: PlannerToolService; stop: () => void }> {
     const svc = new PlannerToolService(noAnalysis);
     const disposers: Array<() => void> = [];
@@ -203,6 +252,73 @@ describe('hole simulation — the V8 invalidation state machine', () => {
         stop();
     });
 
+    test('everything the engine reads is in the signature — the bag and the surfaces too', async () => {
+        // The rule: if it changes `simulateChain`'s inputs, it must grey the
+        // result. Club set and green/surface geometry reach the engine
+        // indirectly (dispersion, target, lie classification), so they are the
+        // two that are easy to forget — and a distribution priced with a club
+        // the player no longer carries is simply wrong.
+        seedCourse([hole('h1', 1)]);
+        seedClubs();
+        seedPlanWithShots([shotAt('s1', 0, null, TEE_XY.y + 200)]);
+        selectHole(1);
+        const sim = useInlineSim();
+
+        const { svc, stop } = await startTool();
+        await svc.simulateNow();
+        expect(sim.stale.get()).toBe(false);
+
+        // Bag change (a club's carry edited) → stale.
+        di.get(ClubsService).store.set([{ ...DRIVER, carryM: 250, version: 2 }, IRON5]);
+        expect(sim.stale.get()).toBe(true);
+
+        await svc.simulateNow();
+        expect(sim.stale.get()).toBe(false);
+
+        // Surface edit (the green moved / was reshaped) → stale.
+        const features = di.get(FeaturesService);
+        features.store.set(features.store.items.peek().map(f => ({
+            ...f, geometry: square(25, GREEN_XY.x + 10, GREEN_XY.y), version: 2,
+        })));
+        expect(sim.stale.get()).toBe(true);
+
+        stop();
+    });
+
+    test('a failed run reports the error WITHOUT throwing away the last good result', async () => {
+        seedCourse([hole('h1', 1)]);
+        seedPlanWithShots([shotAt('s1', 0, null, TEE_XY.y + 200)]);
+        selectHole(1);
+        let fail = false;
+        const sim = useInlineSim({
+            ...createInlineSimClient(),
+            async simulate(legs, ctx, opts) {
+                if (fail) throw new Error('worker died');
+                return createInlineSimClient().simulate(legs, ctx, opts);
+            },
+        });
+
+        const { svc, stop } = await startTool();
+        await svc.simulateNow();
+        const good = sim.branches.get();
+        expect(good).toHaveLength(1);
+
+        fail = true;
+        await svc.simulateNow();
+        // The last good distribution is still the best thing on screen; the
+        // failure is reported ALONGSIDE it, not instead of it.
+        expect(sim.simError.get()).toContain('worker died');
+        expect(sim.branches.get()).toBe(good);
+        // Discovery has its own error slot, so one half can't blank the other.
+        expect(sim.discoverError.get()).toBeNull();
+
+        fail = false;
+        await svc.simulateNow();
+        expect(sim.simError.get()).toBeNull();
+
+        stop();
+    });
+
     test('the sampled-landing scatter is suppressed while a result is stale', async () => {
         seedCourse([hole('h1', 1)]);
         const shot = shotAt('s1', 0, null, TEE_XY.y + 200);
@@ -253,6 +369,64 @@ describe('hole simulation — the V8 invalidation state machine', () => {
         stop();
     });
 
+    test('CLICKING an option marker on the map auto-simulates (the real mouse path)', async () => {
+        // The regression this pins: `onMouseDown` sets the selection AND opens a
+        // drag object in the same handler, and the auto-sim microtask runs after
+        // it — so a guard of "bail if a drag exists" made marker clicks, the
+        // primary way anyone selects an option, never simulate at all. Driving
+        // `selection` directly (as the test above does) cannot see that.
+        seedCourse([hole('h1', 1)]);
+        const left = shotAt('opt-a', 0, null, TEE_XY.y + 200);
+        const right = shotAt('opt-b', 1, null, TEE_XY.y + 220);
+        seedPlanWithShots([left, right]);
+        selectHole(1);
+        const sim = useInlineSim();
+        useFakeMap({ lat: left.lat, lon: left.lon });
+
+        const { svc, stop } = await startTool();
+        mouse(svc).onMouseDown(downEvent(100, 100), fakeMapHandle);
+        expect(svc.selection.get()).toEqual({ kind: 'shot', id: 'opt-a' });
+        await settle();
+        await settle();
+
+        expect(sim.branches.get().map(b => b.branchId).sort()).toEqual(['opt-a', 'opt-b']);
+        mouse(svc).onMouseUp(fakeMapHandle); // release with no movement: a click
+
+        stop();
+    });
+
+    test('a drag that MOVED never triggers a simulation (DECADE §4.5 / V8)', async () => {
+        seedCourse([hole('h1', 1)]);
+        const left = shotAt('opt-a', 0, null, TEE_XY.y + 200);
+        const right = shotAt('opt-b', 1, null, TEE_XY.y + 220);
+        seedPlanWithShots([left, right]);
+        selectHole(1);
+        const sim = useInlineSim();
+        useFakeMap({ lat: left.lat, lon: left.lon });
+
+        const { svc, stop } = await startTool();
+        mouse(svc).onMouseDown(downEvent(100, 100), fakeMapHandle);
+        await settle();
+        await settle();
+        const afterClick = sim.branches.get();
+        expect(afterClick).toHaveLength(2);
+
+        // Now the gesture actually moves: geometry changes per frame, and the
+        // distribution must go stale WITHOUT anything recomputing.
+        mouse(svc).onMouseMove({
+            point: { x: 160, y: 160 },
+            lngLat: { lat: left.lat + 0.0004, lng: left.lon },
+        });
+        // A selection change arriving mid-drag must not sneak a run in either.
+        svc.selection.set({ kind: 'shot', id: 'opt-b' });
+        await settle();
+        await settle();
+        expect(sim.stale.get()).toBe(true);
+        expect(sim.branches.get()).toBe(afterClick); // same objects — nothing re-ran
+
+        stop();
+    });
+
     test('switching holes forgets the distribution (derived state, never persisted)', async () => {
         seedCourse([hole('h1', 1), hole('h2', 2)]);
         seedPlanWithShots([shotAt('s1', 0, null, TEE_XY.y + 200)]);
@@ -292,7 +466,10 @@ describe('hole simulation — the V8 invalidation state machine', () => {
  * covered by the engine's own tests (shared/strategy/variant-graph); what needs
  * protecting HERE is the ghost lifecycle and the accept write path.
  */
-function stubDiscoverClient(nodes: Array<{ x: number; y: number }>): SimClient {
+function stubDiscoverClient(
+    nodes: Array<{ x: number; y: number }>,
+    legs: Array<{ club?: { name: string; carryM: number; dispersionM: number } }> = [],
+): SimClient {
     const variant = {
         nodes: nodes.map((point, i) => ({
             id: `n${i}`,
@@ -300,7 +477,7 @@ function stubDiscoverClient(nodes: Array<{ x: number; y: number }>): SimClient {
             chainage: point.y - TEE_XY.y,
             kind: i === 0 ? 'tee' : i === nodes.length - 1 ? 'green' : 'aim',
         })),
-        legs: [],
+        legs,
         score: { expectedStrokes: 4.2, penaltyProb: 0.12, worstCaseStrokes: 6, legs: [] },
         signature: {
             shotCount: nodes.length - 2,
@@ -452,30 +629,71 @@ describe('suggest lines (V7) — ghosts and the accept write path', () => {
         stop();
     });
 
-    test('accepting under a selected shot branches from that decision point', async () => {
+    test('accepting anchors at the TEE whatever is selected — it is a whole line', async () => {
+        // Discovery always searches tee → green (`variantContext`), so the first
+        // landing's leg IS a tee shot. Hanging it off a mid-chain selection
+        // would draw that leg from some landing halfway up the hole — a line
+        // nobody saw and the chip never priced.
         seedCourse([hole('h1', 1)]);
         const { api, added } = fakePlansApi();
         const plan = new PlanService(api);
         await plan.load('c1');
-        // One existing root shot to branch alongside.
-        const existing = await plan.addShot(1, { lat: TEE_LATLON.lat, lon: TEE_LATLON.lon });
+        // An existing two-shot chain, with the SECOND shot selected.
+        const first = await plan.addShot(1, { lat: TEE_LATLON.lat, lon: TEE_LATLON.lon });
+        const second = await plan.addShot(1, {
+            lat: GREEN_LATLON.lat, lon: GREEN_LATLON.lon, parentShotId: first!.id,
+        });
         di.set(PlanService, plan);
         selectHole(1);
-        const sim = useInlineSim(stubDiscoverClient([
-            TEE_XY, { x: TEE_XY.x - 25, y: TEE_XY.y + 150 }, GREEN_XY,
-        ]));
+        const landing = { x: TEE_XY.x - 25, y: TEE_XY.y + 150 };
+        const sim = useInlineSim(stubDiscoverClient([TEE_XY, landing, GREEN_XY]));
 
         const { svc, stop } = await startTool();
         await svc.suggestLines();
-        svc.selection.set({ kind: 'shot', id: existing!.id });
+        svc.selection.set({ kind: 'shot', id: second!.id });
         await settle();
 
         added.length = 0;
         await svc.acceptVariant(sim.variants.get()[0].id);
 
-        // Sibling of the selected shot (same parent), not its child.
+        // A ROOT option: its leg starts at the tee, not at `first`'s landing.
         expect(added).toHaveLength(1);
-        expect(added[0].parentShotId).toBe(existing!.parentShotId);
+        expect(added[0].parentShotId).toBeNull();
+        // And it sits exactly where the ghost's first landing was drawn.
+        const expected = sweref99tmToWgs84(landing.x, landing.y);
+        expect(added[0].lat as number).toBeCloseTo(expected.lat, 9);
+        expect(added[0].lon as number).toBeCloseTo(expected.lon, 9);
+
+        stop();
+    });
+
+    test('accepted legs keep the CLUBS the variant was priced with', async () => {
+        // The graph picks clubs by wind-adjusted reachability; re-deriving them
+        // from plays-like distance on write can pick a different one, and then
+        // the branch prices unlike the chip the user clicked.
+        seedCourse([hole('h1', 1)]);
+        seedClubs();
+        const { api, added } = fakePlansApi();
+        const plan = new PlanService(api);
+        await plan.load('c1');
+        di.set(PlanService, plan);
+        selectHole(1);
+        // Leg 0 is a ~230 m carry the auto-picker would call Driver — but the
+        // variant chose the 5 iron, and that is what must be written. Leg 1 is
+        // another ~230 m and carries NO club, so it falls back to the auto pick
+        // (Driver) — proving the fallback still works and the two paths differ.
+        const sim = useInlineSim(stubDiscoverClient(
+            [TEE_XY, { x: TEE_XY.x, y: TEE_XY.y + 230 }, { x: TEE_XY.x, y: TEE_XY.y + 460 }, GREEN_XY],
+            [{ club: { name: IRON5.name, carryM: IRON5.carryM, dispersionM: IRON5.dispersionM } }, {}],
+        ));
+
+        const { svc, stop } = await startTool();
+        await svc.suggestLines();
+        await svc.acceptVariant(sim.variants.get()[0].id);
+
+        expect(added).toHaveLength(2);
+        expect(added[0].clubId).toBe(IRON5.id); // the variant's pick, NOT the nearest
+        expect(added[1].clubId).toBe(DRIVER.id); // clubless leg → the auto pick
 
         stop();
     });
