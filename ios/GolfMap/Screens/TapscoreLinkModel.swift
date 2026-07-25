@@ -7,6 +7,7 @@ public protocol TapscoreLinkAPI: Sendable {
     func tapscoreLink(roundId: String) async throws -> TapscoreLink
     func linkTapscore(roundId: String, token: String, ballId: String?) async throws -> TapscoreLink
     func unlinkTapscore(roundId: String) async throws -> TapscoreLink
+    func tapscoreBalls(token: String) async throws -> [TapscoreBall]
 }
 
 extension GolfAPIClient: TapscoreLinkAPI {}
@@ -66,7 +67,8 @@ public enum TapscoreLinkFailure: Equatable, Sendable {
         return nil
     }
 
-    /// Whether the UI should reveal the explicit ball-ID field.
+    /// Whether the UI should ask which ball to score into (the roster picker,
+    /// or the free-text ID field when the roster couldn't be fetched).
     public var needsBallChoice: Bool {
         if case .ambiguousBall = self { return true }
         return false
@@ -113,8 +115,13 @@ final class TapscoreLinkModel {
     /// Set by the last deliberate action; cleared on the next attempt.
     private(set) var failure: TapscoreLinkFailure?
     /// True when the server asked which ball to score into — the UI reveals the
-    /// ball-ID field. Sticky until a successful link or an explicit reset.
+    /// ball picker (or the ball-ID field when the roster couldn't be fetched).
+    /// Sticky until a successful link or an explicit reset.
     private(set) var needsBallChoice = false
+    /// The claimed balls of the token's round, fetched after an ambiguous-ball
+    /// 409 so the player picks a name instead of transcribing an id. Empty when
+    /// the roster fetch failed — the UI then falls back to the free-text field.
+    private(set) var ballChoices: [TapscoreBall] = []
 
     init(roundModel: RoundModel, api: any TapscoreLinkAPI) {
         self.roundModel = roundModel
@@ -191,11 +198,26 @@ final class TapscoreLinkModel {
             )
             await apply(link)
             needsBallChoice = false
+            ballChoices = []
         } catch {
             let classified = Self.report(error)
             failure = classified
-            if classified.needsBallChoice { needsBallChoice = true }
+            if classified.needsBallChoice {
+                needsBallChoice = true
+                await loadBallChoices(token: token)
+            }
         }
+    }
+
+    /// Fetches the token round's roster so the ambiguous-ball retry is a pick,
+    /// not a transcription. Pending (unclaimed) seats are dropped — the server
+    /// refuses to link them, so offering one would only manufacture the next
+    /// 409. Best effort: a fetch failure leaves `ballChoices` empty and the UI
+    /// falls back to the free-text field; the ambiguous-ball failure already
+    /// on screen stays the message.
+    private func loadBallChoices(token: String) async {
+        let roster = (try? await api.tapscoreBalls(token: token)) ?? []
+        ballChoices = roster.filter { !$0.pending }
     }
 
     /// Unlinks the active round. Scores already published stay in Tapscore —
@@ -212,6 +234,7 @@ final class TapscoreLinkModel {
             let link = try await api.unlinkTapscore(roundId: roundId)
             await apply(link)
             needsBallChoice = false
+            ballChoices = []
         } catch {
             failure = Self.report(error)
         }
@@ -226,9 +249,11 @@ final class TapscoreLinkModel {
         return classified
     }
 
-    /// Drops a stale ball-choice prompt (e.g. the player typed a new code).
+    /// Drops a stale ball-choice prompt (e.g. the player typed a new code —
+    /// the fetched roster belongs to the old token).
     func clearBallChoice() {
         needsBallChoice = false
+        ballChoices = []
         failure = nil
     }
 

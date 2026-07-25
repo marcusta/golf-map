@@ -47,6 +47,24 @@ public struct TapscoreLink: Codable, Sendable, Equatable {
     }
 }
 
+/// One ball (scorecard column) of a Tapscore round — an element of the
+/// `GET /api/rounds/tapscore-balls` response (`shared/api/tapscore-bridge.gen.ts`,
+/// `TapscoreBall`). Fetched by share token at link time so an ambiguous-ball
+/// 409 can offer a picker instead of asking the player to transcribe an id.
+public struct TapscoreBall: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    /// Player name as Tapscore shows it; nil for an unnamed seat.
+    public let label: String?
+    /// True iff the ball is an unclaimed placeholder seat (not linkable).
+    public let pending: Bool
+
+    public init(id: String, label: String?, pending: Bool) {
+        self.id = id
+        self.label = label
+        self.pending = pending
+    }
+}
+
 /// A shot row: `POST /api/rounds/shots/add` and `/update` response.
 public struct Shot: Codable, Sendable, Equatable {
     public let id: String

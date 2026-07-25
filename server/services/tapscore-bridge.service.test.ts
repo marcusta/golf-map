@@ -340,6 +340,45 @@ test('a single-user-era round (user_id null) stays accessible to any user', asyn
     expect(status.linked).toBe(true);
 });
 
+// --- Ball roster (the picker behind the ambiguous-ball 409) ------------------
+
+test('balls returns the full roster verbatim — id, label and pending flag', async () => {
+    const fake = startFake((f) =>
+        f.addRound(TOKEN, {
+            playHoles: singleBallRound().playHoles,
+            balls: [
+                { id: 'ball-1', label: 'Marcus', pending: false },
+                { id: 'ball-2', label: 'Alex', pending: false },
+                { id: 'ball-3', label: null, pending: true }, // unclaimed seat
+            ],
+        }),
+    );
+    const ctx = await setup(fake.baseUrl);
+
+    const balls = await ctx.tapscoreBridgeService.balls(TOKEN);
+    expect(balls).toEqual([
+        { id: 'ball-1', label: 'Marcus', pending: false },
+        { id: 'ball-2', label: 'Alex', pending: false },
+        { id: 'ball-3', label: null, pending: true },
+    ]);
+});
+
+test('balls rejects an unknown token with NotFoundError (404)', async () => {
+    const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
+    const ctx = await setup(fake.baseUrl);
+    await expect(ctx.tapscoreBridgeService.balls('no-such-token')).rejects.toBeInstanceOf(
+        NotFoundError,
+    );
+});
+
+test('balls needs no linked (or any) round — it serves the pre-link picker', async () => {
+    const fake = startFake((f) => f.addRound(TOKEN, singleBallRound()));
+    const ctx = await setup(fake.baseUrl);
+    // No round started, nothing linked — the roster still resolves by token.
+    const balls = await ctx.tapscoreBridgeService.balls(TOKEN);
+    expect(balls.map((b) => b.id)).toEqual(['ball-1']);
+});
+
 // --- Publish through the shot-write hook ------------------------------------
 
 test('adding shots publishes the hole score with a versioned client_event_id', async () => {

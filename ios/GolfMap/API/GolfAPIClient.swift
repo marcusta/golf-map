@@ -582,6 +582,15 @@ public actor GolfAPIClient {
         try await postJSON(path: "rounds/tapscore-unlink", body: UnlinkTapscoreRequest(roundId: roundId))
     }
 
+    /// The balls of the Tapscore round behind a share token
+    /// (`GET /api/rounds/tapscore-balls`) — the roster the link sheet offers as
+    /// a picker after an ambiguous-ball 409. Round-agnostic: only the token is
+    /// needed, so it works before the round is linked. 404 when the token
+    /// resolves to no Tapscore round.
+    public func tapscoreBalls(token: String) async throws -> [TapscoreBall] {
+        try await request(path: "rounds/tapscore-balls", query: ["token": token])
+    }
+
     private struct LinkTapscoreRequest: Encodable {
         let roundId: String
         let token: String
