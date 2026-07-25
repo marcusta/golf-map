@@ -40,9 +40,10 @@ Friendly rounds via share token, server-side only:
 - **`services/tapscore-bridge.service.ts`** — link/unlink/status + the publish
   logic. After each shot-sync write lands, it recomputes per-hole gross strokes
   for the changed hole(s) and POSTs Tapscore score events.
-- **`api/tapscore-bridge.api.ts`** — `GET/POST /rounds/tapscore-link` and
-  `POST /rounds/tapscore-unlink`, following the descriptor pattern so the typed
-  client (`shared/api/tapscore-bridge.gen.ts`) regenerates.
+- **`api/tapscore-bridge.api.ts`** — `GET/POST /rounds/tapscore-link`,
+  `POST /rounds/tapscore-unlink` and `GET /rounds/tapscore-balls`, following the
+  descriptor pattern so the typed client (`shared/api/tapscore-bridge.gen.ts`)
+  regenerates.
 - **Shot-write hook** — `RoundsService` gained an optional `onShotsChanged`
   callback fired after `addShot`/`updateShot`/`removeShot`; `createServices`
   wires it to `TapscoreBridgeService.syncHoles`.
@@ -73,6 +74,15 @@ A client links a golf-map round to a Tapscore round with the **share token**
 
 Linking is a deliberate action, so it *may* throw (bad token, ambiguous ball,
 Tapscore unreachable). This is the one place failure surfaces to the caller.
+
+**The ball roster.** `balls(token)` (`GET /rounds/tapscore-balls`) returns the
+token round's balls verbatim — `{ id, label, pending }` — so a client that hit
+the ambiguous-ball 409 can offer a *picker* instead of asking the player to
+transcribe an id off Tapscore. It is deliberately round-agnostic: the roster is
+needed at link time, before any golf-map round carries the token, so the token
+is the only input (and the only credential). Unknown token → 404, same as
+`link`. The roster ships pending seats too; filtering them is presentation —
+the iOS sheet drops them because linking one would only earn the next 409.
 
 ### 3.2 Publishing (the hook)
 
@@ -202,7 +212,9 @@ whose `/score` reproduces the true semantics — **dedupe-and-drop** on a repeat
 `client_event_id` and a scorecard cell (keyed by `ball × play-hole`) that moves
 **only on a fresh insert**. Tests cover link (auto-pick / ambiguous / unknown
 token / unknown ball / pending-seat rejection / pending-seat ignored in
-auto-pick), publish with a versioned id, an **incremental-play regression**
+auto-pick), the **ball roster** (verbatim including pending seats, 404 on an
+unknown token, and no round required), publish with a versioned id, an
+**incremental-play regression**
 (shot → shot → penalty each advancing the cell through distinct monotonic
 versions, with an unchanged re-sync producing no POST), publish being **off the
 write path** (cell empty until `settle`), a **drain-reentrancy** case (a hole
@@ -210,4 +222,4 @@ re-queued while a drain is mid-POST still lands its newer value — proven with 
 gated fake that holds the first POST open), a moved shot updating both holes,
 cell clearing, an unlinked round staying silent, and **Tapscore unreachable →
 shot write still succeeds.** Plus focused unit tests for `computeHoleStrokes`.
-Full server suite: 494 pass.
+Full server suite: 515 pass.

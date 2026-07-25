@@ -3,7 +3,12 @@ import { sql } from 'kysely';
 import type { Database } from '../db/schema';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { log } from '@basics/core/server/logger';
-import { TapscoreClientError, type TapscoreClient, type TapscorePlayHole } from './tapscore-client';
+import {
+    TapscoreClientError,
+    type TapscoreBall,
+    type TapscoreClient,
+    type TapscorePlayHole,
+} from './tapscore-client';
 
 // --- Tapscore scoring bridge (T60, V1) ---
 //
@@ -167,6 +172,17 @@ export class TapscoreBridgeService {
         this.syncHoles(roundId, holes);
         await this.settle(roundId);
         return toStatus(roundId, token, resolvedBallId);
+    }
+
+    /**
+     * The balls (scorecard columns) of the Tapscore round behind a share
+     * token, roster verbatim including unclaimed (pending) seats — the client
+     * decides presentation. Round-agnostic on purpose: it is called at link
+     * time, before any golf-map round carries the token. 404 when the token
+     * resolves to no round.
+     */
+    async balls(token: string): Promise<TapscoreBall[]> {
+        return this.fetchBallsOrThrow(token);
     }
 
     async unlink(roundId: string): Promise<TapscoreLinkStatus> {

@@ -23,10 +23,12 @@ final class TapscoreLinkModelTests: XCTestCase {
         var statusResult: Result<TapscoreLink, any Error> = .success(.unlinkedStub)
         var linkResult: Result<TapscoreLink, any Error> = .success(.linkedStub)
         var unlinkResult: Result<TapscoreLink, any Error> = .success(.unlinkedStub)
+        var ballsResult: Result<[TapscoreBall], any Error> = .success([])
 
         private(set) var linkCalls: [(roundId: String, token: String, ballId: String?)] = []
         private(set) var unlinkCalls: [String] = []
         private(set) var statusCalls: [String] = []
+        private(set) var ballsCalls: [String] = []
 
         func tapscoreLink(roundId: String) async throws -> TapscoreLink {
             statusCalls.append(roundId)
@@ -41,6 +43,11 @@ final class TapscoreLinkModelTests: XCTestCase {
         func unlinkTapscore(roundId: String) async throws -> TapscoreLink {
             unlinkCalls.append(roundId)
             return try unlinkResult.get()
+        }
+
+        func tapscoreBalls(token: String) async throws -> [TapscoreBall] {
+            ballsCalls.append(token)
+            return try ballsResult.get()
         }
     }
 
@@ -201,6 +208,116 @@ final class TapscoreLinkModelTests: XCTestCase {
         XCTAssertEqual(model.state, .linked(ballId: "ball-2"))
         XCTAssertFalse(model.needsBallChoice)
         XCTAssertNil(model.failure)
+    }
+
+    // MARK: - Ball roster (picker instead of transcription)
+
+    func testAmbiguousBallFetchesTheRosterAndOffersOnlyClaimedBalls() async throws {
+        let database = try AppDatabase.inMemory()
+        let roundModel = try await makeRoundModel(database: database)
+        let bridge = FakeBridge()
+        bridge.linkResult = .failure(APIError.http(
+            status: 409, message: "Tapscore round has 2 claimed balls; specify which ballId to link"
+        ))
+        bridge.ballsResult = .success([
+            TapscoreBall(id: "ball-1", label: "Marcus", pending: false),
+            TapscoreBall(id: "ball-2", label: "Alex", pending: false),
+            TapscoreBall(id: "ball-3", label: nil, pending: true), // unclaimed seat
+        ])
+        let model = TapscoreLinkModel(roundModel: roundModel, api: bridge)
+
+        // The player pasted the share URL — the roster must be fetched with the
+        // EXTRACTED token, not the raw paste.
+        await model.link(rawToken: "https://tapscore.app/r/abc123")
+
+        XCTAssertTrue(model.needsBallChoice)
+        XCTAssertEqual(bridge.ballsCalls, ["abc123"])
+        XCTAssertEqual(
+            model.ballChoices.map(\.id), ["ball-1", "ball-2"],
+            "a pending seat is not linkable, so it is not offered"
+        )
+
+        // Picking a ball retries the link with its id.
+        bridge.linkResult = .success(TapscoreLink(
+            roundId: "srv-1", linked: true, token: "abc123", ballId: "ball-2"
+        ))
+        await model.link(rawToken: "abc123", ballId: "ball-2")
+
+        XCTAssertEqual(bridge.linkCalls.last?.ballId, "ball-2")
+        XCTAssertEqual(model.state, .linked(ballId: "ball-2"))
+        XCTAssertFalse(model.needsBallChoice)
+        XCTAssertTrue(model.ballChoices.isEmpty, "a successful link drops the roster")
+    }
+
+    func testRosterFetchFailureFallsBackToTheFreeTextField() async throws {
+        let database = try AppDatabase.inMemory()
+        let roundModel = try await makeRoundModel(database: database)
+        let bridge = FakeBridge()
+        let message = "Tapscore round has 2 claimed balls; specify which ballId to link"
+        bridge.linkResult = .failure(APIError.http(status: 409, message: message))
+        bridge.ballsResult = .failure(APIError.transport("The request timed out."))
+        let model = TapscoreLinkModel(roundModel: roundModel, api: bridge)
+
+        await model.link(rawToken: "abc123")
+
+        XCTAssertTrue(model.needsBallChoice, "the question still stands")
+        XCTAssertTrue(model.ballChoices.isEmpty, "no roster → the UI shows the ID field")
+        XCTAssertEqual(
+            model.failure, .ambiguousBall(serverMessage: message),
+            "the roster fetch failing must not replace the ambiguous-ball message"
+        )
+    }
+
+    func testOnlyTheAmbiguousBallConflictFetchesTheRoster() async throws {
+        let database = try AppDatabase.inMemory()
+        let roundModel = try await makeRoundModel(database: database)
+        let bridge = FakeBridge()
+        bridge.linkResult = .failure(APIError.http(
+            status: 409, message: "Ball ball-2 is an unclaimed seat in Tapscore; claim it there before linking"
+        ))
+        let model = TapscoreLinkModel(roundModel: roundModel, api: bridge)
+
+        await model.link(rawToken: "abc123", ballId: "ball-2")
+
+        XCTAssertTrue(bridge.ballsCalls.isEmpty, "naming a ball is not the fix here — no roster needed")
+    }
+
+    func testClearingTheBallChoiceDropsTheStaleRoster() async throws {
+        let database = try AppDatabase.inMemory()
+        let roundModel = try await makeRoundModel(database: database)
+        let bridge = FakeBridge()
+        bridge.linkResult = .failure(APIError.http(
+            status: 409, message: "Tapscore round has 2 claimed balls; specify which ballId to link"
+        ))
+        bridge.ballsResult = .success([
+            TapscoreBall(id: "ball-1", label: "Marcus", pending: false),
+            TapscoreBall(id: "ball-2", label: "Alex", pending: false),
+        ])
+        let model = TapscoreLinkModel(roundModel: roundModel, api: bridge)
+
+        await model.link(rawToken: "abc123")
+        XCTAssertFalse(model.ballChoices.isEmpty)
+
+        // The player edits the code — the roster belongs to the old token.
+        model.clearBallChoice()
+        XCTAssertFalse(model.needsBallChoice)
+        XCTAssertTrue(model.ballChoices.isEmpty)
+        XCTAssertNil(model.failure)
+    }
+
+    func testFailureBannerPointsAtThePickerWhenTheRosterIsUp() {
+        let ambiguous = TapscoreLinkFailure.ambiguousBall(
+            serverMessage: "Tapscore round has 2 claimed balls; specify which ballId to link"
+        )
+        let withPicker = TapscoreLinkView.failureText(ambiguous, hasBallPicker: true)
+        XCTAssertFalse(withPicker.lowercased().contains("ball id"), "the remedy is the picker, not an id")
+        XCTAssertEqual(
+            TapscoreLinkView.failureText(ambiguous, hasBallPicker: false),
+            ambiguous.message,
+            "the free-text fallback keeps the enter-the-id wording"
+        )
+        let offline = TapscoreLinkFailure.offline
+        XCTAssertEqual(TapscoreLinkView.failureText(offline, hasBallPicker: true), offline.message)
     }
 
     func testUnclaimedSeatIsItsOwnMessage() async throws {

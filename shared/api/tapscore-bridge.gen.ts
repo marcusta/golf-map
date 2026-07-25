@@ -8,10 +8,17 @@ export interface TapscoreLinkStatus {
     ballId: null | string;
 }
 
+export interface TapscoreBall {
+    id: string;
+    label: null | string;
+    pending: boolean;
+}
+
 export interface TapscoreBridgeApi {
     status(input: { roundId: string }): Promise<TapscoreLinkStatus>;
     link(input: { ballId?: string; roundId: string; token: string }): Promise<TapscoreLinkStatus>;
     unlink(input: { roundId: string }): Promise<TapscoreLinkStatus>;
+    balls(input: { token: string }): Promise<TapscoreBall[]>;
 }
 
 export function createTapscoreBridgeClient(baseUrl: string): TapscoreBridgeApi {
@@ -28,6 +35,13 @@ export function createTapscoreBridgeClient(baseUrl: string): TapscoreBridgeApi {
         },
         async unlink(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/rounds/tapscore-unlink`, body: input });
+        },
+        async balls(input) {
+            const params = new URLSearchParams();
+            for (const [k, v] of Object.entries(input as any))
+                if (v !== undefined) params.set(k, String(v));
+            const qs = params.toString();
+            return apiFetch({ method: 'GET', url: `${baseUrl}/rounds/tapscore-balls${qs ? '?' + qs : ''}` });
         },
     };
 }

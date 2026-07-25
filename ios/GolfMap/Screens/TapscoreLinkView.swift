@@ -63,7 +63,8 @@ struct TapscoreLinkView: View {
             }
             if let failure = model.failure {
                 Section {
-                    Label(failure.message, systemImage: "exclamationmark.triangle.fill")
+                    Label(Self.failureText(failure, hasBallPicker: !model.ballChoices.isEmpty),
+                          systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote)
                         .foregroundStyle(Color.statusNegative)
                 }
@@ -107,17 +108,32 @@ struct TapscoreLinkView: View {
                 .focused($codeFocused)
                 .accessibilityLabel("Tapscore share code")
                 .onChange(of: code) { _, _ in
-                    if model.needsBallChoice { model.clearBallChoice() }
+                    guard model.needsBallChoice else { return }
+                    // The roster — and any ball picked from it — belong to the
+                    // code that was on screen a moment ago.
+                    model.clearBallChoice()
+                    ballId = ""
                 }
 
             // Only asked for when the server said the round has several
-            // claimed balls — golf-map cannot list them (the bridge API takes a
-            // ballId but exposes no roster), so the value comes from Tapscore.
+            // claimed balls. The roster fetched after that 409 turns the
+            // question into a pick; the free-text field survives only as the
+            // fallback for a failed roster fetch.
             if model.needsBallChoice {
-                TextField("Ball ID (from Tapscore)", text: $ballId)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .accessibilityLabel("Tapscore ball ID")
+                if model.ballChoices.isEmpty {
+                    TextField("Ball ID (from Tapscore)", text: $ballId)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityLabel("Tapscore ball ID")
+                } else {
+                    Picker("Player", selection: $ballId) {
+                        Text("Choose…").tag("")
+                        ForEach(model.ballChoices) { ball in
+                            Text(ball.label ?? ball.id).tag(ball.id)
+                        }
+                    }
+                    .accessibilityLabel("Tapscore player")
+                }
             }
 
             Button {
@@ -126,7 +142,11 @@ struct TapscoreLinkView: View {
             } label: {
                 Label("Link round", systemImage: "link")
             }
-            .disabled(model.isBusy || code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(
+                model.isBusy
+                    || code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || (model.needsBallChoice && !model.ballChoices.isEmpty && ballId.isEmpty)
+            )
         } header: {
             Text("Link this round")
         } footer: {
@@ -160,6 +180,17 @@ struct TapscoreLinkView: View {
     }
 
     // MARK: - Copy
+
+    /// The failure banner. `TapscoreLinkFailure.message` tells the player to
+    /// enter a ball ID — right only when the roster fetch failed and the
+    /// free-text fallback is showing. With the picker on screen, the remedy is
+    /// the picker.
+    static func failureText(_ failure: TapscoreLinkFailure, hasBallPicker: Bool) -> String {
+        if case .ambiguousBall = failure, hasBallPicker {
+            return "That Tapscore round has more than one player. Pick whose scorecard your shots update."
+        }
+        return failure.message
+    }
 
     static func summary(for state: TapscoreLinkModel.State) -> String {
         switch state {

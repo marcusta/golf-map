@@ -21,6 +21,12 @@ const UnlinkInput = Type.Object({
     roundId: Type.String(),
 });
 
+const BallsInput = Type.Object({
+    // The Tapscore friendly-round share token — round-agnostic, since the
+    // roster is needed at link time, before any round carries the token.
+    token: Type.String({ minLength: 1 }),
+});
+
 // --- API descriptor ---
 //
 // Small surface for clients to link/unlink a round to a Tapscore round and read
@@ -49,6 +55,13 @@ export function createTapscoreBridgeApi(svc: TapscoreBridgeService) {
             path: '/rounds/tapscore-unlink',
             fn: (input: Static<typeof UnlinkInput>) => svc.unlink(input.roundId),
             schema: UnlinkInput,
+            middleware: mw,
+        },
+        balls: {
+            method: 'GET' as const,
+            path: '/rounds/tapscore-balls',
+            fn: (input: Static<typeof BallsInput>) => svc.balls(input.token),
+            schema: BallsInput,
             middleware: mw,
         },
     };
