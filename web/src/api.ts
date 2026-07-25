@@ -1,3 +1,4 @@
+import { API_BASE } from '@basics/core/client/base';
 import { createMetaClient } from '../../shared/api/meta.gen';
 import { createSitesClient } from '../../shared/api/sites.gen';
 import { createCoursesClient } from '../../shared/api/courses.gen';
@@ -19,23 +20,33 @@ import { createTerrainEditsClient } from '../../shared/api/terrain-edits.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
+/**
+ * Base for every app API call. `API_BASE` is `BASE_PATH + '/api'`, where
+ * BASE_PATH comes from vite's `import.meta.env.BASE_URL` — '' when served at
+ * the root (dev, a bare VPS) and '/golf-map' behind the sig-infra Caddy path
+ * route. A hardcoded '/api' would resolve against the origin root and hit a
+ * different service on that shared, path-routed host. Re-exported here so app
+ * code has one import for it. See docs/reference/sig-infra-deploy.md.
+ */
+export { API_BASE };
+
 export const api = {
-    meta: createMetaClient('/api'),
-    sites: createSitesClient('/api'),
-    courses: createCoursesClient('/api'),
-    holes: createHolesClient('/api'),
-    tees: createTeesClient('/api'),
-    greens: createGreensClient('/api'),
-    pins: createPinsClient('/api'),
-    aimPoints: createAimPointsClient('/api'),
-    courseFeatures: createCourseFeaturesClient('/api'),
-    clubs: createClubsClient('/api'),
-    gamePlans: createGamePlansClient('/api'),
-    rounds: createRoundsClient('/api'),
-    assets: createAssetsClient('/api'),
-    mapBuild: createMapBuildClient('/api'),
-    orthoPatches: createOrthoPatchesClient('/api'),
-    hydro: createHydroClient('/api'),
-    osm: createOsmClient('/api'),
-    terrainEdits: createTerrainEditsClient('/api'),
+    meta: createMetaClient(API_BASE),
+    sites: createSitesClient(API_BASE),
+    courses: createCoursesClient(API_BASE),
+    holes: createHolesClient(API_BASE),
+    tees: createTeesClient(API_BASE),
+    greens: createGreensClient(API_BASE),
+    pins: createPinsClient(API_BASE),
+    aimPoints: createAimPointsClient(API_BASE),
+    courseFeatures: createCourseFeaturesClient(API_BASE),
+    clubs: createClubsClient(API_BASE),
+    gamePlans: createGamePlansClient(API_BASE),
+    rounds: createRoundsClient(API_BASE),
+    assets: createAssetsClient(API_BASE),
+    mapBuild: createMapBuildClient(API_BASE),
+    orthoPatches: createOrthoPatchesClient(API_BASE),
+    hydro: createHydroClient(API_BASE),
+    osm: createOsmClient(API_BASE),
+    terrainEdits: createTerrainEditsClient(API_BASE),
 };

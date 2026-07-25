@@ -1,3 +1,4 @@
+import { API_BASE } from '@basics/core/client/base';
 import { Signal } from '@basics/core/client/core';
 import {
     createPuttEstimateClient,
@@ -23,7 +24,7 @@ export class PuttEstimateService {
     readonly loading = new Signal(false);
 
     constructor(
-        private api: PuttEstimateApi = createPuttEstimateClient('/api'),
+        private api: PuttEstimateApi = createPuttEstimateClient(API_BASE),
     ) {}
 
     /**

@@ -1,5 +1,7 @@
 import { defineConfig, type Plugin } from 'vite';
 import { resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { applyManifestBase } from './scripts/manifest-base';
 
 // The API server the dev server proxies /api + /tiles to. Defaults to the
 // standard dev port (3000); the E2E harness overrides it (API_PROXY_TARGET)
@@ -34,8 +36,56 @@ function mobileSpaFallback(): Plugin {
     };
 }
 
-export default defineConfig({
-    plugins: [mobileSpaFallback()],
+/**
+ * Applies the deploy `base` to the PWA manifest's root-absolute URLs.
+ *
+ * Vite rewrites `href`/`src` attributes in the html entries for `base`, but the
+ * manifest is a public/ file copied byte for byte — its `scope`/`start_url`/
+ * icon paths would still point at the origin root. `closeBundle` runs after the
+ * public dir has been copied into outDir, so the emitted copy is patched in
+ * place (the committed source file is never touched). See scripts/manifest-base.ts
+ * for why relative URLs are not the answer here.
+ */
+function baseAwareManifest(): Plugin {
+    let outDir = 'dist';
+    let base = '/';
+    return {
+        name: 'base-aware-manifest',
+        apply: 'build',
+        configResolved(config) {
+            outDir = resolve(config.root, config.build.outDir);
+            base = config.base;
+        },
+        closeBundle() {
+            const file = resolve(outDir, 'm/manifest.webmanifest');
+            if (!existsSync(file)) return;
+            writeFileSync(file, applyManifestBase(readFileSync(file, 'utf8'), base));
+        },
+    };
+}
+
+export default defineConfig(({ command }) => ({
+    // Served behind Caddy at https://app.swedenindoorgolf.se/golf-map/ in
+    // production (Caddy `handle_path` strips the /golf-map prefix before
+    // proxying, so the bun server still sees rooted paths — only the BROWSER
+    // carries the prefix). `base` is what puts the prefix back on everything
+    // the browser resolves: hashed asset URLs in both html entries, and
+    // `import.meta.env.BASE_URL`, which @basics/core reads in client/base.ts to
+    // derive BASE_PATH → the router's push/pop base and API_BASE.
+    //
+    // Keyed on vite's `command`, NOT `NODE_ENV === 'production'`: vite only
+    // defaults NODE_ENV to production when it is UNSET, so an inherited
+    // NODE_ENV (bun test exports `test`; some CI shells export `development`)
+    // would silently build a root-based bundle that 404s on the VPS. `command`
+    // is 'build' for every build and 'serve' for `vite dev`, so the e2e
+    // harness and dev server stay at '/' by construction.
+    //
+    // A box that serves the app at the ORIGIN ROOT instead — the standalone
+    // setup in docs/reference/vps-serve-runbook.md, with no path-routing proxy
+    // in front — overrides it: `WEB_BASE=/ bun run build`.
+    // See docs/reference/sig-infra-deploy.md.
+    base: process.env.WEB_BASE ?? (command === 'build' ? '/golf-map/' : '/'),
+    plugins: [mobileSpaFallback(), baseAwareManifest()],
     build: {
         rollupOptions: {
             // Two entries: the desktop builder (index.html) and the mobile
@@ -63,4 +113,4 @@ export default defineConfig({
             },
         },
     },
-});
+}));

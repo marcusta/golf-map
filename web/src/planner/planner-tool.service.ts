@@ -1,3 +1,4 @@
+import { API_BASE } from '@basics/core/client/base';
 import { Signal, Computed, effect, untrack, di, Router } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
 import type { FeatureCollection } from 'geojson';
@@ -344,7 +345,7 @@ export class PlannerToolService {
     readonly sim = di.get(HoleSimService);
 
     /** Injectable for tests (green-slope fetch, D10 seam) — real default hits `/api`. */
-    constructor(private analysisApi: AnalysisApi = createAnalysisClient('/api')) {}
+    constructor(private analysisApi: AnalysisApi = createAnalysisClient(API_BASE)) {}
 
     readonly mode = new Signal<PlannerMode>('select');
     readonly selection = new Signal<PlannerSelection>(null);

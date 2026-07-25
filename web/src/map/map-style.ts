@@ -2,6 +2,7 @@
 // import (types only) so these functions are unit-testable under bun test —
 // MapLibre itself cannot run in happy-dom.
 import type { StyleSpecification, LayerSpecification, RasterSourceSpecification } from 'maplibre-gl';
+import { BASE_PATH } from '@basics/core/client/base';
 import type { TileBounds, TileManifest } from './tileset.service';
 
 /** Source/layer ids — stable public constants downstream tools may reference. */
@@ -38,6 +39,11 @@ export function orthoLayerId(collection: string): string {
  *
  * `collection` selects a non-active ortho vintage tiled under
  * `ortho/<collection>/`; omit it for the flat (build-time active) ortho tree.
+ *
+ * BASE_PATH carries the deploy prefix ('' at the root, '/golf-map' behind the
+ * sig-infra Caddy path route). MapLibre resolves these templates against the
+ * document origin, so a bare '/tiles/…' would leave the prefix off and 404 —
+ * and unlike a failed fetch it surfaces only as blank map tiles.
  */
 export function tileUrlTemplate(
     mapKey: string,
@@ -48,7 +54,7 @@ export function tileUrlTemplate(
 ): string {
     // mapKey = the site id (the shared map's on-disk/URL key), not the course id.
     const query = collection ? `?v=${version}&c=${collection}` : `?v=${version}`;
-    return `/tiles/${mapKey}/${layer}/{z}/{x}/{y}.${ext}${query}`;
+    return `${BASE_PATH}/tiles/${mapKey}/${layer}/{z}/{x}/{y}.${ext}${query}`;
 }
 
 /** Manifest bounds → MapLibre `[west, south, east, north]` array. */

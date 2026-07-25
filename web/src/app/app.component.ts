@@ -1,5 +1,9 @@
 import { Component, Router, template } from '@basics/core/client/core';
 import { AuthService } from '@basics/core/client/auth';
+// Router.navigate() prepends the deploy base itself, so route strings stay
+// app-relative; only the literal `href` (middle-click / open-in-new-tab, which
+// bypasses the onclick handler) has to carry the prefix.
+import { BASE_PATH } from '@basics/core/client/base';
 import { t } from '../theme';
 import { s } from '../css';
 import { LoginComponent } from '../auth/login.component';
@@ -16,9 +20,9 @@ import { icon } from '../ui/icons';
 const tpl = template(`
     <div bind="layout" class="app-layout">
         <header bind="topbar" class="topbar">
-            <a bind="homeLink" href="/">${icon('flag', 20)} Golf Map</a>
+            <a bind="homeLink" href="${BASE_PATH}/">${icon('flag', 20)} Golf Map</a>
             <span class="topbar__spacer"></span>
-            <a bind="playerLink" href="/player" class="topbar__player">Player</a>
+            <a bind="playerLink" href="${BASE_PATH}/player" class="topbar__player">Player</a>
             <span bind="username" class="topbar__user"></span>
             <button bind="logout" class="topbar__logout">Log out</button>
         </header>

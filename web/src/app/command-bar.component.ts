@@ -1,5 +1,7 @@
 import { Component, Computed, Router, template, effect, untrack } from '@basics/core/client/core';
 import { AuthService } from '@basics/core/client/auth';
+// Only the literal `href` needs the deploy prefix — router.navigate() adds it.
+import { BASE_PATH } from '@basics/core/client/base';
 import { t } from '../theme';
 import { s, statusTag, iconBtn, metric, panelTitle, selectedRow } from '../css';
 import { icon } from '../ui/icons';
@@ -23,7 +25,7 @@ const tpl = template(`
     <header class="cmdbar" bind="root">
         <span class="cmdbar__identity">
             <span class="cmdbar__glyph">${icon('flag', 16)}</span>
-            <a bind="courses" class="cmdbar__courses" href="/">&#8249; Courses</a>
+            <a bind="courses" class="cmdbar__courses" href="${BASE_PATH}/">&#8249; Courses</a>
             <span bind="name" class="cmdbar__name" data-testid="course-name"></span>
             <span bind="status" class="cmdbar__pill"></span>
             <span bind="odbl" class="cmdbar__pill odbl" data-testid="course-odbl-pill"></span>

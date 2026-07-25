@@ -1,3 +1,4 @@
+import { API_BASE } from '@basics/core/client/base';
 import { Signal, Computed } from '@basics/core/client/core';
 import { request, type RequestError } from '@basics/core/client/request';
 import {
@@ -272,8 +273,8 @@ export class PuttReadService {
     private readonly result = new Signal<{ sig: string; value: PuttReadResult } | null>(null);
 
     constructor(
-        private analysisApi: AnalysisApi = createAnalysisClient('/api'),
-        private calibrationApi: GreenCalibrationApi = createGreenCalibrationClient('/api'),
+        private analysisApi: AnalysisApi = createAnalysisClient(API_BASE),
+        private calibrationApi: GreenCalibrationApi = createGreenCalibrationClient(API_BASE),
     ) {}
 
     /** Calibration confidence for the active green, or null (uncalibrated). */

@@ -1,3 +1,4 @@
+import { API_BASE } from '@basics/core/client/base';
 import { Signal, Computed, effect, untrack } from '@basics/core/client/core';
 import { request, type RequestError } from '@basics/core/client/request';
 import { createAnalysisClient, type AnalysisApi, type SampleGrid } from '../../../shared/api/analysis.gen';
@@ -82,7 +83,7 @@ export class AnalysisToolService {
     /** Derived slope/stats cache — recomputed only when the grid object changes. */
     private derivedCache: { grid: SampleGrid; slope: SlopeGrid; stats: AnalysisStats } | null = null;
 
-    constructor(private analysisApi: AnalysisApi = createAnalysisClient('/api')) {}
+    constructor(private analysisApi: AnalysisApi = createAnalysisClient(API_BASE)) {}
 
     /** Renderable state: grid + mode + boundary geometry + derived slope/stats. */
     readonly view = new Computed<AnalysisView | null>(() => {
