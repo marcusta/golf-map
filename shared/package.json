@@ -3,7 +3,7 @@
     "private": true,
     "type": "module",
     "dependencies": {
-        "@basics/core": "file:../../mackans-client-fw/core",
+        "@basics/core": "file:../vendor/basics-core-1.1.0.tgz",
         "polygon-clipping": "^0.15.7"
     },
     "devDependencies": {

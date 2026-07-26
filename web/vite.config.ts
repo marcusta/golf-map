@@ -86,6 +86,10 @@ export default defineConfig(({ command }) => ({
     // See docs/reference/sig-infra-deploy.md.
     base: process.env.WEB_BASE ?? (command === 'build' ? '/golf-map/' : '/'),
     plugins: [mobileSpaFallback(), baseAwareManifest()],
+    // @basics/core ships TypeScript source, not a bundle. Excluding it from
+    // pre-bundling lets `bun link @basics/core` HMR framework source during
+    // active framework work; harmless when consuming the vendored tarball.
+    optimizeDeps: { exclude: ['@basics/core'] },
     build: {
         rollupOptions: {
             // Two entries: the desktop builder (index.html) and the mobile

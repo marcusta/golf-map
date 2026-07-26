@@ -1,7 +1,11 @@
 {
     "name": "golf-map",
     "private": true,
-    "workspaces": ["server", "web", "shared"],
+    "workspaces": [
+        "server",
+        "web",
+        "shared"
+    ],
     "scripts": {
         "start": "bun server/main.ts",
         "db:migrate": "bun ./scripts/migrate.ts",
@@ -10,10 +14,12 @@
         "e2e:headed": "playwright test --config e2e/playwright.config.ts --headed",
         "e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
         "e2e:reordered": "bun e2e/reorder-specs.ts && E2E_TEST_DIR=e2e/.tests-reordered playwright test --config e2e/playwright.config.ts",
-        "test:scripts": "bun test ./scripts/"
+        "test:scripts": "bun ../mackans-client-fw/tools/assert-not-linked.ts && bun test ./scripts/",
+        "fw:update": "bun ../mackans-client-fw/tools/update.ts",
+        "fw:check": "bun ../mackans-client-fw/tools/assert-not-linked.ts"
     },
     "dependencies": {
-        "@basics/core": "file:../mackans-client-fw/core",
+        "@basics/core": "file:./vendor/basics-core-1.1.0.tgz",
         "kysely": "^0.27",
         "kysely-bun-sqlite": "^0.3"
     },

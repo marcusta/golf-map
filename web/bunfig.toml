@@ -1,2 +1,6 @@
+# The client tests render real components, so they need a DOM. @basics/core
+# ships the happy-dom adapter as a package export; preloading it here replaces
+# the hand-rolled local shim (which predates the event-realm fix in the
+# framework's own adapter — see CHANGELOG 1.0.0, b4ac1f6).
 [test]
-preload = ["./happy-dom.ts"]
+preload = ["@basics/core/happy-dom"]

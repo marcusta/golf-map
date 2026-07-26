@@ -8,10 +8,10 @@
         "demo": "bun run demo/serve.ts",
         "check:client": "tsc --noEmit",
         "check:test": "tsc -p tsconfig.test.json --noEmit",
-        "test": "bun test"
+        "test": "bun ../../mackans-client-fw/tools/assert-not-linked.ts && bun test"
     },
     "dependencies": {
-        "@basics/core": "file:../../mackans-client-fw/core",
+        "@basics/core": "file:../vendor/basics-core-1.1.0.tgz",
         "maplibre-gl": "^5.24.0",
         "polygon-clipping": "^0.15.7"
     },

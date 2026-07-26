@@ -5,7 +5,7 @@
     "": {
       "name": "golf-map",
       "dependencies": {
-        "@basics/core": "file:../mackans-client-fw/core",
+        "@basics/core": "file:./vendor/basics-core-1.1.0.tgz",
         "kysely": "^0.27",
         "kysely-bun-sqlite": "^0.3",
       },
@@ -17,7 +17,7 @@
     "server": {
       "name": "server",
       "dependencies": {
-        "@basics/core": "file:../../mackans-client-fw/core",
+        "@basics/core": "file:../vendor/basics-core-1.1.0.tgz",
         "@sinclair/typebox": "^0.34",
         "geotiff": "^3.0.5",
         "hono": "^4",
@@ -34,7 +34,7 @@
     "shared": {
       "name": "shared",
       "dependencies": {
-        "@basics/core": "file:../../mackans-client-fw/core",
+        "@basics/core": "file:../vendor/basics-core-1.1.0.tgz",
         "polygon-clipping": "^0.15.7",
       },
       "devDependencies": {
@@ -44,7 +44,7 @@
     "web": {
       "name": "web",
       "dependencies": {
-        "@basics/core": "file:../../mackans-client-fw/core",
+        "@basics/core": "file:../vendor/basics-core-1.1.0.tgz",
         "maplibre-gl": "^5.24.0",
         "polygon-clipping": "^0.15.7",
       },
@@ -58,7 +58,7 @@
     },
   },
   "packages": {
-    "@basics/core": ["@basics/core@file:../mackans-client-fw/core", { "devDependencies": { "happy-dom": "^20.6.1" }, "peerDependencies": { "@sinclair/typebox": "^0.34", "happy-dom": "^20", "hono": "^4", "kysely": "^0.27", "kysely-bun-sqlite": "^0.3", "typescript": "^5" }, "optionalPeers": ["happy-dom"] }],
+    "@basics/core": ["@basics/core@./vendor/basics-core-1.1.0.tgz", { "peerDependencies": { "@sinclair/typebox": "^0.34", "happy-dom": "^20", "hono": "^4", "kysely": "^0.27", "kysely-bun-sqlite": "^0.3", "typescript": "^5" }, "optionalPeers": ["happy-dom"] }, "sha512-WWO8XbuWU/F/MmEWK5wSbceKteURCWWXacMONV/EQj3TdHyNxQOjBB9cZRUOhiP3DQ9ximgxgiFyvrElaA5tZQ=="],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.28.1", "", { "os": "aix", "cpu": "ppc64" }, "sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ=="],
 
@@ -308,10 +308,10 @@
 
     "playwright/fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
 
-    "server/@basics/core": ["@basics/core@file:../mackans-client-fw/core", { "devDependencies": { "happy-dom": "^20.6.1" }, "peerDependencies": { "@sinclair/typebox": "^0.34", "happy-dom": "^20", "hono": "^4", "kysely": "^0.27", "kysely-bun-sqlite": "^0.3", "typescript": "^5" }, "optionalPeers": ["happy-dom"] }],
+    "server/@basics/core": ["@basics/core@../vendor/basics-core-1.1.0.tgz", { "peerDependencies": { "@sinclair/typebox": "^0.34", "happy-dom": "^20", "hono": "^4", "kysely": "^0.27", "kysely-bun-sqlite": "^0.3", "typescript": "^5" }, "optionalPeers": ["happy-dom"] }, "sha512-WWO8XbuWU/F/MmEWK5wSbceKteURCWWXacMONV/EQj3TdHyNxQOjBB9cZRUOhiP3DQ9ximgxgiFyvrElaA5tZQ=="],
 
-    "shared/@basics/core": ["@basics/core@file:../mackans-client-fw/core", { "devDependencies": { "happy-dom": "^20.6.1" }, "peerDependencies": { "@sinclair/typebox": "^0.34", "happy-dom": "^20", "hono": "^4", "kysely": "^0.27", "kysely-bun-sqlite": "^0.3", "typescript": "^5" }, "optionalPeers": ["happy-dom"] }],
+    "shared/@basics/core": ["@basics/core@../vendor/basics-core-1.1.0.tgz", { "peerDependencies": { "@sinclair/typebox": "^0.34", "happy-dom": "^20", "hono": "^4", "kysely": "^0.27", "kysely-bun-sqlite": "^0.3", "typescript": "^5" }, "optionalPeers": ["happy-dom"] }, "sha512-WWO8XbuWU/F/MmEWK5wSbceKteURCWWXacMONV/EQj3TdHyNxQOjBB9cZRUOhiP3DQ9ximgxgiFyvrElaA5tZQ=="],
 
-    "web/@basics/core": ["@basics/core@file:../mackans-client-fw/core", { "devDependencies": { "happy-dom": "^20.6.1" }, "peerDependencies": { "@sinclair/typebox": "^0.34", "happy-dom": "^20", "hono": "^4", "kysely": "^0.27", "kysely-bun-sqlite": "^0.3", "typescript": "^5" }, "optionalPeers": ["happy-dom"] }],
+    "web/@basics/core": ["@basics/core@../vendor/basics-core-1.1.0.tgz", { "peerDependencies": { "@sinclair/typebox": "^0.34", "happy-dom": "^20", "hono": "^4", "kysely": "^0.27", "kysely-bun-sqlite": "^0.3", "typescript": "^5" }, "optionalPeers": ["happy-dom"] }, "sha512-WWO8XbuWU/F/MmEWK5wSbceKteURCWWXacMONV/EQj3TdHyNxQOjBB9cZRUOhiP3DQ9ximgxgiFyvrElaA5tZQ=="],
   }
 }

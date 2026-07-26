@@ -6,8 +6,8 @@
         "dev:server": "CROSS_ORIGIN_RESOURCE_POLICY=same-site DATA_DIR=../data DB_PATH=../data/app.sqlite SESSION_DB_PATH=../data/sessions.sqlite OBS_DB_PATH=../data/obs.sqlite bun --watch main.ts",
         "check:server": "tsc -p tsconfig.server.json --noEmit",
         "check:test": "tsc -p tsconfig.test.json --noEmit",
-        "generate": "BASICS_API_IN_DIR=api BASICS_API_OUT_DIR=../shared/api bun ../../mackans-client-fw/core/generate-api.ts",
-        "test": "bun test",
+        "generate": "BASICS_API_IN_DIR=api BASICS_API_OUT_DIR=../shared/api bun node_modules/@basics/core/generate-api.ts",
+        "test": "bun ../../mackans-client-fw/tools/assert-not-linked.ts && bun test",
         "test:server": "bun test .",
         "create-user": "DB_PATH=../data/app.sqlite bun db/create-user.ts",
         "import": "DB_PATH=../data/app.sqlite bun db/import.ts",
@@ -15,7 +15,7 @@
         "obs:rotate": "OBS_DB_PATH=${OBS_DB_PATH:-../data/obs.sqlite} bun scripts/obs-rotate.ts"
     },
     "dependencies": {
-        "@basics/core": "file:../../mackans-client-fw/core",
+        "@basics/core": "file:../vendor/basics-core-1.1.0.tgz",
         "@sinclair/typebox": "^0.34",
         "geotiff": "^3.0.5",
         "hono": "^4",
