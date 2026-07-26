@@ -2072,6 +2072,25 @@ final class OnCourseModel {
         return route
     }
 
+    /// `holeRoute` as map geometry: the hole's authored routing drawn under
+    /// every plan layer. Course DEFINITION, not strategy — it draws whether or
+    /// not the course has a game plan, which is the point: the plan overlay's
+    /// legs come from planned shots and collapse to a straight tee → green
+    /// segment on an unplanned hole, hiding the dogleg the aim points encode.
+    /// Empty on a hole without aim points: there the route IS tee → green, and
+    /// a second line under the plan leg would only double the stroke.
+    /// Override-resolved positions (same as `holeRoute` / the Adjust handles),
+    /// so dragging an aim moves the drawn routing with it.
+    var courseRouteOverlay: CourseRouteOverlay {
+        guard let hole = currentHole, !hole.aimPoints.isEmpty else { return .empty }
+        let route = holeRoute
+        guard route.count >= 2 else { return .empty }
+        return CourseRouteOverlay(
+            line: route,
+            aims: hole.aimPoints.map { aimPosition(for: $0, in: hole) }
+        )
+    }
+
     /// Per-leg distances along `holeRoute`, whole meters, in order
     /// (tee→aim1, aim1→aim2, …, →green). Empty for a < 2-point route.
     var routeLegs: [Int] {
@@ -4629,6 +4648,7 @@ final class OnCourseModel {
             userLocation: isUsingGPS ? effectiveUserLocation.map { UserLocationMarker(position: $0) } : nil,
             routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : [],
             plan: plan,
+            courseRoute: courseRouteOverlay,
             highlight: isBrowseMode ? browseTarget ?? mapFocus ?? browseOrigin : mapFocus,
             selectedEllipse: selectedTargetEllipse,
             selectedWindHold: selectedTargetWindHold,

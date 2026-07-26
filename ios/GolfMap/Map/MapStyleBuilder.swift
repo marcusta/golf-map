@@ -14,6 +14,17 @@ public enum MapStyleIDs {
     // Dynamic overlay sources start out as empty FeatureCollections in the
     // style; CourseMapView updates them at runtime via MLNShapeSource.shape.
 
+    // Course route (course DEFINITION, not player strategy): the hole's
+    // routing tee → aim points → green center. Aim-point count gives the par,
+    // their positions give the doglegs, so this line shows where the hole goes
+    // even when there is no plan (or a partial one) — the plan's own legs
+    // collapse to a straight tee → green segment there. Drawn UNDER every plan
+    // layer and the distance line: it is the quietest thing on the map.
+    public static let courseRouteSource = "overlay-course-route"
+    public static let courseRouteLayer = "overlay-course-route"
+    public static let courseRouteNodesSource = "overlay-course-route-nodes"
+    public static let courseRouteNodesLayer = "overlay-course-route-nodes"
+
     // Game-plan strategy overlay (read-only viewer): dashed leg polyline,
     // landing-point nodes, and gate cross-lines. Drawn UNDER the distance
     // line — the plan is "the strategy", the white line is "where I am".
@@ -128,6 +139,14 @@ public enum MapStyleBuilder {
     static let distanceLineWidth = 2.5
     static let distanceLineCasingColor = "#14281c"
     static let distanceLineCasingWidth = 5.0
+
+    // Course-route styling: neutral + dashed and thinner than the plan line,
+    // so the authored routing reads as course data rather than as a played
+    // leg. Same `--data-neutral` token the web planner's course route uses.
+    static let courseRouteColor = "#9C917A"
+    static let courseRouteWidth = 2.0
+    static let courseRouteDashArray = [2.0, 1.5]
+    static let courseRouteNodeRadius = 4.0
 
     // Game-plan overlay: violet strategy palette, clearly distinct from the
     // white "where I am" distance line and the amber measure path. The leg
@@ -335,6 +354,8 @@ public enum MapStyleBuilder {
         let sources: [String: Any] = [
             MapStyleIDs.orthoSource: orthoSource,
             MapStyleIDs.featuresSource: ["type": "geojson", "data": features],
+            MapStyleIDs.courseRouteSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.courseRouteNodesSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.planLineSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.planGatesSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.planNodesSource: ["type": "geojson", "data": emptyCollection],
@@ -409,6 +430,32 @@ public enum MapStyleBuilder {
                 "paint": [
                     "fill-color": FeaturePalette.typeColorExpression(outline: false),
                     "fill-opacity": FeaturePalette.fillOpacity,
+                ],
+            ],
+            [
+                // Course route below the whole overlay stack: the hole's
+                // authored routing (tee → aims → green) is context for
+                // everything drawn on it, never a played line.
+                "id": MapStyleIDs.courseRouteLayer,
+                "type": "line",
+                "source": MapStyleIDs.courseRouteSource,
+                "layout": ["line-cap": "round", "line-join": "round"],
+                "paint": [
+                    "line-color": courseRouteColor,
+                    "line-width": courseRouteWidth,
+                    "line-dasharray": courseRouteDashArray,
+                    "line-opacity": 0.8,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.courseRouteNodesLayer,
+                "type": "circle",
+                "source": MapStyleIDs.courseRouteNodesSource,
+                "paint": [
+                    "circle-color": courseRouteColor,
+                    "circle-radius": courseRouteNodeRadius,
+                    "circle-stroke-color": planLineCasingColor,
+                    "circle-stroke-width": 1.5,
                 ],
             ],
             [

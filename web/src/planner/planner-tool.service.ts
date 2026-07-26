@@ -52,14 +52,17 @@ import { lngLatToSweref99tm, sweref99tmToWgs84, wgs84ToSweref99tm } from '../geo
 import { PlanService, type PlanHoleRow } from './plan.service';
 import { ClubsService } from '../player/clubs.service';
 import {
+    COURSE_ROUTE_OVERLAY_ID,
     PLAN_OVERLAY_ID,
     GATE_DEFAULT_HALF_WIDTH_M,
     autoGatesForPlan,
     branchChainLegs,
+    buildCourseRouteGeojson,
     buildHolePlan,
     buildOptionChips,
     buildPlanGeojson,
     chainScoreContext,
+    courseRouteLayers,
     enrichPlanStrategy,
     ghostAimForLeg,
     nearestLegFoot,
@@ -361,6 +364,7 @@ export class PlannerToolService {
     private caddyOverlayAdded = false;
     private puttOverlayAdded = false;
     private browseOverlayAdded = false;
+    private courseRouteOverlayAdded = false;
     private browseSampleSeq = 0;
     private browseInspectionSeq = 0;
 
@@ -1507,6 +1511,32 @@ export class PlannerToolService {
         });
     });
 
+    /**
+     * The selected hole's COURSE ROUTE — tee → aim points → green — as its own
+     * FeatureCollection. Course definition, not player strategy: the plan
+     * overlay's legs come from plan shots and collapse to a single tee → green
+     * segment on an unplanned hole, which hides the hole's doglegs. This line
+     * draws them regardless (and stays put once shots exist, under the legs).
+     * Empty when the hole has no aim points — then the plan's own tee → green
+     * leg already IS the route, and a second identical line would just double it.
+     */
+    private readonly courseRouteData = new Computed<FeatureCollection>(() => {
+        const empty: FeatureCollection = { type: 'FeatureCollection', features: [] };
+        // Putt mode owns the map (same reason as the plan overlay above).
+        if (this.mode.get() === 'putt') return empty;
+        const hole = this.selectedHole.get();
+        if (!hole) return empty;
+        const tee = this.originTee.get();
+        const green = this.furniture.greenForHole(hole.id);
+        return buildCourseRouteGeojson({
+            tee: tee ? { lat: tee.lat, lon: tee.lon } : null,
+            aims: this.furniture.aimsForHole(hole.id).map(a => ({
+                id: a.id, lat: a.lat, lon: a.lon, label: a.label,
+            })),
+            green: green ? { lat: green.centerLat, lon: green.centerLon } : null,
+        });
+    });
+
     private readonly browseOverlayData = new Computed<FeatureCollection>(() => {
         if (this.mode.get() === 'putt') return { type: 'FeatureCollection', features: [] };
         const origin = this.browseOrigin.get();
@@ -1750,6 +1780,34 @@ export class PlannerToolService {
             if (this.overlayAdded) {
                 this.map.removeOverlayLayer(PLAN_OVERLAY_ID);
                 this.overlayAdded = false;
+            }
+        });
+
+        // Course route (tee → aims → green). Its own overlay so the routing
+        // never mutates or re-shapes the plan, slotted UNDER the plan overlay's
+        // first layer (`beforeId`) so the player's legs always draw on top.
+        // On the very first pass the plan overlay does not exist yet (it lands
+        // on a microtask) — `beforeId` then degrades to "on top", which gives
+        // the same stacking anyway, since the plan layers are added after.
+        track(effect(() => {
+            const ready = this.map.ready.get();
+            const data = this.courseRouteData.get();
+            if (!ready) {
+                this.courseRouteOverlayAdded = false;
+                return;
+            }
+            if (!this.courseRouteOverlayAdded) {
+                this.map.addOverlayLayer(COURSE_ROUTE_OVERLAY_ID, data, courseRouteLayers(),
+                    { beforeId: `${PLAN_OVERLAY_ID}-ellipse-fill` });
+                this.courseRouteOverlayAdded = true;
+            } else {
+                this.map.updateOverlayData(COURSE_ROUTE_OVERLAY_ID, data);
+            }
+        }));
+        track(() => {
+            if (this.courseRouteOverlayAdded) {
+                this.map.removeOverlayLayer(COURSE_ROUTE_OVERLAY_ID);
+                this.courseRouteOverlayAdded = false;
             }
         });
 

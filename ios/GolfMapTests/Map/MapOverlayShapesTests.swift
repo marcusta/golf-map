@@ -245,4 +245,36 @@ final class MapOverlayShapesTests: XCTestCase {
 
         XCTAssertEqual(bounds.expanded(byMeters: 0), bounds)
     }
+
+    func testCourseRouteShapeBuildsPolylineThroughAims() throws {
+        let route = CourseRouteOverlay(
+            line: [
+                LatLon(lat: 58.350, lon: 15.720),
+                LatLon(lat: 58.352, lon: 15.722),
+                LatLon(lat: 58.354, lon: 15.724),
+            ],
+            aims: [LatLon(lat: 58.352, lon: 15.722)]
+        )
+        let polyline = try XCTUnwrap(MapOverlayShapes.courseRouteShape(route) as? MLNPolylineFeature)
+        XCTAssertEqual(polyline.pointCount, 3)
+
+        let nodes = try XCTUnwrap(
+            MapOverlayShapes.courseRouteNodesShape(route) as? MLNShapeCollectionFeature
+        )
+        let points = try XCTUnwrap(nodes.shapes as? [MLNPointFeature])
+        XCTAssertEqual(points.count, 1)
+        XCTAssertEqual(points[0].coordinate.latitude, 58.352, accuracy: 1e-9)
+        XCTAssertEqual(points[0].coordinate.longitude, 15.722, accuracy: 1e-9)
+    }
+
+    func testEmptyCourseRouteClearsBothSources() throws {
+        let line = try XCTUnwrap(
+            MapOverlayShapes.courseRouteShape(.empty) as? MLNShapeCollectionFeature
+        )
+        XCTAssertEqual(line.shapes.count, 0)
+        let nodes = try XCTUnwrap(
+            MapOverlayShapes.courseRouteNodesShape(.empty) as? MLNShapeCollectionFeature
+        )
+        XCTAssertEqual(nodes.shapes.count, 0)
+    }
 }

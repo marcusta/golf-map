@@ -147,6 +147,8 @@ final class MapStyleBuilderTests: XCTestCase {
             MapStyleIDs.planLegTintsSource,
             MapStyleIDs.planGhostSource,
             MapStyleIDs.distanceLineSource,
+            MapStyleIDs.courseRouteSource,
+            MapStyleIDs.courseRouteNodesSource,
             MapStyleIDs.targetsSource,
             MapStyleIDs.routeLegLabelsSource,
             MapStyleIDs.ellipseLabelsSource,
@@ -174,6 +176,10 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.backgroundLayer,
                 MapStyleIDs.orthoLayer,
                 MapStyleIDs.featuresFillLayer,
+                // Course route (tee → aims → green) below the whole overlay
+                // stack — course definition, context for everything above it.
+                MapStyleIDs.courseRouteLayer,
+                MapStyleIDs.courseRouteNodesLayer,
                 // Shot-viz dispersion ellipses sit at the bottom of the plan
                 // stack so the leg line / nodes / gates all read over them.
                 MapStyleIDs.planEllipsesFillLayer,
@@ -368,7 +374,7 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 32)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 34)
     }
 
     // MARK: - Shot-visualisation overlay (T2)

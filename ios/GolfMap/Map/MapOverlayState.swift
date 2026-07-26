@@ -207,6 +207,27 @@ public struct PlanOverlay: Equatable, Sendable {
     }
 }
 
+/// The hole's COURSE ROUTE: the authored routing tee → aim points → green
+/// center. Course definition, not player strategy — aim-point count gives the
+/// par and their positions give the doglegs, so this draws whether or not a
+/// game plan exists. It sits under every plan layer: the plan's own legs come
+/// from planned shots and collapse to a straight tee → green segment on an
+/// unplanned hole, which would otherwise hide the hole's shape entirely.
+///
+/// `line` is the full polyline (fewer than two points hides it); `aims` are
+/// just the aim vertices, drawn as small dots.
+public struct CourseRouteOverlay: Equatable, Sendable {
+    public var line: [LatLon]
+    public var aims: [LatLon]
+
+    public init(line: [LatLon] = [], aims: [LatLon] = []) {
+        self.line = line
+        self.aims = aims
+    }
+
+    public static let empty = CourseRouteOverlay()
+}
+
 /// Everything dynamic drawn on top of the course map. Value type — the
 /// SwiftUI layer builds a new state and passes it to `CourseMapView`; updates
 /// are cheap (shape reassignment on existing sources, no style reload).
@@ -230,6 +251,10 @@ public struct MapOverlayState: Equatable, Sendable {
     /// Game-plan strategy overlay for the active hole; nil hides it (course
     /// has no plan, hole has no plan content, or the plan toggle is off).
     public var plan: PlanOverlay?
+    /// The active hole's authored routing (tee → aims → green); `.empty` hides
+    /// it (hole with no aim points — there the plan's tee → green leg IS the
+    /// route, and a second line under it would only double the stroke).
+    public var courseRoute: CourseRouteOverlay
     /// The feature a tapped distance-ladder row focused (cyan ring); nil hides
     /// it. Cleared with the camera focus (`recenter()` / hole change).
     public var highlight: LatLon?
@@ -252,6 +277,7 @@ public struct MapOverlayState: Equatable, Sendable {
         routeLegLabels: [RouteLegLabel] = [],
         adjustHandles: [AdjustHandle] = [],
         plan: PlanOverlay? = nil,
+        courseRoute: CourseRouteOverlay = .empty,
         highlight: LatLon? = nil,
         selectedEllipse: [LatLon]? = nil,
         selectedWindHold: TargetWindHold? = nil,
@@ -264,6 +290,7 @@ public struct MapOverlayState: Equatable, Sendable {
         self.routeLegLabels = routeLegLabels
         self.adjustHandles = adjustHandles
         self.plan = plan
+        self.courseRoute = courseRoute
         self.highlight = highlight
         self.selectedEllipse = selectedEllipse
         self.selectedWindHold = selectedWindHold
@@ -361,6 +388,24 @@ enum MapOverlayShapes {
         return MLNShapeCollectionFeature(shapes: features)
     }
 
+    // MARK: Course route
+
+    /// The course-route polyline (hidden below two points, like every other
+    /// line). `CourseRouteOverlay.line` is already `tee → aims → green`.
+    static func courseRouteShape(_ route: CourseRouteOverlay) -> MLNShape {
+        distanceLineShape(route.line)
+    }
+
+    /// The route's aim vertices as point features.
+    static func courseRouteNodesShape(_ route: CourseRouteOverlay) -> MLNShape {
+        let features = route.aims.map { position -> MLNPointFeature in
+            let feature = MLNPointFeature()
+            feature.coordinate = position.clCoordinate
+            return feature
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
+
     // MARK: Game-plan overlay
 
     /// The plan leg polyline (hidden below two points, like the distance line).
@@ -453,6 +498,16 @@ enum MapOverlayShapes {
 @MainActor
 enum MapOverlayRenderer {
     static func apply(_ state: MapOverlayState, to style: MLNStyle) {
+        setShape(
+            MapOverlayShapes.courseRouteShape(state.courseRoute),
+            sourceID: MapStyleIDs.courseRouteSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.courseRouteNodesShape(state.courseRoute),
+            sourceID: MapStyleIDs.courseRouteNodesSource,
+            in: style
+        )
         setShape(
             MapOverlayShapes.planLineShape(state.plan),
             sourceID: MapStyleIDs.planLineSource,

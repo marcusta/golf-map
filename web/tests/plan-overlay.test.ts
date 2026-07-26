@@ -1,10 +1,13 @@
 import { test, expect, describe } from 'bun:test';
 import {
+    COURSE_ROUTE_OVERLAY_ID,
     autoGatesForPlan,
     branchChainLegs,
+    buildCourseRouteGeojson,
     buildHolePlan,
     buildOptionChips,
     chainScoreContext,
+    courseRouteLayers,
     buildPlanGeojson,
     enrichLegStrategy,
     enrichPlanStrategy,
@@ -1088,5 +1091,66 @@ describe('branchChainLegs / chainScoreContext', () => {
         expect(shotDepthInPlan(plan, driver.id)).toBe(0);
         expect(shotDepthInPlan(plan, wedge.id)).toBe(1);
         expect(shotDepthInPlan(plan, 'nope')).toBe(0);
+    });
+});
+
+// ── Course route (tee → aim points → green) ────────────────────────────────
+
+describe('buildCourseRouteGeojson', () => {
+    const TEE = { lat: 58.4012, lon: 15.5698 };
+    const GREEN = { lat: 58.4020, lon: 15.5649 };
+    const AIM = { id: 'a1', lat: 58.4014, lon: 15.5663, label: null };
+
+    test('routes the line tee → aims → green in aim order', () => {
+        const fc = buildCourseRouteGeojson({
+            tee: TEE,
+            aims: [AIM, { id: 'a2', lat: 58.4018, lon: 15.5655, label: null }],
+            green: GREEN,
+        });
+        const line = fc.features.find(f => f.properties?.role === 'route');
+        expect(line).toBeDefined();
+        expect((line!.geometry as { coordinates: number[][] }).coordinates).toEqual([
+            [15.5698, 58.4012],
+            [15.5663, 58.4014],
+            [15.5655, 58.4018],
+            [15.5649, 58.4020],
+        ]);
+    });
+
+    test('emits a numbered dot per aim, authored label winning', () => {
+        const fc = buildCourseRouteGeojson({
+            tee: TEE,
+            aims: [AIM, { id: 'a2', lat: 58.4018, lon: 15.5655, label: 'Corner' }],
+            green: GREEN,
+        });
+        const aims = fc.features.filter(f => f.properties?.role === 'route-aim');
+        expect(aims.map(f => f.properties?.label)).toEqual(['Aim 1', 'Corner']);
+        expect(aims.map(f => f.properties?.id)).toEqual(['a1', 'a2']);
+    });
+
+    // A par 3 has no aim point: its route IS the plan's tee → green leg, and a
+    // second identical line under it would only double the stroke.
+    test('empty without aim points', () => {
+        expect(buildCourseRouteGeojson({ tee: TEE, aims: [], green: GREEN }).features).toEqual([]);
+    });
+
+    test('empty when fewer than two vertices survive (aim but no tee/green)', () => {
+        expect(buildCourseRouteGeojson({ tee: null, aims: [AIM], green: null }).features).toEqual([]);
+    });
+
+    test('still routes with a missing tee (aim → green)', () => {
+        const fc = buildCourseRouteGeojson({ tee: null, aims: [AIM], green: GREEN });
+        const line = fc.features.find(f => f.properties?.role === 'route');
+        expect((line!.geometry as { coordinates: number[][] }).coordinates).toHaveLength(2);
+    });
+
+    test('layer ids are prefixed with the overlay id and filter by role', () => {
+        const layers = courseRouteLayers();
+        expect(layers.map(l => l.id)).toEqual([
+            'plan-course-route-line',
+            'plan-course-route-aim',
+            'plan-course-route-aim-label',
+        ]);
+        expect(COURSE_ROUTE_OVERLAY_ID).toBe('plan-course-route');
     });
 });

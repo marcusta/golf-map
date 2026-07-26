@@ -54,6 +54,7 @@ import {
     SHOT_LINE_WIDTH,
     STATUS_BAD,
     STATUS_GOOD,
+    STATUS_NEUTRAL,
     STATUS_RISK,
 } from '../map/map-palette';
 import type { LieMap } from './lie-map';
@@ -1018,6 +1019,123 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
     return { type: 'FeatureCollection', features };
 }
 
+// ── Course route (tee → aim points → green) ────────────────────────────────
+//
+// The hole's ROUTING as authored in the course definition: aim-point count
+// gives the par, aim-point positions give the doglegs. This is deliberately
+// NOT part of `HolePlan` — plan legs are the player's strategy (plan shots),
+// while this line is course data that exists whether or not a plan does. The
+// planner draws it as its own overlay UNDER the plan legs so a hole with no
+// (or a partial) plan still shows where the hole actually goes, instead of
+// only the tee → green fallback leg. Mirrors the furniture editor's
+// `aim-line` (same polyline, same dashed treatment) and iOS's course route.
+
+/** Overlay/source id for the course-route line. */
+export const COURSE_ROUTE_OVERLAY_ID = 'plan-course-route';
+
+/** A course-route aim vertex — the source aim row's position + display label. */
+export interface CourseRouteAim {
+    id: string;
+    lat: number;
+    lon: number;
+    label: string | null;
+}
+
+export interface CourseRouteInput {
+    /** Resolved origin tee (same tee the plan anchors on), or null. */
+    tee: { lat: number; lon: number } | null;
+    /** Hole aim points in tee→green order (sortOrder). */
+    aims: readonly CourseRouteAim[];
+    /** Green center, or null. */
+    green: { lat: number; lon: number } | null;
+}
+
+/**
+ * The course-route FeatureCollection: one `route` LineString through
+ * tee → aims → green, plus a numbered `route-aim` dot per aim. Vertices reuse
+ * the source rows' WGS84 lat/lon (no projection round-trip drift). Returns an
+ * empty collection when there is no aim point (nothing to route through — the
+ * plan's own tee → green leg already draws that) or fewer than two vertices.
+ */
+export function buildCourseRouteGeojson(input: CourseRouteInput): FeatureCollection {
+    const empty: FeatureCollection = { type: 'FeatureCollection', features: [] };
+    if (input.aims.length === 0) return empty;
+
+    const coordinates: Position[] = [];
+    if (input.tee) coordinates.push([input.tee.lon, input.tee.lat]);
+    for (const aim of input.aims) coordinates.push([aim.lon, aim.lat]);
+    if (input.green) coordinates.push([input.green.lon, input.green.lat]);
+    if (coordinates.length < 2) return empty;
+
+    const features: Feature[] = [{
+        type: 'Feature',
+        properties: { role: 'route' },
+        geometry: { type: 'LineString', coordinates },
+    }];
+    input.aims.forEach((aim, index) => {
+        features.push({
+            type: 'Feature',
+            properties: {
+                role: 'route-aim',
+                id: aim.id,
+                label: aim.label?.trim() || `Aim ${index + 1}`,
+            },
+            geometry: { type: 'Point', coordinates: [aim.lon, aim.lat] },
+        });
+    });
+    return { type: 'FeatureCollection', features };
+}
+
+/**
+ * Layer specs for the course-route overlay. Neutral + dashed so the routing
+ * reads as course data rather than as a played leg — the plan's own legs keep
+ * the orange `--map-shot-line` treatment and draw on top of this.
+ */
+export function courseRouteLayers(): OverlayLayerSpec[] {
+    return [
+        {
+            id: `${COURSE_ROUTE_OVERLAY_ID}-line`,
+            type: 'line',
+            filter: role('route'),
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+                'line-color': ROUTE_COLOR,
+                'line-width': 2,
+                'line-opacity': 0.8,
+                'line-dasharray': [2, 1.5] as never,
+            },
+        },
+        {
+            id: `${COURSE_ROUTE_OVERLAY_ID}-aim`,
+            type: 'circle',
+            filter: role('route-aim'),
+            paint: {
+                'circle-radius': 4,
+                'circle-color': ROUTE_COLOR,
+                'circle-stroke-color': MARKER_FILL,
+                'circle-stroke-width': 1.5,
+            },
+        },
+        {
+            id: `${COURSE_ROUTE_OVERLAY_ID}-aim-label`,
+            type: 'symbol',
+            filter: role('route-aim'),
+            layout: {
+                'text-field': ['get', 'label'] as never,
+                'text-size': 10,
+                'text-offset': [0, -1.3],
+                'text-anchor': 'bottom',
+                'text-allow-overlap': false,
+            },
+            paint: {
+                'text-color': OVERLAY_TEXT,
+                'text-halo-color': OVERLAY_TEXT_HALO,
+                'text-halo-width': 1.2,
+            },
+        },
+    ];
+}
+
 const role = (value: string): FilterSpecification =>
     ['==', ['get', 'role'], value] as FilterSpecification;
 
@@ -1028,6 +1146,8 @@ const LEG_COLOR = SHOT_LINE_COLOR; // '#E4A15A' — --map-shot-line (guide §03 
 const ELLIPSE_COLOR = CAT.moss; // '#5C6B4A' — --data-cat-4, landing dispersion
 const GATE_COLOR = CAT.teal; // '#3E8EA0' — --data-cat-2
 const GHOST_COLOR = CAT.plum; // '#8A5A6E' — --data-cat-6, distinct from legs/gates/ellipses
+/** Course-route (tee → aims → green) line + vertices — quiet, non-strategy. */
+const ROUTE_COLOR = STATUS_NEUTRAL; // '#9C917A' — --data-neutral
 
 /** Confidence-light colours (L&L data-viz semantic ramp — good / risk / bad). */
 export const LIGHT_GREEN_COLOR = STATUS_GOOD; // '#4E7A46' — --data-good
