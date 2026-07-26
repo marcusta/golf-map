@@ -14,6 +14,14 @@ Vite + TS SPA on `@basics/core` client framework, MapLibre for maps. Course buil
 
 The package is a versioned tarball in `vendor/` — never edit `node_modules/@basics/core`, never repoint the dep string. See root [AGENTS.md](../AGENTS.md) for `fw:update` / `bun link`. After either, restart the dev server (`rm -rf node_modules/.vite` if you hit `does not provide an export named ...`). `bunfig.toml` preloads the package's own happy-dom adapter (`@basics/core/happy-dom`); there is no local shim.
 
+## Styling — local recipes, semantic tokens
+
+This is a **deliberate, assessed** divergence from the other `@basics/core` consumers. Do not "consolidate" it.
+
+- **`src/css.ts` is the source of truth for component recipes** (Links & Loam). The only thing imported from `@basics/core/client/ui` anywhere in the repo is the `s` spacing scale. Core's `btn()`/`input()`/`card()` and its table / status-pill / empty-state components are **not** used — don't port `round-sg-table.ts` and friends onto them.
+- Because the local recipes aren't core's, the recipe-ordering rule from the other consumer repos (recipe interpolation first in a block, overrides after) **does not apply here**.
+- **`src/theme.ts` speaks full semantic token names** (`color-text-primary`, `color-surface-card`, …) through the typed `t()`. Theme-invariant layers (map/data/scale/type/motion) are raw `var()` reads from `design-tokens.css`. Keep theme edits on that vocabulary: do **not** reintroduce the legacy short-name aliases (`bg`/`primary`/`text`/…) — they were deliberately removed — and do **not** apply `bridgeLegacyControls` (that helper is for legacy-vocabulary themes like tapscore; it would be wrong here). There are zero direct `var(--btn-bg|btn-hover|radius|shadow|error|input-bg|primary)` reads — keep it that way.
+
 ## Layout (`src/`)
 
 `app/` shell · `auth/` login+guard · `courses/` list · `course-detail/` · `editor/` (toolbar + `tools/`) · `draw/` (SVG feature drawing, history/undo) · `import/` (SVG orthophoto trace import) · `measure/` · `analysis/` (green slope) · `planner/` (strategy: overlay, gates, plan service) · `player/` (club config) · `map/` (MapLibre style/tiles/interaction) · `geo/` (bezier, bspline, transform) · `furniture/`.
