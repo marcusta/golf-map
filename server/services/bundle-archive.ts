@@ -29,10 +29,14 @@ async function finish(proc: Proc, label: string): Promise<void> {
  * Packs the contents of `srcDir` into `outPath` as a zstd-compressed tar.
  * Entry names are relative to `srcDir` (no leading directory), so extraction
  * lands the tree directly under the destination.
+ *
+ * `-f` because the bundle path is derived from the site id and so is stable
+ * across runs: without it a `--no-upload` dry run leaves a file that makes
+ * every later publish of that site fail with `already exists; not overwritten`.
  */
 export async function createTarZst(srcDir: string, outPath: string): Promise<void> {
     const tar = spawn(['tar', '-cf', '-', '-C', srcDir, '.'], { pipeStdout: true });
-    const zstd = spawn(['zstd', '-q', '-o', outPath, '-'], { stdin: tar.stdout as ReadableStream });
+    const zstd = spawn(['zstd', '-q', '-f', '-o', outPath, '-'], { stdin: tar.stdout as ReadableStream });
     await Promise.all([finish(tar, 'tar'), finish(zstd, 'zstd')]);
 }
 

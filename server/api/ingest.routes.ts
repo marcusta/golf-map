@@ -52,7 +52,23 @@ export function createIngestRoutes(ingestService: IngestService, dataDir: string
 
         try {
             // Stream the request body straight to disk (bundles are ~60–80 MB).
-            await Bun.write(tmpPath, new Response(c.req.raw.body));
+            //
+            // Pumped through a FileSink by hand rather than the shorter
+            // `Bun.write(tmpPath, new Response(c.req.raw.body))`: that form
+            // never resolves on Bun 1.3.6 (the VPS), so every publish hung
+            // until the client timed out while the box sat idle. The explicit
+            // reader loop behaves the same on every version and still never
+            // holds the whole bundle in memory.
+            const body = c.req.raw.body;
+            if (!body) return c.json({ error: 'Empty body' }, 400);
+            const sink = Bun.file(tmpPath).writer();
+            const reader = body.getReader();
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                sink.write(value);
+            }
+            await sink.end();
             const report = await ingestService.ingestArchive(tmpPath);
             return c.json(report);
         } catch (err) {
