@@ -20,7 +20,7 @@ import { di, Router } from '@basics/core/client/core';
 import { _reset } from '@basics/core/client/error-report';
 import { PlannerToolService } from '../src/planner/planner-tool.service';
 import { PlanService } from '../src/planner/plan.service';
-import { HoleSimService } from '../src/planner/hole-sim.service';
+import { HoleSimService, PRIMARY_BRANCH_ID } from '../src/planner/hole-sim.service';
 import { createInlineSimClient, type SimClient } from '../src/planner/sim-client';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { FeaturesService } from '../src/draw/features.service';
@@ -468,7 +468,11 @@ describe('hole simulation — the V8 invalidation state machine', () => {
  */
 function stubDiscoverClient(
     nodes: Array<{ x: number; y: number }>,
-    legs: Array<{ club?: { name: string; carryM: number; dispersionM: number } }> = [],
+    legs: Array<{
+        origin?: { x: number; y: number };
+        landing?: { x: number; y: number };
+        club?: { name: string; carryM: number; dispersionM: number };
+    }> = [],
 ): SimClient {
     const variant = {
         nodes: nodes.map((point, i) => ({
@@ -571,6 +575,80 @@ describe('suggest lines (V7) — ghosts and the accept write path', () => {
         svc.dismissVariant(ghosts[0].id);
         expect(sim.variants.get()).toEqual([]);
         expect(sim.hoveredVariantId.get()).toBeNull(); // hover follows the ghost out
+
+        stop();
+    });
+
+    test('selecting a ghost PINS it — hover leaving no longer drops the corridor', async () => {
+        seedCourse([hole('h1', 1)]);
+        seedPlanWithShots([]);
+        selectHole(1);
+        const sim = useInlineSim(stubDiscoverClient([
+            TEE_XY, { x: TEE_XY.x - 20, y: TEE_XY.y + 180 }, GREEN_XY,
+        ]));
+
+        const { svc, stop } = await startTool();
+        await svc.suggestLines();
+        const id = sim.variants.get()[0].id;
+
+        svc.selectVariant(id);
+        expect(sim.selectedVariantId.get()).toBe(id);
+        svc.hoverVariant(null); // pointer leaves — selection outlives it
+        expect(sim.selectedVariantId.get()).toBe(id);
+
+        svc.selectVariant(id); // same row again unpins
+        expect(sim.selectedVariantId.get()).toBeNull();
+
+        stop();
+    });
+
+    test('selecting a ghost simulates it alongside the primary line (§V5, on selection)', async () => {
+        seedCourse([hole('h1', 1)]);
+        seedClubs();
+        seedPlanWithShots([shotAt('s1', 0, null, TEE_XY.y + 200)]);
+        selectHole(1);
+        const landing = { x: TEE_XY.x - 20, y: TEE_XY.y + 180 };
+        const sim = useInlineSim(stubDiscoverClient(
+            [TEE_XY, landing, GREEN_XY],
+            [
+                { origin: TEE_XY, landing, club: { name: 'Driver', carryM: 235, dispersionM: 30 } },
+                { origin: landing, landing: GREEN_XY, club: { name: '5 iron', carryM: 165, dispersionM: 18 } },
+            ],
+        ));
+
+        const { svc, stop } = await startTool();
+        await svc.suggestLines();
+        const ghost = sim.variants.get()[0];
+
+        svc.selectVariant(ghost.id);
+        await settle();
+
+        const branches = sim.branches.get();
+        expect(branches.map(b => b.branchId))
+            .toEqual([PRIMARY_BRANCH_ID, `variant:${ghost.id}`]);
+        const suggestion = branches[1];
+        expect(suggestion.label).toBe(ghost.label);
+        expect(suggestion.mean).toBeGreaterThan(0);
+        // Landing clouds are what makes the ghost inspectable on the map.
+        expect(suggestion.perLegLandings[0].length).toBeGreaterThan(0);
+
+        stop();
+    });
+
+    test('dismissing the pinned ghost clears the pin with it', async () => {
+        seedCourse([hole('h1', 1)]);
+        seedPlanWithShots([]);
+        selectHole(1);
+        const sim = useInlineSim(stubDiscoverClient([
+            TEE_XY, { x: TEE_XY.x - 20, y: TEE_XY.y + 180 }, GREEN_XY,
+        ]));
+
+        const { svc, stop } = await startTool();
+        await svc.suggestLines();
+        const id = sim.variants.get()[0].id;
+        svc.selectVariant(id);
+        svc.dismissVariant(id);
+        expect(sim.selectedVariantId.get()).toBeNull();
 
         stop();
     });

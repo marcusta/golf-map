@@ -175,7 +175,8 @@ const tpl = template(`
             <div class="sim-actions">
                 <button bind="simulateBtn" type="button" class="mini-btn" data-testid="planner-simulate">Simulate</button>
                 <button bind="suggestBtn" type="button" class="mini-btn" data-testid="planner-suggest-lines">Suggest lines</button>
-                <label class="sim-toggle" title="Show sampled landings on the map">
+                <label class="sim-toggle"
+                    title="Show sampled landings on the map — coloured by shot number (1st shot clay, 2nd sky, 3rd wheat)">
                     <input bind="scatterToggle" type="checkbox" data-testid="planner-sim-scatter" /> Landings
                 </label>
             </div>
@@ -593,24 +594,47 @@ export class PlannerPanelComponent extends Component {
             & .sim-note { font-size: 0.72rem; color: ${t('color-text-secondary')}; }
             & .sim-note.error { color: ${t('color-status-negative')}; }
 
-            & .variant-list { display: flex; flex-direction: column; gap: 2px; margin-top: ${s('xs')}; }
+            & .variant-list { display: flex; flex-direction: column; gap: ${s('xs')}; margin-top: ${s('xs')}; }
+            /*
+             * TWO LINES, deliberately: the label is a sentence-length signature
+             * ("right of the bunkers · right of the trees · 2 shots") and the
+             * dock is narrow. The old single-row 1fr/auto/auto grid gave the
+             * label whatever the chip and two buttons left over — about four
+             * characters — so every row wrapped one word per line and was
+             * unreadable. Label owns row 1 in full; chip + actions share row 2.
+             */
             & .variant-row {
                 display: grid;
-                grid-template-columns: 1fr auto auto;
-                gap: 4px;
+                grid-template-columns: 1fr auto;
+                grid-template-areas: 'label label' 'chip actions';
+                gap: 2px 4px;
                 align-items: center;
-                padding: 2px 4px;
+                padding: ${s('xs')};
                 border-radius: ${t('radius-sm')};
                 border-left: 2px dashed ${t('color-border-default')};
-                font-size: 0.72rem;
+                font-size: 0.78rem;
                 color: ${t('color-text-secondary')};
+                cursor: pointer;
                 &:hover { background: ${t('color-surface-sunken')}; }
+                /* Pinned ghost — matches the map's emphasised corridor. */
+                &.selected {
+                    background: ${t('color-surface-sunken')};
+                    border-left-style: solid;
+                    border-left-color: ${t('color-accent-primary')};
+                }
             }
-            & .variant-row__label { color: ${t('color-text-primary')}; }
+            & .variant-row__label {
+                grid-area: label;
+                color: ${t('color-text-primary')};
+                font-weight: 500;
+                line-height: 1.25;
+            }
             & .variant-row__chip {
+                grid-area: chip;
                 font-family: var(--font-mono);
                 font-variant-numeric: tabular-nums;
             }
+            & .variant-row .shot-actions { grid-area: actions; }
 
             & .shot-list, & .gate-list { display: flex; flex-direction: column; gap: 2px; }
             & .empty-note { display: none; font-size: 0.72rem; color: ${t('color-text-secondary')}; &.show { display: block; } }
@@ -953,11 +977,33 @@ export class PlannerPanelComponent extends Component {
         const variantId = (event: Event): string | null =>
             (event.target as HTMLElement).closest<HTMLElement>('[data-variant]')?.dataset.variant ?? null;
         const onVariantClick = (event: Event): void => {
-            const action = (event.target as HTMLElement).closest<HTMLElement>('[data-variant-action]');
             const id = variantId(event);
-            if (!action || !id) return;
+            if (!id) return;
+            const action = (event.target as HTMLElement).closest<HTMLElement>('[data-variant-action]');
+            if (!action) {
+                // Anywhere else on the row pins the ghost (and clicking the
+                // pinned row again unpins it) — the affordance that makes a
+                // suggestion inspectable once the pointer moves away.
+                this.tool.selectVariant(id);
+                return;
+            }
             if (action.dataset.variantAction === 'accept') void this.tool.acceptVariant(id);
             else this.tool.dismissVariant(id);
+        };
+        const onVariantKey = (event: KeyboardEvent): void => {
+            if (event.key === 'Escape') {
+                this.tool.selectVariant(null);
+                return;
+            }
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            // Keyboard parity for the row itself; the accept/dismiss buttons
+            // are real <button>s and handle their own keys.
+            const target = event.target as HTMLElement;
+            if (target.closest('[data-variant-action]')) return;
+            const id = variantId(event);
+            if (!id) return;
+            event.preventDefault();
+            this.tool.selectVariant(id);
         };
         const onVariantOver = (event: Event): void => this.tool.hoverVariant(variantId(event));
         const onVariantOut = (event: Event): void => {
@@ -977,6 +1023,7 @@ export class PlannerPanelComponent extends Component {
         };
         const onVariantFocus = (event: Event): void => this.tool.hoverVariant(variantId(event));
         variantList.addEventListener('click', onVariantClick);
+        variantList.addEventListener('keydown', onVariantKey);
         variantList.addEventListener('mouseover', onVariantOver);
         variantList.addEventListener('mouseout', onVariantOut);
         variantList.addEventListener('mouseleave', onVariantOut);
@@ -984,6 +1031,7 @@ export class PlannerPanelComponent extends Component {
         variantList.addEventListener('focusout', onVariantBlur);
         this.track(() => {
             variantList.removeEventListener('click', onVariantClick);
+            variantList.removeEventListener('keydown', onVariantKey);
             variantList.removeEventListener('mouseover', onVariantOver);
             variantList.removeEventListener('mouseout', onVariantOut);
             variantList.removeEventListener('mouseleave', onVariantOut);
@@ -1709,8 +1757,16 @@ export class PlannerPanelComponent extends Component {
     private variantsHtml(): string {
         const ghosts = this.tool.sim.variants.get();
         if (ghosts.length === 0) return '';
-        return ghosts.map(ghost =>
-            `<div class="variant-row" data-testid="planner-variant-row" data-variant="${escapeHtml(ghost.id)}">`
+        const selectedId = this.tool.sim.selectedVariantId.get();
+        const hint = '<div class="sim-note">Click a line to pin it on the map (ellipses, leg '
+            + 'distances and its own histogram). Accept writes it into the plan as an option; '
+            + 'Dismiss just forgets it.</div>';
+        return hint + ghosts.map(ghost => {
+            const selected = ghost.id === selectedId;
+            return `<div class="variant-row${selected ? ' selected' : ''}" `
+            + `data-testid="planner-variant-row" data-variant="${escapeHtml(ghost.id)}" `
+            + `data-selected="${selected ? '1' : '0'}" role="button" tabindex="0" `
+            + `aria-pressed="${selected ? 'true' : 'false'}">`
             + `<span class="variant-row__label">${escapeHtml(ghost.label)}</span>`
             + `<span class="variant-row__chip" data-testid="planner-variant-chip">`
             + `${escapeHtml(variantChipText(ghost))}</span>`
@@ -1718,7 +1774,8 @@ export class PlannerPanelComponent extends Component {
             + `<button type="button" class="mini-btn" data-variant-action="accept" `
             + `data-testid="planner-variant-accept">Accept</button>`
             + `<button type="button" class="mini-btn" data-variant-action="dismiss" `
-            + `data-testid="planner-variant-dismiss">Dismiss</button></span></div>`).join('');
+            + `data-testid="planner-variant-dismiss">Dismiss</button></span></div>`;
+        }).join('');
     }
 
     private statusText(): string {

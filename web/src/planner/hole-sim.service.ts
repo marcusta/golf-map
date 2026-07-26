@@ -35,7 +35,12 @@ import type {
 import { DEFAULT_ROLLOUTS } from '../../../shared/strategy';
 import { createWorkerSimClient, type SimClient } from './sim-client';
 import { buildHistogram, shiftPmf, type ScoreBucket } from './sim-histogram';
-import { SCATTER_MAX_PER_LEG, variantSignatureLabel, type GhostVariant } from './sim-overlay';
+import {
+    SCATTER_MAX_PER_LEG,
+    disambiguateVariantLabels,
+    variantSignatureLabel,
+    type GhostVariant,
+} from './sim-overlay';
 
 /**
  * Sentinel branch id for the hole's PRIMARY line (the rank-0 walk). Options
@@ -196,8 +201,21 @@ export class HoleSimService {
     /** Ghost branches for the selected hole. Transient — never persisted. */
     readonly variants = new Signal<readonly GhostVariant[]>([]);
 
-    /** The ghost whose corridor is previewed (hover). */
+    /** The ghost whose corridor is previewed (hover — dies with the pointer). */
     readonly hoveredVariantId = new Signal<string | null>(null);
+
+    /**
+     * The PINNED ghost (click). Hover alone was the only affordance the feature
+     * shipped with, which made a suggestion unreadable: the corridor vanished
+     * the moment the pointer left the row. Selection survives that, and is what
+     * the ellipse/leg-label geometry and the ghost's own distribution hang off.
+     */
+    readonly selectedVariantId = new Signal<string | null>(null);
+
+    /** Pin a ghost (or clear with null). Selecting the pinned one unpins it. */
+    selectVariant(id: string | null): void {
+        this.selectedVariantId.set(id === this.selectedVariantId.peek() ? null : id);
+    }
 
     readonly discovering = new Signal<boolean>(false);
 
@@ -219,11 +237,14 @@ export class HoleSimService {
         try {
             const found: ScoredVariant[] = await this.client.discover(ctx);
             if (seq !== this.discoverSeq) return 0;
-            const ghosts = found.map(variant => ({
+            // Signature dedupe guarantees distinct LINES; the two-phrase label
+            // cap does not guarantee distinct NAMES. Disambiguate before the
+            // panel shows five rows that all read "right of the bunkers · 2 shots".
+            const ghosts = disambiguateVariantLabels(found.map(variant => ({
                 id: variant.signature.key,
                 label: variantSignatureLabel(variant.signature, hazardKindById),
                 variant,
-            } satisfies GhostVariant));
+            } satisfies GhostVariant)));
             this.variants.set(ghosts);
             return ghosts.length;
         } catch (error) {
@@ -239,6 +260,7 @@ export class HoleSimService {
     dismissVariant(id: string): void {
         this.variants.set(this.variants.peek().filter(g => g.id !== id));
         if (this.hoveredVariantId.peek() === id) this.hoveredVariantId.set(null);
+        if (this.selectedVariantId.peek() === id) this.selectedVariantId.set(null);
     }
 
     /** Drop every ghost (hole switch, accept, teardown). */
@@ -246,6 +268,7 @@ export class HoleSimService {
         this.discoverSeq++;
         this.variants.set([]);
         this.hoveredVariantId.set(null);
+        this.selectedVariantId.set(null);
         this.discovering.set(false);
         this.discoverError.set(null);
     }

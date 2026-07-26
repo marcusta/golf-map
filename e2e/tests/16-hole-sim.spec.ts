@@ -76,3 +76,61 @@ test('simulate produces a histogram off the main thread, and a plan edit greys i
         return !!map?.getSource('plan-sim-scatter');
     })).toBe(true);
 });
+
+// Ghost SELECTION (feature-hole-sim-and-variants §V5 "lazily, on selection"):
+// hover-only preview was unusable — the corridor vanished with the pointer. A
+// click pins the ghost, which is what buys it its own distribution card, its
+// per-leg ellipses and leg labels on the map. Only a browser can prove the pin
+// survives the pointer leaving and that the second card really comes back from
+// the worker.
+test('clicking a suggested line pins it, simulates it, and Escape unpins', async ({ page }) => {
+    await seedPlanViaApi(page, {
+        courseId: TEST_COURSE_ID,
+        holeNumber: HOLE_1,
+        teeId: TEE_HOLE_1,
+        shots: [{ ...LANDING, clubId: CLUB_7I }],
+    });
+    await openPlanner(page, TEST_COURSE_ID, HOLE_1);
+
+    await page.locator(tid('planner-suggest-lines')).click();
+    const rows = page.locator(tid('planner-variant-row'));
+    await expect(rows.first()).toBeVisible();
+    // Labels are disambiguated, so no two rows read the same.
+    const labels = await rows.locator('.variant-row__label').allTextContents();
+    expect(new Set(labels).size).toBe(labels.length);
+
+    const row = rows.first();
+    await row.click();
+    await expect(row).toHaveAttribute('data-selected', '1');
+    // The pin is state, not hover: moving the pointer away keeps it.
+    await page.mouse.move(5, 5);
+    await expect(row).toHaveAttribute('data-selected', '1');
+
+    // Selecting simulates primary + ghost — two cards, the ghost's labelled
+    // with its own name.
+    const cards = page.locator(tid('planner-sim-card'));
+    await expect(cards).toHaveCount(2);
+    await expect(cards.nth(1).locator(tid('planner-sim-mean'))).toHaveText(/mean \d+\.\d\d/);
+    // The pinned ghost draws its dispersion ellipses / leg labels, which only
+    // exist on the selected feature set. Read the source data itself rather
+    // than querySourceFeatures — the latter only sees rendered tiles.
+    await expect.poll(async () => page.evaluate(() => {
+        const map = (window as unknown as {
+            __map?: { getSource: (id: string) => { serialize?: () => unknown } | undefined };
+        }).__map;
+        const source = map?.getSource('plan-variants');
+        const data = (source?.serialize?.() as { data?: { features?: Array<{ properties?: Record<string, unknown> }> } } | undefined)?.data;
+        return (data?.features ?? []).filter(f => f.properties?.role === 'ellipse').length;
+    })).toBeGreaterThan(0);
+
+    // Escape unpins from the keyboard; the ghost list stays.
+    await row.press('Escape');
+    await expect(row).toHaveAttribute('data-selected', '0');
+    await expect(rows.first()).toBeVisible();
+
+    // Clicking the pinned row again toggles the pin off.
+    await row.click();
+    await expect(row).toHaveAttribute('data-selected', '1');
+    await row.click();
+    await expect(row).toHaveAttribute('data-selected', '0');
+});

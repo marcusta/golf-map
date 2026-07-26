@@ -103,6 +103,7 @@ import {
     buildScatterGeojson,
     buildVariantGeojson,
     scatterLayers,
+    variantBranchId,
     variantLayers,
     type GhostVariant,
     type ScatterPoint,
@@ -207,6 +208,8 @@ function caddyLayers(): OverlayLayerSpec[] {
 const MARKER_HIT_PX = 12;
 /** Screen-px point-to-segment tolerance for gate-line (move) hits. */
 const GATE_LINE_HIT_PX = 8;
+/** Screen-px point-to-segment tolerance for clicking a suggested (ghost) line. */
+const VARIANT_LINE_HIT_PX = 10;
 /** Screen-px max distance from a leg for placing a gate on it. */
 const GATE_PLACE_PX = 32;
 /** Smallest draggable gate half-width, meters. */
@@ -1049,6 +1052,57 @@ export class PlannerToolService {
         this.sim.hoveredVariantId.set(id);
     }
 
+    /**
+     * Pin a ghost (click a row, or the same row again to unpin). Selecting is
+     * what makes a suggestion inspectable: the corridor stays put once the
+     * pointer leaves, the ellipses and leg labels appear, and the ghost is
+     * SIMULATED alongside the primary line so its histogram sits next to the
+     * plan's — the doc's "lazily, on selection" distribution (§V5), which the
+     * hover-only version never had a trigger for.
+     *
+     * Simulating here is still V8-legal: it fires on an explicit user action,
+     * never from an effect on plan geometry.
+     */
+    selectVariant(id: string | null): void {
+        this.sim.selectVariant(id);
+        const selected = this.sim.selectedVariantId.peek();
+        if (!selected) return;
+        const requests = this.buildVariantSimRequests(selected);
+        if (requests.length === 0) return;
+        void this.sim.simulate(requests);
+    }
+
+    /**
+     * The selected ghost as simulate requests, with the primary line alongside
+     * it when the hole has one — a suggestion's distribution only means
+     * something next to the distribution of what you're already planning.
+     */
+    private buildVariantSimRequests(variantId: string): SimBranchRequest[] {
+        const ghost = this.sim.variants.peek().find(g => g.id === variantId);
+        const hole = this.selectedHole.peek();
+        const greenCenter = this.greenCenterVec();
+        if (!ghost || !hole || !greenCenter || ghost.variant.legs.length === 0) return [];
+        const ctx: ChainScoreContext = chainScoreContext({
+            lieMap: this.lieMap.peek(),
+            greenCenter,
+            wind: this.effectiveWind.peek(),
+        });
+        const par = hole.par ?? 4;
+        return [
+            ...this.buildSimRequests([PRIMARY_BRANCH_ID]),
+            {
+                branchId: variantBranchId(variantId),
+                label: ghost.label,
+                par,
+                // Discovery anchors every variant at the TEE (`variantContext`),
+                // so nothing has been played before its first leg.
+                strokesBefore: 0,
+                legs: ghost.variant.legs,
+                ctx,
+            },
+        ];
+    }
+
     // ── Sim overlays ──────────────────────────────────────────────────────
 
     private simScatterAdded = false;
@@ -1078,10 +1132,16 @@ export class PlannerToolService {
     private readonly simScatterData = new Computed<FeatureCollection>(
         () => buildScatterGeojson(this.scatterPoints.get()));
 
-    private readonly variantOverlayData = new Computed<FeatureCollection>(
-        () => buildVariantGeojson(this.sim.variants.get(), {
+    private readonly variantOverlayData = new Computed<FeatureCollection>(() => {
+        const wind = this.effectiveWind.get();
+        return buildVariantGeojson(this.sim.variants.get(), {
             hoveredId: this.sim.hoveredVariantId.get(),
-        }));
+            selectedId: this.sim.selectedVariantId.get(),
+            // The same wind the variant was priced with, so the selected
+            // ghost's ellipse centers sit where its chip's number came from.
+            ...(wind ? { wind: { speedMps: wind.speedMps, directionDeg: wind.directionDeg } } : {}),
+        });
+    });
 
     /**
      * Green-slope summary for the selected hole's green (D10 shape), or null.
@@ -2302,6 +2362,15 @@ export class PlannerToolService {
             this.selection.set({ kind: hit.kind === 'shot' ? 'shot' : 'gate', id: hit.id });
             return;
         }
+        // Ghost lines are clickable too — pinning a suggestion from the map is
+        // the natural gesture when you are looking at the lines, not the list.
+        // After markers (an authored shot always wins the pixel), before the
+        // browse fallbacks (a click ON a ghost is never an empty-map click).
+        const ghostId = this.variantHitTest(e.point);
+        if (ghostId) {
+            this.selectVariant(ghostId);
+            return;
+        }
         // Empty-map clicks inspect a target from the current origin. Moving the
         // origin is a separate, explicit action in the distance readout.
         if (browseTargetActivation('map') === 'inspect') {
@@ -2694,6 +2763,31 @@ export class PlannerToolService {
 
     private pxDist(a: { x: number; y: number }, b: { x: number; y: number }): number {
         return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    /**
+     * The ghost line under the cursor, or null. Same click-only cost profile as
+     * `hitTest` (terrain-aware project is ~40 µs/call, never on mouse-move),
+     * and a no-op the moment there are no ghosts — the common case.
+     */
+    private variantHitTest(screen: { x: number; y: number }): string | null {
+        const ghosts = this.sim.variants.peek();
+        if (ghosts.length === 0) return null;
+        const map = this.map.map.peek();
+        if (!map) return null;
+        let best: string | null = null;
+        let bestDist = VARIANT_LINE_HIT_PX;
+        for (const ghost of ghosts) {
+            const points = ghost.variant.nodes.map(node => {
+                const { lat, lon } = sweref99tmToWgs84(node.point.x, node.point.y);
+                return map.project([lon, lat]);
+            });
+            for (let i = 1; i < points.length; i++) {
+                const d = pointToSegmentPx(screen, points[i - 1], points[i]);
+                if (d < bestDist) { bestDist = d; best = ghost.id; }
+            }
+        }
+        return best;
     }
 }
 
