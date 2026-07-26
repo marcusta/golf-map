@@ -75,7 +75,7 @@ golf-map/
   data/          v1 export, sample assets (gitignored where large)
 ```
 
-`@basics/core` is consumed from the mackans-client-fw repo (workspace/file dependency or published package — settle in Phase 0).
+`@basics/core` is consumed as a versioned tarball committed at `vendor/basics-core-<X.Y.Z>.tgz` (settled in Phase 0; migrated off the sibling working-tree dependency 2026-07-26). See [AGENTS.md](AGENTS.md) for the update loop.
 
 ### 2.2 Server — built on `@basics/core` (mackans-client-fw)
 

@@ -11,7 +11,7 @@ build-out.
 
 **Phase 0 (Foundation) and Phase 1 (Server core) are complete.**
 
-- Server scaffolded on `@basics/core` (mackans-client-fw): Bun + Hono + Kysely + SQLite, cookie-session
+- Server scaffolded on `@basics/core`: Bun + Hono + Kysely + SQLite, cookie-session
   auth, structured logging, request tracing.
 - 16-table Kysely schema covering courses, holes, tees, greens, pins, aim points, course features,
   clubs, game plans, rounds, assets, and framework tables (users, sessions, observability).
@@ -29,7 +29,8 @@ placeholder.
 ## Repo layout
 
 ```
-server/   Bun + Hono + Kysely + SQLite, built on @basics/core (mackans-client-fw)
+server/   Bun + Hono + Kysely + SQLite, built on @basics/core
+vendor/   basics-core-<X.Y.Z>.tgz — the committed @basics/core release this repo ships against
 web/      Vite + TS web app (placeholder — filled in a later phase)
 shared/   Generated API clients (shared/api/*.gen.ts), shared strategy math, JSON schemas
 data/     SQLite databases (gitignored) — app.sqlite, sessions.sqlite, obs.sqlite
