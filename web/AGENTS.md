@@ -10,6 +10,8 @@ Vite + TS SPA on `@basics/core` client framework, MapLibre for maps. Course buil
 
 ⚠️ Signals are eager/push-based; derived-geometry effects can fire on mixed intermediate state. Coalesce side effects with `queueMicrotask`.
 
+⚠️ A component spawned inside a parent's `render()` runs its `onMount` while its host is still inside a **detached template clone** (`ownerDocument` = an inert `about:blank` document). Never hand such a host to a library that binds document-level listeners at construction — MapLibre puts a drag's mousemove/mouseup there, so the map's clicks work while every drag is silently dead. `MapService.init` waits for the host to join the live document; do the same for anything similar.
+
 ## Layout (`src/`)
 
 `app/` shell · `auth/` login+guard · `courses/` list · `course-detail/` · `editor/` (toolbar + `tools/`) · `draw/` (SVG feature drawing, history/undo) · `import/` (SVG orthophoto trace import) · `measure/` · `analysis/` (green slope) · `planner/` (strategy: overlay, gates, plan service) · `player/` (club config) · `map/` (MapLibre style/tiles/interaction) · `geo/` (bezier, bspline, transform) · `furniture/`.

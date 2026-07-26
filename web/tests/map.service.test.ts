@@ -1,6 +1,7 @@
 import { test, expect, describe } from 'bun:test';
 import { MapService } from '../src/map/map.service';
 import { ORTHO_SOURCE_ID, orthoSourceId, tileUrlTemplate } from '../src/map/map-style';
+import type { TileManifest } from '../src/map/tileset.service';
 
 // MapLibre GL can't render under happy-dom (no WebGL), so init()/the real
 // map lifecycle stay integration-tested in the app. These cover the seamless
@@ -121,5 +122,70 @@ describe('refreshOrthoTiles version-bump propagation', () => {
         const svc = new MapService();
         svc.refreshOrthoTiles('V2');
         expect(svc.displayedVersion.get()).toBeNull();
+    });
+});
+
+describe('init defers construction until the container is in the live document', () => {
+    const MANIFEST: TileManifest = {
+        bounds: { west: 15.6954, south: 58.3431, east: 15.7489, north: 58.3712 },
+        layers: { ortho: { minzoom: 14, maxzoom: 20 }, terrain: { minzoom: 12, maxzoom: 17 } },
+        elevation: { min: 53.28, max: 98.5 },
+        generatedAt: '2026-07-04T08:28:59Z',
+    };
+
+    /** Record create() calls instead of building a real (WebGL-less) map. */
+    function spyService(): { svc: MapService; calls: HTMLElement[] } {
+        const svc = new MapService();
+        const calls: HTMLElement[] = [];
+        (svc as unknown as { create: (c: HTMLElement) => void }).create = c => { calls.push(c); };
+        return { svc, calls };
+    }
+
+    const tick = (ms = 40) => new Promise(resolve => setTimeout(resolve, ms));
+
+    test('a connected container builds the map straight away', () => {
+        const { svc, calls } = spyService();
+        const host = document.createElement('div');
+        document.body.appendChild(host);
+
+        svc.init(host, 'site-1', MANIFEST, 'V1');
+
+        expect(calls).toEqual([host]);
+        host.remove();
+    });
+
+    test('a detached container waits — MapLibre would bind drags to the inert owner document', async () => {
+        const { svc, calls } = spyService();
+        // What a component's render() hands us: a node inside a cloned
+        // <template> fragment, still outside the page's document.
+        const tpl = document.createElement('template');
+        tpl.innerHTML = '<div bind="mapHost"></div>';
+        const frag = tpl.content.cloneNode(true) as DocumentFragment;
+        const host = frag.querySelector('[bind="mapHost"]') as HTMLElement;
+
+        svc.init(host, 'site-1', MANIFEST, 'V1');
+        await tick();
+        expect(calls).toEqual([]);
+
+        document.body.appendChild(frag);
+        await tick();
+
+        expect(calls).toEqual([host]);
+        host.remove();
+    });
+
+    test('destroy cancels a pending init — a torn-down canvas never builds a map', async () => {
+        const { svc, calls } = spyService();
+        const frag = document.createDocumentFragment();
+        const host = document.createElement('div');
+        frag.appendChild(host);
+
+        svc.init(host, 'site-1', MANIFEST, 'V1');
+        svc.destroy();
+        document.body.appendChild(host);
+        await tick();
+
+        expect(calls).toEqual([]);
+        host.remove();
     });
 });

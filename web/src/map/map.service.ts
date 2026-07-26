@@ -33,6 +33,13 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 export type OverlayLayerSpec = DistributiveOmit<LayerSpecification, 'source'>;
 
 /**
+ * `el` is attached to the page's own document — not to a detached fragment and
+ * not to a template's inert owner document. MapLibre must only be constructed
+ * against such an element (see the owner-document trap in `init`).
+ */
+const isLive = (el: HTMLElement): boolean => el.isConnected && el.ownerDocument === document;
+
+/**
  * DI singleton owning the editor's maplibregl.Map lifecycle. This is the
  * foundation API for the editor tools (drawing, furniture, measurement,
  * green analysis):
@@ -101,14 +108,51 @@ export class MapService {
     /** overlay id → layer ids added for it */
     private overlays = new Map<string, string[]>();
     private tiles: { manifest: TileManifest } | null = null;
+    /** Poll handle for a deferred `init` awaiting a live-document container. */
+    private pendingInit: ReturnType<typeof setInterval> | null = null;
 
     /**
      * Create the editor map inside `container` for a course's tile set.
      * Camera starts fitted to the manifest bounds. Idempotence guard:
      * destroys any previous map first.
+     *
+     * Construction is DEFERRED until `container` has joined the live document
+     * (see the ownerDocument trap below); the map/ready signals are the
+     * completion signal either way, so callers never need to care.
      */
     init(container: HTMLElement, mapKey: string, manifest: TileManifest, version: string): void {
         this.destroy();
+        // THE OWNER-DOCUMENT TRAP. MapLibre binds its gesture listeners at
+        // construction time: element-level ones (mousedown/click/wheel) on the
+        // canvas container, but the drag continuation (mousemove + mouseup) on
+        // `container.ownerDocument`. Components render into a cloned <template>
+        // fragment, whose nodes belong to an INERT about:blank document until
+        // the fragment is inserted — and a child spawned inside a parent's
+        // render() runs its onMount (→ this init) while still detached. A map
+        // built then binds mousemove/mouseup to that dead document and, once
+        // the host is adopted into the page, every DRAG is silently dead —
+        // pan, marker drags, marquee — while clicks keep working. That was the
+        // "panning breaks after switching Create↔Plan" bug: on a cold load the
+        // tile manifest arrives async (host already inserted), but on a mode
+        // switch the manifest is cached, so init ran synchronously from the
+        // detached render pass.
+        //
+        // setInterval, not requestAnimationFrame: hidden/background tabs never
+        // tick rAF (same reason the size watchdog below polls).
+        if (!isLive(container)) {
+            this.pendingInit = setInterval(() => {
+                if (!isLive(container)) return;
+                clearInterval(this.pendingInit!);
+                this.pendingInit = null;
+                this.create(container, mapKey, manifest, version);
+            }, 16);
+            return;
+        }
+        this.create(container, mapKey, manifest, version);
+    }
+
+    /** Build the map. Precondition: `container` is in the live document. */
+    private create(container: HTMLElement, mapKey: string, manifest: TileManifest, version: string): void {
         this.tiles = { manifest };
 
         // Ortho vintages → layer ids (mirrors buildEditorStyle). >1 vintage
@@ -242,6 +286,10 @@ export class MapService {
 
     /** Tear down the map. Safe to call when no map exists. */
     destroy(): void {
+        if (this.pendingInit !== null) {
+            clearInterval(this.pendingInit);
+            this.pendingInit = null;
+        }
         for (const dispose of this.disposers) dispose();
         this.disposers = [];
         this.overlays.clear();
