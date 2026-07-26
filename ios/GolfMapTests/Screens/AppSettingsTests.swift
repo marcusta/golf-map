@@ -165,4 +165,40 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(settings.setServerOrigin(""))
         XCTAssertNil(defaults.string(forKey: "serverOrigin"))
     }
+
+    /// A phone can't reach the builder Mac's loopback, so the no-override
+    /// default has to be a real host. The simulator shares the Mac's loopback
+    /// and is where the dev server + headless verify hooks live, so it keeps
+    /// localhost.
+    func testDefaultServerOriginIsReachableFromWhereTheAppRuns() {
+        let origin = AppEnvironment.defaultServerOrigin
+        #if targetEnvironment(simulator)
+        XCTAssertEqual(origin.absoluteString, "http://localhost:3000")
+        #else
+        XCTAssertEqual(origin.absoluteString, "https://app.swedenindoorgolf.se/golf-map")
+        XCTAssertEqual(origin.scheme, "https")
+        XCTAssertNotEqual(origin.host, "localhost")
+        #endif
+        // Normalization must be a no-op on the built-in default — otherwise a
+        // user who types the default by hand gets a different stored value.
+        XCTAssertEqual(AppSettings.normalizeServerOrigin(origin.absoluteString), origin.absoluteString)
+    }
+
+    /// The override wins over the built-in default, whatever the default is.
+    /// `resolvedServerOrigin` reads `UserDefaults.standard` by design (it runs
+    /// before the DI container exists), so this test writes there and restores.
+    func testStoredOverrideBeatsTheBuiltInDefault() {
+        let std = UserDefaults.standard
+        let previous = std.string(forKey: "serverOrigin")
+        defer {
+            if let previous { std.set(previous, forKey: "serverOrigin") }
+            else { std.removeObject(forKey: "serverOrigin") }
+        }
+
+        std.removeObject(forKey: "serverOrigin")
+        XCTAssertEqual(AppEnvironment.resolvedServerOrigin(), AppEnvironment.defaultServerOrigin)
+
+        std.set("http://192.168.1.20:3000", forKey: "serverOrigin")
+        XCTAssertEqual(AppEnvironment.resolvedServerOrigin().absoluteString, "http://192.168.1.20:3000")
+    }
 }

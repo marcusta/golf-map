@@ -21,7 +21,8 @@ enum AuthState: Equatable {
 ///
 /// **Server origin** is read once from `UserDefaults` key `serverOrigin` (so it
 /// can be pointed at a different host without a rebuild — used by the offline
-/// live-verify), falling back to `http://localhost:3000` in DEBUG.
+/// live-verify), falling back to `defaultServerOrigin` (the deployed VPS on a
+/// device, the local dev server on the simulator).
 @MainActor
 @Observable
 final class AppEnvironment {
@@ -107,14 +108,31 @@ final class AppEnvironment {
         }
     }
 
+    /// Built-in server origin when no `serverOrigin` override is stored.
+    ///
+    /// A device can never reach the builder Mac's `localhost`, so a phone with
+    /// no override has to point somewhere real or the app is dead on first
+    /// launch — that's the deployed VPS (path-prefixed; `GolfAPIClient` and
+    /// `TileURLBuilder` both join onto the prefix, see `DeployPrefixTests`).
+    /// The simulator shares the Mac's loopback, so it keeps the local dev
+    /// server: that's where day-to-day development and the headless
+    /// live-verify hooks run.
+    static let defaultServerOrigin: URL = {
+        #if targetEnvironment(simulator)
+        return URL(string: "http://localhost:3000")!
+        #else
+        return URL(string: "https://app.swedenindoorgolf.se/golf-map")!
+        #endif
+    }()
+
     /// Resolves the server origin: `UserDefaults["serverOrigin"]` override wins,
-    /// else `http://localhost:3000` (DEBUG default).
+    /// else `defaultServerOrigin`.
     static func resolvedServerOrigin() -> URL {
         if let override = UserDefaults.standard.string(forKey: "serverOrigin"),
            let url = URL(string: override) {
             return url
         }
-        return URL(string: "http://localhost:3000")!
+        return defaultServerOrigin
     }
 
     // MARK: - Bootstrap

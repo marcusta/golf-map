@@ -71,7 +71,7 @@ struct SettingsScreen: View {
                 }
 
                 Section {
-                    TextField("http://localhost:3000", text: $originText)
+                    TextField(AppEnvironment.defaultServerOrigin.absoluteString, text: $originText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -84,7 +84,7 @@ struct SettingsScreen: View {
                 } header: {
                     Text("Server")
                 } footer: {
-                    Text("Leave blank to use the built-in default (http://localhost:3000). Restart the app to apply a change.")
+                    Text("Leave blank to use the built-in default (\(AppEnvironment.defaultServerOrigin.absoluteString)). Force-quit and reopen the app to apply a change — switching apps is not enough.")
                 }
             }
             .navigationTitle("Settings")
