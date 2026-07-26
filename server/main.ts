@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { mkdirSync } from 'node:fs';
 import type { Database } from './db/schema';
 import { config } from '@basics/core/server/config';
 import { createApp } from '@basics/core/server/app';
@@ -9,13 +10,20 @@ import { createTileRoutes, cachingTileKeyLookup } from './services/tiles';
 import { createStaticRoutes } from './services/static';
 import { serverMode } from './mode';
 
+// A fresh box has no `data/` — the SQLite files can't be created inside a
+// directory that doesn't exist, and nothing in the deploy tooling makes it.
+// Create the DB parents before `createApp` opens them, so a first boot on an
+// empty checkout just works. Runs as the service user, which owns the repo.
+const dataDir = process.env.DATA_DIR ?? './data';
+for (const dir of [dataDir, ...[config.dbPath, config.sessionDbPath, config.obsDbPath].map((f) => path.dirname(f))]) {
+    mkdirSync(dir, { recursive: true });
+}
+
 const { app, db, bootstrapAuth } = await createApp<Database>(path.join(import.meta.dir, 'db/migrations'));
 
 const mode = serverMode();
 const services = createServices(db, { mode });
 const { userService, coursesService, assetsService, mapBuildService } = services;
-
-const dataDir = process.env.DATA_DIR ?? './data';
 
 // Builder-only boot work: clear any builds left `running` by a prior process
 // (their in-memory runner died with the restart) so the UI doesn't poll a job

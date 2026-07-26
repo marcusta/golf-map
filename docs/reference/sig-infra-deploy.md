@@ -204,10 +204,30 @@ Run from this repo's directory on the local Mac. The wizard prompts for:
 | Service name | `golf-map` (the folder default) |
 | GitHub repository | the golf-map repo |
 | Description | `golf-map — course mapping + on-course companion (serve mode)` |
-| **Start command** | `/usr/local/bin/bun run start` |
+| **Start command** | `/usr/local/bin/bun run start:vps` |
 | Port | `3801` |
 
-`start` is the root script `bun server/main.ts`. Running from the repo root
+**`start:vps`, not `start`** — that is what makes this deploy work with no
+hand-edited unit. `service_create` writes `ExecStart`, `WorkingDirectory` and
+`Environment=NODE_ENV=production`, and nothing else; every other setting this
+service needs therefore lives in the script the unit runs:
+
+```
+SERVER_MODE=serve PORT=3801 DATA_DIR=./data DB_PATH=./data/app.sqlite
+SESSION_DB_PATH=./data/sessions.sqlite OBS_DB_PATH=./data/obs.sqlite
+WEB_DIST_DIR=./web/dist BODY_LIMIT=268435456 REQUEST_TIMEOUT=900000
+TAPSCORE_BASE_URL=http://localhost:3737 bun server/main.ts
+```
+
+So the environment ships with the code: `git pull` + restart can never leave
+the unit describing a different port or mode than the commit it runs.
+`scripts/vps-start.test.ts` pins the values that break a deploy silently — the
+`PORT` against `deploy.json`'s health check, `SERVER_MODE=serve`, the DB paths
+against the database sig-infra migrates, and the body/timeout limits against
+the publish bundle size.
+
+`start` (plain `bun server/main.ts`, builder mode, port 3000) stays the generic
+entrypoint; only `start:vps` is deploy-shaped. Running from the repo root
 (`WorkingDirectory=/srv/golf-map`) is deliberate: `main.ts` resolves its
 migrations folder and the default `WEB_DIST_DIR` from `import.meta.dir`
 (absolute, so unaffected), while the cwd-relative defaults — `DATA_DIR=./data`,
@@ -222,54 +242,36 @@ sig-infra migrates.
 
 `service_create` writes the unit with `ExecStart=<start command>`,
 `WorkingDirectory=/srv/golf-map` and `Environment=NODE_ENV=production` — and
-nothing else. Add the rest with `systemctl edit` (or by editing the unit
-directly) **before the first deploy**; the full set this service needs:
+nothing else. That is fine, because **everything except the secret is in
+`start:vps`** (§3.3): mode, port, DB/data paths, web dist, body limit, request
+timeout, tapscore origin. The unit needs exactly one addition.
 
-> **`PORT=3801` must be in the unit before you deploy.** Nothing derives the
-> port from `services.json` at runtime — `@basics/core` reads `PORT` and
-> **defaults to 3000**. Without it the unit starts happily on the wrong port,
-> `deploy.json`'s `curl -f http://localhost:3801/api/meta` fails, and
-> `deploy.ts` treats that as a bad release and auto-recovers: it resets the
-> code and restarts. The symptom is a rollback loop with a perfectly healthy
-> app answering on 3000. The same goes for `SERVER_MODE=serve` — the default
-> mode does not mount the static routes or the ingest endpoint.
+`PUBLISH_TOKEN` — bearer secret for `POST /api/ingest/site`. Blank or missing
+means every publish is rejected (fail closed), which is the correct default for
+a box that never publishes. Keep it out of the unit file so it isn't readable
+in `systemctl show`:
+
+```sh
+# /etc/golf-map.env, 0640 root:golf-map
+PUBLISH_TOKEN=<openssl rand -base64 48>
+```
 
 ```ini
-Environment=NODE_ENV=production
-Environment=SERVER_MODE=serve
-Environment=PORT=3801
-
-# Data layout. DATA_DIR holds tiles/, dem/, tile-archives/, incoming/.
-# These match the cwd-relative defaults, but are set explicitly so a change of
-# WorkingDirectory can never silently move the database.
-Environment=DATA_DIR=/srv/golf-map/data
-Environment=DB_PATH=/srv/golf-map/data/app.sqlite
-Environment=SESSION_DB_PATH=/srv/golf-map/data/sessions.sqlite
-Environment=OBS_DB_PATH=/srv/golf-map/data/obs.sqlite
-Environment=WEB_DIST_DIR=/srv/golf-map/web/dist
-
-# Ingest uploads a 60–80 MB bundle in ONE request. The framework defaults
-# (1 MB body, 30 s timeout — see @basics/core/server/config.ts) are far below
-# that and MUST be raised, or publish fails with a 413/timeout that looks like
-# a network fault.
-Environment=BODY_LIMIT=268435456
-Environment=REQUEST_TIMEOUT=900000
-
-# Bearer secret for POST /api/ingest/site. Blank/missing = every publish is
-# rejected (fail closed). Generate with `openssl rand -base64 48`.
-# Prefer EnvironmentFile=/etc/golf-map.env (0640 root:golf-map) so the token is
-# not readable in `systemctl show`.
-Environment=PUBLISH_TOKEN=<48 random bytes, base64>
-
-# tapscore runs on the same box; the bridge talks to it directly, not through
-# Caddy.
-Environment=TAPSCORE_BASE_URL=http://localhost:3737
+# systemctl edit golf-map
+[Service]
+EnvironmentFile=/etc/golf-map.env
 ```
 
 `DB_PATH`, `SESSION_DB_PATH`, `OBS_DB_PATH`, `BODY_LIMIT`, `REQUEST_TIMEOUT`,
 `PORT` are read by the framework (`@basics/core/server/config.ts`);
 `SERVER_MODE`, `DATA_DIR`, `WEB_DIST_DIR`, `PUBLISH_TOKEN` and
 `TAPSCORE_BASE_URL` by this repo.
+
+> **If you ever override these in the unit, the unit wins over `start:vps`
+> only for values the script does not set** — the script's own `KEY=value`
+> prefix takes precedence over inherited environment. Change the port or the
+> paths in `package.json`, not in the unit, or the two will disagree and
+> `scripts/vps-start.test.ts` will not catch it.
 
 Not needed here, unlike the standalone runbook: `CROSS_ORIGIN_RESOURCE_POLICY` /
 `CORS_ORIGIN` stay at their defaults, because Caddy serves the app and the API
@@ -324,7 +326,9 @@ and `deploy --db` starts by snapshotting one — `db-tool.ts snapshot` fails wit
 `Source not found` if `/srv/golf-map/data/app.sqlite` does not exist. So the
 very first deploy must be `--no-db`: the server creates the database and runs
 every migration itself on first boot, and only *later* deploys have something to
-snapshot. Nothing in sig-infra creates the `data/` directory either.
+snapshot. (Nothing in sig-infra creates the `data/` directory either — so
+`server/main.ts` creates it itself before opening the databases, as the service
+user that owns the checkout.)
 
 1. **`service_create`** with the answers in §3.3. This creates the `golf-map`
    system user, clones the repo to `/srv/golf-map`, writes and *enables* the
@@ -335,41 +339,37 @@ snapshot. Nothing in sig-infra creates the `data/` directory either.
 3. **No framework clone is needed** — `@basics/core` rides along as a committed
    tarball in `vendor/` (§2). An older `/srv/mackans-client-fw` left over from a
    previous deploy is inert and can be removed.
-4. **Unit environment**: add every `Environment=` line from §4 — `PORT=3801` and
-   `SERVER_MODE=serve` are not optional (see the warning there) — put
-   `PUBLISH_TOKEN` in `/etc/golf-map.env`, then `systemctl daemon-reload`. Do
-   **not** start the service yet; nothing is installed or built.
-5. **Data directory**, owned by the service user so the app can create its
-   SQLite files:
-   ```sh
-   sudo mkdir -p /srv/golf-map/data
-   sudo chown golf-map:golf-map /srv/golf-map/data
-   ```
-6. **Pre-flight**: `deploy_preflight` from this repo — it validates `deploy.json`,
+4. **Publish token** (§4) — write `/etc/golf-map.env` (0640 root:golf-map) and
+   point the unit at it with `EnvironmentFile=`, then `systemctl daemon-reload`.
+   Everything else the service needs is already in `start:vps`. Skip this step
+   entirely if the box will not receive publishes yet; ingest then 401s, which
+   is the correct closed default. Do **not** start the service yet; nothing is
+   installed or built.
+5. **Pre-flight**: `deploy_preflight` from this repo — it validates `deploy.json`,
    that the migrate/validate scripts exist and that the remote state looks sane,
    before anything is touched.
-7. **First deploy**: `deploy --no-db` (see the note above — there is no database
+6. **First deploy**: `deploy --no-db` (see the note above — there is no database
    to snapshot yet). `install` runs `bun install` and the web build; watch for
    the 300 s timeout (§3.2). The service then boots, creates
    `data/app.sqlite`, and applies every migration.
-8. **Verify**:
+7. **Verify**:
    ```sh
    curl -s https://app.swedenindoorgolf.se/golf-map/api/meta   # → {"…","mode":"serve"}
    caddy_status golf-map
    ```
    Then load the page and confirm the bundle URLs carry the prefix
    (`/golf-map/assets/…`) and return 200.
-9. **Create a user** on the box — publish never carries user rows (runbook §5):
+8. **Create a user** on the box — publish never carries user rows (runbook §5):
    ```sh
    cd /srv/golf-map/server
    sudo -u golf-map env DB_PATH=/srv/golf-map/data/app.sqlite bun db/create-user.ts <username>
    ```
-10. **Publish a site** from the builder (§5) — a small one first (§5's note) —
+9. **Publish a site** from the builder (§5) — a small one first (§5's note) —
     then check it renders and tiles load.
-11. **iOS**: set the app's server base URL to
+10. **iOS**: set the app's server base URL to
     `https://app.swedenindoorgolf.se/golf-map` (no trailing `/api` — the client
     appends it). The path is preserved by every joiner; see `DeployPrefixTests`.
-12. **Mobile PWA**: open `https://app.swedenindoorgolf.se/golf-map/m`, add to
+11. **Mobile PWA**: open `https://app.swedenindoorgolf.se/golf-map/m`, add to
     home screen, and confirm the standalone launch stays in-app (scope is
     `/golf-map/m`).
 

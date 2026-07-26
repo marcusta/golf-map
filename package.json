@@ -8,6 +8,7 @@
     ],
     "scripts": {
         "start": "bun server/main.ts",
+        "start:vps": "SERVER_MODE=serve PORT=3801 DATA_DIR=./data DB_PATH=./data/app.sqlite SESSION_DB_PATH=./data/sessions.sqlite OBS_DB_PATH=./data/obs.sqlite WEB_DIST_DIR=./web/dist BODY_LIMIT=268435456 REQUEST_TIMEOUT=900000 TAPSCORE_BASE_URL=http://localhost:3737 bun server/main.ts",
         "db:migrate": "bun ./scripts/migrate.ts",
         "db:health": "bun ./scripts/health.ts",
         "e2e": "playwright test --config e2e/playwright.config.ts",
