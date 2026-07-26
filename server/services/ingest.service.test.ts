@@ -142,6 +142,22 @@ describe('ingest (serve-mode publish apply)', () => {
         expect(pins.length).toBe(4); // 2 pins per green * 2 greens
     });
 
+    test('aim points travel with the course — they define its par shape, not a player strategy', async () => {
+        const builderDb = await freshDb();
+        const builderData = tmp('builder');
+        await seedBuilder(builderDb, builderData);
+        const bundlePath = await makeBundle(builderDb, builderData);
+
+        const vpsDb = await freshDb();
+        const ingest = new IngestService({ db: vpsDb, dataDir: tmp('vps') });
+        const report = await ingest.ingestArchive(bundlePath);
+
+        expect(report.upserted.aim_points).toBe(2); // one per seeded hole
+        const aims = await vpsDb.selectFrom('aim_points').selectAll().execute();
+        expect(aims.length).toBe(2);
+        expect(aims[0].lat).toBeGreaterThan(58);
+    });
+
     test('tile count includes all layers', async () => {
         const builderDb = await freshDb();
         const builderData = tmp('builder');

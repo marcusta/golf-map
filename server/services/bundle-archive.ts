@@ -14,6 +14,11 @@ function spawn(cmd: string[], opts: { stdin?: ReadableStream; pipeStdout?: boole
         stdin: opts.stdin ?? 'ignore',
         stdout: opts.pipeStdout ? 'pipe' : 'inherit',
         stderr: 'pipe',
+        // macOS `tar` stores extended attributes as AppleDouble `._` members,
+        // which the VPS then extracts as real files: the first Linkan publish
+        // installed 4116 of them next to 3880 tiles. They are inert but they
+        // more than double the file count and the reported tile stats.
+        env: { ...process.env, COPYFILE_DISABLE: '1' },
     } as Parameters<typeof Bun.spawn>[1]);
 }
 

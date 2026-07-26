@@ -36,6 +36,11 @@ export const DEFAULT_ORTHO_MAXZOOM = 19;
  * `course_assets` is intentionally absent: ingest rewrites the site's asset
  * rows from scratch to point at the freshly published artifacts (§8.4), rather
  * than replaying builder-local filenames (`sources/…`, per-vintage ortho).
+ *
+ * `aim_points` is course definition, not player strategy — furniture in the
+ * same sense as tees and green front/center/back. Their count is what makes a
+ * hole a par 3/4/5/6 (0/1/2/3 aim points) and their position is what makes it
+ * a dogleg, so a course published without them is not the same course.
  */
 export const CONTENT_TABLES = [
     'sites',
@@ -43,6 +48,7 @@ export const CONTENT_TABLES = [
     'holes',
     'tees',
     'greens',
+    'aim_points',
     'course_features',
     'hazards',
 ] as const;
@@ -111,10 +117,11 @@ export const CONTENT_BLOCKER_REFERENCES: Record<ContentTable, ReadonlyArray<{ ta
         { table: 'game_plans', column: 'course_id' },
         { table: 'rounds', column: 'course_id' },
     ],
-    holes: [
-        { table: 'aim_points', column: 'hole_id' },
-    ],
+    holes: [],
     tees: [],
+    // Nothing user-owned references an aim point; plan shots carry their own
+    // coordinates rather than pointing at one.
+    aim_points: [],
     greens: [
         { table: 'pins', column: 'green_id' },
         { table: 'green_scans', column: 'green_id' },

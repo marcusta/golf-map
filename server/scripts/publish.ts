@@ -119,6 +119,8 @@ async function contentRows(db: Kysely<Database>, table: ContentTable, scope: Sit
             return holeIds.length ? db.selectFrom('tees').selectAll().where('hole_id', 'in', holeIds).execute() : [];
         case 'greens':
             return holeIds.length ? db.selectFrom('greens').selectAll().where('hole_id', 'in', holeIds).execute() : [];
+        case 'aim_points':
+            return holeIds.length ? db.selectFrom('aim_points').selectAll().where('hole_id', 'in', holeIds).execute() : [];
         case 'course_features':
             return courseIds.length ? db.selectFrom('course_features').selectAll().where('course_id', 'in', courseIds).execute() : [];
         case 'hazards':

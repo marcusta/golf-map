@@ -183,6 +183,7 @@ export class IngestService {
                 holes: holeIds,
                 greens: greenIds,
                 tees: await this.idsIn(trx, 'tees', 'hole_id', holeIds),
+                aim_points: await this.idsIn(trx, 'aim_points', 'hole_id', holeIds),
                 course_features: await this.idsIn(trx, 'course_features', 'course_id', courseIds),
                 hazards: await this.idsIn(trx, 'hazards', 'hole_id', holeIds),
             };
