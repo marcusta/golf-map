@@ -75,7 +75,7 @@ Cross-cutting risk to hold in mind while modeling: **the plan is the contract be
 - Run server: `cd server && bun run dev:server` (port 3000, DB `data/app.sqlite`, user `marcus`/`change-me`). Web dev per `web/` scripts.
 - Orchestrate with sub-agents: **strong model (Fable) for the demanding design** (math port, schema/sync decisions, planner architecture), cheaper model for well-specified mechanical work. Parallel agents only with strict per-agent file ownership; review between batches.
 - Every piece gets unit tests AND live verification (preview the web app, confirm overlays render + numbers match v1) before "done". Honest reporting — failed/skipped things said plainly.
-- Don't modify `mackans-client-fw` unless the task is explicitly about the framework (golf-map consumes it via bun `file:` — after any framework change run `bun install --force` in golf-map).
+- Don't modify `mackans-client-fw` unless the task is explicitly about the framework (golf-map consumes it as a versioned tarball in `vendor/`; a framework change means a real release there, then `bun run fw:update` here).
 - Commit at reviewed milestones, descriptive messages, **never Co-Authored-By**. Record decisions in `ROADMAP.md` as they're made.
 
 ## Suggested opening move

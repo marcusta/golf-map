@@ -77,40 +77,35 @@ survives the iOS API/tile joiners.
 > `@basics/core` builds hardcode `'/api/_obs'` in
 > `client/obs/obs.api.instance.ts`, which resolves against the origin root and
 > misses this service entirely — the dashboard loads but every panel is empty.
-> It now goes through `API_BASE`. Because bun caches `file:` dependencies by
-> path (§2), a checkout that already has the fix is *not* enough: the server
-> needs `bun install --force` and a web rebuild before the dashboard works under
-> `/golf-map/`.
+> It now goes through `API_BASE`, fixed in `@basics/core` **1.1.0** (§2). A box
+> still on an older vendored tarball needs a `fw:update` commit and a web
+> rebuild before the dashboard works under `/golf-map/`.
 
 ---
 
-## 2. Prerequisite: the framework checkout
+## 2. The framework dependency (no extra checkout needed)
 
-`@basics/core` is consumed as a `file:` dependency at
-`../../mackans-client-fw/core` (relative to `server/`, `web/`, `shared/`) and
-`../mackans-client-fw/core` from the repo root. That resolves on the server
-**iff the framework is cloned as a sibling of the service folder**:
+`@basics/core` is consumed as a **versioned tarball committed to this repo** at
+`vendor/basics-core-<X.Y.Z>.tgz`, declared by all four package.json files
+(root, `server/`, `web/`, `shared/`). `git pull && bun install` on the box
+resolves it with no network access to the framework repo and **no framework
+clone on the server** — `/srv/mackans-client-fw` is no longer a prerequisite.
 
-```sh
-sudo -u golf-map git clone <framework-repo-url> /srv/mackans-client-fw
-```
+The version is visible in the dependency string, so it is always obvious which
+framework a given deployed commit shipped against, and a rollback of this repo
+rolls the framework back with it, atomically.
 
-`/srv/golf-map` + `/srv/mackans-client-fw` reproduces the local layout exactly,
-so no path rewriting is needed. This is the chosen v1 approach — the framework is
-**not** vendored into this repo (unlike tapscore, which snapshots it under
-`vendor/basics-core`).
-
-> **Framework updates need two steps.** `git pull` in `/srv/mackans-client-fw`
-> is not enough: bun **copies** a `file:` dependency into
-> `node_modules/.bun/@basics+core@…` at install time, and the store key is
-> derived from the path, not the contents — so a plain `bun install` sees
-> nothing to do and the old copy keeps being served. Always:
+> **Framework updates happen on the DEV machine, never on the box.** From a
+> local checkout with `mackans-client-fw` as a sibling:
 >
 > ```sh
-> cd /srv/mackans-client-fw && sudo -u golf-map git pull
-> cd /srv/golf-map          && sudo -u golf-map bun install --force
-> sudo systemctl restart golf-map
+> cd ~/dev/github/golf-map
+> bun run fw:update            # bare = latest tag; or fw:update 1.2.0
+> # run the checks, then commit vendor/*.tgz + the four package.jsons + bun.lock
 > ```
+>
+> The box then just takes the normal deploy path (`git pull`, `bun install`,
+> rebuild, restart). No `--force`, no second repo to keep in sync.
 
 ---
 
@@ -337,8 +332,9 @@ snapshot. Nothing in sig-infra creates the `data/` directory either.
 2. **`healthCheckPath`**: add `"healthCheckPath": "/api/meta"` to the now-existing
    `services.json` entry in the sig-infra repo; commit, push, pull on the
    server, `bun generate.ts` (§3.1).
-3. **Framework clone** on the box: `/srv/mackans-client-fw` (§2). Must exist
-   before any `bun install`, or the `file:` dependency cannot resolve.
+3. **No framework clone is needed** — `@basics/core` rides along as a committed
+   tarball in `vendor/` (§2). An older `/srv/mackans-client-fw` left over from a
+   previous deploy is inert and can be removed.
 4. **Unit environment**: add every `Environment=` line from §4 — `PORT=3801` and
    `SERVER_MODE=serve` are not optional (see the warning there) — put
    `PUBLISH_TOKEN` in `/etc/golf-map.env`, then `systemctl daemon-reload`. Do

@@ -35,9 +35,11 @@ shared/   Generated API clients (shared/api/*.gen.ts), shared strategy math, JSO
 data/     SQLite databases (gitignored) — app.sqlite, sessions.sqlite, obs.sqlite
 ```
 
-`server/` depends on `@basics/core` via a local `file:` dependency pointing at the sibling
-`mackans-client-fw` repo (`../../mackans-client-fw/core`). That repo must be checked out alongside
-this one at `/Users/marcust/dev/github/mackans-client-fw`.
+`@basics/core` is consumed as a versioned tarball committed at `vendor/basics-core-<X.Y.Z>.tgz`
+and declared by all four package.json files (root, `server/`, `web/`, `shared/`), so `bun install`
+works in a fresh clone with nothing else checked out. Moving to a new framework release is
+`bun run fw:update [X.Y.Z]` from the repo root, which needs the `mackans-client-fw` repo checked
+out as a sibling at `/Users/marcust/dev/github/mackans-client-fw`.
 
 All `server/package.json` scripts assume **`server/` as the working directory** (`bun run <script>`
 runs with cwd = the package dir). They set `DB_PATH`/`SESSION_DB_PATH`/`OBS_DB_PATH` explicitly so

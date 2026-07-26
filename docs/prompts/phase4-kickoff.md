@@ -36,7 +36,7 @@ Scope:
 - Orchestrate with sub-agents: **Fable for demanding tasks** (architecture, novel/cross-stack), **Opus for well-specified ones**. Parallel agents only with strict per-agent file ownership; review results between batches.
 - Every piece gets unit tests AND live verification (simulator screenshots for UI) before being called done. Honest reporting — failed/skipped things are said plainly.
 - Commit at reviewed milestones, descriptive messages, never Co-Authored-By.
-- Don't modify `mackans-client-fw` unless the task is explicitly about the framework (golf-map consumes it via bun `file:` — after any framework change run `bun install --force` in golf-map).
+- Don't modify `mackans-client-fw` unless the task is explicitly about the framework (golf-map consumes it as a versioned tarball in `vendor/`; a framework change means a real release there, then `bun run fw:update` here).
 - Record decisions in ROADMAP.md as they're made.
 
 ## Suggested opening move

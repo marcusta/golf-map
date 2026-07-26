@@ -11,9 +11,9 @@
  * BYTES 404 (no pyramid on disk), which MapLibre tolerates — the style has no
  * glyphs/sprites, so `map.on('load')` still fires and the map reaches ready.
  *
- * Lives in server/ (not e2e/) because @basics/core is a workspace `file:` dep
+ * Lives in server/ (not e2e/) because @basics/core is a workspace dependency
  * resolvable only from server/web node_modules — Bun resolves from the file's
- * directory. The e2e global-setup spawns this as `bun db/seed-e2e.ts <path>`
+ * directory, and e2e/ is outside every workspace. The e2e global-setup spawns this as `bun db/seed-e2e.ts <path>`
  * with cwd=server. Run standalone: `bun db/seed-e2e.ts <db-path>` (cwd server).
  */
 import { sql } from 'kysely';
