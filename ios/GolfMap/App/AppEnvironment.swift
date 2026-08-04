@@ -46,6 +46,8 @@ final class AppEnvironment {
     let keychain: Keychain
     /// App-wide user preferences (competition mode, …).
     let settings: AppSettings
+    /// Build-time feature gates, resolved once at launch.
+    let gates: FeatureGates
 
     // MARK: Observable state
 
@@ -63,13 +65,15 @@ final class AppEnvironment {
         database: AppDatabase,
         bundlePaths: BundlePaths,
         keychain: Keychain = Keychain(),
-        settings: AppSettings = AppSettings()
+        settings: AppSettings = AppSettings(),
+        gates: FeatureGates = .current
     ) {
         self.serverOrigin = serverOrigin
         self.database = database
         self.bundlePaths = bundlePaths
         self.keychain = keychain
         self.settings = settings
+        self.gates = gates
 
         let client = GolfAPIClient(baseURL: serverOrigin)
         self.client = client
