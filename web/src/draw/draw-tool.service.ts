@@ -50,6 +50,7 @@ import { CAT, MARKER_FILL, OVERLAY_TEXT, STATUS_RISK } from '../map/map-palette'
 import {
     DIGIT_FEATURE_TYPES,
     DRAW_FILL_OPACITY,
+    FEATURE_TYPES,
     SELECTION_COLOR,
     SURROUND_PAIRINGS,
     typeColorExpression,
@@ -101,6 +102,27 @@ const DRAG_MOVE_THRESHOLD_PX = 3;
 const MOVE_THRESHOLD_PX = 2;
 /** Marquee: below this the gesture counts as a click (prototype: 5 px). */
 const MARQUEE_MIN_PX = 5;
+
+// New-shape type policy persistence (survives reloads; per browser).
+const TYPE_FOLLOWS_LAST_KEY = 'golfmap.draw.typeFollowsLast';
+const DEFAULT_TYPE_KEY = 'golfmap.draw.defaultType';
+
+/** Safe localStorage read (privacy mode / embedded contexts can throw). */
+function storedPref(key: string): string | null {
+    try {
+        return localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+function storePref(key: string, value: string): void {
+    try {
+        localStorage.setItem(key, value);
+    } catch {
+        // Best-effort — the in-memory signal still holds for the session.
+    }
+}
 /** Cmd/Ctrl+D clone offset in EPSG:3006 meters (prototype: 10 units). */
 export const DUPLICATE_OFFSET_M = 10;
 /** Expand/contract preset distances in meters (prototype table). */
@@ -356,6 +378,42 @@ export class DrawToolService {
     readonly history = new EditHistory();
     /** Feature type used for the next created polygon. */
     readonly drawType = new Signal<FeatureType>('bunker');
+    /**
+     * New-shape type policy: true (default) = the next armed shape keeps the
+     * last-used type (chain-draw feel), false = every arm resets `drawType`
+     * to `defaultDrawType`. Persisted per browser; set via the feature-type
+     * dropdown's footer.
+     */
+    readonly typeFollowsLast = new Signal<boolean>(storedPref(TYPE_FOLLOWS_LAST_KEY) !== '0');
+    /** The type new shapes reset to when `typeFollowsLast` is off. Persisted. */
+    readonly defaultDrawType = new Signal<FeatureType>(
+        (FEATURE_TYPES as readonly string[]).includes(storedPref(DEFAULT_TYPE_KEY) ?? '')
+            ? storedPref(DEFAULT_TYPE_KEY) as FeatureType
+            : 'bunker');
+
+    /** Set + persist the new-shape type policy. */
+    setTypeFollowsLast(follows: boolean): void {
+        this.typeFollowsLast.set(follows);
+        storePref(TYPE_FOLLOWS_LAST_KEY, follows ? '1' : '0');
+        if (!follows) this.drawType.set(this.defaultDrawType.peek());
+    }
+
+    /** Set + persist the default new-shape type (applies immediately when armed). */
+    setDefaultDrawType(type: FeatureType): void {
+        this.defaultDrawType.set(type);
+        storePref(DEFAULT_TYPE_KEY, type);
+        if (!this.typeFollowsLast.peek()) this.drawType.set(type);
+    }
+
+    /**
+     * Arm polygon drawing, applying the new-shape type policy first. All UI
+     * arm paths ('N', the command bar's + toggle) go through here; chain-draw
+     * (staying armed after a close) applies the same policy in `closeDraft`.
+     */
+    armDraw(): void {
+        if (!this.typeFollowsLast.peek()) this.drawType.set(this.defaultDrawType.peek());
+        this.state.arm();
+    }
     /** Hole assignment for the next created polygon (null = course level). */
     readonly drawHoleId = new Signal<string | null>(null);
     /**
@@ -557,7 +615,7 @@ export class DrawToolService {
                 return;
             }
             if (!this.previewAdded) {
-                ctx.map.addOverlayLayer(DRAW_OVERLAY_ID, data, previewLayers());
+                ctx.map.addOverlayLayer(DRAW_OVERLAY_ID, data, previewLayers(), { keepOnTop: true });
                 this.previewAdded = true;
             } else {
                 ctx.map.updateOverlayData(DRAW_OVERLAY_ID, data);
@@ -1245,7 +1303,7 @@ export class DrawToolService {
         } else if (e.key === 'n' || e.key === 'N') {
             if (!this.state.isDrawing.peek() && !meta) {
                 e.preventDefault();
-                this.state.arm();
+                this.armDraw();
             }
         } else if (e.key === 'b' || e.key === 'B') {
             if (!this.state.isDrawing.peek() && !meta) {
@@ -1321,8 +1379,13 @@ export class DrawToolService {
         if (!ring || !this.features) return;
         this.cursor.set(null);
         const features = this.features;
+        const type = this.drawType.peek();
+        // Chain-draw stays armed without re-arming, so the new-shape type
+        // policy must apply HERE too: the next chained shape starts as the
+        // default type, not as whatever this one was.
+        if (!this.typeFollowsLast.peek()) this.drawType.set(this.defaultDrawType.peek());
         void features.create({
-            type: this.drawType.peek(),
+            type,
             holeId: this.drawHoleId.peek(),
             geometry: { crs: 'EPSG:3006', curveType: 'bspline', rings: [ring] },
         }).then(created => {

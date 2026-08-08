@@ -21,6 +21,7 @@ import {
     SAM_TOOL_ID,
     SAM_SIMPLIFY_EPS_M,
     SAM_FIT_TOLERANCE_M,
+    SAM_SCOPE_COURSE,
     type SamCropSource,
 } from '../src/sam/sam-tool.service';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
@@ -72,6 +73,7 @@ interface Harness {
     interactionMode: Signal<string>;
     clickHandlers: Array<(e: { lngLat: { lng: number; lat: number } }) => void>;
     cropCalls: Array<{ urls: string[]; size: number }>;
+    drawHoleId: Signal<string | null>;
     setSidecar(handler: (url: string) => Response | Promise<Response>): void;
 }
 
@@ -95,7 +97,9 @@ async function harness(sidecar?: (url: string) => Response | Promise<Response>):
         return 'FAKEJPEGBASE64';
     };
     const history = new EditHistory();
-    const svc = new SamToolService(new SamClient('http://sam.test', fetchFn), cropSource, () => history);
+    const drawHoleId = new Signal<string | null>(null);
+    const svc = new SamToolService(
+        new SamClient('http://sam.test', fetchFn), cropSource, () => history, () => drawHoleId.peek());
 
     const features = new FeaturesService(fakeApi());
     await features.load('course-1');
@@ -129,7 +133,7 @@ async function harness(sidecar?: (url: string) => Response | Promise<Response>):
     };
     svc.activate(ctx);
     await tick(); // settle the activation health probe
-    return { svc, features, history, interactionMode, clickHandlers, cropCalls, setSidecar: h => { handler = h; } };
+    return { svc, features, history, interactionMode, clickHandlers, cropCalls, drawHoleId, setSidecar: h => { handler = h; } };
 }
 
 /** Sidecar that answers healthy and returns the given polygons. */
@@ -282,7 +286,7 @@ describe('segmentAt', () => {
 
         expect(created).toBeDefined();
         expect(created!.type).toBe('green');
-        expect(created!.holeId).toBeNull();
+        expect(created!.holeId).toBeNull(); // follow scope, no draw target hole
         expect(created!.geometry.crs).toBe('EPSG:3006');
         expect(created!.geometry.curveType).toBe('bspline');
         expect(created!.geometry.rings).toHaveLength(1);
@@ -320,6 +324,29 @@ describe('segmentAt', () => {
         await tick();
         await tick();
         expect(h.features.store.items.get()).toHaveLength(1);
+    });
+
+    test('default follow scope tracks the draw target hole', async () => {
+        const h = await harness(sidecarWith([ellipseMask(256, 256, 150, 90)]));
+        h.drawHoleId.set('hole-7');
+        const created = await h.svc.segmentAt(CLICK);
+        expect(created!.holeId).toBe('hole-7');
+    });
+
+    test('course scope forces holeId null even with a draw target hole', async () => {
+        const h = await harness(sidecarWith([ellipseMask(256, 256, 150, 90)]));
+        h.drawHoleId.set('hole-7');
+        h.svc.holeScope.set(SAM_SCOPE_COURSE);
+        const created = await h.svc.segmentAt(CLICK);
+        expect(created!.holeId).toBeNull();
+    });
+
+    test('an explicit hole id scope wins over the draw target', async () => {
+        const h = await harness(sidecarWith([ellipseMask(256, 256, 150, 90)]));
+        h.drawHoleId.set('hole-7');
+        h.svc.holeScope.set('hole-3');
+        const created = await h.svc.segmentAt(CLICK);
+        expect(created!.holeId).toBe('hole-3');
     });
 
     test('an empty mask sets a notice and creates nothing', async () => {

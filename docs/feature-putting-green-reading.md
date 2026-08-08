@@ -148,8 +148,15 @@ so; Tier 3 is honest about being an estimate.
   footprint is a 2–3 m radius patch (ARKit depth error ~1% of range; grazing angles beyond
   that are noise). If the simulated path exits the scanned corridor, prompt to widen.
 - **Walk beside the line** (etiquette = physics: don't dent the surface being measured).
-- **Anchor the ends:** phone set flat on the green at ball and hole for ~1 s each — two static
-  IMU level readings bracketing the scan, a drift check for free.
+- **Anchor the ends:** aim the on-screen crosshair at the ball / the hole and tap — the LiDAR
+  hit under the crosshair is the endpoint, so the player stands normally instead of holding the
+  phone over the spot. Only the horizontal position matters (`prepareCorridor` re-levels height
+  from the ground points near the ball).
+- **Optional endpoint levels:** phone set flat on the green at ball and hole for ~1 s each — two
+  static IMU level readings bracketing the scan, a drift check for free. **Skippable**: they
+  produce `endpointLevelDeltaPct` (a cross-check) and a calibration sample, and feed neither the
+  read nor the verdict. Skipped ⇒ payload carries fewer than two `endpointLevels` and the delta
+  is omitted.
 - **Out-and-back is the quality gate:** walk to the hole and back; pass-to-pass mismatch is a
   direct error estimate → confidence score. Green = show read; yellow = suggest re-scan;
   red = refuse ("read it yourself"). **Never show a confident read from a bad scan.**

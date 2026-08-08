@@ -93,9 +93,17 @@ export class PlanService {
 
     constructor(private plansApi: GamePlansApi = api.gamePlans) {}
 
-    /** Load the course's plan tree (null = no plan yet). Cached per courseId. */
-    async load(courseId: string): Promise<void> {
-        if (this.loadedCourseId === courseId) return;
+    /**
+     * Load the course's plan tree (null = no plan yet). Cached per courseId;
+     * pass `force` to refetch a course that is already loaded.
+     *
+     * The cache is per-service and never expires, so it MUST be forced whenever
+     * the planner is (re)entered or refocused — the iOS app writes to the same
+     * rows, and without a forced refetch its edits only appeared after a full
+     * page reload.
+     */
+    async load(courseId: string, force = false): Promise<void> {
+        if (this.loadedCourseId === courseId && !force) return;
         const tree = await request(this.loading, this.error, () =>
             this.plansApi.getByCourse({ courseId }));
         if (tree === undefined) return; // failed — error signal set, cache untouched
@@ -118,8 +126,7 @@ export class PlanService {
     async reload(): Promise<void> {
         const courseId = this.loadedCourseId;
         if (!courseId) return;
-        this.loadedCourseId = null;
-        await this.load(courseId);
+        await this.load(courseId, true);
     }
 
     /** The plan-hole row for a hole number, or undefined (not planned yet). */

@@ -68,13 +68,13 @@ const SAFE_DX = 180;
 /**
  * Arm the polygon tool if it isn't already. Chain-draw (draw-tool.service.ts
  * `closeDraft`) deliberately keeps the tool ARMED after a ring closes, so for
- * every square after the first the same toolbar button reads "Cancel drawing"
+ * every square after the first the same toolbar button reads "Stop drawing"
  * with aria-pressed=true (command-bar.component.ts `newPoly`) — clicking it
  * blindly would DISARM the tool and turn the next corner clicks into
  * selection clicks.
  */
 async function armDraw(page: Page): Promise<void> {
-    const btn = page.getByRole('button', { name: /New polygon|Cancel drawing/ });
+    const btn = page.locator(tid('new-polygon-btn'));
     await expect(btn).toBeVisible();
     if ((await btn.getAttribute('aria-pressed')) !== 'true') await btn.click();
 }
@@ -85,7 +85,7 @@ async function armDraw(page: Page): Promise<void> {
  * the first point of the next polygon, not a hit-test.
  */
 async function disarmDraw(page: Page): Promise<void> {
-    const btn = page.getByRole('button', { name: /New polygon|Cancel drawing/ });
+    const btn = page.locator(tid('new-polygon-btn'));
     if ((await btn.getAttribute('aria-pressed')) === 'true') await btn.click();
     await expect(btn).toHaveAttribute('aria-pressed', 'false');
 }

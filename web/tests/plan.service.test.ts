@@ -272,6 +272,39 @@ describe('load', () => {
         expect(calls.getByCourse).toBe(1); // cached
     });
 
+    test('force refetches an already-loaded course (another client edited it)', async () => {
+        const { api, calls } = fakeApi();
+        const svc = new PlanService(api);
+
+        await svc.load('c1');
+        expect(svc.plan.get()).toBeNull();
+
+        // The phone creates the plan against the same rows.
+        await api.upsert({ courseId: 'c1' });
+
+        await svc.load('c1'); // cached — still nothing
+        expect(calls.getByCourse).toBe(1);
+        expect(svc.plan.get()).toBeNull();
+
+        await svc.load('c1', true);
+        expect(calls.getByCourse).toBe(2);
+        expect(svc.plan.get()).not.toBeNull();
+    });
+
+    test('reload refetches without dropping the cached courseId', async () => {
+        const { api, calls } = fakeApi();
+        const svc = new PlanService(api);
+
+        await svc.load('c1');
+        await api.upsert({ courseId: 'c1' });
+        await svc.reload();
+
+        expect(calls.getByCourse).toBe(2);
+        expect(svc.plan.get()).not.toBeNull();
+        await svc.load('c1');
+        expect(calls.getByCourse).toBe(2); // still cached under the same course
+    });
+
     test('no-plan sentinel {ok:true} is treated as null (not a poisoned head)', async () => {
         const { api } = fakeApi();
         const svc = new PlanService(api);

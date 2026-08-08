@@ -2,7 +2,8 @@ import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, panelTitle } from '../css';
 import { FEATURE_TYPES, FEATURE_STYLES, type FeatureType } from '../draw/feature-palette';
-import { SamToolService } from './sam-tool.service';
+import { CourseDetailService } from '../course-detail/course-detail.service';
+import { SamToolService, SAM_SCOPE_FOLLOW, SAM_SCOPE_COURSE } from './sam-tool.service';
 
 const tpl = template(`
     <div class="sam-panel" bind="root" data-testid="sam-panel">
@@ -14,6 +15,8 @@ const tpl = template(`
         <div bind="armedSection" class="armed-section">
             <h4 class="section-title">Create as</h4>
             <select bind="typeSelect" class="type-select"></select>
+            <h4 class="section-title scope-title">Add to</h4>
+            <select bind="scopeSelect" class="type-select" data-testid="sam-scope-select"></select>
         </div>
         <div bind="busyLine" class="busy-line">Segmenting…</div>
         <div bind="notice" class="notice"></div>
@@ -45,6 +48,8 @@ export class SamPanelComponent extends Component {
                 margin: 0 0 ${s('xs')};
                 ${panelTitle()}
             }
+
+            & .scope-title { margin-top: ${s('sm')}; }
 
             & .status-row {
                 display: flex;
@@ -114,6 +119,7 @@ export class SamPanelComponent extends Component {
     `;
 
     private tool = this.inject(SamToolService);
+    private courseDetail = this.inject(CourseDetailService);
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -151,6 +157,32 @@ export class SamPanelComponent extends Component {
         }
         select.addEventListener('change', () => this.tool.armedType.set(select.value as FeatureType));
         this.track(effect(() => { select.value = this.tool.armedType.get(); }));
+
+        // Hole scope: "Selected hole" (default — follows the sidebar's active
+        // hole, like draw) / "Course level" / an explicit hole. Options are
+        // rebuilt when the hole list loads (feature-stack panel pattern).
+        const scopeSelect = this.ref(frag, 'scopeSelect') as HTMLSelectElement;
+        scopeSelect.addEventListener('change', () => this.tool.holeScope.set(scopeSelect.value));
+        this.track(effect(() => {
+            const holes = this.courseDetail.holes.get();
+            const value = this.tool.holeScope.get();
+            scopeSelect.textContent = '';
+            const follow = document.createElement('option');
+            follow.value = SAM_SCOPE_FOLLOW;
+            follow.textContent = 'Selected hole (auto)';
+            scopeSelect.appendChild(follow);
+            const course = document.createElement('option');
+            course.value = SAM_SCOPE_COURSE;
+            course.textContent = 'Course level';
+            scopeSelect.appendChild(course);
+            for (const hole of holes) {
+                const option = document.createElement('option');
+                option.value = hole.id;
+                option.textContent = `Hole ${hole.number} (par ${hole.par})`;
+                scopeSelect.appendChild(option);
+            }
+            scopeSelect.value = value;
+        }));
 
         return frag;
     }

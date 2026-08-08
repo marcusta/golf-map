@@ -24,9 +24,11 @@ describe('mode-split API mounting (W1)', () => {
         expect(meta.status).toBe(200);
         expect(await meta.json()).toMatchObject({ name: 'golf-map', mode: 'serve' });
 
-        // Builder-only route is not mounted → 404 (not 401).
+        // Builder-only routes are not mounted → 404 (not 401).
         const build = await app.request('/api/mapbuild/latest?courseId=x');
         expect(build.status).toBe(404);
+        const publish = await app.request('/api/publish/status');
+        expect(publish.status).toBe(404);
 
         // Ingest route IS mounted → 401 without a token (not 404).
         const ingest = await app.request('/api/ingest/site', { method: 'POST' });
@@ -39,9 +41,11 @@ describe('mode-split API mounting (W1)', () => {
         const meta = await app.request('/api/meta');
         expect(await meta.json()).toMatchObject({ mode: 'builder' });
 
-        // Builder route mounted → auth guard yields 401 (proves it is present).
+        // Builder routes mounted → auth guard yields 401 (proves they are present).
         const build = await app.request('/api/mapbuild/latest?courseId=x');
         expect(build.status).toBe(401);
+        const publish = await app.request('/api/publish/status');
+        expect(publish.status).toBe(401);
 
         // Ingest route not mounted in builder mode → 404.
         const ingest = await app.request('/api/ingest/site', { method: 'POST' });

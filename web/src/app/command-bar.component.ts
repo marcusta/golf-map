@@ -3,7 +3,7 @@ import { AuthService } from '@basics/core/client/auth';
 // Only the literal `href` needs the deploy prefix — router.navigate() adds it.
 import { BASE_PATH } from '@basics/core/client/base';
 import { t } from '../theme';
-import { s, statusTag, iconBtn, metric, panelTitle, selectedRow } from '../css';
+import { s, statusTag, iconBtn, input, metric, panelTitle, selectedRow } from '../css';
 import { icon } from '../ui/icons';
 import { PopoverComponent, type PopoverContent } from '../ui/popover.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
@@ -18,6 +18,7 @@ import { ServerModeService, visibleEditorTools } from './server-mode.service';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
 import { GeojsonImportService } from '../import/geojson-import.service';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
+import { PublishClientService, PUBLISH_STEP_LABELS, type PublishState } from './publish-client.service';
 
 type CommandBarMode = 'create' | 'plan';
 
@@ -249,12 +250,21 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 &:hover { background: ${t('color-surface-sunken')}; color: ${t('color-text-primary')}; }
             }
 
-            & .cmdbar__new { ${iconBtn({ primary: true })} }
-            /* Armed (drawing) → the button is now Cancel; mirror the draw
-               panel's red affordance instead of a second variant. */
+            /* New-polygon is a TOGGLE (draw ⇄ select), so it must read as
+               off/on rather than being permanently accent-filled: ghost when
+               idle, accent-filled + rotated-to-× icon while drawing is armed. */
+            & .cmdbar__new { ${iconBtn()} }
+            & .cmdbar__new .cmdbar__new-icon {
+                display: inline-flex;
+                transition: transform var(--dur-fast) var(--ease-standard);
+            }
             & .cmdbar__new[aria-pressed="true"] {
-                background: ${t('color-status-negative')};
-                &:hover { background: ${t('color-status-negative')}; }
+                border-color: transparent;
+                background: ${t('color-accent-primary')};
+                color: ${t('color-on-accent')};
+                box-shadow: 0 6px 14px -6px color-mix(in srgb, ${t('color-accent-primary')} 60%, transparent);
+                &:hover { background: ${t('color-accent-hover')}; color: ${t('color-on-accent')}; }
+                & .cmdbar__new-icon { transform: rotate(45deg); }
             }
             & .cmdbar__box { ${iconBtn()} }
 
@@ -444,6 +454,35 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         .cmd-ft-row.is-hidden .cmd-ft-eye { opacity: 1; }
         .cmd-ft-row.is-hidden .cmd-ft { opacity: 0.45; }
 
+        /* New-shape type policy footer: keep-last-used checkbox + (when off)
+           the default-type picker new shapes reset to on arm. */
+        .cmd-ft-policy {
+            margin-top: 10px;
+            padding: 10px 4px 2px;
+            border-top: 1px solid ${t('color-border-subtle')};
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            font-size: 0.8rem;
+            color: ${t('color-text-primary')};
+
+            & label {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                cursor: pointer;
+                & input { accent-color: ${t('color-accent-primary')}; }
+            }
+            & .cmd-ft-policy__default {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                &.hide { display: none; }
+                & span { color: ${t('color-text-secondary')}; }
+                & select { ${input()} flex: 1; min-width: 0; }
+            }
+        }
+
         /* Accent (Publish) menu item — clay text + a small clay swatch. */
         .menu-item.cmd-menu-accent {
             color: ${t('color-text-accent')};
@@ -464,6 +503,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private importSvc = this.inject(SvgImportService);
     private geojsonImportSvc = this.inject(GeojsonImportService);
     private mapBuild = this.inject(MapBuildClientService);
+    private publishVps = this.inject(PublishClientService);
     private confirm = this.inject(ConfirmService);
     private helpModal = this.inject(HelpModalService);
     private serverMode = this.inject(ServerModeService);
@@ -637,13 +677,16 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             },
             helpBtn: { onclick: () => this.helpModal.show() },
             newPoly: {
-                innerHTML: icon('plus', 16),
-                title: () => (this.tool.state.isDrawing.get() ? 'Cancel drawing (Esc)' : 'New polygon (N)'),
-                'aria-label': () => (this.tool.state.isDrawing.get() ? 'Cancel drawing' : 'New polygon'),
+                innerHTML: `<span class="cmdbar__new-icon">${icon('plus', 16)}</span>`,
+                title: () => (this.tool.state.isDrawing.get()
+                    ? 'Drawing — click to stop and return to Select (Esc)'
+                    : 'New polygon (N)'),
+                'aria-label': () => (this.tool.state.isDrawing.get() ? 'Stop drawing' : 'New polygon'),
                 'aria-pressed': () => this.tool.state.isDrawing.get(),
+                'data-testid': 'new-polygon-btn',
                 onclick: () => {
                     if (this.tool.state.isDrawing.peek()) this.tool.state.disarm();
-                    else this.tool.state.arm();
+                    else this.tool.armDraw();
                 },
             },
             boxSelect: {
@@ -651,6 +694,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 title: () => (this.tool.state.boxSelect.get() ? 'Box-select: on (B)' : 'Box-select (B)'),
                 'aria-label': 'Box-select',
                 'aria-pressed': () => this.tool.state.boxSelect.get(),
+                'data-testid': 'box-select-btn',
                 onclick: () => this.tool.state.toggleBoxSelect(),
             },
         });
@@ -745,8 +789,31 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     }
 
     private buildFeaturePanel(host: HTMLElement, track: (d: () => void) => void, close: () => void): void {
-        host.innerHTML = `<div class="cmdbar__ft-title">Feature type</div><div class="cmdbar__ft-grid" data-k="grid"></div>`;
+        host.innerHTML = `<div class="cmdbar__ft-title">Feature type</div><div class="cmdbar__ft-grid" data-k="grid"></div>`
+            + `<div class="cmd-ft-policy">`
+            + `<label><input type="checkbox" data-k="follow" data-testid="ft-follow-last"> New shapes keep the last-used type</label>`
+            + `<div class="cmd-ft-policy__default" data-k="defaultRow"><span>Start new shapes as</span>`
+            + `<select data-k="defaultSel" data-testid="ft-default-type" aria-label="Default type for new shapes"></select></div>`
+            + `</div>`;
         const grid = host.querySelector<HTMLElement>('[data-k="grid"]')!;
+
+        // New-shape type policy footer (persisted on DrawToolService).
+        const follow = host.querySelector<HTMLInputElement>('[data-k="follow"]')!;
+        const defaultRow = host.querySelector<HTMLElement>('[data-k="defaultRow"]')!;
+        const defaultSel = host.querySelector<HTMLSelectElement>('[data-k="defaultSel"]')!;
+        for (const type of FEATURE_TYPES) {
+            const opt = document.createElement('option');
+            opt.value = type;
+            opt.textContent = FEATURE_STYLES[type].label;
+            defaultSel.appendChild(opt);
+        }
+        follow.onchange = () => this.tool.setTypeFollowsLast(follow.checked);
+        defaultSel.onchange = () => this.tool.setDefaultDrawType(defaultSel.value as FeatureType);
+        track(effect(() => {
+            follow.checked = this.tool.typeFollowsLast.get();
+            defaultRow.classList.toggle('hide', this.tool.typeFollowsLast.get());
+            defaultSel.value = this.tool.defaultDrawType.get();
+        }));
         for (const type of FEATURE_TYPES) {
             const style = FEATURE_STYLES[type];
             const row = document.createElement('div');
@@ -927,6 +994,105 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             publishBtn.disabled = disabled;
         }));
         host.appendChild(publishBtn);
+
+        // Publish to VPS — ships the site's built bundle to the serve box
+        // (tiles, content, analysis DEM), so the phone can download the
+        // course. The UI face of `bun run publish` (T59); builder only, same
+        // guard as Publish revision above.
+        this.mountPublishToVps(host, track, close);
+    }
+
+    /**
+     * "Publish to VPS" actions-menu row. Label reflects the live run state
+     * (step while running); clicking when unconfigured explains the env setup
+     * instead of failing. Result (success/failure + warnings) is reported via
+     * ConfirmService once the run reaches a terminal state — the menu itself
+     * is long closed by then.
+     */
+    private mountPublishToVps(host: HTMLElement, track: (d: () => void) => void, close: () => void): void {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'menu-item';
+        btn.dataset.testid = 'course-publish-vps-btn';
+        host.appendChild(btn);
+
+        // Preseed configured/running state on menu open (cheap GET).
+        void this.publishVps.refresh();
+
+        track(effect(() => {
+            const state = this.publishVps.state.get();
+            const running = state?.status === 'running';
+            const label = running
+                ? `Publishing to VPS — ${state?.step ? PUBLISH_STEP_LABELS[state.step] : 'finishing'}…`
+                : 'Publish to VPS';
+            btn.innerHTML = `<span class="menu-item__icon">${icon(running ? 'loader-circle' : 'arrow-up-to-line', 16)}</span>`
+                + `<span class="menu-item__label">${label}</span>`;
+            btn.disabled = running;
+        }));
+
+        btn.onclick = async () => {
+            const course = this.svc.course.peek();
+            close();
+            if (!course) return;
+
+            const state = this.publishVps.state.peek() ?? await this.publishVps.refresh();
+            if (state && !state.configured) {
+                await this.confirm.confirm({
+                    title: 'Publishing is not configured',
+                    body: 'This builder has no publish target.',
+                    detail: 'Set PUBLISH_URL and PUBLISH_TOKEN in the server environment and restart it. See docs/reference/vps-serve-runbook.md.',
+                    confirmLabel: 'OK',
+                    tone: 'primary',
+                });
+                return;
+            }
+
+            const target = state?.targetUrl ? ` to ${state.targetUrl}` : ' to the VPS';
+            const ok = await this.confirm.confirm({
+                title: `Publish ${course.name}${target}?`,
+                body: 'This uploads the built course bundle (map tiles, holes and features, analysis DEM) and swaps it in atomically on the serve box.',
+                detail: 'User data on the VPS (rounds, plans, calibration, pins) is never touched. Devices download the update from the course list.',
+                confirmLabel: 'Publish to VPS',
+                cancelLabel: 'Not now',
+                tone: 'primary',
+                layout: 'review',
+            });
+            if (!ok) return;
+
+            let result: PublishState;
+            try {
+                result = await this.publishVps.run(course.id);
+            } catch (err) {
+                await this.confirm.confirm({
+                    title: 'Publish failed to start',
+                    body: err instanceof Error ? err.message : String(err),
+                    confirmLabel: 'OK',
+                    tone: 'danger',
+                });
+                return;
+            }
+            const warnings = result.warnings.length
+                ? ` Warnings: ${result.warnings.join(' — ')}`
+                : '';
+            if (result.status === 'succeeded') {
+                const size = result.bundleBytes !== null ? formatBytes(result.bundleBytes) : 'unknown size';
+                await this.confirm.confirm({
+                    title: 'Published to VPS',
+                    body: `${course.name} is live (bundle ${size}).`,
+                    detail: `Open the course list on your phone and download (or re-download) the course.${warnings}`,
+                    confirmLabel: 'Done',
+                    tone: 'primary',
+                });
+            } else {
+                await this.confirm.confirm({
+                    title: 'Publish failed',
+                    body: result.error ?? 'Unknown error — check the server log.',
+                    detail: warnings || undefined,
+                    confirmLabel: 'OK',
+                    tone: 'danger',
+                });
+            }
+        };
     }
 
     /**

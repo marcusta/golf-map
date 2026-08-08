@@ -23,6 +23,7 @@ import { createOrthoPatchesApi } from './api/ortho-patches.api';
 import { createHydroApi } from './api/hydro.api';
 import { createOsmApi } from './api/osm.api';
 import { createTerrainEditsApi } from './api/terrain-edits.api';
+import { createPublishApi } from './api/publish.api';
 import { createTapscoreBridgeApi } from './api/tapscore-bridge.api';
 import { createIngestRoutes } from './api/ingest.routes';
 
@@ -60,6 +61,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         hydroService,
         osmService,
         terrainEditsService,
+        publishService,
         tapscoreBridgeService,
         ingestService,
     } = services;
@@ -92,6 +94,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         mount(app, '/api', createHydroApi(hydroService));
         mount(app, '/api', createOsmApi(osmService));
         mount(app, '/api', createTerrainEditsApi(terrainEditsService));
+        mount(app, '/api', createPublishApi(publishService));
     } else {
         // --- Serve-only API: publish ingest (bearer-token, not cookie session) ---
         app.route('/api', createIngestRoutes(ingestService, opts.dataDir));

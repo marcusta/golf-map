@@ -143,16 +143,32 @@ export class PlannerComponent extends Component {
     onMount(): void {
         // Course + holes, features, clubs and the plan tree — (re)loaded
         // whenever the courseId route param changes.
+        //
+        // The plan tree is force-loaded: it is the one store the iOS app also
+        // writes to, and `PlanService`'s per-course cache would otherwise serve
+        // whatever this tab last saw — so re-entering the planner showed a
+        // stale tree until a hard page reload.
         this.track(effect(() => {
             const { courseId } = this.params.get();
             if (!courseId) return;
             untrack(() => {
                 void this.svc.load(courseId);
                 void this.features.load(courseId);
-                void this.plan.load(courseId);
+                void this.plan.load(courseId, true);
                 void this.clubs.load();
             });
         }));
+
+        // Same reason, for a tab left open while the plan was edited on the
+        // phone: refetch when the window regains focus.
+        // A refetch replaces the stores wholesale, so skip it while a local
+        // save is in flight — that response reconciles the tree by itself.
+        const onFocus = () => {
+            if (this.plan.saving.peek()) return;
+            void this.plan.reload();
+        };
+        window.addEventListener('focus', onFocus);
+        this.track(() => window.removeEventListener('focus', onFocus));
 
         // Furniture (tees/greens/aims) needs the hole ids — load once they
         // arrive (same pattern as the furniture tool's attach hook).

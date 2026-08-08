@@ -17,6 +17,7 @@ import { createOrthoPatchesClient } from '../../shared/api/ortho-patches.gen';
 import { createHydroClient } from '../../shared/api/hydro.gen';
 import { createOsmClient } from '../../shared/api/osm.gen';
 import { createTerrainEditsClient } from '../../shared/api/terrain-edits.gen';
+import { createPublishClient } from '../../shared/api/publish.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
@@ -49,4 +50,5 @@ export const api = {
     hydro: createHydroClient(API_BASE),
     osm: createOsmClient(API_BASE),
     terrainEdits: createTerrainEditsClient(API_BASE),
+    publish: createPublishClient(API_BASE),
 };

@@ -107,6 +107,12 @@ export class MapService {
     private disposers: Array<() => void> = [];
     /** overlay id → layer ids added for it */
     private overlays = new Map<string, string[]>();
+    /** Overlays that must stay above later-added overlays (tool previews). */
+    private onTopOverlays = new Set<string>();
+    /** Latest queued (not yet sent) overlay data per source (see updateOverlayData). */
+    private pendingOverlayData = new Map<string, GeoJSON>();
+    /** Overlay sources with a `setData` currently awaiting worker completion. */
+    private overlayDataInFlight = new Set<string>();
     private tiles: { manifest: TileManifest } | null = null;
     /** Poll handle for a deferred `init` awaiting a live-document container. */
     private pendingInit: ReturnType<typeof setInterval> | null = null;
@@ -196,6 +202,11 @@ export class MapService {
             });
         });
         map.on('zoom', () => this.zoom.set(map.getZoom()));
+        // Gesture-end drape repair: a zoom/pan burst mid-edit can leave
+        // draped overlay layers (fills, the draft line) on stale terrain
+        // render-to-texture tiles — see repairDrapedOverlays.
+        map.on('moveend', () => this.scheduleDrapeRepair());
+        map.on('zoomend', () => this.scheduleDrapeRepair());
         map.on('click', e => this.dispatch(this.clickHandlers, e));
         map.on('mousemove', e => this.dispatch(this.moveHandlers, e));
 
@@ -293,6 +304,12 @@ export class MapService {
         for (const dispose of this.disposers) dispose();
         this.disposers = [];
         this.overlays.clear();
+        this.onTopOverlays.clear();
+        this.pendingOverlayData.clear();
+        if (this.drapeRepairTimer !== null) {
+            clearTimeout(this.drapeRepairTimer);
+            this.drapeRepairTimer = null;
+        }
         this.tiles = null;
         this.orthoSources = [];
         this.mapKey = null;
@@ -494,7 +511,7 @@ export class MapService {
         id: string,
         data: GeoJSON,
         layers: OverlayLayerSpec[],
-        opts: { beforeId?: string } = {},
+        opts: { beforeId?: string; keepOnTop?: boolean } = {},
     ): void {
         const map = this.requireMap();
         map.addSource(id, { type: 'geojson', data });
@@ -508,14 +525,119 @@ export class MapService {
             map.addLayer({ ...layer, source: id } as LayerSpecification, beforeId);
         }
         this.overlays.set(id, layers.map(l => l.id));
+        // `keepOnTop` overlays (tool previews — draft outline, vertex/handle
+        // markers) stay above overlays added LATER: layer z-order is add
+        // order, and on a cold load the draw preview can beat the features
+        // fill to the style, burying the markers under every shape.
+        if (opts.keepOnTop) this.onTopOverlays.add(id);
+        for (const topId of this.onTopOverlays) {
+            if (topId === id) continue;
+            for (const layerId of this.overlays.get(topId) ?? []) {
+                if (map.getLayer(layerId)) map.moveLayer(layerId);
+            }
+        }
+        // Hold updates until the source's INITIAL load settles — the other
+        // half of the 5.x worker race (maplibre-gl-js#7734 is precisely
+        // "setData immediately after source init returns wrong data").
+        // Updates arriving meanwhile queue in pendingOverlayData.
+        this.overlayDataInFlight.add(id);
+        void this.sourceLoaded(map, id).then(() => {
+            this.overlayDataInFlight.delete(id);
+            if (this.pendingOverlayData.has(id)) void this.pumpOverlayData(id);
+        });
     }
 
-    /** Replace the GeoJSON data of an overlay added via `addOverlayLayer`. */
+    /** Resolves once `id`'s source reports loaded (3s fallback — never hangs the queue). */
+    private sourceLoaded(map: maplibregl.Map, id: string): Promise<void> {
+        return new Promise(resolve => {
+            let done = false;
+            const finish = (): void => {
+                if (done) return;
+                done = true;
+                map.off('sourcedata', check);
+                resolve();
+            };
+            const check = (e: maplibregl.MapSourceDataEvent): void => {
+                if (e.sourceId === id && e.isSourceLoaded) finish();
+            };
+            map.on('sourcedata', check);
+            setTimeout(finish, 3000);
+        });
+    }
+
+    /**
+     * Replace the GeoJSON data of an overlay added via `addOverlayLayer`.
+     *
+     * Updates are SERIALIZED per source with a latest-wins queue: maplibre
+     * 5.x has a worker race when `setData` calls overlap in flight (fixed
+     * upstream only in 6.0, maplibre-gl-js#7734) that intermittently leaves
+     * a source's tiles stale/partially rendered until the next camera move —
+     * seen in the field as the draw tool's draft line vanishing during a
+     * fast pan/zoom and a just-committed feature's fill not appearing until
+     * the map is nudged. Awaiting each `setData` before sending the next
+     * (dropping superseded intermediates) removes the overlap entirely.
+     */
     updateOverlayData(id: string, data: GeoJSON): void {
-        const map = this.requireMap();
-        const source = map.getSource(id);
-        if (source && source.type === 'geojson') {
-            (source as maplibregl.GeoJSONSource).setData(data);
+        this.requireMap();
+        this.pendingOverlayData.set(id, data);
+        if (!this.overlayDataInFlight.has(id)) void this.pumpOverlayData(id);
+    }
+
+    private async pumpOverlayData(id: string): Promise<void> {
+        this.overlayDataInFlight.add(id);
+        try {
+            while (this.pendingOverlayData.has(id)) {
+                const data = this.pendingOverlayData.get(id)!;
+                this.pendingOverlayData.delete(id);
+                const map = this.map.peek();
+                if (!map || !this.ready.peek()) return;
+                const source = map.getSource(id);
+                if (!source || source.type !== 'geojson') return;
+                await (source as maplibregl.GeoJSONSource).setData(data, true);
+            }
+            this.scheduleDrapeRepair();
+        } catch {
+            // A destroyed map / removed source mid-await aborts the update;
+            // the next updateOverlayData starts a fresh pump.
+        } finally {
+            this.overlayDataInFlight.delete(id);
+        }
+    }
+
+    private drapeRepairTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /**
+     * Trailing-debounced terrain-drape repair after overlay updates settle.
+     *
+     * With terrain enabled every fill/line layer is DRAPED: rasterized into
+     * the terrain's render-to-texture tile cache (circles/symbols are not).
+     * maplibre 5.x only frees that cache for a source update when the tile's
+     * reload `data` event actually arrives — a reload dropped by the worker
+     * race leaves the stale texture up permanently: the draft line vanishing
+     * after a fast pan/zoom mid-draw, or a committed fill not appearing
+     * until the next camera move (which happens to rebuild the cache).
+     * 6.x reworked this invalidation (#7812); on 5.x we free the cache
+     * ourselves once an update burst settles, and on gesture end. A full
+     * freeRtt costs one re-render of the visible draped tiles — the same
+     * work every camera move already does.
+     */
+    private scheduleDrapeRepair(): void {
+        if (this.drapeRepairTimer !== null) clearTimeout(this.drapeRepairTimer);
+        this.drapeRepairTimer = setTimeout(() => {
+            this.drapeRepairTimer = null;
+            this.repairDrapedOverlays();
+        }, 150);
+    }
+
+    private repairDrapedOverlays(): void {
+        const map = this.map.peek();
+        if (!map || !this.ready.peek()) return;
+        try {
+            map.terrain?.tileManager?.freeRtt();
+            map.triggerRepaint();
+        } catch {
+            // Terrain internals shifted (upgrade) — worst case the old
+            // "repaints on next camera move" behavior remains.
         }
     }
 
@@ -552,6 +674,8 @@ export class MapService {
 
     /** Remove an overlay's layers and source. No-op if absent. */
     removeOverlayLayer(id: string): void {
+        this.pendingOverlayData.delete(id);
+        this.onTopOverlays.delete(id);
         const map = this.map.get();
         if (!map) return;
         for (const layerId of this.overlays.get(id) ?? []) {

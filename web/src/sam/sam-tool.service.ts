@@ -39,6 +39,11 @@ export const SAM_FIT_TOLERANCE_M = 0.5;
 /** Sidecar reachability, as shown by the panel. */
 export type SamHealth = 'checking' | 'online' | 'offline';
 
+/** `holeScope` sentinel: created features follow the draw target hole. */
+export const SAM_SCOPE_FOLLOW = 'follow';
+/** `holeScope` sentinel: created features go to course level (holeId null). */
+export const SAM_SCOPE_COURSE = 'course';
+
 /**
  * Composes a crop from ortho tiles → base64 JPEG (no data-URL prefix).
  * `tiles` carry resolved URLs + draw offsets; missing tiles (out-of-coverage
@@ -85,6 +90,12 @@ export class SamToolService {
     readonly health = new Signal<SamHealth>('checking');
     /** Feature type the next segmentation creates (panel picker). */
     readonly armedType = new Signal<FeatureType>('bunker');
+    /**
+     * Hole scope for created features (panel picker): SAM_SCOPE_FOLLOW
+     * (default — track the draw target / sidebar hole), SAM_SCOPE_COURSE
+     * (course level), or an explicit hole id.
+     */
+    readonly holeScope = new Signal<string>(SAM_SCOPE_FOLLOW);
     /** True while a crop/segment/create round trip is in flight. */
     readonly busy = new Signal(false);
     /** One-line panel notice (why the last click produced nothing). */
@@ -98,7 +109,18 @@ export class SamToolService {
         // The DRAW tool's history: SAM-created features join the same undo
         // stack, so ⌘Z in draw mode peels them like any other create.
         private historyOf: () => EditHistory = () => di.get(DrawToolService).history,
+        // The DRAW tool's target hole — what SAM_SCOPE_FOLLOW resolves to
+        // (the command bar keeps it synced to the sidebar's selected hole).
+        private followHoleId: () => string | null = () => di.get(DrawToolService).drawHoleId.peek(),
     ) {}
+
+    /** The holeId the next created feature gets, per the armed scope. */
+    private resolveHoleId(): string | null {
+        const scope = this.holeScope.peek();
+        if (scope === SAM_SCOPE_COURSE) return null;
+        if (scope === SAM_SCOPE_FOLLOW) return this.followHoleId();
+        return scope;
+    }
 
     // ── EditorTool lifecycle ────────────────────────────────────────────────
 
@@ -199,7 +221,7 @@ export class SamToolService {
         }
         const created = await ctx.features.create({
             type: this.armedType.peek(),
-            holeId: null,
+            holeId: this.resolveHoleId(),
             geometry: {
                 crs: 'EPSG:3006',
                 curveType: 'bspline',
