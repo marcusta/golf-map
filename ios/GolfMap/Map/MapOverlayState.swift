@@ -67,10 +67,15 @@ public struct EllipseLabel: Equatable, Sendable {
     /// The ellipse's (drift-shifted) center — the anchor point.
     public var position: LatLon
     public var text: String
+    /// Draw the text on a small dark rounded box — the tap-a-shape edge
+    /// figures use this: they land over light sand/fairway where the plain
+    /// stroked outline alone drowns.
+    public var boxed: Bool
 
-    public init(position: LatLon, text: String) {
+    public init(position: LatLon, text: String, boxed: Bool = false) {
         self.position = position
         self.text = text
+        self.boxed = boxed
     }
 }
 
@@ -207,6 +212,26 @@ public struct PlanOverlay: Equatable, Sendable {
     }
 }
 
+/// The tapped-shape inspection overlay: the tapped ring's outline (drawn as a
+/// cyan wash + outline so "you tapped THIS shape" is unmistakable) plus the
+/// two play-line edge points the front/carry figures measure to. The figures
+/// themselves ride the ellipse-label pipeline (pre-rendered images — the
+/// offline style has no glyph PBFs). Nil hides the whole group.
+public struct InspectedFeatureOverlay: Equatable, Sendable {
+    /// Tapped ring outline, WGS84 (implicitly closed).
+    public var ring: [LatLon]
+    /// Near-edge play-line point — the `front` figure's anchor.
+    public var frontPoint: LatLon
+    /// Far-edge play-line point — the `carry` figure's anchor.
+    public var carryPoint: LatLon
+
+    public init(ring: [LatLon], frontPoint: LatLon, carryPoint: LatLon) {
+        self.ring = ring
+        self.frontPoint = frontPoint
+        self.carryPoint = carryPoint
+    }
+}
+
 /// The hole's COURSE ROUTE: the authored routing tee → aim points → green
 /// center. Course definition, not player strategy — aim-point count gives the
 /// par and their positions give the doglegs, so this draws whether or not a
@@ -258,6 +283,9 @@ public struct MapOverlayState: Equatable, Sendable {
     /// The feature a tapped distance-ladder row focused (cyan ring); nil hides
     /// it. Cleared with the camera focus (`recenter()` / hole change).
     public var highlight: LatLon?
+    /// Tapped-shape inspection (ring wash/outline + front/carry edge markers);
+    /// nil hides it. Cleared with the inspection.
+    public var inspectedFeature: InspectedFeatureOverlay?
     /// The explicit browse-from origin (solid cyan dot) — the exact point
     /// browse distances measure from. Nil outside browse mode or while
     /// browsing from the active tee (the route line start marks that).
@@ -283,6 +311,7 @@ public struct MapOverlayState: Equatable, Sendable {
         plan: PlanOverlay? = nil,
         courseRoute: CourseRouteOverlay = .empty,
         highlight: LatLon? = nil,
+        inspectedFeature: InspectedFeatureOverlay? = nil,
         browseFrom: LatLon? = nil,
         selectedEllipse: [LatLon]? = nil,
         selectedWindHold: TargetWindHold? = nil,
@@ -297,6 +326,7 @@ public struct MapOverlayState: Equatable, Sendable {
         self.plan = plan
         self.courseRoute = courseRoute
         self.highlight = highlight
+        self.inspectedFeature = inspectedFeature
         self.browseFrom = browseFrom
         self.selectedEllipse = selectedEllipse
         self.selectedWindHold = selectedWindHold
@@ -338,6 +368,27 @@ enum MapOverlayShapes {
         let feature = MLNPointFeature()
         feature.coordinate = marker.position.clCoordinate
         return feature
+    }
+
+    /// Tapped-shape inspection: the ring polygon (role "shape" — one source
+    /// backs the wash, outline and edge layers) plus the two play-line edge
+    /// points (role "edge"). Empty collection hides the group.
+    static func inspectedFeatureShape(_ overlay: InspectedFeatureOverlay?) -> MLNShape {
+        guard let overlay else { return emptyShape() }
+        var features: [MLNShape] = []
+        if overlay.ring.count >= 3 {
+            var coordinates = overlay.ring.map(\.clCoordinate)
+            let polygon = MLNPolygonFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+            polygon.attributes = ["role": "shape"]
+            features.append(polygon)
+        }
+        for position in [overlay.frontPoint, overlay.carryPoint] {
+            let feature = MLNPointFeature()
+            feature.coordinate = position.clCoordinate
+            feature.attributes = ["role": "edge"]
+            features.append(feature)
+        }
+        return MLNShapeCollectionFeature(shapes: features)
     }
 
     /// The ladder tap-highlight point (empty collection hides the ring).
@@ -572,6 +623,11 @@ enum MapOverlayRenderer {
         setShape(
             MapOverlayShapes.highlightShape(state.highlight),
             sourceID: MapStyleIDs.highlightSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.inspectedFeatureShape(state.inspectedFeature),
+            sourceID: MapStyleIDs.inspectedFeatureSource,
             in: style
         )
         setShape(

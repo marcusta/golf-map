@@ -200,6 +200,111 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertEqual(model.hazardCarries.count, 1)
     }
 
+    // MARK: - Tap-a-shape inspection (front/carry along the play line)
+
+    private func surfaceBox(_ lat: Double, _ lon: Double, _ kind: String) -> FlatRing {
+        let c = Sweref99TM.fromWGS84(LatLon(lat: lat, lon: lon))
+        return FlatRing(points: [
+            Vec2(x: c.x - 5, y: c.y - 5), Vec2(x: c.x + 5, y: c.y - 5),
+            Vec2(x: c.x + 5, y: c.y + 5), Vec2(x: c.x - 5, y: c.y + 5),
+        ], kind: kind)
+    }
+
+    func testInspectTappedFeatureShowsFrontAndCarryAlongPlayLine() {
+        let model = makeModel() // hole 1, origin = default tee (browse)
+        // A bunker on hole 1's tee→green line, installed as a surface ring.
+        model.setSurfaces([surfaceBox(58.3620, 15.7090, "bunker")])
+
+        XCTAssertTrue(model.inspectTappedFeature(LatLon(lat: 58.3620, lon: 15.7090)))
+        let feature = try! XCTUnwrap(model.inspectedFeature)
+        XCTAssertEqual(feature.carry.kind, "bunker")
+        XCTAssertGreaterThan(feature.carry.frontM, 0)
+        XCTAssertGreaterThan(feature.carry.carryM, feature.carry.frontM)
+
+        // The banner reflects it as a hazard row: front = distance, carry set.
+        let advice = try! XCTUnwrap(model.selectedTargetAdvice)
+        XCTAssertEqual(advice.kind, .hazard)
+        XCTAssertEqual(advice.distanceM, feature.carry.frontM)
+        XCTAssertEqual(advice.carryM, feature.carry.carryM)
+
+        // Ray mode: the window is the ray's entry/exit through the tapped
+        // ring (a 10 m box), NOT a projection onto some hole line.
+        XCTAssertTrue((9...11).contains(feature.carry.carryM - feature.carry.frontM),
+                      "ray crosses the 10 m box: \(feature.carry)")
+        XCTAssertNil(feature.lineTo)
+
+        // The map overlay highlights the tapped ring, runs the measuring line
+        // origin → through the shape to its far lip, and prints both figures
+        // as boxed labels at the measured edge points.
+        let overlays = model.overlays
+        let overlay = try! XCTUnwrap(overlays.inspectedFeature)
+        XCTAssertEqual(overlay.ring.count, 4)
+        XCTAssertEqual(overlays.distanceLine.count, 2)
+        XCTAssertEqual(overlays.distanceLine[1], overlay.carryPoint)
+        let featureLabels = overlays.ellipseLabels.filter(\.boxed)
+        XCTAssertEqual(featureLabels.map(\.text).sorted(),
+                       ["\(feature.carry.frontM)", "\(feature.carry.carryM)"].sorted())
+    }
+
+    func testInspectTappedFeatureWithBrowseToMeasuresAlongChosenLine() {
+        let model = makeModel()
+        model.setGPSEnabled(false) // browse mode — browse-to points exist here
+        model.setSurfaces([surfaceBox(58.3620, 15.7090, "bunker")])
+
+        // Choose a browse-to landing point past the bunker, then tap the
+        // bunker: the point is KEPT and the window measures along the chosen
+        // origin → browse-to line (projection, so the side prefix survives).
+        let landing = LatLon(lat: 58.3630, lon: 15.7085)
+        model.inspectBrowsePoint(landing)
+        XCTAssertTrue(model.inspectTappedFeature(LatLon(lat: 58.3620, lon: 15.7090)))
+
+        XCTAssertEqual(model.browseTarget, landing, "browse-to survives the shape tap")
+        let feature = try! XCTUnwrap(model.inspectedFeature)
+        XCTAssertEqual(feature.lineTo, landing)
+        XCTAssertGreaterThan(feature.carry.carryM, feature.carry.frontM)
+
+        // The drawn measuring line is the chosen line (origin → browse-to /
+        // far edge, whichever reaches farther).
+        let overlays = model.overlays
+        XCTAssertEqual(overlays.distanceLine.count, 2)
+        XCTAssertEqual(overlays.highlight, landing, "kept browse-to stays highlighted")
+    }
+
+    func testInspectTappedFeatureAnswersForTheGreenRing() {
+        let model = makeModel()
+        model.setSurfaces([surfaceBox(58.3640, 15.7080, "green")])
+        XCTAssertTrue(model.inspectTappedFeature(LatLon(lat: 58.3640, lon: 15.7080)))
+        XCTAssertEqual(model.inspectedFeature?.carry.kind, "green")
+    }
+
+    func testInspectTappedFeatureMissAndNonTappableReturnFalse() {
+        let model = makeModel()
+        // Fairway under the tap is not a tappable kind; open map is a miss.
+        model.setSurfaces([surfaceBox(58.3620, 15.7090, "fairway")])
+        XCTAssertFalse(model.inspectTappedFeature(LatLon(lat: 58.3620, lon: 15.7090)))
+        XCTAssertFalse(model.inspectTappedFeature(LatLon(lat: 58.3500, lon: 15.7300)))
+        XCTAssertNil(model.inspectedFeature)
+    }
+
+    func testInspectBrowsePointClearsInspectedFeature() {
+        let model = makeModel()
+        model.setGPSEnabled(false) // inspectBrowsePoint is browse-mode-only
+        model.setSurfaces([surfaceBox(58.3620, 15.7090, "bunker")])
+        model.inspectTappedFeature(LatLon(lat: 58.3620, lon: 15.7090))
+        XCTAssertNotNil(model.inspectedFeature)
+        model.inspectBrowsePoint(LatLon(lat: 58.3630, lon: 15.7085))
+        XCTAssertNil(model.inspectedFeature, "point inspect replaces the shape inspection")
+    }
+
+    func testHoleChangeClearsInspectedFeature() {
+        let model = makeModel()
+        model.setSurfaces([surfaceBox(58.3620, 15.7090, "bunker")])
+        model.inspectTappedFeature(LatLon(lat: 58.3620, lon: 15.7090))
+        XCTAssertNotNil(model.inspectedFeature)
+        model.nextHole()
+        XCTAssertNil(model.inspectedFeature)
+    }
+
     func testLadderPopulatesFromTeeOriginWhenBrowsing() {
         // No GPS fix → origin falls back to the active tee (browse mode). The
         // ladder must still populate — it measures from any valid origin, not

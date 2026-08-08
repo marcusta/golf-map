@@ -66,6 +66,15 @@ export function outlineColorExpression(): unknown[] {
 }
 
 /**
+ * Draw-order rank of a feature type (higher = painted on top, hit first).
+ * The tap-a-shape hit test uses this so a bunker inside a green answers the
+ * tap the same way the map paints it. Unknown types sink below everything.
+ */
+export function typeZRank(type: string): number {
+    return TYPE_Z_ORDER.indexOf(type);
+}
+
+/**
  * Draw-order sort key from the feature `type` — falls back to the server's
  * `stackKey` for intra-type ordering (hole grouping) via a compound never
  * needed at paint time; here type-rank alone matches the desktop layering

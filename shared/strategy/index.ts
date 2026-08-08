@@ -64,6 +64,13 @@ export {
     hazardsAlongLine,
 } from './carry';
 export {
+    type RingSide,
+    type RingLineExtent,
+    TAPPABLE_RING_TYPES,
+    ringExtentAlongLines,
+    ringExtentAlongRay,
+} from './ring-extent';
+export {
     type PointRole,
     type DistanceTarget,
     type FeatureDistance,

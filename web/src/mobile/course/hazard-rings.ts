@@ -1,5 +1,5 @@
 import { wgs84ToSweref99tm } from '../../geo/transform';
-import { DEFAULT_HAZARD_TYPES } from '../../../../shared/strategy';
+import { DEFAULT_HAZARD_TYPES, TAPPABLE_RING_TYPES } from '../../../../shared/strategy';
 import type { BrowseHazardTarget } from '../../planner/browse-ladder';
 import type {
     CourseFeatureFeatureCollection,
@@ -7,6 +7,7 @@ import type {
 } from '../../../../shared/api/course-features.gen';
 
 const HAZARD_TYPES = new Set(DEFAULT_HAZARD_TYPES);
+const TAPPABLE_TYPES = new Set(TAPPABLE_RING_TYPES);
 
 /** Human labels per hazard feature type (falls back to a title-cased type). */
 const HAZARD_LABELS: Record<string, string> = {
@@ -19,6 +20,7 @@ const HAZARD_LABELS: Record<string, string> = {
     outside: 'Out of bounds',
     trees: 'Trees',
     deep_rough: 'Deep rough',
+    green: 'Green',
 };
 
 /** Project one WGS84 outer ring (`[lng, lat]` pairs) to EPSG:3006 `{x, y}`. */
@@ -41,11 +43,29 @@ function projectRing(coords: number[][]): { x: number; y: number }[] {
 export function hazardRingsFromGeojson(
     fc: CourseFeatureFeatureCollection | null,
 ): BrowseHazardTarget[] {
+    return ringsFromGeojson(fc, HAZARD_TYPES);
+}
+
+/**
+ * The rings the tap-a-shape readout hit-tests: every hazard ring PLUS the
+ * greens (`TAPPABLE_RING_TYPES`) — tapping a green answers with its near/far
+ * extent along the play line just like a bunker.
+ */
+export function tappableRingsFromGeojson(
+    fc: CourseFeatureFeatureCollection | null,
+): BrowseHazardTarget[] {
+    return ringsFromGeojson(fc, TAPPABLE_TYPES);
+}
+
+function ringsFromGeojson(
+    fc: CourseFeatureFeatureCollection | null,
+    types: ReadonlySet<string>,
+): BrowseHazardTarget[] {
     if (!fc) return [];
     const out: BrowseHazardTarget[] = [];
     for (const feature of fc.features) {
         const type = feature.properties.type;
-        if (!HAZARD_TYPES.has(type)) continue;
+        if (!types.has(type)) continue;
         const label = HAZARD_LABELS[type] ?? type;
         for (const [ringIndex, ring] of polygonOuterRings(feature).entries()) {
             const points = projectRing(ring);

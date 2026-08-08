@@ -166,6 +166,36 @@ final class RouteLegLabelRenderer {
     /// The shared white-on-stroke text rasterizer behind `labelImage` — also
     /// used by `EllipseLabelRenderer` so every on-map text image (route-leg
     /// figures, ellipse labels) shares one look.
+    /// Boxed variant: the string on a small dark rounded pill — used where a
+    /// figure lands over light ground (sand / fairway) and the stroked
+    /// outline alone drowns (the tap-a-shape edge figures).
+    static func boxedTextImage(_ string: String, fontSize: CGFloat) -> UIImage {
+        let text = string as NSString
+        let baseFont = UIFont.systemFont(ofSize: fontSize, weight: .bold)
+        let font = baseFont.fontDescriptor.withDesign(.rounded)
+            .map { UIFont(descriptor: $0, size: baseFont.pointSize) } ?? baseFont
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: UIColor.white,
+        ]
+        let textSize = text.size(withAttributes: attributes)
+        let padX: CGFloat = 5
+        let padY: CGFloat = 2
+        let size = CGSize(
+            width: ceil(textSize.width) + padX * 2,
+            height: ceil(textSize.height) + padY * 2
+        )
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { _ in
+            let box = UIBezierPath(
+                roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 5
+            )
+            UIColor(white: 0.05, alpha: 0.82).setFill()
+            box.fill()
+            text.draw(at: CGPoint(x: padX, y: padY), withAttributes: attributes)
+        }
+    }
+
     static func textImage(_ string: String, fontSize: CGFloat) -> UIImage {
         let text = string as NSString
         let baseFont = UIFont.systemFont(ofSize: fontSize, weight: .bold)

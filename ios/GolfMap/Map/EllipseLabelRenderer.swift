@@ -33,15 +33,15 @@ final class EllipseLabelRenderer {
 
     /// Bring the style in sync with `labels` (empty hides the layer's data).
     func apply(_ labels: [EllipseLabel], to style: MLNStyle) {
-        let needed = Set(labels.map { Self.imageName(text: $0.text) })
+        let needed = Set(labels.map { Self.imageName(text: $0.text, boxed: $0.boxed) })
         for stale in registeredImageNames.subtracting(needed) {
             style.removeImage(forName: stale)
         }
         registeredImageNames.formIntersection(needed)
         for label in labels {
-            let name = Self.imageName(text: label.text)
+            let name = Self.imageName(text: label.text, boxed: label.boxed)
             if registeredImageNames.insert(name).inserted {
-                style.setImage(Self.labelImage(text: label.text), forName: name)
+                style.setImage(Self.labelImage(text: label.text, boxed: label.boxed), forName: name)
             }
         }
 
@@ -54,9 +54,9 @@ final class EllipseLabelRenderer {
     // MARK: - Pure builders (unit-tested)
 
     /// Image id for a label string. Value-keyed (not index-keyed) so equal
-    /// labels share one registered image.
-    static func imageName(text: String) -> String {
-        "\(imageNamePrefix)\(text)"
+    /// labels share one registered image; the boxed variant gets its own id.
+    static func imageName(text: String, boxed: Bool = false) -> String {
+        "\(imageNamePrefix)\(boxed ? "box-" : "")\(text)"
     }
 
     /// One point feature per label, anchored at the ellipse center, carrying
@@ -65,7 +65,7 @@ final class EllipseLabelRenderer {
         let features = labels.map { label -> MLNPointFeature in
             let feature = MLNPointFeature()
             feature.coordinate = label.position.clCoordinate
-            feature.attributes = ["labelImage": imageName(text: label.text)]
+            feature.attributes = ["labelImage": imageName(text: label.text, boxed: label.boxed)]
             return feature
         }
         return MLNShapeCollectionFeature(shapes: features)
@@ -74,7 +74,9 @@ final class EllipseLabelRenderer {
     /// Slightly smaller than the route-leg figures — a caption on a shape, not
     /// a primary distance. Shares `RouteLegLabelRenderer`'s rasterizer so all
     /// on-map text images look alike.
-    static func labelImage(text: String) -> UIImage {
-        RouteLegLabelRenderer.textImage(text, fontSize: 14)
+    static func labelImage(text: String, boxed: Bool = false) -> UIImage {
+        boxed
+            ? RouteLegLabelRenderer.boxedTextImage(text, fontSize: 13)
+            : RouteLegLabelRenderer.textImage(text, fontSize: 14)
     }
 }

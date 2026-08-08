@@ -61,6 +61,30 @@ final class OnCourseModel {
     private(set) var browseOrigin: LatLon?
     /// Terrain elevation sampled at `browseOrigin` for plays-like yardages.
     private(set) var browseOriginElevation: Double?
+    /// The tapped course shape's inspection state: the banner row payload
+    /// (`carry`) plus the geometry the map overlay highlights — the tapped
+    /// ring outline and the two play-line points the front/carry figures
+    /// measure to.
+    struct InspectedFeature: Equatable {
+        /// Label/kind/front/carry/side/centroid — the banner row payload.
+        var carry: HazardCarry
+        /// Tapped ring outline (WGS84) — the map highlight polygon.
+        var ring: [LatLon]
+        /// Measured near-edge point (WGS84) — on the ring boundary in ray
+        /// mode, on the chosen line in browse-to mode.
+        var frontPoint: LatLon
+        /// Measured far-edge point (WGS84) — same anchoring as `frontPoint`.
+        var carryPoint: LatLon
+        /// The KEPT browse-to point whose origin→point line the figures were
+        /// measured along; nil = ray mode (origin → tap through the shape).
+        var lineTo: LatLon?
+    }
+
+    /// The tapped course shape (bunker / water / green / trees / …) currently
+    /// inspected: its near ("front") / far ("carry") extent along the play
+    /// line from the current origin. Unlike `browseTarget` this works in GPS
+    /// mode too — the readout is FROM the live fix.
+    private(set) var inspectedFeature: InspectedFeature?
     /// Transient arbitrary point being inspected FROM the current browse
     /// origin. It becomes the origin only after explicit promotion.
     private(set) var browseTarget: LatLon?
@@ -524,6 +548,7 @@ final class OnCourseModel {
         browseOriginElevation = nil
         browseTarget = nil
         browseTargetElevation = nil
+        inspectedFeature = nil
         restoreCamera = nil
         cameraToken += 1
         // A decide-choice working target is per-hole transient state (R4).
@@ -793,12 +818,75 @@ final class OnCourseModel {
         }
     }
 
+    /// Inspect a tapped course shape (bunker / water / green / trees / …):
+    /// hit-test the surface stack at the tap and, on a hit, surface the
+    /// ring's front/carry window. Two measuring modes:
+    ///
+    ///  - Default (ray): along the ray origin → tap, extended through the
+    ///    shape — "if I hit at that bunker, it's front to reach and carry to
+    ///    clear". The figures anchor ON the shape's own lips.
+    ///  - Browse-to (browse mode with an inspected `browseTarget`): the point
+    ///    is KEPT and the shape's window is projected onto the CHOSEN line
+    ///    origin → browse-to — "on the line I'm considering, when do I reach
+    ///    / carry it". The figures anchor on that line.
+    ///
+    /// Unlike `inspectBrowsePoint` this works in GPS mode too (always ray
+    /// there). Returns false when the tap landed on no tappable shape, so the
+    /// screen can fall back (browse point inspect / chrome toggle).
+    @discardableResult
+    func inspectTappedFeature(_ position: LatLon) -> Bool {
+        guard let origin else { return false }
+        let tapPlanar = Self.planar(position)
+        guard let ring = tappableRing(at: tapPlanar) else { return false }
+
+        let extent: HazardCarries.RingLineExtent?
+        let lineTo: LatLon?
+        if isBrowseMode, let browseTarget {
+            extent = HazardCarries.extent(
+                of: ring, along: [[Self.planar(origin), Self.planar(browseTarget)]]
+            )
+            lineTo = browseTarget
+        } else {
+            extent = HazardCarries.extent(of: ring, fromRay: Self.planar(origin), through: tapPlanar)
+            lineTo = nil
+        }
+        guard let extent else { return false }
+        mapFocus = nil
+        focusedLadderId = nil
+        inspectedFeature = InspectedFeature(
+            carry: extent.carry,
+            ring: ring.points.map { Sweref99TM.toWGS84(x: $0.x, y: $0.y) },
+            frontPoint: Sweref99TM.toWGS84(x: extent.frontPoint.x, y: extent.frontPoint.y),
+            carryPoint: Sweref99TM.toWGS84(x: extent.carryPoint.x, y: extent.carryPoint.y),
+            lineTo: lineTo
+        )
+        return true
+    }
+
+    /// Dismiss the tapped-shape inspection (GPS-mode tap on open map).
+    func clearInspectedFeature() {
+        inspectedFeature = nil
+    }
+
+    /// Topmost containing tappable ring at `p` — the surface stack is
+    /// topmost-first, so the first hit is the ring the map paints on top (a
+    /// bunker inside a green answers as the bunker). Bbox prefilter as `lieAt`.
+    private func tappableRing(at p: Vec2) -> FlatRing? {
+        for i in surfaces.indices where i < surfaceBBoxes.count {
+            guard HazardCarries.tappableTypes.contains(surfaces[i].kind) else { continue }
+            guard surfaceBBoxes[i].contains(p) else { continue }
+            if pointInRing(p, surfaces[i].points) { return surfaces[i] }
+        }
+        return nil
+    }
+
     /// Inspect an arbitrary map point FROM the unchanged browse origin. Does
     /// not issue a camera command, so a tap at the end of a pan stays harmless.
     func inspectBrowsePoint(_ position: LatLon) {
         guard isBrowseMode else { return }
         mapFocus = nil
         focusedLadderId = nil
+        inspectedFeature = nil
         browseTargetElevationTask?.cancel()
         browseTarget = position
         browseTargetElevation = nil
@@ -828,7 +916,7 @@ final class OnCourseModel {
 
     /// Whether the card should offer the explicit promotion action.
     var canPromoteInspectedBrowseTarget: Bool {
-        isBrowseMode && (browseTarget != nil || focusedLadderId != nil)
+        isBrowseMode && (browseTarget != nil || focusedLadderId != nil || inspectedFeature != nil)
     }
 
     /// Restore the selected tee as the browse origin.
@@ -844,6 +932,7 @@ final class OnCourseModel {
         browseTargetElevationTask?.cancel()
         browseTarget = nil
         browseTargetElevation = nil
+        inspectedFeature = nil
     }
 
     private func clearBrowseInspection() {
@@ -3799,6 +3888,20 @@ final class OnCourseModel {
                 position: wt.position
             )
         }
+        // A tapped course shape owns the banner while inspected: a hazard-kind
+        // row whose meters/carryM are the shape's front/carry along the play
+        // line, so the hazard banner (big carry + "carry · front N") renders it.
+        if let feature = inspectedFeature, origin != nil {
+            return LadderRow(
+                id: Self.inspectedFeatureRowID,
+                kind: .hazard,
+                label: feature.carry.displayLabel,
+                detail: "front / carry",
+                meters: feature.carry.frontM,
+                carryM: feature.carry.carryM,
+                position: Sweref99TM.toWGS84(x: feature.carry.centroid.x, y: feature.carry.centroid.y)
+            )
+        }
         // Inspecting an arbitrary tapped point needs no ladder — return early so a
         // browse tap never builds the (course-wide) ladder it would not use.
         if let browseTarget, let origin {
@@ -3821,6 +3924,7 @@ final class OnCourseModel {
     }
 
     private static let browseTargetRowID = "browse-target"
+    static let inspectedFeatureRowID = "inspected-feature"
 
     /// Minimum |adjusted carry − plays-as| before the advice names the gap
     /// ("+49 long") — under this the ellipse visually covers the target anyway.
@@ -3852,7 +3956,11 @@ final class OnCourseModel {
                 // not a re-derived closest club.
                 club = chosen
             } else if row.kind == .hazard {
-                if let carry = row.carryM {
+                if row.id == Self.inspectedFeatureRowID, inspectedFeature?.carry.kind == "green" {
+                    // Tapped green ring: the front/back window IS the readout —
+                    // a carry club or "Lay up short" note is hazard advice and
+                    // reads wrong against the green.
+                } else if let carry = row.carryM {
                     let longest = clubs.map(\.carryM).max() ?? 0
                     if Double(carry) <= longest {
                         club = closestClub(clubs, Double(carry))?.name
@@ -4671,6 +4779,17 @@ final class OnCourseModel {
         let line: [LatLon]
         if let wt = workingTarget, let origin {
             line = [origin, wt.position]
+        } else if let feature = inspectedFeature, let origin {
+            if let lineTo = feature.lineTo {
+                // Browse-to mode: draw the CHOSEN line, extended out to the
+                // far edge when the shape reaches past the browse-to point.
+                let farEnd = Distance.planarMeters(origin, feature.carryPoint)
+                    > Distance.planarMeters(origin, lineTo) ? feature.carryPoint : lineTo
+                line = [origin, farEnd]
+            } else {
+                // Ray mode: origin straight through the shape to its far lip.
+                line = [origin, feature.carryPoint]
+            }
         } else if isBrowseMode, let browseTarget, let origin {
             // Inspecting an arbitrary map point: the line IS the inspected
             // shot, origin straight to the tap (the hole route would suggest
@@ -4692,6 +4811,28 @@ final class OnCourseModel {
                 ?? "\(ellipse.legMeters)"
             ellipseLabels.append(EllipseLabel(position: ellipse.center, text: text))
         }
+        // Tapped-shape inspection: the front/carry figures printed AT the two
+        // measured edge points (pre-rendered label images — same pipeline as
+        // the ellipse labels; the offline style has no glyphs). Each label is
+        // nudged a few meters OUTWARD along the measuring line (front toward
+        // the origin, carry past the far edge) so the two never collide over
+        // a narrow shape.
+        if let feature = inspectedFeature {
+            let front = Sweref99TM.fromWGS84(feature.frontPoint)
+            let far = Sweref99TM.fromWGS84(feature.carryPoint)
+            let dx = far.x - front.x, dy = far.y - front.y
+            let len = hypot(dx, dy)
+            let nudge = 8.0
+            let ux = len > 1e-9 ? dx / len : 0, uy = len > 1e-9 ? dy / len : 1
+            ellipseLabels.append(EllipseLabel(
+                position: Sweref99TM.toWGS84(x: front.x - ux * nudge, y: front.y - uy * nudge),
+                text: "\(feature.carry.frontM)", boxed: true
+            ))
+            ellipseLabels.append(EllipseLabel(
+                position: Sweref99TM.toWGS84(x: far.x + ux * nudge, y: far.y + uy * nudge),
+                text: "\(feature.carry.carryM)", boxed: true
+            ))
+        }
 
         return MapOverlayState(
             distanceLine: line,
@@ -4704,6 +4845,11 @@ final class OnCourseModel {
             plan: plan,
             courseRoute: courseRouteOverlay,
             highlight: isBrowseMode ? browseTarget ?? mapFocus ?? browseOrigin : mapFocus,
+            inspectedFeature: inspectedFeature.map {
+                InspectedFeatureOverlay(
+                    ring: $0.ring, frontPoint: $0.frontPoint, carryPoint: $0.carryPoint
+                )
+            },
             // The explicit browse origin gets its own persistent dot — the
             // highlight ring moves to whatever was tapped last, so without
             // this the "measuring from here" point vanishes on inspection.

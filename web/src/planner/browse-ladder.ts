@@ -33,6 +33,11 @@ export interface BrowseLadderRow {
     clubName: string | null;
     /** Projected EPSG:3006 point; every rung can become the next origin. */
     position: StrategyPoint;
+    /**
+     * Far-edge ("carry") distance along the play line, meters — only on the
+     * tap-a-shape inspection row, where `lineM` is the near ("front") edge.
+     */
+    farM?: number;
 }
 
 export interface BrowseLadderInput {

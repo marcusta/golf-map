@@ -846,10 +846,13 @@ private struct OnCourseContentView: View {
                 // The browse-mode long-press "move tee" is RETIRED — it fired
                 // simultaneously with MapLibre's quick-zoom (moving the tee
                 // also zoomed the map). Adjust mode owns moves now.
-                // The single-tap recognizer is shared: normal Browse inspects a
-                // target from the current origin; measure/plan/putt own it while
-                // their tool is active.
-                measureTapEnabled: (model.isBrowseMode && isDistanceMode)
+                // The single-tap recognizer is shared: in distance mode a tap
+                // on a hazard/green shape inspects it (front/carry along the
+                // play line) in BOTH GPS and Browse; Browse falls back to the
+                // point inspect, GPS to the chrome toggle (which this
+                // recognizer now owns — see the retired simultaneousGesture
+                // below). Measure/plan/putt own the tap while active.
+                measureTapEnabled: isDistanceMode
                     || isMeasure || isPuttSurfaceActive || isPlacingPlanShot,
                 onMeasureTap: { position in
                     if isMeasure {
@@ -857,7 +860,20 @@ private struct OnCourseContentView: View {
                     } else if isPlacingPlanShot {
                         model.placePlanShot(at: position)
                     } else if model.isBrowseMode && isDistanceMode {
-                        model.inspectBrowsePoint(position)
+                        if !model.inspectTappedFeature(position) {
+                            model.inspectBrowsePoint(position)
+                        }
+                    } else if isDistanceMode {
+                        // GPS mode: tap on a shape inspects it; a tap on open
+                        // map first dismisses an inspection, then (with none
+                        // up) toggles the chrome as before.
+                        if !model.inspectTappedFeature(position) {
+                            if model.inspectedFeature != nil {
+                                model.clearInspectedFeature()
+                            } else {
+                                withAnimation(.easeInOut(duration: 0.28)) { immersive.toggle() }
+                            }
+                        }
                     } else {
                         puttRead.handleTap(puttPoint(position))
                     }
@@ -912,20 +928,11 @@ private struct OnCourseContentView: View {
             // and home-indicator strips.
             .trackFrame { mapFrame = $0 }
             .ignoresSafeArea()
-            // Short tap toggles chrome. High minimumDistance drag-less tap so it
-            // doesn't swallow the map's own pan. Inert while a tool is active:
-            // in Green view a stray tap must not hide the analysis panel, in
-            // measure mode the tap places a point, and in adjust mode the map
-            // surface belongs to the handles (UIKit recognizers in
-            // CourseMapView).
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    // In Browse, a short map tap inspects a distance target and
-                    // must not also hide/show the chrome.
-                    guard model.toolMode == .none, !model.isBrowseMode else { return }
-                    withAnimation(.easeInOut(duration: 0.28)) { immersive.toggle() }
-                }
-            )
+            // The chrome toggle moved into the shared single-tap recognizer
+            // above (GPS distance mode, tap on open map): the SwiftUI
+            // simultaneous TapGesture that used to live here double-fired with
+            // it, and the recognizer variant also stops a double-tap zoom from
+            // flashing the chrome (it defers to MapLibre's double-tap).
 
             chrome
         }

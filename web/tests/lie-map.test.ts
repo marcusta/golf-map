@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { CourseFeature } from '../../shared/api/course-features.gen';
 import { buildLieMap } from '../src/planner/lie-map';
+import { TAPPABLE_RING_TYPES } from '../../shared/strategy';
 
 /**
  * A square feature (EPSG:3006 meters), straight edges (no bezier handles).
@@ -144,5 +145,20 @@ describe('buildLieMap', () => {
         expect(surfaces).toHaveLength(2);
         expect(surfaces[0].kind).toBe('bunker'); // topmost (higher sortOrder) first
         expect(surfaces[1].kind).toBe('fairway');
+    });
+
+    test('ringAt() returns the topmost tappable ring, skipping non-tappable kinds', () => {
+        const fairway = squareFeature('f1', 'fairway', 0, 100, 0, 200, { sortOrder: 0 });
+        const green = squareFeature('g1', 'green', 20, 80, 120, 180, { sortOrder: 1 });
+        const bunker = squareFeature('b1', 'bunker', 40, 60, 90, 110, { sortOrder: 2 });
+        const map = buildLieMap([fairway, green, bunker]);
+        const kinds = new Set(TAPPABLE_RING_TYPES);
+
+        expect(map.ringAt({ x: 50, y: 100 }, kinds)?.kind).toBe('bunker');
+        expect(map.ringAt({ x: 50, y: 150 }, kinds)?.kind).toBe('green');
+        // Inside only the fairway — not a tappable kind → null.
+        expect(map.ringAt({ x: 10, y: 10 }, kinds)).toBeNull();
+        // Outside everything → null.
+        expect(map.ringAt({ x: 500, y: 500 }, kinds)).toBeNull();
     });
 });

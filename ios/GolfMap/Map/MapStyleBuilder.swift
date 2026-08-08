@@ -91,6 +91,16 @@ public enum MapStyleIDs {
     public static let browseFromSource = "overlay-browse-from"
     public static let browseFromDotLayer = "overlay-browse-from-dot"
 
+    // Tapped-shape inspection: the tapped ring's outline + translucent wash,
+    // plus the two play-line edge markers the front/carry figures measure to
+    // (their number labels ride the ellipse-labels source). One mixed
+    // role-tagged source ("shape" polygon, "edge" points); empty when nothing
+    // is inspected.
+    public static let inspectedFeatureSource = "overlay-inspected-feature"
+    public static let inspectedFeatureFillLayer = "overlay-inspected-feature-fill"
+    public static let inspectedFeatureOutlineLayer = "overlay-inspected-feature-outline"
+    public static let inspectedFeatureEdgeLayer = "overlay-inspected-feature-edges"
+
     // Selected-target dispersion ellipse: the recommended club's shot pattern
     // at the tapped target (cyan, matching the highlight). One polygon source.
     public static let selectedEllipseSource = "overlay-selected-ellipse"
@@ -234,6 +244,14 @@ public enum MapStyleBuilder {
     /// while staying distinct from the blue GPS dot.
     static let browseFromDotRadius = 6.0
     static let browseFromDotStrokeWidth = 2.0
+
+    // Tapped-shape inspection: highlight-family cyan wash + outline on the
+    // tapped ring so "you tapped THIS shape" is unmistakable, plus small edge
+    // dots pinning where the front/carry figures land on the play line.
+    static let inspectedFeatureFillOpacity = 0.12
+    static let inspectedFeatureOutlineWidth = 2.5
+    static let inspectedFeatureEdgeRadius = 5.5
+    static let inspectedFeatureEdgeStrokeWidth = 2.0
 
     // Route-leg label icons: nudged sideways (screen px) so the number sits
     // beside the route line rather than on it — the hole camera draws the
@@ -387,6 +405,7 @@ public enum MapStyleBuilder {
             MapStyleIDs.measurePointsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.adjustHandlesSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.highlightSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.inspectedFeatureSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.browseFromSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.selectedEllipseSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.selectedWindHoldSource: ["type": "geojson", "data": emptyCollection],
@@ -656,6 +675,30 @@ public enum MapStyleBuilder {
                 ],
             ],
             [
+                // Tapped-shape wash + outline: under the distance line so the
+                // origin→front→carry measuring line stays readable across it.
+                "id": MapStyleIDs.inspectedFeatureFillLayer,
+                "type": "fill",
+                "source": MapStyleIDs.inspectedFeatureSource,
+                "filter": ["==", ["get", "role"], "shape"],
+                "paint": [
+                    "fill-color": highlightColor,
+                    "fill-opacity": inspectedFeatureFillOpacity,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.inspectedFeatureOutlineLayer,
+                "type": "line",
+                "source": MapStyleIDs.inspectedFeatureSource,
+                "filter": ["==", ["get", "role"], "shape"],
+                "layout": ["line-join": "round"],
+                "paint": [
+                    "line-color": highlightColor,
+                    "line-width": inspectedFeatureOutlineWidth,
+                    "line-opacity": 0.95,
+                ],
+            ],
+            [
                 "id": MapStyleIDs.distanceLineCasingLayer,
                 "type": "line",
                 "source": MapStyleIDs.distanceLineSource,
@@ -674,6 +717,20 @@ public enum MapStyleBuilder {
                 "paint": [
                     "line-color": distanceLineColor,
                     "line-width": distanceLineWidth,
+                ],
+            ],
+            [
+                // Front/carry edge markers: above the distance line (they pin
+                // its two measured points), below the labels naming them.
+                "id": MapStyleIDs.inspectedFeatureEdgeLayer,
+                "type": "circle",
+                "source": MapStyleIDs.inspectedFeatureSource,
+                "filter": ["==", ["get", "role"], "edge"],
+                "paint": [
+                    "circle-color": highlightColor,
+                    "circle-radius": inspectedFeatureEdgeRadius,
+                    "circle-stroke-color": userHaloColor,
+                    "circle-stroke-width": inspectedFeatureEdgeStrokeWidth,
                 ],
             ],
             [

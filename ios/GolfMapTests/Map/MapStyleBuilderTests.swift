@@ -157,6 +157,7 @@ final class MapStyleBuilderTests: XCTestCase {
             MapStyleIDs.measurePointsSource,
             MapStyleIDs.adjustHandlesSource,
             MapStyleIDs.highlightSource,
+            MapStyleIDs.inspectedFeatureSource,
             MapStyleIDs.browseFromSource,
             MapStyleIDs.selectedEllipseSource,
             MapStyleIDs.selectedWindHoldSource,
@@ -200,8 +201,14 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.planGhostCenterLayer,
                 MapStyleIDs.planGhostAimLayer,
                 MapStyleIDs.planNodesLayer,
+                // Tapped-shape wash + outline under the distance line (the
+                // measuring line reads over the highlighted ring); its edge
+                // markers above the line, pinning the two measured points.
+                MapStyleIDs.inspectedFeatureFillLayer,
+                MapStyleIDs.inspectedFeatureOutlineLayer,
                 MapStyleIDs.distanceLineCasingLayer,
                 MapStyleIDs.distanceLineLayer,
+                MapStyleIDs.inspectedFeatureEdgeLayer,
                 MapStyleIDs.routeLegLabelsLayer,
                 MapStyleIDs.ellipseLabelsLayer,
                 MapStyleIDs.targetsLayer,
@@ -377,7 +384,7 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 36)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 39)
     }
 
     // MARK: - Shot-visualisation overlay (T2)

@@ -73,6 +73,12 @@ export interface LieMap {
     surfaces(): readonly FlatRing[];
     /** The subset of rings whose feature type is a corridor obstacle (DEFAULT_HAZARD_TYPES). */
     hazardRings(): readonly FlatRing[];
+    /**
+     * Topmost containing ring at `p` whose feature type is in `kinds`, or
+     * null — the tap-a-shape hit test (same D23/D24 stack order as
+     * `classifyLie`, but returns the ring itself).
+     */
+    ringAt(p: Vec2, kinds: ReadonlySet<string>): FlatRing | null;
 }
 
 function bbox(ring: FlatRing): { minX: number; maxX: number; minY: number; maxY: number } {
@@ -141,5 +147,13 @@ export function buildLieMap(
         },
         surfaces: () => surfaces,
         hazardRings: () => hazards,
+        ringAt(p: Vec2, kinds: ReadonlySet<string>): FlatRing | null {
+            for (const r of classified) {
+                if (!kinds.has(r.ring.kind)) continue;
+                if (p.x < r.minX || p.x > r.maxX || p.y < r.minY || p.y > r.maxY) continue;
+                if (pointInRing(p, r.ring.points)) return r.ring;
+            }
+            return null;
+        },
     };
 }

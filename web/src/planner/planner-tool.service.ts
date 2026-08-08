@@ -13,8 +13,11 @@ import {
     featureDistances,
     optimizeAim,
     playsAsM,
+    ringExtentAlongLines,
+    ringExtentAlongRay,
     runCaddy,
     segmentStats,
+    TAPPABLE_RING_TYPES,
     windEffect,
     type AimResult,
     type CaddyAdvice,
@@ -166,7 +169,47 @@ function browseLayers(): OverlayLayerSpec[] {
                 'circle-stroke-width': 2,
             },
         },
+        // Tapped-shape inspection: the ring itself gets an amber wash +
+        // outline (inspect family), and the two measured edge points carry
+        // their front/carry figures as labels.
+        {
+            id: `${BROWSE_OVERLAY_ID}-feature-fill`,
+            type: 'fill',
+            filter: ['==', ['get', 'role'], 'feature-ring'] as never,
+            paint: { 'fill-color': '#f5b301', 'fill-opacity': 0.15 },
+        },
+        {
+            id: `${BROWSE_OVERLAY_ID}-feature-outline`,
+            type: 'line',
+            filter: ['==', ['get', 'role'], 'feature-ring'] as never,
+            layout: { 'line-join': 'round' },
+            paint: { 'line-color': '#f5b301', 'line-width': 2.5, 'line-opacity': 0.95 },
+        },
+        {
+            id: `${BROWSE_OVERLAY_ID}-edge`,
+            type: 'circle',
+            filter: ['==', ['get', 'role'], 'edge'] as never,
+            paint: {
+                'circle-radius': 5,
+                'circle-color': '#f5b301',
+                'circle-stroke-color': '#14281c',
+                'circle-stroke-width': 2,
+            },
+        },
+        // The edge figures themselves are DOM markers (the editor style has
+        // no glyphs endpoint, so symbol text layers can't render) — see the
+        // inspected-feature label effect in start().
     ];
+}
+
+/**
+ * Inline style for a tapped-shape edge figure ("96" / "112") DOM marker —
+ * inspect-family amber pill, same idiom as the putt aim label.
+ */
+function edgeLabelCss(): string {
+    return 'font: 600 11px/1.3 system-ui, sans-serif; padding: 1px 5px;'
+        + ' border-radius: 5px; pointer-events: none; white-space: nowrap;'
+        + ' background: rgba(245, 179, 1, 0.92); color: #14281c;';
 }
 
 /** Marker + label layers for the caddy advice overlay. */
@@ -304,7 +347,31 @@ export interface BrowseOrigin {
 
 type BrowseInspection =
     | { source: 'ladder'; holeId: string; rowId: string }
-    | { source: 'map'; holeId: string; id: string; position: StrategyPoint };
+    | { source: 'map'; holeId: string; id: string; position: StrategyPoint }
+    | {
+        source: 'map-feature';
+        holeId: string;
+        id: string;
+        label: string;
+        ring: FlatRing;
+        /** The clicked point (planar) — the ray anchor in ray mode. */
+        at: StrategyPoint;
+        /**
+         * A browse-to point that was inspected when the shape was clicked —
+         * KEPT, and the shape's window measures along origin → this line
+         * instead of the ray through the click.
+         */
+        lineTo: StrategyPoint | null;
+    };
+
+/** Feature kinds the tap-a-shape hit test answers for (hazards + green). */
+const TAPPABLE_KINDS: ReadonlySet<string> = new Set(TAPPABLE_RING_TYPES);
+
+/** "water_creek" → "Water creek" — display label for a tapped ring's kind. */
+function ringKindLabel(kind: string): string {
+    const spaced = kind.replace(/_/g, ' ');
+    return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
 
 type DragTarget =
     | { kind: 'shot'; id: string }
@@ -625,6 +692,9 @@ export class PlannerToolService {
         if (inspection.source === 'ladder') {
             return this.browseRows.get().find(row => row.id === inspection.rowId) ?? null;
         }
+        if (inspection.source === 'map-feature') {
+            return this.inspectedFeatureData.get()?.row ?? null;
+        }
         const originWgs = this.browseOrigin.get();
         if (!originWgs) return null;
         const originProjected = wgs84ToSweref99tm(originWgs.lat, originWgs.lon);
@@ -642,6 +712,76 @@ export class PlannerToolService {
         });
         return row ?? null;
     });
+
+    /**
+     * The tap-a-shape inspection, row + geometry: the readout row for the
+     * panel plus the tapped ring and the two play-line edge points the map
+     * overlay highlights and labels. Null when nothing (or a non-shape) is
+     * inspected.
+     */
+    private readonly inspectedFeatureData = new Computed<{
+        row: BrowseLadderRow;
+        ring: FlatRing;
+        frontPoint: StrategyPoint;
+        carryPoint: StrategyPoint;
+        lineTo: StrategyPoint | null;
+    } | null>(() => {
+        const inspection = this.browseInspection.get();
+        const hole = this.selectedHole.get();
+        if (!inspection || inspection.source !== 'map-feature' || inspection.holeId !== hole?.id) {
+            return null;
+        }
+        return this.buildInspectedFeature(inspection);
+    });
+
+    /**
+     * The tap-a-shape readout row + geometry. Ray mode (no kept browse-to):
+     * the window is the ray origin → click extended through the ring, so the
+     * edge points sit ON the shape's lips and there is no side tag. Browse-to
+     * mode: the window projects onto the chosen origin → browse-to line
+     * (edge points on that line, side prefix kept). `clubName` is the club
+     * that carries the FAR edge.
+     */
+    private buildInspectedFeature(
+        inspection: Extract<BrowseInspection, { source: 'map-feature' }>,
+    ): {
+        row: BrowseLadderRow;
+        ring: FlatRing;
+        frontPoint: StrategyPoint;
+        carryPoint: StrategyPoint;
+        lineTo: StrategyPoint | null;
+    } | null {
+        const originWgs = this.browseOrigin.get();
+        if (!originWgs) return null;
+        const originProjected = wgs84ToSweref99tm(originWgs.lat, originWgs.lon);
+        const origin: StrategyPoint = { ...originProjected, elevation: originWgs.elevation };
+
+        const extent = inspection.lineTo
+            ? ringExtentAlongLines([[origin, inspection.lineTo]], inspection.ring)
+            : ringExtentAlongRay(origin, inspection.at, inspection.ring);
+        if (!extent) return null;
+
+        const side = extent.side === 'left' ? 'L ' : extent.side === 'right' ? 'R ' : '';
+        const carryClub = closestClub(this.orderedClubs.get(), extent.carryM);
+        return {
+            row: {
+                id: inspection.id,
+                kind: 'hazard_front',
+                label: `${side}${inspection.label}`,
+                lineM: extent.frontM,
+                farM: extent.carryM,
+                playsAsM: null,
+                elevationDeltaM: null,
+                windDeltaM: null,
+                clubName: carryClub?.name ?? null,
+                position: extent.centroid,
+            },
+            ring: inspection.ring,
+            frontPoint: extent.frontPoint,
+            carryPoint: extent.carryPoint,
+            lineTo: inspection.lineTo,
+        };
+    }
 
     /** Green centre as EPSG:3006 Vec2 for the aim optimiser (null = no green). */
     private greenCenterVec(): Vec2 | null {
@@ -1580,8 +1720,65 @@ export class PlannerToolService {
                 });
             }
         }
+        const feature = this.inspectedFeatureData.get();
         const inspected = this.inspectedBrowseRow.get();
-        if (inspected) {
+        if (feature) {
+            // Tapped-shape inspection: highlight the ring itself, run the
+            // measuring line origin → front edge → far edge, and print both
+            // figures at the edge points they measure to.
+            const ringCoords = feature.ring.points.map(p => {
+                const w = sweref99tmToWgs84(p.x, p.y);
+                return [w.lon, w.lat] as [number, number];
+            });
+            if (ringCoords.length >= 3) {
+                ringCoords.push(ringCoords[0]);
+                features.push({
+                    type: 'Feature',
+                    properties: { role: 'feature-ring' },
+                    geometry: { type: 'Polygon', coordinates: [ringCoords] },
+                });
+            }
+            const front = sweref99tmToWgs84(feature.frontPoint.x, feature.frontPoint.y);
+            const far = sweref99tmToWgs84(feature.carryPoint.x, feature.carryPoint.y);
+            // Ray mode: the line runs origin → through the shape to its far
+            // lip. Browse-to mode: the line is the CHOSEN one, extended out
+            // to the far edge when the shape reaches past the browse-to
+            // point, with the kept point marked.
+            let lineEnd = far;
+            if (feature.lineTo) {
+                const target = sweref99tmToWgs84(feature.lineTo.x, feature.lineTo.y);
+                const originPl = wgs84ToSweref99tm(origin.lat, origin.lon);
+                const targetFarther = Math.hypot(feature.lineTo.x - originPl.x, feature.lineTo.y - originPl.y)
+                    > Math.hypot(feature.carryPoint.x - originPl.x, feature.carryPoint.y - originPl.y);
+                if (targetFarther) lineEnd = target;
+                features.push({
+                    type: 'Feature',
+                    properties: { role: 'target' },
+                    geometry: { type: 'Point', coordinates: [target.lon, target.lat] },
+                });
+            }
+            features.unshift({
+                type: 'Feature',
+                properties: { role: 'inspect-line' },
+                geometry: {
+                    type: 'LineString',
+                    coordinates: [
+                        [origin.lon, origin.lat],
+                        [lineEnd.lon, lineEnd.lat],
+                    ],
+                },
+            });
+            features.push({
+                type: 'Feature',
+                properties: { role: 'edge', label: String(Math.round(feature.row.lineM)) },
+                geometry: { type: 'Point', coordinates: [front.lon, front.lat] },
+            });
+            features.push({
+                type: 'Feature',
+                properties: { role: 'edge', label: String(Math.round(feature.row.farM ?? 0)) },
+                geometry: { type: 'Point', coordinates: [far.lon, far.lat] },
+            });
+        } else if (inspected) {
             const target = sweref99tmToWgs84(inspected.position.x, inspected.position.y);
             features.unshift({
                 type: 'Feature',
@@ -1632,6 +1829,8 @@ export class PlannerToolService {
     private puttDerivedCache: { grid: SampleGrid; slope: SlopeGrid; stats: AnalysisStats } | null = null;
     /** DOM-marker labels on the graphics (distance/plays/aim + cross-slope). */
     private puttLabelMarkers: maplibregl.Marker[] = [];
+    /** DOM markers carrying the tapped-shape front/carry figures. */
+    private featureEdgeMarkers: maplibregl.Marker[] = [];
 
     /**
      * The reused analysis view for the putt green (null → nothing / cleared):
@@ -1832,6 +2031,53 @@ export class PlannerToolService {
                 this.map.removeOverlayLayer(BROWSE_OVERLAY_ID);
                 this.browseOverlayAdded = false;
             }
+        });
+
+        // Tapped-shape edge figures: the front/carry numbers printed AT the
+        // two measured play-line points — DOM markers (the editor style has no
+        // glyphs endpoint, so symbol text layers can't render). Recreated on
+        // change; two nodes, cheap.
+        track(effect(() => {
+            const ready = this.map.ready.get();
+            const raw = this.map.map.get();
+            const feature = this.inspectedFeatureData.get();
+            for (const m of this.featureEdgeMarkers) m.remove();
+            this.featureEdgeMarkers = [];
+            if (!ready || !raw || !feature) return;
+            // Nudge each figure a few meters OUTWARD along the measuring line
+            // (front toward the origin, carry past the far edge) so the two
+            // never collide over a narrow shape.
+            const dx = feature.carryPoint.x - feature.frontPoint.x;
+            const dy = feature.carryPoint.y - feature.frontPoint.y;
+            const len = Math.hypot(dx, dy);
+            const nudge = 8;
+            const ux = len > 1e-9 ? dx / len : 0;
+            const uy = len > 1e-9 ? dy / len : 1;
+            const labels = [
+                {
+                    point: { x: feature.frontPoint.x - ux * nudge, y: feature.frontPoint.y - uy * nudge },
+                    text: String(Math.round(feature.row.lineM)),
+                },
+                {
+                    point: { x: feature.carryPoint.x + ux * nudge, y: feature.carryPoint.y + uy * nudge },
+                    text: String(Math.round(feature.row.farM ?? 0)),
+                },
+            ];
+            for (const l of labels) {
+                const el = document.createElement('div');
+                el.className = 'browse-edge-label';
+                el.textContent = l.text;
+                el.style.cssText = edgeLabelCss();
+                const { lat, lon } = sweref99tmToWgs84(l.point.x, l.point.y);
+                this.featureEdgeMarkers.push(
+                    new maplibregl.Marker({ element: el, anchor: 'center', offset: [0, -14] })
+                        .setLngLat([lon, lat]).addTo(raw),
+                );
+            }
+        }));
+        track(() => {
+            for (const m of this.featureEdgeMarkers) m.remove();
+            this.featureEdgeMarkers = [];
         });
 
         // Caddy advice overlay — its own source/layer so it never touches the
@@ -2200,6 +2446,49 @@ export class PlannerToolService {
         this.browseInspection.set({ source: 'ladder', holeId: hole.id, rowId: row.id });
     }
 
+    /**
+     * Inspect a tapped course shape (bunker / water / green / trees / …):
+     * hit-test the lie map at the click point and, on a hit, surface the
+     * ring's front/carry window (`inspectedBrowseRow`). Two measuring modes:
+     * by default the window is the RAY origin → click extended through the
+     * shape (figures land on the shape's own lips); when a browse-to target
+     * was being inspected (map point or ladder rung), that point is KEPT and
+     * the window projects onto the chosen origin → browse-to line instead.
+     * Returns false when the click landed on no tappable shape, so the map
+     * handler can fall back to the plain point readout.
+     */
+    inspectBrowseFeature(position: { lng: number; lat: number }): boolean {
+        const hole = this.selectedHole.peek();
+        if (!hole) return false;
+        const at = lngLatToSweref99tm(position);
+        const ring = this.lieMap.peek().ringAt(at, TAPPABLE_KINDS);
+        if (!ring) return false;
+
+        // The measuring line's far end: whatever browse-to target is up right
+        // now. A previous shape inspection passes its own kept line along, so
+        // clicking bunker after bunker stays on the same chosen line.
+        const current = this.browseInspection.peek();
+        let lineTo: StrategyPoint | null = null;
+        if (current?.source === 'map-feature') {
+            lineTo = current.lineTo;
+        } else if (current) {
+            lineTo = this.inspectedBrowseRow.peek()?.position ?? null;
+        }
+
+        const seq = ++this.browseInspectionSeq;
+        this.enterBrowseMode();
+        this.browseInspection.set({
+            source: 'map-feature',
+            holeId: hole.id,
+            id: `map-feature-${seq}`,
+            label: ringKindLabel(ring.kind),
+            ring,
+            at: { ...at },
+            lineTo,
+        });
+        return true;
+    }
+
     /** Select an arbitrary map point for readout without changing the origin. */
     async inspectBrowsePoint(position: { lng: number; lat: number }): Promise<void> {
         const hole = this.selectedHole.peek();
@@ -2430,8 +2719,11 @@ export class PlannerToolService {
             return;
         }
         // Empty-map clicks inspect a target from the current origin. Moving the
-        // origin is a separate, explicit action in the distance readout.
+        // origin is a separate, explicit action in the distance readout. A
+        // click INSIDE a hazard/green shape inspects that shape (front/carry
+        // along the play line) instead of the bare point under the cursor.
         if (browseTargetActivation('map') === 'inspect') {
+            if (this.inspectBrowseFeature(e.lngLat)) return;
             void this.inspectBrowsePoint(e.lngLat);
         } else {
             void this.setBrowseFrom(e.lngLat);

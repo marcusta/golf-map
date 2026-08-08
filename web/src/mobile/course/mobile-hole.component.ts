@@ -7,6 +7,7 @@ import {
     template,
     untrack,
 } from '@basics/core/client/core';
+import maplibregl from 'maplibre-gl';
 import { MapService, type OverlayLayerSpec } from '../../map/map.service';
 import { ElevationService } from '../../map/elevation.service';
 import { TilesetService } from '../../map/tileset.service';
@@ -22,16 +23,26 @@ import {
     PLAN_OVERLAY_ID,
     type HolePlan,
 } from '../../planner/plan-overlay';
-import { bearingBetween, type BrowsePointTarget, type BrowseHazardTarget } from '../../planner/browse-ladder';
-import type { StrategyPoint, ClubSpec } from '../../../../shared/strategy';
-import { wgs84ToSweref99tm } from '../../geo/transform';
+import {
+    bearingBetween,
+    type BrowsePointTarget,
+    type BrowseHazardTarget,
+} from '../../planner/browse-ladder';
+import {
+    pointInRing,
+    ringExtentAlongRay,
+    type ClubSpec,
+    type StrategyPoint,
+    type Vec2,
+} from '../../../../shared/strategy';
+import { sweref99tmToWgs84, wgs84ToSweref99tm } from '../../geo/transform';
 import { GeolocationService, type GpsFix } from '../gps/geolocation.service';
 import { GPS_OVERLAY_ID, buildGpsGeojson, gpsLayers } from '../gps/gps-overlay';
 import { WakeLock } from '../gps/wake-lock';
 import { FeaturesGeojsonService } from './features-geojson.service';
-import { fillColorExpression, outlineColorExpression, typeSortKeyExpression } from './feature-colors';
+import { fillColorExpression, outlineColorExpression, typeSortKeyExpression, typeZRank } from './feature-colors';
 import { frameHole, type LngLatPoint } from './hole-frame';
-import { hazardRingsFromGeojson } from './hazard-rings';
+import { hazardRingsFromGeojson, tappableRingsFromGeojson } from './hazard-rings';
 import { HoleOverrideService, suggestedHole } from './hole-override.service';
 import { greenRoute } from '../app/route-key';
 import { buildHoleReadouts, pointDistance, type HoleReadouts } from '../gps/distances';
@@ -96,6 +107,25 @@ const legRowTpl = template(`
 
 /** A plan-target / hazard row as displayed: raw distance + plays-like aside. */
 interface TargetRow { id: string; label: string; value: string; plays: string }
+
+/**
+ * What the tap pill + tap overlay show: a bare point's distance, or — when
+ * the tap landed inside a hazard/green shape — that shape's near ("front") /
+ * far ("carry") extent along the play line, plus the geometry the overlay
+ * highlights (the ring, and the two play-line edge points the figures
+ * measure to).
+ */
+type TapReadout =
+    | { kind: 'point'; lineM: number; playsAsM: number | null }
+    | {
+        kind: 'feature';
+        label: string;
+        frontM: number;
+        carryM: number;
+        ring: LngLatPoint[];
+        frontPoint: LngLatPoint;
+        carryPoint: LngLatPoint;
+    };
 
 /** One green readout: the raw line distance plus its plays-like companion. */
 interface GreenCell { lineM: number | null; playsAsM: number | null }
@@ -388,6 +418,8 @@ export class MobileHoleComponent extends Component {
     /** Last tapped map point (WGS84), or null. */
     private tapPoint = new Signal<LngLatPoint | null>(null);
     private gpsRefreshScheduled = false;
+    /** DOM markers carrying the tap-a-shape front/carry figures. */
+    private tapEdgeMarkers: maplibregl.Marker[] = [];
 
     // ── Route ────────────────────────────────────────────────────────────────
 
@@ -459,6 +491,10 @@ export class MobileHoleComponent extends Component {
     private hazardTargets = new Computed<BrowseHazardTarget[]>(() =>
         hazardRingsFromGeojson(this.features.data.get()));
 
+    /** Hazards + greens — the shapes the tap-a-shape readout answers for. */
+    private tappableRings = new Computed<BrowseHazardTarget[]>(() =>
+        tappableRingsFromGeojson(this.features.data.get()));
+
     private clubSpecs = new Computed<ClubSpec[]>(() =>
         this.clubs.store.items.get().map(c => ({ name: c.name, carryM: c.carryM, dispersionM: c.dispersionM })));
 
@@ -513,14 +549,57 @@ export class MobileHoleComponent extends Component {
         });
     });
 
-    private tapReadout = new Computed<{ lineM: number; playsAsM: number | null } | null>(() => {
+    private tapReadout = new Computed<TapReadout | null>(() => {
         const at = this.tapPoint.get();
         const origin = this.origin.get();
         if (!at || !origin) return null;
         const sweref = wgs84ToSweref99tm(at.lat, at.lng);
+        const feature = this.tappedFeatureReadout(sweref, origin);
+        if (feature) return feature;
         const elevation = this.elevation.elevationAtSync({ lng: at.lng, lat: at.lat });
-        return pointDistance(origin, { x: sweref.x, y: sweref.y, elevation }, this.readoutBearing.get());
+        return {
+            kind: 'point',
+            ...pointDistance(origin, { x: sweref.x, y: sweref.y, elevation }, this.readoutBearing.get()),
+        };
     });
+
+    /**
+     * Tap landed inside a hazard/green shape → its near/far window along the
+     * RAY from the GPS position through the tap, extended through the ring —
+     * "if I hit at that shape, it's front to reach and carry to clear". The
+     * edge points sit ON the shape's own lips, so the figures render at the
+     * shape. Null when the tap hit no tappable ring; the topmost-painted
+     * ring wins overlaps (same type z-order the map renders).
+     */
+    private tappedFeatureReadout(p: Vec2, origin: StrategyPoint): TapReadout | null {
+        let best: BrowseHazardTarget | null = null;
+        let bestRank = -Infinity;
+        for (const target of this.tappableRings.get()) {
+            if (!pointInRing(p, target.ring.points)) continue;
+            const rank = typeZRank(target.ring.kind);
+            if (rank > bestRank) {
+                bestRank = rank;
+                best = target;
+            }
+        }
+        if (!best) return null;
+
+        const extent = ringExtentAlongRay(origin, p, best.ring);
+        if (!extent) return null;
+        const toLngLat = (v: { x: number; y: number }): LngLatPoint => {
+            const w = sweref99tmToWgs84(v.x, v.y);
+            return { lng: w.lon, lat: w.lat };
+        };
+        return {
+            kind: 'feature',
+            label: best.label,
+            frontM: extent.frontM,
+            carryM: extent.carryM,
+            ring: best.ring.points.map(toLngLat),
+            frontPoint: toLngLat(extent.frontPoint),
+            carryPoint: toLngLat(extent.carryPoint),
+        };
+    }
 
     // ── Nearest-hole suggestion ────────────────────────────────────────────────
 
@@ -576,6 +655,9 @@ export class MobileHoleComponent extends Component {
                 textContent: () => {
                     const r = this.tapReadout.get();
                     if (!r) return '';
+                    if (r.kind === 'feature') {
+                        return `${r.label} ${Math.round(r.frontM)} / ${Math.round(r.carryM)} m  ✕`;
+                    }
                     const plays = r.playsAsM !== null && Math.abs(r.playsAsM - r.lineM) >= 1
                         ? ` · plays ${Math.round(r.playsAsM)}` : '';
                     return `Point ${Math.round(r.lineM)} m${plays}  ✕`;
@@ -800,6 +882,54 @@ export class MobileHoleComponent extends Component {
         // Tap-anywhere: set the point; the readout + overlay derive from it.
         this.track(this.mapSvc.onClick(({ lngLat }) => this.tapPoint.set({ lng: lngLat.lng, lat: lngLat.lat })));
 
+        // Tap-a-shape edge figures: the front/carry numbers printed AT the two
+        // measured play-line points — DOM markers (the map style has no glyphs
+        // endpoint, so symbol text layers can't render). Two nodes, recreated
+        // on change.
+        this.track(effect(() => {
+            const ready = this.mapSvc.ready.get();
+            const raw = this.mapSvc.map.get();
+            const readout = this.tapReadout.get();
+            for (const m of this.tapEdgeMarkers) m.remove();
+            this.tapEdgeMarkers = [];
+            if (!ready || !raw || readout?.kind !== 'feature') return;
+            // Nudge each figure a few meters outward along the ray (front
+            // toward the player, carry past the far lip) so the two labels
+            // never collide over a narrow shape.
+            const frontP = wgs84ToSweref99tm(readout.frontPoint.lat, readout.frontPoint.lng);
+            const carryP = wgs84ToSweref99tm(readout.carryPoint.lat, readout.carryPoint.lng);
+            const dx = carryP.x - frontP.x;
+            const dy = carryP.y - frontP.y;
+            const len = Math.hypot(dx, dy);
+            const nudge = 8;
+            const ux = len > 1e-9 ? dx / len : 0;
+            const uy = len > 1e-9 ? dy / len : 1;
+            const toLngLat = (x: number, y: number): LngLatPoint => {
+                const w = sweref99tmToWgs84(x, y);
+                return { lng: w.lon, lat: w.lat };
+            };
+            const labels = [
+                {
+                    at: toLngLat(frontP.x - ux * nudge, frontP.y - uy * nudge),
+                    text: String(Math.round(readout.frontM)),
+                },
+                {
+                    at: toLngLat(carryP.x + ux * nudge, carryP.y + uy * nudge),
+                    text: String(Math.round(readout.carryM)),
+                },
+            ];
+            for (const l of labels) {
+                const el = document.createElement('div');
+                el.className = 'm-tap-edge-label';
+                el.textContent = l.text;
+                el.style.cssText = TAP_EDGE_LABEL_CSS;
+                this.tapEdgeMarkers.push(
+                    new maplibregl.Marker({ element: el, anchor: 'center', offset: [0, -14] })
+                        .setLngLat([l.at.lng, l.at.lat]).addTo(raw),
+                );
+            }
+        }));
+
         this.geo.start();
         this.wake.enable();
 
@@ -811,6 +941,8 @@ export class MobileHoleComponent extends Component {
         // it recursively (two live maps over one container). See the same guard
         // on the green screen.
         this.track(() => untrack(() => {
+            for (const m of this.tapEdgeMarkers) m.remove();
+            this.tapEdgeMarkers = [];
             this.mapSvc.destroy();
             this.elevation.configure(null);
             this.geo.stop();
@@ -830,14 +962,52 @@ export class MobileHoleComponent extends Component {
     private tapData(): ReturnType<typeof buildGpsGeojson> {
         const at = this.tapPoint.get();
         if (!at) return emptyFc();
-        return {
-            type: 'FeatureCollection',
-            features: [{
+        const features: ReturnType<typeof buildGpsGeojson>['features'] = [{
+            type: 'Feature',
+            properties: { role: 'tap' },
+            geometry: { type: 'Point', coordinates: [at.lng, at.lat] },
+        }];
+
+        // Tap landed in a shape: highlight the ring, run the measuring line
+        // GPS position → front edge → far edge, and print both figures at
+        // the edge points they measure to.
+        const readout = this.tapReadout.get();
+        const fix = this.geo.fix.get();
+        if (readout?.kind === 'feature' && fix) {
+            const ringCoords = readout.ring.map(p => [p.lng, p.lat] as [number, number]);
+            if (ringCoords.length >= 3) {
+                ringCoords.push(ringCoords[0]);
+                features.unshift({
+                    type: 'Feature',
+                    properties: { role: 'ring' },
+                    geometry: { type: 'Polygon', coordinates: [ringCoords] },
+                });
+            }
+            features.unshift({
                 type: 'Feature',
-                properties: { role: 'tap' },
-                geometry: { type: 'Point', coordinates: [at.lng, at.lat] },
-            }],
-        };
+                properties: { role: 'line' },
+                geometry: {
+                    type: 'LineString',
+                    // The ray from the GPS position through the shape to its
+                    // far lip (the front point lies on it).
+                    coordinates: [
+                        [fix.lng, fix.lat],
+                        [readout.carryPoint.lng, readout.carryPoint.lat],
+                    ],
+                },
+            });
+            features.push({
+                type: 'Feature',
+                properties: { role: 'edge', label: String(Math.round(readout.frontM)) },
+                geometry: { type: 'Point', coordinates: [readout.frontPoint.lng, readout.frontPoint.lat] },
+            });
+            features.push({
+                type: 'Feature',
+                properties: { role: 'edge', label: String(Math.round(readout.carryM)) },
+                geometry: { type: 'Point', coordinates: [readout.carryPoint.lng, readout.carryPoint.lat] },
+            });
+        }
+        return { type: 'FeatureCollection', features };
     }
 
     private scheduleGpsRefresh(): void {
@@ -896,9 +1066,39 @@ function featureLayers(): OverlayLayerSpec[] {
     ];
 }
 
-/** The tap-anywhere marker (a single accent dot). */
+/**
+ * The tap-anywhere marker (a single accent dot), plus the tap-a-shape
+ * feedback: an accent wash + outline on the tapped ring, the measuring line
+ * from the GPS position through the near edge to the far edge, and the two
+ * edge markers labelled with the front/carry figures.
+ */
 function tapLayers(): OverlayLayerSpec[] {
     return [
+        {
+            id: `${TAP_OVERLAY_ID}-ring-fill`,
+            type: 'fill',
+            filter: ['==', ['get', 'role'], 'ring'],
+            paint: { 'fill-color': '#BF6A3E', 'fill-opacity': 0.18 },
+        },
+        {
+            id: `${TAP_OVERLAY_ID}-ring-outline`,
+            type: 'line',
+            filter: ['==', ['get', 'role'], 'ring'],
+            layout: { 'line-join': 'round' },
+            paint: { 'line-color': '#BF6A3E', 'line-width': 2.5, 'line-opacity': 0.95 },
+        },
+        {
+            id: `${TAP_OVERLAY_ID}-line`,
+            type: 'line',
+            filter: ['==', ['get', 'role'], 'line'],
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+                'line-color': '#BF6A3E',
+                'line-width': 2,
+                'line-opacity': 0.9,
+                'line-dasharray': [2, 1.5] as never,
+            },
+        },
         {
             id: `${TAP_OVERLAY_ID}-dot`,
             type: 'circle',
@@ -910,5 +1110,27 @@ function tapLayers(): OverlayLayerSpec[] {
                 'circle-stroke-width': 2,
             },
         },
+        {
+            id: `${TAP_OVERLAY_ID}-edge`,
+            type: 'circle',
+            filter: ['==', ['get', 'role'], 'edge'],
+            paint: {
+                'circle-radius': 5,
+                'circle-color': '#BF6A3E',
+                'circle-stroke-color': '#FFFFFF',
+                'circle-stroke-width': 2,
+            },
+        },
+        // The edge figures themselves are DOM markers (the map style has no
+        // glyphs endpoint, so symbol text layers can't render) — see the
+        // tap-edge label effect in onMount().
     ];
 }
+
+/**
+ * Inline style for a tap-edge figure ("96" / "112") DOM marker — tap-accent
+ * pill, mirroring the desktop planner's edge labels.
+ */
+const TAP_EDGE_LABEL_CSS = 'font: 600 12px/1.3 system-ui, sans-serif;'
+    + ' padding: 1px 6px; border-radius: 6px; pointer-events: none;'
+    + ' white-space: nowrap; background: rgba(191, 106, 62, 0.94); color: #fff;';

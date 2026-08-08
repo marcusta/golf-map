@@ -1597,6 +1597,12 @@ export class PlannerPanelComponent extends Component {
     private browseDetailHtml(): string {
         const row = this.tool.inspectedBrowseRow.get();
         if (!row) return '';
+        if (row.farM !== undefined) {
+            // Tap-a-shape inspection: near/far extent along the play line.
+            const details = [`front ${Math.round(row.lineM)} m`, `carry ${Math.round(row.farM)} m`];
+            if (row.clubName) details.push(`${row.clubName} carries`);
+            return `<b>${escapeHtml(row.label)}</b>${escapeHtml(details.join(' · '))}`;
+        }
         const details = [`Actual ${Math.round(row.lineM)} m`];
         if (row.playsAsM !== null) details.push(`plays ${Math.round(row.playsAsM)} m`);
         if (row.elevationDeltaM !== null) details.push(`elevation ${signedMeters(row.elevationDeltaM)}`);

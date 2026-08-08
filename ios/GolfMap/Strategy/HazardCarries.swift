@@ -71,6 +71,13 @@ public enum HazardCarries {
         "bunker", "water", "water_creek", "penalty_yellow", "penalty_red",
     ]
 
+    /// Feature types the tap-a-shape readout hit-tests — mirror of shared
+    /// `TAPPABLE_RING_TYPES` (every corridor obstacle plus the green itself).
+    public static let tappableTypes: Set<String> = [
+        "bunker", "water", "water_creek", "outside", "deep_rough", "trees",
+        "penalty_yellow", "penalty_red", "oob", "green",
+    ]
+
     /// Human label for a feature type (unknown types Title-Cased as a fallback).
     public static func label(for kind: String) -> String {
         switch kind {
@@ -254,6 +261,113 @@ public enum HazardCarries {
             .sorted { $0.frontM != $1.frontM ? $0.frontM < $1.frontM : $0.carryM < $1.carryM }
             .prefix(cap)
             .map { $0 }
+    }
+
+    /// A tapped ring's chainage window plus the play-line points the two
+    /// numbers measure to — mirror of shared `RingLineExtent`. The points
+    /// anchor the on-map edge markers/labels; `carry` feeds the banner row.
+    public struct RingLineExtent: Equatable, Sendable {
+        public var carry: HazardCarry
+        /// The play-line point `carry.frontM` measures to (near edge), EPSG:3006.
+        public var frontPoint: Vec2
+        /// The play-line point `carry.carryM` measures to (far edge), EPSG:3006.
+        public var carryPoint: Vec2
+
+        public init(carry: HazardCarry, frontPoint: Vec2, carryPoint: Vec2) {
+            self.carry = carry
+            self.frontPoint = frontPoint
+            self.carryPoint = carryPoint
+        }
+    }
+
+    /// The chainage window ONE explicitly tapped ring occupies along the
+    /// nearest of several play lines — the tap-a-shape readout (mirror of
+    /// shared `ringExtentAlongLines`). Same projection math as `nearLines`,
+    /// minus the corridor / ahead gating: a tapped shape was chosen
+    /// deliberately, so it is never filtered out. Nil for a degenerate ring,
+    /// no usable line, or a ring entirely BEHIND every line's start.
+    public static func extent(of ring: FlatRing, along lines: [[Vec2]]) -> RingLineExtent? {
+        guard ring.points.count >= 3 else { return nil }
+        let polylines = lines.filter { $0.count >= 2 }
+        guard !polylines.isEmpty else { return nil }
+
+        let centroid = ringCentroid(ring)
+        var bestPerp = Double.infinity
+        var chosen: RingLineExtent?
+        for poly in polylines {
+            guard let c = project(centroid, onto: poly), c.perp < bestPerp else { continue }
+            var aMin = Double.infinity, aMax = -Double.infinity
+            for p in ring.points {
+                if let vp = project(p, onto: poly) {
+                    aMin = min(aMin, vp.along); aMax = max(aMax, vp.along)
+                }
+            }
+            // Entirely behind this line's start — not measurable along it.
+            guard aMax > 0 else { continue }
+            bestPerp = c.perp
+            let side: HazardSide = c.perp < 3 ? .onLine : (c.lateral >= 0 ? .right : .left)
+            let frontM = max(0, aMin)
+            chosen = RingLineExtent(
+                carry: HazardCarry(
+                    label: label(for: ring.kind), kind: ring.kind,
+                    frontM: Int(frontM.rounded()), carryM: Int(aMax.rounded()),
+                    side: side, centroid: centroid
+                ),
+                frontPoint: pointAlong(poly, meters: frontM),
+                carryPoint: pointAlong(poly, meters: aMax)
+            )
+        }
+        return chosen
+    }
+
+    /// The window `ring` occupies along the RAY from `origin` through
+    /// `through` (normally the tapped point inside the ring) — the default
+    /// tap-a-shape readout, mirror of shared `ringExtentAlongRay`: "if I hit
+    /// at that shape, it's front to reach and carry to clear". Edge points
+    /// sit ON the ring boundary; an origin standing inside the ring reads
+    /// front 0 at the origin. Side is always `.onLine` (the ray points at the
+    /// shape, so a left/right tag is meaningless). Nil for a degenerate
+    /// ring/ray or a numeric miss.
+    public static func extent(
+        of ring: FlatRing, fromRay origin: Vec2, through: Vec2
+    ) -> RingLineExtent? {
+        guard ring.points.count >= 3 else { return nil }
+        let dx = through.x - origin.x, dy = through.y - origin.y
+        let length = hypot(dx, dy)
+        guard length > 1e-9 else { return nil }
+        let dir = Vec2(x: dx / length, y: dy / length)
+
+        let hits = rayRingIntersections(origin, dir, ring.points)
+        guard let maxHit = hits.max(), let minHit = hits.min() else { return nil }
+        let frontM = pointInRing(origin, ring.points) ? 0 : minHit
+        return RingLineExtent(
+            carry: HazardCarry(
+                label: label(for: ring.kind), kind: ring.kind,
+                frontM: Int(frontM.rounded()), carryM: Int(maxHit.rounded()),
+                side: .onLine, centroid: ringCentroid(ring)
+            ),
+            frontPoint: Vec2(x: origin.x + dir.x * frontM, y: origin.y + dir.y * frontM),
+            carryPoint: Vec2(x: origin.x + dir.x * maxHit, y: origin.y + dir.y * maxHit)
+        )
+    }
+
+    /// The point `meters` of chainage along a polyline. Chainage past the end
+    /// extrapolates along the last segment's direction (a tapped ring can
+    /// extend beyond the green) — mirror of shared `pointAlongPolyline`.
+    private static func pointAlong(_ poly: [Vec2], meters: Double) -> Vec2 {
+        var remaining = meters
+        for i in 0..<(poly.count - 1) {
+            let a = poly[i], b = poly[i + 1]
+            let seg = hypot(b.x - a.x, b.y - a.y)
+            if seg == 0 { continue }
+            let last = i == poly.count - 2
+            if remaining <= seg || last {
+                let t = remaining / seg
+                return Vec2(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+            }
+            remaining -= seg
+        }
+        return poly[0]
     }
 
     private static func polylineLength(_ poly: [Vec2]) -> Double {

@@ -163,4 +163,97 @@ final class HazardCarriesTests: XCTestCase {
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows[0].side, .onLine)
     }
+
+    // MARK: - extent(of:along:) — the tap-a-shape readout
+
+    func testExtentOnLineRingReportsChainageWindow() {
+        let line = [Vec2(x: 0, y: 0), Vec2(x: 0, y: 300)]
+        let extent = HazardCarries.extent(of: box(-10, 120, 10, 150), along: [line])
+        XCTAssertEqual(extent?.carry.frontM, 120)
+        XCTAssertEqual(extent?.carry.carryM, 150)
+        XCTAssertEqual(extent?.carry.side, .onLine)
+        // Edge points sit ON the play line at the two chainages.
+        XCTAssertEqual(extent?.frontPoint.y ?? -1, 120, accuracy: 1e-9)
+        XCTAssertEqual(extent?.carryPoint.y ?? -1, 150, accuracy: 1e-9)
+        XCTAssertEqual(extent?.frontPoint.x ?? -1, 0, accuracy: 1e-9)
+    }
+
+    func testExtentSideRingIsNeverCorridorFiltered() {
+        // 30–50 m right of the line — nearLines would drop it at the default
+        // corridor, but a tapped shape always answers.
+        let line = [Vec2(x: 0, y: 0), Vec2(x: 0, y: 300)]
+        let extent = HazardCarries.extent(of: box(30, 80, 50, 110), along: [line])
+        XCTAssertEqual(extent?.carry.frontM, 80)
+        XCTAssertEqual(extent?.carry.carryM, 110)
+        XCTAssertEqual(extent?.carry.side, .right)
+    }
+
+    func testExtentRingPastTheLineEndStillMeasures() {
+        // Past the target (no ahead-gate for an explicit tap).
+        let line = [Vec2(x: 0, y: 0), Vec2(x: 0, y: 100)]
+        let extent = HazardCarries.extent(of: box(-5, 130, 5, 160), along: [line])
+        XCTAssertEqual(extent?.carry.frontM, 130)
+        XCTAssertEqual(extent?.carry.carryM, 160)
+        // Edge points extrapolate along the last segment past the line end.
+        XCTAssertEqual(extent?.frontPoint.y ?? -1, 130, accuracy: 1e-9)
+        XCTAssertEqual(extent?.carryPoint.y ?? -1, 160, accuracy: 1e-9)
+    }
+
+    func testExtentRingBehindOriginReturnsNilAndStraddleClampsFront() {
+        let line = [Vec2(x: 0, y: 0), Vec2(x: 0, y: 300)]
+        XCTAssertNil(HazardCarries.extent(of: box(-5, -80, 5, -40), along: [line]))
+        let straddling = HazardCarries.extent(of: box(-5, -20, 5, 30), along: [line])
+        XCTAssertEqual(straddling?.carry.frontM, 0)
+        XCTAssertEqual(straddling?.carry.carryM, 30)
+    }
+
+    func testExtentFromRayReportsEntryExitOnTheRingLips() {
+        // Tap the middle of a bunker due north: entry 120, exit 150, points
+        // ON the ring boundary, no side tag (the ray points at the shape).
+        let extent = HazardCarries.extent(
+            of: box(-10, 120, 10, 150), fromRay: Vec2(x: 0, y: 0), through: Vec2(x: 0, y: 135)
+        )
+        XCTAssertEqual(extent?.carry.frontM, 120)
+        XCTAssertEqual(extent?.carry.carryM, 150)
+        XCTAssertEqual(extent?.carry.side, .onLine)
+        XCTAssertEqual(extent?.frontPoint.y ?? -1, 120, accuracy: 1e-9)
+        XCTAssertEqual(extent?.carryPoint.y ?? -1, 150, accuracy: 1e-9)
+    }
+
+    func testExtentFromRayOffAxisShapeAndInsideOrigin() {
+        // Off to the north-east: measured along the diagonal ray at it.
+        let diagonal = HazardCarries.extent(
+            of: box(90, 90, 110, 110), fromRay: Vec2(x: 0, y: 0), through: Vec2(x: 100, y: 100)
+        )
+        XCTAssertEqual(Double(diagonal?.carry.frontM ?? -1), (90.0 * 90 + 90 * 90).squareRoot(), accuracy: 1)
+        XCTAssertEqual(Double(diagonal?.carry.carryM ?? -1), (110.0 * 110 + 110 * 110).squareRoot(), accuracy: 1)
+
+        // Standing inside the ring: front 0 at the origin, carry = the exit.
+        let inside = HazardCarries.extent(
+            of: box(-10, -10, 10, 30), fromRay: Vec2(x: 0, y: 5), through: Vec2(x: 0, y: 20)
+        )
+        XCTAssertEqual(inside?.carry.frontM, 0)
+        XCTAssertEqual(inside?.carry.carryM, 25)
+        XCTAssertEqual(inside?.frontPoint.y ?? -1, 5, accuracy: 1e-9)
+
+        // Degenerate ray (origin == through) → nil.
+        XCTAssertNil(HazardCarries.extent(
+            of: box(-5, 10, 5, 20), fromRay: Vec2(x: 0, y: 0), through: Vec2(x: 0, y: 0)
+        ))
+    }
+
+    func testExtentMeasuresAlongNearestOfSeveralLines() {
+        // Dogleg: routed line turns east at (0, 100); direct line cuts the
+        // corner. A ring on the second routed leg measures 100 + 50..70.
+        let routed = [Vec2(x: 0, y: 0), Vec2(x: 0, y: 100), Vec2(x: 200, y: 100)]
+        let direct = [Vec2(x: 0, y: 0), Vec2(x: 200, y: 100)]
+        let extent = HazardCarries.extent(of: box(50, 95, 70, 105), along: [routed, direct])
+        XCTAssertEqual(extent?.carry.frontM, 150)
+        XCTAssertEqual(extent?.carry.carryM, 170)
+        XCTAssertEqual(extent?.carry.side, .onLine)
+        // Edge points sit on the routed second leg, past the corner.
+        XCTAssertEqual(extent?.frontPoint.x ?? -1, 50, accuracy: 1e-9)
+        XCTAssertEqual(extent?.frontPoint.y ?? -1, 100, accuracy: 1e-9)
+        XCTAssertEqual(extent?.carryPoint.x ?? -1, 70, accuracy: 1e-9)
+    }
 }
