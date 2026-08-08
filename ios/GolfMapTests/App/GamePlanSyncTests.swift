@@ -55,6 +55,58 @@ final class GamePlanSyncTests: XCTestCase {
 
     // MARK: - Tests
 
+    /// A course with NO plan yet is the normal state of a fresh server (plans
+    /// are user data, only ever created by a client), and the route wrapper
+    /// serializes that null result as the sentinel `{"ok":true}` — which used
+    /// to fail decoding and abort the whole refresh, club bag included.
+    func testNoPlanSentinelIsTreatedAsNoPlanNotAnError() async throws {
+        let database = try await makeDatabaseWithCourse()
+        try await database.saveGamePlan(StoredGamePlan(
+            plan: GamePlanRecord(id: "stale", courseId: "course-1", serverId: "stale", serverVersion: 1, syncState: .synced),
+            holes: [], shots: [], gates: []
+        ))
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: Data(#"{"ok":true}"#.utf8))],
+            forPathContaining: "/game-plans/by-course"
+        )
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: clubListBody([clubJSON(id: "srv-driver")]))],
+            forPathContaining: "/clubs"
+        )
+
+        try await GamePlanSync.refresh(client: makeClient(), database: database, courseId: "course-1")
+
+        let plan = try await database.gamePlan(courseId: "course-1")
+        XCTAssertNil(plan, "the sentinel means NO plan — the stale cache is deleted")
+        let clubs = try await database.allClubs()
+        XCTAssertEqual(clubs.map(\.id), ["srv-driver"], "the club bag still landed")
+    }
+
+    /// The two fetches commit independently: a failing plan fetch must not
+    /// throw away an already-fetched club bag (plan shots would then render
+    /// without club names until a refresh where both happened to succeed).
+    func testFailedPlanFetchStillSavesTheClubBag() async throws {
+        let database = try await makeDatabaseWithCourse()
+        MockURLProtocol.shared.setScript(
+            [.init(status: 500, body: Data(#"{"error":"boom"}"#.utf8))],
+            forPathContaining: "/game-plans/by-course"
+        )
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: clubListBody([clubJSON(id: "srv-driver", carryM: 230)]))],
+            forPathContaining: "/clubs"
+        )
+
+        do {
+            try await GamePlanSync.refresh(client: makeClient(), database: database, courseId: "course-1")
+            XCTFail("the plan failure must still surface to the caller")
+        } catch {
+            // expected — the caller logs and keeps the previous plan cache
+        }
+
+        let clubs = try await database.allClubs()
+        XCTAssertEqual(clubs.map(\.id), ["srv-driver"], "the club bag committed despite the plan error")
+    }
+
     func testRefreshSavesCleanClubBagFromServer() async throws {
         let database = try await makeDatabaseWithCourse()
         MockURLProtocol.shared.setScript([.init(status: 200, body: emptyPlanBody())], forPathContaining: "/game-plans/by-course")

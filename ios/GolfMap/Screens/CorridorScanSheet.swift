@@ -43,12 +43,19 @@ struct CorridorScanSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                content
+            ZStack {
+                Color.surfaceApp.ignoresSafeArea()
+                cameraLayer
+                VStack(spacing: 20) {
+                    // Over video the content is a card pinned to the bottom,
+                    // so the crosshair and the grass stay visible while you
+                    // read the instruction.
+                    if showsCamera { Spacer(minLength: 0) }
+                    content
+                }
+                .padding()
             }
-            .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.surfaceApp.ignoresSafeArea())
             .navigationTitle("Corridor scan")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -62,6 +69,58 @@ struct CorridorScanSheet: View {
         }
         .onAppear { service.start() }
         .onDisappear { service.cancel() }
+    }
+
+    // MARK: - Camera layer
+
+    /// Phases where the phone is in hand and pointed at the green. The level
+    /// phases deliberately have no preview: the phone is face-down on the
+    /// grass, so the feed would be a black rectangle.
+    private var showsCamera: Bool {
+        switch service.phase {
+        case .anchorBall, .readyToWalkOut, .walkOut, .readyToWalkBack, .walkBack:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The two phases where a tap records a world point.
+    private var showsCrosshair: Bool {
+        switch service.phase {
+        case .anchorBall, .walkOut: return true
+        default: return false
+        }
+    }
+
+    @ViewBuilder
+    private var cameraLayer: some View {
+        #if canImport(ARKit)
+        if showsCamera, let session = service.previewSession {
+            ARCameraPreview(session: session) {
+                service.reassertSessionDelegate()
+            }
+            .ignoresSafeArea()
+            if showsCrosshair {
+                AimCrosshair(distanceM: service.aimDistanceM)
+            }
+        }
+        #endif
+    }
+
+    /// Content container: a translucent card over video, plain surface
+    /// otherwise.
+    @ViewBuilder
+    private func panel<Inner: View>(@ViewBuilder _ inner: () -> Inner) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+        VStack(spacing: 16) { inner() }
+            .padding(showsCamera ? Space.s4 : 0)
+            .background {
+                if showsCamera {
+                    shape.fill(.ultraThinMaterial)
+                        .overlay(shape.strokeBorder(Color.borderSubtle.opacity(0.6), lineWidth: 1))
+                }
+            }
     }
 
     // MARK: - Phase content
@@ -81,7 +140,7 @@ struct CorridorScanSheet: View {
             stepView(
                 step: 1,
                 title: "Anchor the ball",
-                instruction: "Stand at the ball and hold the phone over it, camera facing the green.",
+                instruction: "Put the crosshair on the ball and tap. Stand where you like — the LiDAR marks the spot you aim at.",
                 buttonLabel: "Anchor ball",
                 action: { service.anchorBall() }
             )
@@ -98,7 +157,7 @@ struct CorridorScanSheet: View {
         case .walkOut:
             walkView(
                 title: "Walking out…",
-                instruction: "Keep the phone facing the green, a step to the high side of the line. At the hole, tap Mark hole.",
+                instruction: "Keep the phone facing the grass, a step to the high side of the line. At the hole, put the crosshair on it and tap.",
                 buttonLabel: "Mark hole",
                 action: { service.markHole() }
             )
@@ -153,7 +212,7 @@ struct CorridorScanSheet: View {
         buttonLabel: String,
         action: @escaping () -> Void
     ) -> some View {
-        VStack(spacing: 16) {
+        panel {
             OverlineLabel("Step \(step) of 3")
             Text(title)
                 .font(.title3.weight(.semibold))
@@ -161,7 +220,7 @@ struct CorridorScanSheet: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Spacer()
+            if !showsCamera { Spacer() }
             Button(action: action) {
                 Text(buttonLabel)
                     .frame(maxWidth: .infinity)
@@ -176,7 +235,7 @@ struct CorridorScanSheet: View {
         buttonLabel: String,
         action: @escaping () -> Void
     ) -> some View {
-        VStack(spacing: 16) {
+        panel {
             Text(title)
                 .font(.title3.weight(.semibold))
             Text(instruction)
@@ -195,7 +254,7 @@ struct CorridorScanSheet: View {
                 )
             }
             .padding(.top, 8)
-            Spacer()
+            if !showsCamera { Spacer() }
             Button(action: action) {
                 Text(buttonLabel)
                     .frame(maxWidth: .infinity)
@@ -264,6 +323,15 @@ struct CorridorScanSheet: View {
                     .buttonStyle(PrimaryButtonStyle())
                 }
             }
+            // The level is a cross-check, not an input to the read — always
+            // skippable, including out of a red one.
+            Button {
+                service.skipLevel()
+            } label: {
+                Text("Skip level")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryButtonStyle())
         }
     }
 
@@ -335,7 +403,11 @@ struct CorridorScanSheet: View {
             qcRow("Pass mismatch", String(format: "%.2f", result.passMismatchSlopePct), unit: "% slope")
             qcRow("Fit residual", String(format: "%.0f", result.combined.rmseM * 1000), unit: "mm")
             qcRow("Line coverage", String(format: "%.0f", result.combinedCoverageFrac * 100), unit: "%")
-            qcRow("Endpoint levels Δ", String(format: "%.2f", result.endpointLevelDeltaPct), unit: "% slope")
+            qcRow(
+                "Endpoint levels Δ",
+                result.endpointLevelDeltaPct.map { String(format: "%.2f", $0) } ?? "skipped",
+                unit: result.endpointLevelDeltaPct == nil ? nil : "% slope"
+            )
             qcRow("Line length", String(format: "%.1f", result.lineLengthM), unit: "m")
             qcRow("Points kept", "\(result.payloadPoints.count)")
         }
@@ -455,7 +527,6 @@ struct CorridorScanSheet: View {
     }
 
     private func upload(_ result: CorridorScanService.ScanComputation) async {
-        guard let ballLevel = service.ballLevel, let holeLevel = service.holeLevel else { return }
         let capturedAt = DeviceInfo.iso8601()
         let ballLL = Sweref99TM.toWGS84(x: ballWorld.x, y: ballWorld.y)
         let holeLL = Sweref99TM.toWGS84(x: holeWorld.x, y: holeWorld.y)
@@ -506,10 +577,16 @@ struct CorridorScanSheet: View {
             appVersion: DeviceInfo.appVersion,
             ball: GreenScanLocation(lat: ballLL.lat, lon: ballLL.lon, horizontalAccuracyM: accuracy),
             hole: GreenScanLocation(lat: holeLL.lat, lon: holeLL.lon, horizontalAccuracyM: accuracy),
+            // Skipped levels are simply absent — the contract's consumers read
+            // this as "no endpoint cross-check available", never as a zero.
             endpointLevels: [
-                levelPayload(ballLevel, at: ballLL, headingAccuracyDeg: service.ballLevelHeadingAccuracyDeg),
-                levelPayload(holeLevel, at: holeLL, headingAccuracyDeg: service.holeLevelHeadingAccuracyDeg),
-            ],
+                service.ballLevel.map {
+                    levelPayload($0, at: ballLL, headingAccuracyDeg: service.ballLevelHeadingAccuracyDeg)
+                },
+                service.holeLevel.map {
+                    levelPayload($0, at: holeLL, headingAccuracyDeg: service.holeLevelHeadingAccuracyDeg)
+                },
+            ].compactMap { $0 },
             frame: CorridorFrame(
                 originalLineBearingDeg: service.lineBearingDeg ?? markerBearing,
                 lineLengthM: result.lineLengthM

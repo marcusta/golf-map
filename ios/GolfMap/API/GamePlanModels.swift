@@ -47,6 +47,20 @@ public struct PlanWindPatch: Sendable, Equatable {
     }
 }
 
+/// Where a newly added shot attaches in the hole's shot TREE.
+///
+/// The add endpoint distinguishes an absent `parentShotId` from an explicit
+/// null, so the three cases are separate values rather than one `String?`:
+///  - `.shot(id)` — a continuation of that shot;
+///  - `.root` — a new root option (explicit JSON null);
+///  - `.primaryLineTail` — let the SERVER pick (key omitted); only for callers
+///    that genuinely don't know the tree, which the sync engine never is.
+public enum PlanShotParent: Sendable, Equatable {
+    case shot(String)
+    case root
+    case primaryLineTail
+}
+
 /// A player's full game plan for one course:
 /// `GET /api/game-plans/by-course` (returns the object or JSON `null`).
 public struct GamePlan: Codable, Sendable, Equatable {

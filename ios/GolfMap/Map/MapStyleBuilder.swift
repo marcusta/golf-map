@@ -82,6 +82,14 @@ public enum MapStyleIDs {
     public static let highlightSource = "overlay-highlight"
     public static let highlightHaloLayer = "overlay-highlight-halo"
     public static let highlightRingLayer = "overlay-highlight-ring"
+    public static let highlightDotLayer = "overlay-highlight-dot"
+
+    // Browse-from origin marker: a small solid cyan dot pinning the exact
+    // point browse distances measure FROM (the ring above marks what you
+    // tapped; this marks where you're browsing from). One point source;
+    // empty outside browse mode / without an explicit browse origin.
+    public static let browseFromSource = "overlay-browse-from"
+    public static let browseFromDotLayer = "overlay-browse-from-dot"
 
     // Selected-target dispersion ellipse: the recommended club's shot pattern
     // at the tapped target (cyan, matching the highlight). One polygon source.
@@ -218,6 +226,14 @@ public enum MapStyleBuilder {
     static let highlightHaloOpacity = 0.22
     static let highlightRingRadius = 12.5
     static let highlightRingStrokeWidth = 3.0
+    /// Small solid center dot inside the highlight ring — the ring alone reads
+    /// as "roughly here"; the dot pins the exact inspected point.
+    static let highlightDotRadius = 3.5
+    /// Browse-from origin dot: highlight-family cyan on a white stroke so it
+    /// reads with the (cyan-ringed) inspected target as one from→to pair,
+    /// while staying distinct from the blue GPS dot.
+    static let browseFromDotRadius = 6.0
+    static let browseFromDotStrokeWidth = 2.0
 
     // Route-leg label icons: nudged sideways (screen px) so the number sits
     // beside the route line rather than on it — the hole camera draws the
@@ -371,6 +387,7 @@ public enum MapStyleBuilder {
             MapStyleIDs.measurePointsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.adjustHandlesSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.highlightSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.browseFromSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.selectedEllipseSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.selectedWindHoldSource: ["type": "geojson", "data": emptyCollection],
         ]
@@ -747,6 +764,20 @@ public enum MapStyleBuilder {
                 ],
             ],
             [
+                // Browse-from origin dot: below the highlight so when nothing
+                // is inspected (highlight falls back to the browse origin) the
+                // ring draws around this dot as one marker.
+                "id": MapStyleIDs.browseFromDotLayer,
+                "type": "circle",
+                "source": MapStyleIDs.browseFromSource,
+                "paint": [
+                    "circle-color": highlightColor,
+                    "circle-radius": browseFromDotRadius,
+                    "circle-stroke-color": userHaloColor,
+                    "circle-stroke-width": browseFromDotStrokeWidth,
+                ],
+            ],
+            [
                 // Ladder tap highlight, above the markers/user dot so the
                 // selected feature's ring reads clearly; below the adjust
                 // handles so a drag affordance is never obscured.
@@ -769,6 +800,17 @@ public enum MapStyleBuilder {
                     "circle-stroke-color": highlightColor,
                     "circle-stroke-width": highlightRingStrokeWidth,
                     "circle-stroke-opacity": 0.95,
+                ],
+            ],
+            [
+                // Exact-point dot inside the highlight ring — the ring alone
+                // reads as "roughly here"; this pins the inspected point.
+                "id": MapStyleIDs.highlightDotLayer,
+                "type": "circle",
+                "source": MapStyleIDs.highlightSource,
+                "paint": [
+                    "circle-color": highlightColor,
+                    "circle-radius": highlightDotRadius,
                 ],
             ],
             [

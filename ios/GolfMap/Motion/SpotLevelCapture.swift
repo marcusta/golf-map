@@ -102,10 +102,11 @@ final class SpotLevelCapture {
         reset()
         phase = .settling
         motion.deviceMotionUpdateInterval = 1.0 / Self.updateHz
-        motion.startDeviceMotionUpdates(
-            using: .xMagneticNorthZVertical,
-            to: queue
-        ) { [weak self] deviceMotion, _ in
+        // MUST be an explicitly `@Sendable` closure: `CMDeviceMotionHandler` is
+        // not Sendable, so a plain closure written here inherits this class's
+        // `@MainActor` isolation and traps (`_swift_task_checkIsolatedSwift`)
+        // the moment CoreMotion invokes it on `queue`.
+        let handler: @Sendable (CMDeviceMotion?, Error?) -> Void = { [weak self] deviceMotion, _ in
             guard let deviceMotion else { return }
             // CoreMotion delivers on `queue`; hop to the main actor for state.
             let sample = Self.sample(from: deviceMotion)
@@ -116,6 +117,11 @@ final class SpotLevelCapture {
                 self?.ingest(sample, headingAccuracyDeg: headingAccuracy)
             }
         }
+        motion.startDeviceMotionUpdates(
+            using: .xMagneticNorthZVertical,
+            to: queue,
+            withHandler: handler
+        )
     }
 
     /// Stop updates and return to idle without producing a reading.
@@ -220,7 +226,7 @@ final class SpotLevelCapture {
     /// Map a `CMDeviceMotion` to the pure sample. `gravity` is already a
     /// device-frame unit vector toward earth; `heading` is the compass bearing
     /// of the reference frame's forward axis (degrees, or negative if unknown).
-    private static func sample(from dm: CMDeviceMotion) -> SpotLevelMath.Sample {
+    nonisolated private static func sample(from dm: CMDeviceMotion) -> SpotLevelMath.Sample {
         let g = dm.gravity
         // CoreMotion `heading` is the rotation of the device about the vertical
         // relative to the reference frame's north — the compass bearing of the
@@ -234,7 +240,7 @@ final class SpotLevelCapture {
     /// magnetometer calibration accuracy is the proxy. We approximate it from
     /// the magnetic-field calibration accuracy, mapping the enum to a degree
     /// band. `.high` ≈ 5°, `.medium` ≈ 20°, `.low` ≈ 35°, uncalibrated → large.
-    private static func headingAccuracy(_ dm: CMDeviceMotion) -> Double {
+    nonisolated private static func headingAccuracy(_ dm: CMDeviceMotion) -> Double {
         switch dm.magneticField.accuracy {
         case .high: return 5
         case .medium: return 20

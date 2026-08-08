@@ -3767,8 +3767,16 @@ final class OnCourseModel {
         var clubCarryM: Int?
         /// Hazard far edge, whole meters; nil for non-hazards.
         var carryM: Int?
-        /// Trailing context: "→ 58 m in · LW", "3 Wood carries", "Lay up short".
+        /// Trailing context: "58 m · LW", "3 Wood carries", "Lay up short".
         var note: String?
+        /// SF Symbol drawn ahead of `note` (e.g. "flag.fill" = to the green) —
+        /// the icon carries the destination so the note stays short.
+        var noteSystemImage: String?
+        /// Browse-tap rows: what's LEFT to the green center from the tapped
+        /// point ("⚑ 141 · 8I"), so inspecting a landing spot keeps the
+        /// approach in view. Nil for other rows / no green / on the green.
+        var toGreenM: Int?
+        var toGreenClub: String?
         /// Crosswind compensation on the ground, hidden below the 3 m visual
         /// threshold. The side is relative to the shot line, not map north.
         var windHoldM: Int?
@@ -3814,6 +3822,10 @@ final class OnCourseModel {
 
     private static let browseTargetRowID = "browse-target"
 
+    /// Minimum |adjusted carry − plays-as| before the advice names the gap
+    /// ("+49 long") — under this the ellipse visually covers the target anyway.
+    private static let clubGapNoteMinM = 5
+
     var selectedTargetAdvice: TargetAdvice? {
         guard let row = selectedLadderRow else { return nil }
 
@@ -3832,6 +3844,7 @@ final class OnCourseModel {
 
         var club: String?
         var note: String?
+        var noteSystemImage: String?
         if !competitionMode, !clubs.isEmpty {
             if row.id == Self.workingTargetRowID, let chosen = workingTarget?.clubName {
                 // The working target carries ITS choice's club — the banner
@@ -3853,7 +3866,10 @@ final class OnCourseModel {
                 // so plays-as / elevation to the green are noise; drop them and
                 // let the "leaves" figure carry the row.
                 club = layup.club
-                note = "→ \(layup.remainingM) m in" + (layup.approachClub.map { " · \($0)" } ?? "")
+                // "⚑ 176 m · 5I" — the flag icon says "to the green" without
+                // costing the words that clipped on narrow cards.
+                note = "\(layup.remainingM) m" + (layup.approachClub.map { " · \($0)" } ?? "")
+                noteSystemImage = "flag.fill"
                 playsAs = nil
                 elevationDelta = nil
             } else {
@@ -3870,10 +3886,43 @@ final class OnCourseModel {
                 for: row, clubName: clubName, elevationDeltaM: elevationDelta
             )
         }
+        // Inspected map point: keep the NEXT shot in view — distance from the
+        // tap on to the green center plus the bag's approach club. Gated past
+        // 15 m so taps on/around the green don't grow a noise chip.
+        var toGreenM: Int?
+        var toGreenClub: String?
+        if row.id == Self.browseTargetRowID, let pos = row.position,
+           let green = targets.greenCenter {
+            let remaining = Int(Distance.planarMeters(pos, green).rounded())
+            if remaining >= 15 {
+                toGreenM = remaining
+                toGreenClub = suggestedClub(
+                    from: pos,
+                    fromElevation: browseTargetElevation ?? ladderTerrainElevation(at: pos),
+                    to: green,
+                    toElevation: targets.greenElevation
+                )
+            }
+        }
+        // The closest club can still be well off the target (sparse bag) —
+        // then its ellipse sits visibly long/short of the tap and reads as a
+        // bug. Name the gap: adjusted carry vs what the target plays as.
+        if note == nil, let viz = shotViz {
+            // Both sides are GROUND meters from the origin: the ellipse
+            // center's adjusted carry vs the target's straight distance (the
+            // wind/slope the club fights is already inside viz.carryM —
+            // comparing against plays-as would double-count it).
+            let gap = viz.carryM - row.meters
+            if abs(gap) >= Self.clubGapNoteMinM {
+                note = gap > 0 ? "+\(gap) long" : "\(-gap) short"
+            }
+        }
         return TargetAdvice(
             title: row.label, kind: row.kind, distanceM: row.meters,
             playsAsM: playsAs, elevationDeltaM: elevationDelta,
             club: club, clubCarryM: shotViz?.carryM, carryM: row.carryM, note: note,
+            noteSystemImage: noteSystemImage,
+            toGreenM: toGreenM, toGreenClub: toGreenClub,
             windHoldM: shotViz?.hold?.meters,
             windHoldSide: shotViz?.hold?.side
         )
@@ -4622,6 +4671,11 @@ final class OnCourseModel {
         let line: [LatLon]
         if let wt = workingTarget, let origin {
             line = [origin, wt.position]
+        } else if isBrowseMode, let browseTarget, let origin {
+            // Inspecting an arbitrary map point: the line IS the inspected
+            // shot, origin straight to the tap (the hole route would suggest
+            // the tap measures via the aims). Cleared with the inspection.
+            line = [origin, browseTarget]
         } else {
             line = isBrowseMode ? browseForwardRoute : gpsForwardRoute
         }
@@ -4650,6 +4704,10 @@ final class OnCourseModel {
             plan: plan,
             courseRoute: courseRouteOverlay,
             highlight: isBrowseMode ? browseTarget ?? mapFocus ?? browseOrigin : mapFocus,
+            // The explicit browse origin gets its own persistent dot — the
+            // highlight ring moves to whatever was tapped last, so without
+            // this the "measuring from here" point vanishes on inspection.
+            browseFrom: isBrowseMode ? browseOrigin : nil,
             selectedEllipse: selectedTargetEllipse,
             selectedWindHold: selectedTargetWindHold,
             ellipseLabels: ellipseLabels

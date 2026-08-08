@@ -240,6 +240,60 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertEqual(highlight.lat, point.lat, accuracy: 1e-9)
     }
 
+    func testBrowseInspectDrawsFromDotAndStraightLineToTap() throws {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        XCTAssertNil(model.overlays.browseFrom, "browsing from the tee needs no origin dot")
+
+        let from = LatLon(lat: 58.3620, lon: 15.7090)
+        model.setBrowseOrigin(from)
+        XCTAssertEqual(model.overlays.browseFrom, from, "explicit browse origin keeps its own dot")
+
+        let tap = LatLon(lat: 58.3632, lon: 15.7083)
+        model.inspectBrowsePoint(tap)
+        XCTAssertEqual(model.overlays.browseFrom, from, "origin dot survives the inspection")
+        XCTAssertEqual(
+            model.overlays.distanceLine, [from, tap],
+            "inspecting draws the origin → tap line, not the hole route"
+        )
+        XCTAssertEqual(model.overlays.highlight, tap)
+
+        model.promoteInspectedBrowseTarget()
+        XCTAssertEqual(model.overlays.browseFrom, tap, "promotion moves the origin dot")
+        XCTAssertEqual(
+            model.overlays.distanceLine.first, tap,
+            "with the inspection cleared the line is the route from the new origin"
+        )
+        XCTAssertGreaterThanOrEqual(
+            model.overlays.distanceLine.count, 2,
+            "route line restored after promotion"
+        )
+    }
+
+    func testBrowseAdviceNamesTheClubGapWhenBagIsSparse() throws {
+        let model = makeModel()
+        model.setGPSEnabled(false)
+        // One-club bag: closestClub always answers Driver, so a mid-distance
+        // tap gets an ellipse landing well past the target — the note must
+        // name that gap instead of leaving the long ellipse unexplained.
+        model.setClubs([
+            ClubRecord(id: "dr", name: "Driver", carryM: 230, dispersionM: 40, sortOrder: 0)
+        ])
+        // ~150 m north of the default tee (58.3600, 15.7100). Calm + no
+        // elevation data → the adjusted carry is the nominal 230.
+        model.inspectBrowsePoint(LatLon(lat: 58.36135, lon: 15.7100))
+
+        let advice = try XCTUnwrap(model.selectedTargetAdvice)
+        XCTAssertEqual(advice.club, "Driver")
+        XCTAssertEqual(advice.note, "+\(230 - advice.distanceM) long")
+
+        // Inspecting a landing spot keeps the approach in view: distance from
+        // the tap ON to the green center, with the bag's closest club.
+        let toGreen = try XCTUnwrap(advice.toGreenM)
+        XCTAssertGreaterThan(toGreen, 15)
+        XCTAssertEqual(advice.toGreenClub, "Driver", "one-club bag answers Driver")
+    }
+
     func testBrowseLadderTapInspectsBeforeExplicitPromotion() throws {
         let model = makeModel()
         model.setGPSEnabled(false)

@@ -1092,7 +1092,15 @@ private struct OnCourseContentView: View {
             Text("Hole \(model.currentHoleNumber) has no hole-out.")
         }
         // The chrome floats over a dark ortho map — force dark materials.
-        .environment(\.colorScheme, .dark)
+        //
+        // `preferredColorScheme`, NOT `.environment(\.colorScheme, .dark)`: the
+        // environment value only reaches SwiftUI's own semantic colors, while
+        // every `Color.dynamic` token (Tokens.swift) resolves off the UIKit
+        // trait collection, as do nav bars, segmented controls, `.roundedBorder`
+        // fields and the keyboard. With the environment override the two
+        // disagreed inside presented sheets — light card, near-white text — and
+        // the calibration sheet was unreadable. This sets the trait too.
+        .preferredColorScheme(.dark)
         #if DEBUG
         .onAppear { applyDebugLaunchHooks() }
         #endif
@@ -2511,7 +2519,9 @@ private struct DistanceCardView: View {
     /// route/aim legs, plan — sits behind the expand chevron.
     @State private var expanded = false
     /// Tapping the big distance toggles it between actual and plays-as.
-    @State private var showPlaysAs = false
+    /// Plays-as leads by default — it's the number you club from; the tap on
+    /// the big figure swaps actual up when you want the raw line.
+    @State private var showPlaysAs = true
 
     // Match the map marker convention: front red / center white / back blue.
     private static let frontColor = Color(red: 0.88, green: 0.19, blue: 0.19)
@@ -2534,12 +2544,7 @@ private struct DistanceCardView: View {
             if let advice = model.selectedTargetAdvice {
                 selectedTargetBanner(advice)
             }
-            laserRow
-            // Today's-pin entry — only where the hole has a green frame to place
-            // a pin against (spec §5). A placed override adds a source chip.
-            if model.currentGreenFrame != nil {
-                pinRow
-            }
+            toolsRow
             bottomStrip
         }
         .padding(.horizontal, Space.s4)
@@ -2862,87 +2867,116 @@ private struct DistanceCardView: View {
         let big = isHazard ? (advice.carryM ?? advice.distanceM)
             : (showingPlaysAs ? advice.playsAsM! : advice.distanceM)
 
-        return HStack(alignment: .center, spacing: 12) {
-            Circle().fill(accent).frame(width: 9, height: 9)
-            VStack(alignment: .leading, spacing: 4) {
+        // Top-aligned two-column row: everything informational stacks tightly
+        // on the left (title, club, aim/notes, promote button); the figure
+        // column is big number over its companion. Neither side carries
+        // layoutPriority — under width pressure the big number scales down
+        // (minimumScaleFactor) before any text truncates.
+        return HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                // The accent tint IS the kind marker (matches the ladder
+                // rail colors) — the old 9 pt dot cost a 21 pt indent.
                 Text(advice.title.uppercased())
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(accent)
                     .lineLimit(1)
-                HStack(spacing: 8) {
-                    if let club = advice.club {
-                        HStack(spacing: 3) {
-                            Image(systemName: "figure.golf")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.green)
-                            // Club + its adjusted carry ("54 · 88 m") — the
-                            // SAME figure the advice ellipse (and its on-map
-                            // label) is drawn with.
-                            Text(advice.clubCarryM.map { "\(club) · \($0) m" } ?? club)
-                                .font(.caption.weight(.semibold))
-                                .lineLimit(1)
-                                .fixedSize()
-                        }
+                if let club = advice.club {
+                    HStack(spacing: 3) {
+                        Image(systemName: "figure.golf")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.green)
+                        // Club + its adjusted carry — the SAME figure the
+                        // advice ellipse (and its on-map label) is drawn
+                        // with. Carry is implied; no verb needed.
+                        Text(advice.clubCarryM.map { "\(club) · \($0) m" } ?? club)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
                     }
-                    if let delta = advice.elevationDeltaM, delta != 0 {
+                }
+                HStack(spacing: 10) {
+                    // Always shown (a flat "0 m" included) — a hidden chip
+                    // reads as missing data, not as flat ground.
+                    if let delta = advice.elevationDeltaM {
                         HStack(spacing: 2) {
-                            Image(systemName: delta > 0 ? "arrow.up.right" : "arrow.down.right")
-                                .font(.system(size: 9, weight: .semibold))
+                            Image(systemName: delta > 0 ? "arrow.up.right"
+                                  : delta < 0 ? "arrow.down.right" : "minus")
+                                .font(.system(size: 10, weight: .semibold))
                             Text("\(abs(delta)) m")
-                                .font(.caption2)
+                                .font(.footnote)
                         }
                         .foregroundStyle(.secondary)
                         .fixedSize()
                     }
                     if let hold = advice.windHoldM, let side = advice.windHoldSide {
-                        HStack(spacing: 2) {
-                            Image(systemName: side == .left ? "arrow.left" : "arrow.right")
-                                .font(.system(size: 9, weight: .bold))
-                            Text("\(DistanceFormat.string(hold, unit: unit)) \(unit.abbreviation)")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .foregroundStyle(Self.windHoldColor)
-                        .fixedSize()
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(
-                            "Hold \(DistanceFormat.stringWithUnit(hold, unit: unit)) \(side.rawValue)"
-                        )
-                    }
-                    if let note = advice.note {
-                        Text(note)
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(note == "Lay up short" ? Self.pinColor : .primary)
+                        // Aim correction (hold into the wind), not the wind's
+                        // own direction — "aim" keeps the arrow unambiguous.
+                        Text("aim \(side == .left ? "←" : "→") \(DistanceFormat.string(hold, unit: unit)) \(unit.abbreviation)")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Self.windHoldColor)
                             .lineLimit(1)
-                            .fixedSize()
+                            .accessibilityLabel(
+                                "Aim \(DistanceFormat.stringWithUnit(hold, unit: unit)) \(side.rawValue) of the target"
+                            )
                     }
                 }
-                if model.canPromoteInspectedBrowseTarget {
-                    Button {
-                        model.promoteInspectedBrowseTarget()
-                    } label: {
-                        Label("Browse from here", systemImage: "arrow.turn.down.right")
-                            .font(.caption2.weight(.semibold))
+                // Outcome line, separate from the adjustments above — four
+                // chips on one ~200 pt line crushed into "aim… 8 sh… ⚑ 2…".
+                if advice.note != nil || advice.toGreenM != nil {
+                    HStack(spacing: 10) {
+                        if let note = advice.note {
+                            HStack(spacing: 3) {
+                                if let icon = advice.noteSystemImage {
+                                    Image(systemName: icon)
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(Self.frontColor)
+                                }
+                                Text(note)
+                                    .font(.footnote.weight(.medium))
+                                    .foregroundStyle(note == "Lay up short" ? Self.pinColor : .primary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        if let toGreen = advice.toGreenM {
+                            // From the tapped point ON to the green: remaining
+                            // + approach club, the layup chip's flag form.
+                            HStack(spacing: 3) {
+                                Image(systemName: "flag.fill")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Self.frontColor)
+                                Text("\(toGreen) m" + (advice.toGreenClub.map { " · \($0)" } ?? ""))
+                                    .font(.footnote.weight(.medium))
+                                    .lineLimit(1)
+                            }
+                            .accessibilityLabel(
+                                "\(toGreen) meters to the green"
+                                + (advice.toGreenClub.map { ", \($0)" } ?? "")
+                            )
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .accessibilityHint("Makes this target the new distance origin")
                 }
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 0) {
-                MetricText(DistanceFormat.string(big, unit: unit), unit: unit.abbreviation, size: 38)
+                MetricText(DistanceFormat.string(big, unit: unit), unit: unit.abbreviation, size: 44)
                     .minimumScaleFactor(0.7)
                 HStack(spacing: 3) {
                     if canToggle {
                         Image(systemName: "arrow.up.arrow.down")
-                            .font(.system(size: 8, weight: .semibold))
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.tertiary)
                     }
+                    // The companion figure, so actual AND plays-as read at
+                    // a glance; the tap swaps which one is big.
                     Text(isHazard
                          ? "carry · front \(DistanceFormat.string(advice.distanceM, unit: unit))"
-                         : (showingPlaysAs ? "plays-as" : "actual"))
-                        .font(.caption2)
+                         : (showingPlaysAs
+                            ? "actual \(DistanceFormat.string(advice.distanceM, unit: unit))"
+                            : advice.playsAsM.map {
+                                "plays \(DistanceFormat.string($0, unit: unit))"
+                            } ?? "actual"))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             .contentShape(Rectangle())
@@ -2952,8 +2986,8 @@ private struct DistanceCardView: View {
 
     // Today's-pin controls: a compact button into the pin-entry sheet, plus —
     // when an override is placed — a source-tag chip ("Laser"/"Sheet"/"Visual")
-    // with an inline clear.
-    private var pinRow: some View {
+    // with an inline clear. Inline content for `toolsRow` (no line of its own).
+    private var pinControls: some View {
         HStack(spacing: 8) {
             Button(action: onPinEntry) {
                 HStack(spacing: 5) {
@@ -2990,14 +3024,14 @@ private struct DistanceCardView: View {
                 .padding(.vertical, 5)
                 .background(Self.pinColor.opacity(0.15), in: Capsule())
             }
-            Spacer()
         }
     }
 
-    /// One rangefinder button for pin placement, calibration shots and live
-    /// residual verification. The last mapped-feature shot remains visible as
-    /// a plain carry check even when a confirming refresh closed silently.
-    private var laserRow: some View {
+    /// Laser + today's-pin controls on ONE row (they cost a line each before),
+    /// with the laser carry-check readout below when one exists. The old
+    /// "Mapped target picked" hint is gone — the laser sheet itself says what
+    /// a shot will be checked against.
+    private var toolsRow: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
                 Button(action: onLaserEntry) {
@@ -3016,10 +3050,33 @@ private struct DistanceCardView: View {
                 .accessibilityLabel("Enter laser distance")
                 .accessibilityHint("Routes to pin placement, GPS calibration, or calibration verification")
 
-                if model.browseTarget != nil {
-                    Text("Mapped target picked")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                // Today's-pin entry — only where the hole has a green frame to
+                // place a pin against (spec §5); a placed override adds a chip.
+                if model.currentGreenFrame != nil {
+                    pinControls
+                }
+                // Promote the inspected target to the browse origin — lives
+                // here as a pill so the banner keeps its lines for data.
+                if model.canPromoteInspectedBrowseTarget {
+                    Button {
+                        model.promoteInspectedBrowseTarget()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.turn.down.right")
+                                .font(.caption)
+                            Text("From here")
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        .foregroundStyle(Color.cyan)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.cyan.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Browse from here")
+                    .accessibilityHint("Makes this target the new distance origin")
                 }
                 Spacer()
             }
@@ -3059,17 +3116,20 @@ private struct DistanceCardView: View {
             Spacer()
             profileChip
             if model.isBrowseMode && model.browseOrigin != nil {
+                // Icon-only, like the elevation chip — "From tee" hyphenated
+                // when the strip ran out of width.
                 Button {
                     model.resetBrowseOrigin()
                 } label: {
-                    Label("From tee", systemImage: "arrow.uturn.backward")
-                        .font(.caption)
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.footnote)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
                 .background(.white.opacity(0.08), in: Capsule())
+                .accessibilityLabel("From tee")
                 .accessibilityHint("Restores the selected tee as the distance origin")
             }
             locationToggle
@@ -3297,18 +3357,16 @@ private struct DistanceCardView: View {
 
     /// Opens the elevation-profile sheet for the hole route (non-modal; the
     /// map stays live).
+    // Icon-only: four labeled pills don't fit the strip's width and SwiftUI
+    // hyphenates inside them ("Eleva-tion"); the accessibility label names it.
     private var profileChip: some View {
         Button(action: onProfile) {
-            HStack(spacing: 5) {
-                Image(systemName: "chart.xyaxis.line")
-                    .font(.caption)
-                Text("Elevation")
-                    .font(.caption)
-            }
-            .foregroundStyle(Color.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.white.opacity(0.08), in: Capsule())
+            Image(systemName: "chart.xyaxis.line")
+                .font(.footnote)
+                .foregroundStyle(Color.secondary)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(.white.opacity(0.08), in: Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Elevation profile")
@@ -3349,6 +3407,8 @@ private struct DistanceCardView: View {
             HStack(spacing: 5) {
                 Image(systemName: model.currentTeeHasOverride ? "flag.circle.fill" : "flag.circle")
                 Text(model.resolvedTeeName ?? "Tee")
+                    .lineLimit(1)
+                    .fixedSize()
                 if model.currentTeeHasOverride {
                     Image(systemName: "mappin.and.ellipse")
                         .font(.caption2)
@@ -3375,6 +3435,8 @@ private struct DistanceCardView: View {
                     .font(.caption)
                 Text(locationLabel)
                     .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize()
             }
             .foregroundStyle(model.isUsingGPS ? Color.green : Color.secondary)
             .padding(.horizontal, 10)

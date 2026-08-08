@@ -51,23 +51,41 @@ struct PinEntrySheet: View {
     /// (raw GPS off / browse with no fix) — surfaced as a hint, not a crash.
     @State private var laserNeedsOrigin = false
     @State private var consumedInitialPhrase = false
+    /// The sheet opens at `.medium` (the input zone is all that matters until
+    /// something parses) and jumps to `.large` the moment a placement resolves —
+    /// the drag sketch is 220pt tall and is otherwise clipped by the medium
+    /// detent, leaving the player fine-tuning a green they can only half see.
+    @State private var detent: PresentationDetent = .medium
 
     /// The map-marker pin yellow, matched to the distance card + on-map pin.
     private static let pinColor = Color(red: 1.0, green: 0.83, blue: 0.23)
 
+    /// Scroll anchor for the confirm sketch.
+    private static let confirmZoneID = "confirm-zone"
+
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Space.s5) {
-                    inputZone
-                    candidateZone
-                    if let working {
-                        confirmZone(working)
+            ScrollViewReader { scroll in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Space.s5) {
+                        inputZone
+                        candidateZone
+                        if let working {
+                            confirmZone(working)
+                                .id(Self.confirmZoneID)
+                        }
                     }
+                    .padding(.horizontal, Space.s5)
+                    .padding(.top, Space.s2)
+                    .padding(.bottom, Space.s6)
                 }
-                .padding(.horizontal, Space.s5)
-                .padding(.top, Space.s2)
-                .padding(.bottom, Space.s6)
+                // Growing the sheet alone isn't enough: the input zone still
+                // occupies the top, so bring the sketch up to where the thumb is.
+                .onChange(of: working != nil) { _, hasPlacement in
+                    guard hasPlacement else { return }
+                    detent = .large
+                    withAnimation { scroll.scrollTo(Self.confirmZoneID, anchor: .top) }
+                }
             }
             .navigationTitle("Place pin")
             .navigationBarTitleDisplayMode(.inline)
@@ -77,7 +95,7 @@ struct PinEntrySheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.medium, .large], selection: $detent)
         .presentationDragIndicator(.visible)
         // The recognizer auto-finishes (final result / silence timeout) by
         // dropping `.listening` → `.idle`; a manual mic tap does the same via

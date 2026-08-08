@@ -174,9 +174,17 @@ public actor GolfAPIClient {
     }
 
     /// Adds a plan shot (`POST /api/game-plans/shots/add`). The server assigns
-    /// `sortOrder` by insert order — the sync engine pushes adds in sortOrder.
+    /// `sortOrder` (sibling rank) by insert order — the sync engine pushes adds
+    /// parent-before-child.
+    ///
+    /// `parent` says where in the TREE the shot goes, and the distinction the
+    /// server draws is absent-vs-null: an ABSENT `parentShotId` appends to the
+    /// primary line's tail, an explicit NULL starts a new root option. A local
+    /// shot always knows its parent (nil parent = first shot on the hole), so
+    /// this client always sends the key — never letting the server guess.
     public func addPlanShot(
         gamePlanHoleId: String,
+        parent: PlanShotParent,
         lat: Double,
         lon: Double,
         elevation: Double? = nil,
@@ -184,7 +192,7 @@ public actor GolfAPIClient {
         label: String? = nil
     ) async throws -> PlanShot {
         try await postJSON(path: "game-plans/shots/add", body: AddPlanShotRequest(
-            gamePlanHoleId: gamePlanHoleId,
+            gamePlanHoleId: gamePlanHoleId, parent: parent,
             lat: lat, lon: lon, elevation: elevation, clubId: clubId, label: label
         ))
     }
@@ -256,13 +264,37 @@ public actor GolfAPIClient {
         }
     }
 
+    // Hand-written for the same reason as the wind requests: the server reads
+    // ABSENT `parentShotId` as "append to the primary line" and explicit NULL
+    // as "new root option", and a synthesized encoder omits nil optionals — so
+    // it could never express a root.
     private struct AddPlanShotRequest: Encodable {
         let gamePlanHoleId: String
+        let parent: PlanShotParent
         let lat: Double
         let lon: Double
         let elevation: Double?
         let clubId: String?
         let label: String?
+
+        enum CodingKeys: String, CodingKey {
+            case gamePlanHoleId, parentShotId, lat, lon, elevation, clubId, label
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(gamePlanHoleId, forKey: .gamePlanHoleId)
+            switch parent {
+            case .root: try container.encodeNil(forKey: .parentShotId)
+            case .shot(let id): try container.encode(id, forKey: .parentShotId)
+            case .primaryLineTail: break // absent — the server appends
+            }
+            try container.encode(lat, forKey: .lat)
+            try container.encode(lon, forKey: .lon)
+            try container.encodeIfPresent(elevation, forKey: .elevation)
+            try container.encodeIfPresent(clubId, forKey: .clubId)
+            try container.encodeIfPresent(label, forKey: .label)
+        }
     }
 
     private struct UpdatePlanShotRequest: Encodable {
@@ -825,7 +857,15 @@ public actor GolfAPIClient {
         }
     }
 
-    /// Like `request`, but tolerates a JSON `null` body → nil.
+    /// Like `request`, but tolerates a "no such row" body → nil.
+    ///
+    /// Three spellings mean nil, because the server framework's route wrapper
+    /// (`@basics/core` `mount`) does `c.json(result ?? { ok: true })`: a handler
+    /// returning null/undefined is serialized as the SENTINEL `{"ok":true}`,
+    /// not as JSON `null`. Decoding that sentinel as the payload type used to
+    /// throw `APIError.decoding` — which, for a course with no game plan yet
+    /// (the normal state of a freshly deployed server, where plans are user
+    /// data created only by clients), broke the whole plan refresh.
     private func requestOptional<T: Decodable>(
         path: String,
         method: String = "GET",
@@ -837,7 +877,7 @@ public actor GolfAPIClient {
             path: path, method: method, query: query, body: body, allowRelogin: allowRelogin
         )
         let trimmed = data.trimmingLeadingWhitespace()
-        if trimmed.isEmpty || trimmed == Data("null".utf8) {
+        if trimmed.isEmpty || trimmed == Data("null".utf8) || Self.isNullSentinel(trimmed) {
             return nil
         }
         do {
@@ -845,6 +885,17 @@ public actor GolfAPIClient {
         } catch {
             throw APIError.decoding(String(describing: error))
         }
+    }
+
+    /// True for the framework's null-result sentinel: an object whose only key
+    /// is `ok` with the value `true`. Deliberately exact — a real payload that
+    /// happened to carry an `ok` flag alongside other fields is NOT a sentinel.
+    static func isNullSentinel(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object.count == 1,
+              let ok = object["ok"] as? Bool
+        else { return false }
+        return ok
     }
 
     private func decodeErrorMessage(_ data: Data) -> String? {

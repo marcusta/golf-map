@@ -61,6 +61,20 @@ final class CorridorScanService {
     nonisolated static let minLineLengthM = 2.0
     nonisolated static let minPassPoints = 500
 
+    // MARK: - Crosshair aiming
+
+    /// Half-size (depth-map pixels) of the patch sampled under the crosshair.
+    /// ±3 on a 256×192 map ≈ a 5 cm spot at 1.5 m — the ball, not the fairway
+    /// behind it.
+    nonisolated static let aimPatchHalfPixels = 3
+    /// Valid pixels the patch needs before the aim point is trusted.
+    nonisolated static let minAimPatchPixels = 8
+    /// Aiming reaches further than the fit cloud does: pointing at the ball
+    /// from standing height is ~1.5 m, marking the hole from a step away up to
+    /// ~5 m. Depth accuracy at that range (~1%) is centimeters — fine for an
+    /// endpoint, unusable for surface slope, hence the separate limit.
+    nonisolated static let maxAimDepthM = 5.0
+
     // MARK: - Phase
 
     enum Phase: Equatable {
@@ -98,6 +112,10 @@ final class CorridorScanService {
     private(set) var pointCount = 0
     /// Horizontal camera distance from the ball anchor, meters.
     private(set) var distanceFromBallM: Double = 0
+    /// Range to the point under the crosshair, meters — nil when the centre
+    /// of the frame has no usable depth (too far, too dark, no surface). The
+    /// crosshair renders live off this, and marking is gated on it.
+    private(set) var aimDistanceM: Double?
 
     // MARK: - Endpoint levels (reused D2 capture, owned here)
 
@@ -122,7 +140,8 @@ final class CorridorScanService {
         var outCoverageFrac: Double
         var backCoverageFrac: Double
         var passMismatchSlopePct: Double
-        var endpointLevelDeltaPct: Double
+        /// nil when either endpoint level was skipped.
+        var endpointLevelDeltaPct: Double?
         var verdict: GreenScanVerdict
         /// Decimated (≤ 5000) scan-frame points for the payload, mm-rounded.
         var payloadPoints: [[Double]]
@@ -149,6 +168,13 @@ final class CorridorScanService {
         /// Horizontal projection of the camera look direction (x/z, world).
         var lookX: Double
         var lookZ: Double
+        /// World point under the screen-centre crosshair (median of a small
+        /// high-confidence depth patch), nil when the centre has no usable
+        /// depth. THE anchor for ball/hole marking — aiming at the ball beats
+        /// holding the phone over it (see `anchorBall`).
+        var centerHitWorld: CorridorFitMath.P3?
+        /// Range to that point, meters — the aim readout / in-range gate.
+        var centerHitDistanceM: Double?
     }
 
     @ObservationIgnored private var outWorld: [CorridorFitMath.P3] = []
@@ -156,6 +182,7 @@ final class CorridorScanService {
     @ObservationIgnored private var ballAnchor: CorridorFitMath.P3?
     @ObservationIgnored private var holeAnchor: CorridorFitMath.P3?
     @ObservationIgnored private var latestCameraPos: CorridorFitMath.P3?
+    @ObservationIgnored private var latestCenterHit: CorridorFitMath.P3?
     @ObservationIgnored private var latestLook: (x: Double, z: Double)?
     @ObservationIgnored private var latestHeadingDeg: Double?
 
@@ -167,6 +194,21 @@ final class CorridorScanService {
     #if canImport(ARKit)
     @ObservationIgnored private var session: ARSession?
     @ObservationIgnored private var sessionDelegate: ScanSessionDelegate?
+
+    /// The running session, for the camera preview to render. Observable on
+    /// purpose (unlike the rest of the AR internals): the preview has to
+    /// re-attach when `start()` builds a new session.
+    var previewSession: ARSession? { session }
+
+    /// Re-assert our frame delegate. `ARSCNView.session = …` may install
+    /// itself as the session's delegate; losing ours would silently stop all
+    /// point collection, so the preview calls this right after attaching.
+    func reassertSessionDelegate() {
+        guard let session, let sessionDelegate else { return }
+        if session.delegate !== sessionDelegate {
+            session.delegate = sessionDelegate
+        }
+    }
     #endif
 
     init() {
@@ -230,13 +272,39 @@ final class CorridorScanService {
         phase = .idle
     }
 
-    /// Tap "Anchor ball" while holding the phone over the ball: records the
-    /// camera position as the ball anchor, then runs the static level.
+    /// Tap "Anchor ball" with the crosshair on the ball: records the world
+    /// point under the crosshair as the ball anchor, then runs the static
+    /// level.
+    ///
+    /// The crosshair hit is the accurate anchor — it is the actual point on
+    /// the green being aimed at. `latestCameraPos` (the phone's own position,
+    /// ~1 m up and wherever the hand is) is only the fallback for the frame
+    /// where depth is missing. Anchor HEIGHT is irrelevant either way:
+    /// `prepareCorridor` re-levels z from the near-ball ground points; only
+    /// the horizontal x/z matter, which is exactly what the crosshair fixes.
     func anchorBall() {
-        guard phase == .anchorBall, let camera = latestCameraPos else { return }
-        ballAnchor = camera
+        guard phase == .anchorBall, let anchor = latestCenterHit ?? latestCameraPos else { return }
+        ballAnchor = anchor
         phase = .levelBall
         level.start()
+    }
+
+    /// Skip the static level at this endpoint. The endpoint levels are a
+    /// quality *cross-check* (`endpointLevelDeltaPct`), not an input to the
+    /// read or its verdict — so a player who does not want to put the phone
+    /// down can walk straight on. The uploaded payload then carries no
+    /// endpoint levels and the delta is omitted.
+    func skipLevel() {
+        switch phase {
+        case .levelBall:
+            level.cancel()
+            phase = .readyToWalkOut
+        case .levelHole:
+            level.cancel()
+            phase = .readyToWalkBack
+        default:
+            return
+        }
     }
 
     /// Level settled at the ball (sheet gates on `level.phase == .done` and
@@ -261,13 +329,15 @@ final class CorridorScanService {
     /// hole anchor + the compass/look bearing snapshot, then runs the second
     /// static level.
     func markHole() {
-        guard phase == .walkOut, let camera = latestCameraPos, let ball = ballAnchor else { return }
-        holeAnchor = camera
+        guard phase == .walkOut, let anchor = latestCenterHit ?? latestCameraPos,
+              let ball = ballAnchor
+        else { return }
+        holeAnchor = anchor
         // Bearing snapshot: compass heading of the look direction now, the
         // ball→hole world direction rotated into compass frame.
         if let heading = latestHeadingDeg, let look = latestLook {
             lineBearingDeg = CorridorFitMath.bearingDeg(
-                ofX: camera.x - ball.x, z: camera.z - ball.z,
+                ofX: anchor.x - ball.x, z: anchor.z - ball.z,
                 referenceX: look.x, referenceZ: look.z,
                 referenceBearingDeg: heading
             )
@@ -295,8 +365,7 @@ final class CorridorScanService {
 
     /// Back at the ball — run fits + QC off the main actor.
     func finish() {
-        guard phase == .walkBack, let ball = ballAnchor, let hole = holeAnchor,
-              let ballLevel, let holeLevel
+        guard phase == .walkBack, let ball = ballAnchor, let hole = holeAnchor
         else { return }
         phase = .fitting
         #if canImport(ARKit)
@@ -304,8 +373,10 @@ final class CorridorScanService {
         #endif
         let out = outWorld
         let back = backWorld
-        let ballSlopePct = ballLevel.slopePct
-        let holeSlopePct = holeLevel.slopePct
+        // nil when the level was skipped — the endpoint cross-check is then
+        // omitted rather than faked.
+        let ballSlopePct = ballLevel?.slopePct
+        let holeSlopePct = holeLevel?.slopePct
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = CorridorScanService.fitScan(
                 outWorld: out, backWorld: back,
@@ -347,8 +418,8 @@ final class CorridorScanService {
         backWorld: [CorridorFitMath.P3],
         ballAnchorWorld: CorridorFitMath.P3,
         holeAnchorWorld: CorridorFitMath.P3,
-        ballLevelSlopePct: Double,
-        holeLevelSlopePct: Double
+        ballLevelSlopePct: Double?,
+        holeLevelSlopePct: Double?
     ) -> FitOutcome {
         guard let clouds = CorridorFitMath.prepareCorridor(
             outWorld: outWorld, backWorld: backWorld,
@@ -376,10 +447,16 @@ final class CorridorScanService {
         let coverage = CorridorFitMath.coverageFrac(
             clouds.out + clouds.back, lineLengthM: clouds.lineLengthM
         )
-        let endpointDelta = CorridorFitMath.endpointLevelDeltaPct(
-            fit: combined, lineLengthM: clouds.lineLengthM,
-            ballLevelSlopePct: ballLevelSlopePct, holeLevelSlopePct: holeLevelSlopePct
-        )
+        // Only computable when both endpoint levels were taken.
+        let endpointDelta: Double? =
+            if let ballLevelSlopePct, let holeLevelSlopePct {
+                CorridorFitMath.endpointLevelDeltaPct(
+                    fit: combined, lineLengthM: clouds.lineLengthM,
+                    ballLevelSlopePct: ballLevelSlopePct, holeLevelSlopePct: holeLevelSlopePct
+                )
+            } else {
+                nil
+            }
         let verdict = CorridorFitMath.verdict(
             passMismatchSlopePct: mismatch,
             rmseM: combined.rmseM,
@@ -416,6 +493,8 @@ final class CorridorScanService {
 
     private func ingest(_ sample: FrameSample) {
         latestCameraPos = sample.cameraPos
+        latestCenterHit = sample.centerHitWorld
+        aimDistanceM = sample.centerHitDistanceM
         latestLook = (sample.lookX, sample.lookZ)
         if let ball = ballAnchor {
             let dx = sample.cameraPos.x - ball.x
@@ -443,6 +522,8 @@ final class CorridorScanService {
         ballAnchor = nil
         holeAnchor = nil
         latestCameraPos = nil
+        latestCenterHit = nil
+        aimDistanceM = nil
         latestLook = nil
         latestHeadingDeg = nil
         ballLevel = nil
@@ -460,16 +541,21 @@ final class CorridorScanService {
     private func startHeadingUpdates() {
         guard headingMotion.isDeviceMotionAvailable else { return }
         headingMotion.deviceMotionUpdateInterval = 0.1
-        headingMotion.startDeviceMotionUpdates(
-            using: .xMagneticNorthZVertical,
-            to: headingQueue
-        ) { [weak self] deviceMotion, _ in
+        // Explicitly `@Sendable` — see `SpotLevelCapture.start()`: a plain
+        // closure here inherits `@MainActor` and traps when CoreMotion calls it
+        // on `headingQueue`.
+        let handler: @Sendable (CMDeviceMotion?, Error?) -> Void = { [weak self] deviceMotion, _ in
             guard let deviceMotion, deviceMotion.heading >= 0 else { return }
             let heading = deviceMotion.heading
             Task { @MainActor [weak self] in
                 self?.latestHeadingDeg = heading
             }
         }
+        headingMotion.startDeviceMotionUpdates(
+            using: .xMagneticNorthZVertical,
+            to: headingQueue,
+            withHandler: handler
+        )
     }
 
     private func stopHeadingUpdates() {
@@ -512,6 +598,8 @@ private final class ScanSessionDelegate: NSObject, ARSessionDelegate, Sendable {
         let lookZ = Double(-transform.columns.2.z)
 
         var points: [CorridorFitMath.P3] = []
+        var centerHit: CorridorFitMath.P3?
+        var centerRange: Double?
         // Depth is only useful while tracking is normal — a relocalizing
         // pose would smear points across the world.
         if case .normal = camera.trackingState,
@@ -522,11 +610,101 @@ private final class ScanSessionDelegate: NSObject, ARSessionDelegate, Sendable {
                 transform: transform,
                 cameraY: cameraPos.y
             )
+            if let hit = Self.centerHit(
+                depthData: depthData, camera: camera, transform: transform
+            ) {
+                centerHit = hit.world
+                centerRange = hit.rangeM
+            }
         }
 
         onSample(CorridorScanService.FrameSample(
-            points: points, cameraPos: cameraPos, lookX: lookX, lookZ: lookZ
+            points: points, cameraPos: cameraPos, lookX: lookX, lookZ: lookZ,
+            centerHitWorld: centerHit, centerHitDistanceM: centerRange
         ))
+    }
+
+    /// The world point under the screen-centre crosshair: median depth over a
+    /// small high-confidence patch at the centre of the depth map, unprojected
+    /// and transformed to the gravity world.
+    ///
+    /// The depth map centre IS the screen centre — the preview renders the
+    /// camera image aspect-fill, which crops the edges symmetrically and
+    /// leaves the centre fixed. A patch median (not a single pixel) because a
+    /// lone depth pixel on grass is noisy and occasionally invalid.
+    private static func centerHit(
+        depthData: ARDepthData,
+        camera: ARCamera,
+        transform: simd_float4x4
+    ) -> (world: CorridorFitMath.P3, rangeM: Double)? {
+        let depthMap = depthData.depthMap
+        guard let confidenceMap = depthData.confidenceMap else { return nil }
+        guard CVPixelBufferGetPixelFormatType(depthMap) == kCVPixelFormatType_DepthFloat32,
+              CVPixelBufferGetPixelFormatType(confidenceMap) == kCVPixelFormatType_OneComponent8
+        else { return nil }
+
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        CVPixelBufferLockBaseAddress(confidenceMap, .readOnly)
+        defer {
+            CVPixelBufferUnlockBaseAddress(depthMap, .readOnly)
+            CVPixelBufferUnlockBaseAddress(confidenceMap, .readOnly)
+        }
+        guard let depthBase = CVPixelBufferGetBaseAddress(depthMap),
+              let confidenceBase = CVPixelBufferGetBaseAddress(confidenceMap)
+        else { return nil }
+
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+        let depthStride = CVPixelBufferGetBytesPerRow(depthMap) / MemoryLayout<Float32>.stride
+        let confidenceStride = CVPixelBufferGetBytesPerRow(confidenceMap)
+        let depthPixels = depthBase.assumingMemoryBound(to: Float32.self)
+        let confidencePixels = confidenceBase.assumingMemoryBound(to: UInt8.self)
+
+        let centerU = width / 2
+        let centerV = height / 2
+        let half = CorridorScanService.aimPatchHalfPixels
+        // `.medium` and up: the crosshair must still find the surface at a
+        // grazing angle, where the strict `.high` gate used for the fit cloud
+        // thins out.
+        let minConfidence = UInt8(ARConfidenceLevel.medium.rawValue)
+
+        var depths: [Double] = []
+        depths.reserveCapacity((2 * half + 1) * (2 * half + 1))
+        for v in (centerV - half)...(centerV + half) {
+            guard v >= 0, v < height else { continue }
+            for u in (centerU - half)...(centerU + half) {
+                guard u >= 0, u < width else { continue }
+                guard confidencePixels[v * confidenceStride + u] >= minConfidence else { continue }
+                let depth = Double(depthPixels[v * depthStride + u])
+                guard depth.isFinite,
+                      depth >= CorridorScanService.minDepthM,
+                      depth <= CorridorScanService.maxAimDepthM
+                else { continue }
+                depths.append(depth)
+            }
+        }
+        guard depths.count >= CorridorScanService.minAimPatchPixels else { return nil }
+        depths.sort()
+        let range = depths[depths.count / 2]
+
+        let intrinsics = camera.intrinsics
+        let scaleX = Double(width) / Double(camera.imageResolution.width)
+        let scaleY = Double(height) / Double(camera.imageResolution.height)
+        let fx = Double(intrinsics.columns.0.x) * scaleX
+        let fy = Double(intrinsics.columns.1.y) * scaleY
+        let cx = Double(intrinsics.columns.2.x) * scaleX
+        let cy = Double(intrinsics.columns.2.y) * scaleY
+        guard fx > 0, fy > 0 else { return nil }
+
+        let local = CorridorFitMath.unprojectDepthPixel(
+            u: Double(centerU), v: Double(centerV), depthM: range,
+            fx: fx, fy: fy, cx: cx, cy: cy
+        )
+        let world = transform * simd_float4(Float(local.x), Float(local.y), Float(local.z), 1)
+        return (
+            CorridorFitMath.P3(x: Double(world.x), y: Double(world.y), z: Double(world.z)),
+            range
+        )
     }
 
     /// Subsample the depth map, keep high-confidence pixels in range,

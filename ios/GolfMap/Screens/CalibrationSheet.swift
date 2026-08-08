@@ -41,6 +41,13 @@ struct CalibrationSheet: View {
     @State private var pumpTask: Task<Void, Never>?
     /// Typed laser distance for the next trilateration shot.
     @State private var laserText = ""
+    /// Detent, driven so "Pick the target on the map" can get out of the way:
+    /// background interaction is only enabled up through `.medium`, so the
+    /// sheet must shrink before the map underneath is tappable.
+    @State private var detent: PresentationDetent = .large
+    /// Focus on the metres field, so picking a target can dismiss the keyboard
+    /// (it covers the map the player is being sent to tap).
+    @FocusState private var laserFieldFocused: Bool
 
     enum Mode: Hashable { case anchor, laser }
 
@@ -66,7 +73,7 @@ struct CalibrationSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.medium, .large], selection: $detent)
         .presentationDragIndicator(.visible)
         // Keep the map tappable behind the medium detent: both flows ask the
         // player to tap a feature in Browse mode mid-flow (anchor source /
@@ -214,7 +221,7 @@ struct CalibrationSheet: View {
             }
             .padding(.horizontal, Space.s3)
             .padding(.vertical, Space.s2)
-            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.md))
+            .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.md))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -253,11 +260,20 @@ struct CalibrationSheet: View {
     // deliberately collecting a fresh trilateration solve.
     @ViewBuilder
     private var laserZone: some View {
-        VStack(alignment: .leading, spacing: Space.s3) {
-            OverlineLabel("Laser fixed features")
-            Text("Laser 2–3 fixed, mapped features from where you stand.")
+        VStack(alignment: .leading, spacing: Space.s4) {
+            HStack(alignment: .firstTextBaseline) {
+                OverlineLabel("Laser fixed features")
+                Spacer()
+                Text("\(session.shots.count) of 2–3")
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(session.shots.count >= 2
+                                     ? Color.statusPositive : Color.textSecondary)
+            }
+            Text("Stand still. Laser 2–3 fixed, mapped features spread widely "
+                 + "around you — a narrow fan only pins one axis.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.textSecondary)
 
             if model.userLocation == nil {
                 hint(
@@ -265,8 +281,8 @@ struct CalibrationSheet: View {
                     + "so it needs one to start from."
                 )
             } else {
-                shotList
-                addShotRow
+                if !session.shots.isEmpty { shotList }
+                addShotCard
                 spreadHint
             }
         }
@@ -281,56 +297,129 @@ struct CalibrationSheet: View {
         }
     }
 
+    /// One row per captured shot. Each row names the direction it was shot in
+    /// and echoes the GPS-implied distance next to the lasered one: two shots
+    /// are otherwise indistinguishable ("Shot 1", "Shot 2"), and a lasered
+    /// distance far off the mapped one means the wrong feature was tapped —
+    /// exactly the mistake that poisons the solve.
     @ViewBuilder
     private var shotList: some View {
-        ForEach(Array(session.shots.enumerated()), id: \.offset) { index, shot in
-            HStack {
-                Text("Shot \(index + 1)")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text(String(format: "%.1f m", shot.laserDistanceM))
-                    .font(.subheadline)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Button {
-                    session.removeShot(at: index)
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.footnote)
-                        .foregroundStyle(Color.statusNegative)
+        VStack(spacing: Space.s2) {
+            ForEach(Array(session.shots.enumerated()), id: \.offset) { index, shot in
+                HStack(spacing: Space.s3) {
+                    Text("\(index + 1)")
+                        .font(.caption.weight(.bold))
+                        .monospacedDigit()
+                        .frame(width: 24, height: 24)
+                        .background(Color.textSecondary.opacity(0.2), in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(String(format: "%.1f m lasered", shot.laserDistanceM))
+                            .font(.subheadline.weight(.semibold))
+                            .monospacedDigit()
+                        Text(shotDetail(shot))
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                    Spacer()
+                    Button {
+                        session.removeShot(at: index)
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.footnote)
+                            .foregroundStyle(Color.statusNegative)
+                            .padding(Space.s2)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remove shot \(index + 1)")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Remove shot \(index + 1)")
+                .padding(.horizontal, Space.s3)
+                .padding(.vertical, Space.s2)
+                .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.md))
             }
-            .padding(.horizontal, Space.s3)
-            .padding(.vertical, Space.s2)
-            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.md))
         }
     }
 
+    /// The one live step: pick a target, then type its lasered distance. The
+    /// two halves are never shown at once — picking needs the map (sheet down,
+    /// keyboard away), typing needs the keyboard — so the card shows only the
+    /// step the player is actually on.
     @ViewBuilder
-    private var addShotRow: some View {
-        VStack(alignment: .leading, spacing: Space.s2) {
+    private var addShotCard: some View {
+        VStack(alignment: .leading, spacing: Space.s3) {
             if let target = model.browseTarget {
                 Label(targetLine(target), systemImage: "mappin.and.ellipse")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.textPrimary)
+                Text("Laser that feature and type the metres.")
+                    .font(.caption)
+                    .foregroundStyle(Color.textSecondary)
+                HStack(spacing: Space.s3) {
+                    TextField("metres", text: $laserText)
+                        .keyboardType(.decimalPad)
+                        .focused($laserFieldFocused)
+                        .font(.title3.monospacedDigit())
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 140)
+                        .submitLabel(.done)
+                    Button("Add shot") { addShot() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(parsedLaserMetres == nil)
+                }
+                Button("Pick a different target") { pickTargetOnMap() }
                     .font(.footnote)
-                    .foregroundStyle(.primary)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.statusInfo)
             } else {
-                hint(
-                    "Tap the target feature on the map first (Browse mode), "
-                    + "then enter the lasered metres."
-                )
-            }
-            HStack(spacing: Space.s3) {
-                TextField("metres", text: $laserText)
-                    .keyboardType(.decimalPad)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 120)
-                Button("Add shot") { addShot() }
-                    .buttonStyle(.bordered)
-                    .disabled(model.browseTarget == nil || parsedLaserMetres == nil)
+                Button {
+                    pickTargetOnMap()
+                } label: {
+                    Label("Pick the target on the map", systemImage: "hand.tap")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                Text("Drops this sheet and switches the map to Browse. "
+                     + "Tap the feature you are lasering, then come back here.")
+                    .font(.caption)
+                    .foregroundStyle(Color.textSecondary)
             }
         }
+        .padding(Space.s3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.md))
+    }
+
+    /// Get out of the way of the tap: browse mode is what makes a map tap set
+    /// `browseTarget` at all, the keyboard covers the map, and background
+    /// interaction only reaches through at the medium detent.
+    private func pickTargetOnMap() {
+        model.setGPSEnabled(false)
+        laserFieldFocused = false
+        detent = .medium
+    }
+
+    /// "NE · 48 m by GPS" — direction from the current fix plus the mapped
+    /// distance, measured now (the player stands still through the flow).
+    private func shotDetail(_ shot: Trilateration.Shot) -> String {
+        guard let fix = model.userLocation else { return "Captured" }
+        let p = Sweref99TM.fromWGS84(fix)
+        let dx = shot.featurePlanar.x - p.x
+        let dy = shot.featurePlanar.y - p.y
+        let distance = (dx * dx + dy * dy).squareRoot()
+        let bearing = (atan2(dx, dy) * 180 / .pi).truncatingRemainder(dividingBy: 360)
+        return String(format: "%@ · %.0f m by GPS",
+                      Self.compassPoint(bearing < 0 ? bearing + 360 : bearing),
+                      distance)
+    }
+
+    private static let compassPoints = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+
+    /// 8-point compass label for a 0…360 clockwise-from-north bearing.
+    static func compassPoint(_ bearingDeg: Double) -> String {
+        let index = Int((bearingDeg / 45).rounded()) % 8
+        return compassPoints[(index + 8) % 8]
     }
 
     @ViewBuilder
@@ -347,12 +436,12 @@ struct CalibrationSheet: View {
         }
     }
 
-    /// "Target set · ~143 m away (GPS)" — a sanity echo that the tapped point
-    /// is plausibly the thing being lasered.
+    /// "Target picked · ~143 m away by GPS" — a sanity echo that the tapped
+    /// point is plausibly the thing being lasered.
     private func targetLine(_ target: LatLon) -> String {
-        guard let fix = model.userLocation else { return "Target set" }
+        guard let fix = model.userLocation else { return "Target picked" }
         let d = Distance.planarMeters(fix, target)
-        return String(format: "Target set · ~%.0f m away (GPS)", d)
+        return String(format: "Target picked · ~%.0f m away by GPS", d)
     }
 
     private func trilaterationWarnings(_ solution: Trilateration.Solution) -> [String] {
@@ -432,7 +521,7 @@ struct CalibrationSheet: View {
             .controlSize(.large)
         }
         .padding(Space.s3)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.md))
+        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.md))
     }
 
     /// "2.3 m east, 1.1 m south" — the bias as the player reads a map.

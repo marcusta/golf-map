@@ -25,26 +25,47 @@ enum GamePlanSync {
     /// pending edits push separately via `PlanSyncService`, and the next clean
     /// refresh picks up the merged result). Same rule for the club bag against
     /// `ClubSyncService` — see `hasPendingClubEdits`.
+    /// The two fetches are INDEPENDENT: each is caught on its own so a failure
+    /// on one side still commits the other. They used to share a single `try`,
+    /// which meant any plan-side failure also threw away an already-fetched
+    /// club bag — the bag would then stay empty (and plan shots unnamed) until
+    /// a refresh where the plan happened to succeed. The first error is
+    /// rethrown after both sides have had their chance to commit.
     static func refresh(client: GolfAPIClient, database: AppDatabase, courseId: String) async throws {
         async let planTask = client.gamePlan(courseId: courseId)
         async let clubsTask = client.clubs()
 
-        let plan = try await planTask
-        let clubs = try await clubsTask
+        var plan: GamePlan?
+        var planError: Error?
+        var clubs: [Club] = []
+        var firstError: Error?
+        do { plan = try await planTask } catch { planError = error }
+        do { clubs = try await clubsTask } catch { firstError = error }
 
-        // Skip clobbering local club edits; they reconcile through ClubSyncService.
-        if try await !database.hasPendingClubEdits() {
-            try await database.saveClubs(clubs.map(clubRecord))
+        do {
+            // Skip clobbering local club edits; they reconcile through ClubSyncService.
+            if firstError == nil, try await !database.hasPendingClubEdits() {
+                try await database.saveClubs(clubs.map(clubRecord))
+            }
+        } catch {
+            firstError = error
         }
 
-        // Skip clobbering local plan edits; they reconcile through PlanSyncService.
-        if try await database.hasPendingPlanEdits(courseId: courseId) { return }
-
-        if let plan {
-            try await database.saveGamePlan(storedPlan(from: plan))
-        } else {
-            try await database.deleteGamePlan(courseId: courseId)
+        do {
+            if let planError { throw planError }
+            // Skip clobbering local plan edits; they reconcile through PlanSyncService.
+            if try await !database.hasPendingPlanEdits(courseId: courseId) {
+                if let plan {
+                    try await database.saveGamePlan(storedPlan(from: plan))
+                } else {
+                    try await database.deleteGamePlan(courseId: courseId)
+                }
+            }
+        } catch {
+            firstError = firstError ?? error
         }
+
+        if let firstError { throw firstError }
     }
 
     /// Reads the cached plan + clubs and assembles the display value, or nil

@@ -441,7 +441,26 @@ final class CorridorFitMathTests: XCTestCase {
         XCTAssertLessThanOrEqual(result.payloadPoints.count, CorridorFitMath.maxPayloadPoints)
         XCTAssertEqual(result.lineLengthM, 8, accuracy: 0.01)
         XCTAssertEqual(result.combined.gradient(x: 4, y: 0).gx, 0.02, accuracy: 0.002)
-        XCTAssertLessThan(result.endpointLevelDeltaPct, 0.25)
+        XCTAssertLessThan(try XCTUnwrap(result.endpointLevelDeltaPct), 0.25)
+    }
+
+    /// Skipping the endpoint levels omits the cross-check; everything else
+    /// about the read is unchanged (the levels are QC, not an input).
+    func testFitScanWithoutEndpointLevelsOmitsTheDelta() throws {
+        let ball = CorridorFitMath.P3(x: 0, y: 1, z: 0)
+        let hole = CorridorFitMath.P3(x: 0, y: 1.16, z: -8)
+        let outcome = CorridorScanService.fitScan(
+            outWorld: worldPass(slopeAlong: 0.02, seed: 3),
+            backWorld: worldPass(slopeAlong: 0.02, seed: 4),
+            ballAnchorWorld: ball, holeAnchorWorld: hole,
+            ballLevelSlopePct: nil, holeLevelSlopePct: nil
+        )
+        guard case .success(let result) = outcome else {
+            return XCTFail("expected success, got \(outcome)")
+        }
+        XCTAssertNil(result.endpointLevelDeltaPct)
+        XCTAssertEqual(result.verdict, .green)
+        XCTAssertEqual(result.lineLengthM, 8, accuracy: 0.01)
     }
 
     func testFitScanYellowThenRedAsPassesDiverge() {

@@ -179,6 +179,104 @@ final class PlanSyncTests: XCTestCase {
         XCTAssertFalse(hasPending)
     }
 
+    /// The web planner created the plan first; the phone's first edit then hits
+    /// a 409 on BOTH creates (plan and hole) because the rows already exist.
+    /// That is not divergence — re-pulling here would delete the very shot the
+    /// user just placed, which is how iOS edits silently vanished. The server's
+    /// ids are adopted instead and the pending shot pushes on top.
+    func testCreateConflictRebasesOntoTheServerTreeInsteadOfClobbering() async throws {
+        let database = try await makeDatabaseWithCourse()
+        let plan = try await database.ensurePlanRow(courseId: "course-1")
+        let hole = try await database.ensurePlanHoleRow(gamePlanId: plan.id, holeNumber: 1)
+        try await database.savePlanShot(PlanShotRecord(
+            id: "local-s1", gamePlanHoleId: hole.id, sortOrder: 0,
+            lat: 58.35, lon: 15.72, syncState: .pending
+        ))
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 409, body: Data(#"{"error":"Version conflict"}"#.utf8))],
+            forPathContaining: "/game-plans/upsert"
+        )
+        MockURLProtocol.shared.setScript(
+            [.init(status: 409, body: Data(#"{"error":"Version conflict"}"#.utf8))],
+            forPathContaining: "/game-plans/set-hole"
+        )
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: treeBody())],
+            forPathContaining: "/game-plans/by-course"
+        )
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: shotBody(id: "srv-new", sortOrder: 1))],
+            forPathContaining: "/game-plans/shots/add"
+        )
+
+        await makeService(database: database).flush()
+
+        let savedPlan = try await database.dbQueue.read { try GamePlanRecord.fetchOne($0, key: plan.id) }
+        XCTAssertEqual(savedPlan?.serverId, "srv-p1", "adopted the server plan's id")
+        XCTAssertEqual(savedPlan?.serverVersion, 9)
+        let savedHole = try await database.dbQueue.read { try GamePlanHoleRecord.fetchOne($0, key: hole.id) }
+        XCTAssertEqual(savedHole?.serverId, "srv-h1", "adopted the server hole for hole 1")
+        XCTAssertEqual(savedHole?.serverVersion, 4)
+
+        let localShot = try await database.planShot(id: "local-s1")
+        XCTAssertEqual(localShot?.serverId, "srv-new", "the local edit reached the server")
+        XCTAssertEqual(localShot?.syncState, .synced)
+
+        let body = try XCTUnwrap(
+            MockURLProtocol.shared.jsonBodies(forPathContaining: "/game-plans/shots/add").last
+        )
+        XCTAssertEqual(body["gamePlanHoleId"] as? String, "srv-h1", "pushed against the ADOPTED hole")
+
+        let leftover = try await database.plansNeedingSync()
+        XCTAssertTrue(leftover.isEmpty, "nothing stuck in the queue")
+    }
+
+    /// Tree position must be SENT: the server reads an absent `parentShotId` as
+    /// "append to the primary line", so an option placed on a side branch used
+    /// to land on the wrong branch. A root sends an explicit JSON null; a
+    /// continuation sends the parent's SERVER id (not the local one).
+    func testAddSendsExplicitParentShotIdForRootsAndContinuations() async throws {
+        let database = try await makeDatabaseWithCourse()
+        let plan = try await database.ensurePlanRow(courseId: "course-1")
+        let hole = try await database.ensurePlanHoleRow(gamePlanId: plan.id, holeNumber: 1)
+        try await database.savePlanShot(PlanShotRecord(
+            id: "local-root", gamePlanHoleId: hole.id, sortOrder: 0,
+            lat: 58.35, lon: 15.72, syncState: .pending
+        ))
+        try await database.savePlanShot(PlanShotRecord(
+            id: "local-child", gamePlanHoleId: hole.id, sortOrder: 0,
+            parentShotId: "local-root", lat: 58.36, lon: 15.73, syncState: .pending
+        ))
+
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: planBody(id: "srv-p1"))], forPathContaining: "/game-plans/upsert"
+        )
+        MockURLProtocol.shared.setScript(
+            [.init(status: 200, body: holeBody(id: "srv-h1"))], forPathContaining: "/game-plans/set-hole"
+        )
+        MockURLProtocol.shared.setScript(
+            [
+                .init(status: 200, body: shotBody(id: "srv-root", sortOrder: 0)),
+                .init(status: 200, body: shotBody(id: "srv-child", sortOrder: 0)),
+            ],
+            forPathContaining: "/game-plans/shots/add"
+        )
+
+        await makeService(database: database).flush()
+
+        let bodies = MockURLProtocol.shared.jsonBodies(forPathContaining: "/game-plans/shots/add")
+        let sent = Array(bodies.suffix(2))
+        XCTAssertEqual(sent.count, 2)
+        XCTAssertTrue(sent[0].keys.contains("parentShotId"), "the key is SENT, not omitted")
+        XCTAssertTrue(sent[0]["parentShotId"] is NSNull, "a root is an explicit null")
+        XCTAssertEqual(sent[1]["parentShotId"] as? String, "srv-root", "the PARENT'S server id")
+
+        let child = try await database.planShot(id: "local-child")
+        XCTAssertEqual(child?.serverId, "srv-child")
+        XCTAssertEqual(child?.syncState, .synced)
+    }
+
     func testTombstonedShotRemovedThenHardDeleted() async throws {
         let database = try await makeDatabaseWithCourse()
         try await database.saveGamePlan(StoredGamePlan(

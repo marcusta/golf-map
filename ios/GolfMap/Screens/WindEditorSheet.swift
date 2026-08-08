@@ -66,6 +66,7 @@ struct WindEditorSheet: View {
                         directionDeg: $directionDeg,
                         speedMps: speedMps,
                         holeBearing: model.holeBearing,
+                        orientation: scope == .allHoles ? .northUp : .holeUp,
                         onCommit: { apply() }
                     )
                     .frame(width: 220, height: 220)
@@ -260,20 +261,34 @@ struct WindEditorSheet: View {
 
 // MARK: - Dial
 
-/// Drag-to-set wind direction, drawn HOLE-UP like the map: the hole plays
-/// straight up the dial, so the arrow shows the wind exactly as it hits the
-/// shot. The knob is the arrow HEAD — it sits where the wind blows TO, matching
-/// `WindIndicatorChip`, and the stored `directionDeg` is the compass direction
-/// the wind comes FROM (meteorological), 180° opposite.
+/// Drag-to-set wind direction. Orientation follows the edit scope:
+/// - `.northUp` (course-wide wind): north is up and N/E/S/W ring the dial, so
+///   the arrow reads exactly like the arrows on a weather forecast; the hole's
+///   direction of play is a small rim marker.
+/// - `.holeUp` (this hole's override): the hole plays straight up the dial, so
+///   the arrow shows the wind exactly as it hits the shot; north is a small
+///   rim marker.
+/// The knob is the arrow HEAD — it sits where the wind blows TO, matching
+/// `WindIndicatorChip` and forecast arrows, and the stored `directionDeg` is
+/// the compass direction the wind comes FROM (meteorological), 180° opposite.
 private struct WindDial: View {
+    enum Orientation {
+        case northUp
+        case holeUp
+    }
+
     @Binding var directionDeg: Double
     let speedMps: Double
     let holeBearing: Double
+    let orientation: Orientation
     let onCommit: () -> Void
+
+    /// Compass bearing rendered straight up the dial.
+    private var upBearing: Double { orientation == .holeUp ? holeBearing : 0 }
 
     /// Screen angle (0 = up the dial, clockwise) of the way the wind blows.
     private var blowScreenAngle: Double {
-        (directionDeg + 180 - holeBearing).truncatingRemainder(dividingBy: 360)
+        (directionDeg + 180 - upBearing).truncatingRemainder(dividingBy: 360)
     }
 
     var body: some View {
@@ -288,17 +303,30 @@ private struct WindDial: View {
                 Circle()
                     .strokeBorder(.tertiary, lineWidth: 1)
 
-                // The hole: plays straight up the dial.
-                VStack(spacing: 2) {
-                    Text("HOLE")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary)
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
+                switch orientation {
+                case .holeUp:
+                    // The hole: plays straight up the dial.
+                    VStack(spacing: 2) {
+                        Text("HOLE")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.top, 10)
+                    // …and north as a small rim marker for orientation.
+                    rimLabel("N", screenAngle: -holeBearing)
+                case .northUp:
+                    // Compass ring, exactly like a forecast map.
+                    rimLabel("N", screenAngle: 0)
+                    rimLabel("E", screenAngle: 90)
+                    rimLabel("S", screenAngle: 180)
+                    rimLabel("W", screenAngle: 270)
+                    // The hole's direction of play as a small rim marker.
+                    rimMarker(screenAngle: holeBearing)
                 }
-                .padding(.top, 10)
 
                 // The wind arrow, pointing the way the wind blows.
                 Image(systemName: "location.north.fill")
@@ -314,7 +342,7 @@ private struct WindDial: View {
                     .position(knobPosition(center: center, radius: radius * 0.78))
                     .shadow(radius: 2, y: 1)
 
-                Text("\(Int(directionDeg.rounded()))°")
+                Text("From \(Self.cardinal(directionDeg)) · \(Int(directionDeg.rounded()))°")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -330,7 +358,7 @@ private struct WindDial: View {
             )
             .accessibilityElement()
             .accessibilityLabel("Wind direction")
-            .accessibilityValue("From \(Int(directionDeg.rounded())) degrees")
+            .accessibilityValue("From \(Self.cardinal(directionDeg)), \(Int(directionDeg.rounded())) degrees")
             .accessibilityAdjustableAction { direction in
                 // ±5° per swipe — VoiceOver's way onto the dial.
                 let delta: Double = direction == .increment ? 5 : -5
@@ -338,6 +366,37 @@ private struct WindDial: View {
                 onCommit()
             }
         }
+    }
+
+    /// A small compass/hole letter at the dial's rim, upright regardless of
+    /// where on the rim it sits.
+    private func rimLabel(_ text: String, screenAngle: Double) -> some View {
+        VStack {
+            Text(text)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(-screenAngle))
+            Spacer()
+        }
+        .padding(.top, 8)
+        .rotationEffect(.degrees(screenAngle))
+    }
+
+    /// The hole's direction of play on the north-up dial: a small rim arrow
+    /// pointing outward along the line of play.
+    private func rimMarker(screenAngle: Double) -> some View {
+        VStack(spacing: 1) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+            Text("HOLE")
+                .font(.system(size: 7, weight: .bold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(-screenAngle))
+            Spacer()
+        }
+        .padding(.top, 22)
+        .rotationEffect(.degrees(screenAngle))
     }
 
     private func knobPosition(center: CGPoint, radius: CGFloat) -> CGPoint {
@@ -356,7 +415,18 @@ private struct WindDial: View {
         // Dead centre carries no direction — ignore rather than snap to north.
         guard abs(dx) > 0.5 || abs(dy) > 0.5 else { return }
         let screenAngle = atan2(dx, dy) * 180 / .pi
-        directionDeg = normalized(screenAngle + holeBearing + 180)
+        directionDeg = normalized(screenAngle + upBearing + 180)
+    }
+
+    /// 16-point compass name for a meteorological direction ("from").
+    static func cardinal(_ degrees: Double) -> String {
+        let names = [
+            "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+        ]
+        let wrapped = degrees.truncatingRemainder(dividingBy: 360)
+        let positive = wrapped < 0 ? wrapped + 360 : wrapped
+        return names[Int((positive / 22.5).rounded()) % 16]
     }
 
     private func normalized(_ degrees: Double) -> Double {

@@ -258,6 +258,10 @@ public struct MapOverlayState: Equatable, Sendable {
     /// The feature a tapped distance-ladder row focused (cyan ring); nil hides
     /// it. Cleared with the camera focus (`recenter()` / hole change).
     public var highlight: LatLon?
+    /// The explicit browse-from origin (solid cyan dot) — the exact point
+    /// browse distances measure from. Nil outside browse mode or while
+    /// browsing from the active tee (the route line start marks that).
+    public var browseFrom: LatLon?
     /// The selected target's recommended-club dispersion ellipse (closed WGS84
     /// ring); nil hides it.
     public var selectedEllipse: [LatLon]?
@@ -279,6 +283,7 @@ public struct MapOverlayState: Equatable, Sendable {
         plan: PlanOverlay? = nil,
         courseRoute: CourseRouteOverlay = .empty,
         highlight: LatLon? = nil,
+        browseFrom: LatLon? = nil,
         selectedEllipse: [LatLon]? = nil,
         selectedWindHold: TargetWindHold? = nil,
         ellipseLabels: [EllipseLabel] = []
@@ -292,6 +297,7 @@ public struct MapOverlayState: Equatable, Sendable {
         self.plan = plan
         self.courseRoute = courseRoute
         self.highlight = highlight
+        self.browseFrom = browseFrom
         self.selectedEllipse = selectedEllipse
         self.selectedWindHold = selectedWindHold
         self.ellipseLabels = ellipseLabels
@@ -566,6 +572,11 @@ enum MapOverlayRenderer {
         setShape(
             MapOverlayShapes.highlightShape(state.highlight),
             sourceID: MapStyleIDs.highlightSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.highlightShape(state.browseFrom),
+            sourceID: MapStyleIDs.browseFromSource,
             in: style
         )
         setShape(

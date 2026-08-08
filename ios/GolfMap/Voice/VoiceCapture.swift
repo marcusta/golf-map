@@ -74,6 +74,20 @@ final class VoiceCapture {
     /// the value Apple's speech sample uses — low latency, no under-runs.
     nonisolated static let tapBufferSize: AVAudioFrameCount = 1024
 
+    /// How many times `start()` retries a not-yet-live microphone input before
+    /// giving up. The first-grant race clears within a few hundred ms.
+    nonisolated static let engineStartAttempts = 4
+    /// Back-off between those attempts.
+    nonisolated static let engineRetryDelay: Duration = .milliseconds(150)
+
+    /// Engine-start failures we handle ourselves (as opposed to the errors
+    /// `AVAudioSession`/`AVAudioEngine` throw).
+    enum EngineError: Error {
+        /// The input node reported an unusable (0 Hz / 0-channel) format —
+        /// the audio route isn't live yet. Retryable.
+        case inputUnavailable
+    }
+
     // MARK: - Private
 
     private static let localeKey = "voice.locale"
@@ -127,17 +141,30 @@ final class VoiceCapture {
         // A `stop()` may have raced in during the await above.
         guard status != .listening else { return }
 
-        do {
-            try startEngine(recognizer: recognizer)
-            transcript = ""
-            status = .listening
-        } catch {
-            // Audio session / engine start failed (e.g. a route conflict). Not a
-            // permission or locale problem — clean up and return to idle so the
-            // user can retry.
-            teardown()
-            status = .idle
+        // Immediately after a *first* mic grant the input route is often not live
+        // yet, so the input node reports a 0 Hz / 0-channel format. Retry a few
+        // times before giving up (see `EngineError.inputUnavailable`).
+        for attempt in 0..<Self.engineStartAttempts {
+            do {
+                try startEngine(recognizer: recognizer)
+                transcript = ""
+                status = .listening
+                return
+            } catch EngineError.inputUnavailable where attempt < Self.engineStartAttempts - 1 {
+                teardown()
+                try? await Task.sleep(for: Self.engineRetryDelay)
+                guard status != .listening else { return }
+            } catch {
+                // Audio session / engine start failed (e.g. a route conflict). Not a
+                // permission or locale problem — clean up and return to idle so the
+                // user can retry.
+                teardown()
+                status = .idle
+                return
+            }
         }
+        teardown()
+        status = .idle
     }
 
     /// Stops the engine and returns the final transcript (`nil` if empty / never
@@ -170,11 +197,27 @@ final class VoiceCapture {
         let input = audioEngine.inputNode
         let format = input.outputFormat(forBus: 0)
 
+        // `installTap` validates the format inside CoreAudio and raises an
+        // **ObjC exception** on a 0 Hz / 0-channel format — an uncatchable
+        // SIGABRT, not a Swift error. That is exactly what the input node
+        // reports in the runloop turn where the user first grants microphone
+        // permission (the route isn't live yet), so check it ourselves and let
+        // `start()` back off and retry rather than crash the app.
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw EngineError.inputUnavailable
+        }
+
         // The tap fires on a realtime audio thread; `append` is thread-safe, so we
         // hand it a nonisolated reference and append directly rather than hopping
         // to the main actor (which would drop buffers).
+        //
+        // `@Sendable` is load-bearing, not decoration: `AVAudioNodeTapBlock` is
+        // not itself `@Sendable`, so a plain closure written here would inherit
+        // this method's main-actor isolation and trap on entry
+        // (`dispatch_assert_queue` → `EXC_BREAKPOINT`) the moment CoreAudio calls
+        // it from the audio thread. Same for the recognition handler below.
         nonisolated(unsafe) let sink = audioRequest
-        input.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: format) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: format) { @Sendable buffer, _ in
             sink.append(buffer)
         }
 
@@ -187,7 +230,7 @@ final class VoiceCapture {
         }
         engine = audioEngine
 
-        task = recognizer.recognitionTask(with: audioRequest) { [weak self] result, error in
+        task = recognizer.recognitionTask(with: audioRequest) { @Sendable [weak self] result, error in
             // Off the main actor. Pull out only Sendable values (the result is
             // not Sendable) and hop back.
             let text = result?.bestTranscription.formattedString
@@ -228,7 +271,13 @@ final class VoiceCapture {
 
     // MARK: - Permissions (async wrappers over completion-handler APIs)
 
-    private static func requestSpeechAuthorization() async -> Bool {
+    // Both helpers are `nonisolated`. They are `static` members of a
+    // `@MainActor` type, so without it they would inherit main-actor isolation —
+    // and so would the completion closures below. TCC delivers those replies on
+    // a background queue, and the Swift runtime's isolation check then trips
+    // `dispatch_assert_queue(main)` → `EXC_BREAKPOINT`, crashing the app the
+    // moment the user grants permission. Nothing in them touches actor state.
+    private nonisolated static func requestSpeechAuthorization() async -> Bool {
         // Already-decided states resolve without re-prompting.
         switch SFSpeechRecognizer.authorizationStatus() {
         case .authorized: return true
@@ -243,7 +292,7 @@ final class VoiceCapture {
         }
     }
 
-    private static func requestMicrophonePermission() async -> Bool {
+    private nonisolated static func requestMicrophonePermission() async -> Bool {
         switch AVAudioApplication.shared.recordPermission {
         case .granted: return true
         case .denied: return false
