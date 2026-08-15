@@ -29,6 +29,7 @@ import {
     bearingToUnitVector,
     corridorWidth,
     dispersionEllipse,
+    gatedForwardRoutePoints,
     optimizeAim,
     scoreOptionChain,
     segmentStats,
@@ -816,6 +817,16 @@ export interface PlanOverlayInput {
     optionChips?: readonly OptionChip[];
     selectedShotId: string | null;
     selectedGateId: string | null;
+    /**
+     * Hole aim points in tee→green order (WGS84). When supplied, a leg that
+     * ENDS at the green renders as the ROUTED polyline through the still-ahead
+     * aims (shared route-chainage filter, gated straight within
+     * AIM_ROUTING_THRESHOLD_M of the green) instead of a straight cut — a
+     * 500 m tee→green fallback leg follows the hole's doglegs. The leg's
+     * label then shows the routed ground distance. Rendering only: strategy
+     * (bearing/ellipse/EV) still works on the straight leg.
+     */
+    aimPoints?: readonly { lat: number; lon: number }[];
 }
 
 function toPosition(p: Vec2): Position {
@@ -830,9 +841,14 @@ function toPosition(p: Vec2): Position {
  * e.g. "184 m · plays 176 m · 7 Iron 150 m" (club/plays parts omitted when
  * absent).
  */
-export function legLabel(leg: PlanLeg): string {
-    const parts = [`${Math.round(leg.horizontalM)} m`];
-    if (leg.playsLikeM !== undefined) parts.push(`plays ${Math.round(leg.playsLikeM)} m`);
+export function legLabel(leg: PlanLeg, routedM?: number): string {
+    // A routed (through-the-aims) rendering labels the routed ground distance;
+    // plays-as keeps the leg's elevation delta on top of it.
+    const groundM = routedM ?? leg.horizontalM;
+    const parts = [`${Math.round(groundM)} m`];
+    if (leg.playsLikeM !== undefined) {
+        parts.push(`plays ${Math.round(groundM + (leg.playsLikeM - leg.horizontalM))} m`);
+    }
     if (leg.club) parts.push(`${leg.club.name} ${Math.round(leg.club.carryM)} m`);
     const drift = legDriftLabel(leg);
     if (drift) parts.push(drift);
@@ -860,6 +876,45 @@ export function gateLabel(gate: PlanGate): string {
 }
 
 /**
+ * Routed rendering for a leg that ENDS at the green: the polyline through the
+ * still-ahead aim points (shared route-chainage filter; gated straight within
+ * AIM_ROUTING_THRESHOLD_M of the green, in which case this returns null and
+ * the leg draws straight). Aim vertices reuse the source rows' WGS84 lat/lon
+ * (no projection round-trip drift). Null when there is nothing to route
+ * through — no aims supplied, non-green leg, or every aim already passed.
+ */
+function routedLegLine(
+    plan: HolePlan,
+    leg: PlanLeg,
+    aimPoints: readonly { lat: number; lon: number }[] | undefined,
+): { coordinates: Position[]; routedM: number } | null {
+    if (!aimPoints || aimPoints.length === 0 || leg.to.kind !== 'green') return null;
+    const aims = aimPoints.map(a => wgs84ToSweref99tm(a.lat, a.lon));
+    const teeNode = plan.allNodes.find(n => n.kind === 'tee');
+    const route = gatedForwardRoutePoints({
+        origin: { x: leg.from.x, y: leg.from.y },
+        aims,
+        green: { x: leg.to.x, y: leg.to.y },
+        ...(teeNode ? { tee: { x: teeNode.x, y: teeNode.y } } : {}),
+    });
+    const kept = Math.max(0, route.length - 2);
+    if (kept === 0) return null;
+    let routedM = 0;
+    for (let i = 0; i < route.length - 1; i++) {
+        routedM += Math.hypot(route[i + 1].x - route[i].x, route[i + 1].y - route[i].y);
+    }
+    const keptAims = aimPoints.slice(aimPoints.length - kept);
+    return {
+        coordinates: [
+            [leg.from.lon, leg.from.lat],
+            ...keptAims.map(a => [a.lon, a.lat] as Position),
+            [leg.to.lon, leg.to.lat],
+        ],
+        routedM,
+    };
+}
+
+/**
  * The plan overlay FeatureCollection (WGS84). Roles: `leg` (LineString with
  * a distance label), `ellipse` (Polygon per clubbed leg, selected = the
  * selected shot's landing ellipse), `node` (tee/shot/green markers), and
@@ -871,6 +926,7 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
 
     if (plan) {
         for (const leg of plan.allLegs) {
+            const routed = routedLegLine(plan, leg, input.aimPoints);
             features.push({
                 type: 'Feature',
                 properties: {
@@ -878,14 +934,15 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
                     index: leg.index,
                     depth: leg.depth,
                     primary: leg.primary,
-                    label: legLabel(leg),
+                    label: legLabel(leg, routed?.routedM),
                     // Approach-leg confidence light (null on non-approach / un-enriched
                     // legs) → tints the leg line; see legLight().
                     light: legLight(leg) ?? '',
                 },
                 geometry: {
                     type: 'LineString',
-                    coordinates: [[leg.from.lon, leg.from.lat], [leg.to.lon, leg.to.lat]],
+                    coordinates: routed?.coordinates
+                        ?? [[leg.from.lon, leg.from.lat], [leg.to.lon, leg.to.lat]],
                 },
             });
             if (leg.ellipse) {

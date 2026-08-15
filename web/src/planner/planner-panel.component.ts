@@ -1,7 +1,7 @@
 import { Component, Signal, Computed, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, field, panelTitle, metric, selectedRow, primaryBtn } from '../css';
-import { clubAdvice, mpsToMph, type BreakSide } from '../../../shared/strategy';
+import { clubAdvice, mphToMps, mpsToMph, windComponents, type BreakSide } from '../../../shared/strategy';
 import type { PlanShot, PlanGate } from '../../../shared/api/game-plans.gen';
 import { FurnitureService } from '../furniture/furniture.service';
 import { ClubsService } from '../player/clubs.service';
@@ -130,29 +130,36 @@ const tpl = template(`
             </label>
         </div>
 
-        <div class="plan-panel__section">
+        <div class="plan-panel__section" data-testid="planner-wind-section">
             <h4 class="section-title">Wind</h4>
-            <div class="wind-row">
-                <label class="plan-field">Plan m/s
-                    <input bind="planWindSpeed" type="number" step="0.1" min="0" />
-                </label>
-                <label class="plan-field">From °
-                    <input bind="planWindDir" type="number" step="1" min="0" max="359" />
-                </label>
+            <svg bind="windDial" class="wind-dial" viewBox="0 0 200 200" role="slider"
+                aria-label="Wind direction" data-testid="planner-wind-dial"></svg>
+            <div class="wind-speed-head">
+                <span bind="windSpeedValue" class="wind-speed-value"></span>
+                <span bind="windSpeedMph" class="wind-speed-mph"></span>
+                <span bind="windBand" class="wind-band"></span>
             </div>
-            <div bind="planWindMph" class="wind-mph"></div>
-            <div bind="overrideBlock" class="override-block">
-                <div class="wind-row">
-                    <label class="plan-field">Hole m/s
-                        <input bind="holeWindSpeed" type="number" step="0.1" min="0" placeholder="inherit" />
-                    </label>
-                    <label class="plan-field">From °
-                        <input bind="holeWindDir" type="number" step="1" min="0" max="359" placeholder="inherit" />
-                    </label>
+            <input bind="windSlider" class="wind-slider" type="range" min="0" max="20" step="0.5"
+                aria-label="Wind speed" data-testid="planner-wind-speed" />
+            <div bind="windTiles" class="wind-tiles">
+                <div class="wind-tile">
+                    <span bind="windAlongTitle" class="wind-tile__title"></span>
+                    <span bind="windAlongValue" class="wind-tile__value"></span>
+                    <span class="wind-tile__caption">m/s along</span>
                 </div>
-                <button bind="clearOverride" type="button" class="mini-btn">Clear override (inherit plan)</button>
+                <div class="wind-tile">
+                    <span bind="windCrossTitle" class="wind-tile__title"></span>
+                    <span bind="windCrossValue" class="wind-tile__value"></span>
+                    <span class="wind-tile__caption">m/s across</span>
+                </div>
             </div>
-            <div bind="effectiveWind" class="wind-effective"></div>
+            <div class="wind-scope">
+                <button bind="windScopeAll" type="button" class="mini-btn" data-testid="planner-wind-scope-all">All holes</button>
+                <button bind="windScopeHole" type="button" class="mini-btn" data-testid="planner-wind-scope-hole">This hole only</button>
+            </div>
+            <div bind="windScopeNote" class="wind-scope-note"></div>
+            <button bind="windClear" type="button" class="mini-btn" data-testid="planner-wind-clear"></button>
+            <div bind="effectiveWind" class="wind-effective" data-testid="planner-wind-effective"></div>
         </div>
 
         <div bind="legsSection" class="plan-panel__section" data-testid="planner-legs-section">
@@ -422,13 +429,67 @@ export class PlannerPanelComponent extends Component {
 
             & .plan-field { ${field()} min-width: 0; flex: 1; }
             & .wind-row { display: flex; gap: ${s('sm')}; }
-            & .wind-mph, & .wind-effective {
+            & .wind-effective {
                 font-size: 0.72rem;
                 color: ${t('color-text-secondary')};
                 font-family: var(--font-mono);
                 font-variant-numeric: tabular-nums;
             }
-            & .override-block { display: flex; flex-direction: column; gap: ${s('xs')}; }
+            & .wind-dial {
+                width: 168px;
+                height: 168px;
+                display: block;
+                margin: 0 auto;
+                touch-action: none;
+                cursor: grab;
+                & .dial-face { fill: ${t('color-surface-sunken')}; stroke: ${t('color-border-default')}; }
+                & .dial-rim { fill: ${t('color-text-secondary')}; font-weight: 700; }
+                & .dial-arrow { fill: ${t('color-accent-primary')}; }
+                & .dial-arrow.calm { fill: ${t('color-border-strong')}; }
+                & .dial-knob {
+                    fill: ${t('color-accent-primary')};
+                    stroke: ${t('color-surface-raised')};
+                    stroke-width: 2;
+                }
+                & .dial-caption {
+                    fill: ${t('color-text-secondary')};
+                    font-family: var(--font-mono);
+                    font-variant-numeric: tabular-nums;
+                    font-weight: 600;
+                }
+            }
+            & .wind-speed-head { display: flex; align-items: baseline; gap: ${s('xs')}; }
+            & .wind-speed-value { ${metric()} font-size: 0.95rem; }
+            & .wind-speed-mph {
+                font-size: 0.7rem;
+                color: ${t('color-text-secondary')};
+                font-family: var(--font-mono);
+                font-variant-numeric: tabular-nums;
+            }
+            & .wind-band { margin-left: auto; font-size: 0.7rem; color: ${t('color-text-secondary')}; }
+            & .wind-slider { width: 100%; margin: 0; accent-color: ${t('color-accent-primary')}; }
+            & .wind-tiles { display: flex; gap: ${s('sm')}; }
+            & .wind-tile {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 1px;
+                padding: 6px 0;
+                border-radius: ${t('radius-sm')};
+                background: ${t('color-surface-sunken')};
+            }
+            & .wind-tile__title {
+                font-size: 0.62rem;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+                color: ${t('color-text-secondary')};
+            }
+            & .wind-tile__value { ${metric()} font-size: 0.9rem; }
+            & .wind-tile__caption { font-size: 0.6rem; color: ${t('color-text-secondary')}; }
+            & .wind-scope { display: flex; gap: ${s('xs')}; & .mini-btn { flex: 1; } }
+            & .wind-scope-note { font-size: 0.66rem; color: ${t('color-text-secondary')}; }
             & .mini-btn {
                 padding: 3px ${s('xs')};
                 font-size: 0.72rem;
@@ -850,19 +911,6 @@ export class PlannerPanelComponent extends Component {
                 },
             },
             holeSection: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
-            planWindMph: () => {
-                const speed = this.plan.plan.get()?.windSpeedMps ?? null;
-                return speed !== null ? `= ${mpsToMph(speed).toFixed(1)} mph` : '';
-            },
-            overrideBlock: { style: () => this.tool.selectedHole.get() ? '' : 'display:none' },
-            clearOverride: {
-                onclick: () => void this.setHoleWind(null, null),
-                style: () => {
-                    const hole = this.tool.planHole.get();
-                    return hole && (hole.windSpeedMps !== null || hole.windDirectionDeg !== null)
-                        ? '' : 'display:none';
-                },
-            },
             effectiveWind: () => {
                 const wind = this.tool.effectiveWind.get();
                 if (!wind) return 'Effective: calm (no wind set)';
@@ -919,7 +967,7 @@ export class PlannerPanelComponent extends Component {
 
         this.bindTeeSelect(this.ref(frag, 'teeSelect') as HTMLSelectElement);
         this.bindPreferredClub(this.ref(frag, 'preferredClub') as HTMLSelectElement);
-        this.bindWindInputs(frag);
+        this.bindWindEditor(frag);
         this.bindPuttSection(frag);
         this.bindNotes(this.ref(frag, 'notes') as HTMLTextAreaElement);
 
@@ -1045,6 +1093,7 @@ export class PlannerPanelComponent extends Component {
         // terrain per mouse-move (stale batches are seq-dropped regardless).
         this.spawn(ElevationProfileComponent, this.ref(frag, 'profileHost'));
         this.profile.useSampler(p => this.elevation.elevationAt({ lng: p.lon, lat: p.lat }));
+        this.track(effect(() => this.profile.wind.set(this.tool.effectiveWind.get())));
         let profileTimer: ReturnType<typeof setTimeout> | undefined;
         this.track(effect(() => {
             const nodes = this.tool.holePlan.get()?.nodes ?? [];
@@ -1145,39 +1194,189 @@ export class PlannerPanelComponent extends Component {
         }));
     }
 
-    // ── Wind ────────────────────────────────────────────────────────────────
+    // ── Wind (iOS WindEditorSheet parity: dial + slider + scope) ────────────
 
-    private bindWindInputs(frag: DocumentFragment): void {
-        const planSpeed = this.ref(frag, 'planWindSpeed') as HTMLInputElement;
-        const planDir = this.ref(frag, 'planWindDir') as HTMLInputElement;
-        const holeSpeed = this.ref(frag, 'holeWindSpeed') as HTMLInputElement;
-        const holeDir = this.ref(frag, 'holeWindDir') as HTMLInputElement;
+    /**
+     * Which plan level an edit writes — mirrors the iOS scope picker. 'hole'
+     * exactly while the hole carries its own override (the sync effect derives
+     * it), and switching scope MIGRATES the current values so an edit is never
+     * an invisible no-op (see iOS `WindEditorSheet.migrate`).
+     */
+    private readonly windScope = new Signal<'all' | 'hole'>('all');
+    /** Local gesture values — seeded from the store, written back on release. */
+    private readonly windSpeedLocal = new Signal(0);
+    private readonly windDirLocal = new Signal(0);
+    /** True mid-gesture (dial drag / slider grab) so store echoes don't clobber it. */
+    private windEditing = false;
 
-        planSpeed.addEventListener('change', () =>
-            void this.plan.setPlanWind({ windSpeedMps: parseNum(planSpeed.value, 1) }));
-        planDir.addEventListener('change', () =>
-            void this.plan.setPlanWind({ windDirectionDeg: parseNum(planDir.value, 0) }));
-        holeSpeed.addEventListener('change', () => {
-            const hole = this.tool.selectedHole.peek();
-            if (hole) void this.plan.setHoleFields(hole.number, { windSpeedMps: parseNum(holeSpeed.value, 1) });
-        });
-        holeDir.addEventListener('change', () => {
-            const hole = this.tool.selectedHole.peek();
-            if (hole) void this.plan.setHoleFields(hole.number, { windDirectionDeg: parseNum(holeDir.value, 0) });
-        });
+    private bindWindEditor(frag: DocumentFragment): void {
+        const dial = this.ref(frag, 'windDial') as unknown as SVGSVGElement;
+        const slider = this.ref(frag, 'windSlider') as HTMLInputElement;
+        const speedValue = this.ref(frag, 'windSpeedValue');
+        const speedMph = this.ref(frag, 'windSpeedMph');
+        const band = this.ref(frag, 'windBand');
+        const tiles = this.ref(frag, 'windTiles');
+        const alongTitle = this.ref(frag, 'windAlongTitle');
+        const alongValue = this.ref(frag, 'windAlongValue');
+        const crossTitle = this.ref(frag, 'windCrossTitle');
+        const crossValue = this.ref(frag, 'windCrossValue');
+        const scopeAll = this.ref(frag, 'windScopeAll') as HTMLButtonElement;
+        const scopeHole = this.ref(frag, 'windScopeHole') as HTMLButtonElement;
+        const scopeNote = this.ref(frag, 'windScopeNote');
+        const clearBtn = this.ref(frag, 'windClear') as HTMLButtonElement;
 
-        // Reflect store state into the inputs — but never clobber the field
-        // the user is currently typing in.
-        this.track(effect(() => {
-            const plan = this.plan.plan.get();
-            syncInput(planSpeed, plan?.windSpeedMps ?? null, 1);
-            syncInput(planDir, plan?.windDirectionDeg ?? null, 0);
-        }));
+        // Seed local state from the store (per-field override ?? plan, like
+        // `effectiveWind`). No wind set → dead headwind up the hole, so the
+        // first drag starts somewhere meaningful rather than due north.
         this.track(effect(() => {
             const hole = this.tool.planHole.get();
-            syncInput(holeSpeed, hole?.windSpeedMps ?? null, 1);
-            syncInput(holeDir, hole?.windDirectionDeg ?? null, 0);
+            const plan = this.plan.plan.get();
+            const bearing = this.tool.holeBearing.get();
+            if (this.windEditing) return;
+            const override = hole !== null
+                && hole.windSpeedMps !== null && hole.windDirectionDeg !== null;
+            this.windScope.set(override ? 'hole' : 'all');
+            this.windSpeedLocal.set(hole?.windSpeedMps ?? plan?.windSpeedMps ?? 0);
+            this.windDirLocal.set(
+                hole?.windDirectionDeg ?? plan?.windDirectionDeg ?? bearing ?? 0);
         }));
+
+        // Direction dial — drag anywhere on it; commit on release.
+        this.track(effect(() => {
+            dial.innerHTML = windDialSvg({
+                directionDeg: this.windDirLocal.get(),
+                speedMps: this.windSpeedLocal.get(),
+                holeBearing: this.tool.holeBearing.get(),
+                holeUp: this.windScope.get() === 'hole',
+            });
+            dial.setAttribute('aria-valuenow',
+                String(Math.round(normalizeDeg(this.windDirLocal.get()))));
+        }));
+        const dirFromPointer = (ev: PointerEvent): number | null => {
+            const rect = dial.getBoundingClientRect();
+            const dx = ev.clientX - (rect.left + rect.width / 2);
+            const dy = (rect.top + rect.height / 2) - ev.clientY;
+            // Dead centre carries no direction — ignore rather than snap north.
+            if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return null;
+            const screenAngle = Math.atan2(dx, dy) * 180 / Math.PI;
+            const upBearing = this.windScope.peek() === 'hole'
+                ? (this.tool.holeBearing.peek() ?? 0) : 0;
+            return normalizeDeg(screenAngle + upBearing + 180);
+        };
+        dial.addEventListener('pointerdown', ev => {
+            this.windEditing = true;
+            dial.setPointerCapture(ev.pointerId);
+            const dir = dirFromPointer(ev);
+            if (dir !== null) this.windDirLocal.set(dir);
+        });
+        dial.addEventListener('pointermove', ev => {
+            if (!this.windEditing || !dial.hasPointerCapture(ev.pointerId)) return;
+            const dir = dirFromPointer(ev);
+            if (dir !== null) this.windDirLocal.set(dir);
+        });
+        dial.addEventListener('pointerup', ev => {
+            if (!dial.hasPointerCapture(ev.pointerId)) return;
+            dial.releasePointerCapture(ev.pointerId);
+            this.windEditing = false;
+            this.applyWind();
+        });
+
+        // Speed slider — live labels per frame, one write on release
+        // ('change'), matching the iOS commit-on-gesture-end rule.
+        slider.addEventListener('input', () => {
+            this.windEditing = true;
+            this.windSpeedLocal.set(parseFloat(slider.value));
+        });
+        slider.addEventListener('change', () => {
+            this.windEditing = false;
+            this.applyWind();
+        });
+        this.track(effect(() => {
+            const speed = this.windSpeedLocal.get();
+            slider.value = String(speed);
+            speedValue.textContent = `${speed.toFixed(1)} m/s`;
+            speedMph.textContent = `${mpsToMph(speed).toFixed(0)} mph`;
+            band.textContent = windBandLabel(speed);
+        }));
+
+        // Head/cross readout along the hole — the two numbers a player
+        // actually plays off. Same decomposition as the strategy engine.
+        this.track(effect(() => {
+            const bearing = this.tool.holeBearing.get();
+            const speed = this.windSpeedLocal.get();
+            const dir = this.windDirLocal.get();
+            tiles.style.display = bearing === null ? 'none' : '';
+            if (bearing === null) return;
+            const c = windComponents(speed, dir, bearing);
+            const headTail = mphToMps(c.headTailMph);
+            const cross = mphToMps(c.crosswindMph);
+            alongTitle.textContent = headTail < 0 ? 'Into' : 'Down';
+            alongValue.textContent = Math.abs(headTail).toFixed(1);
+            // crosswindMph > 0 = wind from the shooter's LEFT.
+            crossTitle.textContent = cross >= 0 ? 'From left' : 'From right';
+            crossValue.textContent = Math.abs(cross).toFixed(1);
+        }));
+
+        scopeAll.addEventListener('click', () => this.setWindScope('all'));
+        scopeHole.addEventListener('click', () => this.setWindScope('hole'));
+        this.track(effect(() => {
+            const scope = this.windScope.get();
+            const hole = this.tool.selectedHole.get();
+            scopeAll.setAttribute('aria-pressed', String(scope === 'all'));
+            scopeHole.setAttribute('aria-pressed', String(scope === 'hole'));
+            scopeHole.disabled = !hole;
+            scopeHole.textContent = hole ? `Hole ${hole.number} only` : 'This hole only';
+            scopeNote.textContent = scope === 'all'
+                ? 'The course-wide wind — every hole without its own override.'
+                : 'Overrides the course-wide wind on this hole only.';
+        }));
+
+        clearBtn.addEventListener('click', () => {
+            if (this.windScope.peek() === 'hole') {
+                // Back to inheriting — the sync effect reseeds from the plan wind.
+                void this.setHoleWind(null, null);
+            } else {
+                this.windSpeedLocal.set(0);
+                void this.plan.setPlanWind({ windSpeedMps: null, windDirectionDeg: null });
+            }
+        });
+        this.track(effect(() => {
+            clearBtn.textContent = this.windScope.get() === 'hole'
+                ? "Clear this hole's override" : 'Clear wind (calm)';
+        }));
+    }
+
+    /** Write the current dial + slider values at the current scope. */
+    private applyWind(): void {
+        const patch = {
+            windSpeedMps: this.windSpeedLocal.peek(),
+            windDirectionDeg: this.windDirLocal.peek(),
+        };
+        if (this.windScope.peek() === 'hole') {
+            const hole = this.tool.selectedHole.peek();
+            if (hole) void this.plan.setHoleFields(hole.number, patch);
+        } else {
+            void this.plan.setPlanWind(patch);
+        }
+    }
+
+    /**
+     * Scope switch migrates the values so the new scope takes effect at once
+     * (iOS `migrate(to:)`): → hole writes them as the override; → all drops
+     * the override FIRST (else the plan wind stays shadowed here), then
+     * writes them as the plan wind.
+     */
+    private setWindScope(scope: 'all' | 'hole'): void {
+        if (this.windScope.peek() === scope) return;
+        this.windScope.set(scope);
+        const speed = this.windSpeedLocal.peek();
+        const dir = this.windDirLocal.peek();
+        if (scope === 'hole') {
+            void this.setHoleWind(speed, dir);
+        } else {
+            void this.setHoleWind(null, null).then(() =>
+                this.plan.setPlanWind({ windSpeedMps: speed, windDirectionDeg: dir }));
+        }
     }
 
     /** Clear (or set) both hole-override wind fields (null = inherit). */
@@ -1598,8 +1797,18 @@ export class PlannerPanelComponent extends Component {
         const row = this.tool.inspectedBrowseRow.get();
         if (!row) return '';
         if (row.farM !== undefined) {
-            // Tap-a-shape inspection: near/far extent along the play line.
-            const details = [`front ${Math.round(row.lineM)} m`, `carry ${Math.round(row.farM)} m`];
+            // Tap-a-shape inspection: near/far extent along the play line,
+            // with plays-as per edge once the DEM samples resolve.
+            const plays = this.tool.inspectedEdgePlays.get();
+            const withPlays = (actualM: number, playsM: number | null): string => {
+                const actual = `${Math.round(actualM)} m`;
+                return playsM !== null && Math.round(playsM) !== Math.round(actualM)
+                    ? `${actual} (plays ${Math.round(playsM)})` : actual;
+            };
+            const details = [
+                `front ${withPlays(row.lineM, plays.frontM)}`,
+                `carry ${withPlays(row.farM, plays.carryM)}`,
+            ];
             if (row.clubName) details.push(`${row.clubName} carries`);
             return `<b>${escapeHtml(row.label)}</b>${escapeHtml(details.join(' · '))}`;
         }
@@ -1859,6 +2068,91 @@ function parseNum(value: string, decimals: number): number | null {
 function syncInput(input: HTMLInputElement, value: number | null, decimals: number): void {
     if (document.activeElement === input) return;
     input.value = value === null ? '' : value.toFixed(decimals);
+}
+
+// ── Wind dial (iOS `WindDial` parity) ───────────────────────────────────────
+
+function normalizeDeg(degrees: number): number {
+    const wrapped = degrees % 360;
+    return wrapped < 0 ? wrapped + 360 : wrapped;
+}
+
+const CARDINALS = [
+    'N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+    'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW',
+];
+
+/** 16-point compass name for a meteorological direction ("from"). */
+function cardinal(degrees: number): string {
+    return CARDINALS[Math.round(normalizeDeg(degrees) / 22.5) % 16];
+}
+
+/** Plain-language strength cue (the bands a player actually distinguishes). */
+function windBandLabel(speedMps: number): string {
+    if (speedMps < 0.25) return 'Calm';
+    if (speedMps < 2) return 'Light';
+    if (speedMps < 5) return 'Breezy';
+    if (speedMps < 8) return 'Strong';
+    if (speedMps < 12) return 'Hard';
+    return 'Brutal';
+}
+
+/** Point on the dial (200×200 viewBox, centre 100,100) for a screen angle. */
+function dialPoint(screenAngleDeg: number, radius: number): { x: number; y: number } {
+    const rad = screenAngleDeg * Math.PI / 180;
+    return { x: 100 + radius * Math.sin(rad), y: 100 - radius * Math.cos(rad) };
+}
+
+/**
+ * The dial's SVG markup. Orientation follows the edit scope, exactly like the
+ * iOS dial: course-wide wind renders north-up (N/E/S/W ring, hole as a rim
+ * marker — reads like a forecast arrow); a hole override renders hole-up (the
+ * hole plays straight up the dial, north as the rim marker). The arrow/knob
+ * sit where the wind blows TO; the stored direction is where it comes FROM.
+ */
+function windDialSvg(o: {
+    directionDeg: number;
+    speedMps: number;
+    holeBearing: number | null;
+    holeUp: boolean;
+}): string {
+    const upBearing = o.holeUp ? (o.holeBearing ?? 0) : 0;
+    const blow = normalizeDeg(o.directionDeg + 180 - upBearing);
+    const parts: string[] = [
+        '<circle class="dial-face" cx="100" cy="100" r="97" stroke-width="1.5" />',
+    ];
+    const rim = (text: string, screenAngle: number, size: number, radius = 84): void => {
+        const p = dialPoint(screenAngle, radius);
+        parts.push(
+            `<text class="dial-rim" x="${p.x.toFixed(1)}" y="${p.y.toFixed(1)}"`
+            + ` font-size="${size}" text-anchor="middle" dominant-baseline="central">${text}</text>`,
+        );
+    };
+    if (o.holeUp) {
+        rim('HOLE ↑', 0, 9);
+        if (o.holeBearing !== null) rim('N', normalizeDeg(-o.holeBearing), 10);
+    } else {
+        rim('N', 0, 11);
+        rim('E', 90, 11);
+        rim('S', 180, 11);
+        rim('W', 270, 11);
+        // The hole's direction of play, inset so it never collides with the ring.
+        if (o.holeBearing !== null) rim('HOLE ↑', o.holeBearing, 8, 66);
+    }
+    const arrowClass = o.speedMps < 0.25 ? 'dial-arrow calm' : 'dial-arrow';
+    parts.push(
+        `<g transform="rotate(${blow.toFixed(1)} 100 100)">`
+        + `<path class="${arrowClass}" d="M100 68 L117 124 L100 112 L83 124 Z" /></g>`,
+    );
+    const knob = dialPoint(blow, 76);
+    parts.push(
+        `<circle class="dial-knob" cx="${knob.x.toFixed(1)}" cy="${knob.y.toFixed(1)}" r="13" />`,
+    );
+    parts.push(
+        `<text class="dial-caption" x="100" y="148" font-size="11" text-anchor="middle">`
+        + `From ${cardinal(o.directionDeg)} · ${Math.round(normalizeDeg(o.directionDeg))}°</text>`,
+    );
+    return parts.join('');
 }
 
 function escapeHtml(str: string): string {

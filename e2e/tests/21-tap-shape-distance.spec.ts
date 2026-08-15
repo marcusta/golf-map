@@ -19,9 +19,9 @@ import { TEST_COURSE_ID, HOLE_1, tid, openPlanner, waitForMapReady } from './fix
 const GREEN_LAT = 58.402873;
 const GREEN_LON = 15.563897;
 
-/** Click a WGS84 point by projecting it through the live map's QA hook. */
-async function clickMapAt(page: Page, lon: number, lat: number): Promise<void> {
-    const pt = await page.evaluate(({ lon, lat }) => {
+/** Screen position of a WGS84 point via the live map's QA hook. */
+async function mapScreenPoint(page: Page, lon: number, lat: number): Promise<{ x: number; y: number }> {
+    return page.evaluate(({ lon, lat }) => {
         const map = (window as unknown as {
             __map?: {
                 project: (ll: [number, number]) => { x: number; y: number };
@@ -32,6 +32,11 @@ async function clickMapAt(page: Page, lon: number, lat: number): Promise<void> {
         const rect = map.getCanvas().getBoundingClientRect();
         return { x: rect.left + p.x, y: rect.top + p.y };
     }, { lon, lat });
+}
+
+/** Click a WGS84 point by projecting it through the live map's QA hook. */
+async function clickMapAt(page: Page, lon: number, lat: number): Promise<void> {
+    const pt = await mapScreenPoint(page, lon, lat);
     await page.mouse.click(pt.x, pt.y);
 }
 
@@ -42,14 +47,15 @@ test('planner browse: clicking the green shape shows its front/carry extent', as
     await expect(async () => {
         await clickMapAt(page, GREEN_LON, GREEN_LAT);
         await expect(detail).toContainText('Green', { timeout: 1_000 });
-        await expect(detail).toContainText(/front \d+ m · carry \d+ m/, { timeout: 1_000 });
+        await expect(detail).toContainText(/front \d+ m( \(plays \d+\))? · carry \d+ m( \(plays \d+\))?/, { timeout: 1_000 });
     }).toPass({ timeout: 20_000 });
 
     // Visual feedback: the two edge figures render as DOM markers on the map,
-    // and the browse overlay carries the ring highlight + edge dots.
+    // and the browse overlay carries the ring highlight + edge dots. Each
+    // figure may carry a "plays N" second line once the DEM samples resolve.
     const edgeLabels = page.locator('.browse-edge-label');
     await expect(edgeLabels).toHaveCount(2);
-    await expect(edgeLabels.first()).toHaveText(/^\d+$/);
+    await expect(edgeLabels.first()).toHaveText(/^\d+(plays \d+)?$/);
     await expect(async () => {
         const ringCount = await page.evaluate(() => {
             const map = (window as unknown as {
@@ -66,10 +72,13 @@ test('planner browse: clicking the green shape shows its front/carry extent', as
     // chosen line) and the shape window measures along origin → point.
     await clickMapAt(page, GREEN_LON, GREEN_LAT - 0.0008);
     await expect(detail).toContainText('Selected point');
+    // Point inspection prints its actual (+ plays) figure at the target too.
+    await expect(page.locator('.browse-inspect-label')).toHaveText(/^\d+ m/);
     await clickMapAt(page, GREEN_LON, GREEN_LAT);
     await expect(detail).toContainText('Green');
-    await expect(detail).toContainText(/front \d+ m · carry \d+ m/);
+    await expect(detail).toContainText(/front \d+ m( \(plays \d+\))? · carry \d+ m( \(plays \d+\))?/);
     await expect(page.locator('.browse-edge-label')).toHaveCount(2);
+    await expect(page.locator('.browse-inspect-label')).toHaveCount(0);
     await expect(async () => {
         const keptTarget = await page.evaluate(() => {
             const map = (window as unknown as {
@@ -79,6 +88,17 @@ test('planner browse: clicking the green shape shows its front/carry extent', as
         });
         expect(keptTarget).toBeGreaterThan(0);
     }).toPass({ timeout: 10_000 });
+
+    // Two-stage tap: clicking INSIDE the already-inspected green converts to
+    // a point inspect — the aim-at-a-spot-on-the-green flow.
+    await clickMapAt(page, GREEN_LON, GREEN_LAT);
+    await expect(detail).toContainText('Selected point');
+
+    // Double-click = "browse from here" (desktop shortcut, any surface):
+    // the transient origin moves to the double-clicked point.
+    const dbl = await mapScreenPoint(page, GREEN_LON, GREEN_LAT - 0.0008);
+    await page.mouse.dblclick(dbl.x, dbl.y);
+    await expect(page.locator('.browse-from')).toContainText('From selected map point');
 });
 
 test.describe('mobile companion', () => {
@@ -105,5 +125,11 @@ test.describe('mobile companion', () => {
         const edgeLabels = page.locator('.m-tap-edge-label');
         await expect(edgeLabels).toHaveCount(2);
         await expect(edgeLabels.first()).toHaveText(/^\d+$/);
+
+        // Two-stage tap: tapping inside the same green again converts to the
+        // plain point readout ("aim here"), and the edge markers clear.
+        await clickMapAt(page, GREEN_LON, GREEN_LAT);
+        await expect(pill).toHaveText(/Point \d+ m/);
+        await expect(edgeLabels).toHaveCount(0);
     });
 });

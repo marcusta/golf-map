@@ -417,6 +417,13 @@ export class MobileHoleComponent extends Component {
 
     /** Last tapped map point (WGS84), or null. */
     private tapPoint = new Signal<LngLatPoint | null>(null);
+    /**
+     * Two-stage tap state: true forces the plain point readout even inside a
+     * tappable shape — set when the tap landed inside the shape ALREADY read
+     * as a feature ("tap once to ask about the thing, tap again to point at
+     * a spot in it"). A third tap flips back to the shape readout.
+     */
+    private tapAsPoint = new Signal(false);
     private gpsRefreshScheduled = false;
     /** DOM markers carrying the tap-a-shape front/carry figures. */
     private tapEdgeMarkers: maplibregl.Marker[] = [];
@@ -554,8 +561,10 @@ export class MobileHoleComponent extends Component {
         const origin = this.origin.get();
         if (!at || !origin) return null;
         const sweref = wgs84ToSweref99tm(at.lat, at.lng);
-        const feature = this.tappedFeatureReadout(sweref, origin);
-        if (feature) return feature;
+        if (!this.tapAsPoint.get()) {
+            const feature = this.tappedFeatureReadout(sweref, origin);
+            if (feature) return feature;
+        }
         const elevation = this.elevation.elevationAtSync({ lng: at.lng, lat: at.lat });
         return {
             kind: 'point',
@@ -880,7 +889,21 @@ export class MobileHoleComponent extends Component {
         }));
 
         // Tap-anywhere: set the point; the readout + overlay derive from it.
-        this.track(this.mapSvc.onClick(({ lngLat }) => this.tapPoint.set({ lng: lngLat.lng, lat: lngLat.lat })));
+        // Two-stage: a tap INSIDE the shape currently read as a feature
+        // converts to the plain point readout at that spot ("aim here"); any
+        // other tap (open map, another shape, or a third tap) re-enters the
+        // automatic mode.
+        this.track(this.mapSvc.onClick(({ lngLat }) => {
+            const previous = this.tapReadout.peek();
+            let asPoint = false;
+            if (previous?.kind === 'feature') {
+                const p = wgs84ToSweref99tm(lngLat.lat, lngLat.lng);
+                const ringPlanar = previous.ring.map(q => wgs84ToSweref99tm(q.lat, q.lng));
+                asPoint = pointInRing(p, ringPlanar);
+            }
+            this.tapAsPoint.set(asPoint);
+            this.tapPoint.set({ lng: lngLat.lng, lat: lngLat.lat });
+        }));
 
         // Tap-a-shape edge figures: the front/carry numbers printed AT the two
         // measured play-line points — DOM markers (the map style has no glyphs

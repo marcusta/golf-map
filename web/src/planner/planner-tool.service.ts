@@ -10,6 +10,9 @@ import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import {
     bearingToUnitVector,
     closestClub,
+    crosswindDriftM,
+    dispersionEllipse,
+    distanceToPolyline,
     featureDistances,
     optimizeAim,
     playsAsM,
@@ -18,7 +21,9 @@ import {
     runCaddy,
     segmentStats,
     TAPPABLE_RING_TYPES,
+    windComponents,
     windEffect,
+    type DispersionEllipse,
     type AimResult,
     type CaddyAdvice,
     type CaddyContext,
@@ -90,6 +95,9 @@ import {
     browseForwardRoute,
     browseTargetActivation,
     buildBrowseLadder,
+    FOREIGN_HAZARD_CORRIDOR_HALF_WIDTH_M,
+    LADDER_CARRY_TYPES,
+    OWN_HAZARD_CORRIDOR_HALF_WIDTH_M,
     type BrowseLadderRow,
     type BrowsePointTarget,
 } from './browse-ladder';
@@ -126,6 +134,25 @@ export const BROWSE_OVERLAY_ID = 'plan-browse';
 
 function browseLayers(): OverlayLayerSpec[] {
     return [
+        // Inspected-target dispersion ellipse — under the lines/markers so the
+        // measuring line and figures stay readable over it.
+        {
+            id: `${BROWSE_OVERLAY_ID}-target-ellipse-fill`,
+            type: 'fill',
+            filter: ['==', ['get', 'role'], 'target-ellipse'] as never,
+            paint: { 'fill-color': '#f5b301', 'fill-opacity': 0.1 },
+        },
+        {
+            id: `${BROWSE_OVERLAY_ID}-target-ellipse-line`,
+            type: 'line',
+            filter: ['==', ['get', 'role'], 'target-ellipse'] as never,
+            paint: {
+                'line-color': '#f5b301',
+                'line-width': 1.5,
+                'line-opacity': 0.75,
+                'line-dasharray': [3, 2] as never,
+            },
+        },
         {
             id: `${BROWSE_OVERLAY_ID}-line`,
             type: 'line',
@@ -209,7 +236,28 @@ function browseLayers(): OverlayLayerSpec[] {
 function edgeLabelCss(): string {
     return 'font: 600 11px/1.3 system-ui, sans-serif; padding: 1px 5px;'
         + ' border-radius: 5px; pointer-events: none; white-space: nowrap;'
-        + ' background: rgba(245, 179, 1, 0.92); color: #14281c;';
+        + ' background: rgba(245, 179, 1, 0.92); color: #14281c;'
+        + ' text-align: center;';
+}
+
+/**
+ * An inspect-amber figure pill, optionally with a smaller second line
+ * ("plays 191" / "plays 236 · Driver") under the main figure.
+ */
+function edgeLabelElement(main: string, sub: string | null, className = 'browse-edge-label'): HTMLDivElement {
+    const el = document.createElement('div');
+    el.className = className;
+    el.style.cssText = edgeLabelCss();
+    const mainEl = document.createElement('div');
+    mainEl.textContent = main;
+    el.appendChild(mainEl);
+    if (sub) {
+        const subEl = document.createElement('div');
+        subEl.textContent = sub;
+        subEl.style.cssText = 'font-weight: 500; font-size: 9px; opacity: 0.85;';
+        el.appendChild(subEl);
+    }
+    return el;
 }
 
 /** Marker + label layers for the caddy advice overlay. */
@@ -523,6 +571,22 @@ export class PlannerToolService {
         return { speedMps, directionDeg };
     });
 
+    /**
+     * Tee→green compass bearing of the selected hole — the wind editor's
+     * reference line (dial orientation + head/cross decomposition), matching
+     * iOS `OnCourseModel.holeBearing`. Null when the hole has no tee or green.
+     */
+    readonly holeBearing = new Computed<number | null>(() => {
+        const hole = this.selectedHole.get();
+        const tee = this.originTee.get();
+        const green = hole ? this.furniture.greenForHole(hole.id) : null;
+        if (!tee || !green) return null;
+        return bearingBetween(
+            wgs84ToSweref99tm(tee.lat, tee.lon),
+            wgs84ToSweref99tm(green.centerLat, green.centerLon),
+        );
+    });
+
     /** The selected hole's shots in sort order. */
     readonly holeShots = new Computed<PlanShot[]>(() => {
         const ph = this.planHole.get();
@@ -578,6 +642,43 @@ export class PlannerToolService {
             this.features.store.items.get(),
             new Map(this.courseDetail.holes.get().map(h => [h.id, h.number])),
         ));
+
+    /**
+     * Every hole's routed play line (first tee → aims → green center), planar —
+     * classifies UNTAGGED hazard rings by nearest route so a `holeId: null`
+     * bunker still counts as the hole it visibly belongs to (iOS
+     * `hazardsByOwnership` parity). Holes without a green contribute no route.
+     */
+    private readonly holeRoutesPlanar = new Computed<Array<{ holeId: string; route: StrategyPoint[] }>>(() => {
+        const routes: Array<{ holeId: string; route: StrategyPoint[] }> = [];
+        for (const hole of this.courseDetail.holes.get()) {
+            const green = this.furniture.greenForHole(hole.id);
+            if (!green) continue;
+            const route: StrategyPoint[] = [];
+            const tee = this.furniture.teesForHole(hole.id)[0];
+            if (tee) route.push(wgs84ToSweref99tm(tee.lat, tee.lon));
+            for (const aim of this.furniture.aimsForHole(hole.id)) {
+                route.push(wgs84ToSweref99tm(aim.lat, aim.lon));
+            }
+            route.push(wgs84ToSweref99tm(green.centerLat, green.centerLon));
+            if (route.length >= 2) routes.push({ holeId: hole.id, route });
+        }
+        return routes;
+    });
+
+    /** The holeId whose routed line is nearest `p`, or null without routes. */
+    private nearestRouteHoleId(p: StrategyPoint): string | null {
+        let best: string | null = null;
+        let bestDistance = Infinity;
+        for (const { holeId, route } of this.holeRoutesPlanar.get()) {
+            const d = distanceToPolyline(p, route);
+            if (d < bestDistance) {
+                bestDistance = d;
+                best = holeId;
+            }
+        }
+        return best;
+    }
 
     /** Sorted yardage ladder measured from the current transient browse origin. */
     readonly browseRows = new Computed<BrowseLadderRow[]>(() => {
@@ -639,11 +740,40 @@ export class PlannerToolService {
         const bearingDeg = greenCenterPoint
             ? bearingBetween(origin, this.browseFirstLegTarget(hole, origin, greenCenterPoint))
             : bearingBetween(origin, reference);
-        const hazards = this.lieMap.get().hazardRings().map((ring, index) => ({
-            id: `hazard-${index}`,
-            label: ring.kind.charAt(0).toUpperCase() + ring.kind.slice(1),
-            ring,
-        }));
+        // Own/foreign corridor split (iOS parity): the hole's own hazards show
+        // even well off the line; other holes' rings only when genuinely near
+        // a play line. Untagged rings (holeId null — common on imported
+        // courses) are assigned to the hole whose routed line their centroid
+        // sits closest to, mirroring iOS's hazardsByOwnership.
+        const multiRoute = this.holeRoutesPlanar.get().length > 1;
+        const hazards = this.lieMap.get().hazardRingsOwned()
+            .filter(entry => LADDER_CARRY_TYPES.has(entry.ring.kind))
+            .map((entry, index) => {
+                let mine: boolean;
+                if (entry.holeId !== null) {
+                    mine = entry.holeId === hole.id;
+                } else if (multiRoute && entry.ring.points.length >= 3) {
+                    mine = this.nearestRouteHoleId(ringCentroid(entry.ring.points)) === hole.id;
+                } else {
+                    mine = true;
+                }
+                return {
+                    id: `hazard-${index}`,
+                    label: ringKindLabel(entry.ring.kind),
+                    ring: entry.ring,
+                    corridorHalfWidthM: mine
+                        ? OWN_HAZARD_CORRIDOR_HALF_WIDTH_M
+                        : FOREIGN_HAZARD_CORRIDOR_HALF_WIDTH_M,
+                };
+            });
+        // Corridor scan lines: the routed play line (origin → still-ahead aims
+        // → green) plus the direct origin → green line — a dogleg hazard in
+        // play on EITHER matters (iOS computeHazardCarries parity).
+        let lines: StrategyPoint[][] | undefined;
+        if (greenCenterPoint) {
+            const { route } = this.browseRoute(hole, origin, greenCenterPoint);
+            lines = route.length > 2 ? [route, [origin, greenCenterPoint]] : [[origin, greenCenterPoint]];
+        }
         return buildBrowseLadder({
             origin,
             points,
@@ -651,6 +781,7 @@ export class PlannerToolService {
             bearingDeg,
             wind: this.effectiveWind.get() ?? undefined,
             clubs: this.orderedClubs.get(),
+            lines,
         });
     });
 
@@ -711,6 +842,61 @@ export class PlannerToolService {
             clubs: this.orderedClubs.get(),
         });
         return row ?? null;
+    });
+
+    /**
+     * The advised club's wind-compensated dispersion ellipse for the INSPECTED
+     * browse target — aimed so its pattern lands ON the target (iOS
+     * `selectedTargetVisualization` parity: 4-pass crosswind aim correction,
+     * then `groundSlope` so the club chosen for the plays-like distance
+     * centers on the target). Null for hazard rungs (no single landing
+     * point), rows without a club, or no origin.
+     */
+    readonly inspectedTargetEllipse = new Computed<DispersionEllipse | null>(() => {
+        const row = this.inspectedBrowseRow.get();
+        if (!row || row.kind === 'hazard_front' || row.kind === 'hazard_carry' || !row.clubName) {
+            return null;
+        }
+        const originWgs = this.browseOrigin.get();
+        if (!originWgs) return null;
+        const club = this.orderedClubs.get().find(c => c.name === row.clubName);
+        if (!club) return null;
+        const origin = wgs84ToSweref99tm(originWgs.lat, originWgs.lon);
+        const target = row.position;
+        const len = Math.hypot(target.x - origin.x, target.y - origin.y);
+        if (len <= 0) return null;
+
+        const bearingTo = (p: StrategyPoint): number => {
+            const deg = Math.atan2(p.x - origin.x, p.y - origin.y) * 180 / Math.PI;
+            return deg < 0 ? deg + 360 : deg;
+        };
+        // The correction iterates the bearing because moving the hold point
+        // slightly changes the wind component relative to the shot. Four
+        // passes converge well below map precision at golf-shot distances.
+        const wind = this.effectiveWind.get();
+        let aimBearing = bearingTo(target);
+        if (wind) {
+            for (let pass = 0; pass < 4; pass++) {
+                const driftM = crosswindDriftM(
+                    club.carryM,
+                    windComponents(wind.speedMps, wind.directionDeg, aimBearing).crosswindMph,
+                );
+                const along = bearingToUnitVector(aimBearing);
+                const right = { x: along.y, y: -along.x };
+                aimBearing = bearingTo({
+                    x: target.x - driftM * right.x,
+                    y: target.y - driftM * right.y,
+                });
+            }
+        }
+
+        return dispersionEllipse({
+            origin,
+            bearingDeg: aimBearing,
+            club,
+            ...(wind ? { windSpeedMps: wind.speedMps, windDirectionDeg: wind.directionDeg } : {}),
+            ...(row.elevationDeltaM !== null ? { groundSlope: row.elevationDeltaM / len } : {}),
+        });
     });
 
     /**
@@ -1642,12 +1828,17 @@ export class PlannerToolService {
         // read as part of the putt read (feature-putting-green-reading §5.1).
         if (this.mode.get() === 'putt') return { type: 'FeatureCollection', features: [] };
         const sel = this.selection.get();
+        const hole = this.selectedHole.get();
         return buildPlanGeojson({
             plan: this.overlayPlan.get(),
             gates: this.holeGates.get(),
             optionChips: this.optionChips.get(),
             selectedShotId: sel?.kind === 'shot' ? sel.id : null,
             selectedGateId: sel?.kind === 'gate' ? sel.id : null,
+            // Green-terminating legs render ROUTED through the still-ahead
+            // aims (a 500 m fallback leg follows the doglegs, not a straight
+            // cut to the flag) — see PlanOverlayInput.aimPoints.
+            aimPoints: hole ? this.furniture.aimsForHole(hole.id) : undefined,
         });
     });
 
@@ -1793,6 +1984,21 @@ export class PlannerToolService {
                 properties: { role: 'target' },
                 geometry: { type: 'Point', coordinates: [target.lon, target.lat] },
             });
+            // The advised club's dispersion pattern, landing on the target.
+            const ellipse = this.inspectedTargetEllipse.get();
+            if (ellipse) {
+                features.unshift({
+                    type: 'Feature',
+                    properties: { role: 'target-ellipse' },
+                    geometry: {
+                        type: 'Polygon',
+                        coordinates: [ellipse.polygon.map(p => {
+                            const w = sweref99tmToWgs84(p.x, p.y);
+                            return [w.lon, w.lat] as [number, number];
+                        })],
+                    },
+                });
+            }
         }
         return { type: 'FeatureCollection', features };
     });
@@ -1833,6 +2039,55 @@ export class PlannerToolService {
     private puttLabelMarkers: maplibregl.Marker[] = [];
     /** DOM markers carrying the tapped-shape front/carry figures. */
     private featureEdgeMarkers: maplibregl.Marker[] = [];
+    /** DOM marker carrying the inspected point target's actual/plays figures. */
+    private inspectMarker: maplibregl.Marker | null = null;
+
+    /**
+     * DEM elevations at the tapped shape's front/carry edge points, sampled
+     * async (the extent math is planar; the ring carries no elevations).
+     * Keyed so a stale sample for a previous inspection never renders.
+     */
+    private readonly inspectedEdgeElevations = new Signal<{
+        key: string;
+        front: number | null;
+        carry: number | null;
+    } | null>(null);
+    private edgeSampleSeq = 0;
+
+    /** Stable identity of a tapped-shape inspection's two edge points. */
+    private static edgeKey(feature: { frontPoint: StrategyPoint; carryPoint: StrategyPoint }): string {
+        const f = feature.frontPoint;
+        const c = feature.carryPoint;
+        return `${f.x.toFixed(1)},${f.y.toFixed(1)}|${c.x.toFixed(1)},${c.y.toFixed(1)}`;
+    }
+
+    /**
+     * Plays-as figures for the tapped shape's front/carry edges — the same
+     * composition the ladder rows use (line + elevationΔ, then wind), fed by
+     * the async edge samples above. Null per edge until its DEM sample (and
+     * the origin's) resolves, so the actual figures always render first.
+     */
+    readonly inspectedEdgePlays = new Computed<{ frontM: number | null; carryM: number | null }>(() => {
+        const none = { frontM: null, carryM: null };
+        const feature = this.inspectedFeatureData.get();
+        const origin = this.browseOrigin.get();
+        if (!feature || !origin || origin.elevation === null) return none;
+        const sampled = this.inspectedEdgeElevations.get();
+        if (!sampled || sampled.key !== PlannerToolService.edgeKey(feature)) return none;
+        const originPlanar = wgs84ToSweref99tm(origin.lat, origin.lon);
+        const bearing = bearingBetween(originPlanar, feature.carryPoint);
+        const wind = this.effectiveWind.get();
+        const plays = (lineM: number, edgeElevation: number | null): number | null => {
+            if (edgeElevation === null) return null;
+            const playsLike = lineM + (edgeElevation - (origin.elevation ?? 0));
+            if (!wind) return playsLike;
+            return playsAsM(playsLike, windEffect(wind.speedMps, wind.directionDeg, bearing, playsLike));
+        };
+        return {
+            frontM: plays(feature.row.lineM, sampled.front),
+            carryM: plays(feature.row.farM ?? feature.row.lineM, sampled.carry),
+        };
+    });
 
     /**
      * The reused analysis view for the putt green (null → nothing / cleared):
@@ -2037,51 +2292,101 @@ export class PlannerToolService {
             }
         });
 
+        // DEM samples for the tapped shape's front/carry edge points — async,
+        // seq-guarded like the browse-origin sample, so a late tile never
+        // paints figures for a previous inspection.
+        track(effect(() => {
+            const feature = this.inspectedFeatureData.get();
+            if (!feature) {
+                this.inspectedEdgeElevations.set(null);
+                return;
+            }
+            const key = PlannerToolService.edgeKey(feature);
+            if (this.inspectedEdgeElevations.peek()?.key === key) return;
+            const seq = ++this.edgeSampleSeq;
+            const front = sweref99tmToWgs84(feature.frontPoint.x, feature.frontPoint.y);
+            const carry = sweref99tmToWgs84(feature.carryPoint.x, feature.carryPoint.y);
+            void Promise.all([
+                this.elevation.elevationAt({ lng: front.lon, lat: front.lat }),
+                this.elevation.elevationAt({ lng: carry.lon, lat: carry.lat }),
+            ]).then(([frontElevation, carryElevation]) => {
+                if (seq !== this.edgeSampleSeq) return;
+                this.inspectedEdgeElevations.set({ key, front: frontElevation, carry: carryElevation });
+            });
+        }));
+
         // Tapped-shape edge figures: the front/carry numbers printed AT the
         // two measured play-line points — DOM markers (the editor style has no
         // glyphs endpoint, so symbol text layers can't render). Recreated on
-        // change; two nodes, cheap.
+        // change; two nodes, cheap. Each figure carries its plays-as line once
+        // the edge DEM samples resolve. When a POINT target is inspected
+        // instead (ladder rung / open-map click), one marker at the target
+        // prints the same actual + plays readout the panel card shows.
         track(effect(() => {
             const ready = this.map.ready.get();
             const raw = this.map.map.get();
             const feature = this.inspectedFeatureData.get();
+            const inspected = feature ? null : this.inspectedBrowseRow.get();
             for (const m of this.featureEdgeMarkers) m.remove();
             this.featureEdgeMarkers = [];
-            if (!ready || !raw || !feature) return;
-            // Nudge each figure a few meters OUTWARD along the measuring line
-            // (front toward the origin, carry past the far edge) so the two
-            // never collide over a narrow shape.
-            const dx = feature.carryPoint.x - feature.frontPoint.x;
-            const dy = feature.carryPoint.y - feature.frontPoint.y;
-            const len = Math.hypot(dx, dy);
-            const nudge = 8;
-            const ux = len > 1e-9 ? dx / len : 0;
-            const uy = len > 1e-9 ? dy / len : 1;
-            const labels = [
-                {
-                    point: { x: feature.frontPoint.x - ux * nudge, y: feature.frontPoint.y - uy * nudge },
-                    text: String(Math.round(feature.row.lineM)),
-                },
-                {
-                    point: { x: feature.carryPoint.x + ux * nudge, y: feature.carryPoint.y + uy * nudge },
-                    text: String(Math.round(feature.row.farM ?? 0)),
-                },
-            ];
-            for (const l of labels) {
-                const el = document.createElement('div');
-                el.className = 'browse-edge-label';
-                el.textContent = l.text;
-                el.style.cssText = edgeLabelCss();
-                const { lat, lon } = sweref99tmToWgs84(l.point.x, l.point.y);
-                this.featureEdgeMarkers.push(
-                    new maplibregl.Marker({ element: el, anchor: 'center', offset: [0, -14] })
-                        .setLngLat([lon, lat]).addTo(raw),
+            this.inspectMarker?.remove();
+            this.inspectMarker = null;
+            if (!ready || !raw) return;
+            if (feature) {
+                // Nudge each figure a few meters OUTWARD along the measuring line
+                // (front toward the origin, carry past the far edge) so the two
+                // never collide over a narrow shape.
+                const dx = feature.carryPoint.x - feature.frontPoint.x;
+                const dy = feature.carryPoint.y - feature.frontPoint.y;
+                const len = Math.hypot(dx, dy);
+                const nudge = 8;
+                const ux = len > 1e-9 ? dx / len : 0;
+                const uy = len > 1e-9 ? dy / len : 1;
+                const plays = this.inspectedEdgePlays.get();
+                const labels = [
+                    {
+                        point: { x: feature.frontPoint.x - ux * nudge, y: feature.frontPoint.y - uy * nudge },
+                        text: String(Math.round(feature.row.lineM)),
+                        sub: plays.frontM !== null && Math.round(plays.frontM) !== Math.round(feature.row.lineM)
+                            ? `plays ${Math.round(plays.frontM)}` : null,
+                    },
+                    {
+                        point: { x: feature.carryPoint.x + ux * nudge, y: feature.carryPoint.y + uy * nudge },
+                        text: String(Math.round(feature.row.farM ?? 0)),
+                        sub: plays.carryM !== null && Math.round(plays.carryM) !== Math.round(feature.row.farM ?? 0)
+                            ? `plays ${Math.round(plays.carryM)}` : null,
+                    },
+                ];
+                for (const l of labels) {
+                    const el = edgeLabelElement(l.text, l.sub);
+                    const { lat, lon } = sweref99tmToWgs84(l.point.x, l.point.y);
+                    this.featureEdgeMarkers.push(
+                        new maplibregl.Marker({ element: el, anchor: 'center', offset: [0, -14] })
+                            .setLngLat([lon, lat]).addTo(raw),
+                    );
+                }
+            } else if (inspected) {
+                const subParts: string[] = [];
+                if (inspected.playsAsM !== null
+                    && Math.round(inspected.playsAsM) !== Math.round(inspected.lineM)) {
+                    subParts.push(`plays ${Math.round(inspected.playsAsM)}`);
+                }
+                if (inspected.clubName) subParts.push(inspected.clubName);
+                const el = edgeLabelElement(
+                    `${Math.round(inspected.lineM)} m`,
+                    subParts.length > 0 ? subParts.join(' · ') : null,
+                    'browse-inspect-label',
                 );
+                const { lat, lon } = sweref99tmToWgs84(inspected.position.x, inspected.position.y);
+                this.inspectMarker = new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -10] })
+                    .setLngLat([lon, lat]).addTo(raw);
             }
         }));
         track(() => {
             for (const m of this.featureEdgeMarkers) m.remove();
             this.featureEdgeMarkers = [];
+            this.inspectMarker?.remove();
+            this.inspectMarker = null;
         });
 
         // Caddy advice overlay — its own source/layer so it never touches the
@@ -2458,8 +2763,10 @@ export class PlannerToolService {
      * shape (figures land on the shape's own lips); when a browse-to target
      * was being inspected (map point or ladder rung), that point is KEPT and
      * the window projects onto the chosen origin → browse-to line instead.
-     * Returns false when the click landed on no tappable shape, so the map
-     * handler can fall back to the plain point readout.
+     * Returns false when the click landed on no tappable shape — OR inside
+     * the shape ALREADY inspected (the two-stage tap): the map handler then
+     * falls back to the point inspect, converting the second click into an
+     * aim point at the exact spot.
      */
     inspectBrowseFeature(position: { lng: number; lat: number }): boolean {
         const hole = this.selectedHole.peek();
@@ -2467,6 +2774,8 @@ export class PlannerToolService {
         const at = lngLatToSweref99tm(position);
         const ring = this.lieMap.peek().ringAt(at, TAPPABLE_KINDS);
         if (!ring) return false;
+        const inspected = this.browseInspection.peek();
+        if (inspected?.source === 'map-feature' && inspected.ring === ring) return false;
 
         // The measuring line's far end: whatever browse-to target is up right
         // now. A previous shape inspection passes its own kept line along, so
@@ -2766,12 +3075,31 @@ export class PlannerToolService {
     private bindRawHandlers(map: MaplibreMap, track: (dispose: () => void) => void): void {
         const onMouseDown = (e: MapMouseEvent) => this.onMouseDown(e, map);
         const onMouseUp = () => this.onMouseUp(map);
+        const onDblClick = (e: MapMouseEvent) => this.onDblClick(e);
         map.on('mousedown', onMouseDown);
         map.on('mouseup', onMouseUp);
+        map.on('dblclick', onDblClick);
         track(() => {
             map.off('mousedown', onMouseDown);
             map.off('mouseup', onMouseUp);
+            map.off('dblclick', onDblClick);
         });
+    }
+
+    /**
+     * Double-click anywhere = "browse from here" (desktop shortcut): move the
+     * transient browse origin to the clicked point, on any surface. The
+     * gesture's two single clicks will have inspected something first —
+     * `setBrowseFrom` clears that inspection, so the double-click supersedes
+     * it. `preventDefault` suppresses MapLibre's double-click zoom while the
+     * planner's select/browse mode owns the gesture (wheel zoom remains);
+     * the placement modes keep their own click semantics untouched.
+     */
+    private onDblClick(e: MapMouseEvent): void {
+        if (!this.isMyClaim()) return;
+        if (this.mode.peek() !== 'select') return;
+        e.preventDefault();
+        void this.setBrowseFrom(e.lngLat);
     }
 
     private onMouseDown(e: MapMouseEvent, map: MaplibreMap): void {

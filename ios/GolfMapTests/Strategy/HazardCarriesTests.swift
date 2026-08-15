@@ -153,6 +153,34 @@ final class HazardCarriesTests: XCTestCase {
                        "but it sits on the direct cut line → in play")
     }
 
+    func testNearLinesRingFarBeyondBothLineEndsIsExcluded() {
+        // The web-ladder regression: hazards 900–1500 m downrange appeared as
+        // rungs. A ring far past the ends of BOTH 100 m lines must stay out even
+        // though it sits laterally dead on-line — the ahead-gate (aMin ≤ line
+        // length + extraAheadM) and the corridor gate (perp measured to the
+        // clamped polyline, not the infinite line) both drop it.
+        let far = box(-5, 900, 5, 950)
+        XCTAssertTrue(HazardCarries.nearLines([routedLine, directLine], hazards: [far]).isEmpty)
+        // A generous greenside margin must never resurrect a hazard 800 m past
+        // the green.
+        XCTAssertTrue(
+            HazardCarries.nearLines([routedLine, directLine], hazards: [far], extraAheadM: 40).isEmpty
+        )
+    }
+
+    func testNearLinesExtraAheadGatesRingJustPastTheEnds() {
+        // Ahead-gate proper: a ring just past both line ends (110–130 m on 100 m
+        // lines, within corridor of the shared endpoint) is dropped by default
+        // and admitted only when extraAheadM covers its near edge. Direct line
+        // first so the perp tie at the shared endpoint measures along it.
+        let greenside = box(-5, 110, 5, 130)
+        XCTAssertTrue(HazardCarries.nearLines([directLine, routedLine], hazards: [greenside]).isEmpty)
+        let rows = HazardCarries.nearLines([directLine, routedLine], hazards: [greenside], extraAheadM: 40)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].frontM, 110)
+        XCTAssertEqual(rows[0].carryM, 130)
+    }
+
     func testNearLineExtraAheadIncludesGreensideBunker() {
         // A bunker just past the green centre (105–115 m vs a 100 m target) is
         // dropped by default but caught with a margin — greenside bunkers sit

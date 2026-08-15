@@ -66,7 +66,11 @@ export {
 export {
     type RingSide,
     type RingLineExtent,
+    type HazardNearLine,
+    type HazardsNearLinesOptions,
     TAPPABLE_RING_TYPES,
+    distanceToPolyline,
+    hazardsNearLines,
     ringExtentAlongLines,
     ringExtentAlongRay,
 } from './ring-extent';

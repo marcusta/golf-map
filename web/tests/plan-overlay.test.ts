@@ -418,6 +418,42 @@ describe('buildPlanGeojson', () => {
         expect(legLabel(noClub.legs[0])).toBe('200 m · plays 195 m');
     });
 
+    test('green-terminating leg routes through still-ahead aims when supplied', () => {
+        // Long unplanned hole: single tee→green leg of 500 m with a dogleg
+        // aim 40 m east at 250 m out. With aimPoints the leg polyline kinks
+        // through the aim and the label shows the ROUTED ground distance.
+        const plan = buildHolePlan(northInput({ shots: [], green: { ...at(500), elevation: 10 } }));
+        const aim = at(250, 40);
+        const fc = buildPlanGeojson({
+            plan, gates: [], selectedShotId: null, selectedGateId: null,
+            aimPoints: [aim],
+        });
+        const [leg] = byRole(fc.features, 'leg');
+        const coords = (leg.geometry as LineString).coordinates;
+        expect(coords).toHaveLength(3);
+        expect(coords[1][0]).toBeCloseTo(aim.lon, 6);
+        expect(coords[1][1]).toBeCloseTo(aim.lat, 6);
+        const routedM = Math.hypot(250, 40) + Math.hypot(250, 40);
+        const label = (leg.properties as { label: string }).label;
+        expect(label.startsWith(`${Math.round(routedM)} m`)).toBe(true);
+        // Elevation delta rides on the routed distance (+0 here → plays = routed).
+        expect(label).toContain(`plays ${Math.round(routedM)} m`);
+    });
+
+    test('short approach leg stays straight (routing gate) and without aims nothing changes', () => {
+        // Green 200 m out — within AIM_ROUTING_THRESHOLD_M, so even a
+        // still-ahead aim must not kink the drawn leg.
+        const plan = buildHolePlan(northInput({ shots: [], green: { ...at(200), elevation: 10 } }));
+        const gated = buildPlanGeojson({
+            plan, gates: [], selectedShotId: null, selectedGateId: null,
+            aimPoints: [at(100, 30)],
+        });
+        expect((byRole(gated.features, 'leg')[0].geometry as LineString).coordinates).toHaveLength(2);
+
+        const noAims = buildPlanGeojson({ plan, gates: [], selectedShotId: null, selectedGateId: null });
+        expect((byRole(noAims.features, 'leg')[0].geometry as LineString).coordinates).toHaveLength(2);
+    });
+
     test('null plan renders gates only; empty everything renders nothing', () => {
         const fcEmpty = buildPlanGeojson({ plan: null, gates: [], selectedShotId: null, selectedGateId: null });
         expect(fcEmpty.features).toHaveLength(0);

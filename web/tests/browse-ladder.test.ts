@@ -45,6 +45,118 @@ describe('planner browse ladder', () => {
         expect(rows.map(row => row.position)).toEqual([{ x: 0, y: 40 }, { x: 0, y: 55 }]);
     });
 
+    test('hazard rungs beyond the furthest point target (+margin) are dropped', () => {
+        const origin = { x: 0, y: 0 };
+        const farRing = (yFront: number, yBack: number) => ({
+            kind: 'water', points: [
+                { x: -5, y: yFront }, { x: 5, y: yFront }, { x: 5, y: yBack }, { x: -5, y: yBack },
+            ],
+        });
+        const rows = buildBrowseLadder({
+            origin,
+            bearingDeg: 0,
+            points: [
+                { id: 'green-back', label: 'Green back', role: 'green_back', point: { x: 0, y: 400 } },
+            ],
+            hazards: [
+                // Straddles the cap: front kept, carry (beyond margin) dropped.
+                { id: 'back-water', label: 'Water', ring: farRing(410, 480) },
+                // Entirely beyond the hole (another hole's ring) — no rungs.
+                { id: 'far-water', label: 'Water', ring: farRing(880, 900) },
+            ],
+        });
+
+        expect(rows.map(row => row.id)).toEqual([
+            'green-back:green_back', 'back-water:hazard_front',
+        ]);
+    });
+
+    test('without point targets hazard rungs are not capped', () => {
+        const rows = buildBrowseLadder({
+            origin: { x: 0, y: 0 },
+            bearingDeg: 0,
+            points: [],
+            hazards: [{
+                id: 'water',
+                label: 'Water',
+                ring: { kind: 'water', points: [
+                    { x: -5, y: 800 }, { x: 5, y: 800 }, { x: 5, y: 830 }, { x: -5, y: 830 },
+                ] },
+            }],
+        });
+        expect(rows.map(row => row.id)).toEqual(['water:hazard_front', 'water:hazard_carry']);
+    });
+
+    test('corridor mode: a bunker BESIDE the play line rungs, side-tagged', () => {
+        const origin = { x: 0, y: 0 };
+        const green = { x: 0, y: 300 };
+        const rows = buildBrowseLadder({
+            origin,
+            bearingDeg: 0,
+            points: [{ id: 'green-center', label: 'Green', role: 'green_center', point: green }],
+            hazards: [{
+                id: 'side-bunker',
+                label: 'Bunker',
+                corridorHalfWidthM: 400,
+                ring: { kind: 'bunker', points: [
+                    { x: 30, y: 100 }, { x: 50, y: 100 }, { x: 50, y: 130 }, { x: 30, y: 130 },
+                ] },
+            }],
+            lines: [[origin, green]],
+        });
+
+        const front = rows.find(r => r.id === 'side-bunker:hazard_front');
+        const carry = rows.find(r => r.id === 'side-bunker:hazard_carry');
+        expect(front?.label).toBe('R Bunker front');
+        expect(front?.lineM).toBeCloseTo(100);
+        expect(front?.position).toEqual({ x: 0, y: 100 });
+        expect(carry?.label).toBe('R Bunker carry');
+        expect(carry?.lineM).toBeCloseTo(130);
+    });
+
+    test('corridor mode: foreign rings only rung inside their narrow corridor', () => {
+        const origin = { x: 0, y: 0 };
+        const green = { x: 0, y: 300 };
+        const foreignRing = (minX: number, maxX: number) => ({
+            kind: 'water', points: [
+                { x: minX, y: 150 }, { x: maxX, y: 150 }, { x: maxX, y: 180 }, { x: minX, y: 180 },
+            ],
+        });
+        const rows = buildBrowseLadder({
+            origin,
+            bearingDeg: 0,
+            points: [{ id: 'green-center', label: 'Green', role: 'green_center', point: green }],
+            hazards: [
+                { id: 'near-foreign', label: 'Water', corridorHalfWidthM: 35, ring: foreignRing(20, 40) },
+                { id: 'far-foreign', label: 'Water', corridorHalfWidthM: 35, ring: foreignRing(120, 150) },
+            ],
+            lines: [[origin, green]],
+        });
+
+        expect(rows.some(r => r.id === 'near-foreign:hazard_front')).toBe(true);
+        expect(rows.some(r => r.id.startsWith('far-foreign'))).toBe(false);
+    });
+
+    test('corridor mode: rings entirely past the green (+margin) are dropped', () => {
+        const origin = { x: 0, y: 0 };
+        const green = { x: 0, y: 300 };
+        const rows = buildBrowseLadder({
+            origin,
+            bearingDeg: 0,
+            points: [{ id: 'green-center', label: 'Green', role: 'green_center', point: green }],
+            hazards: [{
+                id: 'next-hole-water',
+                label: 'Water',
+                corridorHalfWidthM: 400,
+                ring: { kind: 'water', points: [
+                    { x: -5, y: 900 }, { x: 5, y: 900 }, { x: 5, y: 950 }, { x: -5, y: 950 },
+                ] },
+            }],
+            lines: [[origin, green]],
+        });
+        expect(rows.some(r => r.id.startsWith('next-hole-water'))).toBe(false);
+    });
+
     test('bearing uses compass degrees', () => {
         expect(bearingBetween({ x: 0, y: 0 }, { x: 10, y: 0 })).toBeCloseTo(90);
         expect(bearingBetween({ x: 0, y: 0 }, { x: 0, y: -10 })).toBeCloseTo(180);

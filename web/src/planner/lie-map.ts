@@ -55,6 +55,7 @@ const GROUP_RANK_SPAN = 4096;
 interface ClassifiedFeatureRing {
     ring: FlatRing;
     stackKey: number;
+    holeId: string | null;
     minX: number;
     maxX: number;
     minY: number;
@@ -73,6 +74,12 @@ export interface LieMap {
     surfaces(): readonly FlatRing[];
     /** The subset of rings whose feature type is a corridor obstacle (DEFAULT_HAZARD_TYPES). */
     hazardRings(): readonly FlatRing[];
+    /**
+     * Same subset with each ring's source-feature `holeId` — lets a ladder
+     * widen the corridor for the current hole's own hazards vs other holes'
+     * (mirroring iOS's own/foreign split). Null = course-level feature.
+     */
+    hazardRingsOwned(): readonly { ring: FlatRing; holeId: string | null }[];
     /**
      * Topmost containing ring at `p` whose feature type is in `kinds`, or
      * null — the tap-a-shape hit test (same D23/D24 stack order as
@@ -126,16 +133,17 @@ export function buildLieMap(
         const ring: FlatRing = { points, kind: feature.type };
         const groupRank = feature.holeId === null ? 0 : holeNumberById?.get(feature.holeId) ?? 0;
         const stackKey = groupRank * GROUP_RANK_SPAN + feature.sortOrder;
-        classified.push({ ring, stackKey, ...bbox(ring) });
+        classified.push({ ring, stackKey, holeId: feature.holeId, ...bbox(ring) });
     }
     // Topmost-first (highest stack key) so the FIRST containing ring wins
     // nesting (D23/D24) — the same order the map renders and the editor hits.
     classified.sort((a, b) => b.stackKey - a.stackKey);
 
     const surfaces = classified.map(c => c.ring);
-    const hazards = classified
+    const hazardEntries = classified
         .filter(c => HAZARD_TYPES.has(c.ring.kind))
-        .map(c => c.ring);
+        .map(c => ({ ring: c.ring, holeId: c.holeId }));
+    const hazards = hazardEntries.map(c => c.ring);
 
     return {
         classifyLie(p: Vec2): Lie {
@@ -147,6 +155,7 @@ export function buildLieMap(
         },
         surfaces: () => surfaces,
         hazardRings: () => hazards,
+        hazardRingsOwned: () => hazardEntries,
         ringAt(p: Vec2, kinds: ReadonlySet<string>): FlatRing | null {
             for (const r of classified) {
                 if (!kinds.has(r.ring.kind)) continue;
