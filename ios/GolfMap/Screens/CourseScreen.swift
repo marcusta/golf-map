@@ -850,6 +850,7 @@ private struct OnCourseContentView: View {
                 camera: model.cameraCommand,
                 zoom: model.zoomCommand,
                 analysis: isGreenView ? greenAnalysis.mapState : nil,
+                analysisProbe: isGreenView ? greenAnalysis.probe : nil,
                 putt: isGreenView ? puttRead.overlay : nil,
                 onCameraChange: { model.noteMapCamera(center: $0, zoom: $1, bearing: $2) },
                 // The browse-mode long-press "move tee" is RETIRED — it fired
@@ -884,7 +885,10 @@ private struct OnCourseContentView: View {
                             }
                         }
                     } else {
+                        // Green view: the tap both places the ball/hole and
+                        // (slope overlay up) reads the slope under the finger.
                         puttRead.handleTap(puttPoint(position))
+                        greenAnalysis.probeTapped(puttPoint(position))
                     }
                 },
                 // The handle-drag recognizer is shared too: Adjust drags the
@@ -1171,6 +1175,9 @@ private struct OnCourseContentView: View {
                             // Give the async grid sampling time to land.
                             try? await Task.sleep(nanoseconds: 4_000_000_000)
                             puttRead.handleTap(puttPoint(LatLon(lat: lat, lon: lon)))
+                            // Same pairing as the live tap path: the tap also
+                            // probes the slope (rendered when mode == slope).
+                            greenAnalysis.probeTapped(puttPoint(LatLon(lat: lat, lon: lon)))
                             puttRead.computeSurfaceReadNow()
                             Self.writePuttDebugSummary(puttRead)
                         }

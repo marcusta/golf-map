@@ -22,6 +22,7 @@ import { greenRingsWgs84 } from './green-frame';
 export const GREEN_HEAT_ID = 'm-green-heat';
 export const GREEN_BOUNDARY_ID = 'm-green-boundary';
 export const GREEN_ARROWS_ID = 'm-green-arrows';
+export const GREEN_PROBE_ID = 'm-green-probe';
 
 /** Image-source corner quad: top-left, top-right, bottom-right, bottom-left. */
 export type Quad = [[number, number], [number, number], [number, number], [number, number]];

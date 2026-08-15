@@ -21,6 +21,8 @@ import {
     INSIDE_ALPHA,
     OUTSIDE_ALPHA,
     ARROW_MIN_SLOPE_PCT,
+    sampleSlopeAt,
+    fallDirectionLabel,
     buildMeterGridLines,
     computeContours,
     CONTOUR_INTERVAL_M,
@@ -302,6 +304,96 @@ test('fall-line arrow spacing never drops below 1.5 m', () => {
     });
     const arrows = sampleFallLines(grid, computeSlopeGrid(grid));
     expect(arrows.length).toBe(9);
+});
+
+// ─── sampleSlopeAt (tap probe) ────────────────────────────────────────────
+
+test('probe on an analytic plane returns the exact slope and downhill direction', () => {
+    const grid = planeGrid();
+    const slope = computeSlopeGrid(grid);
+    // Interior point away from cell centers — bilinear over equal values.
+    const probe = sampleSlopeAt(grid, slope, 1002.7, 1997.3);
+    expect(probe).not.toBeNull();
+    expect(probe!.e).toBe(1002.7);
+    expect(probe!.n).toBe(1997.3);
+    expect(probe!.slopePct).toBeCloseTo(5, 8);
+    expect(probe!.dirE).toBeCloseTo(-0.6, 8);
+    expect(probe!.dirN).toBeCloseTo(-0.8, 8);
+});
+
+test('probe interpolates bilinearly between cells of different slope', () => {
+    // Two columns of distinct constant slope values injected directly.
+    const grid = makeGrid({ width: 2, height: 1, resolution: 1, z: () => 0 });
+    const slope = {
+        slopePct: new Float64Array([2, 6]),
+        dirE: new Float64Array([1, 1]),
+        dirN: new Float64Array([0, 0]),
+    };
+    // Midpoint of the two cell centers (e = 1000.5 and 1001.5).
+    const probe = sampleSlopeAt(grid, slope, 1001, 1999.5);
+    expect(probe!.slopePct).toBeCloseTo(4, 8);
+    expect(probe!.dirE).toBeCloseTo(1, 8);
+    expect(probe!.dirN).toBeCloseTo(0, 8);
+});
+
+test('probe direction cancels toward flat across a crest', () => {
+    // Opposing faces: downhill west vs downhill east, equal magnitude.
+    const grid = makeGrid({ width: 2, height: 1, resolution: 1, z: () => 0 });
+    const slope = {
+        slopePct: new Float64Array([4, 4]),
+        dirE: new Float64Array([-1, 1]),
+        dirN: new Float64Array([0, 0]),
+    };
+    const probe = sampleSlopeAt(grid, slope, 1001, 1999.5);
+    // Scalar magnitude survives; the vector cancels to zero direction.
+    expect(probe!.slopePct).toBeCloseTo(4, 8);
+    expect(probe!.dirE).toBe(0);
+    expect(probe!.dirN).toBe(0);
+});
+
+test('probe outside the grid extent returns null', () => {
+    const grid = planeGrid(); // e 1000–1006, n 1995–2000
+    const slope = computeSlopeGrid(grid);
+    expect(sampleSlopeAt(grid, slope, 999.9, 1997)).toBeNull();
+    expect(sampleSlopeAt(grid, slope, 1006.1, 1997)).toBeNull();
+    expect(sampleSlopeAt(grid, slope, 1003, 2000.1)).toBeNull();
+    expect(sampleSlopeAt(grid, slope, 1003, 1994.9)).toBeNull();
+    // Edges are inclusive.
+    expect(sampleSlopeAt(grid, slope, 1000, 2000)).not.toBeNull();
+    expect(sampleSlopeAt(grid, slope, 1006, 1995)).not.toBeNull();
+});
+
+test('probe skips nodata neighbors with weight renormalization', () => {
+    const grid = makeGrid({ width: 2, height: 1, resolution: 1, z: () => 0 });
+    const slope = {
+        slopePct: new Float64Array([3, NaN]),
+        dirE: new Float64Array([0, NaN]),
+        dirN: new Float64Array([-1, NaN]),
+    };
+    // Midpoint: the NaN cell's half weight renormalizes onto the valid cell.
+    const probe = sampleSlopeAt(grid, slope, 1001, 1999.5);
+    expect(probe!.slopePct).toBeCloseTo(3, 8);
+    expect(probe!.dirN).toBeCloseTo(-1, 8);
+});
+
+test('probe with no valid neighbor returns null', () => {
+    const grid = makeGrid({ width: 2, height: 1, resolution: 1, z: () => 0 });
+    const slope = {
+        slopePct: new Float64Array([NaN, NaN]),
+        dirE: new Float64Array([NaN, NaN]),
+        dirN: new Float64Array([NaN, NaN]),
+    };
+    expect(sampleSlopeAt(grid, slope, 1001, 1999.5)).toBeNull();
+});
+
+test('fallDirectionLabel maps downhill vectors to compass names', () => {
+    expect(fallDirectionLabel(0, 1)).toBe('N');
+    expect(fallDirectionLabel(1, 0)).toBe('E');
+    expect(fallDirectionLabel(0, -1)).toBe('S');
+    expect(fallDirectionLabel(-1, 0)).toBe('W');
+    expect(fallDirectionLabel(1, 1)).toBe('NE');
+    expect(fallDirectionLabel(-0.7071, -0.7071)).toBe('SW');
+    expect(fallDirectionLabel(0, 0)).toBeNull();
 });
 
 // ─── buildMeterGridLines ──────────────────────────────────────────────────

@@ -96,7 +96,7 @@ import {
 import type { AimPoint } from '../../../shared/api/aim-points.gen';
 import maplibregl from 'maplibre-gl';
 import { AnalysisOverlayRenderer } from '../analysis/analysis-overlay';
-import { computeSlopeGrid, computeStats, type SlopeGrid, type AnalysisStats } from '../analysis/analysis-math';
+import { computeSlopeGrid, computeStats, sampleSlopeAt, type SlopeGrid, type AnalysisStats, type SlopeProbe } from '../analysis/analysis-math';
 import type { AnalysisView } from '../analysis/analysis-tool.service';
 import { createAnalysisClient, type AnalysisApi, type SampleGrid } from '../../../shared/api/analysis.gen';
 import { puttLabelDescriptors } from './putt-labels';
@@ -1827,6 +1827,8 @@ export class PlannerToolService {
     private readonly puttAnalysisRenderer = new AnalysisOverlayRenderer();
     /** DEM-derived slope/stats for the putt green, cached per grid object. */
     private puttDerivedCache: { grid: SampleGrid; slope: SlopeGrid; stats: AnalysisStats } | null = null;
+    /** Tapped-point slope readout, pinned to the grid it was sampled from. */
+    private readonly puttProbe = new Signal<{ grid: SampleGrid; probe: SlopeProbe } | null>(null);
     /** DOM-marker labels on the graphics (distance/plays/aim + cross-slope). */
     private puttLabelMarkers: maplibregl.Marker[] = [];
     /** DOM markers carrying the tapped-shape front/carry figures. */
@@ -1843,6 +1845,7 @@ export class PlannerToolService {
         if (mode === 'none') return null;
         const grid = this.puttRead.grid.get();
         const ctx = this.puttRead.context.get();
+        const probe = this.puttProbe.get();
         if (!grid || !ctx) return null;
         if (!this.puttDerivedCache || this.puttDerivedCache.grid !== grid) {
             const slope = computeSlopeGrid(grid);
@@ -1858,6 +1861,7 @@ export class PlannerToolService {
             // grid + 2 cm contours. Slope mode keeps its arrows uncluttered.
             showGrid: mode === 'height',
             showContours: mode === 'height',
+            probe: mode === 'slope' && probe?.grid === grid ? probe.probe : null,
         };
     });
 
@@ -2680,6 +2684,24 @@ export class PlannerToolService {
         return this.map.interactionMode.peek() === PLANNER_TOOL_ID;
     }
 
+    /**
+     * Putt-mode tap while the slope overlay is up: read the interpolated
+     * slope under the click (the same tap that places ball/hole — slope at
+     * the point you just placed is exactly the read you want). Off-grid taps
+     * clear the readout.
+     */
+    private probePutt(p: { x: number; y: number }): void {
+        if (this.puttRead.overlayMode.peek() !== 'slope') return;
+        const grid = this.puttRead.grid.peek();
+        if (!grid) return;
+        if (!this.puttDerivedCache || this.puttDerivedCache.grid !== grid) {
+            const slope = computeSlopeGrid(grid);
+            this.puttDerivedCache = { grid, slope, stats: computeStats(grid, slope) };
+        }
+        const probe = sampleSlopeAt(grid, this.puttDerivedCache.slope, p.x, p.y);
+        this.puttProbe.set(probe ? { grid, probe } : null);
+    }
+
     private onClick(e: MapPointerEvent): void {
         if (!this.isMyClaim()) return;
         if (this.suppressClick) return;
@@ -2699,7 +2721,9 @@ export class PlannerToolService {
             // the origin and the target are user-chosen. Clicks on an existing
             // marker never get here (mousedown grabs them for a drag and the
             // synthesized click is swallowed).
-            this.puttRead.placeNext(lngLatToSweref99tm(e.lngLat));
+            const p = lngLatToSweref99tm(e.lngLat);
+            this.puttRead.placeNext(p);
+            this.probePutt(p);
             return;
         }
 

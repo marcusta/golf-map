@@ -204,6 +204,35 @@ test('clear invalidates an in-flight fetch', async () => {
     expect(svc.grid.get()).toBeNull();
 });
 
+test('probe renders only in slope mode and survives mode round-trips', async () => {
+    const api = fakeApi(() => Promise.resolve(makeGrid()));
+    const svc = new AnalysisToolService(api);
+    await svc.analyze(makeFeature());
+
+    const probe = { e: 500001, n: 6467999, slopePct: 3.2, dirE: 1, dirN: 0 };
+    svc.probe.set(probe);
+    expect(svc.view.get()!.probe).toBe(probe);
+
+    svc.setMode('height');
+    expect(svc.view.get()!.probe).toBeNull();
+    svc.setMode('slope');
+    expect(svc.view.get()!.probe).toBe(probe);
+});
+
+test('probe is dropped on re-fetch (stale against the new grid) and on clear', async () => {
+    const api = fakeApi(() => Promise.resolve(makeGrid()));
+    const svc = new AnalysisToolService(api);
+    await svc.analyze(makeFeature());
+
+    svc.probe.set({ e: 500001, n: 6467999, slopePct: 3.2, dirE: 1, dirN: 0 });
+    await svc.setBuffer(25); // re-sample → new grid
+    expect(svc.probe.get()).toBeNull();
+
+    svc.probe.set({ e: 500001, n: 6467999, slopePct: 3.2, dirE: 1, dirN: 0 });
+    svc.clear();
+    expect(svc.probe.get()).toBeNull();
+});
+
 test('derived slope/stats are cached per grid object across mode switches', async () => {
     const api = fakeApi(() => Promise.resolve(makeGrid()));
     const svc = new AnalysisToolService(api);

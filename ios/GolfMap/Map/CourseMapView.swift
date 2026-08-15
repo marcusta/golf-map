@@ -37,6 +37,12 @@ public struct CourseMapView: UIViewRepresentable {
     /// nil renders nothing. Applied via runtime source/layer add/remove — no
     /// style reload. Change detection is by (result identity, mode).
     public var analysis: GreenAnalysisMapState?
+    /// Tapped-point slope readout for the Green view (dot + downhill arrow +
+    /// slope% chip); nil renders nothing. Separate from `analysis` so a tap
+    /// never re-encodes the heat image — the renderer applies it via its own
+    /// lightweight source/layer path. Only rendered while `analysis` is up in
+    /// slope mode.
+    public var analysisProbe: SlopeProbe?
     /// Green-view putt-read overlay (break path, aim dot, reference line,
     /// ball/hole markers); nil renders nothing. Updates via cheap shape
     /// reassignment — it changes on every marker drag frame. The ball/hole
@@ -100,6 +106,7 @@ public struct CourseMapView: UIViewRepresentable {
         camera: MapCameraCommand? = nil,
         zoom: MapZoomCommand? = nil,
         analysis: GreenAnalysisMapState? = nil,
+        analysisProbe: SlopeProbe? = nil,
         putt: PuttReadGeometry.PuttOverlay? = nil,
         onMapReady: (() -> Void)? = nil,
         onCameraChange: ((LatLon, Double, Double) -> Void)? = nil,
@@ -119,6 +126,7 @@ public struct CourseMapView: UIViewRepresentable {
         self.camera = camera
         self.zoom = zoom
         self.analysis = analysis
+        self.analysisProbe = analysisProbe
         self.putt = putt
         self.onMapReady = onMapReady
         self.onCameraChange = onCameraChange
@@ -292,6 +300,7 @@ public struct CourseMapView: UIViewRepresentable {
 
         coordinator.desiredOverlays = overlays
         coordinator.desiredAnalysis = analysis
+        coordinator.desiredAnalysisProbe = analysisProbe
         coordinator.desiredPutt = putt
         if coordinator.isStyleLoaded, let style = mapView.style {
             MapOverlayRenderer.apply(overlays, to: style)
@@ -299,6 +308,7 @@ public struct CourseMapView: UIViewRepresentable {
             coordinator.ellipseLabelRenderer.apply(overlays.ellipseLabels, to: style)
             coordinator.adjustHandleRenderer.apply(overlays.adjustHandles, to: style)
             coordinator.analysisRenderer.apply(analysis, to: style)
+            coordinator.analysisRenderer.applyProbe(analysisProbe, to: style)
             // After analysis so the putt layers stack above the heat/arrows.
             coordinator.puttRenderer.apply(putt, to: style)
         }
@@ -341,6 +351,7 @@ public struct CourseMapView: UIViewRepresentable {
         var appliedFeaturesGeoJSON: Data?
         var desiredOverlays: MapOverlayState = .empty
         var desiredAnalysis: GreenAnalysisMapState?
+        var desiredAnalysisProbe: SlopeProbe?
         var desiredPutt: PuttReadGeometry.PuttOverlay?
         let analysisRenderer = GreenAnalysisRenderer()
         let puttRenderer = PuttOverlayRenderer()
@@ -645,6 +656,7 @@ public struct CourseMapView: UIViewRepresentable {
             adjustHandleRenderer.apply(desiredOverlays.adjustHandles, to: style)
             analysisRenderer.styleDidReload()
             analysisRenderer.apply(desiredAnalysis, to: style)
+            analysisRenderer.applyProbe(desiredAnalysisProbe, to: style)
             puttRenderer.styleDidReload()
             puttRenderer.apply(desiredPutt, to: style)
             if let pendingCamera {

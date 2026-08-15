@@ -345,6 +345,79 @@ public func sampleFallLines(_ grid: SampleGrid, slope: SlopeGrid) -> [FallLineAr
     return arrows
 }
 
+// MARK: - Point probe (tap → slope at that spot)
+
+/// The slope readout for one tapped point.
+public struct SlopeProbe: Equatable, Sendable {
+    /// Probed point, EPSG:3006.
+    public var e: Double
+    public var n: Double
+    /// Interpolated slope magnitude, percent.
+    public var slopePct: Double
+    /// Downhill unit vector (zero when locally flat).
+    public var dirE: Double
+    public var dirN: Double
+
+    public init(e: Double, n: Double, slopePct: Double, dirE: Double, dirN: Double) {
+        self.e = e
+        self.n = n
+        self.slopePct = slopePct
+        self.dirE = dirE
+        self.dirN = dirN
+    }
+}
+
+/// Slope at an arbitrary EPSG:3006 point: bilinear over the 4 nearest cell
+/// centers, skipping nodata cells with weight renormalization. Magnitude
+/// interpolates the scalar slope%, direction interpolates the downhill
+/// *vector* (dir × pct) so opposing faces cancel toward flat at crests.
+/// Null outside the grid extent or with no valid neighbor.
+public func sampleSlopeAt(_ grid: SampleGrid, slope: SlopeGrid, e: Double, n: Double) -> SlopeProbe? {
+    let spec = grid.spec
+    let widthM = Double(spec.width) * spec.resolution
+    let heightM = Double(spec.height) * spec.resolution
+    if e < spec.originE || e > spec.originE + widthM { return nil }
+    if n > spec.originN || n < spec.originN - heightM { return nil }
+
+    // Cell-center space: cell (col,row)'s center sits at (col+0.5, row+0.5).
+    let fx = (e - spec.originE) / spec.resolution - 0.5
+    let fy = (spec.originN - n) / spec.resolution - 0.5
+    let col0 = Int(floor(fx))
+    let row0 = Int(floor(fy))
+    let tx = fx - Double(col0)
+    let ty = fy - Double(row0)
+
+    var wSum = 0.0
+    var pctSum = 0.0
+    var vE = 0.0
+    var vN = 0.0
+    let neighbors: [(Int, Int, Double)] = [
+        (col0, row0, (1 - tx) * (1 - ty)),
+        (col0 + 1, row0, tx * (1 - ty)),
+        (col0, row0 + 1, (1 - tx) * ty),
+        (col0 + 1, row0 + 1, tx * ty),
+    ]
+    for (col, row, w) in neighbors {
+        guard col >= 0, col < spec.width, row >= 0, row < spec.height else { continue }
+        let i = row * spec.width + col
+        let pct = slope.slopePct[i]
+        if pct.isNaN { continue }
+        wSum += w
+        pctSum += w * pct
+        vE += w * slope.dirE[i] * pct
+        vN += w * slope.dirN[i] * pct
+    }
+    if wSum < 1e-9 { return nil }
+    let mag = (vE * vE + vN * vN).squareRoot()
+    return SlopeProbe(
+        e: e,
+        n: n,
+        slopePct: pctSum / wSum,
+        dirE: mag > 1e-9 ? vE / mag : 0,
+        dirN: mag > 1e-9 ? vN / mag : 0
+    )
+}
+
 // MARK: - 1 m reference grid
 
 /// A straight line segment, EPSG:3006 endpoints.

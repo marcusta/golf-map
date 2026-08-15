@@ -116,6 +116,49 @@ final class AnalysisOverlayGeometryTests: XCTestCase {
         XCTAssertEqual(label.y, 6_470_000, accuracy: 0.01)
     }
 
+    func testProbeArrowLengthIsScaledUpFromTheAmbientArrows() {
+        let spec = AnalysisGridSpec(originE: 0, originN: 0, resolution: 0.5, width: 40, height: 40)
+        XCTAssertEqual(
+            AnalysisOverlayGeometry.probeArrowLengthM(spec),
+            AnalysisOverlayGeometry.arrowLengthM(spec) * 1.6,
+            accuracy: 1e-12
+        )
+    }
+
+    func testProbeStrokesAnchorTheArrowAtTheProbe() {
+        // Downhill due east, length 4 m: shaft runs FROM the probe TO 4 m
+        // east (anchored at the point, not centered like ambient arrows).
+        let probe = SlopeProbe(e: 540_000, n: 6_470_000, slopePct: 3.2, dirE: 1, dirN: 0)
+        let geom = AnalysisOverlayGeometry.probeStrokes(probe, lengthM: 4)
+        XCTAssertEqual(geom.strokes.count, 3) // shaft + 2 head strokes
+
+        func metric(_ ll: LatLon) -> Sweref99TM.Point { Sweref99TM.fromWGS84(ll) }
+        let point = metric(geom.point)
+        XCTAssertEqual(point.x, 540_000, accuracy: 0.01)
+        XCTAssertEqual(point.y, 6_470_000, accuracy: 0.01)
+
+        let start = metric(geom.strokes[0][0])
+        let tip = metric(geom.strokes[0][1])
+        XCTAssertEqual(start.x, 540_000, accuracy: 0.01)
+        XCTAssertEqual(tip.x, 540_000 + 4, accuracy: 0.01)
+        XCTAssertEqual(tip.y, 6_470_000, accuracy: 0.01)
+        // Head strokes swing back from the tip (±150°): west of the tip.
+        for head in geom.strokes.dropFirst() {
+            let hTip = metric(head[0])
+            let hEnd = metric(head[1])
+            XCTAssertEqual(hTip.x, tip.x, accuracy: 0.01)
+            XCTAssertLessThan(hEnd.x, tip.x)
+        }
+    }
+
+    func testProbeStrokesAreEmptyWhenLocallyFlat() {
+        let probe = SlopeProbe(e: 540_000, n: 6_470_000, slopePct: 0, dirE: 0, dirN: 0)
+        let geom = AnalysisOverlayGeometry.probeStrokes(probe, lengthM: 4)
+        XCTAssertTrue(geom.strokes.isEmpty)
+        let point = Sweref99TM.fromWGS84(geom.point)
+        XCTAssertEqual(point.x, 540_000, accuracy: 0.01)
+    }
+
     func testGreenAnalysisResultComputesBoundsAndDerivedFields() {
         // 5% plane grid, 10×10 m all-inside.
         let spec = AnalysisGridSpec(

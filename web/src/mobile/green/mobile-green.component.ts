@@ -31,10 +31,14 @@ import { PUTT_OVERLAY_ID, buildPuttGeojson, puttLayers } from '../../planner/put
 import {
     computeSlopeGrid,
     computeStats,
+    fallDirectionLabel,
     sampleFallLines,
+    sampleSlopeAt,
     type AnalysisStats,
     type SlopeGrid,
+    type SlopeProbe,
 } from '../../analysis/analysis-math';
+import { probeArrowLengthM, probeGeojson, probeLayers } from '../../analysis/probe-overlay';
 import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../../geo/transform';
 import { pointInGeometry } from '../../geo/bezier';
 import { GeolocationService } from '../gps/geolocation.service';
@@ -47,6 +51,7 @@ import {
     GREEN_ARROWS_ID,
     GREEN_BOUNDARY_ID,
     GREEN_HEAT_ID,
+    GREEN_PROBE_ID,
     arrowLayers,
     arrowLengthM,
     arrowsGeojson,
@@ -82,6 +87,8 @@ const tpl = template(`
                 <div class="m-green__note" bind="note" data-testid="m-green-note"></div>
                 <div class="m-green__conf" bind="conf" data-testid="m-green-confidence"></div>
             </div>
+
+            <div class="m-green__probe" bind="probeRow" data-testid="m-green-probe"></div>
 
             <div class="m-green__row">
                 <span class="m-green__lbl">Tap places</span>
@@ -230,6 +237,18 @@ export class MobileGreenComponent extends Component {
             }
             & .m-green__conf.warn { color: ${t('color-status-caution')}; }
 
+            /* Tapped-point slope readout (slope overlay only). */
+            & .m-green__probe {
+                display: none;
+                margin: calc(-1 * ${s('sm')}) 0 ${s('md')};
+                font-size: 0.85rem;
+                font-weight: 600;
+                font-variant-numeric: tabular-nums;
+                text-align: center;
+                color: ${t('color-text-secondary')};
+            }
+            & .m-green__probe.show { display: block; }
+
             & .m-green__row {
                 display: flex;
                 align-items: center;
@@ -326,7 +345,10 @@ export class MobileGreenComponent extends Component {
     private heatAdded = false;
     private boundaryAdded = false;
     private arrowsAdded = false;
+    private probeOverlayAdded = false;
     private puttAdded = false;
+    /** Tapped-point slope readout, pinned to the grid it was sampled from. */
+    private probe = new Signal<{ grid: SampleGrid; probe: SlopeProbe } | null>(null);
     /** The (grid, mode) the heat image was rendered for — skip redundant work. */
     private renderedFor: { grid: SampleGrid; mode: string } | null = null;
     private derivedCache: { grid: SampleGrid; slope: SlopeGrid; stats: AnalysisStats } | null = null;
@@ -386,6 +408,10 @@ export class MobileGreenComponent extends Component {
                 },
                 textContent: () => confidenceText(this.putt.display.get()),
             },
+            probeRow: {
+                className: () => this.probeText() ? 'm-green__probe show' : 'm-green__probe',
+                textContent: () => this.probeText() ?? '',
+            },
             placeBall: {
                 className: () => this.segClass(this.putt.placing.get() === 'ball'),
                 onclick: () => this.putt.setPlacing('ball'),
@@ -435,6 +461,15 @@ export class MobileGreenComponent extends Component {
             holeNumber: this.holeNo.get(),
             hasGreen: this.context.get() !== null,
         });
+    }
+
+    /** "Slope here: 2.4% · falls NE", or null when no live probe. */
+    private probeText(): string | null {
+        if (this.putt.overlayMode.get() !== 'slope') return null;
+        const p = this.probe.get();
+        if (!p || p.grid !== this.putt.grid.get()) return null;
+        const dir = fallDirectionLabel(p.probe.dirE, p.probe.dirN);
+        return `Slope here: ${p.probe.slopePct.toFixed(1)}%${dir ? ` · falls ${dir}` : ''}`;
     }
 
     private stepStimp(delta: number): void {
@@ -503,7 +538,8 @@ export class MobileGreenComponent extends Component {
         // the analysis stack.
         this.track(effect(() => {
             if (!this.mapSvc.ready.get()) {
-                this.heatAdded = this.boundaryAdded = this.arrowsAdded = this.puttAdded = false;
+                this.heatAdded = this.boundaryAdded = this.arrowsAdded = false;
+                this.probeOverlayAdded = this.puttAdded = false;
                 this.renderedFor = null;
                 return;
             }
@@ -524,11 +560,13 @@ export class MobileGreenComponent extends Component {
             this.schedulePuttData();
         }));
 
-        // Analysis field: grid arrival + mode toggles, likewise coalesced.
+        // Analysis field: grid arrival + mode toggles + probe taps, likewise
+        // coalesced.
         this.track(effect(() => {
             this.putt.grid.get();
             this.putt.overlayMode.get();
             this.putt.context.get();
+            this.probe.get();
             this.scheduleAnalysisRender();
         }));
 
@@ -546,13 +584,16 @@ export class MobileGreenComponent extends Component {
         }));
 
         // Tap-to-place (the ball first, then the hole — the shared service
-        // auto-advances the selector).
+        // auto-advances the selector). With the slope overlay up, the same
+        // tap also reads the slope at that point (sheet row + map arrow).
         this.track(this.mapSvc.onClick(({ lngLat }) => {
             if (this.suppressClick) {
                 this.suppressClick = false;
                 return;
             }
-            this.putt.placeNext(lngLatToSweref99tm(lngLat));
+            const p = lngLatToSweref99tm(lngLat);
+            this.putt.placeNext(p);
+            this.updateProbe(p);
         }));
 
         this.geo.start();
@@ -663,11 +704,29 @@ export class MobileGreenComponent extends Component {
                 this.mapSvc.addOverlayLayer(
                     GREEN_ARROWS_ID, arrowsGeojson(arrows, arrowLengthM(grid)), arrowLayers());
                 this.arrowsAdded = true;
+
+                const probe = this.probe.peek();
+                if (probe && probe.grid === grid) {
+                    this.mapSvc.addOverlayLayer(
+                        GREEN_PROBE_ID,
+                        probeGeojson(probe.probe, probeArrowLengthM(grid)),
+                        probeLayers(GREEN_PROBE_ID));
+                    this.probeOverlayAdded = true;
+                }
             }
         } else {
             this.clearHeat();
         }
         this.raisePuttGeometry();
+    }
+
+    /** Sample the slope under a tap; clears when off-grid or no slope data. */
+    private updateProbe(p: Vec2): void {
+        if (this.putt.overlayMode.peek() !== 'slope') return;
+        const grid = this.putt.grid.peek();
+        if (!grid) return;
+        const probe = sampleSlopeAt(grid, this.derivedFor(grid).slope, p.x, p.y);
+        this.probe.set(probe ? { grid, probe } : null);
     }
 
     private derivedFor(grid: SampleGrid): { slope: SlopeGrid; stats: AnalysisStats } {
@@ -679,6 +738,10 @@ export class MobileGreenComponent extends Component {
     }
 
     private clearVectors(): void {
+        if (this.probeOverlayAdded) {
+            this.mapSvc.removeOverlayLayer(GREEN_PROBE_ID);
+            this.probeOverlayAdded = false;
+        }
         if (this.arrowsAdded) {
             this.mapSvc.removeOverlayLayer(GREEN_ARROWS_ID);
             this.arrowsAdded = false;

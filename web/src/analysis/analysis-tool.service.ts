@@ -10,9 +10,11 @@ import { pointInGeometry, type FeatureGeometry } from '../geo/bezier';
 import {
     computeSlopeGrid,
     computeStats,
+    sampleSlopeAt,
     type AnalysisMode,
     type AnalysisStats,
     type SlopeGrid,
+    type SlopeProbe,
 } from './analysis-math';
 
 /** Interaction-claim id AND overlay id prefix for the analysis tool. */
@@ -36,6 +38,8 @@ export interface AnalysisView {
     showGrid: boolean;
     /** Draw 2 cm elevation contours. */
     showContours: boolean;
+    /** Tapped-point slope readout (slope mode only), or null. */
+    probe: SlopeProbe | null;
 }
 
 /**
@@ -76,6 +80,8 @@ export class AnalysisToolService {
     readonly grid = new Signal<SampleGrid | null>(null);
     readonly loading = new Signal(false);
     readonly error = new Signal<RequestError | null>(null);
+    /** Clicked-point slope readout (slope mode; cleared with the grid). */
+    readonly probe = new Signal<SlopeProbe | null>(null);
 
     private ctx: ToolContext | null = null;
     private renderer: AnalysisRenderer | null = null;
@@ -103,6 +109,7 @@ export class AnalysisToolService {
             stats: this.derivedCache.stats,
             showGrid: this.gridVisible.get(),
             showContours: this.contoursVisible.get(),
+            probe: mode === 'slope' ? this.probe.get() : null,
         };
     });
 
@@ -194,6 +201,7 @@ export class AnalysisToolService {
         this.analyzedFeature.set(null);
         this.grid.set(null);
         this.error.set(null);
+        this.probe.set(null);
     }
 
     private async refresh(): Promise<void> {
@@ -208,7 +216,10 @@ export class AnalysisToolService {
                 resolutionM: ANALYSIS_RESOLUTION_M,
             }));
         if (seq !== this.fetchSeq) return; // superseded by a newer request / clear
-        if (result) this.grid.set(result);
+        if (result) {
+            this.probe.set(null); // sampled against the old grid — stale
+            this.grid.set(result);
+        }
     }
 
     // ── Map click → green hit test ────────────────────────────────────────
@@ -218,9 +229,25 @@ export class AnalysisToolService {
         const p = lngLatToSweref99tm(e.lngLat);
 
         const hit = this.hitGreen(p);
+        const analyzed = this.analyzedFeature.peek();
+
+        // Slope mode: a click inside the analysed grid (green OR surrounds)
+        // reads the slope at that point instead of re-analysing/clearing.
+        // A different green still switches the analysis.
+        if ((!hit || hit.id === analyzed?.id) && this.mode.peek() === 'slope') {
+            const view = this.view.peek();
+            if (view) {
+                const probe = sampleSlopeAt(view.grid, view.slope, p.x, p.y);
+                if (probe) {
+                    this.probe.set(probe);
+                    return;
+                }
+            }
+        }
+
         if (hit) {
             void this.analyze(hit);
-        } else if (this.analyzedFeature.peek()) {
+        } else if (analyzed) {
             this.clear(); // click off a green hides the overlay (reference behavior)
         }
     }

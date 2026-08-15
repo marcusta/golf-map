@@ -355,6 +355,69 @@ final class AnalysisMathTests: XCTestCase {
         }
     }
 
+    // MARK: - sampleSlopeAt (tap probe — parity with the web probe tests)
+
+    func testProbeOnAnalyticPlaneReturnsExactSlopeAndDownhillDirection() {
+        let grid = planeGrid()
+        let slope = computeSlopeGrid(grid)
+        let probe = sampleSlopeAt(grid, slope: slope, e: 1002.7, n: 1997.3)
+        XCTAssertNotNil(probe)
+        XCTAssertEqual(probe?.e, 1002.7)
+        XCTAssertEqual(probe?.n, 1997.3)
+        XCTAssertEqual(probe?.slopePct ?? 0, 5, accuracy: 1e-8)
+        XCTAssertEqual(probe?.dirE ?? 0, -0.6, accuracy: 1e-8)
+        XCTAssertEqual(probe?.dirN ?? 0, -0.8, accuracy: 1e-8)
+    }
+
+    func testProbeInterpolatesBilinearlyBetweenCellsOfDifferentSlope() {
+        let grid = makeGrid(width: 2, height: 1, resolution: 1) { _, _ in 0 }
+        let slope = SlopeGrid(slopePct: [2, 6], dirE: [1, 1], dirN: [0, 0])
+        // Midpoint of the two cell centers (e = 1000.5 and 1001.5).
+        let probe = sampleSlopeAt(grid, slope: slope, e: 1001, n: 1999.5)
+        XCTAssertEqual(probe?.slopePct ?? 0, 4, accuracy: 1e-8)
+        XCTAssertEqual(probe?.dirE ?? 0, 1, accuracy: 1e-8)
+        XCTAssertEqual(probe?.dirN ?? 1, 0, accuracy: 1e-8)
+    }
+
+    func testProbeDirectionCancelsTowardFlatAcrossACrest() {
+        let grid = makeGrid(width: 2, height: 1, resolution: 1) { _, _ in 0 }
+        let slope = SlopeGrid(slopePct: [4, 4], dirE: [-1, 1], dirN: [0, 0])
+        let probe = sampleSlopeAt(grid, slope: slope, e: 1001, n: 1999.5)
+        // Scalar magnitude survives; the vector cancels to zero direction.
+        XCTAssertEqual(probe?.slopePct ?? 0, 4, accuracy: 1e-8)
+        XCTAssertEqual(probe?.dirE, 0)
+        XCTAssertEqual(probe?.dirN, 0)
+    }
+
+    func testProbeOutsideGridExtentReturnsNil() {
+        let grid = planeGrid() // e 1000–1006, n 1995–2000
+        let slope = computeSlopeGrid(grid)
+        XCTAssertNil(sampleSlopeAt(grid, slope: slope, e: 999.9, n: 1997))
+        XCTAssertNil(sampleSlopeAt(grid, slope: slope, e: 1006.1, n: 1997))
+        XCTAssertNil(sampleSlopeAt(grid, slope: slope, e: 1003, n: 2000.1))
+        XCTAssertNil(sampleSlopeAt(grid, slope: slope, e: 1003, n: 1994.9))
+        // Edges are inclusive.
+        XCTAssertNotNil(sampleSlopeAt(grid, slope: slope, e: 1000, n: 2000))
+        XCTAssertNotNil(sampleSlopeAt(grid, slope: slope, e: 1006, n: 1995))
+    }
+
+    func testProbeSkipsNodataNeighborsWithWeightRenormalization() {
+        let grid = makeGrid(width: 2, height: 1, resolution: 1) { _, _ in 0 }
+        let slope = SlopeGrid(slopePct: [3, .nan], dirE: [0, .nan], dirN: [-1, .nan])
+        // Midpoint: the NaN cell's half weight renormalizes onto the valid cell.
+        let probe = sampleSlopeAt(grid, slope: slope, e: 1001, n: 1999.5)
+        XCTAssertEqual(probe?.slopePct ?? 0, 3, accuracy: 1e-8)
+        XCTAssertEqual(probe?.dirN ?? 0, -1, accuracy: 1e-8)
+    }
+
+    func testProbeWithNoValidNeighborReturnsNil() {
+        let grid = makeGrid(width: 2, height: 1, resolution: 1) { _, _ in 0 }
+        let slope = SlopeGrid(
+            slopePct: [.nan, .nan], dirE: [.nan, .nan], dirN: [.nan, .nan]
+        )
+        XCTAssertNil(sampleSlopeAt(grid, slope: slope, e: 1001, n: 1999.5))
+    }
+
     func testContourSegmentsStayWithinTheSampledNodeExtent() {
         let grid = makeGrid(width: 12, height: 10) { e, n in
             50 + 0.06 * (e - 1000) + 0.04 * (n - 1990) + 0.05 * sin(e) * cos(n)

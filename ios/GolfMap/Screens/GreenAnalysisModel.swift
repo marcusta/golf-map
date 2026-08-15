@@ -28,6 +28,8 @@ final class GreenAnalysisModel {
     private(set) var mode: AnalysisMode = .slope
     /// Surrounds buffer in meters (slider, 0–50). Changing it re-samples.
     private(set) var bufferM: Double = AnalysisGridMath.defaultBufferM
+    /// Tapped-point slope readout (slope mode only), or nil.
+    private(set) var probe: SlopeProbe?
 
     var isActive: Bool {
         if case .idle = state { return false }
@@ -127,10 +129,24 @@ final class GreenAnalysisModel {
         computeTask = nil
         activePolygon = nil
         state = .idle
+        probe = nil
     }
 
     func setMode(_ newMode: AnalysisMode) {
         mode = newMode
+        if newMode != .slope {
+            probe = nil
+        }
+    }
+
+    /// Green-view tap while the slope overlay is up: read the interpolated
+    /// slope under the finger. Off-grid taps clear the readout.
+    func probeTapped(_ point: Vec2) {
+        guard mode == .slope, let result else {
+            probe = nil
+            return
+        }
+        probe = sampleSlopeAt(result.grid, slope: result.slope, e: point.x, n: point.y)
     }
 
     /// Change the surrounds buffer (clamped 0–50 m) and re-sample.
@@ -153,6 +169,7 @@ final class GreenAnalysisModel {
         guard let polygon = activePolygon else { return }
         computeTask?.cancel()
         state = .loading
+        probe = nil // sampled against the outgoing grid — stale
         let sampler = sampler
         let bufferM = bufferM
         computeTask = Task { [weak self] in

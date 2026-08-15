@@ -44,6 +44,12 @@ final class GreenAnalysisRendererTests: XCTestCase {
         XCTAssertNil(GreenAnalysisRenderer.image(fromRGBA: [], width: 0, height: 0))
     }
 
+    func testProbeLabelImageRendersNonEmptyChip() {
+        let image = GreenAnalysisRenderer.probeLabelImage(text: "3.2%")
+        XCTAssertGreaterThan(image.size.width, 10)
+        XCTAssertGreaterThan(image.size.height, 10)
+    }
+
     func testLabelImageRendersNonEmptyChip() {
         let image = GreenAnalysisRenderer.labelImage(text: "3.2")
         XCTAssertGreaterThan(image.size.width, 10)

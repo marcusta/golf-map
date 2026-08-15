@@ -23,6 +23,13 @@ public enum GreenAnalysisMapIDs {
     public static let labelsSource = "analysis-labels"
     public static let labelsLayer = "analysis-labels"
     static let labelImagePrefix = "analysis-label-"
+    public static let probeLinesSource = "analysis-probe-lines"
+    public static let probeArrowCasingLayer = "analysis-probe-arrow-casing"
+    public static let probeArrowLayer = "analysis-probe-arrow"
+    public static let probePointSource = "analysis-probe-point"
+    public static let probeDotLayer = "analysis-probe-dot"
+    public static let probeLabelLayer = "analysis-probe-label"
+    static let probeLabelImageName = "analysis-probe-label"
 }
 
 /// Renders one `GreenAnalysisMapState` onto the course map: heat-map image
@@ -46,11 +53,14 @@ final class GreenAnalysisRenderer {
     /// The (result, mode) currently materialized in the style.
     private var rendered: GreenAnalysisMapState?
     private var labelImageNames: [String] = []
+    /// The tap-probe currently materialized in the style.
+    private var renderedProbe: SlopeProbe?
 
     /// The style was rebuilt/reloaded — everything previously added is gone.
     func styleDidReload() {
         rendered = nil
         labelImageNames = []
+        renderedProbe = nil
     }
 
     /// Bring the style in sync with `state` (nil clears). Rebuilds wholesale
@@ -108,6 +118,151 @@ final class GreenAnalysisRenderer {
         }
         labelImageNames = []
         rendered = nil
+        clearProbe(from: style)
+    }
+
+    // MARK: - Tap probe (separate lifecycle — a tap must not rebuild the heat image)
+
+    /// Bring the style in sync with the tapped-point probe (nil clears).
+    /// Deliberately NOT part of `GreenAnalysisMapState`/`apply`: that path
+    /// rebuilds the whole overlay (heat image re-encode included) on every
+    /// state change, far too heavy per tap. Call after `apply` — the probe
+    /// only renders over an applied slope-mode overlay.
+    func applyProbe(_ probe: SlopeProbe?, to style: MLNStyle) {
+        let active = rendered?.mode == .slope ? probe : nil
+        guard active != renderedProbe else { return }
+        clearProbe(from: style)
+        guard let active, let spec = rendered?.result.grid.spec else { return }
+
+        let lengthM = AnalysisOverlayGeometry.probeArrowLengthM(spec)
+        let geom = AnalysisOverlayGeometry.probeStrokes(active, lengthM: lengthM)
+        let gold = UIColor(red: 0xff / 255.0, green: 0xd2 / 255.0, blue: 0x3f / 255.0, alpha: 1)
+        let dark = UIColor(red: 0x14 / 255.0, green: 0x28 / 255.0, blue: 0x1c / 255.0, alpha: 1)
+
+        // Downhill arrow (gold over dark casing — distinct from the white
+        // ambient fall-line arrows). Absent when the point is locally flat.
+        if !geom.strokes.isEmpty {
+            let features = geom.strokes.map { stroke -> MLNPolylineFeature in
+                var coordinates = stroke.map(\.clCoordinate)
+                return MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+            }
+            let source = MLNShapeSource(
+                identifier: GreenAnalysisMapIDs.probeLinesSource,
+                shape: MLNShapeCollectionFeature(shapes: features)
+            )
+            style.addSource(source)
+
+            let round = NSValue(mlnLineCap: .round)
+            let casing = MLNLineStyleLayer(
+                identifier: GreenAnalysisMapIDs.probeArrowCasingLayer,
+                source: source
+            )
+            casing.lineCap = NSExpression(forConstantValue: round)
+            casing.lineColor = NSExpression(forConstantValue: dark)
+            casing.lineWidth = NSExpression(forConstantValue: 4.5)
+            casing.lineOpacity = NSExpression(forConstantValue: 0.6)
+            insert(casing, into: style)
+
+            let line = MLNLineStyleLayer(
+                identifier: GreenAnalysisMapIDs.probeArrowLayer,
+                source: source
+            )
+            line.lineCap = NSExpression(forConstantValue: round)
+            line.lineColor = NSExpression(forConstantValue: gold)
+            line.lineWidth = NSExpression(forConstantValue: 2.2)
+            insert(line, into: style)
+        }
+
+        // Gold-ringed dot at the tapped point + slope% chip above it.
+        let point = MLNPointFeature()
+        point.coordinate = geom.point.clCoordinate
+        let pointSource = MLNShapeSource(
+            identifier: GreenAnalysisMapIDs.probePointSource,
+            shape: point
+        )
+        style.addSource(pointSource)
+
+        let dot = MLNCircleStyleLayer(
+            identifier: GreenAnalysisMapIDs.probeDotLayer,
+            source: pointSource
+        )
+        dot.circleRadius = NSExpression(forConstantValue: 4.5)
+        dot.circleColor = NSExpression(forConstantValue: dark)
+        dot.circleStrokeColor = NSExpression(forConstantValue: gold)
+        dot.circleStrokeWidth = NSExpression(forConstantValue: 2)
+        insert(dot, into: style)
+
+        let text = String(format: "%.1f%%", active.slopePct)
+        style.setImage(
+            Self.probeLabelImage(text: text),
+            forName: GreenAnalysisMapIDs.probeLabelImageName
+        )
+        let label = MLNSymbolStyleLayer(
+            identifier: GreenAnalysisMapIDs.probeLabelLayer,
+            source: pointSource
+        )
+        label.iconImageName = NSExpression(
+            forConstantValue: GreenAnalysisMapIDs.probeLabelImageName
+        )
+        label.iconAllowsOverlap = NSExpression(forConstantValue: true)
+        label.iconOffset = NSExpression(
+            forConstantValue: NSValue(cgVector: CGVector(dx: 0, dy: -16))
+        )
+        insert(label, into: style)
+
+        renderedProbe = active
+    }
+
+    private func clearProbe(from style: MLNStyle) {
+        for layerID in [
+            GreenAnalysisMapIDs.probeLabelLayer,
+            GreenAnalysisMapIDs.probeDotLayer,
+            GreenAnalysisMapIDs.probeArrowLayer,
+            GreenAnalysisMapIDs.probeArrowCasingLayer,
+        ] {
+            if let layer = style.layer(withIdentifier: layerID) {
+                style.removeLayer(layer)
+            }
+        }
+        for sourceID in [
+            GreenAnalysisMapIDs.probePointSource,
+            GreenAnalysisMapIDs.probeLinesSource,
+        ] {
+            if let source = style.source(withIdentifier: sourceID) {
+                style.removeSource(source)
+            }
+        }
+        style.removeImage(forName: GreenAnalysisMapIDs.probeLabelImageName)
+        renderedProbe = nil
+    }
+
+    /// The probe's slope% chip: the label-chip look but gold bold text with a
+    /// "%" suffix, matching the web probe marker.
+    static func probeLabelImage(text: String) -> UIImage {
+        let font = UIFont.systemFont(ofSize: 12, weight: .bold)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: UIColor(
+                red: 0xff / 255.0, green: 0xd2 / 255.0, blue: 0x3f / 255.0, alpha: 1
+            ),
+        ]
+        let textSize = (text as NSString).size(withAttributes: attributes)
+        let padding = CGSize(width: 5, height: 2)
+        let size = CGSize(
+            width: ceil(textSize.width) + padding.width * 2,
+            height: ceil(textSize.height) + padding.height * 2
+        )
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { _ in
+            let rect = CGRect(origin: .zero, size: size)
+            let path = UIBezierPath(roundedRect: rect, cornerRadius: 4)
+            UIColor(red: 10 / 255.0, green: 20 / 255.0, blue: 14 / 255.0, alpha: 0.85).setFill()
+            path.fill()
+            (text as NSString).draw(
+                at: CGPoint(x: padding.width, y: padding.height),
+                withAttributes: attributes
+            )
+        }
     }
 
     // MARK: - Heat image

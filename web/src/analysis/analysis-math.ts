@@ -447,3 +447,83 @@ export function sampleFallLines(grid: SampleGrid, slope: SlopeGrid): FallLineArr
     }
     return arrows;
 }
+
+// ─── Point probe (tap a point → slope there) ──────────────────────────────
+
+/** Interpolated slope at a tapped/clicked point, EPSG:3006. */
+export interface SlopeProbe {
+    e: number;
+    n: number;
+    /** Bilinear slope magnitude, percent. */
+    slopePct: number;
+    /** Downhill unit vector; (0, 0) when the point is locally flat. */
+    dirE: number;
+    dirN: number;
+}
+
+/**
+ * Slope at an arbitrary point: bilinear over the four surrounding cell
+ * centers, skipping nodata cells and renormalizing the weights (so a probe
+ * next to the grid edge or a nodata hole still reads from what IS there).
+ * Magnitude interpolates the scalar slope%; direction interpolates the
+ * downhill *vector* (so opposing faces cancel toward flat on a crest instead
+ * of averaging into a fictitious direction). Null when the point is outside
+ * the grid extent or has no valid neighbor cell.
+ */
+export function sampleSlopeAt(
+    grid: SampleGrid,
+    slope: SlopeGrid,
+    e: number,
+    n: number,
+): SlopeProbe | null {
+    const { origin, resolution, width, height } = grid;
+    if (e < origin.e || e > origin.e + width * resolution) return null;
+    if (n > origin.n || n < origin.n - height * resolution) return null;
+
+    // Position in cell-center space (cell centers sit at +0.5 cells).
+    const fx = (e - origin.e) / resolution - 0.5;
+    const fy = (origin.n - n) / resolution - 0.5;
+    const col0 = Math.floor(fx);
+    const row0 = Math.floor(fy);
+    const tx = fx - col0;
+    const ty = fy - row0;
+
+    let wSum = 0;
+    let pctSum = 0;
+    let vE = 0;
+    let vN = 0;
+    for (const [col, row, w] of [
+        [col0, row0, (1 - tx) * (1 - ty)],
+        [col0 + 1, row0, tx * (1 - ty)],
+        [col0, row0 + 1, (1 - tx) * ty],
+        [col0 + 1, row0 + 1, tx * ty],
+    ]) {
+        if (col < 0 || col >= width || row < 0 || row >= height) continue;
+        const i = row * width + col;
+        const pct = slope.slopePct[i];
+        if (Number.isNaN(pct)) continue;
+        wSum += w;
+        pctSum += w * pct;
+        vE += w * slope.dirE[i] * pct;
+        vN += w * slope.dirN[i] * pct;
+    }
+    if (wSum < 1e-9) return null;
+
+    const slopePct = pctSum / wSum;
+    const mag = Math.hypot(vE, vN);
+    return {
+        e,
+        n,
+        slopePct,
+        dirE: mag > 1e-9 ? vE / mag : 0,
+        dirN: mag > 1e-9 ? vN / mag : 0,
+    };
+}
+
+/** 8-way compass name for a downhill direction, e.g. "NE"; null when flat. */
+export function fallDirectionLabel(dirE: number, dirN: number): string | null {
+    if (dirE === 0 && dirN === 0) return null;
+    const bearing = (Math.atan2(dirE, dirN) * 180) / Math.PI;
+    const names = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    return names[Math.round(((bearing + 360) % 360) / 45) % 8];
+}

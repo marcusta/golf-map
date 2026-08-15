@@ -21,6 +21,7 @@ import {
 } from './analysis-math';
 import type { AnalysisRenderer, AnalysisView } from './analysis-tool.service';
 import type { SampleGrid } from '../../../shared/api/analysis.gen';
+import { probeArrowLengthM, probeGeojson, probeLayers } from './probe-overlay';
 
 const HEAT_SOURCE_ID = 'analysis-heat';
 const HEAT_LAYER_ID = 'analysis-heat';
@@ -28,6 +29,7 @@ const BOUNDARY_OVERLAY_ID = 'analysis-boundary';
 const ARROWS_OVERLAY_ID = 'analysis-arrows';
 const GRID_OVERLAY_ID = 'analysis-meter-grid';
 const CONTOURS_OVERLAY_ID = 'analysis-contours';
+const PROBE_OVERLAY_ID = 'analysis-probe';
 
 type Quad = [[number, number], [number, number], [number, number], [number, number]];
 
@@ -120,7 +122,9 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
     private arrowsAdded = false;
     private gridAdded = false;
     private contoursAdded = false;
+    private probeAdded = false;
     private labelMarkers: maplibregl.Marker[] = [];
+    private probeMarker: maplibregl.Marker | null = null;
     /** The grid/mode the current heat image was rendered from (skip redundant redraws). */
     private renderedFor: { grid: SampleGrid; mode: string } | null = null;
     /** Grid-derived decoration GeoJSON, cached per grid object (toggles re-render cheaply). */
@@ -155,8 +159,9 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
         }
 
         // 2. Decoration stack — rebuilt every render in a fixed order so the
-        // z-order is always heat < contours < 1 m grid < boundary < arrows,
-        // whichever of grid/mode/toggles changed.
+        // z-order is always heat < contours < 1 m grid < boundary < arrows
+        // < probe, whichever of grid/mode/toggles changed.
+        this.removeProbe(map);
         this.removeArrows(map);
         this.removeDecorations(map);
 
@@ -256,6 +261,29 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
                 );
             }
         }
+
+        // 4. Slope probe: the clicked point's dot + downhill arrow + a slope%
+        // chip (a DOM marker, like the arrow labels — no glyphs endpoint).
+        if (view.mode === 'slope' && view.probe) {
+            const probe = view.probe;
+            map.addOverlayLayer(
+                PROBE_OVERLAY_ID,
+                probeGeojson(probe, probeArrowLengthM(view.grid)),
+                probeLayers(PROBE_OVERLAY_ID),
+            );
+            this.probeAdded = true;
+
+            const el = document.createElement('div');
+            el.dataset.testid = 'analysis-probe-label';
+            el.textContent = `${probe.slopePct.toFixed(1)}%`;
+            el.style.cssText =
+                'background: rgba(10, 20, 14, 0.85); color: #ffd23f; font: 700 12px/1.5 system-ui, sans-serif;' +
+                'padding: 1px 6px; border-radius: 5px; pointer-events: none; white-space: nowrap;';
+            const { lat, lon } = sweref99tmToWgs84(probe.e, probe.n);
+            this.probeMarker = new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -10] })
+                .setLngLat([lon, lat])
+                .addTo(raw);
+        }
     }
 
     reset(): void {
@@ -263,11 +291,14 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
         // DOM nodes at this point but remove() is safe and drops references.
         for (const m of this.labelMarkers) m.remove();
         this.labelMarkers = [];
+        this.probeMarker?.remove();
+        this.probeMarker = null;
         this.heatAdded = false;
         this.boundaryAdded = false;
         this.arrowsAdded = false;
         this.gridAdded = false;
         this.contoursAdded = false;
+        this.probeAdded = false;
         this.renderedFor = null;
         this.decorCache = null;
     }
@@ -275,6 +306,7 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
     clear(map: MapService): void {
         const raw = map.map.peek();
         if (raw) {
+            if (this.probeAdded) map.removeOverlayLayer(PROBE_OVERLAY_ID);
             if (this.arrowsAdded) map.removeOverlayLayer(ARROWS_OVERLAY_ID);
             this.removeDecorations(map);
             if (this.heatAdded) {
@@ -284,8 +316,11 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
         }
         for (const m of this.labelMarkers) m.remove();
         this.labelMarkers = [];
+        this.probeMarker?.remove();
+        this.probeMarker = null;
         this.heatAdded = false;
         this.arrowsAdded = false;
+        this.probeAdded = false;
         this.renderedFor = null;
         this.decorCache = null;
     }
@@ -338,5 +373,14 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
         }
         for (const m of this.labelMarkers) m.remove();
         this.labelMarkers = [];
+    }
+
+    private removeProbe(map: MapService): void {
+        if (this.probeAdded) {
+            map.removeOverlayLayer(PROBE_OVERLAY_ID);
+            this.probeAdded = false;
+        }
+        this.probeMarker?.remove();
+        this.probeMarker = null;
     }
 }

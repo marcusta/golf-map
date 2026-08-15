@@ -40,6 +40,39 @@ public enum AnalysisOverlayGeometry {
         return min(3.5, max(1.2, spacing * 0.45))
     }
 
+    /// Probe arrow length: 1.6× the fall-line arrow sizing for the same grid,
+    /// so the probed direction stands out of the ambient arrow field.
+    /// Mirrors the web `probeArrowLengthM`.
+    public static func probeArrowLengthM(_ spec: AnalysisGridSpec) -> Double {
+        arrowLengthM(spec) * 1.6
+    }
+
+    /// The probe's map geometry: the probed point plus (when not locally
+    /// flat) an arrow from the point downhill — shaft + two ±150° head
+    /// strokes, anchored AT the probe rather than centered on it. Mirrors the
+    /// web `probeGeojson`.
+    public static func probeStrokes(_ probe: SlopeProbe, lengthM: Double) -> (point: LatLon, strokes: [[LatLon]]) {
+        let point = Sweref99TM.toWGS84(x: probe.e, y: probe.n)
+        guard probe.dirE != 0 || probe.dirN != 0 else { return (point, []) }
+
+        let tipE = probe.e + probe.dirE * lengthM
+        let tipN = probe.n + probe.dirN * lengthM
+        let headLen = lengthM * 0.35
+        var strokes: [[LatLon]] = [[point, Sweref99TM.toWGS84(x: tipE, y: tipN)]]
+        for sign in [1.0, -1.0] {
+            let angle = sign * 150 * Double.pi / 180
+            let cosA = cos(angle)
+            let sinA = sin(angle)
+            let hx = probe.dirE * cosA - probe.dirN * sinA
+            let hy = probe.dirE * sinA + probe.dirN * cosA
+            strokes.append([
+                Sweref99TM.toWGS84(x: tipE, y: tipN),
+                Sweref99TM.toWGS84(x: tipE + hx * headLen, y: tipN + hy * headLen),
+            ])
+        }
+        return (point, strokes)
+    }
+
     /// The 1 m reference grid as WGS84 two-point lines. Straight in
     /// EPSG:3006; endpoint-only conversion is exact enough at green scale.
     public static func meterGridLines(_ spec: AnalysisGridSpec) -> [[LatLon]] {
