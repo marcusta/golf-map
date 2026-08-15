@@ -253,6 +253,65 @@ public struct CourseRouteOverlay: Equatable, Sendable {
     public static let empty = CourseRouteOverlay()
 }
 
+/// The reticle-browse (pan-to-aim) overlay group: the solid origin→aim line
+/// with its dotted continuation past the aim, the per-frame pan dispersion
+/// arc, and — once the camera settles — the advised club's ellipse, the two
+/// dotted neighbor-club arcs and the crosswind hold tick. The model empties
+/// the settled pieces while panning (the pan arc persists throughout); club
+/// labels for the neighbor arcs ride the shared `ellipseLabels` pipeline.
+public struct ReticleOverlay: Equatable, Sendable {
+    /// One neighbor-club arc: the club's name (labeled at the arc end via
+    /// `ellipseLabels`) and its open WGS84 arc polyline (drawn dotted).
+    public struct NeighborArc: Equatable, Sendable {
+        public var label: String
+        public var polyline: [LatLon]
+
+        public init(label: String, polyline: [LatLon]) {
+            self.label = label
+            self.polyline = polyline
+        }
+    }
+
+    /// Solid origin→aim line. Fewer than two points hides it.
+    public var aimLine: [LatLon]
+    /// Dotted continuation past the aim along the same bearing ("where you
+    /// end up if you fly it"); length is computed by the model. Empty hides.
+    public var dottedExtension: [LatLon]
+    /// Pan club's lateral-dispersion arc at the aim distance (open polyline).
+    /// Persists through pan AND settle. Empty hides (competition mode).
+    public var panArc: [LatLon]
+    /// Settled advised club's dispersion ellipse (closed WGS84 ring). Empty
+    /// while panning / before the first settle / in competition mode.
+    public var ellipse: [LatLon]
+    /// The advised club's name drawn ON its ellipse (right edge — the side the
+    /// neighbor arcs label too, so all three club names read in one column).
+    /// Rides `ellipseLabels` like the arc labels; nil when there's no ellipse.
+    public var ellipseLabel: EllipseLabel?
+    /// Settled closest-shorter/longer club arcs (dotted). Empty like `ellipse`.
+    public var neighborArcs: [NeighborArc]
+    /// Settled crosswind hold tick (ghost aim ring + dashed connector). Nil
+    /// like `ellipse`.
+    public var windHold: TargetWindHold?
+
+    public init(
+        aimLine: [LatLon] = [],
+        dottedExtension: [LatLon] = [],
+        panArc: [LatLon] = [],
+        ellipse: [LatLon] = [],
+        ellipseLabel: EllipseLabel? = nil,
+        neighborArcs: [NeighborArc] = [],
+        windHold: TargetWindHold? = nil
+    ) {
+        self.aimLine = aimLine
+        self.dottedExtension = dottedExtension
+        self.panArc = panArc
+        self.ellipse = ellipse
+        self.ellipseLabel = ellipseLabel
+        self.neighborArcs = neighborArcs
+        self.windHold = windHold
+    }
+}
+
 /// Everything dynamic drawn on top of the course map. Value type — the
 /// SwiftUI layer builds a new state and passes it to `CourseMapView`; updates
 /// are cheap (shape reassignment on existing sources, no style reload).
@@ -296,6 +355,9 @@ public struct MapOverlayState: Equatable, Sendable {
     /// Rose hold marker + connector for crosswind compensation at the selected
     /// target. Nil for calm/negligible wind, hazards, or advice-hidden modes.
     public var selectedWindHold: TargetWindHold?
+    /// Reticle-browse overlay group (aim line + arcs + settled advice); nil
+    /// hides the whole group (GPS mode, no hole, reticle untouched).
+    public var reticle: ReticleOverlay?
     /// Labels for every VISIBLE dispersion ellipse (the selected-target advice
     /// ellipse + the selection-scoped plan leg ellipses). Follows ellipse
     /// visibility, never the immersive chrome flag.
@@ -315,6 +377,7 @@ public struct MapOverlayState: Equatable, Sendable {
         browseFrom: LatLon? = nil,
         selectedEllipse: [LatLon]? = nil,
         selectedWindHold: TargetWindHold? = nil,
+        reticle: ReticleOverlay? = nil,
         ellipseLabels: [EllipseLabel] = []
     ) {
         self.distanceLine = distanceLine
@@ -330,6 +393,7 @@ public struct MapOverlayState: Equatable, Sendable {
         self.browseFrom = browseFrom
         self.selectedEllipse = selectedEllipse
         self.selectedWindHold = selectedWindHold
+        self.reticle = reticle
         self.ellipseLabels = ellipseLabels
     }
 
@@ -419,6 +483,50 @@ enum MapOverlayShapes {
         aim.coordinate = hold.aim.clCoordinate
         aim.attributes = ["role": "hold-aim"]
         return MLNShapeCollectionFeature(shapes: [line, aim])
+    }
+
+    // MARK: Reticle browse
+
+    /// The reticle's three lines as one role-tagged source: the solid aim
+    /// line ("aim"), its dotted continuation ("extension") and the pan
+    /// dispersion arc ("pan-arc"). Each line hides below two points.
+    static func reticleLinesShape(_ overlay: ReticleOverlay?) -> MLNShape {
+        guard let overlay else { return emptyShape() }
+        var features: [MLNShape] = []
+        for (role, points) in [
+            ("aim", overlay.aimLine),
+            ("extension", overlay.dottedExtension),
+            ("pan-arc", overlay.panArc),
+        ] where points.count >= 2 {
+            var coordinates = points.map(\.clCoordinate)
+            let line = MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+            line.attributes = ["role": role]
+            features.append(line)
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
+
+    /// The settled advised-club ellipse (same construction as the selected-
+    /// target ellipse; empty collection hides it).
+    static func reticleEllipseShape(_ overlay: ReticleOverlay?) -> MLNShape {
+        selectedEllipseShape(overlay.map(\.ellipse))
+    }
+
+    /// The settled neighbor-club arcs as dotted polylines (their club-name
+    /// labels ride the ellipse-labels pipeline, anchored at each arc's end).
+    static func reticleNeighborArcsShape(_ overlay: ReticleOverlay?) -> MLNShape {
+        let features = (overlay?.neighborArcs ?? []).compactMap { arc -> MLNPolylineFeature? in
+            guard arc.polyline.count >= 2 else { return nil }
+            var coordinates = arc.polyline.map(\.clCoordinate)
+            return MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+        }
+        return MLNShapeCollectionFeature(shapes: features)
+    }
+
+    /// The settled crosswind hold tick — same tagged connector + hollow aim
+    /// marker as the selected-target hold, on the reticle's own source.
+    static func reticleWindHoldShape(_ overlay: ReticleOverlay?) -> MLNShape {
+        selectedWindHoldShape(overlay?.windHold)
     }
 
     /// The measure path polyline (hidden below two points, like the distance
@@ -643,6 +751,26 @@ enum MapOverlayRenderer {
         setShape(
             MapOverlayShapes.selectedWindHoldShape(state.selectedWindHold),
             sourceID: MapStyleIDs.selectedWindHoldSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.reticleLinesShape(state.reticle),
+            sourceID: MapStyleIDs.reticleLinesSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.reticleEllipseShape(state.reticle),
+            sourceID: MapStyleIDs.reticleEllipseSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.reticleNeighborArcsShape(state.reticle),
+            sourceID: MapStyleIDs.reticleNeighborsSource,
+            in: style
+        )
+        setShape(
+            MapOverlayShapes.reticleWindHoldShape(state.reticle),
+            sourceID: MapStyleIDs.reticleWindHoldSource,
             in: style
         )
     }

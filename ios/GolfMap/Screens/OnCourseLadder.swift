@@ -67,6 +67,11 @@ enum LadderBuilder {
         let pinPosition: LatLon?
     }
 
+    /// Row id of a hazard rung, from the `HazardCarry` id. Shared so callers
+    /// that only hold a hazard (the reticle's snap → rail highlight) can name
+    /// its rung without rebuilding the ladder.
+    static func hazardRowId(_ hazardId: String) -> String { "haz-\(hazardId)" }
+
     /// Merge every source into one near→far list. Positions come pre-resolved on
     /// each input; the caller measures plan-shot distances from the ball.
     static func build(
@@ -88,7 +93,7 @@ enum LadderBuilder {
 
         for hazard in hazards {
             rows.append(OnCourseModel.LadderRow(
-                id: "haz-\(hazard.id)", kind: .hazard,
+                id: hazardRowId(hazard.id), kind: .hazard,
                 label: hazard.label, detail: "front / carry",
                 meters: hazard.frontM, carryM: hazard.carryM, position: hazard.position
             ))

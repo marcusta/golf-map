@@ -113,6 +113,24 @@ public enum MapStyleIDs {
     public static let selectedWindHoldLineLayer = "overlay-selected-wind-hold-line"
     public static let selectedWindHoldAimLayer = "overlay-selected-wind-hold-aim"
 
+    // Reticle browse (pan-to-aim): the solid origin→aim line + dotted
+    // continuation + pan dispersion arc share one role-tagged source; the
+    // settled advised-club ellipse, dotted neighbor-club arcs and crosswind
+    // hold tick each get their own (the model empties them while panning).
+    public static let reticleLinesSource = "overlay-reticle-lines"
+    public static let reticleAimCasingLayer = "overlay-reticle-aim-casing"
+    public static let reticleAimLayer = "overlay-reticle-aim"
+    public static let reticleExtensionLayer = "overlay-reticle-extension"
+    public static let reticlePanArcLayer = "overlay-reticle-pan-arc"
+    public static let reticleEllipseSource = "overlay-reticle-ellipse"
+    public static let reticleEllipseFillLayer = "overlay-reticle-ellipse-fill"
+    public static let reticleEllipseOutlineLayer = "overlay-reticle-ellipse-outline"
+    public static let reticleNeighborsSource = "overlay-reticle-neighbors"
+    public static let reticleNeighborsLayer = "overlay-reticle-neighbors"
+    public static let reticleWindHoldSource = "overlay-reticle-wind-hold"
+    public static let reticleWindHoldLineLayer = "overlay-reticle-wind-hold-line"
+    public static let reticleWindHoldAimLayer = "overlay-reticle-wind-hold-aim"
+
     // Measure tool path (dedicated sources — the distance-line source is
     // rewritten every GPS fix and must never fight the measure overlay).
     public static let measureLineSource = "overlay-measure-line"
@@ -228,6 +246,19 @@ public enum MapStyleBuilder {
     static let selectedWindHoldDashArray = [1.0, 1.5]
     static let selectedWindHoldLineWidth = 2.0
     static let selectedWindHoldAimRadius = 7.0
+
+    // Reticle browse: the aim line keeps the white-on-dark-casing distance
+    // line identity (it IS the current shot line in browse); the dotted
+    // continuation is the same white, thinner and dashed ("if you fly it");
+    // the pan arc + neighbor arcs use the cyan advice family (the settled
+    // ellipse/wind-hold layers reuse the selected-target values directly).
+    static let reticleExtensionWidth = 2.0
+    static let reticleExtensionDashArray = [1.0, 2.0]
+    static let reticlePanArcColor = "#22d3ee"
+    static let reticlePanArcWidth = 2.5
+    static let reticleNeighborColor = "#67e8f9"
+    static let reticleNeighborWidth = 1.5
+    static let reticleNeighborDashArray = [1.5, 2.0]
 
     // Ladder tap highlight: bright cyan, unused by any other marker, so the
     // "you tapped this" ring is unmistakable over ortho + every overlay.
@@ -409,6 +440,10 @@ public enum MapStyleBuilder {
             MapStyleIDs.browseFromSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.selectedEllipseSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.selectedWindHoldSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.reticleLinesSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.reticleEllipseSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.reticleNeighborsSource: ["type": "geojson", "data": emptyCollection],
+            MapStyleIDs.reticleWindHoldSource: ["type": "geojson", "data": emptyCollection],
         ]
 
         var adjustHandleColorExpr: [Any] = ["match", ["get", "kind"]]
@@ -554,6 +589,70 @@ public enum MapStyleBuilder {
                 "id": MapStyleIDs.selectedWindHoldAimLayer,
                 "type": "circle",
                 "source": MapStyleIDs.selectedWindHoldSource,
+                "filter": ["==", ["get", "role"], "hold-aim"],
+                "paint": [
+                    "circle-radius": selectedWindHoldAimRadius,
+                    "circle-color": "rgba(0,0,0,0)",
+                    "circle-stroke-color": selectedWindHoldColor,
+                    "circle-stroke-width": 2.5,
+                    "circle-stroke-opacity": 0.95,
+                ],
+            ],
+            [
+                // Settled reticle ellipse: same advice-cyan area as the
+                // selected-target ellipse, same low stacking (over surfaces,
+                // under every line/label drawn across it).
+                "id": MapStyleIDs.reticleEllipseFillLayer,
+                "type": "fill",
+                "source": MapStyleIDs.reticleEllipseSource,
+                "paint": [
+                    "fill-color": selectedEllipseFillColor,
+                    "fill-opacity": selectedEllipseFillOpacity,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.reticleEllipseOutlineLayer,
+                "type": "line",
+                "source": MapStyleIDs.reticleEllipseSource,
+                "paint": [
+                    "line-color": selectedEllipseOutlineColor,
+                    "line-width": selectedEllipseOutlineWidth,
+                    "line-opacity": 0.9,
+                ],
+            ],
+            [
+                // Neighbor-club arcs: dotted, dimmer cyan — "the club above/
+                // below lands here" context around the settled ellipse.
+                "id": MapStyleIDs.reticleNeighborsLayer,
+                "type": "line",
+                "source": MapStyleIDs.reticleNeighborsSource,
+                "layout": ["line-join": "round"],
+                "paint": [
+                    "line-color": reticleNeighborColor,
+                    "line-width": reticleNeighborWidth,
+                    "line-opacity": 0.85,
+                    "line-dasharray": reticleNeighborDashArray,
+                ],
+            ],
+            [
+                // Reticle crosswind hold tick — same rose dashed connector +
+                // hollow aim ring as the selected-target hold.
+                "id": MapStyleIDs.reticleWindHoldLineLayer,
+                "type": "line",
+                "source": MapStyleIDs.reticleWindHoldSource,
+                "filter": ["==", ["get", "role"], "hold-line"],
+                "layout": ["line-cap": "round"],
+                "paint": [
+                    "line-color": selectedWindHoldColor,
+                    "line-width": selectedWindHoldLineWidth,
+                    "line-opacity": 0.95,
+                    "line-dasharray": selectedWindHoldDashArray,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.reticleWindHoldAimLayer,
+                "type": "circle",
+                "source": MapStyleIDs.reticleWindHoldSource,
                 "filter": ["==", ["get", "role"], "hold-aim"],
                 "paint": [
                     "circle-radius": selectedWindHoldAimRadius,
@@ -717,6 +816,58 @@ public enum MapStyleBuilder {
                 "paint": [
                     "line-color": distanceLineColor,
                     "line-width": distanceLineWidth,
+                ],
+            ],
+            [
+                // Reticle aim line: the distance-line identity (white on a
+                // dark casing) — in browse mode it IS the current shot line.
+                // Above the settled ellipse/arcs so the line reads over them.
+                "id": MapStyleIDs.reticleAimCasingLayer,
+                "type": "line",
+                "source": MapStyleIDs.reticleLinesSource,
+                "filter": ["==", ["get", "role"], "aim"],
+                "layout": ["line-cap": "round", "line-join": "round"],
+                "paint": [
+                    "line-color": distanceLineCasingColor,
+                    "line-width": distanceLineCasingWidth,
+                    "line-opacity": 0.85,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.reticleAimLayer,
+                "type": "line",
+                "source": MapStyleIDs.reticleLinesSource,
+                "filter": ["==", ["get", "role"], "aim"],
+                "layout": ["line-cap": "round", "line-join": "round"],
+                "paint": [
+                    "line-color": distanceLineColor,
+                    "line-width": distanceLineWidth,
+                ],
+            ],
+            [
+                // Dotted continuation past the aim — butt caps keep the dash
+                // gaps visible.
+                "id": MapStyleIDs.reticleExtensionLayer,
+                "type": "line",
+                "source": MapStyleIDs.reticleLinesSource,
+                "filter": ["==", ["get", "role"], "extension"],
+                "paint": [
+                    "line-color": distanceLineColor,
+                    "line-width": reticleExtensionWidth,
+                    "line-opacity": 0.75,
+                    "line-dasharray": reticleExtensionDashArray,
+                ],
+            ],
+            [
+                "id": MapStyleIDs.reticlePanArcLayer,
+                "type": "line",
+                "source": MapStyleIDs.reticleLinesSource,
+                "filter": ["==", ["get", "role"], "pan-arc"],
+                "layout": ["line-cap": "round", "line-join": "round"],
+                "paint": [
+                    "line-color": reticlePanArcColor,
+                    "line-width": reticlePanArcWidth,
+                    "line-opacity": 0.9,
                 ],
             ],
             [

@@ -6,6 +6,8 @@ GolfMap/Info.plist
 xcuserdata/
 DerivedData/
 .deploy-derived/
+.sim-derived/
+.watch-derived/
 .build/
 *.xcresult
 GolfMapWatch/Info.plist

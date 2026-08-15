@@ -1,6 +1,14 @@
 import MapLibre
 import SwiftUI
 
+/// Whether the camera is still moving when a reticle position is reported.
+/// `.panning` fires per camera-change event; `.idle` fires exactly once when
+/// the map settles (the model's 200 ms settle timer keys off it).
+public enum ReticlePanState: Equatable {
+    case panning
+    case idle
+}
+
 /// SwiftUI map view for one downloaded course bundle: offline ortho raster
 /// basemap + course feature polygons (web editor palette) + dynamic overlays
 /// (distance line, target markers, custom GPS dot).
@@ -90,6 +98,17 @@ public struct CourseMapView: UIViewRepresentable {
     /// MapLibre's own quick-zoom fires instead ("zooms out when I tap Adjust").
     /// Green view keeps pinch zoom (a missed putt-marker grab just pans).
     public var adjustLocksGestures: Bool
+    /// When true (browse mode + hole selected), the geo point under the fixed
+    /// reticle anchor (`reticleAnchor(in:)`) is reported through
+    /// `onReticleMove` on every camera-change delegate event. Unprojection is
+    /// the flat `convert(_:toCoordinateFrom:)` — deliberately no terrain-aware
+    /// projection here (pan work stays O(1); see the reticle design note).
+    public var isReticleEnabled: Bool
+    /// Called (main actor) with the WGS84 point under the reticle anchor, the
+    /// map scale there (ground meters per screen point — the snap threshold's
+    /// zoom conversion), and the pan state. `.panning` per camera-change
+    /// event; `.idle` exactly once when the map becomes idle.
+    public var onReticleMove: ((LatLon, Double, ReticlePanState) -> Void)?
     /// A handle was grabbed (drag began). Argument: the handle id.
     public var onHandleGrab: ((String) -> Void)?
     /// The grabbed handle moved; called per drag frame with the unprojected
@@ -116,6 +135,8 @@ public struct CourseMapView: UIViewRepresentable {
         onMeasureTap: ((LatLon) -> Void)? = nil,
         adjustEnabled: Bool = false,
         adjustLocksGestures: Bool = true,
+        isReticleEnabled: Bool = false,
+        onReticleMove: ((LatLon, Double, ReticlePanState) -> Void)? = nil,
         onHandleGrab: ((String) -> Void)? = nil,
         onHandleMove: ((String, LatLon) -> Void)? = nil,
         onHandleDrop: ((String) -> Void)? = nil
@@ -136,6 +157,8 @@ public struct CourseMapView: UIViewRepresentable {
         self.onMeasureTap = onMeasureTap
         self.adjustEnabled = adjustEnabled
         self.adjustLocksGestures = adjustLocksGestures
+        self.isReticleEnabled = isReticleEnabled
+        self.onReticleMove = onReticleMove
         self.onHandleGrab = onHandleGrab
         self.onHandleMove = onHandleMove
         self.onHandleDrop = onHandleDrop
@@ -246,6 +269,8 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.lastZoomCommand = zoom
         coordinator.onMapReady = onMapReady
         coordinator.onCameraChange = onCameraChange
+        coordinator.isReticleEnabled = isReticleEnabled
+        coordinator.onReticleMove = onReticleMove
         return mapView
     }
 
@@ -258,6 +283,8 @@ public struct CourseMapView: UIViewRepresentable {
     func applyUpdate(to mapView: MLNMapView, coordinator: Coordinator) {
         coordinator.onMapReady = onMapReady
         coordinator.onCameraChange = onCameraChange
+        coordinator.isReticleEnabled = isReticleEnabled
+        coordinator.onReticleMove = onReticleMove
         coordinator.onLongPress = onLongPress
         coordinator.longPressRecognizer?.isEnabled = longPressEnabled
         coordinator.onMeasureTap = onMeasureTap
@@ -364,6 +391,11 @@ public struct CourseMapView: UIViewRepresentable {
         var isStyleLoaded = false
         var onMapReady: (() -> Void)?
         var onCameraChange: ((LatLon, Double, Double) -> Void)?
+        var isReticleEnabled = false
+        var onReticleMove: ((LatLon, Double, ReticlePanState) -> Void)?
+        /// Guards the once-per-settle `.idle` emission: panning events clear
+        /// it, the first idle after movement sets it, repeat idles are dropped.
+        private(set) var reticleIdleReported = false
         var onLongPress: ((LatLon) -> Void)?
         weak var longPressRecognizer: UILongPressGestureRecognizer?
         var onMeasureTap: ((LatLon) -> Void)?
@@ -670,6 +702,7 @@ public struct CourseMapView: UIViewRepresentable {
         /// scrolls off-screen is pulled onto the visible part of its leg.
         public func mapViewRegionIsChanging(_ mapView: MLNMapView) {
             routeLegLabelRenderer.reposition(in: mapView)
+            reportReticle(.panning, in: mapView)
         }
 
         public func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
@@ -680,6 +713,59 @@ public struct CourseMapView: UIViewRepresentable {
                 mapView.zoomLevel,
                 mapView.direction
             )
+            // Position update only — the once-per-settle `.idle` comes from
+            // `mapViewDidBecomeIdle` (a fling/animation may still be running
+            // when regionDidChange fires).
+            reportReticle(.panning, in: mapView)
+        }
+
+        public func mapViewDidBecomeIdle(_ mapView: MLNMapView) {
+            reportReticle(.idle, in: mapView)
+        }
+
+        // MARK: Reticle
+
+        /// The fixed reticle anchor: horizontal center, 30% down from the top
+        /// of the map viewport (see the reticle-browse design note).
+        static let reticleAnchorYFraction: CGFloat = 0.30
+
+        static func reticleAnchor(in bounds: CGRect) -> CGPoint {
+            CGPoint(
+                x: bounds.width * 0.5,
+                y: bounds.height * reticleAnchorYFraction
+            )
+        }
+
+        /// Unprojects the reticle anchor (flat transform, no terrain) and
+        /// forwards it. `.panning` reports on every call; `.idle` is emitted
+        /// exactly once per settle. Exposed (internal) so tests can drive the
+        /// delegate path directly.
+        func reportReticle(_ state: ReticlePanState, in mapView: MLNMapView) {
+            guard isReticleEnabled, let onReticleMove else { return }
+            switch state {
+            case .panning:
+                reticleIdleReported = false
+            case .idle:
+                guard !reticleIdleReported else { return }
+                reticleIdleReported = true
+            }
+            let anchor = Self.reticleAnchor(in: mapView.bounds)
+            let coordinate = mapView.convert(anchor, toCoordinateFrom: mapView)
+            onReticleMove(
+                LatLon(lat: coordinate.latitude, lon: coordinate.longitude),
+                mapView.metersPerPoint(atLatitude: coordinate.latitude),
+                state
+            )
+        }
+
+        /// Hole-fit chrome insets that account for the reticle anchor: the top
+        /// inset places the fitted hole's far end (the green — bearing puts
+        /// tee→green vertical) at the anchor's 30% line instead of the very
+        /// top, so the tee sits in the lower part of the viewport and the
+        /// reticle opens on/near the green. `padding` is the fit's uniform
+        /// edge padding, already inside the anchor offset.
+        static func reticleFitInsets(mapHeight: Double, padding: Double) -> MapEdgeInsets {
+            MapEdgeInsets(top: max(0, mapHeight * Double(reticleAnchorYFraction) - padding))
         }
     }
 }

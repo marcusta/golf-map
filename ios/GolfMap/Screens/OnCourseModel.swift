@@ -78,6 +78,9 @@ final class OnCourseModel {
         /// The KEPT browse-to point whose origin→point line the figures were
         /// measured along; nil = ray mode (origin → tap through the shape).
         var lineTo: LatLon?
+        /// The tapped planar ring itself — identity for the two-stage tap (a
+        /// second tap inside the SAME ring converts to a point inspect).
+        var sourceRing: FlatRing
     }
 
     /// The tapped course shape (bunker / water / green / trees / …) currently
@@ -450,6 +453,7 @@ final class OnCourseModel {
         } else {
             self.aimRoutingThresholdMeters = Self.defaultAimRoutingThresholdMeters
         }
+        self.reticleShowsActual = defaults.bool(forKey: Self.reticleShowsActualKey)
         loadTeeOverrides()
         loadAdjustOverrides()
         loadPinOverrides()
@@ -502,6 +506,9 @@ final class OnCourseModel {
         clearBrowseTarget()
         mapFocus = position
         focusedLadderId = ladderId
+        // The centering animation itself reports through `reticleMoved`; the
+        // flag lets it pass without releasing the fresh ladder focus.
+        ladderFocusCameraSettled = false
         restoreCamera = nil
         cameraToken += 1
     }
@@ -791,6 +798,9 @@ final class OnCourseModel {
         // the new origin's layup landing positions are sampled even when no
         // further GPS fix arrives.
         refreshLadderElevations(force: true)
+        // The reticle measures from the flipped origin too: drop any settled
+        // answer taken from the old origin and re-settle at the unchanged aim.
+        resettleReticleAfterOriginChange()
     }
 
     func toggleGPS() { setGPSEnabled(!gpsEnabled) }
@@ -808,6 +818,8 @@ final class OnCourseModel {
         mapFocus = nil
         focusedLadderId = nil
         refreshLadderElevations(force: true)
+
+        resettleReticleAfterOriginChange()
 
         browseOriginElevationTask?.cancel()
         guard let sampler = elevationSampler else { return }
@@ -830,18 +842,22 @@ final class OnCourseModel {
     ///    origin → browse-to — "on the line I'm considering, when do I reach
     ///    / carry it". The figures anchor on that line.
     ///
-    /// Unlike `inspectBrowsePoint` this works in GPS mode too (always ray
-    /// there). Returns false when the tap landed on no tappable shape, so the
-    /// screen can fall back (browse point inspect / chrome toggle).
+    /// Works in GPS mode too (from the live fix). Returns false when the tap
+    /// landed on no tappable shape OR inside the shape that is ALREADY
+    /// inspected — the caller then dismisses the inspection (second tap =
+    /// dismiss, both modes).
     @discardableResult
     func inspectTappedFeature(_ position: LatLon) -> Bool {
         guard let origin else { return false }
         let tapPlanar = Self.planar(position)
         guard let ring = tappableRing(at: tapPlanar) else { return false }
+        // Second tap inside the SAME inspected shape → not consumed here; the
+        // caller dismisses the inspection.
+        if inspectedFeature?.sourceRing == ring { return false }
 
         let extent: HazardCarries.RingLineExtent?
         let lineTo: LatLon?
-        if isBrowseMode, let browseTarget {
+        if let browseTarget {
             extent = HazardCarries.extent(
                 of: ring, along: [[Self.planar(origin), Self.planar(browseTarget)]]
             )
@@ -858,9 +874,29 @@ final class OnCourseModel {
             ring: ring.points.map { Sweref99TM.toWGS84(x: $0.x, y: $0.y) },
             frontPoint: Sweref99TM.toWGS84(x: extent.frontPoint.x, y: extent.frontPoint.y),
             carryPoint: Sweref99TM.toWGS84(x: extent.carryPoint.x, y: extent.carryPoint.y),
-            lineTo: lineTo
+            lineTo: lineTo,
+            sourceRing: ring
         )
         return true
+    }
+
+    /// The single distance-mode map-tap entry point (both GPS and browse):
+    ///
+    ///  1. Tap a NEW shape → inspect it (front/carry window).
+    ///  2. Tap the shape ALREADY inspected, or open map → dismiss whatever is
+    ///     inspected; with nothing up return false so the screen may toggle
+    ///     its chrome.
+    ///
+    /// A tap never point-inspects: the reticle IS the aim point (both modes),
+    /// so a tapped dot next to it would be a second, competing target.
+    @discardableResult
+    func handleDistanceTap(_ position: LatLon) -> Bool {
+        if inspectTappedFeature(position) { return true }
+        if inspectedFeature != nil || browseTarget != nil {
+            clearBrowseInspection()
+            return true
+        }
+        return false
     }
 
     /// Dismiss the tapped-shape inspection (GPS-mode tap on open map).
@@ -880,10 +916,12 @@ final class OnCourseModel {
         return nil
     }
 
-    /// Inspect an arbitrary map point FROM the unchanged browse origin. Does
-    /// not issue a camera command, so a tap at the end of a pan stays harmless.
+    /// Inspect an arbitrary map point FROM the current origin — the browse
+    /// origin in browse mode, the live fix in GPS mode (an aim point on the
+    /// green from the fairway). Does not issue a camera command, so a tap at
+    /// the end of a pan stays harmless. Only the PROMOTION to a new browse
+    /// origin stays browse-mode-only.
     func inspectBrowsePoint(_ position: LatLon) {
-        guard isBrowseMode else { return }
         mapFocus = nil
         focusedLadderId = nil
         inspectedFeature = nil
@@ -926,6 +964,17 @@ final class OnCourseModel {
         browseOriginElevation = nil
         clearBrowseInspection()
         refreshLadderElevations(force: true)
+        resettleReticleAfterOriginChange()
+    }
+
+    /// A moved origin invalidates the settled reticle answer (it measures
+    /// from the old origin). Drop it and re-settle at the unchanged aim —
+    /// "From here"/"From tee" land with a fresh readout instead of a stale one.
+    private func resettleReticleAfterOriginChange() {
+        guard let target = reticleTarget else { return }
+        reticleSettleTask?.cancel()
+        reticleSettled = nil
+        reticleMoved(target, panning: false)
     }
 
     private func clearBrowseTarget() {
@@ -939,6 +988,354 @@ final class OnCourseModel {
         mapFocus = nil
         focusedLadderId = nil
         clearBrowseTarget()
+    }
+
+    // MARK: - Reticle browse (pan-to-aim)
+
+    /// Geo point currently under the fixed reticle anchor (RB2's callback
+    /// feeds it). Live in both GPS and browse mode.
+    private(set) var reticleTarget: LatLon?
+    /// True from the first camera-change report until the map settles.
+    private(set) var reticleIsPanning = false
+    /// Full once-per-settle answer; nil while panning and before the first
+    /// settle. Advice fields inside are competition-gated (distances stay).
+    private(set) var reticleSettled: ReticleSettled?
+    /// Origin the settled snapshot measured from. In GPS mode the origin walks
+    /// with the player — drift past `reticleOriginResettleM` re-settles;
+    /// browse origins re-settle explicitly via `resettleReticleAfterOriginChange`.
+    @ObservationIgnored private var reticleSettledOrigin: LatLon?
+    /// True once the ladder-focus centering animation has gone idle. While a
+    /// ladder rung is focused, reticle pan reports before this are the
+    /// focusing animation itself; the first pan AFTER it is the user taking
+    /// the map back, which releases the focus to the reticle.
+    @ObservationIgnored private var ladderFocusCameraSettled = false
+
+    /// The settled big figure shows the raw ("actual") distance instead of
+    /// plays-like. Tapping the figure toggles; a global (not per-course)
+    /// preference — it is a reading habit, not course state.
+    private(set) var reticleShowsActual = false
+    private static let reticleShowsActualKey = "onCourse.reticleShowsActual"
+
+    func toggleReticleDistanceMode() {
+        reticleShowsActual.toggle()
+        defaults.set(reticleShowsActual, forKey: Self.reticleShowsActualKey)
+    }
+
+    /// GPS drift beyond this re-settles the reticle answer (walking with the
+    /// aim parked); below it, fix jitter keeps the settled snapshot stable.
+    static let reticleOriginResettleM = 3.0
+
+    /// Injectable settle debounce — 200 ms after the map goes idle per the
+    /// design note. Tests swap in an instant sleep the same way `now` pins
+    /// the clock.
+    @ObservationIgnored var reticleSettleSleep: @Sendable () async throws -> Void = {
+        try await Task.sleep(nanoseconds: 200_000_000)
+    }
+    @ObservationIgnored private var reticleSettleTask: Task<Void, Never>?
+
+    /// The settled reticle snapshot — the expensive once-per-settle answer
+    /// (elevation sample, plays-like, wind hold). The per-frame pan snapshot
+    /// stays in the `reticlePan*` computed properties instead.
+    struct ReticleSettled: Equatable {
+        struct NeighborArc: Equatable {
+            var clubName: String
+            /// WGS84 open arc polyline (drawn dotted, not a polygon).
+            var polyline: [LatLon]
+        }
+        /// Plays-like origin→aim through the wind, whole meters. Competition
+        /// mode: the straight distance through the wind (slope withheld).
+        var playsLikeM: Int
+        /// Re-picked at the plays-like distance — may differ from the pan
+        /// club (preview vs answer). Nil in competition mode / empty bag.
+        var advisedClub: String?
+        /// Advised club's wind-compensated dispersion ellipse (WGS84 ring).
+        /// Empty in competition mode.
+        var ellipse: [LatLon]
+        /// Where the advised club's NAME is drawn on the map: the ellipse's
+        /// rightmost point relative to the aim line, matching the neighbor
+        /// arcs' right-end labels so all three club names sit on the same side
+        /// (a HUD-only club chip was misread as the nearest arc's label).
+        /// Nil whenever there is no ellipse.
+        var ellipseLabelPosition: LatLon?
+        /// Closest shorter + longer clubs at their own plays-like-adjusted
+        /// carries. Empty in competition mode / at bag ends.
+        var neighborArcs: [NeighborArc]
+        /// Crosswind hold ("aim 6 m left") for the advised club, when it
+        /// clears the visibility threshold. Nil in competition mode.
+        var windHold: TargetWindHold?
+        /// Aim→green-center, whole meters; nil without a green.
+        var remainingToGreenM: Int?
+    }
+
+    /// Origin the reticle measures from — the same chain as `origin`: the
+    /// (gated) live GPS fix, else the transient browse origin, else the
+    /// active tee. GPS mode aims from the player's position; browse mode
+    /// from the browse origin.
+    private var reticleOrigin: LatLon? { origin }
+
+    /// Raw planar origin→reticle distance — the pan-state big number. O(1),
+    /// safe to read every camera-change frame.
+    var reticlePanDistanceM: Double? {
+        guard let origin = reticleOrigin, let target = reticleTarget else { return nil }
+        return Distance.planarMeters(origin, target)
+    }
+
+    /// Pan club: first club whose carry reaches the raw distance (else the
+    /// longest). Dispersion width is advice → competition-gated.
+    var reticlePanClub: ClubRecord? {
+        guard !competitionMode, let distance = reticlePanDistanceM else { return nil }
+        return BrowseReticle.panClub(clubs: clubs, distanceM: distance)
+    }
+
+    /// Pan arc: the pan club's lateral dispersion drawn at the reticle
+    /// distance, centered on the aim line (WGS84 open polyline). Nil without
+    /// a pan club or when the reticle sits on the origin.
+    var reticlePanArc: [LatLon]? {
+        guard let origin = reticleOrigin, let target = reticleTarget,
+              let distance = reticlePanDistanceM, distance > 0,
+              let club = reticlePanClub
+        else { return nil }
+        let o = Sweref99TM.fromWGS84(origin)
+        let t = Sweref99TM.fromWGS84(target)
+        let arc = BrowseReticle.arcPolyline(
+            origin: Vec2(x: o.x, y: o.y),
+            bearingDeg: Self.planarBearing(from: o, to: t),
+            radiusM: distance,
+            halfWidthM: BrowseReticle.lateralHalfWidthM(club: club, atDistanceM: distance)
+        )
+        return arc.map { Sweref99TM.toWGS84(x: $0.x, y: $0.y) }
+    }
+
+    /// Raw planar aim→green-center, whole meters — the pan-state remaining
+    /// figure. The settled snapshot carries its own plays-like-era copy
+    /// (`ReticleSettled.remainingToGreenM`); identical geometry, cached there.
+    var reticleRemainingToGreenM: Int? {
+        guard let target = reticleTarget, reticleOrigin != nil,
+              let green = targets.greenCenter else { return nil }
+        return Int(Distance.planarMeters(target, green).rounded())
+    }
+
+    /// Dotted continuation past the aim along the same bearing — "where you
+    /// end up if you fly it": the remaining green-line length, capped at how
+    /// far past the aim the longest club would carry (the cap is club data →
+    /// competition mode keeps the plain remaining length). Nil when nothing
+    /// bounds it or the bounded length vanishes.
+    var reticleDottedExtension: [LatLon]? {
+        guard let origin = reticleOrigin, let target = reticleTarget,
+              let raw = reticlePanDistanceM, raw > 0 else { return nil }
+        var length = Double.infinity
+        if let green = targets.greenCenter {
+            length = Distance.planarMeters(target, green)
+        }
+        if !competitionMode, let longest = clubs.map(\.carryM).max() {
+            length = min(length, max(0, longest - raw))
+        }
+        guard length.isFinite, length > 0.5 else { return nil }
+        let o = Sweref99TM.fromWGS84(origin)
+        let t = Sweref99TM.fromWGS84(target)
+        return [
+            target,
+            Sweref99TM.toWGS84(
+                x: t.x + (t.x - o.x) / raw * length,
+                y: t.y + (t.y - o.y) / raw * length
+            ),
+        ]
+    }
+
+    /// The reticle group for the map (RB4): aim line + dotted extension +
+    /// pan arc always; the settled pieces (ellipse, neighbor arcs, wind hold)
+    /// only once the camera settles — pan-start empties them via
+    /// `reticleSettled = nil`, so the settled layers hide while panning.
+    var reticleOverlay: ReticleOverlay? {
+        // A tool owning the map keeps a stale reticle target from drawing —
+        // the reticle only reports (and only makes sense) in distance mode.
+        guard toolMode == .none else { return nil }
+        guard let origin = reticleOrigin, let target = reticleTarget else { return nil }
+        var overlay = ReticleOverlay(aimLine: [origin, target])
+        overlay.dottedExtension = reticleDottedExtension ?? []
+        overlay.panArc = reticlePanArc ?? []
+        if !reticleIsPanning, let settled = reticleSettled {
+            overlay.ellipse = settled.ellipse
+            if let club = settled.advisedClub, let position = settled.ellipseLabelPosition {
+                overlay.ellipseLabel = EllipseLabel(position: position, text: club, boxed: true)
+            }
+            overlay.neighborArcs = settled.neighborArcs.map {
+                ReticleOverlay.NeighborArc(label: $0.clubName, polyline: $0.polyline)
+            }
+            overlay.windHold = settled.windHold
+        }
+        return overlay
+    }
+
+    /// The focused-ladder aim visuals, riding the reticle overlay group: while
+    /// a rail rung is focused (tap in the ladder) the FOCUSED target owns the
+    /// aim — a dotted origin→target line plus the recommended club's
+    /// dispersion ellipse, on-map label and wind hold. The reticle's own line,
+    /// arcs and ellipse stand down while this is up (`overlays` prefers it);
+    /// the next user pan releases the focus and the reticle takes over again.
+    /// Nil outside browse-mode ladder focus or without a positioned row.
+    var ladderFocusOverlay: ReticleOverlay? {
+        guard isBrowseMode, toolMode == .none, focusedLadderId != nil,
+              let row = selectedLadderRow, let position = row.position,
+              let origin else { return nil }
+        var overlay = ReticleOverlay()
+        overlay.dottedExtension = [origin, position]
+        if let ellipse = selectedTargetEllipse { overlay.ellipse = ellipse }
+        overlay.ellipseLabel = selectedTargetEllipseLabel
+        overlay.windHold = selectedTargetWindHold
+        return overlay
+    }
+
+    /// Camera reticle callback (RB2). While panning: track the point, drop
+    /// the settled layer and any pending settle — the cheap pan snapshot IS
+    /// the computed properties above, nothing is stored per frame. On idle:
+    /// debounce `reticleSettleSleep` (200 ms), then compute the full settled
+    /// snapshot once.
+    func reticleMoved(_ p: LatLon, panning: Bool, metersPerPoint: Double? = nil) {
+        guard currentHole != nil else { return }
+        // A focused ladder rung owns the aim visuals (dotted line + advice
+        // ellipse to the FOCUSED target). Camera reports from its own
+        // centering animation only track the target quietly; once that settle
+        // has landed, the next user pan hands the map back to the reticle.
+        if focusedLadderId != nil {
+            if !(panning && ladderFocusCameraSettled) {
+                if !panning { ladderFocusCameraSettled = true }
+                reticleTarget = p
+                return
+            }
+            mapFocus = nil
+            focusedLadderId = nil
+        }
+        reticleSettleTask?.cancel()
+        reticleTarget = p
+        if panning {
+            reticleIsPanning = true
+            reticleSettled = nil
+            return
+        }
+        reticleIsPanning = false
+        reticleSettleTask = Task { [weak self] in
+            guard let sleep = self?.reticleSettleSleep else { return }
+            try? await sleep()
+            guard !Task.isCancelled, let self,
+                  self.reticleTarget == p, !self.reticleIsPanning else { return }
+            await self.settleReticle(at: p)
+        }
+    }
+
+    /// The once-per-settle computation: elevation samples, plays-like, the
+    /// re-picked club's ellipse + wind hold, neighbor arcs, remaining.
+    private func settleReticle(at target: LatLon) async {
+        guard let origin = reticleOrigin else { return }
+
+        // Elevations: the origin's known value (browse-origin sample / tee
+        // record), else a fresh terrain sample; the reticle point is always
+        // sampled here — the once-per-settle budget covers it.
+        var originElev = originElevation
+        var targetElev: Double?
+        if let sampler = elevationSampler {
+            targetElev = await sampler(target)
+            if originElev == nil { originElev = await sampler(origin) }
+        }
+        // Async gap: a new pan or hole switch invalidates this settle (a mode
+        // flip cancels the task via `resettleReticleAfterOriginChange`).
+        guard !Task.isCancelled, reticleTarget == target, !reticleIsPanning else { return }
+
+        let o = Sweref99TM.fromWGS84(origin)
+        let t = Sweref99TM.fromWGS84(target)
+        let rawM = hypot(t.x - o.x, t.y - o.y)
+        guard rawM > 0 else { return }
+        let bearing = Self.planarBearing(from: o, to: t)
+
+        // Plays-like: slope first (withheld in competition mode — same rule
+        // as `playsAsAndElevation`), then the wind "plays as".
+        var playsLike = rawM
+        var elevationDeltaM: Int?
+        if !competitionMode, let oe = originElev, let te = targetElev {
+            let stats = PlaysLike.segmentStats(
+                PlaysLike.Point(e: o.x, n: o.y, elevation: oe),
+                PlaysLike.Point(e: t.x, n: t.y, elevation: te)
+            )
+            if let pl = stats.playsLikeSimple { playsLike = pl }
+            elevationDeltaM = Int((te - oe).rounded())
+        }
+        if let wind = effectiveWind {
+            playsLike = playsAsM(playsLike, windEffect(wind.speedMps, wind.directionDeg, bearing, playsLike))
+        }
+
+        var remainingToGreenM: Int?
+        if let green = targets.greenCenter {
+            remainingToGreenM = Int(Distance.planarMeters(target, green).rounded())
+        }
+
+        // Advice content — competition mode keeps the distances only (same
+        // gating as `selectedTargetEllipse`).
+        var advisedClub: String?
+        var ellipse: [LatLon] = []
+        var ellipseLabelPosition: LatLon?
+        var neighborArcs: [ReticleSettled.NeighborArc] = []
+        var windHold: TargetWindHold?
+        if !competitionMode,
+           let club = BrowseReticle.panClub(clubs: clubs, distanceM: playsLike) {
+            advisedClub = club.name
+            if let viz = computeSelectedTargetVisualization(
+                origin: origin, targetPosition: target, club: club, elevationDeltaM: elevationDeltaM
+            ) {
+                ellipse = viz.ellipse
+                windHold = viz.hold
+                // Name the advised club ON the map, at the ellipse's right
+                // edge — the same side `arcPolyline` ends on, so the three
+                // club labels line up and read in distance order.
+                let planarRing = ellipse.map { p -> Vec2 in
+                    let s = Sweref99TM.fromWGS84(p)
+                    return Vec2(x: s.x, y: s.y)
+                }
+                if let anchor = BrowseReticle.rightmostPoint(
+                    ring: planarRing, bearingDeg: bearing
+                ) {
+                    ellipseLabelPosition = Sweref99TM.toWGS84(x: anchor.x, y: anchor.y)
+                }
+            }
+            // Neighbor arcs at their own plays-like-adjusted carries: the
+            // ground radius that plays like each club's nominal carry along
+            // this line (rawM/playsLike ground meters per plays-like meter),
+            // each arc at the club's own full-carry half-width.
+            let groundPerPlaysLike = playsLike > 0 ? rawM / playsLike : 1
+            let neighbors = BrowseReticle.neighborClubs(clubs: clubs, around: club)
+            for neighbor in [neighbors.shorter, neighbors.longer].compactMap({ $0 }) {
+                let radiusM = neighbor.carryM * groundPerPlaysLike
+                guard radiusM > 0 else { continue }
+                let arc = BrowseReticle.arcPolyline(
+                    origin: Vec2(x: o.x, y: o.y),
+                    bearingDeg: bearing,
+                    radiusM: radiusM,
+                    halfWidthM: BrowseReticle.lateralHalfWidthM(
+                        club: neighbor, atDistanceM: neighbor.carryM
+                    )
+                )
+                neighborArcs.append(ReticleSettled.NeighborArc(
+                    clubName: neighbor.name,
+                    polyline: arc.map { Sweref99TM.toWGS84(x: $0.x, y: $0.y) }
+                ))
+            }
+        }
+
+        reticleSettledOrigin = origin
+        reticleSettled = ReticleSettled(
+            playsLikeM: Int(playsLike.rounded()),
+            advisedClub: advisedClub,
+            ellipse: ellipse,
+            ellipseLabelPosition: ellipseLabelPosition,
+            neighborArcs: neighborArcs,
+            windHold: windHold,
+            remainingToGreenM: remainingToGreenM
+        )
+    }
+
+    /// Compass bearing (0° = north, clockwise) between planar points.
+    private static func planarBearing(from o: Sweref99TM.Point, to t: Sweref99TM.Point) -> Double {
+        let deg = atan2(t.x - o.x, t.y - o.y) * 180 / .pi
+        return deg < 0 ? deg + 360 : deg
     }
 
     /// Overridable for tests; the persisted default is 230 m.
@@ -1496,6 +1893,14 @@ final class OnCourseModel {
         // BEFORE the elevation-sampler early-return below so the geofence still
         // fires when no terrain sampler is installed.
         refreshTeeGeofence()
+        // A settled reticle answer measures from the origin at settle time —
+        // in GPS mode that origin walks with the player. Re-settle once the
+        // fix drifts meaningfully; jitter below the threshold keeps the answer.
+        if reticleSettled != nil, let anchor = reticleSettledOrigin,
+           let fix = effectiveUserLocation,
+           Distance.planarMeters(anchor, fix) > Self.reticleOriginResettleM {
+            resettleReticleAfterOriginChange()
+        }
         userElevationTask?.cancel()
         guard let location, let sampler = elevationSampler else {
             userElevation = nil
@@ -2140,9 +2545,23 @@ final class OnCourseModel {
             )
         }
         return holeBounds.map {
-            .fitHole($0, bearing: holeBearing, padding: 70, animated: true, token: cameraToken)
+            .fitHole(
+                $0, bearing: holeBearing, padding: Self.holeFitPadding,
+                insets: holeFitInsets, animated: true, token: cameraToken
+            )
         }
     }
+
+    /// Uniform edge padding for the default hole fit, points.
+    static let holeFitPadding = 70.0
+
+    /// Extra chrome insets for the default hole fit — the screen sets this
+    /// from the map's measured height so the fitted hole sits with the green
+    /// near the reticle anchor (30% line) and the tee toward the lower part
+    /// (`CourseMapView.Coordinator.reticleFitInsets`). Applied in BOTH modes:
+    /// browse↔GPS keeps identical framing (see `setGPSEnabled`), so the
+    /// insets must not flip with the reticle.
+    var holeFitInsets: MapEdgeInsets = .zero
 
     // MARK: - Derived: routing
 
@@ -3421,7 +3840,25 @@ final class OnCourseModel {
     /// wind-adjusted plays-like distance), selects it, and persists (sampling
     /// elevation). No-op unless the planner tool is active + armed.
     func placePlanShot(at position: LatLon) {
-        guard toolMode == .plan, isAddingPlanShot, let hole = currentHole else { return }
+        guard toolMode == .plan, isAddingPlanShot else { return }
+        isAddingPlanShot = false
+        appendPlanShot(at: position)
+    }
+
+    /// The reticle's "+ Target" action: append a plan point at the current
+    /// reticle aim without the planner tool being up. Turns the plan overlay
+    /// on so the new point is visible immediately.
+    func addReticlePlanTarget() {
+        guard let target = reticleTarget else { return }
+        setPlanVisible(true)
+        appendPlanShot(at: target)
+    }
+
+    /// Shared core of `placePlanShot` / `addReticlePlanTarget`: append a shot
+    /// in sortOrder with an auto-selected club, select it, persist (sampling
+    /// elevation).
+    private func appendPlanShot(at position: LatLon) {
+        guard let hole = currentHole else { return }
         beginPlanEditingIfNeeded()
         let holeNumber = hole.hole.number
         let existing = plan?.shots(holeNumber: holeNumber) ?? []
@@ -3439,7 +3876,6 @@ final class OnCourseModel {
         )
         plan = plan?.addingShot(holeNumber: holeNumber, shot)
         selectedPlanShotId = shotId
-        isAddingPlanShot = false
         planEditToken += 1
         Task { [weak self] in
             let elevation = await self?.elevationSampler?(position) ?? nil
@@ -4774,11 +5210,23 @@ final class OnCourseModel {
         if let p = targets.greenBack { markers.append(TargetMarker(kind: .back, position: p)) }
         if let p = targets.activePin { markers.append(TargetMarker(kind: .pin, position: p)) }
 
+        // While the reticle is active it OWNS the white line: the tapped-point
+        // / tapped-shape line and the browse forward route are both suppressed
+        // so only the reticle aim line + dotted extension draw (device
+        // feedback: the near-parallel extra lines read as clutter).
+        // Tap-a-shape inspection itself is untouched — the card, ring wash and
+        // edge figures stay, only its LINE goes. A focused ladder rung takes
+        // the group over entirely (dotted line + advice ellipse to the FOCUSED
+        // target, no reticle line/arcs) until the next user pan releases it.
+        let reticle = ladderFocusOverlay ?? reticleOverlay
+
         // A working target (decide choice, R4) owns the distance line while
         // set: origin straight to the committed landing.
         let line: [LatLon]
         if let wt = workingTarget, let origin {
             line = [origin, wt.position]
+        } else if reticle != nil {
+            line = []
         } else if let feature = inspectedFeature, let origin {
             if let lineTo = feature.lineTo {
                 // Browse-to mode: draw the CHOSEN line, extended out to the
@@ -4790,10 +5238,11 @@ final class OnCourseModel {
                 // Ray mode: origin straight through the shape to its far lip.
                 line = [origin, feature.carryPoint]
             }
-        } else if isBrowseMode, let browseTarget, let origin {
-            // Inspecting an arbitrary map point: the line IS the inspected
-            // shot, origin straight to the tap (the hole route would suggest
-            // the tap measures via the aims). Cleared with the inspection.
+        } else if let browseTarget, let origin {
+            // Inspecting an arbitrary map point (browse origin or live fix):
+            // the line IS the inspected shot, origin straight to the tap (the
+            // hole route would suggest the tap measures via the aims).
+            // Cleared with the inspection.
             line = [origin, browseTarget]
         } else {
             line = isBrowseMode ? browseForwardRoute : gpsForwardRoute
@@ -4803,9 +5252,18 @@ final class OnCourseModel {
         // the selection-scoped plan leg ellipses) — deliberately NOT behind
         // `showRouteLabels`: they name a selected visualization, unlike the
         // immersive-only route-leg figures.
-        let plan = planOverlay
+        // While the reticle group is up (panning OR ladder focus) the plan
+        // overlay and the authored course route hide with the other lines —
+        // the same device-feedback clutter call: the reticle aim line is the
+        // shot being considered, and the near-parallel plan/route strokes plus
+        // the plan's dispersion ellipses only compete with it.
+        let plan = reticle == nil ? planOverlay : nil
         var ellipseLabels: [EllipseLabel] = []
-        if let label = selectedTargetEllipseLabel { ellipseLabels.append(label) }
+        // While the reticle is active its labeled ellipse is THE club answer;
+        // the legacy selected-target ellipse/label/wind-hold would put a second
+        // club label on screen at once (same clutter class the device-feedback
+        // round flagged for the lines), so they yield to the reticle too.
+        if reticle == nil, let label = selectedTargetEllipseLabel { ellipseLabels.append(label) }
         for ellipse in plan?.ellipses ?? [] {
             let text = ellipse.clubName.map { "\($0) · \(ellipse.legMeters)" }
                 ?? "\(ellipse.legMeters)"
@@ -4817,6 +5275,15 @@ final class OnCourseModel {
         // nudged a few meters OUTWARD along the measuring line (front toward
         // the origin, carry past the far edge) so the two never collide over
         // a narrow shape.
+        // Reticle clubs: the advised club named on its ellipse's right edge and
+        // each neighbor at its arc's END (also the right edge) — same boxed
+        // image pipeline, all three on one side so they read in distance order.
+        // A mid-arc label would collide with the aim line.
+        if let label = reticle?.ellipseLabel { ellipseLabels.append(label) }
+        for arc in reticle?.neighborArcs ?? [] {
+            guard let end = arc.polyline.last else { continue }
+            ellipseLabels.append(EllipseLabel(position: end, text: arc.label, boxed: true))
+        }
         if let feature = inspectedFeature {
             let front = Sweref99TM.fromWGS84(feature.frontPoint)
             let far = Sweref99TM.fromWGS84(feature.carryPoint)
@@ -4843,8 +5310,10 @@ final class OnCourseModel {
             userLocation: isUsingGPS ? effectiveUserLocation.map { UserLocationMarker(position: $0) } : nil,
             routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : [],
             plan: plan,
-            courseRoute: courseRouteOverlay,
-            highlight: isBrowseMode ? browseTarget ?? mapFocus ?? browseOrigin : mapFocus,
+            courseRoute: reticle == nil ? courseRouteOverlay : .empty,
+            highlight: isBrowseMode
+                ? browseTarget ?? mapFocus ?? browseOrigin
+                : browseTarget ?? mapFocus,
             inspectedFeature: inspectedFeature.map {
                 InspectedFeatureOverlay(
                     ring: $0.ring, frontPoint: $0.frontPoint, carryPoint: $0.carryPoint
@@ -4854,8 +5323,9 @@ final class OnCourseModel {
             // highlight ring moves to whatever was tapped last, so without
             // this the "measuring from here" point vanishes on inspection.
             browseFrom: isBrowseMode ? browseOrigin : nil,
-            selectedEllipse: selectedTargetEllipse,
-            selectedWindHold: selectedTargetWindHold,
+            selectedEllipse: reticle == nil ? selectedTargetEllipse : nil,
+            selectedWindHold: reticle == nil ? selectedTargetWindHold : nil,
+            reticle: reticle,
             ellipseLabels: ellipseLabels
         )
     }

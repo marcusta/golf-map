@@ -296,6 +296,39 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertNil(model.inspectedFeature, "point inspect replaces the shape inspection")
     }
 
+    func testSecondTapInsideSameShapeDismissesTheInspection() {
+        let model = makeModel() // gpsEnabled default — tap handling is mode-uniform
+        model.setSurfaces([surfaceBox(58.3620, 15.7090, "bunker")])
+        let tap = LatLon(lat: 58.3620, lon: 15.7090)
+
+        XCTAssertTrue(model.handleDistanceTap(tap))
+        XCTAssertNotNil(model.inspectedFeature)
+
+        // Second tap inside the SAME ring dismisses — the reticle owns aiming
+        // in both modes now, so no tapped aim point is created.
+        XCTAssertTrue(model.handleDistanceTap(tap))
+        XCTAssertNil(model.inspectedFeature)
+        XCTAssertNil(model.browseTarget)
+
+        // Third tap re-inspects the shape fresh (ray mode, no kept aim point).
+        XCTAssertTrue(model.handleDistanceTap(tap))
+        XCTAssertNil(model.inspectedFeature?.lineTo)
+        XCTAssertNil(model.browseTarget)
+    }
+
+    func testGpsOpenMapTapDismissesThenFallsThroughToChrome() {
+        let model = makeModel()
+        model.setSurfaces([surfaceBox(58.3620, 15.7090, "bunker")])
+        model.handleDistanceTap(LatLon(lat: 58.3620, lon: 15.7090))
+        XCTAssertNotNil(model.inspectedFeature)
+
+        let open = LatLon(lat: 58.3500, lon: 15.7300)
+        XCTAssertTrue(model.handleDistanceTap(open), "first open-map tap dismisses")
+        XCTAssertNil(model.inspectedFeature)
+        XCTAssertNil(model.browseTarget)
+        XCTAssertFalse(model.handleDistanceTap(open), "nothing up → screen toggles chrome")
+    }
+
     func testHoleChangeClearsInspectedFeature() {
         let model = makeModel()
         model.setSurfaces([surfaceBox(58.3620, 15.7090, "bunker")])
@@ -409,7 +442,10 @@ final class OnCourseModelTests: XCTestCase {
         model.inspectBrowseLadder(row)
 
         XCTAssertEqual(model.origin, teeOrigin, "ladder inspection must not rebuild from the rung")
-        XCTAssertEqual(model.overlays.distanceLine.first, teeOrigin)
+        // Ladder focus draws the dotted aim line (reticle group) from the
+        // retained origin — the solid distance line stands down under it.
+        XCTAssertEqual(model.overlays.reticle?.dottedExtension.first, teeOrigin)
+        XCTAssertTrue(model.overlays.distanceLine.isEmpty)
         XCTAssertEqual(model.focusedLadderId, row.id)
         XCTAssertEqual(model.selectedTargetAdvice?.title, row.label)
         XCTAssertTrue(model.canPromoteInspectedBrowseTarget)

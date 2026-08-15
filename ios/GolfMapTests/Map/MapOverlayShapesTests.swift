@@ -246,6 +246,69 @@ final class MapOverlayShapesTests: XCTestCase {
         XCTAssertEqual(bounds.expanded(byMeters: 0), bounds)
     }
 
+    // MARK: - Reticle browse (RB4)
+
+    func testReticleLinesTagRolesAndDropDegenerateLines() throws {
+        let overlay = ReticleOverlay(
+            aimLine: [ll(58.350, 15.710), ll(58.352, 15.709)],
+            dottedExtension: [ll(58.352, 15.709)], // single point → hidden
+            panArc: [ll(58.3519, 15.7092), ll(58.352, 15.709), ll(58.3521, 15.7088)]
+        )
+        let collection = try XCTUnwrap(
+            MapOverlayShapes.reticleLinesShape(overlay) as? MLNShapeCollectionFeature
+        )
+        let roles = collection.shapes.compactMap { ($0 as? MLNFeature)?.attributes["role"] as? String }
+        XCTAssertEqual(roles, ["aim", "pan-arc"], "degenerate extension is dropped")
+
+        let hidden = try XCTUnwrap(
+            MapOverlayShapes.reticleLinesShape(nil) as? MLNShapeCollectionFeature
+        )
+        XCTAssertTrue(hidden.shapes.isEmpty)
+    }
+
+    func testReticleEllipseAndNeighborArcsBuildAndClear() throws {
+        let ring = [ll(58.35, 15.70), ll(58.36, 15.70), ll(58.36, 15.71), ll(58.35, 15.70)]
+        let overlay = ReticleOverlay(
+            ellipse: ring,
+            neighborArcs: [
+                ReticleOverlay.NeighborArc(label: "8i", polyline: [ll(58.351, 15.701), ll(58.352, 15.702)]),
+                ReticleOverlay.NeighborArc(label: "Dr", polyline: [ll(58.353, 15.703)]), // degenerate
+            ]
+        )
+        _ = try XCTUnwrap(MapOverlayShapes.reticleEllipseShape(overlay) as? MLNPolygonFeature)
+        let arcs = try XCTUnwrap(
+            MapOverlayShapes.reticleNeighborArcsShape(overlay) as? MLNShapeCollectionFeature
+        )
+        XCTAssertEqual(arcs.shapes.count, 1, "single-point arc is dropped")
+
+        // Settled pieces empty while panning → both sources clear.
+        let panning = ReticleOverlay(aimLine: overlay.ellipse)
+        let noEllipse = try XCTUnwrap(
+            MapOverlayShapes.reticleEllipseShape(panning) as? MLNShapeCollectionFeature
+        )
+        XCTAssertTrue(noEllipse.shapes.isEmpty)
+        let noArcs = try XCTUnwrap(
+            MapOverlayShapes.reticleNeighborArcsShape(panning) as? MLNShapeCollectionFeature
+        )
+        XCTAssertTrue(noArcs.shapes.isEmpty)
+    }
+
+    func testReticleWindHoldReusesTaggedConnectorShape() throws {
+        let overlay = ReticleOverlay(windHold: TargetWindHold(
+            aim: ll(58.361, 15.705), target: ll(58.361, 15.706), meters: 6, side: .left
+        ))
+        let collection = try XCTUnwrap(
+            MapOverlayShapes.reticleWindHoldShape(overlay) as? MLNShapeCollectionFeature
+        )
+        let roles = collection.shapes.compactMap { ($0 as? MLNFeature)?.attributes["role"] as? String }
+        XCTAssertEqual(Set(roles), ["hold-line", "hold-aim"])
+
+        let empty = try XCTUnwrap(
+            MapOverlayShapes.reticleWindHoldShape(ReticleOverlay()) as? MLNShapeCollectionFeature
+        )
+        XCTAssertTrue(empty.shapes.isEmpty)
+    }
+
     func testCourseRouteShapeBuildsPolylineThroughAims() throws {
         let route = CourseRouteOverlay(
             line: [

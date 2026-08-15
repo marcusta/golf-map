@@ -670,6 +670,13 @@ private struct OnCourseContentView: View {
     /// Show the left distance rail: distance mode, chrome up (not immersive).
     private var showsLadderRail: Bool { isDistanceMode && !immersive }
 
+    /// The pan-to-aim reticle is live: a hole up and no tool owning the map
+    /// (distance mode). Both modes — GPS aims from the live fix, browse from
+    /// the browse origin (device feedback round 3).
+    private var isReticleActive: Bool {
+        isDistanceMode && model.currentHole != nil
+    }
+
     /// The putt read's Surface tier is live: green view up, surface installed,
     /// not competition-gated. Gates the tap-to-place and marker-drag inputs.
     private var isPuttSurfaceActive: Bool {
@@ -768,9 +775,77 @@ private struct OnCourseContentView: View {
             }
             .frame(maxHeight: .infinity)
 
+            // Reticle actions ride above whatever bottom panel is up (the
+            // distance card, or nothing in immersive mode).
+            // Hidden while a ladder rung owns the aim (dotted line + advice to
+            // the focused target): the chips act on the reticle's anchor point,
+            // which is NOT the focused target — the card's own "From here"
+            // covers promotion until the next pan hands the map back.
+            if isReticleActive && model.reticleTarget != nil && model.focusedLadderId == nil {
+                reticleActions
+                    .padding(.bottom, 8)
+            }
+
             bottomPanel
         }
         .trackFrame { chromeFrame = $0 }
+    }
+
+    /// Reticle action chips: add a plan target at the aim point / rebase the
+    /// browse origin onto it. 44 pt hit targets.
+    private var reticleActions: some View {
+        HStack(spacing: 10) {
+            Button {
+                model.addReticlePlanTarget()
+            } label: {
+                reticleChipLabel("plus.circle", "Target")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add plan target")
+            .accessibilityHint("Places a plan point at the aim point")
+
+            // Origin rebasing is a browse concept — in GPS mode the origin is
+            // the player's feet, so only "+ Target" is offered there.
+            if model.isBrowseMode {
+                Button {
+                    if let target = model.reticleTarget { model.setBrowseOrigin(target) }
+                } label: {
+                    reticleChipLabel("arrow.turn.down.right", "From here")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Browse from here")
+                .accessibilityHint("Makes the aim point the new distance origin")
+            }
+
+            // Only offered once the origin left the tee — mirrors the card's
+            // bottom-strip reset, but reachable without opening the card.
+            if model.browseOrigin != nil {
+                Button {
+                    model.resetBrowseOrigin()
+                } label: {
+                    reticleChipLabel("arrow.uturn.backward", "Tee")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("From tee")
+                .accessibilityHint("Restores the selected tee as the distance origin")
+            }
+        }
+    }
+
+    /// Scrim-backed chip label (the chips float over map imagery).
+    private func reticleChipLabel(_ symbol: String, _ text: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol)
+                .font(.subheadline)
+            Text(text)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .foregroundStyle(Color.accentPrimary)
+        .padding(.horizontal, 14)
+        .frame(minHeight: 44)
+        .background(.black.opacity(0.55), in: Capsule())
     }
 
     /// The active tool's panel (or the distance card when no tool is up).
@@ -869,20 +944,14 @@ private struct OnCourseContentView: View {
                         measure.place(position)
                     } else if isPlacingPlanShot {
                         model.placePlanShot(at: position)
-                    } else if model.isBrowseMode && isDistanceMode {
-                        if !model.inspectTappedFeature(position) {
-                            model.inspectBrowsePoint(position)
-                        }
                     } else if isDistanceMode {
-                        // GPS mode: tap on a shape inspects it; a tap on open
-                        // map first dismisses an inspection, then (with none
-                        // up) toggles the chrome as before.
-                        if !model.inspectTappedFeature(position) {
-                            if model.inspectedFeature != nil {
-                                model.clearInspectedFeature()
-                            } else {
-                                withAnimation(.easeInOut(duration: 0.28)) { immersive.toggle() }
-                            }
+                        // Distance mode: the model consumes shape inspects and
+                        // dismissals; an open-map tap with nothing up falls
+                        // through here and toggles the chrome — in browse the
+                        // reticle owns aiming, so the tap is free to hide/show
+                        // the card in both modes.
+                        if !model.handleDistanceTap(position) {
+                            withAnimation(.easeInOut(duration: 0.28)) { immersive.toggle() }
                         }
                     } else {
                         // Green view: the tap both places the ball/hole and
@@ -898,6 +967,11 @@ private struct OnCourseContentView: View {
                 // zoom for the whole mode.
                 adjustEnabled: isAdjust || isPuttSurfaceActive || isCapture || isPlan,
                 adjustLocksGestures: isAdjust,
+                // Pan-to-aim reticle (both modes, no tool up): the geo point
+                // under the fixed anchor streams into the model per camera
+                // frame; the `.idle` report triggers the debounced settle.
+                isReticleEnabled: isReticleActive,
+                onReticleMove: { model.reticleMoved($0, panning: $2 == .panning, metersPerPoint: $1) },
                 onHandleGrab: { id in
                     if id.hasPrefix("plan-shot.") {
                         model.beginPlanShotDrag(handleID: id)
@@ -939,13 +1013,31 @@ private struct OnCourseContentView: View {
             // map and reports the full-bleed frame — read after, SwiftUI hands
             // back the safe-area frame and the chrome insets lose the status-bar
             // and home-indicator strips.
-            .trackFrame { mapFrame = $0 }
+            .trackFrame { frame in
+                mapFrame = frame
+                // Hole-fit insets follow the reticle anchor (green near the
+                // 30% line, tee low) — mode-independent, see `holeFitInsets`.
+                let insets = CourseMapView.Coordinator.reticleFitInsets(
+                    mapHeight: frame.height, padding: OnCourseModel.holeFitPadding
+                )
+                if model.holeFitInsets != insets { model.holeFitInsets = insets }
+            }
             .ignoresSafeArea()
             // The chrome toggle moved into the shared single-tap recognizer
             // above (GPS distance mode, tap on open map): the SwiftUI
             // simultaneous TapGesture that used to live here double-fired with
             // it, and the recognizer variant also stops a double-tap zoom from
             // flashing the chrome (it defers to MapLibre's double-tap).
+
+            // Reticle crosshair + readouts, pinned to the shared anchor over
+            // the FULL-BLEED map (the anchor fraction is viewport-relative,
+            // like `Coordinator.reticleAnchor`). Hit-testing stays ON for the
+            // big figure only (tap flips actual ↔ plays-like); everything
+            // else in the HUD opts out so map gestures pass through.
+            if isReticleActive {
+                ReticleHUD(model: model, unit: env.settings.distanceUnit)
+                    .ignoresSafeArea()
+            }
 
             chrome
         }
@@ -3502,3 +3594,124 @@ private extension View {
         )
     }
 }
+
+// MARK: - Reticle browse HUD (crosshair + readouts)
+
+/// The fixed pan-to-aim crosshair with its distance readouts, laid over the
+/// full-bleed map at the shared anchor (horizontal center,
+/// `CourseMapView.Coordinator.reticleAnchorYFraction` down — the same point
+/// the map unprojects for `onReticleMove`). Only the big figure hit-tests
+/// (tap flips actual ↔ plays-like); the rest opts out so every map gesture
+/// passes through.
+private struct ReticleHUD: View {
+    let model: OnCourseModel
+    let unit: DistanceUnit
+
+    private static let windHoldColor = Color(red: 0.957, green: 0.447, blue: 0.714)
+    /// Plays-like tint for the big figure — the map's highlight cyan (same
+    /// family as the advice ellipse / ladder focus ring), so "adjusted number"
+    /// reads as advice at a glance. Actual stays plain overlay white.
+    private static let playsLikeColor = Color(red: 0.13, green: 0.83, blue: 0.93)
+
+    var body: some View {
+        GeometryReader { geo in
+            let anchor = CGPoint(
+                x: geo.size.width * 0.5,
+                y: geo.size.height * CourseMapView.Coordinator.reticleAnchorYFraction
+            )
+            // No marker at the anchor: the aim line's end IS the aim point
+            // (device feedback — even the minimal circle was noise).
+            // Ladder focus owns the aim while set — the anchor readout would
+            // measure a point nobody is aiming at, so it stands down.
+            if model.reticleTarget != nil && model.focusedLadderId == nil {
+                readouts
+                    .frame(maxWidth: .infinity)
+                    // Breathing room below the (marker-less) anchor so the
+                    // big figure never crowds the aim-line end — pushed well
+                    // clear so nearby features (bunkers, edges) stay visible
+                    // around the aim point (device feedback round 2).
+                    .padding(.top, anchor.y + 92)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            }
+        }
+    }
+
+    /// Pan state: raw from→aim + raw remaining. Settled: from→aim as
+    /// plays-like OR actual (tap the big figure to flip — the caption under
+    /// it names which is up), the settled remaining, and the wind-hold line.
+    /// No club chip: the advised club is named on its ellipse (with the
+    /// neighbor arcs).
+    private var readouts: some View {
+        let settled = model.reticleIsPanning ? nil : model.reticleSettled
+        // Panning always reads raw (plays-like is settle-priced); competition
+        // mode has no plays-like at all, so the toggle stands down there too.
+        let showsActual = model.reticleShowsActual || model.competitionMode
+        return VStack(spacing: 4) {
+            // Big from→aim figure (matches the distance card's metric type).
+            Button {
+                model.toggleReticleDistanceMode()
+            } label: {
+                // Plays-like marks itself INSIDE the pill (no second label):
+                // the settled figure turns highlight cyan and carries the
+                // slope glyph — a plain white number is the actual distance
+                // (and the pan readout).
+                let playsLikeUp = settled != nil && !showsActual
+                HStack(spacing: 5) {
+                    MetricText(
+                        DistanceFormat.string(
+                            showsActual
+                                ? model.reticlePanDistanceM
+                                : settled.map { Double($0.playsLikeM) } ?? model.reticlePanDistanceM,
+                            unit: unit
+                        ),
+                        unit: unit.abbreviation, size: 26,
+                        color: playsLikeUp ? Self.playsLikeColor : Overlay.text,
+                        unitColor: Overlay.textMuted
+                    )
+                    if playsLikeUp {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Self.playsLikeColor)
+                    }
+                }
+                .mapLabelScrim()
+            }
+            .buttonStyle(.plain)
+            .disabled(model.competitionMode)
+            .accessibilityLabel(
+                settled != nil && !showsActual ? "Plays-like distance" : "Distance"
+            )
+            .accessibilityHint("Switches between actual and plays-like distance")
+            HStack(spacing: 6) {
+                if let remaining = settled?.remainingToGreenM ?? model.reticleRemainingToGreenM {
+                    HStack(spacing: 3) {
+                        MetricText(
+                            DistanceFormat.string(remaining, unit: unit),
+                            unit: unit.abbreviation, size: 13
+                        )
+                        Text("in")
+                            .font(.caption2)
+                            .foregroundStyle(Overlay.textMuted)
+                    }
+                    .mapLabelScrim()
+                }
+            }
+            // The small readouts are display-only — opt out of hit-testing so
+            // a stray tap near them still reaches the map.
+            .allowsHitTesting(false)
+            if let hold = settled?.windHold {
+                // Aim correction (hold into the wind) — same arrow language
+                // as the advice banner.
+                Text("aim \(hold.side == .left ? "←" : "→") \(DistanceFormat.string(hold.meters, unit: unit)) \(unit.abbreviation)")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Self.windHoldColor)
+                    .mapLabelScrim()
+                    .accessibilityLabel(
+                        "Aim \(DistanceFormat.stringWithUnit(hold.meters, unit: unit)) \(hold.side.rawValue) of the target"
+                    )
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+

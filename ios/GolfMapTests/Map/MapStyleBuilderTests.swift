@@ -161,6 +161,10 @@ final class MapStyleBuilderTests: XCTestCase {
             MapStyleIDs.browseFromSource,
             MapStyleIDs.selectedEllipseSource,
             MapStyleIDs.selectedWindHoldSource,
+            MapStyleIDs.reticleLinesSource,
+            MapStyleIDs.reticleEllipseSource,
+            MapStyleIDs.reticleNeighborsSource,
+            MapStyleIDs.reticleWindHoldSource,
         ] {
             let source = try XCTUnwrap(sources[id] as? [String: Any], id)
             XCTAssertEqual(source["type"] as? String, "geojson", id)
@@ -190,6 +194,14 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.selectedEllipseOutlineLayer,
                 MapStyleIDs.selectedWindHoldLineLayer,
                 MapStyleIDs.selectedWindHoldAimLayer,
+                // Reticle settled advice (ellipse, neighbor arcs, wind hold)
+                // low in the stack — the aim/extension/pan-arc lines above
+                // the distance line read over them.
+                MapStyleIDs.reticleEllipseFillLayer,
+                MapStyleIDs.reticleEllipseOutlineLayer,
+                MapStyleIDs.reticleNeighborsLayer,
+                MapStyleIDs.reticleWindHoldLineLayer,
+                MapStyleIDs.reticleWindHoldAimLayer,
                 // Plan overlay UNDER the distance line: the strategy is
                 // context; the white "where I am" line stays on top.
                 MapStyleIDs.planLineCasingLayer,
@@ -208,6 +220,10 @@ final class MapStyleBuilderTests: XCTestCase {
                 MapStyleIDs.inspectedFeatureOutlineLayer,
                 MapStyleIDs.distanceLineCasingLayer,
                 MapStyleIDs.distanceLineLayer,
+                MapStyleIDs.reticleAimCasingLayer,
+                MapStyleIDs.reticleAimLayer,
+                MapStyleIDs.reticleExtensionLayer,
+                MapStyleIDs.reticlePanArcLayer,
                 MapStyleIDs.inspectedFeatureEdgeLayer,
                 MapStyleIDs.routeLegLabelsLayer,
                 MapStyleIDs.ellipseLabelsLayer,
@@ -384,7 +400,7 @@ final class MapStyleBuilderTests: XCTestCase {
         )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(decoded["version"] as? Int, 8)
-        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 39)
+        XCTAssertEqual((decoded["layers"] as? [Any])?.count, 48)
     }
 
     // MARK: - Shot-visualisation overlay (T2)
