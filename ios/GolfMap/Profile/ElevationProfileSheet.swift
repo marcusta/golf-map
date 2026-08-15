@@ -4,9 +4,9 @@ import SwiftUI
 /// The elevation-profile sheet: a side cross-section of the terrain along the
 /// hole route (tee→green) or the measure path, drawn with Swift Charts. Both
 /// axes carry real metre tick labels — numbers, not shading. The y-axis
-/// auto-scales to fill the chart (a ±8 m change over 400 m is invisible at
-/// 1:1), and the resulting vertical exaggeration is computed from the actual
-/// pixel/metre ratios and printed as an honest caption.
+/// auto-scales to the data (a ±8 m change over 400 m is invisible at 1:1),
+/// but the vertical exaggeration is capped so flat holes don't render like
+/// cliffs and perceived steepness stays comparable across holes.
 ///
 /// The drawn curve is smoothed with a short moving average (the offline
 /// terrain tiles quantize elevation to 0.1 m, which stair-steps at a 2 m
@@ -18,11 +18,25 @@ struct ElevationProfileSheet: View {
     let onClose: () -> Void
     @Environment(AppEnvironment.self) private var env
 
-    /// Chart plot size in pixels (for the exaggeration caption), captured
-    /// from the chart's plot frame.
+    /// Chart plot size in pixels (for the exaggeration cap), captured from
+    /// the chart's plot frame.
     @State private var plotSize: CGSize = .zero
 
     private static let amber = MeasurePanel.amber
+
+    /// Max (px per vertical metre) / (px per horizontal metre). Matches the
+    /// web `MAX_VERTICAL_EXAGGERATION` (elevation-profile.component.ts).
+    private static let maxVerticalExaggeration = 10.0
+
+    /// Zoomed visible x-span (m); nil = the whole path (no scrolling). The
+    /// y-axis rescales to the visible stretch (same exaggeration cap), so
+    /// zooming into part of the hole makes its bumps readable.
+    @State private var visibleSpan: Double?
+    /// Leading edge (m) of the visible window while zoomed (Charts scroll
+    /// position binding).
+    @State private var scrollX: Double = 0
+    private static let minVisibleSpanMeters = 60.0
+    private static let zoomStep = 1.6
 
     /// X-axis (along-route distance) tick labels only — chart domain/geometry
     /// and the y-axis (elevation) stay metric regardless of this setting (see
@@ -39,7 +53,6 @@ struct ElevationProfileSheet: View {
             } else {
                 statsRow
                 chart
-                caption
             }
         }
         .padding(.horizontal, 16)
@@ -65,6 +78,9 @@ struct ElevationProfileSheet: View {
                 ProgressView().controlSize(.small)
             }
             Spacer()
+            if model.elevationRange != nil {
+                zoomControls
+            }
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 20))
@@ -107,6 +123,52 @@ struct ElevationProfileSheet: View {
                 }
             }
         }
+    }
+
+    /// Zoom in / out / reset (shown once terrain resolved). Zoomed charts
+    /// scroll horizontally to reach other stretches of the hole.
+    private var zoomControls: some View {
+        HStack(spacing: 14) {
+            Button { zoom(by: Self.zoomStep) } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .disabled(visibleSpan == nil)
+            .accessibilityLabel("Zoom out")
+            Button { zoom(by: 1 / Self.zoomStep) } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .disabled((visibleSpan ?? .infinity) <= Self.minVisibleSpanMeters)
+            .accessibilityLabel("Zoom in")
+            if visibleSpan != nil {
+                Button {
+                    visibleSpan = nil
+                    scrollX = 0
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                }
+                .accessibilityLabel("Reset zoom")
+            }
+        }
+        .font(.system(size: 15))
+        .foregroundStyle(.secondary)
+        .buttonStyle(.plain)
+    }
+
+    /// Adjust the visible x-span by `factor` (>1 out, <1 in), keeping the
+    /// window centered where it was.
+    private func zoom(by factor: Double) {
+        let total = max(model.totalDistance, 1)
+        let window = visibleWindow
+        let current = window.upperBound - window.lowerBound
+        let newSpan = min(total, max(Self.minVisibleSpanMeters, current * factor))
+        if newSpan >= total * 0.999 {
+            visibleSpan = nil
+            scrollX = 0
+            return
+        }
+        let center = (window.lowerBound + window.upperBound) / 2
+        scrollX = min(max(center - newSpan / 2, 0), total - newSpan)
+        visibleSpan = newSpan
     }
 
     private var totalDeltaLabel: String {
@@ -168,6 +230,9 @@ struct ElevationProfileSheet: View {
         }
         .chartXScale(domain: 0...max(model.totalDistance, 1))
         .chartYScale(domain: yDomain)
+        .chartScrollableAxes(visibleSpan == nil ? [] : .horizontal)
+        .chartXVisibleDomain(length: visibleSpan ?? max(model.totalDistance, 1))
+        .chartScrollPosition(x: $scrollX)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 6)) { value in
                 AxisGridLine()
@@ -199,6 +264,11 @@ struct ElevationProfileSheet: View {
             }
         }
         .frame(minHeight: 120)
+        .onChange(of: model.totalDistance) { _, _ in
+            // New path (hole change / measure edit) → back to the overview.
+            visibleSpan = nil
+            scrollX = 0
+        }
     }
 
     /// Contiguous runs of non-nil SMOOTHED samples (nil coverage → visible
@@ -219,12 +289,54 @@ struct ElevationProfileSheet: View {
         return runs
     }
 
-    /// Y domain from the RAW range with a little headroom; the auto-fill of
-    /// the plot height is what produces the vertical exaggeration.
+    /// The x window currently on screen: the whole path, or the zoomed
+    /// scroll window.
+    private var visibleWindow: ClosedRange<Double> {
+        let total = max(model.totalDistance, 1)
+        guard let span = visibleSpan, span < total else { return 0...total }
+        let lo = min(max(scrollX, 0), total - span)
+        return lo...(lo + span)
+    }
+
+    /// Y domain from the RAW range of the VISIBLE stretch with a little
+    /// headroom, then widened (equally on both sides) until the vertical
+    /// exaggeration stays under `maxVerticalExaggeration` for the current
+    /// plot frame — zooming in shrinks the visible x-span, which relaxes the
+    /// minimum y-span and lets bumps grow. Before the plot frame is known a
+    /// typical sheet aspect stands in (the state update re-renders with the
+    /// real one a frame later).
     private var yDomain: ClosedRange<Double> {
         guard let range = model.elevationRange else { return 0...1 }
-        let pad = max(0.5, (range.max - range.min) * 0.15)
-        return (range.min - pad)...(range.max + pad)
+        let window = visibleWindow
+
+        // Raw min/max over the visible samples (full-path range fallback for
+        // a window with no coverage).
+        var rawLo = Double.infinity
+        var rawHi = -Double.infinity
+        for sample in model.samples {
+            guard let e = sample.elevation, window.contains(sample.distanceMeters) else { continue }
+            rawLo = min(rawLo, e)
+            rawHi = max(rawHi, e)
+        }
+        if rawLo > rawHi {
+            rawLo = range.min
+            rawHi = range.max
+        }
+
+        let pad = max(0.5, (rawHi - rawLo) * 0.15)
+        var lo = rawLo - pad
+        var hi = rawHi + pad
+        let aspect = plotSize.width > 0 && plotSize.height > 0
+            ? Double(plotSize.height / plotSize.width)
+            : 0.45
+        let xSpan = window.upperBound - window.lowerBound
+        let minSpan = xSpan * aspect / Self.maxVerticalExaggeration
+        if hi - lo < minSpan {
+            let center = (lo + hi) / 2
+            lo = center - minSpan / 2
+            hi = center + minSpan / 2
+        }
+        return lo...hi
     }
 
     private func yTickText(_ value: Double) -> String {
@@ -232,35 +344,6 @@ struct ElevationProfileSheet: View {
         return span < 8
             ? String(format: "%.1f m", value)
             : "\(Int(value.rounded())) m"
-    }
-
-    // MARK: - Caption (honest scale note)
-
-    private var caption: some View {
-        Text(captionText)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-    }
-
-    private var captionText: String {
-        var parts: [String] = []
-        if let factor = verticalExaggeration {
-            parts.append(String(format: "Vertical exaggeration ~%.0f×", factor))
-        }
-        parts.append("terrain sampled every 2 m (0.1 m steps), curve smoothed ~10 m; Δ values are raw")
-        return parts.joined(separator: " · ")
-    }
-
-    /// (px per vertical metre) / (px per horizontal metre), from the actual
-    /// plot frame — an honest number, not a guess.
-    private var verticalExaggeration: Double? {
-        let xSpan = max(model.totalDistance, 1)
-        let ySpan = yDomain.upperBound - yDomain.lowerBound
-        guard plotSize.width > 0, plotSize.height > 0, ySpan > 0 else { return nil }
-        let pxPerMeterY = Double(plotSize.height) / ySpan
-        let pxPerMeterX = Double(plotSize.width) / xSpan
-        guard pxPerMeterX > 0 else { return nil }
-        return pxPerMeterY / pxPerMeterX
     }
 
     // MARK: - Empty / loading

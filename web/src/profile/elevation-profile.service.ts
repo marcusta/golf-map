@@ -37,6 +37,12 @@ export class ElevationProfileService {
     readonly loading = new Signal(false);
     /** The path the current series belongs to (change detection / titling). */
     readonly path = new Signal<LatLon[]>([]);
+    /**
+     * Effective wind for the hosted path (hole override ?? plan wind); fed
+     * by the hosting panel like the sampler/path. Drives the drag-measure
+     * plays-like readout in the expanded chart; null = calm/unknown.
+     */
+    readonly wind = new Signal<{ speedMps: number; directionDeg: number } | null>(null);
 
     /** Terrain elevation sampler; bound by the host, stubbed in tests. */
     private sampler: ProfileElevationSampler | null = null;

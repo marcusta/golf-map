@@ -55,6 +55,22 @@ test('chartSvg escapes user-provided marker labels', () => {
     expect(svg).not.toContain('<b>&"x"');
 });
 
+test('chartSvg zoom window clips samples and markers to the visible stretch', () => {
+    const svg = chartSvg(samplesWithGap(), markers, { min: 62, max: 64 }, 200, {
+        w: 900, h: 400, window: { x0: 0, x1: 100 },
+    });
+
+    // Only Tee (0 m) and S1 (100 m) are inside the window — Green (200 m)
+    // must be clipped out.
+    expect(svg).toContain('>Tee</text>');
+    expect(svg).toContain('>S1</text>');
+    expect(svg).not.toContain('>Green</text>');
+    expect((svg.match(/class="rule"/g) ?? []).length).toBe(2);
+
+    // The gap starts past 118 m: the visible window has one contiguous run.
+    expect((svg.match(/<polyline /g) ?? []).length).toBe(1);
+});
+
 test('statsHtml: endpoint-named total chip, leg chips only on multi-leg routes', () => {
     const legs = [
         { label: 'Tee→S1', delta: -1.0 },

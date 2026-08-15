@@ -30,5 +30,6 @@ test('planner shows the elevation-profile section and settles sampling', async (
 
     // No phantom chart or stats without elevations.
     await expect(page.locator(tid('elevation-profile-stats'))).not.toBeVisible();
-    await expect(page.locator(`${tid('elevation-profile')} svg`)).not.toBeVisible();
+    await expect(page.locator(tid('elevation-profile-chart'))).not.toBeVisible();
+    await expect(page.locator(tid('elevation-profile-expand'))).not.toBeVisible();
 });
