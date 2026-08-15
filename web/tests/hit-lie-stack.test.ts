@@ -105,6 +105,15 @@ describe('D23 stack model — render / hit / lie agree (acceptance scenario 1)',
         const hit = containingTopDown(svc.stackTopDown.get(), new Set(['rough']), islandCenter);
         expect(hit.map(f => f.id)).toEqual(['fair']);
     });
+
+    test('individually hidden features drop out of the hit stack', () => {
+        withHoles([]);
+        const svc = new FeaturesService();
+        svc.store.set([feature('fair', 'fairway', square(50), 0), feature('isle', 'rough', square(10), 1)]);
+        // Island hidden by id → the click falls through to the fairway.
+        const hit = containingTopDown(svc.stackTopDown.get(), NO_HIDDEN, islandCenter, new Set(['isle']));
+        expect(hit.map(f => f.id)).toEqual(['fair']);
+    });
 });
 
 describe('advanceAltCycle (D27 Alt+click)', () => {

@@ -288,9 +288,13 @@ export function containingTopDown(
     stackTopDown: readonly CourseFeature[],
     hidden: ReadonlySet<string>,
     p: Point,
+    hiddenIds: ReadonlySet<string> = EMPTY_ID_SET,
 ): CourseFeature[] {
-    return stackTopDown.filter(f => !hidden.has(f.type) && pointInGeometry(p, f.geometry));
+    return stackTopDown.filter(f =>
+        !hidden.has(f.type) && !hiddenIds.has(f.id) && pointInGeometry(p, f.geometry));
 }
+
+const EMPTY_ID_SET: ReadonlySet<string> = new Set();
 
 /**
  * Next Alt/Option+click cycle state (D27). Same stack as last time → step one
@@ -570,6 +574,13 @@ export class DrawToolService {
         };
         window.addEventListener('keyup', onKeyUp);
         ctx.track(() => window.removeEventListener('keyup', onKeyUp));
+
+        // Focus loss mid-hold (⌘Tab, devtools, macOS overlays) eats the
+        // keyup — without this the flag latches and EVERY subsequent drag
+        // becomes a marquee until reload.
+        const onBlur = () => this.spaceHeld.set(false);
+        window.addEventListener('blur', onBlur);
+        ctx.track(() => window.removeEventListener('blur', onBlur));
 
         // Raw map handlers (mousedown/up for drags + marquee, dblclick to
         // swallow duplicate draw points, contextmenu to delete vertices) —
@@ -1150,7 +1161,9 @@ export class DrawToolService {
                 // Default 'contain' (fully inside); Alt = 'intersect'.
                 const mode = e.originalEvent.altKey ? 'intersect' : 'contain';
                 const hidden = this.features.hiddenTypes.peek();
-                const visible = this.features.store.items.peek().filter(f => !hidden.has(f.type));
+                const hiddenIds = this.features.hiddenIds.peek();
+                const visible = this.features.store.items.peek()
+                    .filter(f => !hidden.has(f.type) && !hiddenIds.has(f.id));
                 this.features.setSelection(featuresInRect(visible, rect, mode));
             } else {
                 const single = this.features.selected.peek();
@@ -1812,7 +1825,12 @@ export class DrawToolService {
      */
     private hitStack(p: Point): CourseFeature[] {
         if (!this.features) return [];
-        return containingTopDown(this.features.stackTopDown.peek(), this.features.hiddenTypes.peek(), p);
+        return containingTopDown(
+            this.features.stackTopDown.peek(),
+            this.features.hiddenTypes.peek(),
+            p,
+            this.features.hiddenIds.peek(),
+        );
     }
 
     /**

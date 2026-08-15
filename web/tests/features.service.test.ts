@@ -401,6 +401,21 @@ describe('multi-select', () => {
         expect([...svc.selectedIds.get()]).toEqual(['b']);
         expect(svc.hiddenTypes.get().has('bunker')).toBe(true);
     });
+
+    test('hiding a single feature deselects it, showing it again does not reselect', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.setSelection(['a', 'b']);
+
+        svc.toggleFeatureVisibility('a');
+        expect([...svc.selectedIds.get()]).toEqual(['b']);
+        expect(svc.hiddenIds.get().has('a')).toBe(true);
+
+        svc.toggleFeatureVisibility('a'); // back on
+        expect(svc.hiddenIds.get().has('a')).toBe(false);
+        expect([...svc.selectedIds.get()]).toEqual(['b']);
+    });
 });
 
 describe('geojson derivation', () => {
@@ -462,6 +477,18 @@ describe('geojson derivation', () => {
 
         svc.toggleTypeVisibility('rough'); // back on
         expect(svc.geojson.get().features).toHaveLength(3);
+    });
+
+    test('hidden individual features are filtered from the geojson', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'bunker')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        svc.toggleFeatureVisibility('b');
+        expect(svc.geojson.get().features.map(f => f.id)).toEqual(['a']);
+
+        svc.toggleFeatureVisibility('b'); // back on
+        expect(svc.geojson.get().features).toHaveLength(2);
     });
 
     test('patchLocal rebuilds the geojson with the moved coordinates', async () => {

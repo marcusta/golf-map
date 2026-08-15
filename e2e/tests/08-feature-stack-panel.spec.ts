@@ -154,6 +154,57 @@ test('feature-stack panel reorders and stays selection-synced with the map', asy
     await expect(page.locator(`${tid('stack-row')}[data-feature-id="${featureA!.id}"]`)).toHaveClass(/selected/);
 });
 
+/**
+ * Per-feature visibility (stack panel eye toggles): hiding a feature dims its
+ * row, drops it from the selection, and removes it from BOTH the rendered
+ * geojson and the map hit-test — a click that used to land on it falls
+ * through to the shape underneath. Un-hiding restores everything.
+ */
+test('stack-row eye hides a feature from render, selection and hit-testing', async ({ page }) => {
+    await page.goto(`/course/${TEST_COURSE_ID}`);
+    await expect(page.locator(tid('course-detail'))).toBeVisible();
+    await waitForMapReady(page);
+
+    await selectSubMode(page, 'draw');
+    await expect(page.locator(tid('stack-panel'))).toBeVisible();
+
+    const before = (await courseLevelFeatures(page)).length;
+    await drawSquare(page, 120); // A — bottom
+    await expect.poll(async () => (await courseLevelFeatures(page)).length).toBe(before + 1);
+    await drawSquare(page, 50); // B — on top, fully inside A
+    await expect.poll(async () => (await courseLevelFeatures(page)).length).toBe(before + 2);
+    await disarmDraw(page);
+
+    const rows = await courseLevelFeatures(page);
+    const [featureA, featureB] = [...rows].sort((a, b) => a.sortOrder - b.sortOrder).slice(-2);
+    const rowB = page.locator(`${tid('stack-row')}[data-feature-id="${featureB!.id}"]`);
+    const rowA = page.locator(`${tid('stack-row')}[data-feature-id="${featureA!.id}"]`);
+
+    // B is selected (chain-draw selects the last-created shape). Hiding it
+    // dims its row AND drops the selection.
+    await expect(rowB).toHaveClass(/selected/);
+    await rowB.locator(tid('stack-row-eye')).click();
+    await expect(rowB).toHaveClass(/hidden/);
+    await expect(rowB).not.toHaveClass(/selected/);
+
+    // Hidden B is out of the geojson and the hit stack: a click at the
+    // center (inside both) now selects A underneath.
+    await expect.poll(() => page.evaluate((id) => {
+        const t = (window as unknown as {
+            __drawTool: { features: { geojson: { peek(): { features: Array<{ id: string }> } } } };
+        }).__drawTool;
+        return t.features.geojson.peek().features.some(f => f.id === id);
+    }, featureB!.id)).toBe(false);
+    await clickMapViewport(page, SAFE_DX, 0);
+    await expect(rowA).toHaveClass(/selected/);
+
+    // Un-hide: the row un-dims and B is hittable again (topmost wins).
+    await rowB.locator(tid('stack-row-eye')).click();
+    await expect(rowB).not.toHaveClass(/hidden/);
+    await clickMapViewport(page, SAFE_DX, 0);
+    await expect(rowB).toHaveClass(/selected/);
+});
+
 test('draw target follows selected hole and selected features can move to course level', async ({ page }) => {
     await page.goto(`/course/${TEST_COURSE_ID}?hole=2`);
     await expect(page.locator(tid('course-detail'))).toBeVisible();

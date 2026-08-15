@@ -77,6 +77,12 @@ export class FeaturesService {
      */
     readonly hiddenTypes = new Signal<ReadonlySet<string>>(new Set());
     /**
+     * Individual feature IDS hidden from the overlay + hit tests (stack
+     * panel eye toggles, Inkscape/Photoshop-style). Same lifecycle rules
+     * as `hiddenTypes`: client-side view state, never persisted.
+     */
+    readonly hiddenIds = new Signal<ReadonlySet<string>>(new Set());
+    /**
      * Nice mode is a photo-blended, stroke-free vector tint. Draw mode uses
      * a high-contrast palette with visible feature boundaries.
      */
@@ -137,8 +143,9 @@ export class FeaturesService {
      */
     readonly geojson = new Computed<FeatureCollection>(() => {
         const hidden = this.hiddenTypes.get();
+        const hiddenIds = this.hiddenIds.get();
         const features: Feature[] = this.store.items.get()
-            .filter(f => !hidden.has(f.type))
+            .filter(f => !hidden.has(f.type) && !hiddenIds.has(f.id))
             .map(f => ({
                 type: 'Feature',
                 id: f.id,
@@ -265,6 +272,27 @@ export class FeaturesService {
             if (keep.size !== this.selectedIds.peek().size) this.selectedIds.set(keep);
         }
         this.hiddenTypes.set(next);
+    }
+
+    /**
+     * Toggle ONE feature's visibility (stack panel eye toggles). Hiding a
+     * feature also drops it from the selection — same invariant as
+     * `toggleTypeVisibility`: invisible features must not remain silently
+     * editable.
+     */
+    toggleFeatureVisibility(id: string): void {
+        const next = new Set(this.hiddenIds.peek());
+        if (next.has(id)) {
+            next.delete(id);
+        } else {
+            next.add(id);
+            if (this.selectedIds.peek().has(id)) {
+                const keep = new Set(this.selectedIds.peek());
+                keep.delete(id);
+                this.selectedIds.set(keep);
+            }
+        }
+        this.hiddenIds.set(next);
     }
 
     /** Create a feature (autosave on ring close). Selects it on success. */

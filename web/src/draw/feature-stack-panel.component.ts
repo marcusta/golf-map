@@ -31,6 +31,7 @@ const rowTpl = template(`
         <span bind="swatch" class="type-swatch"></span>
         <span bind="label" class="stack-row__label"></span>
         <span bind="count" class="stack-row__count"></span>
+        <button bind="eye" type="button" class="stack-row__eye" data-testid="stack-row-eye"></button>
     </div>
 `);
 
@@ -95,7 +96,29 @@ export class FeatureStackPanelComponent extends Component {
                     ${selectedRow()}
                     & .stack-row__label { font-weight: 600; }
                 }
+                /* Hidden features stay listed but read as absent. */
+                &.hidden {
+                    & .type-swatch, & .stack-row__label, & .stack-row__count { opacity: 0.4; }
+                }
             }
+
+            /* Eye toggle: quiet until the row is hovered — except a hidden
+               row's closed eye, which stays fully visible as the state cue
+               (Inkscape convention). */
+            & .stack-row__eye {
+                flex-shrink: 0;
+                display: inline-flex;
+                align-items: center;
+                border: none;
+                background: none;
+                padding: 2px;
+                cursor: pointer;
+                color: ${t('color-text-secondary')};
+                opacity: 0.25;
+                transition: opacity var(--dur-fast) var(--ease-standard);
+            }
+            & .stack-row:hover .stack-row__eye,
+            & .stack-row.hidden .stack-row__eye { opacity: 1; }
 
             & .type-swatch {
                 width: 14px;
@@ -276,7 +299,20 @@ export class FeatureStackPanelComponent extends Component {
         const el = this.wireEl(rowTpl, {
             row: {
                 onclick: () => this.features.select(feature.id),
-                className: () => this.features.selectedIds.get().has(feature.id) ? 'stack-row selected' : 'stack-row',
+                className: () => {
+                    const classes = ['stack-row'];
+                    if (this.features.selectedIds.get().has(feature.id)) classes.push('selected');
+                    if (this.features.hiddenIds.get().has(feature.id)) classes.push('hidden');
+                    return classes.join(' ');
+                },
+            },
+            eye: {
+                onclick: (e: Event) => {
+                    e.stopPropagation(); // eye toggles visibility, never selects
+                    this.features.toggleFeatureVisibility(feature.id);
+                },
+                innerHTML: () => icon(this.features.hiddenIds.get().has(feature.id) ? 'eye-off' : 'eye', 16),
+                title: () => this.features.hiddenIds.get().has(feature.id) ? 'Show' : 'Hide',
             },
             swatch: {
                 'style': () => {
