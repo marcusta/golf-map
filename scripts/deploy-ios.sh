@@ -51,20 +51,32 @@ if [ -z "$UDID" ]; then
 fi
 echo "==> Deploying to device $UDID"
 
-echo "==> xcodebuild (Release)"
+APP="$DERIVED/Build/Products/Release-iphoneos/$SCHEME.app"
+# Remove any previous product so a failed build can't silently install a stale binary.
+rm -rf "$APP"
+
+# Stamp the build number with the deploy time so the installed version is
+# verifiable on-device (xcrun devicectl device info apps).
+STAMP=$(date +%Y%m%d.%H%M)
+echo "==> xcodebuild (Release, build $STAMP)"
+BUILD_LOG=$(mktemp)
+BUILD_STATUS=0
 xcodebuild -project ios/GolfMap.xcodeproj -scheme "$SCHEME" \
     -configuration Release \
     -destination "id=$UDID" \
     -derivedDataPath "$DERIVED" \
     -allowProvisioningUpdates \
-    build | grep -E "error:|warning: .*deprecated|BUILD" || true
+    CURRENT_PROJECT_VERSION="$STAMP" \
+    build > "$BUILD_LOG" 2>&1 || BUILD_STATUS=$?
+grep -E "error:|warning: .*deprecated|BUILD" "$BUILD_LOG" || true
 
-APP="$DERIVED/Build/Products/Release-iphoneos/$SCHEME.app"
-if [ ! -d "$APP" ]; then
-    echo "Build failed — $APP missing. Re-run without the grep filter for full output:" >&2
+if [ "$BUILD_STATUS" -ne 0 ] || [ ! -d "$APP" ]; then
+    echo "Build failed (exit $BUILD_STATUS). Full log: $BUILD_LOG" >&2
+    echo "Or re-run manually:" >&2
     echo "  xcodebuild -project ios/GolfMap.xcodeproj -scheme $SCHEME -configuration Release -destination id=$UDID -derivedDataPath $DERIVED -allowProvisioningUpdates build" >&2
     exit 1
 fi
+rm -f "$BUILD_LOG"
 
 echo "==> Installing $APP"
 xcrun devicectl device install app --device "$UDID" "$APP"

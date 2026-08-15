@@ -165,6 +165,15 @@ struct CourseScreen: View {
             }
             newModel.updateUserLocation(locationProvider.location)
 
+            // Fire-and-forget: queue this course's watch payload. The system
+            // delivers it whenever the watch is reachable; dedupe inside the
+            // service keeps repeat opens free.
+            env.watchSync.sendCourse(
+                furniture: furniture,
+                featuresGeoJSON: featuresGeoJSON,
+                elevationSampler: { await terrain.elevation(at: $0) }
+            )
+
             // Planner tool write path (task T3): edits persist as GRDB dirty
             // rows and push through PlanSyncService, offline-first.
             newModel.planWriter = PlanEditStore(

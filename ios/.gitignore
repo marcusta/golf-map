@@ -8,3 +8,4 @@ DerivedData/
 .deploy-derived/
 .build/
 *.xcresult
+GolfMapWatch/Info.plist

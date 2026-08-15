@@ -48,6 +48,9 @@ final class AppEnvironment {
     let settings: AppSettings
     /// Build-time feature gates, resolved once at launch.
     let gates: FeatureGates
+    /// Pushes course bundles to the watch app (WatchConnectivity). Fed on
+    /// course open; queued transfers survive the watch being out of reach.
+    let watchSync = WatchSyncService()
 
     // MARK: Observable state
 
