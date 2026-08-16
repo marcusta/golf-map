@@ -633,6 +633,12 @@ private struct OnCourseContentView: View {
     /// the fit on the FIRST entry (before the panel has ever been laid out) is
     /// already close; the post-layout `refitTool` corrects it.
     @State private var greenPanelHeight: CGFloat = 240
+    /// Last measured COMPACT distance-card height (the hole-entry camera
+    /// solve's bottom chrome, D-HF3). Seeded plausible like `greenPanelHeight`
+    /// so the first solve is already close; the measured layout corrects it.
+    /// D-HF5: only ever measured while the card is compact — expanding
+    /// overlays the map and must never re-frame the camera.
+    @State private var distanceCardHeight: CGFloat = 96
 
     /// Padding the Green-view camera fit must add on each edge so the green
     /// lands centered between the hole header and the panel rather than in the
@@ -647,6 +653,38 @@ private struct OnCourseContentView: View {
             bottom: Double(safeBottom + greenPanelHeight + 16),
             right: 8
         )
+    }
+
+    /// Chrome insets for the hole-entry camera solve (D-HF3): hole header at
+    /// the top, the distance card at the bottom. Mirrors
+    /// `greenViewCameraInsets`' measurement; `distanceCardHeight` is the
+    /// COMPACT card's height always (D-HF5).
+    private var distanceModeCameraInsets: MapEdgeInsets {
+        guard mapFrame.height > 0, chromeFrame.height > 0 else { return .zero }
+        let safeTop = max(0, chromeFrame.minY - mapFrame.minY)
+        let safeBottom = max(0, mapFrame.maxY - chromeFrame.maxY)
+        return MapEdgeInsets(
+            top: Double(safeTop + headerHeight + 8),
+            left: 8,
+            bottom: Double(safeBottom + distanceCardHeight + 8),
+            right: 8
+        )
+    }
+
+    /// Pushes the measured map viewport + distance-mode chrome insets into
+    /// the model for the hole-entry solve (D-HF3). The insets only update
+    /// while the distance chrome is actually up AND the card is compact — an
+    /// immersive toggle, a tool panel, or expanding the card (D-HF5) must
+    /// never re-frame the entry camera.
+    private func syncSolveGeometry() {
+        if model.mapViewportSize != mapFrame.size {
+            model.mapViewportSize = mapFrame.size
+        }
+        guard isDistanceMode, !immersive, !model.isDistanceCardExpanded else { return }
+        let insets = distanceModeCameraInsets
+        if model.distanceCameraInsets != insets {
+            model.distanceCameraInsets = insets
+        }
     }
 
     /// Pops back to the course list — the system navigation bar is hidden on
@@ -751,7 +789,7 @@ private struct OnCourseContentView: View {
                     )
                 }
                 .padding(.horizontal, 12)
-                .trackFrame { headerHeight = $0.height }
+                .trackFrame { headerHeight = $0.height; syncSolveGeometry() }
                 .transition(.move(edge: .top).combined(with: .opacity))
             } else {
                 CompactChipView(model: model)
@@ -781,14 +819,15 @@ private struct OnCourseContentView: View {
             // the focused target): the chips act on the reticle's anchor point,
             // which is NOT the focused target — the card's own "From here"
             // covers promotion until the next pan hands the map back.
-            if isReticleActive && model.reticleTarget != nil && model.focusedLadderId == nil {
+            if isReticleActive && model.reticleTarget != nil && model.focusedLadderId == nil
+                && !model.reticleAwaitingEntrySettle {
                 reticleActions
                     .padding(.bottom, 8)
             }
 
             bottomPanel
         }
-        .trackFrame { chromeFrame = $0 }
+        .trackFrame { chromeFrame = $0; syncSolveGeometry() }
     }
 
     /// Reticle action chips: add a plan target at the aim point / rebase the
@@ -910,6 +949,14 @@ private struct OnCourseContentView: View {
                 onLaserEntry: { showLaserEntry = true },
                 onReadPutt: { readPuttFromGreenCard() }
             )
+                // Measured for the hole-entry solve's bottom inset (D-HF3).
+                // D-HF5: the COMPACT height only — an expanded card overlays
+                // the map temporarily and never changes the solve inputs.
+                .trackFrame { frame in
+                    guard !model.isDistanceCardExpanded else { return }
+                    distanceCardHeight = frame.height
+                    syncSolveGeometry()
+                }
                 .padding(.horizontal, 12)
                 .padding(.bottom, -2)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -950,14 +997,23 @@ private struct OnCourseContentView: View {
                         // through here and toggles the chrome — in browse the
                         // reticle owns aiming, so the tap is free to hide/show
                         // the card in both modes.
+                        // D-HF5 ladder — one tap per step: an EXPANDED card
+                        // collapses to compact first; with the card already
+                        // compact the tap toggles immersive as before.
                         if !model.handleDistanceTap(position) {
-                            withAnimation(.easeInOut(duration: 0.28)) { immersive.toggle() }
+                            withAnimation(.easeInOut(duration: 0.28)) {
+                                if !model.collapseDistanceCardOnMapTap() {
+                                    immersive.toggle()
+                                }
+                            }
                         }
                     } else {
-                        // Green view: the tap both places the ball/hole and
-                        // (slope overlay up) reads the slope under the finger.
-                        puttRead.handleTap(puttPoint(position))
-                        greenAnalysis.probeTapped(puttPoint(position))
+                        // Green view: an armed Ball/Hole target claims the tap
+                        // (one-shot placement); otherwise the tap reads the
+                        // slope under the finger (slope overlay up).
+                        if !puttRead.handleTap(puttPoint(position)) {
+                            greenAnalysis.probeTapped(puttPoint(position))
+                        }
                     }
                 },
                 // The handle-drag recognizer is shared too: Adjust drags the
@@ -1021,6 +1077,9 @@ private struct OnCourseContentView: View {
                     mapHeight: frame.height, padding: OnCourseModel.holeFitPadding
                 )
                 if model.holeFitInsets != insets { model.holeFitInsets = insets }
+                // The hole-entry SOLVE (D-HF3) needs the raw viewport + the
+                // distance-mode chrome on top of it.
+                syncSolveGeometry()
             }
             .ignoresSafeArea()
             // The chrome toggle moved into the shared single-tap recognizer
@@ -2094,6 +2153,9 @@ private struct OnCourseContentView: View {
         // opens pre-placed (no tap needed). Hole stays the resolved active pin.
         if let ball = preplaceBall {
             puttRead.placeBall(puttPoint(ball))
+            // Ball arrived pre-placed — mirror handleTap's advance so the next
+            // tap isn't a surprise ball move (arm hole only if none resolved).
+            puttRead.setPlaceTarget(puttRead.hole == nil ? .hole : .none)
         }
         // Apply the synced per-green calibration (confidence lift + bias
         // correction) before the terrain grid settles, so the surface is built
@@ -2559,19 +2621,38 @@ private struct HoleHeaderView: View {
     var strokesOnHole: Int?
     @Environment(AppEnvironment.self) private var env
 
+    /// Quick hole picker, opened by tapping the title. The chevrons step one
+    /// hole at a time; this is the jump for "take me to 14".
+    @State private var showPicker = false
+
     var body: some View {
         HStack(spacing: 8) {
             stepButton(systemImage: "chevron.left", enabled: model.canGoPrevious) {
                 model.previousHole()
             }
-            VStack(spacing: 1) {
-                Text("Hole \(model.currentHoleNumber)")
-                    .font(.headline)
-                Text(subtitle)
-                    .font(AppFont.mono(11, .regular))
-                    .foregroundStyle(.secondary)
+            Button { showPicker = true } label: {
+                VStack(spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text("Hole \(model.currentHoleNumber)")
+                            .font(.headline)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(subtitle)
+                        .font(AppFont.mono(11, .regular))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                // The whole title column is the target — the label alone would
+                // leave dead space between the chevron buttons.
+                .frame(minHeight: 40)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Hole \(model.currentHoleNumber). \(subtitle)")
+            .accessibilityHint("Opens the hole picker")
+            .accessibilityIdentifier("hole-header-title")
             stepButton(systemImage: "chevron.right", enabled: model.canGoNext) {
                 model.nextHole()
             }
@@ -2580,6 +2661,9 @@ private struct HoleHeaderView: View {
         .padding(.vertical, Space.s1)
         .glassPanel(cornerRadius: 14)
         .holeSwipeGesture(model: model)
+        .sheet(isPresented: $showPicker) {
+            HolePickerSheet(model: model, onClose: { showPicker = false })
+        }
     }
 
     private var subtitle: String {
@@ -2608,6 +2692,92 @@ private struct HoleHeaderView: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.3)
+    }
+}
+
+// MARK: - Hole picker
+
+/// Quick jump between the course's holes, opened from the header title.
+///
+/// A grid of hole tiles rather than a list: 18 holes fit without scrolling on
+/// a phone, each tile is a big target (a course screen is used with one gloved
+/// thumb, walking), and number/par/length are exactly what the pick is made on.
+/// The current hole is the accented tile.
+private struct HolePickerSheet: View {
+    let model: OnCourseModel
+    let onClose: () -> Void
+    @Environment(AppEnvironment.self) private var env
+
+    /// Adaptive so 3 tiles land on a small phone and 4–5 on a large one /
+    /// landscape, with no fixed-column breakpoints to maintain.
+    private let columns = [GridItem(.adaptive(minimum: 96), spacing: Space.s2)]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: Space.s2) {
+                    ForEach(model.holePickerEntries) { entry in
+                        tile(entry)
+                    }
+                }
+                .padding(.horizontal, Space.s4)
+                .padding(.vertical, Space.s3)
+            }
+            .navigationTitle("Holes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onClose)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func tile(_ entry: OnCourseModel.HolePickerEntry) -> some View {
+        Button {
+            model.goToHole(number: entry.number)
+            onClose()
+        } label: {
+            VStack(spacing: 2) {
+                Text("\(entry.number)")
+                    .font(AppFont.mono(26, .bold))
+                    .foregroundStyle(entry.isCurrent ? Color.onAccent : Color.textPrimary)
+                Text("Par \(entry.par)")
+                    .font(AppFont.sans(12, .medium))
+                    .foregroundStyle(entry.isCurrent ? Color.onAccent.opacity(0.85) : Color.textSecondary)
+                Text(lengthLabel(entry))
+                    .font(AppFont.mono(11, .regular))
+                    .foregroundStyle(entry.isCurrent ? Color.onAccent.opacity(0.75) : Color.textTertiary)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 84)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .fill(entry.isCurrent ? Color.accentPrimary : Color.surfaceCard)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .stroke(entry.isCurrent ? Color.clear : Color.borderSubtle, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Hole \(entry.number), par \(entry.par)\(entry.strokeIndex.map { ", stroke index \($0)" } ?? "")")
+        .accessibilityAddTraits(entry.isCurrent ? [.isButton, .isSelected] : [.isButton])
+        .accessibilityIdentifier("hole-picker-\(entry.number)")
+    }
+
+    /// Length off the active tee, or the stroke index when the hole has no
+    /// usable tee→green path (never an invented figure).
+    private func lengthLabel(_ entry: OnCourseModel.HolePickerEntry) -> String {
+        guard let meters = entry.lengthMeters else {
+            return entry.strokeIndex.map { "SI \($0)" } ?? "—"
+        }
+        let unit = env.settings.distanceUnit
+        return (entry.lengthApproximate ? "~" : "")
+            + DistanceFormat.stringWithUnit(meters, unit: unit)
     }
 }
 
@@ -2647,26 +2817,129 @@ private struct DistanceCardView: View {
 
     private var unit: DistanceUnit { env.settings.distanceUnit }
 
+    /// Standard panel transition (matches every bottom panel on this screen).
+    private static let detentAnimation = Animation.easeInOut(duration: 0.22)
+
     var body: some View {
+        // D-HF5 — two FIXED detents. Compact is the default and the only state
+        // the camera insets are measured from; expanding just overlays more of
+        // the map (see `syncSolveGeometry`).
         VStack(spacing: 10) {
-            // Round loop (R2): with a round active and a planned line on the
-            // hole, the context strip LEADS — tee preview / plan leg / decide.
-            // Everything below it (banner, pin, strip — the trust anchor) is
-            // exactly today's card, competition gating untouched.
-            if let mode = model.roundCardMode {
-                roundContext(mode)
+            if model.isDistanceCardExpanded {
+                expandedContent
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                compactRow
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            if let advice = model.selectedTargetAdvice {
-                selectedTargetBanner(advice)
-            }
-            toolsRow
-            bottomStrip
         }
         .padding(.horizontal, Space.s4)
         .padding(.top, Space.s3)
         .padding(.bottom, Space.s2)
         .glassPanel()
-        .holeSwipeGesture(model: model)
+        .holeSwipeGesture(model: model) {
+            // Drag down on the card → collapse (never a free-drag detent).
+            withAnimation(Self.detentAnimation) { model.collapseDistanceCard() }
+        }
+    }
+
+    /// Today's full card — unchanged content, now behind the compact row.
+    @ViewBuilder
+    private var expandedContent: some View {
+        // Round loop (R2): with a round active and a planned line on the
+        // hole, the context strip LEADS — tee preview / plan leg / decide.
+        // Everything below it (banner, pin, strip — the trust anchor) is
+        // exactly today's card, competition gating untouched.
+        if let mode = model.roundCardMode {
+            roundContext(mode)
+        }
+        if let advice = model.selectedTargetAdvice {
+            selectedTargetBanner(advice)
+        }
+        toolsRow
+        bottomStrip
+    }
+
+    /// An action completed in the expanded card hands the map back (D-HF5).
+    private func completingAction(_ action: @escaping () -> Void) -> () -> Void {
+        {
+            action()
+            withAnimation(Self.detentAnimation) { model.distanceCardActionCompleted() }
+        }
+    }
+
+    // MARK: Compact row (D-HF5 default)
+
+    /// ONE row: the to-green figure, the advised club with its carry, and the
+    /// plays-like delta. Nothing else — the whole row is the tap target that
+    /// expands the card (44 pt minimum).
+    private var compactRow: some View {
+        let line = model.compactCardLine
+        return Button {
+            withAnimation(Self.detentAnimation) { model.expandDistanceCard() }
+        } label: {
+            HStack(spacing: 12) {
+                MetricText(
+                    DistanceFormat.string(line.distanceM, unit: unit),
+                    unit: unit.abbreviation, size: 40
+                )
+                .minimumScaleFactor(0.7)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    if let club = line.clubName {
+                        HStack(spacing: 4) {
+                            Image(systemName: "figure.golf")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.green)
+                            Text(line.clubCarryM.map { "\(club) · \($0)" } ?? club)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                        }
+                    }
+                    // Plays-like against the actual — the one adjustment worth
+                    // a line here; a flat 0 still shows (hiding it would read
+                    // as missing data, not as flat ground).
+                    if let delta = line.deltaM, let playsLike = line.playsLikeM {
+                        HStack(spacing: 4) {
+                            Image(systemName: delta > 0 ? "arrow.up.right"
+                                  : delta < 0 ? "arrow.down.right" : "minus")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("PL \(DistanceFormat.string(playsLike, unit: unit)) · \(signedDistance(Double(delta)))")
+                                .font(.footnote)
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.up")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(compactAccessibilityLabel(line))
+        .accessibilityHint("Opens the full distance card")
+        .accessibilityIdentifier("distance-card-compact")
+    }
+
+    private func compactAccessibilityLabel(_ line: OnCourseModel.CompactCardLine) -> String {
+        var parts: [String] = []
+        if let distance = line.distanceM {
+            parts.append("\(DistanceFormat.stringWithUnit(distance, unit: unit)) to the green")
+        }
+        if let club = line.clubName {
+            parts.append(line.clubCarryM.map { "\(club), carry \($0) meters" } ?? club)
+        }
+        if let playsLike = line.playsLikeM {
+            parts.append("plays like \(DistanceFormat.stringWithUnit(playsLike, unit: unit))")
+        }
+        return parts.isEmpty ? "Distances" : parts.joined(separator: ", ")
     }
 
     // MARK: Round context (playing-state card modes — round loop R2)
@@ -3104,7 +3377,7 @@ private struct DistanceCardView: View {
     // with an inline clear. Inline content for `toolsRow` (no line of its own).
     private var pinControls: some View {
         HStack(spacing: 8) {
-            Button(action: onPinEntry) {
+            Button(action: completingAction(onPinEntry)) {
                 HStack(spacing: 5) {
                     Image(systemName: "mappin.and.ellipse")
                         .font(.caption)
@@ -3149,7 +3422,8 @@ private struct DistanceCardView: View {
     private var toolsRow: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                Button(action: onLaserEntry) {
+                // Opening the laser sheet is a completed card action (D-HF5).
+                Button(action: completingAction(onLaserEntry)) {
                     HStack(spacing: 5) {
                         Image(systemName: "scope")
                             .font(.caption)
@@ -3503,7 +3777,9 @@ private struct DistanceCardView: View {
             // current hole. Tees not placed on this hole trail with no length.
             Picker("Tee", selection: Binding(
                 get: { model.resolvedTeeName ?? "" },
-                set: { model.selectTee(named: $0) }
+                // D-HF5: picking a tee is a completed action — the card
+                // collapses back to its one row.
+                set: { name in completingAction { model.selectTee(named: name) }() }
             )) {
                 ForEach(model.teeMenuEntries) { entry in
                     Text(teeMenuLabel(entry)).tag(entry.name)
@@ -3511,9 +3787,7 @@ private struct DistanceCardView: View {
             }
             if model.currentTeeHasOverride {
                 Divider()
-                Button(role: .destructive) {
-                    model.resetActiveTee()
-                } label: {
+                Button(role: .destructive, action: completingAction { model.resetActiveTee() }) {
                     Label("Reset moved tee", systemImage: "arrow.uturn.backward")
                 }
             }
@@ -3542,9 +3816,8 @@ private struct DistanceCardView: View {
     // Tappable pill: toggles GPS ↔ Browse. In browse mode the live fix is
     // ignored and the map shows the full hole route.
     private var locationToggle: some View {
-        Button {
-            model.toggleGPS()
-        } label: {
+        // Browse ↔ GPS is a completed card action (D-HF5) — collapse after it.
+        Button(action: completingAction { model.toggleGPS() }) {
             HStack(spacing: 5) {
                 Image(systemName: locationIcon)
                     .font(.caption)
@@ -3580,11 +3853,17 @@ private struct DistanceCardView: View {
 private extension View {
     /// Horizontal swipe on the chrome switches holes (the map itself keeps
     /// its pan gesture).
-    func holeSwipeGesture(model: OnCourseModel) -> some View {
+    /// - Parameter onSwipeDown: optional downward-drag handler (D-HF5 collapses
+    ///   the expanded distance card on it). Shares the one recognizer so a
+    ///   second `.gesture` can't shadow the horizontal hole swipe.
+    func holeSwipeGesture(model: OnCourseModel, onSwipeDown: (() -> Void)? = nil) -> some View {
         gesture(
             DragGesture(minimumDistance: 30)
                 .onEnded { value in
-                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                    guard abs(value.translation.width) > abs(value.translation.height) else {
+                        if value.translation.height > 40 { onSwipeDown?() }
+                        return
+                    }
                     if value.translation.width < -40 {
                         model.nextHole()
                     } else if value.translation.width > 40 {
@@ -3622,8 +3901,11 @@ private struct ReticleHUD: View {
             // No marker at the anchor: the aim line's end IS the aim point
             // (device feedback — even the minimal circle was noise).
             // Ladder focus owns the aim while set — the anchor readout would
-            // measure a point nobody is aiming at, so it stands down.
-            if model.reticleTarget != nil && model.focusedLadderId == nil {
+            // measure a point nobody is aiming at, so it stands down. During
+            // the hole-entry camera flight everything hides with the map
+            // overlays (D-HF4) and appears at first settle.
+            if model.reticleTarget != nil && model.focusedLadderId == nil
+                && !model.reticleAwaitingEntrySettle {
                 readouts
                     .frame(maxWidth: .infinity)
                     // Breathing room below the (marker-less) anchor so the

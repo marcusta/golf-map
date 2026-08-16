@@ -485,7 +485,14 @@ final class OnCourseModel {
 
     func goToHole(number: Int) {
         guard let index = holes.firstIndex(where: { $0.hole.number == number }) else { return }
-        guard index != currentHoleIndex else { return }
+        guard index != currentHoleIndex else {
+            // Re-selecting the current hole re-issues the entry camera
+            // (D-HF3): same solved frame, token bump so the map re-applies
+            // it, and the same settle gating as a real hole change.
+            cameraToken += 1
+            beginHoleEntryFraming()
+            return
+        }
         currentHoleIndex = index
         holeDidChange()
     }
@@ -570,6 +577,11 @@ final class OnCourseModel {
         ladderTerrainElevations.removeAll(keepingCapacity: true)
         lastLadderSweepOrigin = nil
         refreshLadderElevations(force: true)
+        // D-HF1/D-HF3/D-HF4: the reticle aim is SET for the new hole in world
+        // coordinates — never inherited from the previous hole, never derived
+        // from a screen point mid-flight — the entry camera is solved from it,
+        // and the reticle overlays hide until that camera settles.
+        beginHoleEntryFraming()
     }
 
     // MARK: - Map tools (transient modes over the normal hole view)
@@ -798,9 +810,10 @@ final class OnCourseModel {
         // the new origin's layup landing positions are sampled even when no
         // further GPS fix arrives.
         refreshLadderElevations(force: true)
-        // The reticle measures from the flipped origin too: drop any settled
-        // answer taken from the old origin and re-settle at the unchanged aim.
-        resettleReticleAfterOriginChange()
+        // The origin flip is an origin change (D-HF1): the reticle aim is
+        // re-resolved for the new origin instead of lingering where the old
+        // origin pointed it.
+        applyDefaultAim()
     }
 
     func toggleGPS() { setGPSEnabled(!gpsEnabled) }
@@ -819,7 +832,9 @@ final class OnCourseModel {
         focusedLadderId = nil
         refreshLadderElevations(force: true)
 
-        resettleReticleAfterOriginChange()
+        // "From here" is an origin change (D-HF1): the aim resets to the
+        // resolver's default for the new origin, not the stale old aim.
+        applyDefaultAim()
 
         browseOriginElevationTask?.cancel()
         guard let sampler = elevationSampler else { return }
@@ -964,7 +979,8 @@ final class OnCourseModel {
         browseOriginElevation = nil
         clearBrowseInspection()
         refreshLadderElevations(force: true)
-        resettleReticleAfterOriginChange()
+        // "From tee" is an origin change (D-HF1): re-resolve the default aim.
+        applyDefaultAim()
     }
 
     /// A moved origin invalidates the settled reticle answer (it measures
@@ -975,6 +991,403 @@ final class OnCourseModel {
         reticleSettleTask?.cancel()
         reticleSettled = nil
         reticleMoved(target, panning: false)
+    }
+
+    // MARK: - Default aim (D-HF1 + D-HF2 — hole-select framing, slice 1)
+
+    /// The explicit default aim for the current hole from the current origin
+    /// (D-HF1): the plan's current-leg landing point, else the curated
+    /// furniture aim point (farthest ahead-of-origin one within the longest
+    /// club, plays-like), else the green center clamped to the longest club
+    /// (plays-like), else the D-HF2 fairway-snap ring walk (corridor-scoped
+    /// fairways). World coordinates, never derived from a screen point. Nil
+    /// without a hole, origin, or green. The hole-entry camera solve (D-HF3,
+    /// next slice) consumes this.
+    var defaultAimTarget: LatLon? {
+        guard let hole = currentHole, let origin,
+              let green = greenCenterPosition(for: hole) else { return nil }
+        // 1. A plan already picked a corridor-aware target for this leg.
+        if let landing = defaultAimPlanLanding { return landing }
+
+        let o = Self.planar(origin)
+        let g = Self.planar(green)
+        let fairways = fairwayRings(for: hole)
+        // Curated aim points still ahead of the origin (the shared
+        // forward-route chainage filter), in hole order — resolver rule 2.
+        let aheadAims = keptForwardAimIndices(from: origin, toGreen: green)
+            .map { Self.planar(targets.aimPoints[$0].position) }
+        // Plays-like against the green: slope when both elevations are known
+        // (same degradation as the card — raw otherwise), no wind (the clamp
+        // is a plausibility gate, not a shot answer).
+        let originElev = originElevation
+        let greenElev = targets.greenElevation
+        let bag = clubs
+        let point = DefaultAim.resolve(DefaultAim.Input(
+            origin: o,
+            greenCenter: g,
+            fairways: fairways,
+            aimPoints: aheadAims,
+            longestCarryM: bag.map(\.carryM).max() ?? 0,
+            lateralDispersionM: { distanceM in
+                guard let club = BrowseReticle.panClub(clubs: bag, distanceM: distanceM)
+                else { return 0 }
+                // Full width — the resolver's gate wants the full extent.
+                return 2 * BrowseReticle.lateralHalfWidthM(club: club, atDistanceM: distanceM)
+            },
+            playsLikeM: { p in
+                let raw = hypot(p.x - o.x, p.y - o.y)
+                guard let oe = originElev, let ge = greenElev else { return raw }
+                let stats = PlaysLike.segmentStats(
+                    PlaysLike.Point(e: o.x, n: o.y, elevation: oe),
+                    PlaysLike.Point(e: p.x, n: p.y, elevation: ge)
+                )
+                return stats.playsLikeSimple ?? raw
+            }
+        ))
+        return Sweref99TM.toWGS84(x: point.x, y: point.y)
+    }
+
+    /// The plan's current-leg landing for the default aim: the first planned
+    /// shot point not yet passed from the current ORIGIN (the
+    /// `nextPlannedLanding` rule generalized off the GPS fix so browse mode
+    /// resolves it from the tee/browse origin too); once every planned
+    /// landing is behind the origin, the plan's last leg lands on the green.
+    /// Nil without a plan.
+    private var defaultAimPlanLanding: LatLon? {
+        guard let holePlan = currentHolePlan, let hole = currentHole,
+              let green = greenCenterPosition(for: hole), let origin else { return nil }
+        let originToGreen = Distance.planarMeters(origin, green)
+        if let shot = holePlan.shots.first(where: {
+            Distance.planarMeters($0.position, green) < originToGreen
+        }) {
+            return shot.position
+        }
+        // Last leg — the plan's landing is the green itself (D-HF1 rule 1).
+        return green
+    }
+
+    /// Fairway rings scoped to the hole's intended CORRIDOR, for the D-HF2
+    /// ring walk. The surface stack is COURSE-WIDE and carries no holeIds,
+    /// and an unfiltered walk snaps to whatever fairway happens to cross
+    /// the ring — on real courses an ADJACENT hole's fairway, producing
+    /// 45–90° aim bearings (device bug, holes 4/6/13/14/15/18 on Linkan).
+    /// "My fairway" is geometric: the hole's intended play-line is its
+    /// routed polyline (tee → curated aim points → green center,
+    /// override-aware — `cachedHoleRoutePlanar`), and a fairway is the
+    /// walk's when it comes within `fairwayCorridorHalfWidthM` of that
+    /// line. Holes without a route (no tee/green data) keep every ring.
+    private func fairwayRings(for hole: HoleData) -> [[Vec2]] {
+        let all = surfaces.filter { $0.kind == "fairway" && $0.points.count >= 3 }
+        let route = cachedHoleRoutePlanar(for: hole)
+        guard route.count >= 2 else { return all.map(\.points) }
+        return all
+            .filter {
+                Self.ringIntersectsCorridor(
+                    $0.points, route: route, halfWidthM: Self.fairwayCorridorHalfWidthM
+                )
+            }
+            .map(\.points)
+    }
+
+    /// Half-width of the fairway-scoping corridor around the routed
+    /// play-line: wide enough to keep the hole's own fairway (offset
+    /// landing zones included), well under hole-to-hole spacing.
+    private static let fairwayCorridorHalfWidthM = 60.0
+
+    /// Whether a ring comes within `halfWidthM` of the routed play-line.
+    /// The route is sampled every ~10 m; a sample inside the ring, or
+    /// within `halfWidthM` of a ring edge, is a hit. (Fairway rings are far
+    /// wider than the step, so sampling cannot tunnel through one.)
+    private static func ringIntersectsCorridor(
+        _ ring: [Vec2], route: [Vec2], halfWidthM: Double
+    ) -> Bool {
+        guard route.count >= 2, ring.count >= 3 else { return false }
+        for i in 0..<(route.count - 1) {
+            let a = route[i]
+            let b = route[i + 1]
+            let steps = max(Int(hypot(b.x - a.x, b.y - a.y) / 10), 1)
+            for s in 0...steps {
+                let t = Double(s) / Double(steps)
+                let p = Vec2(x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y))
+                if pointInRing(p, ring) { return true }
+                if Self.distanceToRingEdge(p, ring) <= halfWidthM { return true }
+            }
+        }
+        return false
+    }
+
+    /// Minimum distance from a point to a ring's boundary (implicitly
+    /// closed).
+    private static func distanceToRingEdge(_ p: Vec2, _ ring: [Vec2]) -> Double {
+        var best = Double.infinity
+        let n = ring.count
+        for i in 0..<n {
+            let a = ring[i]
+            let b = ring[(i + 1) % n]
+            let dx = b.x - a.x
+            let dy = b.y - a.y
+            let len2 = dx * dx + dy * dy
+            let t = len2 > 0 ? max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0
+            let qx = a.x + t * dx
+            let qy = a.y + t * dy
+            best = min(best, hypot(p.x - qx, p.y - qy))
+        }
+        return best
+    }
+
+    /// D-HF1 wiring: origin changes SET the reticle aim explicitly from the
+    /// resolver — never inherited from the previous hole/origin. Only an
+    /// ENGAGED reticle carries stale aim state; while the reticle is down
+    /// there is nothing to inherit, and engaging it here would suppress the
+    /// forward-route/plan overlays prematurely — hole entry engages via
+    /// `beginHoleEntryFraming` (D-HF3/D-HF4) instead. Falls back to the old
+    /// resettle-in-place when the default cannot be resolved (no green
+    /// data), so the readout never goes stale.
+    private func applyDefaultAim() {
+        // An origin change while the entry camera is still in flight (GPS
+        // fix adopted mid-animation) restarts the entry framing: the solve
+        // re-freezes from the new origin and the settle gate stays up —
+        // routing the new aim through `reticleMoved` would fight the gate.
+        if reticleAwaitingEntrySettle {
+            beginHoleEntryFraming()
+            return
+        }
+        guard reticleTarget != nil else { return }
+        guard let target = defaultAimTarget else {
+            resettleReticleAfterOriginChange()
+            return
+        }
+        reticleSettleTask?.cancel()
+        reticleSettled = nil
+        reticleMoved(target, panning: false)
+    }
+
+    // MARK: - Hole-entry framing (D-HF3 + D-HF4 — hole-select framing, slice 2)
+
+    /// Solve inputs FROZEN at hole entry (origin + resolved default aim): the
+    /// entry camera must not re-fly as the GPS origin walks or a plan edit
+    /// re-resolves the aim — only a hole change / same-hole re-select
+    /// re-frames. Viewport size and insets stay live so the first measured
+    /// layout corrects the frame (same mechanism as `holeFitInsets`).
+    private(set) var holeEntrySolveOrigin: LatLon?
+    private(set) var holeEntrySolveAim: LatLon?
+
+    /// Screen-measured full-bleed map viewport in points; `.zero` until the
+    /// first layout (the solve stands down and the hole fit covers).
+    ///
+    /// The first non-zero measurement also closes the FIRST-HOLE gap: the hole
+    /// shown on course open (including the `-openCourse` / `-openHole` launch
+    /// paths) never passes through `holeDidChange`, so without this it would
+    /// keep the old bounds fit and a disengaged reticle until the first hole
+    /// navigation. Routing it through the same entry path once layout exists
+    /// gives hole one the solved camera + the D-HF1 default aim.
+    var mapViewportSize = CGSize.zero {
+        didSet {
+            guard !didFrameHoleEntry,
+                  mapViewportSize.width > 0, mapViewportSize.height > 0
+            else { return }
+            beginHoleEntryFraming()
+        }
+    }
+    /// True once an entry framing actually resolved a default aim. Guards the
+    /// first-hole catch-up above from re-firing (and lets it retry while the
+    /// aim is still unresolvable — no green data yet).
+    @ObservationIgnored private var didFrameHoleEntry = false
+    /// Distance-mode chrome insets (hole header top, distance card bottom),
+    /// screen-measured. The solve always uses the card-up distance chrome —
+    /// immersive/tool toggles never re-frame the entry camera, and D-HF5's
+    /// expanded card is measured as if it were still compact.
+    var distanceCameraInsets = MapEdgeInsets.zero
+
+    /// Zoom clamps for the entry solve: never frame wider than the course
+    /// tiles resolve, never tighter than the ortho detail ceiling (a short
+    /// par 3 would otherwise zoom absurdly). When a clamp bites, the origin
+    /// anchor holds and the aim drifts off the reticle anchor (D-HF3).
+    static let holeEntryMinZoom = 13.0
+    static let holeEntryMaxZoom = 19.0
+
+    /// D-HF4 — true from hole entry until the first settle: the reticle
+    /// line, labels and dispersion overlays are HIDDEN (not stale-frozen)
+    /// while the entry camera flies, and reappear computed from the
+    /// world-coordinate default aim.
+    private(set) var reticleAwaitingEntrySettle = false
+    /// True once the entry animation has reported idle. A panning report
+    /// AFTER it is the user grabbing the map (lifts the gate, resumes the
+    /// screen-anchor path); one DURING the flight is the animation itself
+    /// and is ignored (never unproject the anchor mid-flight).
+    @ObservationIgnored private var holeEntryCameraIdled = false
+
+    /// D-HF3/D-HF4 — hole entry (and same-hole re-select): freeze the solve
+    /// inputs, engage the reticle at the world-coordinate default aim (slice
+    /// 1 left a disengaged reticle down; the entry camera now drives the
+    /// first engagement), and gate the reticle overlays until the entry
+    /// camera settles. Without a resolvable default (no green data) fall
+    /// back to the slice-1 origin-change behavior so nothing goes stale.
+    private func beginHoleEntryFraming() {
+        holeEntryCameraIdled = false
+        holeEntrySolveOrigin = origin
+        holeEntrySolveAim = defaultAimTarget
+        guard let aim = holeEntrySolveAim, holeEntrySolveOrigin != nil else {
+            reticleAwaitingEntrySettle = false
+            applyDefaultAim()
+            return
+        }
+        reticleSettleTask?.cancel()
+        reticleSettled = nil
+        reticleIsPanning = false
+        reticleTarget = aim
+        reticleAwaitingEntrySettle = true
+        didFrameHoleEntry = true
+    }
+
+    // MARK: - Distance card detent (D-HF5 — compact card)
+
+    /// The distance card's two FIXED states — no free-drag continuum, so the
+    /// chrome insets stay deterministic. Compact is the default.
+    enum DistanceCardDetent: Equatable, Sendable {
+        /// One row: to-green figure, advised club + carry, plays-like delta.
+        case compact
+        /// Today's full card (Laser, Pin, tee, profile, Browse, origin strip).
+        case expanded
+    }
+
+    /// Session state, deliberately NOT persisted to defaults: the card opens
+    /// compact on every app start (D-HF5), and a hole change never expands it
+    /// — hole entry is exactly when the map matters most.
+    private(set) var distanceCardDetent: DistanceCardDetent = .compact
+
+    var isDistanceCardExpanded: Bool { distanceCardDetent == .expanded }
+
+    /// Tapping the compact row (the whole row is the target) expands.
+    func expandDistanceCard() { distanceCardDetent = .expanded }
+
+    /// Back to one row. No-op when already compact.
+    func collapseDistanceCard() { distanceCardDetent = .compact }
+
+    /// An action COMPLETED inside the expanded card — tee picked, Laser or Pin
+    /// sheet opened, Browse toggled — hands the map back.
+    func distanceCardActionCompleted() { collapseDistanceCard() }
+
+    /// A map tap in distance mode that nothing else consumed. Returns true when
+    /// the tap was spent collapsing the expanded card, so the immersive toggle
+    /// must NOT also fire: the ladder is one tap per step (expanded → compact →
+    /// immersive).
+    func collapseDistanceCardOnMapTap() -> Bool {
+        guard isDistanceCardExpanded else { return false }
+        collapseDistanceCard()
+        return true
+    }
+
+    /// The compact row's content (D-HF5): the big to-green figure, the advised
+    /// club with its carry (`7I · 155`), and the plays-like delta against the
+    /// actual. Derived here so the row stays a dumb layout — and so the
+    /// competition gating (which nils the club/slope figures inside
+    /// `OnCourseDistances`) carries through unchanged.
+    struct CompactCardLine: Equatable, Sendable {
+        /// Straight distance to the green center, whole meters.
+        var distanceM: Int?
+        /// Advised club for the (wind-adjusted) plays-like center distance, or
+        /// the max-advance layup club when the green is out of range.
+        var clubName: String?
+        /// That club's carry, whole meters.
+        var clubCarryM: Int?
+        /// Plays-like (wind-adjusted when known) to the center.
+        var playsLikeM: Int?
+        /// plays-like − actual; nil when either side is unknown.
+        var deltaM: Int?
+    }
+
+    var compactCardLine: CompactCardLine {
+        let distances = self.distances
+        let actual = distances?.center
+        let playsLike = distances?.windPlaysLikeCenter ?? distances?.playsLikeCenter
+        var clubName = distances?.centerClubs?.center
+        var clubCarryM: Int?
+        if let name = clubName {
+            clubCarryM = clubs.first { $0.name == name }.map { Int($0.carryM.rounded()) }
+        } else if let aimClub = compactAimLegClub {
+            // Green beyond the bag: the club for the AIM leg the reticle
+            // shows (device bug: a to-green layup club — "7I" against a
+            // 220 m aim line — contradicted the aim on screen).
+            clubName = aimClub.name
+            clubCarryM = Int(aimClub.carryM.rounded())
+        } else if let layup = distances?.layup {
+            // No resolvable aim: the honest max-advance club, same figure
+            // the expanded card's layup row shows.
+            clubName = layup.club
+            clubCarryM = layup.carryM
+        }
+        var deltaM: Int?
+        if let playsLike, let actual { deltaM = playsLike - actual }
+        return CompactCardLine(
+            distanceM: actual,
+            clubName: clubName,
+            clubCarryM: clubCarryM,
+            playsLikeM: playsLike,
+            deltaM: deltaM
+        )
+    }
+
+    /// The compact row's club when the green is beyond the bag: the club for
+    /// the AIM leg (D-HF1's default aim / the panned reticle target) — the
+    /// settled reticle advice when it's in (plays-like pick, same answer the
+    /// map's ellipse label shows), else the pan pick at the current aim
+    /// distance. Advice → nil in competition mode / empty bag / no
+    /// resolvable aim (the layup fallback then covers).
+    private var compactAimLegClub: ClubRecord? {
+        guard !competitionMode, !clubs.isEmpty else { return nil }
+        if let name = reticleSettled?.advisedClub,
+           let club = clubs.first(where: { $0.name == name }) {
+            return club
+        }
+        guard let origin, let target = reticleTarget ?? defaultAimTarget else { return nil }
+        // Whole meters (the card's unit): the D-HF2 walk lands aims exactly
+        // ON club carries, and a sub-millimeter projection round-trip must
+        // not tip `panClub` past the matching club.
+        return BrowseReticle.panClub(
+            clubs: clubs,
+            distanceM: Distance.planarMeters(origin, target).rounded()
+        )
+    }
+
+    /// D-HF3 — the solved hole-entry camera: origin at the ball anchor
+    /// (center-x, 78% down the usable viewport), default aim at the reticle
+    /// anchor (center-x, 30% — the crosshair's own constant), bearing =
+    /// first shot up, zoom from the anchor separation. Nil before layout or
+    /// without an origin/aim — `cameraCommand` falls back to the hole fit.
+    var holeEntryCameraCommand: MapCameraCommand? {
+        guard let origin = holeEntrySolveOrigin, let aim = holeEntrySolveAim,
+              mapViewportSize.width > 0, mapViewportSize.height > 0
+        else { return nil }
+        // Dispersion margin input: the advised club's lateral half-width at
+        // the aim (advice → competition-gated, like the ellipse itself).
+        var dispersionHalfWidthM = 0.0
+        if !competitionMode {
+            let rawM = Distance.planarMeters(origin, aim)
+            if let club = BrowseReticle.panClub(clubs: clubs, distanceM: rawM) {
+                dispersionHalfWidthM = BrowseReticle.lateralHalfWidthM(
+                    club: club, atDistanceM: rawM
+                )
+            }
+        }
+        guard let solved = AnchoredCameraSolve.solve(AnchoredCameraSolve.Input(
+            origin: origin,
+            aim: aim,
+            viewportWidth: Double(mapViewportSize.width),
+            viewportHeight: Double(mapViewportSize.height),
+            insets: distanceCameraInsets,
+            aimAnchorYFraction: Double(CourseMapView.Coordinator.reticleAnchorYFraction),
+            minZoom: Self.holeEntryMinZoom,
+            maxZoom: Self.holeEntryMaxZoom,
+            dispersionHalfWidthM: dispersionHalfWidthM
+        )) else { return nil }
+        return .center(
+            solved.center,
+            zoom: solved.zoom,
+            bearing: solved.bearing,
+            animated: true,
+            token: cameraToken
+        )
     }
 
     private func clearBrowseTarget() {
@@ -1150,6 +1563,10 @@ final class OnCourseModel {
         // A tool owning the map keeps a stale reticle target from drawing —
         // the reticle only reports (and only makes sense) in distance mode.
         guard toolMode == .none else { return nil }
+        // D-HF4: nothing draws while the hole-entry camera flies — the line,
+        // labels and dispersion overlays appear at first settle, computed
+        // from the world-coordinate default aim.
+        guard !reticleAwaitingEntrySettle else { return nil }
         guard let origin = reticleOrigin, let target = reticleTarget else { return nil }
         var overlay = ReticleOverlay(aimLine: [origin, target])
         overlay.dottedExtension = reticleDottedExtension ?? []
@@ -1193,6 +1610,23 @@ final class OnCourseModel {
     /// snapshot once.
     func reticleMoved(_ p: LatLon, panning: Bool, metersPerPoint: Double? = nil) {
         guard currentHole != nil else { return }
+        var p = p
+        // D-HF4: while the hole-entry camera is in flight the screen anchor
+        // is meaningless — panning reports are the animation itself
+        // (ignored: the aim is never derived from unprojecting the anchor
+        // mid-flight), and the idle report settles from the WORLD default
+        // aim (with a clamped zoom the aim legitimately sits off-anchor).
+        // The first pan AFTER the camera landed is the user taking over:
+        // the gate lifts and the screen-anchor path resumes.
+        if reticleAwaitingEntrySettle {
+            if panning {
+                guard holeEntryCameraIdled else { return }
+                reticleAwaitingEntrySettle = false
+            } else {
+                holeEntryCameraIdled = true
+                p = reticleTarget ?? p
+            }
+        }
         // A focused ladder rung owns the aim visuals (dotted line + advice
         // ellipse to the FOCUSED target). Camera reports from its own
         // centering animation only track the target quietly; once that settle
@@ -1321,6 +1755,9 @@ final class OnCourseModel {
         }
 
         reticleSettledOrigin = origin
+        // D-HF4: first settle after hole entry — the gate lifts and the
+        // overlays render from the settled world-coordinate aim.
+        reticleAwaitingEntrySettle = false
         reticleSettled = ReticleSettled(
             playsLikeM: Int(playsLike.rounded()),
             advisedClub: advisedClub,
@@ -1880,6 +2317,9 @@ final class OnCourseModel {
     /// Feeds a GPS fix (or nil on loss) and kicks an async terrain sample for
     /// the plays-like elevation.
     func updateUserLocation(_ location: LatLon?) {
+        // Adoption check input: whether an effective fix existed BEFORE this
+        // update (nil → non-nil below is "GPS fix adopted", an origin change).
+        let hadEffectiveFix = effectiveUserLocation != nil
         // Invalidate a calibration across a GPS discontinuity (spec §6.4) BEFORE
         // the fix is overwritten — the check compares the previous fix to the new one.
         invalidateCalibrationOnGPSJump(from: userLocation, to: location)
@@ -1893,12 +2333,19 @@ final class OnCourseModel {
         // BEFORE the elevation-sampler early-return below so the geofence still
         // fires when no terrain sampler is installed.
         refreshTeeGeofence()
+        // GPS fix ADOPTED (origin flips tee → live fix): an origin change per
+        // D-HF1 — the reticle aim resets to the resolver's default. Walking
+        // drift below is NOT adoption: the aim stays parked and only the
+        // settled answer re-measures.
+        if !hadEffectiveFix, effectiveUserLocation != nil {
+            applyDefaultAim()
+        }
         // A settled reticle answer measures from the origin at settle time —
         // in GPS mode that origin walks with the player. Re-settle once the
         // fix drifts meaningfully; jitter below the threshold keeps the answer.
-        if reticleSettled != nil, let anchor = reticleSettledOrigin,
-           let fix = effectiveUserLocation,
-           Distance.planarMeters(anchor, fix) > Self.reticleOriginResettleM {
+        else if reticleSettled != nil, let anchor = reticleSettledOrigin,
+                let fix = effectiveUserLocation,
+                Distance.planarMeters(anchor, fix) > Self.reticleOriginResettleM {
             resettleReticleAfterOriginChange()
         }
         userElevationTask?.cancel()
@@ -2475,6 +2922,42 @@ final class OnCourseModel {
         )
     }
 
+    /// One row per hole for the quick hole picker (header title tap): number,
+    /// par, stroke index and the active-tee playing length — the same math the
+    /// header subtitle uses, so a picked hole shows the figure it will show
+    /// once opened. Ordered by hole number (the `holes` order).
+    var holePickerEntries: [HolePickerEntry] {
+        holes.enumerated().map { index, hole in
+            let length = HoleLength.playingLength(
+                tee: teePosition(for: hole),
+                aims: hole.aimPoints.map { aimPosition(for: $0, in: hole) },
+                greenCenter: greenCenterPosition(for: hole)
+            )
+            return HolePickerEntry(
+                number: hole.hole.number,
+                par: hole.hole.par,
+                strokeIndex: hole.hole.strokeIndex,
+                lengthMeters: length.meters,
+                lengthApproximate: length.approximate,
+                isCurrent: index == currentHoleIndex
+            )
+        }
+    }
+
+    struct HolePickerEntry: Identifiable, Equatable {
+        let number: Int
+        let par: Int
+        let strokeIndex: Int?
+        /// Whole-meter active-tee playing length; nil when the hole has no
+        /// usable tee→green path (no figure is claimed).
+        let lengthMeters: Int?
+        /// True when the length stops at the last aim point (green center
+        /// missing) — shown with a leading '~' like the header subtitle.
+        let lengthApproximate: Bool
+        let isCurrent: Bool
+        var id: Int { number }
+    }
+
     // MARK: - Derived: map
 
     /// Tee → green-center bearing, i.e. the direction that points "up" when
@@ -2544,6 +3027,10 @@ final class OnCourseModel {
                 token: cameraToken
             )
         }
+        // D-HF3: the hole-entry camera is SOLVED (two anchors), never fitted
+        // to the aim line; the old hole-bounds fit remains the fallback for
+        // pre-layout frames and holes whose default aim cannot resolve.
+        if let solved = holeEntryCameraCommand { return solved }
         return holeBounds.map {
             .fitHole(
                 $0, bearing: holeBearing, padding: Self.holeFitPadding,

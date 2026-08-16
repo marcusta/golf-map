@@ -116,6 +116,27 @@ final class OnCourseModelTests: XCTestCase {
         XCTAssertEqual(model.currentHoleNumber, 3)
     }
 
+    func testHolePickerEntriesCoverEveryHoleAndMarkTheCurrentOne() {
+        let model = makeModel()
+        model.goToHole(number: 2)
+
+        let entries = model.holePickerEntries
+        XCTAssertEqual(entries.map(\.number), [1, 2, 3])
+        XCTAssertEqual(entries.map(\.par), [4, 3, 5])
+        XCTAssertEqual(entries.map(\.strokeIndex), [7, 15, 1])
+        XCTAssertEqual(entries.filter(\.isCurrent).map(\.number), [2])
+
+        // Each row carries the SAME active-tee playing length the header shows
+        // for that hole — the picker must not claim a different figure.
+        for entry in entries {
+            model.goToHole(number: entry.number)
+            XCTAssertEqual(entry.lengthMeters, model.playingLength?.meters,
+                           "hole \(entry.number) length")
+            XCTAssertEqual(entry.lengthApproximate, model.playingLength?.approximate,
+                           "hole \(entry.number) approximate flag")
+        }
+    }
+
     func testHoleChangeAndRecenterBumpCameraToken() {
         let model = makeModel()
         let initial = model.cameraToken

@@ -549,20 +549,27 @@ final class OnCourseReticleTests: XCTestCase {
         await awaitSettled(model)
         let stale = try XCTUnwrap(model.reticleSettled)
 
-        // "From here" moves the origin; the settled answer measured from the
-        // old origin must not linger. Origin != aim → a fresh settle lands.
+        // "From here" moves the origin under an engaged reticle: the aim is
+        // re-SET to the new origin's default (D-HF1) — never inherited — and
+        // the stale settled answer must not linger.
         let origin = LatLon(lat: 58.3615, lon: 15.7092)
         model.setBrowseOrigin(origin)
+        XCTAssertNotEqual(model.reticleTarget, aim, "aim re-defaults from the new origin")
         await awaitSettled(model)
         let fresh = try XCTUnwrap(model.reticleSettled)
         XCTAssertNotEqual(fresh.playsLikeM, stale.playsLikeM,
                           "settled snapshot re-measured from the new origin")
 
-        // Origin ON the aim: stale snapshot cleared, no new one (0 m line).
+        // Origin ON the aim: the default resolver takes over — the green is
+        // now within the longest carry, so the aim snaps to the green center
+        // (never a zero-length line) and a fresh settle lands there.
         model.setBrowseOrigin(model.reticleTarget!)
-        XCTAssertNil(model.reticleSettled)
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertNil(model.reticleSettled, "zero-length settle never lands")
+        XCTAssertNil(model.reticleSettled, "stale snapshot dropped immediately")
+        await awaitSettled(model)
+        let target = try XCTUnwrap(model.reticleTarget)
+        XCTAssertEqual(target.lat, 58.3640, accuracy: 1e-6)
+        XCTAssertEqual(target.lon, 15.7080, accuracy: 1e-6)
+        XCTAssertNotNil(model.reticleSettled, "fresh settle lands at the default aim")
     }
 
     func testResetBrowseOriginDropsStaleSettledSnapshotAndResettles() async throws {
@@ -574,14 +581,311 @@ final class OnCourseReticleTests: XCTestCase {
         await awaitSettled(model)
         let fromOrigin = try XCTUnwrap(model.reticleSettled)
 
-        // "From tee" (reset) moves the origin back — same invalidation rule
-        // as "From here": the settled answer must re-measure from the tee.
+        // "From tee" (reset) moves the origin back — same D-HF1 rule as
+        // "From here": the aim re-defaults from the tee and the settled
+        // answer re-measures there.
         model.resetBrowseOrigin()
         XCTAssertNil(model.browseOrigin)
+        XCTAssertNotEqual(model.reticleTarget, aim, "aim re-defaults from the tee")
         await awaitSettled(model)
         let fromTee = try XCTUnwrap(model.reticleSettled)
         XCTAssertNotEqual(fromTee.playsLikeM, fromOrigin.playsLikeM,
                           "settled snapshot re-measured from the tee")
+    }
+
+    // MARK: - Default aim on hole/origin change (D-HF1 + D-HF2, slice 1)
+
+    /// Two-hole course: hole 1 = the fixture hole; hole 2 = a short par 3
+    /// (~189 m, within the Dr 220 carry even uphill) north of it.
+    private func makeTwoHoleModel() -> OnCourseModel {
+        let course = CourseRecord(
+            id: "course-r", name: "Reticle GC", status: "published",
+            revision: 1, downloadedRevision: 1, updatedAt: "2026-01-01T00:00:00Z",
+            bundleState: .complete
+        )
+        let holes = [
+            HoleRecord(id: "h1", courseId: "course-r", number: 1, par: 4, strokeIndex: 7),
+            HoleRecord(id: "h2", courseId: "course-r", number: 2, par: 3, strokeIndex: 15),
+        ]
+        let tees = [
+            TeeRecord(id: "t1", holeId: "h1", name: "default", lat: 58.3600, lon: 15.7100, elevation: 10, sortOrder: 0),
+            TeeRecord(id: "t2", holeId: "h2", name: "default", lat: 58.3640, lon: 15.7100, elevation: 10, sortOrder: 0),
+        ]
+        let greens = [
+            GreenRecord(
+                id: "g1", holeId: "h1",
+                centerLat: 58.3640, centerLon: 15.7080,
+                frontLat: 58.3638, frontLon: 15.7080,
+                backLat: 58.3642, backLon: 15.7080,
+                elevation: 25
+            ),
+            GreenRecord(
+                id: "g2", holeId: "h2",
+                centerLat: 58.3657, centerLon: 15.7100,
+                frontLat: 58.3655, frontLon: 15.7100,
+                backLat: 58.3659, backLon: 15.7100,
+                elevation: 25
+            ),
+        ]
+        let manifest = TileManifestRecord(
+            courseId: "course-r", west: 15.70, south: 58.35, east: 15.72, north: 58.37,
+            orthoMinZoom: 14, orthoMaxZoom: 20, terrainMinZoom: 12, terrainMaxZoom: 17,
+            elevMin: 0, elevMax: 100, generatedAt: "2026-01-01T00:00:00Z", versionParam: "v1"
+        )
+        let furniture = CourseFurniture(
+            course: course, holes: holes, tees: tees, greens: greens,
+            pins: [], aimPoints: [], manifest: manifest
+        )
+        let model = OnCourseModel(furniture: furniture, defaults: defaults)
+        model.setGPSEnabled(false)
+        model.setClubs(bag())
+        model.reticleSettleSleep = {}
+        return model
+    }
+
+    func testHoleChangeResetsAnEngagedAimToTheNewHoleDefault() throws {
+        let model = makeTwoHoleModel()
+        model.reticleMoved(aim, panning: true) // parked aim on hole 1
+
+        model.goToHole(number: 2)
+
+        // The aim is SET in world coordinates from the resolver — never
+        // inherited from the previous hole. Hole 2 is a short par 3 within
+        // the longest carry → the default is its green center (D-HF1 rule 2).
+        let target = try XCTUnwrap(model.reticleTarget)
+        XCTAssertNotEqual(target, aim, "aim state does not survive hole change")
+        XCTAssertEqual(target.lat, 58.3657, accuracy: 1e-6)
+        XCTAssertEqual(target.lon, 15.7100, accuracy: 1e-6)
+        XCTAssertEqual(model.reticleTarget, model.defaultAimTarget,
+                       "the parked aim is exactly the resolver's answer")
+    }
+
+    func testHoleChangeEngagesADisengagedReticleGatedUntilSettle() {
+        let model = makeTwoHoleModel()
+        XCTAssertNil(model.reticleOverlay)
+
+        model.goToHole(number: 2)
+
+        // D-HF3/D-HF4 (slice 2): hole entry ENGAGES the reticle at the
+        // world-coordinate default aim, but nothing reticle-shaped draws
+        // until the entry camera settles — the forward route covers the map
+        // during the flight.
+        XCTAssertEqual(model.reticleTarget, model.defaultAimTarget)
+        XCTAssertTrue(model.reticleAwaitingEntrySettle)
+        XCTAssertNil(model.reticleOverlay, "reticle overlays hidden while the camera flies")
+        XCTAssertFalse(model.overlays.distanceLine.isEmpty, "forward route still draws")
+    }
+
+    func testFirstGPSFixResetsAnEngagedAimToTheDefault() {
+        let model = OnCourseModel(furniture: makeFurniture(), defaults: defaults)
+        model.setClubs(bag())
+        model.reticleSettleSleep = {}
+        // Pre-fix the reticle measures from the tee; park an aim there.
+        model.reticleMoved(aim, panning: true)
+        XCTAssertEqual(model.reticleTarget, aim)
+
+        // The first adopted fix moves the origin under the aim: the aim is
+        // re-SET from the resolver at the new origin, not inherited.
+        model.updateUserLocation(LatLon(lat: 58.3606, lon: 15.7097))
+        XCTAssertNotEqual(model.reticleTarget, aim, "aim re-defaults on GPS adoption")
+        XCTAssertEqual(model.reticleTarget, model.defaultAimTarget)
+    }
+
+    // MARK: - Hole-entry framing (D-HF3 + D-HF4, slice 2)
+
+    func testEntryAnimationFramesNeverMoveTheAim() {
+        let model = makeTwoHoleModel()
+        model.goToHole(number: 2)
+        let worldAim = model.reticleTarget
+
+        // Camera-animation frames arrive as panning reports with mid-flight
+        // anchor unprojections — the screenshot bug class. Ignored entirely.
+        model.reticleMoved(LatLon(lat: 58.3500, lon: 15.7000), panning: true)
+        model.reticleMoved(LatLon(lat: 58.3620, lon: 15.7150), panning: true)
+
+        XCTAssertEqual(model.reticleTarget, worldAim, "aim stays the world default")
+        XCTAssertFalse(model.reticleIsPanning)
+        XCTAssertTrue(model.reticleAwaitingEntrySettle)
+        XCTAssertNil(model.reticleOverlay)
+    }
+
+    func testFirstSettleRendersFromTheWorldDefaultAim() async throws {
+        let model = makeTwoHoleModel()
+        model.goToHole(number: 2)
+        let worldAim = try XCTUnwrap(model.defaultAimTarget)
+
+        // The camera lands: the idle report's anchor unprojection is CLOSE to
+        // but not exactly the aim (zoom clamps legitimately leave the aim
+        // off-anchor) — the settle must use the world aim, not the report.
+        model.reticleMoved(LatLon(lat: 58.3655, lon: 15.7097), panning: false)
+        await awaitSettled(model)
+
+        XCTAssertEqual(model.reticleTarget, worldAim,
+                       "settled from the world default aim, not the screen anchor")
+        XCTAssertFalse(model.reticleAwaitingEntrySettle)
+        XCTAssertNotNil(model.reticleSettled)
+        let overlay = try XCTUnwrap(model.reticleOverlay, "overlays render at first settle")
+        XCTAssertEqual(overlay.aimLine.last, worldAim)
+    }
+
+    func testUserPanAfterSettleResumesScreenAnchorDerivation() async throws {
+        let model = makeTwoHoleModel()
+        model.goToHole(number: 2)
+        model.reticleMoved(LatLon(lat: 58.3657, lon: 15.7100), panning: false)
+        await awaitSettled(model)
+
+        // First user pan after the entry settle: the reticle follows the
+        // screen anchor again.
+        let panned = LatLon(lat: 58.3650, lon: 15.7090)
+        model.reticleMoved(panned, panning: true)
+        XCTAssertEqual(model.reticleTarget, panned)
+        XCTAssertTrue(model.reticleIsPanning)
+        XCTAssertNil(model.reticleSettled, "pan-start drops the settled layer")
+    }
+
+    func testUserPanAfterCameraLandsButBeforeSettleLiftsTheGate() {
+        let model = makeTwoHoleModel()
+        model.goToHole(number: 2)
+
+        // The camera reported idle, the 200 ms settle is pending — a user
+        // grab in that window takes over immediately (the pending settle is
+        // stale and must not land).
+        model.reticleMoved(LatLon(lat: 58.3657, lon: 15.7100), panning: false)
+        let panned = LatLon(lat: 58.3648, lon: 15.7088)
+        model.reticleMoved(panned, panning: true)
+
+        XCTAssertFalse(model.reticleAwaitingEntrySettle)
+        XCTAssertEqual(model.reticleTarget, panned)
+        XCTAssertNil(model.reticleSettled)
+    }
+
+    func testSameHoleReselectReissuesTheEntryCamera() async throws {
+        let model = makeTwoHoleModel()
+        model.goToHole(number: 2)
+        let firstToken = try XCTUnwrap(model.cameraCommand).token
+        model.reticleMoved(LatLon(lat: 58.3657, lon: 15.7100), panning: false)
+        await awaitSettled(model)
+
+        // Park the aim somewhere else, then re-select hole 2.
+        model.reticleMoved(LatLon(lat: 58.3650, lon: 15.7090), panning: true)
+        model.goToHole(number: 2)
+
+        let reissued = try XCTUnwrap(model.cameraCommand)
+        XCTAssertEqual(reissued.token, firstToken + 1, "token bump re-applies the frame")
+        XCTAssertEqual(model.reticleTarget, model.defaultAimTarget)
+        XCTAssertTrue(model.reticleAwaitingEntrySettle)
+        XCTAssertNil(model.reticleOverlay)
+    }
+
+    func testHoleEntryCameraIsSolvedNotFitted() throws {
+        let model = makeTwoHoleModel()
+        model.mapViewportSize = CGSize(width: 390, height: 844)
+        model.distanceCameraInsets = MapEdgeInsets(top: 60, left: 8, bottom: 260, right: 8)
+
+        model.goToHole(number: 2)
+
+        let command = try XCTUnwrap(model.cameraCommand)
+        guard case .center(let center, let zoom) = command.target else {
+            return XCTFail("hole entry issues a solved .center command, got \(command.target)")
+        }
+
+        // Parity with the pure solver at the model's own inputs: origin =
+        // hole 2 tee, aim = green 2 center, dispersion = the advised club's
+        // half-width at the raw distance.
+        let tee2 = LatLon(lat: 58.3640, lon: 15.7100)
+        let aim2 = try XCTUnwrap(model.defaultAimTarget)
+        let rawM = Distance.planarMeters(tee2, aim2)
+        let club = try XCTUnwrap(BrowseReticle.panClub(clubs: bag(), distanceM: rawM))
+        let expected = try XCTUnwrap(AnchoredCameraSolve.solve(AnchoredCameraSolve.Input(
+            origin: tee2,
+            aim: aim2,
+            viewportWidth: 390,
+            viewportHeight: 844,
+            insets: MapEdgeInsets(top: 60, left: 8, bottom: 260, right: 8),
+            aimAnchorYFraction: Double(CourseMapView.Coordinator.reticleAnchorYFraction),
+            minZoom: OnCourseModel.holeEntryMinZoom,
+            maxZoom: OnCourseModel.holeEntryMaxZoom,
+            dispersionHalfWidthM: BrowseReticle.lateralHalfWidthM(club: club, atDistanceM: rawM)
+        )))
+        XCTAssertEqual(center.lat, expected.center.lat, accuracy: 1e-9)
+        XCTAssertEqual(center.lon, expected.center.lon, accuracy: 1e-9)
+        XCTAssertEqual(zoom, expected.zoom, accuracy: 1e-9)
+        XCTAssertEqual(command.bearing, expected.bearing, accuracy: 1e-9)
+        // Hole 2 runs due (true) north — first-shot-up ≈ grid north, off by
+        // the SWEREF meridian convergence at lon 15.71 (~0.6° here).
+        let northError = min(command.bearing, 360 - command.bearing)
+        XCTAssertEqual(northError, 0, accuracy: 1.5)
+    }
+
+    // MARK: - First hole on course open (D-HF5 slice-3 gap fix)
+
+    func testFirstHoleFramesOnceTheViewportIsMeasured() throws {
+        let model = makeTwoHoleModel()
+        // Pre-layout: no viewport, so the entry solve stands down and the
+        // reticle is still down (nothing to inherit — slice 1).
+        XCTAssertNil(model.reticleTarget)
+        guard case .bounds = try XCTUnwrap(model.cameraCommand).target else {
+            return XCTFail("pre-layout still uses the hole-bounds fit")
+        }
+
+        // First measured layout: hole ONE never passes through
+        // `holeDidChange`, so this is what routes it through the same entry
+        // path — solved camera + engaged default aim, gated until settle.
+        model.mapViewportSize = CGSize(width: 390, height: 844)
+
+        XCTAssertEqual(model.reticleTarget, model.defaultAimTarget,
+                       "hole one enters with the D-HF1 default aim engaged")
+        XCTAssertTrue(model.reticleAwaitingEntrySettle)
+        XCTAssertNil(model.reticleOverlay, "overlays stay hidden until settle")
+        XCTAssertEqual(model.holeEntrySolveOrigin, model.origin)
+        let command = try XCTUnwrap(model.cameraCommand)
+        guard case .center = command.target else {
+            return XCTFail("expected the anchored solve, got \(command.target)")
+        }
+    }
+
+    func testFirstHoleFramingRunsOnceAndNeverReframesOnResize() throws {
+        let model = makeTwoHoleModel()
+        model.mapViewportSize = CGSize(width: 390, height: 844)
+        let token = try XCTUnwrap(model.cameraCommand).token
+
+        // Let the entry camera land, grab the map, then let the viewport
+        // re-measure (rotation / chrome relayout): the catch-up is a ONE-shot,
+        // so nothing re-frames and the user's aim survives.
+        model.reticleMoved(LatLon(lat: 58.3615, lon: 15.7092), panning: false)
+        let parked = LatLon(lat: 58.3610, lon: 15.7095)
+        model.reticleMoved(parked, panning: true)
+        model.mapViewportSize = CGSize(width: 390, height: 800)
+
+        XCTAssertEqual(model.reticleTarget, parked, "no re-entry framing on resize")
+        XCTAssertEqual(model.cameraCommand?.token, token, "no new camera command")
+    }
+
+    func testHoleEntryCameraFallsBackToHoleFitWithoutViewport() throws {
+        let model = makeTwoHoleModel()
+        // No measured viewport yet (pre-layout): the solve stands down.
+        model.goToHole(number: 2)
+        let command = try XCTUnwrap(model.cameraCommand)
+        guard case .bounds = command.target else {
+            return XCTFail("expected the hole-bounds fit fallback, got \(command.target)")
+        }
+    }
+
+    func testOriginChangeDuringEntryFlightRestartsFramingKeepsGate() {
+        let model = makeTwoHoleModel()
+        model.mapViewportSize = CGSize(width: 390, height: 844)
+        model.goToHole(number: 2)
+        XCTAssertTrue(model.reticleAwaitingEntrySettle)
+
+        // "From here" mid-flight (an origin change): the solve re-freezes
+        // from the new origin and the settle gate stays up.
+        let newOrigin = LatLon(lat: 58.3645, lon: 15.7100)
+        model.setBrowseOrigin(newOrigin)
+
+        XCTAssertTrue(model.reticleAwaitingEntrySettle)
+        XCTAssertEqual(model.holeEntrySolveOrigin, newOrigin)
+        XCTAssertEqual(model.reticleTarget, model.defaultAimTarget)
+        XCTAssertNil(model.reticleOverlay)
     }
 
     // MARK: - Screen glue (RB5)
