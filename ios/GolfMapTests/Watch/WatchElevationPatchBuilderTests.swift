@@ -120,6 +120,52 @@ final class WatchElevationPatchBuilderTests: XCTestCase {
         XCTAssertEqual(decoded.height, image.heightPx)
     }
 
+    func testGreenImageCarriesFallArrowsPointingDownhill() async {
+        // The plane rises 1% to the east — downhill is due west, and 1% is
+        // above the 0.5% arrow floor, so every inside-green anchor emits.
+        let image = await WatchGreenImageRenderer.render(
+            rings: squareRing, sampler: planeSampler
+        )
+        guard let image, let arrows = image.arrows, let lengthM = image.arrowLengthM
+        else { return XCTFail("no arrows") }
+
+        XCTAssertFalse(arrows.isEmpty)
+        // Sample grid: 34 m extent at 0.5 m → spacing 3.4 m → 3.4 × 0.45.
+        XCTAssertEqual(lengthM, 1.53, accuracy: 0.01)
+        for arrow in arrows {
+            XCTAssertEqual(arrow.dirE, -1, accuracy: 0.05)
+            XCTAssertEqual(arrow.dirN, 0, accuracy: 0.05)
+            XCTAssertEqual(arrow.slopePct, 1, accuracy: 0.1)
+            // Anchors stay inside the polygon (the image is green-clipped).
+            XCTAssertTrue(arrow.e >= Self.e0 && arrow.e <= Self.e0 + 30)
+            XCTAssertTrue(arrow.n <= Self.n0 && arrow.n >= Self.n0 - 30)
+        }
+    }
+
+    func testGreenImageSlopeGradesSmoothlyOnThePlane() async {
+        // Bilinear slope sampling on a 1% plane: every opaque pixel must be
+        // the exact 1% ramp color (the boundary stop between blue and green
+        // bands) — banding or ring noise would break this.
+        let image = await WatchGreenImageRenderer.render(
+            rings: squareRing, sampler: planeSampler
+        )
+        guard let image,
+              let source = CGImageSourceCreateWithData(image.png as CFData, nil),
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let data = cg.dataProvider?.data as Data?
+        else { return XCTFail("no image") }
+
+        let expected = slopeColor(1.0)
+        let bytesPerRow = cg.bytesPerRow
+        // Interior pixel well away from edges: (60, 60) ≈ 13 m into the green.
+        for (px, py) in [(60, 60), (80, 70), (70, 90)] {
+            let o = py * bytesPerRow + px * 4
+            XCTAssertEqual(Int(data[o]), expected.r, accuracy: 6)
+            XCTAssertEqual(Int(data[o + 1]), expected.g, accuracy: 6)
+            XCTAssertEqual(Int(data[o + 2]), expected.b, accuracy: 6)
+        }
+    }
+
     func testGreenImagePixelInsideIsOpaqueSlopeColorOutsideTransparent() {
         // Direct RGBA path: 2×2, one opaque pixel.
         let rgba: [UInt8] = [

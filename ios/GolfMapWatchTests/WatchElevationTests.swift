@@ -120,7 +120,12 @@ final class WatchElevationTests: XCTestCase {
             greenImage: WatchGreenImage(
                 png: Data([0x89, 0x50, 0x4E, 0x47]),
                 originE: Self.originE, originN: Self.originN,
-                metersPerPixel: 0.25, widthPx: 4, heightPx: 4
+                metersPerPixel: 0.25, widthPx: 4, heightPx: 4,
+                arrows: [WatchFallArrow(
+                    e: Self.originE + 2, n: Self.originN - 2,
+                    dirE: -1, dirN: 0, slopePct: 2.5
+                )],
+                arrowLengthM: 1.53
             )
         )
         let bundle = WatchCourseBundle(

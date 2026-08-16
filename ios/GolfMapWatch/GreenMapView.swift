@@ -26,6 +26,8 @@ struct GreenMapView: View {
             distancesRow
         }
         .padding(.horizontal, 4)
+        .onAppear { decodeCurrentGreen() }
+        .onChange(of: selector.currentIndex) { decodeCurrentGreen() }
     }
 
     private var header: some View {
@@ -41,9 +43,28 @@ struct GreenMapView: View {
         }
     }
 
+    /// The slope PNG decoded ONCE per hole. Decoding inside `body` re-ran on
+    /// every GPS tick, and a decode SwiftUI couldn't resolve mid-draw rendered
+    /// as the system's missing-image placeholder (a purple rectangle).
+    @State private var decodedCache: (holeNumber: Int, image: UIImage)?
+
+    private var decodedGreen: UIImage? {
+        guard let hole else { return nil }
+        return decodedCache?.holeNumber == hole.number ? decodedCache?.image : nil
+    }
+
+    private func decodeCurrentGreen() {
+        guard let hole, let image = hole.greenImage else {
+            decodedCache = nil
+            return
+        }
+        guard decodedCache?.holeNumber != hole.number else { return }
+        decodedCache = UIImage(data: image.png).map { (hole.number, $0) }
+    }
+
     @ViewBuilder
     private var greenCanvas: some View {
-        if let hole, let image = hole.greenImage, let decoded = UIImage(data: image.png) {
+        if let hole, let image = hole.greenImage, let decoded = decodedGreen {
             Canvas { context, size in
                 let widthM = Double(image.widthPx) * image.metersPerPixel
                 let heightM = Double(image.heightPx) * image.metersPerPixel
@@ -79,6 +100,41 @@ struct GreenMapView: View {
                         path.closeSubpath()
                         context.stroke(path, with: .color(.white.opacity(0.9)), lineWidth: 1.5)
                     }
+                }
+
+                // Fall-line arrows (synced vectors — same field as the phone
+                // Green view, anchored at the arrow tail, ±150° head strokes).
+                if let arrows = image.arrows, let lengthM = image.arrowLengthM {
+                    var path = Path()
+                    for arrow in arrows {
+                        let tailE = arrow.e
+                        let tailN = arrow.n
+                        let tipE = tailE + arrow.dirE * lengthM
+                        let tipN = tailN + arrow.dirN * lengthM
+                        let tail = point(Sweref99TM.Point(x: tailE, y: tailN))
+                        let tip = point(Sweref99TM.Point(x: tipE, y: tipN))
+                        path.move(to: tail)
+                        path.addLine(to: tip)
+                        // Head strokes: rotate the reversed direction ±30°.
+                        let headM = lengthM * 0.45
+                        for sign in [1.0, -1.0] {
+                            let angle = sign * Double.pi / 6
+                            let backE = -arrow.dirE * cos(angle) + arrow.dirN * sin(angle)
+                            let backN = -arrow.dirE * sin(angle) - arrow.dirN * cos(angle)
+                            path.move(to: tip)
+                            path.addLine(to: point(Sweref99TM.Point(
+                                x: tipE + backE * headM, y: tipN + backN * headM
+                            )))
+                        }
+                    }
+                    context.stroke(
+                        path, with: .color(.black.opacity(0.45)),
+                        style: StrokeStyle(lineWidth: 2.6, lineCap: .round, lineJoin: .round)
+                    )
+                    context.stroke(
+                        path, with: .color(.white.opacity(0.95)),
+                        style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round)
+                    )
                 }
 
                 if let fix = tracker.currentFix {

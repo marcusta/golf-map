@@ -37,9 +37,23 @@ synced.
   straight distance is never wrong, plays-like can be.
 - **Mini green map** (`GreenMapView`, middle pager page): the phone
   pre-renders each green's slope shading (same ramp as the Green view,
-  0.25 m/px, PNG, clipped to the polygon) via `WatchGreenImageRenderer`;
-  the watch draws the bitmap + boundary + live player dot + F/C/B row.
-  The watch computes nothing.
+  PNG, clipped to the polygon) via `WatchGreenImageRenderer`; the watch
+  draws the bitmap + boundary + fall-line arrows + live player dot +
+  F/C/B row. The watch computes nothing.
+  - The terrain is sampled at the Green view's 0.5 m (the blur radius is
+    in cells — sampling finer halves the smoothing AND doubles the
+    derivative's sensitivity to the terrain-RGB 0.1 m quantization,
+    which renders as rainbow ring noise), then each 0.25 m output pixel
+    bilinearly interpolates the slope field (`sampleSlopeAt`) so the
+    ramp grades smoothly, matching what the phone's GPU texture
+    filtering does for the map overlay.
+  - Fall-line arrows ride along as vectors (`WatchFallArrow` +
+    `arrowLengthM`, from the phone's `sampleFallLines`, clipped to
+    inside-green anchors) — baked into the PNG they would alias at
+    1–2 px stroke widths.
+  - The watch decodes the PNG once per hole (decoding in `body` re-ran
+    every GPS tick and intermittently drew SwiftUI's missing-image
+    placeholder — a purple rectangle).
 - **Dedupe fix**: the content hash now zeroes `builtAt` before hashing —
   previously every course open re-queued a transfer.
 - Format stays v1 (all additive optional fields); older watch builds ignore

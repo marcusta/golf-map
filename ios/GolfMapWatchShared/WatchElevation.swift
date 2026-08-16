@@ -136,6 +136,25 @@ public struct WatchElevationGrid: Codable, Sendable, Equatable {
 /// A slope-shaded picture of one green, pre-rendered on the phone (the same
 /// ramp as the phone/web Green view) — the watch just draws the bitmap and
 /// composites the player dot on top. North-up, EPSG:3006 axis-aligned.
+/// One fall-line arrow on the green: anchor + downhill unit vector,
+/// EPSG:3006. The watch draws these as vectors so they stay crisp at any
+/// canvas scale (baking them into the PNG would alias at 1–2 px widths).
+public struct WatchFallArrow: Codable, Sendable, Equatable {
+    public var e: Double
+    public var n: Double
+    public var dirE: Double
+    public var dirN: Double
+    public var slopePct: Double
+
+    public init(e: Double, n: Double, dirE: Double, dirN: Double, slopePct: Double) {
+        self.e = e
+        self.n = n
+        self.dirE = dirE
+        self.dirN = dirN
+        self.slopePct = slopePct
+    }
+}
+
 public struct WatchGreenImage: Codable, Sendable, Equatable {
     /// PNG bytes (base64 in JSON). PNG, never JPEG: flat-shaded slope bands
     /// with sharp contour edges are JPEG's worst case.
@@ -146,6 +165,10 @@ public struct WatchGreenImage: Codable, Sendable, Equatable {
     public var metersPerPixel: Double
     public var widthPx: Int
     public var heightPx: Int
+    /// Fall-line arrows inside the green (optional — older bundles lack them).
+    public var arrows: [WatchFallArrow]?
+    /// Arrow shaft length in meters, sized by the phone to the green's extent.
+    public var arrowLengthM: Double?
 
     public init(
         png: Data,
@@ -153,7 +176,9 @@ public struct WatchGreenImage: Codable, Sendable, Equatable {
         originN: Double,
         metersPerPixel: Double,
         widthPx: Int,
-        heightPx: Int
+        heightPx: Int,
+        arrows: [WatchFallArrow]? = nil,
+        arrowLengthM: Double? = nil
     ) {
         self.png = png
         self.originE = originE
@@ -161,6 +186,8 @@ public struct WatchGreenImage: Codable, Sendable, Equatable {
         self.metersPerPixel = metersPerPixel
         self.widthPx = widthPx
         self.heightPx = heightPx
+        self.arrows = arrows
+        self.arrowLengthM = arrowLengthM
     }
 }
 

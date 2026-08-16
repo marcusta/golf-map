@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 /// it just draws this bitmap and composites the player dot.
 enum WatchGreenImageRenderer {
 
-    /// Sampling resolution — 0.25 m/px keeps band edges crisp at watch zoom.
+    /// Output pixel size — 0.25 m/px keeps the polygon edge crisp at watch zoom.
     static let resolutionM = 0.25
     /// Small margin so the polygon edge never clips the outermost band.
     static let bufferM = 2.0
@@ -19,36 +19,75 @@ enum WatchGreenImageRenderer {
         rings: [[Sweref99TM.Point]],
         sampler: GridElevationSampler
     ) async -> WatchGreenImage? {
+        // Sample at the SAME resolution as the phone/web Green view (0.5 m).
+        // The Gaussian blur radius is in cells, so sampling finer both halves
+        // the smoothing window and doubles the derivative's sensitivity to the
+        // terrain-RGB 0.1 m quantization — rendered at 0.25 m that comes out
+        // as rainbow contour-ring noise instead of gradients.
         guard let grid = await GreenSampleGridBuilder.build(
-            rings: rings, bufferM: bufferM, resolutionM: resolutionM, sampler: sampler
+            rings: rings,
+            bufferM: bufferM,
+            resolutionM: AnalysisGridMath.defaultResolutionM,
+            sampler: sampler
         ) else { return nil }
         let slope = computeSlopeGrid(grid)
 
+        // Output raster: same extent, finer pixels. Each pixel bilinearly
+        // interpolates the slope field (sampleSlopeAt — the phone gets the
+        // equivalent smoothing for free from the GPU's texture filtering),
+        // so ramp colors grade smoothly instead of banding per sample cell.
+        guard let bbox = AnalysisGridMath.ringsBbox(rings) else { return nil }
+        let outSpec = AnalysisGridSpec(
+            originE: bbox.minX - bufferM,
+            originN: bbox.maxY + bufferM,
+            resolution: resolutionM,
+            width: max(1, Int(ceil((bbox.maxX - bbox.minX + 2 * bufferM) / resolutionM))),
+            height: max(1, Int(ceil((bbox.maxY - bbox.minY + 2 * bufferM) / resolutionM)))
+        )
+        let insideMask = AnalysisGridMath.buildInsideMask(spec: outSpec, rings: rings)
+
         // Inside the green: opaque slope-ramp color; outside: transparent —
         // the watch draws its own boundary from the synced polygon.
-        var rgba = [UInt8](repeating: 0, count: grid.heights.count * 4)
+        var rgba = [UInt8](repeating: 0, count: outSpec.width * outSpec.height * 4)
         var hasContent = false
-        for i in 0..<grid.heights.count {
-            guard grid.insideMask[i], !grid.heights[i].isNaN else { continue }
-            let rgb = slopeColor(slope.slopePct[i])
-            let o = i * 4
-            rgba[o] = UInt8(min(max(rgb.r, 0), 255))
-            rgba[o + 1] = UInt8(min(max(rgb.g, 0), 255))
-            rgba[o + 2] = UInt8(min(max(rgb.b, 0), 255))
-            rgba[o + 3] = 255
-            hasContent = true
+        for row in 0..<outSpec.height {
+            let n = outSpec.originN - (Double(row) + 0.5) * outSpec.resolution
+            for col in 0..<outSpec.width {
+                let i = row * outSpec.width + col
+                guard insideMask[i] else { continue }
+                let e = outSpec.originE + (Double(col) + 0.5) * outSpec.resolution
+                guard let probe = sampleSlopeAt(grid, slope: slope, e: e, n: n)
+                else { continue }
+                let rgb = slopeColor(probe.slopePct)
+                let o = i * 4
+                rgba[o] = UInt8(min(max(rgb.r, 0), 255))
+                rgba[o + 1] = UInt8(min(max(rgb.g, 0), 255))
+                rgba[o + 2] = UInt8(min(max(rgb.b, 0), 255))
+                rgba[o + 3] = 255
+                hasContent = true
+            }
         }
         guard hasContent else { return nil }
-        guard let png = pngData(rgba: rgba, width: grid.spec.width, height: grid.spec.height)
+        guard let png = pngData(rgba: rgba, width: outSpec.width, height: outSpec.height)
         else { return nil }
+
+        // Fall-line arrows: the phone's own sampler, kept to anchors inside
+        // the green (the image is clipped to the polygon). Sent as vectors —
+        // the watch draws them crisp at canvas scale.
+        let outer = rings.first ?? []
+        let arrows = sampleFallLines(grid, slope: slope)
+            .filter { AnalysisGridMath.pointInRing(x: $0.e, y: $0.n, ring: outer) }
+            .map { WatchFallArrow(e: $0.e, n: $0.n, dirE: $0.dirE, dirN: $0.dirN, slopePct: $0.slopePct) }
 
         return WatchGreenImage(
             png: png,
-            originE: grid.spec.originE,
-            originN: grid.spec.originN,
-            metersPerPixel: grid.spec.resolution,
-            widthPx: grid.spec.width,
-            heightPx: grid.spec.height
+            originE: outSpec.originE,
+            originN: outSpec.originN,
+            metersPerPixel: outSpec.resolution,
+            widthPx: outSpec.width,
+            heightPx: outSpec.height,
+            arrows: arrows,
+            arrowLengthM: AnalysisOverlayGeometry.arrowLengthM(grid.spec)
         )
     }
 
