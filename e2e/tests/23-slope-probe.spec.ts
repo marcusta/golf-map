@@ -45,6 +45,10 @@ async function clickAt(page: Page, lon: number, lat: number): Promise<void> {
 // putt-read spec uses; both are well inside the sampled grid).
 const P1 = { lon: 15.563897, lat: 58.402873 };
 const P2 = { lon: 15.563638, lat: 58.402804 };
+// Probe points BETWEEN the markers — a click on a placed marker is grabbed
+// for a drag (the synthesized click is swallowed), so probes must land clear.
+const P3 = { lon: 15.5638, lat: 58.40285 };
+const P4 = { lon: 15.56372, lat: 58.402825 };
 
 test('putt slope overlay: a map click renders the probe dot/arrow + slope% chip; height mode hides it', async ({ page }) => {
     await openPlanner(page, TEST_COURSE_ID, HOLE_1);
@@ -60,8 +64,18 @@ test('putt slope overlay: a map click renders the probe dot/arrow + slope% chip;
     }), { timeout: 15_000 }).toBe(true);
     expect(await probeLayers(page)).toEqual({ dot: false, arrow: false });
 
-    // Click on the green: the same tap places the putt ball AND probes.
+    // First two clicks are claimed by the one-shot placement (ball, then
+    // auto-advanced hole) — no probe while a target is armed.
     await clickAt(page, P1.lon, P1.lat);
+    await clickAt(page, P2.lon, P2.lat);
+    await expect(page.locator(tid('planner-putt-place-ball')))
+        .toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator(tid('planner-putt-place-hole')))
+        .toHaveAttribute('aria-pressed', 'false');
+    expect(await probeLayers(page)).toEqual({ dot: false, arrow: false });
+
+    // Placement disarmed — now a click (clear of the markers) probes.
+    await clickAt(page, P3.lon, P3.lat);
     await expect.poll(() => probeLayers(page), { timeout: 15_000 })
         .toEqual({ dot: true, arrow: true });
 
@@ -73,8 +87,8 @@ test('putt slope overlay: a map click renders the probe dot/arrow + slope% chip;
     expect(text).toMatch(/^\d+\.\d%$/);
     expect(parseFloat(text!)).toBeGreaterThan(0);
 
-    // A second click (advances to the hole point) re-probes at the new spot.
-    await clickAt(page, P2.lon, P2.lat);
+    // Another disarmed click re-probes at the new spot.
+    await clickAt(page, P4.lon, P4.lat);
     await expect(chip).toBeVisible();
     await expect.poll(() => probeLayers(page)).toEqual({ dot: true, arrow: true });
 

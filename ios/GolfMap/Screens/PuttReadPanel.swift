@@ -162,26 +162,43 @@ struct PuttReadSection: View {
         }
     }
 
-    /// Which marker the next map tap moves (both markers stay re-tappable).
+    /// Which marker the next map tap moves. One-shot toggles: arm, tap the
+    /// map once, disarmed again (tapping the active button also disarms).
+    /// While disarmed, map taps read slope instead of moving markers.
     private var placeTargetRow: some View {
         HStack(spacing: 8) {
             Text("Tap places")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Picker("Tap places", selection: Binding(
-                get: { model.placeTarget },
-                set: { model.setPlaceTarget($0) }
-            )) {
-                Text("Ball").tag(PuttReadModel.PlaceTarget.ball)
-                Text("Hole").tag(PuttReadModel.PlaceTarget.hole)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 130)
+            placeTargetButton("Ball", target: .ball)
+            placeTargetButton("Hole", target: .hole)
             Spacer()
             Text("drag markers to adjust")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
+    }
+
+    private func placeTargetButton(
+        _ label: String, target: PuttReadModel.PlaceTarget
+    ) -> some View {
+        let armed = model.placeTarget == target
+        return Button {
+            model.setPlaceTarget(armed ? PuttReadModel.PlaceTarget.none : target)
+        } label: {
+            Text(label)
+                .font(.caption)
+                .fontWeight(armed ? .semibold : .regular)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    armed ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.06),
+                    in: Capsule()
+                )
+                .foregroundStyle(armed ? Color.accentColor : Color.primary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(armed ? .isSelected : [])
     }
 
     // MARK: - Manual (Tier 3) form

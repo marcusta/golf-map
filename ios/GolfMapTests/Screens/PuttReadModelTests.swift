@@ -50,9 +50,11 @@ final class PuttReadModelTests: XCTestCase {
         )
     }
 
-    private func armedModel(grid: SampleGrid?) -> PuttReadModel {
+    private func armedModel(
+        grid: SampleGrid?, defaultHole: Vec2? = Vec2(x: 10, y: 12)
+    ) -> PuttReadModel {
         let model = PuttReadModel(defaults: defaults)
-        model.activate(grid: grid, defaultHole: Vec2(x: 10, y: 12))
+        model.activate(grid: grid, defaultHole: defaultHole)
         return model
     }
 
@@ -141,18 +143,39 @@ final class PuttReadModelTests: XCTestCase {
 
     // MARK: - Placement / drag
 
-    func testHandleTapPlacesBallThenHoleTargetAutoReverts() throws {
+    func testHandleTapIsOneShotAndDisarmedTapsFallThrough() throws {
         let model = armedModel(grid: tiltedGrid())
         XCTAssertEqual(model.hole, Vec2(x: 10, y: 12), "hole defaults to the pin")
         XCTAssertNil(model.ball)
 
-        model.handleTap(ball)
+        XCTAssertTrue(model.handleTap(ball))
         XCTAssertEqual(model.ball, ball, "tap places the ball")
+        XCTAssertEqual(
+            model.placeTarget, PuttReadModel.PlaceTarget.none,
+            "hole already down — ball placement disarms instead of advancing")
+
+        XCTAssertFalse(model.handleTap(Vec2(x: 9, y: 9)), "disarmed tap places nothing")
+        XCTAssertEqual(model.ball, ball)
+        XCTAssertEqual(model.hole, Vec2(x: 10, y: 12))
 
         model.setPlaceTarget(.hole)
-        model.handleTap(Vec2(x: 11, y: 13))
+        XCTAssertTrue(model.handleTap(Vec2(x: 11, y: 13)))
         XCTAssertEqual(model.hole, Vec2(x: 11, y: 13), "hole is re-tappable")
-        XCTAssertEqual(model.placeTarget, .ball, "hole placement auto-reverts")
+        XCTAssertEqual(
+            model.placeTarget, PuttReadModel.PlaceTarget.none,
+            "hole placement disarms")
+    }
+
+    func testHandleTapAdvancesBallToHoleWhileHoleUnplaced() throws {
+        let model = armedModel(grid: tiltedGrid(), defaultHole: nil)
+        XCTAssertNil(model.hole)
+
+        XCTAssertTrue(model.handleTap(ball))
+        XCTAssertEqual(model.placeTarget, .hole, "first pass hands off to the hole")
+
+        XCTAssertTrue(model.handleTap(Vec2(x: 11, y: 13)))
+        XCTAssertEqual(model.hole, Vec2(x: 11, y: 13))
+        XCTAssertEqual(model.placeTarget, PuttReadModel.PlaceTarget.none)
     }
 
     func testDragUpdatesLiveMarkerWithoutReadThenCommitSettles() throws {

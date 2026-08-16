@@ -131,30 +131,36 @@ test('activate fetches the green grid + course confidence; no markers placed yet
     expect(d.confidence?.source).toBe('scans');
 });
 
-test('placeNext places the ball then auto-advances to the hole (two taps)', async () => {
+test('placeNext is one-shot: ball → hole → disarmed (two taps)', async () => {
     routes(tiltedGrid(2));
     const svc = new PuttReadService();
     await svc.activate(ctx());
 
-    // Tap 1 → ball; selector auto-advances to the hole.
-    svc.placeNext(at(8, 14));
+    // Tap 1 → ball; selector auto-advances to the hole (still unplaced).
+    expect(svc.placeNext(at(8, 14))).toBe(true);
     expect(svc.ball.get()).toEqual(at(8, 14));
     expect(svc.hole.get()).toBeNull();
     expect(svc.placing.get()).toBe('hole');
     expect(svc.display.get().message).toContain('hole');
 
-    // Tap 2 → hole; a settled read appears.
-    svc.placeNext(at(8, 6));
+    // Tap 2 → hole; placement disarms; a settled read appears.
+    expect(svc.placeNext(at(8, 6))).toBe(true);
     expect(svc.hole.get()).toEqual(at(8, 6));
+    expect(svc.placing.get()).toBe('none');
     await settle();
     expect(svc.display.get().status).toBe('ok');
 
-    // Selector re-targets the ball; the next tap re-places it (no auto-advance
-    // once both are down).
+    // Disarmed taps place nothing (callers probe slope instead).
+    expect(svc.placeNext(at(9, 9))).toBe(false);
+    expect(svc.ball.get()).toEqual(at(8, 14));
+    expect(svc.hole.get()).toEqual(at(8, 6));
+
+    // Re-arming the ball is one-shot too — both markers down, so the
+    // placement disarms instead of auto-advancing.
     svc.setPlacing('ball');
-    svc.placeNext(at(7, 14));
+    expect(svc.placeNext(at(7, 14))).toBe(true);
     expect(svc.ball.get()).toEqual(at(7, 14));
-    expect(svc.placing.get()).toBe('ball');
+    expect(svc.placing.get()).toBe('none');
 
     // "At pin" convenience snaps the hole to the context default.
     svc.placeHoleAtPin();

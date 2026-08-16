@@ -151,11 +151,16 @@ test('green screen: tap the ball, snap the hole to the pin, and a read renders',
     await expect(page.locator(tid('m-green-pace'))).not.toHaveText('');
     await expect(page.locator(tid('m-green-confidence'))).toContainText('Green data');
 
-    // The ball tap also probed the slope under the finger (slope overlay is
-    // armed by default): the sheet row reads a positive slope% on the seeded
-    // tilted plane. The readout is slope-mode only — Height hides it, and
-    // switching back restores the remembered probe without a new tap.
+    // Placement is one-shot: the ball tap consumed the armed 'ball' target
+    // (advancing to hole), and "at pin" disarmed it — so a fresh tap now
+    // reads the slope instead of moving a marker. The sheet row reads a
+    // positive slope% on the seeded tilted plane. The readout is slope-mode
+    // only — Height hides it, and switching back restores the remembered
+    // probe without a new tap.
     const probeRow = page.locator(tid('m-green-probe'));
+    // (Probe away from the markers — a tap on one grabs it for a drag.)
+    await expect(probeRow).not.toHaveClass(/show/); // no probe from placement taps
+    await tapMapAt(page, BALL2_LON, BALL2_LAT);
     await expect(probeRow).toHaveClass(/show/);
     await expect(probeRow).toContainText(/Slope here: \d+\.\d%/);
     await page.locator(tid('m-green-mode-height')).click();

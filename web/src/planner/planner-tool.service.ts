@@ -3025,14 +3025,13 @@ export class PlannerToolService {
             return;
         }
         if (mode === 'putt') {
-            // Click places whichever point the "Tap places" selector has
-            // active — ball first, then auto-advances to the hole, so both
-            // the origin and the target are user-chosen. Clicks on an existing
-            // marker never get here (mousedown grabs them for a drag and the
-            // synthesized click is swallowed).
+            // An armed "Tap places" target claims the click (one-shot
+            // placement — ball first, auto-advancing to the hole); once
+            // disarmed, clicks read the slope under the cursor instead.
+            // Clicks on an existing marker never get here (mousedown grabs
+            // them for a drag and the synthesized click is swallowed).
             const p = lngLatToSweref99tm(e.lngLat);
-            this.puttRead.placeNext(p);
-            this.probePutt(p);
+            if (!this.puttRead.placeNext(p)) this.probePutt(p);
             return;
         }
 

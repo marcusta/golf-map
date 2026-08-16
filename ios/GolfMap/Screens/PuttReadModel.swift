@@ -295,12 +295,14 @@ final class PuttReadModel {
 
     // MARK: - Placement (settled edits — recompute)
 
-    /// Which marker the next map tap moves. Ball by default; the panel offers
-    /// a Hole target so both markers are re-tappable (doc §5.1). A hole
-    /// placement auto-reverts to Ball (moving the hole is a one-off fix).
+    /// Which marker the next map tap moves. One-shot: placing disarms back to
+    /// `.none` (auto-advancing ball → hole only while the hole is unplaced,
+    /// so the initial two-tap setup still flows). While disarmed, green taps
+    /// fall through to the slope probe instead of moving markers (doc §5.1).
     enum PlaceTarget: String, Equatable, Sendable {
         case ball
         case hole
+        case none
     }
 
     private(set) var placeTarget: PlaceTarget = .ball
@@ -309,14 +311,21 @@ final class PuttReadModel {
         placeTarget = target
     }
 
-    /// A settled tap on the green view: place whichever marker is targeted.
-    func handleTap(_ p: Vec2) {
+    /// A settled tap on the green view: place the armed marker (one-shot).
+    /// Returns false when nothing is armed — the caller may probe instead.
+    @discardableResult
+    func handleTap(_ p: Vec2) -> Bool {
         switch placeTarget {
         case .ball:
             placeBall(p)
+            placeTarget = hole == nil ? .hole : PlaceTarget.none
+            return true
         case .hole:
             placeHole(p)
-            placeTarget = .ball
+            placeTarget = PlaceTarget.none
+            return true
+        case .none:
+            return false
         }
     }
 

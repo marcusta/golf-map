@@ -239,13 +239,14 @@ export class PuttReadService {
     readonly hole = new Signal<Vec2 | null>(null);
 
     /**
-     * Which point the next tap on the green places. Starts at 'ball' and
-     * auto-advances to 'hole' after the ball is placed, so a fresh read is
-     * set origin-then-target with two taps. The panel exposes it as a
-     * "Tap places: Ball | Hole" selector so either point can be re-placed by
-     * tapping (dragging a marker still works too).
+     * Which point the next tap on the green places. One-shot: placing disarms
+     * back to 'none' (auto-advancing ball → hole only while the hole is
+     * unplaced, so a fresh read is still set origin-then-target with two
+     * taps). While 'none', taps fall through to the slope probe instead of
+     * moving markers. The panel's Ball/Hole buttons arm/disarm; dragging a
+     * marker still works regardless.
      */
-    readonly placing = new Signal<'ball' | 'hole'>('ball');
+    readonly placing = new Signal<'ball' | 'hole' | 'none'>('ball');
 
     /** Green speed input (panel field; follows the wind-input pattern). */
     readonly stimpFt = new Signal(DEFAULT_STIMP_FT);
@@ -426,24 +427,29 @@ export class PuttReadService {
     // ── Marker placement / drag (compute cadence — see class header) ──────
 
     /**
-     * A tap on the green — places whichever point `placing` selects, then
-     * auto-advances ball → hole on the first pass (so two taps set origin
-     * then target). A settled edit; recomputes the read.
+     * A tap on the green — places the armed point (one-shot), disarming
+     * afterwards (ball → hole only on the first pass, so two taps set origin
+     * then target). Returns false when nothing is armed — the caller may
+     * probe the slope instead. A settled edit; recomputes the read.
      */
-    placeNext(p: Vec2): void {
-        if (this.placing.peek() === 'ball') {
+    placeNext(p: Vec2): boolean {
+        const which = this.placing.peek();
+        if (which === 'none') return false;
+        if (which === 'ball') {
             this.ball.set(p);
             // Advance to the hole only on the first pass — once both are down,
-            // the selector stays where the user put it.
-            if (this.hole.peek() === null) this.placing.set('hole');
+            // placement disarms so taps read slope.
+            this.placing.set(this.hole.peek() === null ? 'hole' : 'none');
         } else {
             this.hole.set(p);
+            this.placing.set('none');
         }
         this.scheduleRead();
+        return true;
     }
 
-    /** Panel selector — choose which point the next tap places. */
-    setPlacing(which: 'ball' | 'hole'): void {
+    /** Panel selector — arm/disarm which point the next tap places. */
+    setPlacing(which: 'ball' | 'hole' | 'none'): void {
         this.placing.set(which);
     }
 
@@ -452,8 +458,8 @@ export class PuttReadService {
         const ctx = this.context.peek();
         if (ctx === null) return;
         this.hole.set(ctx.defaultHole);
-        if (this.placing.peek() === 'hole' && this.ball.peek() === null) {
-            this.placing.set('ball');
+        if (this.placing.peek() === 'hole') {
+            this.placing.set(this.ball.peek() === null ? 'ball' : 'none');
         }
         this.scheduleRead();
     }

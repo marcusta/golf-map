@@ -412,13 +412,17 @@ export class MobileGreenComponent extends Component {
                 className: () => this.probeText() ? 'm-green__probe show' : 'm-green__probe',
                 textContent: () => this.probeText() ?? '',
             },
+            // One-shot arm/disarm toggles — tapping the active one disarms,
+            // and a disarmed green tap reads slope instead of placing.
             placeBall: {
                 className: () => this.segClass(this.putt.placing.get() === 'ball'),
-                onclick: () => this.putt.setPlacing('ball'),
+                onclick: () => this.putt.setPlacing(
+                    this.putt.placing.peek() === 'ball' ? 'none' : 'ball'),
             },
             placeHole: {
                 className: () => this.segClass(this.putt.placing.get() === 'hole'),
-                onclick: () => this.putt.setPlacing('hole'),
+                onclick: () => this.putt.setPlacing(
+                    this.putt.placing.peek() === 'hole' ? 'none' : 'hole'),
             },
             atPin: { onclick: () => this.putt.placeHoleAtPin() },
             stimp: () => `${this.putt.stimpFt.get()} ft`,
@@ -592,8 +596,7 @@ export class MobileGreenComponent extends Component {
                 return;
             }
             const p = lngLatToSweref99tm(lngLat);
-            this.putt.placeNext(p);
-            this.updateProbe(p);
+            if (!this.putt.placeNext(p)) this.updateProbe(p);
         }));
 
         this.geo.start();

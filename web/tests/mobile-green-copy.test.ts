@@ -104,11 +104,11 @@ describe('green screen banner', () => {
 });
 
 describe('seeding the ball from the GPS fix', () => {
-    function fakePutt(init: { ball?: Vec2; hole?: Vec2; placing?: 'ball' | 'hole' } = {}) {
+    function fakePutt(init: { ball?: Vec2; hole?: Vec2; placing?: 'ball' | 'hole' | 'none' } = {}) {
         const state = {
             ball: init.ball ?? null,
             hole: init.hole ?? null,
-            placing: init.placing ?? ('ball' as 'ball' | 'hole'),
+            placing: init.placing ?? ('ball' as 'ball' | 'hole' | 'none'),
         };
         const port: BallSeedPort = {
             ball: { peek: () => state.ball },
@@ -140,6 +140,14 @@ describe('seeding the ball from the GPS fix', () => {
         expect(state.hole).toEqual(cup);
         expect(state.ball).toEqual(FIX);
         expect(state.placing).toBe('hole'); // selector left alone
+    });
+
+    test('seeding with the hole already down disarms placement', () => {
+        const cup = { x: 500_010, y: 6_480_020 };
+        const { state, port } = fakePutt({ hole: cup, placing: 'ball' });
+        expect(seedBallFromFix(port, FIX)).toBe(true);
+        expect(state.ball).toEqual(FIX);
+        expect(state.placing).toBe('none'); // one-shot consumed, taps now probe
     });
 
     test('never overwrites a ball the player already placed', () => {

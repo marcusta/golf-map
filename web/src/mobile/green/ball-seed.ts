@@ -10,9 +10,9 @@ import type { Vec2 } from '../../../../shared/strategy';
 export interface BallSeedPort {
     ball: { peek(): Vec2 | null };
     hole: { peek(): Vec2 | null };
-    placing: { peek(): 'ball' | 'hole' };
+    placing: { peek(): 'ball' | 'hole' | 'none' };
     placeBall(p: Vec2): void;
-    setPlacing(which: 'ball' | 'hole'): void;
+    setPlacing(which: 'ball' | 'hole' | 'none'): void;
 }
 
 /**
@@ -21,17 +21,18 @@ export interface BallSeedPort {
  * player who tapped "Hole", dropped the cup and had not yet placed a ball would
  * get the hole yanked to their feet by the first in-green fix.
  *
- * Mirrors `placeNext`'s first-pass hand-off (ball → hole) so the next tap still
- * sets the cup, but only when the hole is genuinely unplaced. No-ops once a
- * ball exists — the fix must never overwrite a placed marker.
+ * Mirrors `placeNext`'s one-shot hand-off: seeding the ball consumes an armed
+ * 'ball' target, advancing to 'hole' only while the cup is genuinely unplaced
+ * and disarming otherwise. No-ops once a ball exists — the fix must never
+ * overwrite a placed marker.
  *
  * Returns true when it seeded (callers latch on that: one seed per mount).
  */
 export function seedBallFromFix(putt: BallSeedPort, p: Vec2): boolean {
     if (putt.ball.peek() !== null) return false;
     putt.placeBall(p);
-    if (putt.hole.peek() === null && putt.placing.peek() === 'ball') {
-        putt.setPlacing('hole');
+    if (putt.placing.peek() === 'ball') {
+        putt.setPlacing(putt.hole.peek() === null ? 'hole' : 'none');
     }
     return true;
 }

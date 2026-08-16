@@ -1405,14 +1405,16 @@ export class PlannerPanelComponent extends Component {
             syncInput(stimp, this.putt.stimpFt.get(), 1);
         }));
 
-        // "Tap places" selector — lets the user choose BOTH points by tapping
-        // (ball, then hole), and re-place either afterwards. Active button is
-        // reflected via aria-pressed so the styling can highlight it.
+        // "Tap places" selector — one-shot arm/disarm toggles: arm Ball or
+        // Hole, the next map click places it and disarms; a disarmed click
+        // reads slope instead. Active button reflected via aria-pressed.
         const placeBallBtn = this.ref(frag, 'placeBallBtn') as HTMLButtonElement;
         const placeHoleBtn = this.ref(frag, 'placeHoleBtn') as HTMLButtonElement;
         const holeAtPinBtn = this.ref(frag, 'holeAtPinBtn') as HTMLButtonElement;
-        placeBallBtn.addEventListener('click', () => this.putt.setPlacing('ball'));
-        placeHoleBtn.addEventListener('click', () => this.putt.setPlacing('hole'));
+        placeBallBtn.addEventListener('click', () => this.putt.setPlacing(
+            this.putt.placing.peek() === 'ball' ? 'none' : 'ball'));
+        placeHoleBtn.addEventListener('click', () => this.putt.setPlacing(
+            this.putt.placing.peek() === 'hole' ? 'none' : 'hole'));
         holeAtPinBtn.addEventListener('click', () => this.putt.placeHoleAtPin());
         this.track(effect(() => {
             const which = this.putt.placing.get();
