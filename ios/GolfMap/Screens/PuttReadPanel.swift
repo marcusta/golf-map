@@ -3,16 +3,18 @@ import SwiftUI
 /// The putt-read section of the Green view panel (doc §5.1): Surface (Tier 2,
 /// terrain-tile DEM) / Manual (Tier 3, Tour Read arithmetic) segmented modes,
 /// the readout (plays-like, aim offset, and the Tour Read verbal ALWAYS
-/// alongside), the tap-target picker (Ball / Hole), the Manual estimate form,
-/// and the small "Level" affordance that presents the D2 spot-level capture
-/// sheet. Stimp lives in the Green view panel's (i) popover — it is set once
-/// per round, and the panel over the green has to stay short. All logic lives
-/// in `PuttReadModel` (headless); this view only renders `model.display`.
+/// alongside), the Manual estimate form, and the small "Level" affordance that
+/// presents the D2 spot-level capture sheet. The Ball/Hole tap-target picker
+/// lives on the map control rail (CourseScreen) — it arms what the next MAP
+/// tap does, so it sits with the map, not the panel. Stimp lives in the Green
+/// view panel's (i) popover — it is set once per round, and the panel over the
+/// green has to stay short. All logic lives in `PuttReadModel` (headless);
+/// this view only renders `model.display`.
 ///
 /// Competition mode: the section collapses to a one-line "reads off" note —
 /// the green view itself (slope/height overlay) stays, and Level stays
 /// available (measurement, not advice; see AppSettings).
-struct PuttReadSection: View {
+struct PuttReadSection<Trailing: View>: View {
     let model: PuttReadModel
     /// Training-quiz state (doc §5.1) — estimate the read before it's
     /// revealed, then see it scored. Headless; this view only renders it.
@@ -32,6 +34,11 @@ struct PuttReadSection: View {
     /// is disabled until both putt markers are placed: the scan surface
     /// anchors to them.
     var onScan: (() -> Void)?
+    /// Extra controls appended to the header row's right end — the hosting
+    /// panel's own chrome (the green view's (i) + close). The section header
+    /// is the panel's ONLY header row, so the panel has nowhere else to put
+    /// them.
+    @ViewBuilder let trailing: () -> Trailing
 
     var body: some View {
         let display = model.display
@@ -119,6 +126,7 @@ struct PuttReadSection: View {
             .buttonStyle(.bordered)
             .controlSize(.mini)
             .accessibilityLabel("Level the green")
+            trailing()
         }
     }
 
@@ -158,47 +166,7 @@ struct PuttReadSection: View {
                     .foregroundStyle(display.status == .unavailable ? .red : .secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            placeTargetRow
         }
-    }
-
-    /// Which marker the next map tap moves. One-shot toggles: arm, tap the
-    /// map once, disarmed again (tapping the active button also disarms).
-    /// While disarmed, map taps read slope instead of moving markers.
-    private var placeTargetRow: some View {
-        HStack(spacing: 8) {
-            Text("Tap places")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            placeTargetButton("Ball", target: .ball)
-            placeTargetButton("Hole", target: .hole)
-            Spacer()
-            Text("drag markers to adjust")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-    }
-
-    private func placeTargetButton(
-        _ label: String, target: PuttReadModel.PlaceTarget
-    ) -> some View {
-        let armed = model.placeTarget == target
-        return Button {
-            model.setPlaceTarget(armed ? PuttReadModel.PlaceTarget.none : target)
-        } label: {
-            Text(label)
-                .font(.caption)
-                .fontWeight(armed ? .semibold : .regular)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    armed ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.06),
-                    in: Capsule()
-                )
-                .foregroundStyle(armed ? Color.accentColor : Color.primary)
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(armed ? .isSelected : [])
     }
 
     // MARK: - Manual (Tier 3) form

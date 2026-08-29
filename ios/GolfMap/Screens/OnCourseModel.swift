@@ -344,6 +344,27 @@ final class OnCourseModel {
     /// furniture active pin in `targets`; loaded from `defaults` (today only).
     private(set) var pinOverrides: [String: PinOverride] = [:]
 
+    /// Called whenever the today's-pin set changes (place / clear / daily
+    /// expiry on load) with the pins keyed by HOLE NUMBER — the key the watch
+    /// bundle uses. Injected by the screen to push them to the watch; nil in
+    /// tests and previews.
+    /// Injection publishes the current set immediately — the pins were loaded
+    /// (and day-expired) in `init`, before the screen could wire this up.
+    @ObservationIgnored var onPinsChanged: (@MainActor (String, [Int: LatLon]) -> Void)? {
+        didSet { publishPins() }
+    }
+
+    /// Today's pins keyed by hole number (holes without an override are absent).
+    var pinsByHoleNumber: [Int: LatLon] {
+        var out: [Int: LatLon] = [:]
+        for hole in holes {
+            if let override = pinOverrides[hole.id] { out[hole.hole.number] = override.position }
+        }
+        return out
+    }
+
+    private func publishPins() { onPinsChanged?(courseId, pinsByHoleNumber) }
+
     /// Terrain elevation sampler (bundle terrain tiles); injected by the
     /// screen, stubbed in tests. Used for the user position and as a fallback
     /// for greens without a stored elevation. Injection happens AFTER `init`
@@ -2011,6 +2032,7 @@ final class OnCourseModel {
             }
             pinOverrides[hole.id] = decoded.override
         }
+        publishPins()
     }
 
     /// Short source tag shown on the distance card's pin label when an override
@@ -2032,6 +2054,7 @@ final class OnCourseModel {
             Self.encodePinOverride(override, day: Self.dayString(now())),
             forKey: Self.pinOverrideKey(courseId: courseId, holeId: holeId)
         )
+        publishPins()
     }
 
     /// Clear today's pin for `holeId`; `targets` falls back to the furniture pin.
@@ -2039,6 +2062,7 @@ final class OnCourseModel {
         guard pinOverrides[holeId] != nil else { return }
         pinOverrides[holeId] = nil
         defaults.removeObject(forKey: Self.pinOverrideKey(courseId: courseId, holeId: holeId))
+        publishPins()
     }
 
     // MARK: - GPS origin calibration (spec §6 / L4)
@@ -2203,6 +2227,19 @@ final class OnCourseModel {
     func commitPin(at position: LatLon, source: PinSpec.Source) {
         guard let hole = currentHole else { return }
         setPinOverride(position, source: source, forHole: hole.id)
+    }
+
+    /// The Green view's hole marker IS today's pin: every settled placement of
+    /// the putt-read hole (tap or drag release) commits it as the current
+    /// hole's override, so zooming back out to the hole view keeps measuring
+    /// to the cup the player just marked (front/center/back stay stored).
+    /// `p` is the putt model's planar point (EPSG:3006).
+    func setPinFromGreenRead(_ p: Vec2) {
+        guard let hole = currentHole else { return }
+        let position = Sweref99TM.toWGS84(x: p.x, y: p.y)
+        // A re-place at the same spot would only restamp the day.
+        if let existing = pinOverrides[hole.id], existing.position == position { return }
+        setPinOverride(position, source: .visual, forHole: hole.id)
     }
 
     // MARK: - Adjust mode (draggable handles)

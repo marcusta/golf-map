@@ -1,14 +1,16 @@
 import SwiftUI
 
-/// Bottom control panel for the on-course Green view: Slope/Height/Relative
-/// segmented toggle, the active ramp's legend, and the putt-read section
-/// (`PuttReadSection`, doc feature-putting-green-reading §5.1). Compact port of
-/// the web editor's analysis side panel (analysis-panel.component.ts) styled
-/// like the on-course distance card (dark material over the map).
+/// Bottom control panel for the on-course Green view — now just the putt-read
+/// section (`PuttReadSection`, doc feature-putting-green-reading §5.1) with the
+/// green view's (i) and close controls folded into its header row. Styled like
+/// the on-course distance card (dark material over the map).
 ///
-/// The panel covers the map, so it stays as short as it can: the reference
-/// numbers (green + surrounds stats) and the two rarely-touched settings
-/// (surrounds buffer, stimp) live behind the (i) button instead of on the card.
+/// The panel covers the map, so it is as short as it can be: the mode selector
+/// (Slope/Height/Relative), the Ball/Hole placement chips, and the caddy-advice
+/// bulb live on the map control rail (CourseScreen); the legend is a strip
+/// pinned to the map's left edge (`GreenLegendStrip`); the reference numbers
+/// and the rarely-touched settings (surrounds buffer, stimp, quiz) stay behind
+/// the (i) button.
 struct GreenViewPanel: View {
     let model: GreenAnalysisModel
     let putt: PuttReadModel
@@ -20,9 +22,6 @@ struct GreenViewPanel: View {
     /// The active hole's green id, or nil (Tier-3 manual, no surface) — the
     /// quiz attaches it to the recorded sample.
     let greenId: String?
-    /// Smart-caddy advice for this green (top recommendation). Nil in
-    /// competition mode (advice is withheld) or when nothing fires.
-    let caddy: CaddyAdviceModel
     /// Present the spot-level capture sheet (owned by the screen).
     let onLevel: () -> Void
     /// Present the LiDAR corridor-scan flow (task E1); nil = unsupported
@@ -43,12 +42,6 @@ struct GreenViewPanel: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            header
-            if let advice = caddy.advice {
-                caddyAdvice(advice)
-            }
-            modePicker
-            legend
             if model.isLoading {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -63,8 +56,6 @@ struct GreenViewPanel: View {
                     .foregroundStyle(Color.statusNegative)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Divider()
-                .overlay(.white.opacity(0.15))
             PuttReadSection(
                 model: putt,
                 quiz: quiz,
@@ -72,7 +63,8 @@ struct GreenViewPanel: View {
                 greenId: greenId,
                 surfaceLoading: model.isLoading,
                 onLevel: onLevel,
-                onScan: onScan
+                onScan: onScan,
+                trailing: { headerControls }
             )
         }
         .padding(.horizontal, Space.s4)
@@ -81,16 +73,10 @@ struct GreenViewPanel: View {
         .glassPanel()
     }
 
-    private var header: some View {
+    /// The green view's (i) + close, appended to the putt header row — the
+    /// panel has no title row of its own.
+    private var headerControls: some View {
         HStack(spacing: 8) {
-            Label("Green view", systemImage: "flag.circle.fill")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.green)
-            Spacer(minLength: 4)
-            Text(modeHint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
             Button { showInfo = true } label: {
                 Image(systemName: "info.circle")
                     .font(.system(size: 18))
@@ -186,124 +172,6 @@ struct GreenViewPanel: View {
         }
     }
 
-    // MARK: - Caddy advice
-
-    /// The top smart-caddy recommendation for this green (e.g. "Favour the
-    /// short half…"). Advice, so it never shows in competition mode (the model
-    /// clears it there).
-    private func caddyAdvice(_ advice: CaddyAdvice) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "figure.golf")
-                .font(.footnote)
-                .foregroundStyle(.green)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(advice.headline)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.primary)
-                if let detail = advice.detail {
-                    Text(detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(.green.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var modeHint: String {
-        switch model.mode {
-        case .slope: return "Slope % + fall lines"
-        case .height: return "Elevation on this green"
-        case .relative: return "Hollows read blue/purple"
-        }
-    }
-
-    private var modePicker: some View {
-        Picker("Overlay", selection: Binding(
-            get: { model.mode },
-            set: { model.setMode($0) }
-        )) {
-            Text("Slope").tag(AnalysisMode.slope)
-            Text("Height").tag(AnalysisMode.height)
-            Text("Relative").tag(AnalysisMode.relative)
-        }
-        .pickerStyle(.segmented)
-    }
-
-    // MARK: - Legend
-
-    /// The active ramp as a gradient bar + endpoint labels (same stops as the
-    /// overlay colors — both come from AnalysisMath).
-    private var legend: some View {
-        VStack(spacing: 2) {
-            LinearGradient(
-                stops: legendStops,
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(height: 8)
-            .clipShape(RoundedRectangle(cornerRadius: 3))
-            .overlay(
-                RoundedRectangle(cornerRadius: 3)
-                    .strokeBorder(.black.opacity(0.3), lineWidth: 0.5)
-            )
-            HStack {
-                ForEach(Array(legendLabels.enumerated()), id: \.offset) { index, label in
-                    if index > 0 { Spacer() }
-                    Text(label)
-                        .font(AppFont.mono(10, .regular))
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private var legendStops: [Gradient.Stop] {
-        func color(_ c: AnalysisRGB) -> Color {
-            Color(red: Double(c.r) / 255, green: Double(c.g) / 255, blue: Double(c.b) / 255)
-        }
-        switch model.mode {
-        case .slope:
-            // Stops proportional to the 0–7%+ scale (thresholds at 1/3/5/7).
-            return [
-                .init(color: color(SLOPE_BLUE), location: 0),
-                .init(color: color(SLOPE_BLUE), location: 1 / 7),
-                .init(color: color(SLOPE_GREEN), location: 3 / 7),
-                .init(color: color(SLOPE_ORANGE), location: 5 / 7),
-                .init(color: color(SLOPE_MAGENTA), location: 1),
-            ]
-        case .height:
-            return HEIGHT_STOPS.enumerated().map { index, stop in
-                .init(color: color(stop), location: Double(index) / Double(HEIGHT_STOPS.count - 1))
-            }
-        case .relative:
-            // Deepest hollow (purple) → green level (neutral) → highest mound (red).
-            let stops = REL_BELOW_STOPS.reversed() + REL_ABOVE_STOPS.dropFirst()
-            let count = stops.count
-            return stops.enumerated().map { index, stop in
-                .init(color: color(stop), location: Double(index) / Double(count - 1))
-            }
-        }
-    }
-
-    private var legendLabels: [String] {
-        switch model.mode {
-        case .slope:
-            return ["0%", "1%", "3%", "5%", "7%+"]
-        case .height:
-            return ["Low", "High"]
-        case .relative:
-            let scale = model.result?.stats.relScaleM
-            let label = scale.map { String(format: "%.1f m", $0) } ?? ""
-            return ["−\(label)", "green level", "+\(label)"]
-        }
-    }
-
     // MARK: - Stats
 
     private func statsGrid(_ stats: AnalysisStats) -> some View {
@@ -361,6 +229,89 @@ struct GreenViewPanel: View {
             )
             MetricText("\(Int(model.bufferM))", unit: "m", size: 12)
                 .frame(width: 44, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: - Legend strip (pinned to the map, not the panel)
+
+/// The active ramp as a thin vertical gradient strip with endpoint labels,
+/// pinned to the map's left edge while the Green view is up. Lives with the
+/// overlay it explains, so the bottom panel stays short. Same stops as the
+/// overlay colors — both come from AnalysisMath.
+struct GreenLegendStrip: View {
+    let model: GreenAnalysisModel
+
+    var body: some View {
+        VStack(spacing: 4) {
+            legendLabel(topLabel)
+            LinearGradient(stops: stops, startPoint: .bottom, endPoint: .top)
+                .frame(width: 10)
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(.black.opacity(0.3), lineWidth: 0.5))
+            legendLabel(bottomLabel)
+        }
+        .frame(width: 44)
+        .allowsHitTesting(false)
+    }
+
+    private func legendLabel(_ text: String) -> some View {
+        Text(text)
+            .font(AppFont.mono(9, .semibold))
+            .foregroundStyle(Overlay.text)
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Overlay.readoutFill, in: Capsule())
+    }
+
+    private var topLabel: String {
+        switch model.mode {
+        case .slope: return "7%+"
+        case .height: return "High"
+        case .relative:
+            let scale = model.result?.stats.relScaleM
+            return scale.map { String(format: "+%.1f m", $0) } ?? "+"
+        case .curvature: return "Ridge"
+        }
+    }
+
+    private var bottomLabel: String {
+        switch model.mode {
+        case .slope: return "0%"
+        case .height: return "Low"
+        case .relative:
+            let scale = model.result?.stats.relScaleM
+            return scale.map { String(format: "−%.1f m", $0) } ?? "−"
+        case .curvature: return "Hollow"
+        }
+    }
+
+    private var stops: [Gradient.Stop] {
+        func color(_ c: AnalysisRGB) -> Color {
+            Color(red: Double(c.r) / 255, green: Double(c.g) / 255, blue: Double(c.b) / 255)
+        }
+        switch model.mode {
+        case .slope:
+            // Stops proportional to the 0–7%+ scale (thresholds at 1/3/5/7).
+            return [
+                .init(color: color(SLOPE_BLUE), location: 0),
+                .init(color: color(SLOPE_BLUE), location: 1 / 7),
+                .init(color: color(SLOPE_GREEN), location: 3 / 7),
+                .init(color: color(SLOPE_ORANGE), location: 5 / 7),
+                .init(color: color(SLOPE_MAGENTA), location: 1),
+            ]
+        case .height:
+            return HEIGHT_STOPS.enumerated().map { index, stop in
+                .init(color: color(stop), location: Double(index) / Double(HEIGHT_STOPS.count - 1))
+            }
+        case .relative, .curvature:
+            // Deepest hollow (purple) → neutral → highest mound / ridge (red).
+            let stops = REL_BELOW_STOPS.reversed() + REL_ABOVE_STOPS.dropFirst()
+            let count = stops.count
+            return stops.enumerated().map { index, stop in
+                .init(color: color(stop), location: Double(index) / Double(count - 1))
+            }
         }
     }
 }

@@ -173,6 +173,13 @@ struct CourseScreen: View {
                 featuresGeoJSON: featuresGeoJSON,
                 elevationSampler: { await terrain.elevation(at: $0) }
             )
+            // Today's pins ride a separate, tiny channel (application context,
+            // latest-value): they change mid-round, long after the course
+            // bundle was transferred. Assignment publishes the current set.
+            let watchSync = env.watchSync
+            newModel.onPinsChanged = { courseId, pins in
+                watchSync.sendPins(courseId: courseId, pins: pins)
+            }
 
             // Planner tool write path (task T3): edits persist as GRDB dirty
             // rows and push through PlanSyncService, offline-first.
@@ -619,6 +626,12 @@ private struct OnCourseContentView: View {
     @State private var laserSession = CalibrationSession()
     /// GPS calibration sheet (the calibrate button / status chip open it).
     @State private var showCalibration = false
+    /// Caddy-advice overlay card (green view): opened by the bulb rail button,
+    /// floats over the map above the putt panel.
+    @State private var showAdvice = false
+    /// The player has opened (or dismissed) this green's advice — clears the
+    /// bulb's unread dot. Reset on green-view entry and hole change.
+    @State private var adviceSeen = false
 
     // MARK: Chrome geometry (green-view camera fit)
 
@@ -804,6 +817,14 @@ private struct OnCourseContentView: View {
                         .padding(.top, 4)
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
+                // The active ramp's legend, pinned to the map edge next to the
+                // overlay it explains — keeps the bottom panel a row shorter.
+                if isGreenView {
+                    GreenLegendStrip(model: greenAnalysis)
+                        .padding(.leading, 10)
+                        .padding(.vertical, 16)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                }
                 Spacer(minLength: 0)
                 controlStack
                     .padding(.trailing, 16)
@@ -825,6 +846,16 @@ private struct OnCourseContentView: View {
                 && !model.reticleAwaitingEntrySettle {
                 reticleActions
                     .padding(.bottom, 8)
+            }
+
+            // Caddy advice, floating over the map above the putt panel so the
+            // readout stays visible while it is read. Opened by the bulb rail
+            // button; competition mode never gets here (advice is cleared).
+            if isGreenView, showAdvice, let advice = caddy.advice {
+                adviceCard(advice)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             bottomPanel
@@ -899,7 +930,6 @@ private struct OnCourseContentView: View {
                 quiz: puttQuiz,
                 client: client,
                 greenId: model.currentHole?.green?.id,
-                caddy: caddy,
                 onLevel: { showLevel = true },
                 // Scan is only OFFERED where the hardware can deliver it
                 // (sceneDepth/LiDAR) — nil hides the affordance.
@@ -1012,7 +1042,15 @@ private struct OnCourseContentView: View {
                         // Green view: an armed Ball/Hole target claims the tap
                         // (one-shot placement); otherwise the tap reads the
                         // slope under the finger (slope overlay up).
-                        if !puttRead.handleTap(puttPoint(position)) {
+                        let armed = puttRead.placeTarget
+                        if puttRead.handleTap(puttPoint(position)) {
+                            // The hole marker IS today's pin — a settled
+                            // placement carries back to the hole view (and the
+                            // watch) as the override.
+                            if armed == .hole, let hole = puttRead.hole {
+                                model.setPinFromGreenRead(hole)
+                            }
+                        } else {
                             greenAnalysis.probeTapped(puttPoint(position))
                         }
                     }
@@ -1060,6 +1098,10 @@ private struct OnCourseContentView: View {
                         model.endPlanShotDrag(handleID: id)
                     } else if id.hasPrefix("putt-") {
                         puttRead.commitDrag()
+                        if id == PuttReadGeometry.PuttOverlay.holeHandleID,
+                           let hole = puttRead.hole {
+                            model.setPinFromGreenRead(hole)
+                        }
                     } else if !id.hasPrefix("capture-") {
                         // Capture positions commit on Confirm, not on drop.
                         model.endHandleDrag()
@@ -1123,6 +1165,8 @@ private struct OnCourseContentView: View {
                 puttRead.deactivate()
             }
             caddy.clear()
+            showAdvice = false
+            adviceSeen = false
             measure.clear()
             capture.end()
             laserSession.reset()
@@ -1936,7 +1980,20 @@ private struct OnCourseContentView: View {
     // double-tap); level lives in the green panel, the elevation profile in
     // the measure panel + distance card, the plan toggle on the distance card.
     private var controlStack: some View {
-        VStack(spacing: 10) {
+        VStack(alignment: .trailing, spacing: 10) {
+            // Green view: everything that acts on the MAP rides the rail —
+            // which overlay you see (mode), what the next tap places
+            // (Ball/Hole), plus the caddy-advice bulb. The panel below keeps
+            // only what the data says (the putt readout).
+            if isGreenView {
+                if caddy.advice != nil {
+                    adviceRailButton
+                }
+                greenModeSelector
+                if isPuttSurfaceActive {
+                    puttPlaceSelector
+                }
+            }
             if model.toolMode == .none {
                 // Wind indicator + the way into the wind editor. Shows a calm
                 // state when no wind is set rather than hiding — it is the only
@@ -2128,6 +2185,142 @@ private struct OnCourseContentView: View {
         .accessibilityLabel(isGreenView ? "Exit green view" : "Green view")
     }
 
+    // MARK: - Green view rail controls
+
+    /// The caddy-advice bulb: toggles the advice card floating over the map.
+    /// A green dot marks unread advice; only rendered when advice exists
+    /// (competition mode clears it, so the bulb disappears there).
+    private var adviceRailButton: some View {
+        Button {
+            adviceSeen = true
+            withAnimation(.easeInOut(duration: 0.2)) { showAdvice.toggle() }
+        } label: {
+            Image(systemName: showAdvice ? "lightbulb.fill" : "lightbulb")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(showAdvice ? Color.green : Color.primary)
+                .frame(width: 44, height: 44)
+                .mapControl()
+                .overlay(alignment: .topTrailing) {
+                    if !adviceSeen {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                            .offset(x: -3, y: 3)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(showAdvice ? "Hide caddy advice" : "Show caddy advice")
+        .accessibilityIdentifier("green-advice-bulb")
+    }
+
+    /// Vertical Slope / Height / Relative selector — replaces the panel's
+    /// segmented picker.
+    private var greenModeSelector: some View {
+        VStack(spacing: 0) {
+            greenModeSegment("Slope", .slope)
+            greenModeSegment("Ht", .height)
+            greenModeSegment("Rel", .relative)
+            greenModeSegment("Curv", .curvature)
+        }
+        .background(Overlay.controlFill, in: RoundedRectangle(cornerRadius: 12))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func greenModeSegment(_ label: String, _ mode: AnalysisMode) -> some View {
+        let selected = greenAnalysis.mode == mode
+        return Button {
+            greenAnalysis.setMode(mode)
+        } label: {
+            Text(label)
+                .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Color.black : Color.primary)
+                .frame(width: 44, height: 34)
+                .background(
+                    selected ? AnyShapeStyle(Color.green) : AnyShapeStyle(.clear),
+                    in: RoundedRectangle(cornerRadius: 12)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityLabel("\(label) overlay")
+    }
+
+    /// Which marker the next map tap moves — one-shot toggles: arm, tap the
+    /// map once, disarmed again (tapping the armed chip also disarms). While
+    /// disarmed, map taps read slope instead of moving markers. A hint pill
+    /// slides out beside the armed chip so the one-shot isn't a mystery.
+    private var puttPlaceSelector: some View {
+        HStack(spacing: 8) {
+            if puttRead.placeTarget != .none {
+                Text("tap map to place \(puttRead.placeTarget == .ball ? "ball" : "hole")")
+                    .font(.caption2)
+                    .mapLabelScrim()
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+            VStack(spacing: 0) {
+                puttPlaceSegment("Ball", .ball)
+                puttPlaceSegment("Hole", .hole)
+            }
+            .background(Overlay.controlFill, in: RoundedRectangle(cornerRadius: 12))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .animation(.easeInOut(duration: 0.2), value: puttRead.placeTarget)
+    }
+
+    private func puttPlaceSegment(_ label: String, _ target: PuttReadModel.PlaceTarget) -> some View {
+        let armed = puttRead.placeTarget == target
+        return Button {
+            puttRead.setPlaceTarget(armed ? PuttReadModel.PlaceTarget.none : target)
+        } label: {
+            Text(label)
+                .font(.system(size: 11, weight: armed ? .semibold : .regular))
+                .foregroundStyle(armed ? Color.black : Color.primary)
+                .frame(width: 44, height: 34)
+                .background(
+                    armed ? AnyShapeStyle(Color.cyan) : AnyShapeStyle(.clear),
+                    in: RoundedRectangle(cornerRadius: 12)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(armed ? .isSelected : [])
+        .accessibilityLabel("Tap places \(label.lowercased())")
+    }
+
+    /// The advice card the bulb opens: headline + the one-sentence "why",
+    /// dismissed by its ✕ or by toggling the bulb.
+    private func adviceCard(_ advice: CaddyAdvice) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "lightbulb.fill")
+                .font(.footnote)
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(advice.headline)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.primary)
+                if let detail = advice.detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { showAdvice = false }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss advice")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .glassPanel(cornerRadius: 12)
+    }
+
     // MARK: - Green view enter/exit
 
     /// R6 green handoff: open the green view from the green card with the ball
@@ -2174,6 +2367,10 @@ private struct OnCourseContentView: View {
         let focus: MapCameraCommand.Target = outline.count >= 3
             ? .shape(outline)
             : .bounds(bounds.expanded(byMeters: Self.greenFitMarginM))
+        // Fresh advice state per entry: the card starts closed and the bulb's
+        // unread dot re-arms for whatever this green's advice turns out to be.
+        showAdvice = false
+        adviceSeen = false
         withAnimation(.easeInOut(duration: 0.28)) {
             immersive = false
             model.enterTool(.greenView, focus: focus, insets: greenViewCameraInsets)
@@ -2187,6 +2384,7 @@ private struct OnCourseContentView: View {
         greenAnalysis.deactivate()
         puttRead.deactivate()
         caddy.clear()
+        showAdvice = false
         withAnimation(.easeInOut(duration: 0.28)) {
             model.exitTool()
         }

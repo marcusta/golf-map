@@ -14,6 +14,7 @@ public enum AnalysisMode: String, CaseIterable, Sendable {
     case slope
     case height
     case relative
+    case curvature
 }
 
 /// An 8-bit RGB color (ramp output).
@@ -158,6 +159,126 @@ public let REL_SCALE_MIN_M = 0.3
 /// green level; beyond the cap the ramp saturates.
 public let REL_SCALE_MAX_M = 2.0
 
+// MARK: - Curvature (ridge / hollow view)
+
+/// Gaussian smoothing sigma for the curvature surface, meters. Second
+/// derivatives amplify lidar noise hard — smoothing at landform scale keeps
+/// the broad ridges ("åsryggar") a putt cares about and drops the texture.
+public let CURV_SMOOTH_SIGMA_M = 2.0
+/// Auto-contrast bounds for the curvature ramp, %/m. The ramp pins to the
+/// 95th percentile of |convexity| inside the green, clamped to this range —
+/// a broad, gentle ridge fills the ramp instead of washing out against a
+/// fixed scale sized for sharp features.
+public let CURV_SCALE_MIN_PCT_PER_M = 0.8
+public let CURV_SCALE_MAX_PCT_PER_M = 8.0
+
+/// Separable NaN-aware Gaussian blur of the height grid (normalized
+/// convolution: weights renormalize over valid neighbors; NaN cells stay NaN).
+public func smoothHeights(_ grid: SampleGrid, sigmaM: Double) -> [Double] {
+    let width = grid.spec.width
+    let height = grid.spec.height
+    let sigmaCells = sigmaM / grid.spec.resolution
+    guard sigmaCells > 0.05 else { return grid.heights }
+
+    let radius = max(1, Int((3 * sigmaCells).rounded(.up)))
+    var kernel = [Double](repeating: 0, count: 2 * radius + 1)
+    for k in -radius...radius {
+        kernel[k + radius] = exp(-Double(k * k) / (2 * sigmaCells * sigmaCells))
+    }
+
+    func pass(_ src: [Double], stepRow: Int, stepCol: Int) -> [Double] {
+        var out = [Double](repeating: .nan, count: src.count)
+        for row in 0..<height {
+            for col in 0..<width {
+                let i = row * width + col
+                if src[i].isNaN { continue }
+                var sum = 0.0, weight = 0.0
+                for k in -radius...radius {
+                    let r = row + k * stepRow
+                    let c = col + k * stepCol
+                    guard r >= 0, r < height, c >= 0, c < width else { continue }
+                    let v = src[r * width + c]
+                    if v.isNaN { continue }
+                    let w = kernel[k + radius]
+                    sum += v * w
+                    weight += w
+                }
+                out[i] = sum / weight
+            }
+        }
+        return out
+    }
+
+    let horizontal = pass(grid.heights, stepRow: 0, stepCol: 1)
+    return pass(horizontal, stepRow: 1, stepCol: 0)
+}
+
+/// Per-cell convexity of the smoothed surface: −∇²z expressed as slope-change
+/// %/m. Positive = convex (ridge crest, mound top), negative = concave
+/// (hollow, swale). NaN where a second difference has no valid neighbors.
+public func computeCurvatureGrid(
+    _ grid: SampleGrid,
+    sigmaM: Double = CURV_SMOOTH_SIGMA_M
+) -> [Double] {
+    let width = grid.spec.width
+    let height = grid.spec.height
+    let r2 = grid.spec.resolution * grid.spec.resolution
+    let z = smoothHeights(grid, sigmaM: sigmaM)
+    var out = [Double](repeating: .nan, count: z.count)
+
+    func at(_ row: Int, _ col: Int) -> Double {
+        guard row >= 0, row < height, col >= 0, col < width else { return .nan }
+        return z[row * width + col]
+    }
+
+    for row in 0..<height {
+        for col in 0..<width {
+            let center = at(row, col)
+            if center.isNaN { continue }
+            let east = at(row, col - 1), west = at(row, col + 1)
+            let north = at(row - 1, col), south = at(row + 1, col)
+            var laplacian = 0.0
+            var axes = 0
+            if !east.isNaN, !west.isNaN {
+                laplacian += (east - 2 * center + west) / r2
+                axes += 1
+            }
+            if !north.isNaN, !south.isNaN {
+                laplacian += (north - 2 * center + south) / r2
+                axes += 1
+            }
+            if axes > 0 {
+                out[row * width + col] = -laplacian * 100
+            }
+        }
+    }
+    return out
+}
+
+/// Curvature ramp: the relative view's diverging stops re-pinned to convexity —
+/// hollows blue, ridge crests red, flat neutral. `scaleM` comes from the
+/// per-green auto-contrast in `buildOverlayRgba`.
+public func curvatureColor(_ convexityPctPerM: Double, scale: Double) -> AnalysisRGB {
+    relativeColor(deltaM: convexityPctPerM, scaleM: scale)
+}
+
+/// p-quantile (0–1) of |values| over inside-green cells (all finite cells
+/// when none are inside); nil when nothing finite to rank.
+private func absQuantile(_ values: [Double], inside: [Bool], p: Double) -> Double? {
+    var magnitudes: [Double] = []
+    magnitudes.reserveCapacity(values.count)
+    for i in 0..<values.count where inside[i] && !values[i].isNaN {
+        magnitudes.append(abs(values[i]))
+    }
+    if magnitudes.isEmpty {
+        magnitudes = values.filter { !$0.isNaN }.map(abs)
+    }
+    guard !magnitudes.isEmpty else { return nil }
+    magnitudes.sort()
+    let index = min(magnitudes.count - 1, Int(Double(magnitudes.count - 1) * p))
+    return magnitudes[index]
+}
+
 // MARK: - Stats
 
 public struct AnalysisStats: Equatable, Sendable {
@@ -265,6 +386,17 @@ public func buildOverlayRgba(
     let minHeight = stats.green.minHeight
     let meanHeight = stats.green.meanHeight
     let heightRange = max(stats.green.maxHeight - minHeight, 1e-9)
+    // Derived grid on demand: the overlay is only rebuilt on mode/grid
+    // change, and the grid is small enough that the smooth+diff is trivial.
+    let curvature = mode == .curvature ? computeCurvatureGrid(grid) : []
+
+    // Per-green auto-contrast: pin the curvature ramp to the p95 of
+    // inside-green |convexity|, clamped.
+    var curvScale = CURV_SCALE_MIN_PCT_PER_M
+    if mode == .curvature {
+        let p95 = absQuantile(curvature, inside: grid.insideMask, p: 0.95) ?? curvScale
+        curvScale = min(max(p95, CURV_SCALE_MIN_PCT_PER_M), CURV_SCALE_MAX_PCT_PER_M)
+    }
 
     for i in 0..<heights.count {
         let h = heights[i]
@@ -275,6 +407,8 @@ public func buildOverlayRgba(
         case .slope: rgb = slopeColor(slope.slopePct[i])
         case .height: rgb = heightColor((h - minHeight) / heightRange)
         case .relative: rgb = relativeColor(deltaM: h - meanHeight, scaleM: stats.relScaleM)
+        case .curvature:
+            rgb = curvatureColor(curvature[i].isNaN ? 0 : curvature[i], scale: curvScale)
         }
 
         let o = i * 4
