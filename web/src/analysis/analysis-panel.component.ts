@@ -30,6 +30,7 @@ const MODES: Array<{ id: AnalysisMode; label: string; hint: string }> = [
     { id: 'slope', label: 'Slope', hint: 'Slope steepness (%) with fall-line arrows' },
     { id: 'height', label: 'Height', hint: 'Elevation, normalized to this green' },
     { id: 'relative', label: 'Relative', hint: 'Height vs green level — hollows read blue/purple' },
+    { id: 'curvature', label: 'Curv', hint: 'Convexity — ridge crests read red, hollows blue' },
 ];
 
 const tpl = template(`
@@ -313,6 +314,9 @@ export class AnalysisPanelComponent extends Component {
             case 'slope': return SLOPE_GRADIENT;
             case 'height': return HEIGHT_GRADIENT;
             case 'relative': return RELATIVE_GRADIENT;
+            // Same diverging stops re-pinned to convexity (per-green
+            // auto-contrast — the ramp has no fixed physical scale to label).
+            case 'curvature': return RELATIVE_GRADIENT;
         }
     }
 
@@ -327,6 +331,8 @@ export class AnalysisPanelComponent extends Component {
                 const label = scale ? `${scale.toFixed(1)} m` : '';
                 return [`−${label} hollow`, 'green level', `+${label} mound`];
             }
+            case 'curvature':
+                return ['Hollow', 'flat', 'Ridge'];
         }
     }
 

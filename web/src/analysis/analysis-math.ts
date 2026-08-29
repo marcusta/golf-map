@@ -8,7 +8,7 @@
 
 import type { SampleGrid } from '../../../shared/api/analysis.gen';
 
-export type AnalysisMode = 'slope' | 'height' | 'relative';
+export type AnalysisMode = 'slope' | 'height' | 'relative' | 'curvature';
 
 export type Rgb = [number, number, number];
 
@@ -137,6 +137,138 @@ export function relativeColor(deltaM: number, scaleM: number): Rgb {
     return mix(stops[band], stops[band + 1], m - band);
 }
 
+// ─── Curvature (ridge / hollow view) ──────────────────────────────────────
+
+/**
+ * Gaussian smoothing sigma for the curvature surface, meters. Second
+ * derivatives amplify lidar noise hard — smoothing at landform scale keeps
+ * the broad ridges ("åsryggar") a putt cares about and drops the texture.
+ */
+export const CURV_SMOOTH_SIGMA_M = 2.0;
+/**
+ * Auto-contrast bounds for the curvature ramp, %/m. The ramp pins to the
+ * 95th percentile of |convexity| inside the green, clamped to this range —
+ * a broad, gentle ridge fills the ramp instead of washing out against a
+ * fixed scale sized for sharp features.
+ */
+export const CURV_SCALE_MIN_PCT_PER_M = 0.8;
+export const CURV_SCALE_MAX_PCT_PER_M = 8.0;
+
+/**
+ * Separable NaN-aware Gaussian blur of the height grid (normalized
+ * convolution: weights renormalize over valid neighbors; nodata cells stay
+ * NaN). Returns NaN-for-nodata regardless of the input's null convention.
+ */
+export function smoothHeights(grid: SampleGrid, sigmaM: number): Float64Array {
+    const { width, height, heights, resolution } = grid;
+    const src = new Float64Array(width * height);
+    for (let i = 0; i < src.length; i++) {
+        const h = heights[i];
+        src[i] = h === null ? NaN : h;
+    }
+    const sigmaCells = sigmaM / resolution;
+    if (!(sigmaCells > 0.05)) return src;
+
+    const radius = Math.max(1, Math.ceil(3 * sigmaCells));
+    const kernel = new Float64Array(2 * radius + 1);
+    for (let k = -radius; k <= radius; k++) {
+        kernel[k + radius] = Math.exp(-(k * k) / (2 * sigmaCells * sigmaCells));
+    }
+
+    const pass = (input: Float64Array, stepRow: number, stepCol: number): Float64Array => {
+        const out = new Float64Array(input.length).fill(NaN);
+        for (let row = 0; row < height; row++) {
+            for (let col = 0; col < width; col++) {
+                const i = row * width + col;
+                if (Number.isNaN(input[i])) continue;
+                let sum = 0, weight = 0;
+                for (let k = -radius; k <= radius; k++) {
+                    const r = row + k * stepRow;
+                    const c = col + k * stepCol;
+                    if (r < 0 || r >= height || c < 0 || c >= width) continue;
+                    const v = input[r * width + c];
+                    if (Number.isNaN(v)) continue;
+                    const w = kernel[k + radius];
+                    sum += v * w;
+                    weight += w;
+                }
+                out[i] = sum / weight;
+            }
+        }
+        return out;
+    };
+
+    return pass(pass(src, 0, 1), 1, 0);
+}
+
+/**
+ * Per-cell convexity of the smoothed surface: −∇²z expressed as slope-change
+ * %/m. Positive = convex (ridge crest, mound top), negative = concave
+ * (hollow, swale). NaN where a second difference has no valid neighbors.
+ */
+export function computeCurvatureGrid(
+    grid: SampleGrid,
+    sigmaM: number = CURV_SMOOTH_SIGMA_M,
+): Float64Array {
+    const { width, height, resolution } = grid;
+    const r2 = resolution * resolution;
+    const z = smoothHeights(grid, sigmaM);
+    const out = new Float64Array(z.length).fill(NaN);
+
+    const at = (row: number, col: number): number =>
+        row < 0 || row >= height || col < 0 || col >= width ? NaN : z[row * width + col];
+
+    for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+            const center = at(row, col);
+            if (Number.isNaN(center)) continue;
+            const east = at(row, col - 1), west = at(row, col + 1);
+            const north = at(row - 1, col), south = at(row + 1, col);
+            let laplacian = 0;
+            let axes = 0;
+            if (!Number.isNaN(east) && !Number.isNaN(west)) {
+                laplacian += (east - 2 * center + west) / r2;
+                axes++;
+            }
+            if (!Number.isNaN(north) && !Number.isNaN(south)) {
+                laplacian += (north - 2 * center + south) / r2;
+                axes++;
+            }
+            if (axes > 0) {
+                out[row * width + col] = -laplacian * 100;
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * Curvature ramp: the relative view's diverging stops re-pinned to convexity
+ * — hollows blue, ridge crests red, flat neutral. `scale` comes from the
+ * per-green auto-contrast in `buildOverlayRgba`.
+ */
+export function curvatureColor(convexityPctPerM: number, scale: number): Rgb {
+    return relativeColor(convexityPctPerM, scale);
+}
+
+/**
+ * p-quantile (0-1) of |values| over inside-green cells (all finite cells
+ * when none are inside); null when nothing finite to rank.
+ */
+function absQuantile(values: Float64Array, inside: ArrayLike<number>, p: number): number | null {
+    let magnitudes: number[] = [];
+    for (let i = 0; i < values.length; i++) {
+        if (inside[i] && !Number.isNaN(values[i])) magnitudes.push(Math.abs(values[i]));
+    }
+    if (magnitudes.length === 0) {
+        magnitudes = Array.from(values).filter(v => !Number.isNaN(v)).map(Math.abs);
+    }
+    if (magnitudes.length === 0) return null;
+    magnitudes.sort((a, b) => a - b);
+    const index = Math.min(magnitudes.length - 1, Math.floor((magnitudes.length - 1) * p));
+    return magnitudes[index];
+}
+
 /** Minimum relative-mode scale — avoids amplifying pure noise on dead-flat sites. */
 export const REL_SCALE_MIN_M = 0.3;
 /**
@@ -250,6 +382,18 @@ export function buildOverlayRgba(
     const { minHeight, maxHeight, meanHeight } = stats.green;
     const heightRange = Math.max(maxHeight - minHeight, 1e-9);
 
+    // Derived grid on demand: the overlay is only rebuilt on mode/grid
+    // change, and the grid is small enough that the smooth+diff is trivial.
+    const curvature = mode === 'curvature' ? computeCurvatureGrid(grid) : new Float64Array(0);
+
+    // Per-green auto-contrast: pin the curvature ramp to the p95 of
+    // inside-green |convexity|, clamped.
+    let curvScale = CURV_SCALE_MIN_PCT_PER_M;
+    if (mode === 'curvature') {
+        const p95 = absQuantile(curvature, grid.insideMask, 0.95) ?? curvScale;
+        curvScale = Math.min(Math.max(p95, CURV_SCALE_MIN_PCT_PER_M), CURV_SCALE_MAX_PCT_PER_M);
+    }
+
     for (let i = 0; i < heights.length; i++) {
         const h = heights[i];
         if (h === null) continue; // alpha stays 0
@@ -259,8 +403,10 @@ export function buildOverlayRgba(
             rgb = slopeColor(slope.slopePct[i]);
         } else if (mode === 'height') {
             rgb = heightColor((h - minHeight) / heightRange);
-        } else {
+        } else if (mode === 'relative') {
             rgb = relativeColor(h - meanHeight, stats.relScaleM);
+        } else {
+            rgb = curvatureColor(Number.isNaN(curvature[i]) ? 0 : curvature[i], curvScale);
         }
 
         const o = i * 4;

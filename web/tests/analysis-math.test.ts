@@ -27,6 +27,12 @@ import {
     computeContours,
     CONTOUR_INTERVAL_M,
     CONTOUR_INDEX_EVERY,
+    smoothHeights,
+    computeCurvatureGrid,
+    curvatureColor,
+    CURV_SMOOTH_SIGMA_M,
+    CURV_SCALE_MIN_PCT_PER_M,
+    CURV_SCALE_MAX_PCT_PER_M,
 } from '../src/analysis/analysis-math';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────
@@ -498,4 +504,97 @@ test('contour segments stay within the sampled node extent', () => {
             }
         }
     }
+});
+
+// ─── Curvature (ridge / hollow view) ──────────────────────────────────────
+
+test('smoothing keeps a constant surface exact and nodata as NaN', () => {
+    const grid = makeGrid({ width: 12, height: 10, z: () => 42 });
+    const hole = 4 * grid.width + 5;
+    grid.heights[hole] = null;
+    const z = smoothHeights(grid, CURV_SMOOTH_SIGMA_M);
+    expect(Number.isNaN(z[hole])).toBe(true);
+    // Normalized convolution is exact on a constant everywhere — borders and
+    // the hole's neighbors renormalize over whatever valid cells remain.
+    for (let i = 0; i < z.length; i++) {
+        if (i === hole) continue;
+        expect(z[i]).toBeCloseTo(42, 9);
+    }
+});
+
+test('curvature is zero on a tilted plane away from the border', () => {
+    // 1 m cells → sigmaCells 2, kernel radius 6. Interior cells ≥ 7 from the
+    // border see the full kernel, where smoothing preserves the plane.
+    const grid = makeGrid({
+        width: 30,
+        height: 30,
+        resolution: 1,
+        z: (e, n) => 50 + 0.03 * (e - 1000) + 0.04 * (n - 1970),
+    });
+    const curv = computeCurvatureGrid(grid);
+    for (let row = 7; row < 23; row++) {
+        for (let col = 7; col < 23; col++) {
+            expect(Math.abs(curv[row * grid.width + col])).toBeLessThan(1e-6);
+        }
+    }
+});
+
+test('a hilltop reads convex-positive and a bowl concave-negative at the analytic value', () => {
+    // Paraboloid: −∇²z is constant (0.008 m/m² → 0.8 %/m) and commutes with
+    // the full-kernel interior smoothing, so the center is exact.
+    const dome = makeGrid({
+        width: 30,
+        height: 30,
+        resolution: 1,
+        z: (e, n) => 51 - 0.002 * ((e - 1015) ** 2 + (n - 1985) ** 2),
+    });
+    const center = 15 * dome.width + 15;
+    expect(computeCurvatureGrid(dome)[center]).toBeCloseTo(0.8, 6);
+    const bowl = makeGrid({
+        width: 30,
+        height: 30,
+        resolution: 1,
+        z: (e, n) => 49 + 0.002 * ((e - 1015) ** 2 + (n - 1985) ** 2),
+    });
+    expect(computeCurvatureGrid(bowl)[center]).toBeCloseTo(-0.8, 6);
+});
+
+test('curvature ramp shares the relative diverging stops', () => {
+    expect(curvatureColor(0, 1)).toEqual(REL_NEUTRAL);
+    expect(curvatureColor(3, 3)).toEqual(REL_ABOVE_STOPS[3]);
+    expect(curvatureColor(-3, 3)).toEqual(REL_BELOW_STOPS[3]);
+    expect(curvatureColor(NaN, 1)).toEqual(REL_NEUTRAL);
+});
+
+test('curvature overlay colors a gentle crest warm via per-green auto-contrast', () => {
+    // Gentle dome whose analytic convexity (0.8 %/m) sits at the clamp
+    // floor — a fixed 8 %/m ramp would leave it near-neutral; the p95
+    // auto-contrast must saturate it toward the warm end instead.
+    const grid = makeGrid({
+        width: 30,
+        height: 30,
+        resolution: 1,
+        z: (e, n) => 51 - 0.002 * ((e - 1015) ** 2 + (n - 1985) ** 2),
+    });
+    const slope = computeSlopeGrid(grid);
+    const stats = computeStats(grid, slope);
+    const rgba = buildOverlayRgba(grid, 'curvature', slope, stats);
+    const center = 15 * grid.width + 15;
+    const [r, g, b, a] = [
+        rgba[center * 4], rgba[center * 4 + 1], rgba[center * 4 + 2], rgba[center * 4 + 3],
+    ];
+    // Crest lands deep in the above-ramp: warmer than neutral, red-dominant.
+    expect(r).toBeGreaterThan(b);
+    expect(b).toBeLessThan(REL_NEUTRAL[2]);
+    expect(a).toBe(INSIDE_ALPHA);
+    // Same green as a bowl: the deepest hollow reads blue-dominant.
+    const bowl = makeGrid({
+        width: 30,
+        height: 30,
+        resolution: 1,
+        z: (e, n) => 49 + 0.002 * ((e - 1015) ** 2 + (n - 1985) ** 2),
+    });
+    const bowlRgba = buildOverlayRgba(bowl, 'curvature', computeSlopeGrid(bowl), computeStats(bowl, computeSlopeGrid(bowl)));
+    expect(bowlRgba[center * 4 + 2]).toBeGreaterThan(bowlRgba[center * 4]);
+    expect(CURV_SCALE_MIN_PCT_PER_M).toBeLessThan(CURV_SCALE_MAX_PCT_PER_M);
 });
