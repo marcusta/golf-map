@@ -240,6 +240,26 @@ actor PlanSyncService {
         }
     }
 
+    /// Pushes a set-primary sibling reorder directly (O3). The reorder can't
+    /// ride the row-level dirty flags — the update endpoint carries no
+    /// sortOrder — so this flushes first (so a just-placed option has a server
+    /// id to name) and then calls the dedicated endpoint. Best-effort like the
+    /// rest: offline, the local ranks stand and the reorder is simply lost to
+    /// the next server refresh.
+    func setPrimary(localShotId: String, courseId: String) async {
+        await flush()
+        guard let shot = try? await database.planShot(id: localShotId),
+              let serverId = shot.serverId ?? synthesizedServerId(shot) else {
+            print("PlanSync: set-primary skipped — shot \(localShotId) has no server id yet.")
+            return
+        }
+        do {
+            _ = try await client.setPrimaryPlanShot(id: serverId)
+        } catch {
+            await handle(error, courseId: courseId)
+        }
+    }
+
     /// Resolves the shot's LOCAL parent id to the parent's SERVER id, i.e. the
     /// tree position the add endpoint understands. Returns nil (skip this shot
     /// for now) when the parent exists locally but hasn't been pushed yet — it

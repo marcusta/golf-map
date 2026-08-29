@@ -181,6 +181,12 @@ public struct PlanOverlay: Equatable, Sendable {
     public var line: [LatLon]
     /// Planned landing points (shot nodes), tee→green order.
     public var nodes: [LatLon]
+    /// Non-primary option branches (shot-options tree): each polyline runs
+    /// decision-point start → option landing (→ its continuation). Rendered
+    /// dashed + dimmed under the primary line, mirroring the web planner.
+    public var branchLines: [[LatLon]]
+    /// Landing points on non-primary branches — drawn dimmed like their lines.
+    public var branchNodes: [LatLon]
     /// Target gate cross-lines.
     public var gates: [GateLine]
     /// Dispersion ellipse polygons (shot-viz overlay) — on-course these are
@@ -198,6 +204,8 @@ public struct PlanOverlay: Equatable, Sendable {
     public init(
         line: [LatLon] = [],
         nodes: [LatLon] = [],
+        branchLines: [[LatLon]] = [],
+        branchNodes: [LatLon] = [],
         gates: [GateLine] = [],
         ellipses: [PlanStrategy.EllipseShape] = [],
         ghosts: [PlanStrategy.GhostShape] = [],
@@ -205,6 +213,8 @@ public struct PlanOverlay: Equatable, Sendable {
     ) {
         self.line = line
         self.nodes = nodes
+        self.branchLines = branchLines
+        self.branchNodes = branchNodes
         self.gates = gates
         self.ellipses = ellipses
         self.ghosts = ghosts
@@ -573,17 +583,37 @@ enum MapOverlayShapes {
 
     // MARK: Game-plan overlay
 
-    /// The plan leg polyline (hidden below two points, like the distance line).
+    /// The plan leg polylines as one `branch`-tagged source: the primary line
+    /// (`branch` 0) plus each non-primary option branch (`branch` 1, drawn
+    /// dimmed by a data-driven opacity). Lines hide below two points.
     static func planLineShape(_ plan: PlanOverlay?) -> MLNShape {
-        distanceLineShape(plan?.line ?? [])
+        var features: [MLNShape] = []
+        if let line = plan?.line, line.count >= 2 {
+            var coordinates = line.map(\.clCoordinate)
+            let feature = MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+            feature.attributes = ["branch": 0]
+            features.append(feature)
+        }
+        for branch in plan?.branchLines ?? [] where branch.count >= 2 {
+            var coordinates = branch.map(\.clCoordinate)
+            let feature = MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+            feature.attributes = ["branch": 1]
+            features.append(feature)
+        }
+        return MLNShapeCollectionFeature(shapes: features)
     }
 
-    /// Planned landing points as point features.
+    /// Planned landing points as `branch`-tagged point features (primary 0,
+    /// option-branch 1 — dimmed like their lines).
     static func planNodesShape(_ plan: PlanOverlay?) -> MLNShape {
-        let features = (plan?.nodes ?? []).map { position -> MLNPointFeature in
-            let feature = MLNPointFeature()
-            feature.coordinate = position.clCoordinate
-            return feature
+        var features: [MLNShape] = []
+        for (positions, branch) in [(plan?.nodes ?? [], 0), (plan?.branchNodes ?? [], 1)] {
+            for position in positions {
+                let feature = MLNPointFeature()
+                feature.coordinate = position.clCoordinate
+                feature.attributes = ["branch": branch]
+                features.append(feature)
+            }
         }
         return MLNShapeCollectionFeature(shapes: features)
     }

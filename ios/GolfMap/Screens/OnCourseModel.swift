@@ -606,8 +606,9 @@ final class OnCourseModel {
         /// touch (same drag plumbing as Adjust, without the gesture lock).
         case capture
         /// Plan editing: the planned landing points become draggable handles;
-        /// a tap can place a new shot. Writes go through `planWriter` (GRDB
-        /// dirty row + `PlanSyncService`).
+        /// the reticle stays live as the placement cursor (pan to aim, the
+        /// panel's "Add at aim" drops the point). Writes go through
+        /// `planWriter` (GRDB dirty row + `PlanSyncService`).
         case plan
     }
 
@@ -669,6 +670,10 @@ final class OnCourseModel {
             cameraBeforeRefitTool = lastObservedCamera
             cameraToken += 1
         }
+        // The planner re-bases the reticle origin onto the placement leg's
+        // start — the settled distance-mode answer is stale the moment the
+        // tool opens.
+        if mode == .plan { resettleReticleAfterOriginChange() }
     }
 
     /// Re-fit the active tool's focus bounds with updated chrome insets. The
@@ -690,11 +695,15 @@ final class OnCourseModel {
     /// (Adjust) leaves the view untouched. An in-flight Adjust drag is abandoned.
     func exitTool() {
         guard toolMode != .none else { return }
+        let wasPlan = toolMode == .plan
         toolMode = .none
         toolFocus = nil
         toolCameraInsets = .zero
         draggingHandleID = nil
         resetPlanEditingState()
+        // Leaving the planner flips the reticle origin back onto the hole
+        // origin — the leg-based settled answer is stale.
+        if wasPlan { resettleReticleAfterOriginChange() }
         if toolDidRefitCamera {
             restoreCamera = cameraBeforeRefitTool // nil → falls back to hole fit
             cameraToken += 1
@@ -1483,8 +1492,45 @@ final class OnCourseModel {
     /// Origin the reticle measures from — the same chain as `origin`: the
     /// (gated) live GPS fix, else the transient browse origin, else the
     /// active tee. GPS mode aims from the player's position; browse mode
-    /// from the browse origin.
-    private var reticleOrigin: LatLon? { origin }
+    /// from the browse origin. The PLANNER re-bases it onto the start of the
+    /// leg being placed (`planPlacementOrigin`) so the aim line, plays-like
+    /// and club advice describe the NEXT shot, not the whole-hole line.
+    private var reticleOrigin: LatLon? {
+        if toolMode == .plan, let start = planPlacementOrigin { return start.position }
+        return origin
+    }
+
+    /// Where the next planned shot starts while the planner tool is up: the
+    /// SELECTED shot (the line grows from the shot you picked), else the
+    /// primary line's tail, else the plan tee, else the active tee — the same
+    /// chain `addPlanShotAtReticle` parents on, so the reticle's line, its
+    /// advice and the appended shot's auto club all describe the same leg.
+    var planPlacementOrigin: (shot: CoursePlan.Shot?, position: LatLon, elevation: Double?)? {
+        guard let hole = currentHole else { return nil }
+        let all = plan?.allShots(holeNumber: hole.hole.number) ?? []
+        if let selected = selectedPlanShotId.flatMap({ id in all.first { $0.id == id } }) {
+            return (selected, selected.position, selected.elevation)
+        }
+        if let tail = plan?.shots(holeNumber: hole.hole.number).last {
+            return (tail, tail.position, tail.elevation)
+        }
+        if let holePlan = currentHolePlan ?? plan?.hole(number: hole.hole.number),
+           let tee = planTee(for: hole, plan: holePlan) {
+            return (nil, LatLon(lat: tee.lat, lon: tee.lon), tee.elevation)
+        }
+        if let tee = activeTee(for: hole) {
+            return (nil, LatLon(lat: tee.lat, lon: tee.lon), tee.elevation)
+        }
+        return nil
+    }
+
+    /// The planner panel's "Aiming from …" tag: the placement origin's handle
+    /// label ("P2", "P2B", …) or "tee". Nil while the planner tool is down.
+    var planPlacementOriginLabel: String? {
+        guard toolMode == .plan, let start = planPlacementOrigin else { return nil }
+        guard let shot = start.shot else { return "tee" }
+        return planShotLabels[shot.id] ?? "P?"
+    }
 
     /// Raw planar origin→reticle distance — the pan-state big number. O(1),
     /// safe to read every camera-change frame.
@@ -1560,9 +1606,11 @@ final class OnCourseModel {
     /// only once the camera settles — pan-start empties them via
     /// `reticleSettled = nil`, so the settled layers hide while panning.
     var reticleOverlay: ReticleOverlay? {
-        // A tool owning the map keeps a stale reticle target from drawing —
-        // the reticle only reports (and only makes sense) in distance mode.
-        guard toolMode == .none else { return nil }
+        // A tool owning the map keeps a stale reticle target from drawing.
+        // Two exceptions report through the reticle: distance mode (its home)
+        // and the PLANNER, where the reticle is the placement cursor — pan to
+        // aim, "Add at aim" drops the point at the anchor.
+        guard toolMode == .none || toolMode == .plan else { return nil }
         // D-HF4: nothing draws while the hole-entry camera flies — the line,
         // labels and dispersion overlays appear at first settle, computed
         // from the world-coordinate default aim.
@@ -1663,9 +1711,10 @@ final class OnCourseModel {
         guard let origin = reticleOrigin else { return }
 
         // Elevations: the origin's known value (browse-origin sample / tee
-        // record), else a fresh terrain sample; the reticle point is always
+        // record; in the planner the leg-start plan point's stored sample),
+        // else a fresh terrain sample; the reticle point is always
         // sampled here — the once-per-settle budget covers it.
-        var originElev = originElevation
+        var originElev = toolMode == .plan ? planPlacementOrigin?.elevation : originElevation
         var targetElev: Double?
         if let sampler = elevationSampler {
             targetElev = await sampler(target)
@@ -4169,6 +4218,8 @@ final class OnCourseModel {
         var setShotClub: @Sendable (_ shotId: String, _ clubId: String?) async -> Void
         /// Persist a shot removal.
         var removeShot: @Sendable (_ shotId: String) async -> Void
+        /// Persist a set-primary (sibling reorder) for a shot.
+        var setPrimaryShot: @Sendable (_ shotId: String) async -> Void
         /// Persist the plan-level (course-wide) wind. A nil pair = calm.
         var setPlanWind: @Sendable (_ speedMps: Double?, _ directionDeg: Double?) async -> Void
         /// Persist one hole's wind override. A nil pair clears the override.
@@ -4179,8 +4230,6 @@ final class OnCourseModel {
 
     /// The selected plan shot (tap a handle), for the panel's row + delete.
     private(set) var selectedPlanShotId: String?
-    /// True while the "add shot" affordance is armed — the next map tap places.
-    private(set) var isAddingPlanShot = false
     /// Bumped on every plan edit (drop / add / remove / club) so the strategy
     /// memo re-enriches on the SETTLED plan. Observed → drives the overlay.
     private(set) var planEditToken = 0
@@ -4201,55 +4250,124 @@ final class OnCourseModel {
         return handleID.hasPrefix(prefix) ? String(handleID.dropFirst(prefix.count)) : nil
     }
 
-    /// The current hole's plan shots in sortOrder (empty without a plan/hole).
-    var planEditShots: [CoursePlan.Shot] {
-        guard let hole = currentHole else { return [] }
-        return (plan?.shots(holeNumber: hole.hole.number) ?? [])
-            .sorted { $0.sortOrder < $1.sortOrder }
+    /// One node of the current hole's option tree in depth-first order: the
+    /// shot plus everything its row/handle/label needs derived once.
+    struct PlanTreeNode: Equatable {
+        let shot: CoursePlan.Shot
+        /// 1-based stroke depth (P-number): parent chain length + 1.
+        let depth: Int
+        /// Rank within its sibling group (0 = the group's primary choice).
+        let rank: Int
+        /// Sibling-group size at this decision point.
+        let groupSize: Int
+        /// True when the shot lies on the hole's primary line.
+        let onPrimaryLine: Bool
+        /// "P2", or "P2A"/"P2B" when its decision point has >1 sibling.
+        var label: String {
+            groupSize > 1
+                ? "P\(depth)\(String(UnicodeScalar(65 + min(rank, 25))!))"
+                : "P\(depth)"
+        }
     }
 
-    /// One row of the planner panel: a plan shot with its 1-based index, club,
-    /// and the whole-metre length of the leg REACHING it (from the plan tee or
-    /// the previous landing point).
+    /// Depth-first traversal of the current hole's option tree (each sibling
+    /// group in rank order, each option followed by its own continuation) —
+    /// the single ordering the rows, handles and labels all share. Cyclic or
+    /// orphaned nodes are dropped rather than looping.
+    var planEditTree: [PlanTreeNode] {
+        guard let hole = currentHole else { return [] }
+        let all = plan?.allShots(holeNumber: hole.hole.number) ?? []
+        guard !all.isEmpty else { return [] }
+        let byParent = Dictionary(grouping: all, by: \.parentShotId)
+        let primaryIds = Set((plan?.shots(holeNumber: hole.hole.number) ?? []).map(\.id))
+        var result: [PlanTreeNode] = []
+        var seen = Set<String>()
+
+        func visit(parent: String?, depth: Int) {
+            let group = (byParent[parent] ?? []).sorted {
+                $0.sortOrder != $1.sortOrder ? $0.sortOrder < $1.sortOrder : $0.id < $1.id
+            }
+            for (rank, shot) in group.enumerated() {
+                guard seen.insert(shot.id).inserted else { continue }
+                result.append(PlanTreeNode(
+                    shot: shot, depth: depth, rank: rank, groupSize: group.count,
+                    onPrimaryLine: primaryIds.contains(shot.id)
+                ))
+                visit(parent: shot.id, depth: depth + 1)
+            }
+        }
+        visit(parent: nil, depth: 1)
+        return result
+    }
+
+    /// The current hole's plan shots in tree order (empty without a plan/hole).
+    var planEditShots: [CoursePlan.Shot] {
+        planEditTree.map(\.shot)
+    }
+
+    /// Handle/row label per shot id ("P1", "P2A", …).
+    var planShotLabels: [String: String] {
+        Dictionary(
+            planEditTree.map { ($0.shot.id, $0.label) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    /// One row of the planner panel: a plan shot with its tree label, club,
+    /// and the whole-metre length of the leg REACHING it (from its parent
+    /// shot, else the plan tee).
     struct PlanEditRow: Identifiable, Equatable {
         let shotId: String
-        let index: Int
+        /// Tree label — "P1", or "P2A"/"P2B" at a multi-option decision point.
+        let label: String
         let clubId: String?
         let clubName: String?
         let meters: Int
+        /// True when the shot is NOT on the primary line (rendered dimmed on
+        /// the map; its row indents under the decision point).
+        let isBranch: Bool
+        /// True when "make primary" applies: a non-rank-0 sibling of a
+        /// multi-option decision point.
+        let canMakePrimary: Bool
         var id: String { shotId }
     }
 
-    /// The planner panel's rows for the current hole (tee→green order).
+    /// The planner panel's rows for the current hole, in tree order (primary
+    /// continuation after each option, sibling options adjacent).
     var planEditRows: [PlanEditRow] {
         guard let hole = currentHole else { return [] }
-        let shots = planEditShots
-        var previous: LatLon? = {
+        let all = plan?.allShots(holeNumber: hole.hole.number) ?? []
+        let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let teePosition: LatLon? = {
             if let holePlan = currentHolePlan ?? plan?.hole(number: hole.hole.number),
                let tee = planTee(for: hole, plan: holePlan) {
                 return LatLon(lat: tee.lat, lon: tee.lon)
             }
             return activeTee(for: hole).map { LatLon(lat: $0.lat, lon: $0.lon) }
         }()
-        return shots.enumerated().map { index, shot in
-            let meters = previous.map { Int(Distance.planarMeters($0, shot.position).rounded()) } ?? 0
-            previous = shot.position
+        return planEditTree.map { node in
+            let from = node.shot.parentShotId.flatMap { byId[$0]?.position } ?? teePosition
+            let meters = from.map {
+                Int(Distance.planarMeters($0, node.shot.position).rounded())
+            } ?? 0
             return PlanEditRow(
-                shotId: shot.id, index: index + 1,
-                clubId: shot.clubId, clubName: shot.clubName, meters: meters
+                shotId: node.shot.id, label: node.label,
+                clubId: node.shot.clubId, clubName: node.shot.clubName, meters: meters,
+                isBranch: !node.onPrimaryLine,
+                canMakePrimary: node.groupSize > 1 && node.rank > 0
             )
         }
     }
 
-    /// Draggable handles for the plan shots (planner tool). `P1`, `P2`, … in
-    /// tee→green order.
+    /// Draggable handles for ALL plan shots, options included (planner tool),
+    /// labelled by tree position ("P1", "P2A", …).
     var planEditHandles: [AdjustHandle] {
-        planEditShots.enumerated().map { index, shot in
+        planEditTree.map { node in
             AdjustHandle(
-                id: Self.planShotHandleID(shot.id),
+                id: Self.planShotHandleID(node.shot.id),
                 kind: .planShot,
-                label: "P\(index + 1)",
-                position: shot.position
+                label: node.label,
+                position: node.shot.position
             )
         }
     }
@@ -4262,13 +4380,15 @@ final class OnCourseModel {
         }
     }
 
-    /// Select a plan shot by handle id (tap), or clear with nil.
+    /// Select a plan shot by handle id (tap), or clear with nil. Selection is
+    /// the placement origin in plan mode (the reticle measures from it and
+    /// "Add at aim" continues from it), so changing it re-settles the reticle.
     func selectPlanShot(handleID: String?) {
-        selectedPlanShotId = handleID.flatMap(Self.planShotID(fromHandle:))
+        let next = handleID.flatMap(Self.planShotID(fromHandle:))
+        guard next != selectedPlanShotId else { return }
+        selectedPlanShotId = next
+        if toolMode == .plan { resettleReticleAfterOriginChange() }
     }
-
-    /// Arm / disarm "add shot": the next map tap places a landing point.
-    func setAddingPlanShot(_ armed: Bool) { isAddingPlanShot = armed }
 
     // MARK: Plan-shot drag (cheap per frame, persist on drop)
 
@@ -4306,6 +4426,8 @@ final class OnCourseModel {
         let position = shot.position
         // A tap that selected the handle without moving it: nothing to persist.
         if let start, start == position { return }
+        // Dragging the tail moves the placement leg's start — stale settle.
+        if toolMode == .plan { resettleReticleAfterOriginChange() }
         let holeNumber = hole.hole.number
         Task { [weak self] in
             let elevation = await self?.elevationSampler?(position) ?? nil
@@ -4322,40 +4444,59 @@ final class OnCourseModel {
 
     // MARK: Add / remove / club
 
-    /// Place a new plan shot at `position` (armed "add shot" → map tap). Appends
-    /// in sortOrder with an auto-selected club (closest to the new leg's
-    /// wind-adjusted plays-like distance), selects it, and persists (sampling
-    /// elevation). No-op unless the planner tool is active + armed.
-    func placePlanShot(at position: LatLon) {
-        guard toolMode == .plan, isAddingPlanShot else { return }
-        isAddingPlanShot = false
-        appendPlanShot(at: position)
+    /// The planner panel's "Add at aim": append a plan point at the current
+    /// reticle aim as a CONTINUATION of the placement origin — the selected
+    /// shot, else the primary line's tail (the reticle line already measures
+    /// from the same origin). Auto-clubs the new leg, selects the new shot,
+    /// persists, then re-settles the reticle onto the leg after it.
+    func addPlanShotAtReticle() {
+        guard toolMode == .plan, let target = reticleTarget, let hole = currentHole else { return }
+        let parent = planPlacementOrigin?.shot
+        appendPlanShot(at: target, parent: parent, hole: hole)
+        resettleReticleAfterOriginChange()
+    }
+
+    /// The planner panel's "Add option": place the current reticle aim as a
+    /// SIBLING of the selected shot — another answer to the same decision
+    /// point (spec feature-plan-shot-options.md §4). The leg (and its auto
+    /// club) runs from the selected shot's parent, not from the selection.
+    /// Requires a selection; the new option becomes selected, so a second
+    /// "Add option" branches the same decision point again.
+    func addPlanOptionAtReticle() {
+        guard toolMode == .plan, let target = reticleTarget, let hole = currentHole,
+              let selectedId = selectedPlanShotId,
+              let selected = plan?.allShots(holeNumber: hole.hole.number)
+                  .first(where: { $0.id == selectedId })
+        else { return }
+        let parent = selected.parentShotId.flatMap { parentId in
+            plan?.allShots(holeNumber: hole.hole.number).first { $0.id == parentId }
+        }
+        appendPlanShot(at: target, parent: parent, hole: hole)
+        resettleReticleAfterOriginChange()
     }
 
     /// The reticle's "+ Target" action: append a plan point at the current
     /// reticle aim without the planner tool being up. Turns the plan overlay
     /// on so the new point is visible immediately.
     func addReticlePlanTarget() {
-        guard let target = reticleTarget else { return }
+        guard let target = reticleTarget, let hole = currentHole else { return }
         setPlanVisible(true)
-        appendPlanShot(at: target)
+        appendPlanShot(at: target, parent: plan?.shots(holeNumber: hole.hole.number).last, hole: hole)
     }
 
-    /// Shared core of `placePlanShot` / `addReticlePlanTarget`: append a shot
-    /// in sortOrder with an auto-selected club, select it, persist (sampling
-    /// elevation).
-    private func appendPlanShot(at position: LatLon) {
-        guard let hole = currentHole else { return }
+    /// Shared placement core: append a shot under `parent` (nil = a tee-root
+    /// option) as its LAST sibling — mirroring the server's addShot append —
+    /// with a club auto-fit to the parent→position leg, select it, persist
+    /// (sampling elevation).
+    private func appendPlanShot(at position: LatLon, parent: CoursePlan.Shot?, hole: HoleData) {
         beginPlanEditingIfNeeded()
         let holeNumber = hole.hole.number
-        let existing = plan?.shots(holeNumber: holeNumber) ?? []
-        let parentShotId = existing.last?.id
-        // The on-device editor still appends only to the primary line. In the
-        // tree model that new child is rank 0 under the former tail (or the
-        // sole rank-0 root when the hole was empty).
-        let sortOrder = 0
+        let parentShotId = parent?.id
+        let sortOrder = (plan?.allShots(holeNumber: holeNumber) ?? [])
+            .filter { $0.parentShotId == parentShotId }
+            .count
         let shotId = UUID().uuidString
-        let club = autoClubForNewShot(at: position, existing: existing, hole: hole)
+        let club = autoClubForNewShot(at: position, from: parent, hole: hole)
         let shot = CoursePlan.Shot(
             id: shotId, position: position, elevation: nil,
             clubId: club?.id, clubName: club?.name, label: nil,
@@ -4379,17 +4520,16 @@ final class OnCourseModel {
     }
 
     /// The auto club for a newly placed shot: the bag's closest to the new
-    /// leg's (wind-adjusted, plays-like) distance from the previous landing
-    /// point (or the plan tee). Mirrors the web planner's `autoClubForShot`.
+    /// leg's (wind-adjusted, plays-like) distance from its PARENT shot (or the
+    /// plan tee for a root). Mirrors the web planner's `autoClubForShot`.
     private func autoClubForNewShot(
-        at position: LatLon, existing: [CoursePlan.Shot], hole: HoleData
+        at position: LatLon, from parent: CoursePlan.Shot?, hole: HoleData
     ) -> ClubRecord? {
-        let previous = existing.sorted { $0.sortOrder < $1.sortOrder }.last
         let from: LatLon
         let fromElevation: Double?
-        if let previous {
-            from = previous.position
-            fromElevation = previous.elevation
+        if let parent {
+            from = parent.position
+            fromElevation = parent.elevation
         } else if let holePlan = currentHolePlan ?? plan?.hole(number: hole.hole.number),
                   let tee = planTee(for: hole, plan: holePlan) {
             from = LatLon(lat: tee.lat, lon: tee.lon)
@@ -4405,13 +4545,50 @@ final class OnCourseModel {
         )
     }
 
-    /// Remove a plan shot (local + persist).
+    /// Remove a plan shot with SPLICE semantics (local + persist): its direct
+    /// children re-parent into its sibling slot — the server's default remove
+    /// does the same, so one delete call stays one delete call.
     func removePlanShot(id shotId: String) {
         guard let hole = currentHole else { return }
         plan = plan?.removingShot(holeNumber: hole.hole.number, shotId: shotId)
         if selectedPlanShotId == shotId { selectedPlanShotId = nil }
         planEditToken += 1
         Task { [weak self] in await self?.planWriter?.removeShot(shotId) }
+        // Removing the tail moves the placement leg's start — stale settle.
+        if toolMode == .plan { resettleReticleAfterOriginChange() }
+    }
+
+    /// Remove a plan shot AND its descendants ("delete option" cascade, O2).
+    /// Persists as per-row removes in deepest-first order, so each server-side
+    /// splice is a plain leaf delete and never re-parents anything.
+    func removePlanBranch(id shotId: String) {
+        guard let hole = currentHole else { return }
+        let holeNumber = hole.hole.number
+        let doomedIds = plan?.descendants(holeNumber: holeNumber, of: shotId).map(\.id) ?? []
+        plan = plan?.removingBranch(holeNumber: holeNumber, shotId: shotId)
+        if let selected = selectedPlanShotId,
+           selected == shotId || doomedIds.contains(selected) {
+            selectedPlanShotId = nil
+        }
+        planEditToken += 1
+        Task { [weak self] in
+            for id in doomedIds + [shotId] {
+                await self?.planWriter?.removeShot(id)
+            }
+        }
+        if toolMode == .plan { resettleReticleAfterOriginChange() }
+    }
+
+    /// Make a shot its sibling group's primary choice (O3: a sibling reorder).
+    /// The primary line re-derives, so the map's solid line follows.
+    func setPrimaryPlanShot(id shotId: String) {
+        guard let hole = currentHole else { return }
+        plan = plan?.settingPrimary(holeNumber: hole.hole.number, shotId: shotId)
+        planEditToken += 1
+        Task { [weak self] in await self?.planWriter?.setPrimaryShot(shotId) }
+        // The primary tail may have moved — with no selection the placement
+        // origin follows it.
+        if toolMode == .plan { resettleReticleAfterOriginChange() }
     }
 
     /// Remove the selected plan shot, if any.
@@ -4431,10 +4608,9 @@ final class OnCourseModel {
         Task { [weak self] in await self?.planWriter?.setShotClub(shotId, clubId) }
     }
 
-    /// Clears the transient planner-tool selection/arming (hole nav / tool exit).
+    /// Clears the transient planner-tool selection (hole nav / tool exit).
     private func resetPlanEditingState() {
         selectedPlanShotId = nil
-        isAddingPlanShot = false
         planDragActive = false
         draggingPlanShotID = nil
     }
@@ -5314,9 +5490,27 @@ final class OnCourseModel {
         } else {
             strategy = strategyGeometryForCurrentHole()
         }
+        // Option branches (shot-options tree): every edge that is not on the
+        // primary line, drawn parent → child (tee → child for a root option).
+        // Emitted as per-edge segments — chained edges connect visually.
+        let primaryIds = Set(holePlan.shots.map(\.id))
+        let byId = Dictionary(
+            holePlan.allShots.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let teePosition = currentHole.flatMap { hole in
+            planTee(for: hole, plan: holePlan).map { LatLon(lat: $0.lat, lon: $0.lon) }
+        }
+        let branchShots = holePlan.allShots.filter { !primaryIds.contains($0.id) }
+        let branchLines = branchShots.compactMap { shot -> [LatLon]? in
+            let from = shot.parentShotId.flatMap { byId[$0]?.position } ?? teePosition
+            return from.map { [$0, shot.position] }
+        }
         return PlanOverlay(
             line: planRoute,
             nodes: holePlan.shots.map(\.position),
+            branchLines: branchLines,
+            branchNodes: branchShots.map(\.position),
             gates: holePlan.gates.map { gate in
                 let endpoints = gate.endpoints
                 return PlanOverlay.GateLine(left: endpoints.left, right: endpoints.right)
@@ -5706,13 +5900,22 @@ final class OnCourseModel {
         // the group over entirely (dotted line + advice ellipse to the FOCUSED
         // target, no reticle line/arcs) until the next user pan releases it.
         let reticle = ladderFocusOverlay ?? reticleOverlay
+        // D-HF4 corollary: during the hole-entry camera flight the reticle
+        // group is GATED but will own the screen the moment the camera
+        // settles. Drawing the forward route / authored route / plan for just
+        // the flight makes them flash and vanish — so a pending reticle
+        // already claims the lines and the hole opens straight into the
+        // reticle presentation.
+        let reticlePending = reticleAwaitingEntrySettle && toolMode == .none
+            && reticleOrigin != nil && reticleTarget != nil
+        let reticleOwnsLines = reticle != nil || reticlePending
 
         // A working target (decide choice, R4) owns the distance line while
         // set: origin straight to the committed landing.
         let line: [LatLon]
         if let wt = workingTarget, let origin {
             line = [origin, wt.position]
-        } else if reticle != nil {
+        } else if reticleOwnsLines {
             line = []
         } else if let feature = inspectedFeature, let origin {
             if let lineTo = feature.lineTo {
@@ -5739,18 +5942,21 @@ final class OnCourseModel {
         // the selection-scoped plan leg ellipses) — deliberately NOT behind
         // `showRouteLabels`: they name a selected visualization, unlike the
         // immersive-only route-leg figures.
-        // While the reticle group is up (panning OR ladder focus) the plan
-        // overlay and the authored course route hide with the other lines —
-        // the same device-feedback clutter call: the reticle aim line is the
-        // shot being considered, and the near-parallel plan/route strokes plus
-        // the plan's dispersion ellipses only compete with it.
-        let plan = reticle == nil ? planOverlay : nil
+        // While the reticle group is up (panning, ladder focus, or pending at
+        // hole entry) the plan overlay and the authored course route hide with
+        // the other lines — the same device-feedback clutter call: the reticle
+        // aim line is the shot being considered, and the near-parallel
+        // plan/route strokes plus the plan's dispersion ellipses only compete
+        // with it. The PLANNER is the exception for the plan itself: editing
+        // the points requires seeing them, so the violet plan rides alongside
+        // the placement reticle there.
+        let plan = toolMode == .plan || !reticleOwnsLines ? planOverlay : nil
         var ellipseLabels: [EllipseLabel] = []
         // While the reticle is active its labeled ellipse is THE club answer;
         // the legacy selected-target ellipse/label/wind-hold would put a second
         // club label on screen at once (same clutter class the device-feedback
         // round flagged for the lines), so they yield to the reticle too.
-        if reticle == nil, let label = selectedTargetEllipseLabel { ellipseLabels.append(label) }
+        if !reticleOwnsLines, let label = selectedTargetEllipseLabel { ellipseLabels.append(label) }
         for ellipse in plan?.ellipses ?? [] {
             let text = ellipse.clubName.map { "\($0) · \(ellipse.legMeters)" }
                 ?? "\(ellipse.legMeters)"
@@ -5797,7 +6003,7 @@ final class OnCourseModel {
             userLocation: isUsingGPS ? effectiveUserLocation.map { UserLocationMarker(position: $0) } : nil,
             routeLegLabels: showRouteLabels ? Self.routeLegLabels(along: line) : [],
             plan: plan,
-            courseRoute: reticle == nil ? courseRouteOverlay : .empty,
+            courseRoute: reticleOwnsLines ? .empty : courseRouteOverlay,
             highlight: isBrowseMode
                 ? browseTarget ?? mapFocus ?? browseOrigin
                 : browseTarget ?? mapFocus,
@@ -5810,8 +6016,8 @@ final class OnCourseModel {
             // highlight ring moves to whatever was tapped last, so without
             // this the "measuring from here" point vanishes on inspection.
             browseFrom: isBrowseMode ? browseOrigin : nil,
-            selectedEllipse: reticle == nil ? selectedTargetEllipse : nil,
-            selectedWindHold: reticle == nil ? selectedTargetWindHold : nil,
+            selectedEllipse: reticleOwnsLines ? nil : selectedTargetEllipse,
+            selectedWindHold: reticleOwnsLines ? nil : selectedTargetWindHold,
             reticle: reticle,
             ellipseLabels: ellipseLabels
         )

@@ -221,6 +221,14 @@ public actor GolfAPIClient {
         try await postJSON(path: "game-plans/shots/remove", body: RemovePlanShotRequest(id: id, version: version))
     }
 
+    /// Makes a shot its sibling group's primary option
+    /// (`POST /api/game-plans/shots/set-primary` — a server-side sibling
+    /// reorder, not version-locked).
+    @discardableResult
+    public func setPrimaryPlanShot(id: String) async throws -> OKResponse {
+        try await postJSON(path: "game-plans/shots/set-primary", body: SetPrimaryPlanShotRequest(id: id))
+    }
+
     // Both wind-carrying requests encode the wind keys BY HAND. The server
     // patches only the keys present in the body (an absent key means "leave
     // alone"), and Swift's synthesized `Encodable` omits nil optionals — so a
@@ -310,6 +318,10 @@ public actor GolfAPIClient {
     private struct RemovePlanShotRequest: Encodable {
         let id: String
         let version: Int
+    }
+
+    private struct SetPrimaryPlanShotRequest: Encodable {
+        let id: String
     }
 
     // MARK: - Clubs

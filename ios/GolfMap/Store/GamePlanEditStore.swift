@@ -136,6 +136,29 @@ extension AppDatabase {
         }
     }
 
+    /// Reorders a shot to rank 0 of its sibling group (set-primary, O3),
+    /// keeping the other siblings' relative order at ranks 1…n. Local ranks
+    /// only — `PlanSyncService.pushSetPrimary` mirrors the reorder server-side
+    /// (sortOrder is assigned at create and never rides the row-update push).
+    public func setPrimaryPlanShot(id: String) async throws {
+        try await dbQueue.write { db in
+            guard let target = try PlanShotRecord.fetchOne(db, key: id) else { return }
+            let siblings = try PlanShotRecord
+                .filter(Column("gamePlanHoleId") == target.gamePlanHoleId
+                    && Column("syncState") != RoundSyncState.deleted.rawValue)
+                .fetchAll(db)
+                .filter { $0.parentShotId == target.parentShotId }
+                .sorted { $0.sortOrder != $1.sortOrder ? $0.sortOrder < $1.sortOrder : $0.id < $1.id }
+            guard siblings.first?.id != id else { return }
+            let ordered = [target] + siblings.filter { $0.id != id }
+            for (rank, sibling) in ordered.enumerated() where sibling.sortOrder != rank {
+                var row = sibling
+                row.sortOrder = rank
+                try row.save(db)
+            }
+        }
+    }
+
     // MARK: - Fetches (sync engine)
 
     public func planShot(id: String) async throws -> PlanShotRecord? {

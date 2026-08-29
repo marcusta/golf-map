@@ -15,14 +15,25 @@ final class PlanEditModelTests: XCTestCase {
         private(set) var moves = 0
         private(set) var removes = 0
         private(set) var clubSets = 0
+        private(set) var setPrimaries = 0
         private(set) var lastAddClubId: String?
+        private(set) var lastAddParentShotId: String?
+        private(set) var lastAddSortOrder: Int?
         /// Wind writes, in order: (holeNumber — nil for the plan-level wind,
         /// speed, direction). A nil speed/direction pair is a clear.
         private(set) var windWrites: [(holeNumber: Int?, speedMps: Double?, directionDeg: Double?)] = []
-        func add(_ clubId: String?) { lock.lock(); adds += 1; lastAddClubId = clubId; lock.unlock() }
+        func add(_ clubId: String?, parentShotId: String?, sortOrder: Int) {
+            lock.lock()
+            adds += 1
+            lastAddClubId = clubId
+            lastAddParentShotId = parentShotId
+            lastAddSortOrder = sortOrder
+            lock.unlock()
+        }
         func move() { lock.lock(); moves += 1; lock.unlock() }
         func remove() { lock.lock(); removes += 1; lock.unlock() }
         func setClub() { lock.lock(); clubSets += 1; lock.unlock() }
+        func setPrimary() { lock.lock(); setPrimaries += 1; lock.unlock() }
         func wind(_ holeNumber: Int?, _ speedMps: Double?, _ directionDeg: Double?) {
             lock.lock(); windWrites.append((holeNumber, speedMps, directionDeg)); lock.unlock()
         }
@@ -75,10 +86,13 @@ final class PlanEditModelTests: XCTestCase {
         )
         model.setClubs(clubs)
         model.planWriter = OnCourseModel.PlanEditWriter(
-            addShot: { _, _, _, _, _, _, _, clubId in spy.add(clubId) },
+            addShot: { _, _, sortOrder, parentShotId, _, _, _, clubId in
+                spy.add(clubId, parentShotId: parentShotId, sortOrder: sortOrder)
+            },
             moveShot: { _, _, _, _ in spy.move() },
             setShotClub: { _, _ in spy.setClub() },
             removeShot: { _ in spy.remove() },
+            setPrimaryShot: { _ in spy.setPrimary() },
             setPlanWind: { speed, direction in spy.wind(nil, speed, direction) },
             setHoleWind: { hole, speed, direction in spy.wind(hole, speed, direction) }
         )
@@ -97,13 +111,14 @@ final class PlanEditModelTests: XCTestCase {
         let spy = WriterSpy()
         let model = makeModel(spy: spy)
         model.enterTool(.plan)
-        model.setAddingPlanShot(true)
 
-        // Place ~150 m up the hole from the tee (roughly a 7-iron leg).
+        // Aim ~150 m up the hole from the tee (roughly a 7-iron leg) and
+        // place at the reticle.
         let tee = LatLon(lat: 58.3600, lon: 15.7100)
         let p = Sweref99TM.fromWGS84(tee)
         let placement = Sweref99TM.toWGS84(x: p.x, y: p.y + 150)
-        model.placePlanShot(at: placement)
+        model.reticleMoved(placement, panning: true)
+        model.addPlanShotAtReticle()
 
         let shots = model.planEditShots
         XCTAssertEqual(shots.count, 1)
@@ -112,7 +127,6 @@ final class PlanEditModelTests: XCTestCase {
         let legDist = Distance.planarMeters(tee, placement)
         let expected = clubs.min { abs($0.carryM - legDist) < abs($1.carryM - legDist) }
         XCTAssertEqual(shots[0].clubId, expected?.id)
-        XCTAssertFalse(model.isAddingPlanShot, "placing disarms add mode")
         XCTAssertEqual(model.selectedPlanShotId, shots[0].id)
 
         await drainTasks()
@@ -124,10 +138,10 @@ final class PlanEditModelTests: XCTestCase {
         let spy = WriterSpy()
         let model = makeModel(spy: spy)
         model.enterTool(.plan)
-        model.setAddingPlanShot(true)
         let tee = LatLon(lat: 58.3600, lon: 15.7100)
         let p = Sweref99TM.fromWGS84(tee)
-        model.placePlanShot(at: Sweref99TM.toWGS84(x: p.x, y: p.y + 150))
+        model.reticleMoved(Sweref99TM.toWGS84(x: p.x, y: p.y + 150), panning: true)
+        model.addPlanShotAtReticle()
         await drainTasks()
         let shotId = try XCTUnwrap(model.planEditShots.first).id
         let handle = OnCourseModel.planShotHandleID(shotId)
@@ -163,10 +177,10 @@ final class PlanEditModelTests: XCTestCase {
         let spy = WriterSpy()
         let model = makeModel(spy: spy)
         model.enterTool(.plan)
-        model.setAddingPlanShot(true)
         let tee = LatLon(lat: 58.3600, lon: 15.7100)
         let p = Sweref99TM.fromWGS84(tee)
-        model.placePlanShot(at: Sweref99TM.toWGS84(x: p.x, y: p.y + 150))
+        model.reticleMoved(Sweref99TM.toWGS84(x: p.x, y: p.y + 150), panning: true)
+        model.addPlanShotAtReticle()
         await drainTasks()
         let shotId = try XCTUnwrap(model.planEditShots.first).id
 
@@ -187,10 +201,10 @@ final class PlanEditModelTests: XCTestCase {
     private func modelWithApproachShot(spy: WriterSpy) async throws -> (OnCourseModel, String) {
         let model = makeModel(spy: spy)
         model.enterTool(.plan)
-        model.setAddingPlanShot(true)
         let tee = LatLon(lat: 58.3600, lon: 15.7100)
         let p = Sweref99TM.fromWGS84(tee)
-        model.placePlanShot(at: Sweref99TM.toWGS84(x: p.x, y: p.y + 150))
+        model.reticleMoved(Sweref99TM.toWGS84(x: p.x, y: p.y + 150), panning: true)
+        model.addPlanShotAtReticle()
         await drainTasks()
         _ = model.planOverlay // prime the aim-enrichment memo (legPlans)
         let shotId = try XCTUnwrap(model.planEditShots.first).id
@@ -246,10 +260,10 @@ final class PlanEditModelTests: XCTestCase {
         let spy = WriterSpy()
         let model = makeModel(spy: spy)
         model.enterTool(.plan)
-        model.setAddingPlanShot(true)
         let tee = LatLon(lat: 58.3600, lon: 15.7100)
         let p = Sweref99TM.fromWGS84(tee)
-        model.placePlanShot(at: Sweref99TM.toWGS84(x: p.x, y: p.y + 150))
+        model.reticleMoved(Sweref99TM.toWGS84(x: p.x, y: p.y + 150), panning: true)
+        model.addPlanShotAtReticle()
         await drainTasks()
         let shotId = try XCTUnwrap(model.planEditShots.first).id
 
@@ -258,6 +272,208 @@ final class PlanEditModelTests: XCTestCase {
         XCTAssertEqual(model.planEditShots.first?.clubName, "Driver")
         await drainTasks()
         XCTAssertEqual(spy.clubSets, 1)
+    }
+
+    // MARK: - Option trees (shot alternatives)
+
+    private let tee = LatLon(lat: 58.3600, lon: 15.7100)
+
+    private func place(_ model: OnCourseModel, dy: Double, dx: Double = 0) {
+        let p = Sweref99TM.fromWGS84(tee)
+        model.reticleMoved(Sweref99TM.toWGS84(x: p.x + dx, y: p.y + dy), panning: true)
+    }
+
+    /// "Add option" places a SIBLING of the selected shot (same parent, next
+    /// sortOrder) — not a continuation.
+    func testAddOptionPlacesSiblingOfSelectedShot() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.enterTool(.plan)
+
+        place(model, dy: 150)
+        model.addPlanShotAtReticle() // P1, selected
+        let first = try XCTUnwrap(model.planEditShots.first)
+        XCTAssertEqual(model.selectedPlanShotId, first.id)
+
+        place(model, dy: 120, dx: 40)
+        model.addPlanOptionAtReticle() // sibling of P1 (tee root)
+
+        let all = model.plan?.allShots(holeNumber: 1) ?? []
+        XCTAssertEqual(all.count, 2)
+        let option = try XCTUnwrap(all.first { $0.id != first.id })
+        XCTAssertEqual(option.parentShotId, first.parentShotId, "same parent — a true sibling")
+        XCTAssertEqual(option.sortOrder, 1, "appended after the existing option")
+        XCTAssertEqual(model.selectedPlanShotId, option.id, "the new option is selected")
+
+        await drainTasks()
+        XCTAssertEqual(spy.adds, 2)
+        XCTAssertEqual(spy.lastAddSortOrder, 1)
+        XCTAssertNil(spy.lastAddParentShotId, "root sibling — parent is the tee")
+    }
+
+    /// "Add at aim" with a selection continues FROM the selected shot (child),
+    /// so building a branch is: select the option, then add continuations.
+    func testAddAtAimContinuesFromSelectedShot() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.enterTool(.plan)
+
+        place(model, dy: 150)
+        model.addPlanShotAtReticle()
+        let first = try XCTUnwrap(model.planEditShots.first)
+
+        place(model, dy: 280)
+        model.addPlanShotAtReticle() // child of the selected first shot
+
+        let all = model.plan?.allShots(holeNumber: 1) ?? []
+        let child = try XCTUnwrap(all.first { $0.id != first.id })
+        XCTAssertEqual(child.parentShotId, first.id)
+        await drainTasks()
+        XCTAssertEqual(spy.lastAddParentShotId, first.id)
+        XCTAssertEqual(spy.lastAddSortOrder, 0, "first child of its parent")
+    }
+
+    /// Sibling groups label as P<depth>A/P<depth>B; single options stay plain
+    /// P<depth>. Branch rows are marked and offer "make primary".
+    func testTreeLabelsAndRowFlags() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.enterTool(.plan)
+
+        place(model, dy: 150)
+        model.addPlanShotAtReticle() // P1A-to-be (rank 0)
+        place(model, dy: 120, dx: 40)
+        model.addPlanOptionAtReticle() // P1B (rank 1), now selected
+        place(model, dy: 240, dx: 40)
+        model.addPlanShotAtReticle() // P2 under the branch option
+
+        let rows = model.planEditRows
+        XCTAssertEqual(rows.map(\.label), ["P1A", "P1B", "P2"])
+        XCTAssertEqual(rows.map(\.isBranch), [false, true, true],
+                       "rank-0 root is the primary line; the B option and its continuation are branch")
+        XCTAssertEqual(rows.map(\.canMakePrimary), [false, true, false],
+                       "only a non-primary option in a sibling group can be promoted")
+    }
+
+    /// Set-primary reorders the sibling group: the promoted option becomes the
+    /// primary line (and its continuation with it), labels swap, writer pushes.
+    func testSetPrimaryPromotesOptionAndItsContinuation() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.enterTool(.plan)
+
+        place(model, dy: 150)
+        model.addPlanShotAtReticle()
+        place(model, dy: 120, dx: 40)
+        model.addPlanOptionAtReticle()
+        place(model, dy: 240, dx: 40)
+        model.addPlanShotAtReticle() // continuation of the B option
+        let bOption = try XCTUnwrap(model.planEditRows.first { $0.label == "P1B" })
+
+        model.setPrimaryPlanShot(id: bOption.shotId)
+
+        let rows = model.planEditRows
+        let promoted = try XCTUnwrap(rows.first { $0.shotId == bOption.shotId })
+        XCTAssertEqual(promoted.label, "P1A", "rank 0 now")
+        XCTAssertEqual(rows.map(\.isBranch).filter { $0 }.count, 1,
+                       "only the demoted option remains a branch")
+        let primaryLine = model.plan?.shots(holeNumber: 1) ?? []
+        XCTAssertEqual(primaryLine.count, 2,
+                       "the primary-line projection follows the promoted option + its continuation")
+        XCTAssertEqual(primaryLine.first?.id, bOption.shotId)
+        await drainTasks()
+        XCTAssertEqual(spy.setPrimaries, 1)
+    }
+
+    /// The branch trash removes the option AND its continuation (cascade); each
+    /// doomed shot goes through the writer as a plain remove, child-first.
+    func testRemoveBranchCascades() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.enterTool(.plan)
+
+        place(model, dy: 150)
+        model.addPlanShotAtReticle()
+        place(model, dy: 120, dx: 40)
+        model.addPlanOptionAtReticle()
+        place(model, dy: 240, dx: 40)
+        model.addPlanShotAtReticle() // continuation of the option
+        let bOption = try XCTUnwrap(model.planEditRows.first { $0.label == "P1B" })
+
+        model.removePlanBranch(id: bOption.shotId)
+
+        let all = model.plan?.allShots(holeNumber: 1) ?? []
+        XCTAssertEqual(all.count, 1, "the option and its continuation are gone")
+        XCTAssertNil(model.selectedPlanShotId, "selection was inside the doomed branch")
+        await drainTasks()
+        XCTAssertEqual(spy.removes, 2, "one writer remove per doomed shot")
+    }
+
+    /// Splice remove on the primary line: the removed shot's child is promoted
+    /// into its slot, keeping the continuation.
+    func testRemovePrimaryShotSplicesChildUp() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.enterTool(.plan)
+
+        place(model, dy: 150)
+        model.addPlanShotAtReticle()
+        let first = try XCTUnwrap(model.planEditShots.first)
+        place(model, dy: 280)
+        model.addPlanShotAtReticle() // P2, child of P1
+
+        model.removePlanShot(id: first.id)
+
+        let all = model.plan?.allShots(holeNumber: 1) ?? []
+        XCTAssertEqual(all.count, 1)
+        XCTAssertNil(all.first?.parentShotId, "the child was re-parented to the root")
+        XCTAssertEqual(model.planEditRows.first?.label, "P1")
+    }
+
+    /// The reticle origin follows the selection: selecting P1 mid-tree aims
+    /// from P1, clearing aims from the primary tail, and the label says which.
+    func testReticleOriginFollowsSelection() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.enterTool(.plan)
+
+        place(model, dy: 150)
+        model.addPlanShotAtReticle()
+        let first = try XCTUnwrap(model.planEditShots.first)
+        place(model, dy: 280)
+        model.addPlanShotAtReticle()
+        let second = try XCTUnwrap(model.planEditShots.last)
+
+        XCTAssertEqual(model.planPlacementOrigin?.shot?.id, second.id, "new shot is selected")
+        XCTAssertEqual(model.planPlacementOriginLabel, "P2")
+
+        model.selectPlanShot(handleID: OnCourseModel.planShotHandleID(first.id))
+        XCTAssertEqual(model.planPlacementOrigin?.shot?.id, first.id)
+        XCTAssertEqual(model.planPlacementOriginLabel, "P1")
+
+        model.selectPlanShot(handleID: nil)
+        XCTAssertEqual(model.planPlacementOrigin?.shot?.id, second.id,
+                       "no selection → the primary-line tail")
+    }
+
+    /// Row meters measure the leg from the PARENT (tee for roots), not from
+    /// the previous row in the list.
+    func testRowMetersMeasureFromParent() async throws {
+        let spy = WriterSpy()
+        let model = makeModel(spy: spy)
+        model.enterTool(.plan)
+
+        place(model, dy: 150)
+        model.addPlanShotAtReticle()
+        place(model, dy: 120, dx: 40)
+        model.addPlanOptionAtReticle() // root sibling — also measured from the tee
+
+        let rows = model.planEditRows
+        let bRow = try XCTUnwrap(rows.first { $0.label == "P1B" })
+        let bShot = try XCTUnwrap(model.plan?.allShots(holeNumber: 1).first { $0.id == bRow.shotId })
+        let expected = Int(Distance.planarMeters(tee, bShot.position).rounded())
+        XCTAssertEqual(bRow.meters, expected,
+                       "the option measures its own tee leg, not a chained P1A→P1B leg")
     }
 
     // MARK: - Wind editing (on-course wind editor)

@@ -190,7 +190,15 @@ public enum MapStyleBuilder {
     // are small filled circles under the F/C/B markers.
     static let planColor = "#a78bfa"
     static let planLineWidth = 3.0
+    static let planBranchLineWidth = 2.0
     static let planLineDashArray = [2.0, 2.0]
+
+    /// Data-driven dim for the shot-options tree: features tagged `branch` 1
+    /// (non-primary option branches) get the dimmed value, everything else the
+    /// primary value.
+    static func planBranchDimExpr(primary: Double, branch: Double) -> [Any] {
+        ["case", ["==", ["get", "branch"], 1], branch, primary]
+    }
     static let planLineCasingColor = "#1e1433"
     static let planLineCasingWidth = 5.5
     static let planGateWidth = 3.5
@@ -672,7 +680,9 @@ public enum MapStyleBuilder {
                 "paint": [
                     "line-color": planLineCasingColor,
                     "line-width": planLineCasingWidth,
-                    "line-opacity": 0.8,
+                    // Option branches (`branch` 1) draw dimmed under the
+                    // primary line, mirroring the web planner's overlay.
+                    "line-opacity": planBranchDimExpr(primary: 0.8, branch: 0.35),
                 ],
             ],
             [
@@ -683,8 +693,9 @@ public enum MapStyleBuilder {
                 "layout": ["line-join": "round"],
                 "paint": [
                     "line-color": planColor,
-                    "line-width": planLineWidth,
+                    "line-width": planBranchDimExpr(primary: planLineWidth, branch: planBranchLineWidth),
                     "line-dasharray": planLineDashArray,
+                    "line-opacity": planBranchDimExpr(primary: 1.0, branch: 0.55),
                 ],
             ],
             [
@@ -771,6 +782,9 @@ public enum MapStyleBuilder {
                     "circle-radius": planNodeRadius,
                     "circle-stroke-color": planNodeStrokeColor,
                     "circle-stroke-width": 1.5,
+                    // Option-branch landings dim with their lines.
+                    "circle-opacity": planBranchDimExpr(primary: 1.0, branch: 0.55),
+                    "circle-stroke-opacity": planBranchDimExpr(primary: 1.0, branch: 0.55),
                 ],
             ],
             [

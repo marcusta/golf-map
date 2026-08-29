@@ -1641,8 +1641,8 @@ final class OnCourseModelTests: XCTestCase {
         let model = makeModel()
         XCTAssertTrue(model.ladderRows.filter { $0.kind == .plan }.isEmpty, "no plan → no plan rungs")
         model.enterTool(.plan)
-        model.setAddingPlanShot(true)
-        model.placePlanShot(at: LatLon(lat: 58.3618, lon: 15.7090))
+        model.reticleMoved(LatLon(lat: 58.3618, lon: 15.7090), panning: true)
+        model.addPlanShotAtReticle()
         XCTAssertFalse(model.ladderRows.filter { $0.kind == .plan }.isEmpty,
                        "adding a plan shot invalidates the memo → a plan rung appears")
     }

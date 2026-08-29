@@ -410,6 +410,34 @@ final class OnCourseReticleTests: XCTestCase {
         XCTAssertNil(model.overlays.plan)
     }
 
+    func testPlannerKeepsPlanVisibleAlongsideReticle() throws {
+        let model = makeModel(aims: [aimRecord])
+        model.setPlan(makePlan())
+        model.enterTool(.plan)
+        model.reticleMoved(aim, panning: true)
+
+        // In the planner the reticle is the placement cursor AND the violet
+        // plan stays up for editing; the authored route still stands down.
+        XCTAssertNotNil(model.overlays.reticle, "the reticle stays live in the planner")
+        XCTAssertNotNil(model.overlays.plan, "plan geometry stays visible in the planner")
+        XCTAssertEqual(model.overlays.courseRoute, .empty)
+    }
+
+    func testPlannerReticleMeasuresFromTheLegStart() throws {
+        let model = makeModel()
+        model.setPlan(makePlan()) // one planned point up the hole
+        model.enterTool(.plan)
+        model.reticleMoved(aim, panning: true)
+
+        // The placement leg starts at the LAST plan point, not the hole
+        // origin: line, distance and club advice describe the next shot.
+        let planPoint = LatLon(lat: 58.3618, lon: 15.7090)
+        let overlay = try XCTUnwrap(model.overlays.reticle)
+        XCTAssertEqual(overlay.aimLine.first, planPoint)
+        let raw = try XCTUnwrap(model.reticlePanDistanceM)
+        XCTAssertEqual(raw, Distance.planarMeters(planPoint, aim), accuracy: 0.01)
+    }
+
     // MARK: - Ladder focus (aim visuals for the focused rung)
 
     /// Aim point ~170 m up the hole — its ladder rung is "aim-0".
@@ -667,13 +695,18 @@ final class OnCourseReticleTests: XCTestCase {
         model.goToHole(number: 2)
 
         // D-HF3/D-HF4 (slice 2): hole entry ENGAGES the reticle at the
-        // world-coordinate default aim, but nothing reticle-shaped draws
-        // until the entry camera settles — the forward route covers the map
-        // during the flight.
+        // world-coordinate default aim, and nothing reticle-shaped draws
+        // until the entry camera settles. The pending reticle already owns
+        // the lines: the forward route, authored route and plan never flash
+        // during the flight — the hole opens straight into the reticle.
         XCTAssertEqual(model.reticleTarget, model.defaultAimTarget)
         XCTAssertTrue(model.reticleAwaitingEntrySettle)
         XCTAssertNil(model.reticleOverlay, "reticle overlays hidden while the camera flies")
-        XCTAssertFalse(model.overlays.distanceLine.isEmpty, "forward route still draws")
+        XCTAssertTrue(model.overlays.distanceLine.isEmpty,
+                      "no forward-route flash during the entry flight")
+        XCTAssertEqual(model.overlays.courseRoute, .empty,
+                       "no authored-route flash during the entry flight")
+        XCTAssertNil(model.overlays.plan, "no plan flash during the entry flight")
     }
 
     func testFirstGPSFixResetsAnEngagedAimToTheDefault() {
@@ -933,10 +966,26 @@ final class OnCourseReticleTests: XCTestCase {
         XCTAssertEqual(gps.planEditShots.last?.position, aim)
     }
 
-    func testPlacePlanShotStillRequiresPlannerToolArmed() {
+    func testAddPlanShotAtReticleRequiresPlannerTool() {
         let model = makeModel()
-        model.placePlanShot(at: aim)
-        XCTAssertTrue(model.planEditShots.isEmpty, "not in the plan tool / not armed")
+        model.reticleMoved(aim, panning: true)
+        model.addPlanShotAtReticle()
+        XCTAssertTrue(model.planEditShots.isEmpty, "not in the plan tool")
+    }
+
+    func testAddPlanShotAtReticleAppendsAtAimAndRebasesTheLeg() throws {
+        let model = makeModel()
+        model.enterTool(.plan)
+        model.reticleMoved(aim, panning: true)
+
+        model.addPlanShotAtReticle()
+
+        let shot = try XCTUnwrap(model.planEditShots.last, "a plan point was appended")
+        XCTAssertEqual(shot.position, aim)
+        // The reticle origin moves onto the point just placed — the aim line
+        // now describes the NEXT leg.
+        let overlay = try XCTUnwrap(model.overlays.reticle)
+        XCTAssertEqual(overlay.aimLine.first, aim)
     }
 
     func testToggleReticleDistanceModeFlipsAndPersists() {

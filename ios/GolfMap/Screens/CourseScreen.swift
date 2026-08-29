@@ -697,8 +697,6 @@ private struct OnCourseContentView: View {
     private var isAdjust: Bool { model.toolMode == .adjust }
     private var isCapture: Bool { model.toolMode == .capture }
     private var isPlan: Bool { model.toolMode == .plan }
-    /// The planner tool is armed to place a shot on the next map tap.
-    private var isPlacingPlanShot: Bool { isPlan && model.isAddingPlanShot }
 
     /// The default distance mode (no tool panel active). The ladder rail + the
     /// distance card belong to this mode only.
@@ -708,11 +706,12 @@ private struct OnCourseContentView: View {
     /// Show the left distance rail: distance mode, chrome up (not immersive).
     private var showsLadderRail: Bool { isDistanceMode && !immersive }
 
-    /// The pan-to-aim reticle is live: a hole up and no tool owning the map
-    /// (distance mode). Both modes — GPS aims from the live fix, browse from
-    /// the browse origin (device feedback round 3).
+    /// The pan-to-aim reticle is live: a hole up and either no tool owning
+    /// the map (distance mode) or the PLANNER, where the reticle is the
+    /// placement cursor. Both modes — GPS aims from the live fix, browse
+    /// from the browse origin (device feedback round 3).
     private var isReticleActive: Bool {
-        isDistanceMode && model.currentHole != nil
+        (isDistanceMode || isPlan) && model.currentHole != nil
     }
 
     /// The putt read's Surface tier is live: green view up, surface installed,
@@ -819,7 +818,10 @@ private struct OnCourseContentView: View {
             // the focused target): the chips act on the reticle's anchor point,
             // which is NOT the focused target — the card's own "From here"
             // covers promotion until the next pan hands the map back.
-            if isReticleActive && model.reticleTarget != nil && model.focusedLadderId == nil
+            // Distance mode only: the planner's own panel carries "Add at
+            // aim", so the chips would double the affordance there.
+            if isReticleActive && isDistanceMode && model.reticleTarget != nil
+                && model.focusedLadderId == nil
                 && !model.reticleAwaitingEntrySettle {
                 reticleActions
                     .padding(.bottom, 8)
@@ -983,14 +985,13 @@ private struct OnCourseContentView: View {
                 // play line) in BOTH GPS and Browse; Browse falls back to the
                 // point inspect, GPS to the chrome toggle (which this
                 // recognizer now owns — see the retired simultaneousGesture
-                // below). Measure/plan/putt own the tap while active.
+                // below). Measure/putt own the tap while active; the planner
+                // places via the reticle, not taps.
                 measureTapEnabled: isDistanceMode
-                    || isMeasure || isPuttSurfaceActive || isPlacingPlanShot,
+                    || isMeasure || isPuttSurfaceActive,
                 onMeasureTap: { position in
                     if isMeasure {
                         measure.place(position)
-                    } else if isPlacingPlanShot {
-                        model.placePlanShot(at: position)
                     } else if isDistanceMode {
                         // Distance mode: the model consumes shape inspects and
                         // dismissals; an open-map tap with nothing up falls

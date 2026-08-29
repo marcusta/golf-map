@@ -251,6 +251,31 @@ struct CoursePlan: Equatable, Sendable {
         holesByNumber[holeNumber]?.shots ?? []
     }
 
+    /// EVERY authored node in a hole's option tree, branches included (the
+    /// planner tool edits the full tree; `shots(holeNumber:)` stays the
+    /// primary-line projection every read-only consumer uses).
+    func allShots(holeNumber: Int) -> [Shot] {
+        holesByNumber[holeNumber]?.allShots ?? []
+    }
+
+    /// A shot's full descendant branch (children, grandchildren, …) in
+    /// deepest-first order — the deletion order that lets a cascade run as
+    /// plain per-row removes (a leaf delete never re-parents anything).
+    func descendants(holeNumber: Int, of shotId: String) -> [Shot] {
+        let all = allShots(holeNumber: holeNumber)
+        let byParent = Dictionary(grouping: all, by: \.parentShotId)
+        var result: [Shot] = []
+        var frontier = [shotId]
+        var seen = Set<String>()
+        while let parent = frontier.popLast() {
+            for child in byParent[parent] ?? [] where seen.insert(child.id).inserted {
+                result.append(child)
+                frontier.append(child.id)
+            }
+        }
+        return result.reversed()
+    }
+
     private func replacingShots(holeNumber: Int, with shots: [Shot]) -> CoursePlan {
         var byNumber = holesByNumber
         if let existing = byNumber[holeNumber] {
@@ -293,12 +318,103 @@ struct CoursePlan: Equatable, Sendable {
         )
     }
 
-    /// Copy with a shot removed from a hole. No-op if absent.
+    /// Copy with a shot removed from a hole using SPLICE semantics (O2, the
+    /// server's default): the removed shot's direct children are promoted into
+    /// its sibling slot (re-parented to its parent), and the merged sibling
+    /// group is re-ranked 0…n so the primary line heals. No-op if absent.
     func removingShot(holeNumber: Int, shotId: String) -> CoursePlan {
-        replacingShots(
-            holeNumber: holeNumber,
-            with: (holesByNumber[holeNumber]?.allShots ?? []).filter { $0.id != shotId }
+        let all = holesByNumber[holeNumber]?.allShots ?? []
+        guard let removed = all.first(where: { $0.id == shotId }) else { return self }
+
+        let siblings = all
+            .filter { $0.parentShotId == removed.parentShotId && $0.id != shotId }
+            .sorted(by: Self.siblingRank)
+        let promoted = all
+            .filter { $0.parentShotId == shotId }
+            .sorted(by: Self.siblingRank)
+        let removedRank = all
+            .filter { $0.parentShotId == removed.parentShotId }
+            .sorted(by: Self.siblingRank)
+            .firstIndex { $0.id == shotId } ?? siblings.count
+
+        var merged = siblings
+        merged.insert(contentsOf: promoted, at: min(removedRank, merged.count))
+        let newRank = Dictionary(
+            merged.enumerated().map { ($0.element.id, $0.offset) },
+            uniquingKeysWith: { first, _ in first }
         )
+
+        let shots = all.compactMap { shot -> Shot? in
+            guard shot.id != shotId else { return nil }
+            guard let rank = newRank[shot.id] else { return shot }
+            return Shot(
+                id: shot.id, position: shot.position, elevation: shot.elevation,
+                clubId: shot.clubId, clubName: shot.clubName, label: shot.label,
+                sortOrder: rank, parentShotId: removed.parentShotId
+            )
+        }
+        return replacingShots(holeNumber: holeNumber, with: shots)
+    }
+
+    /// Copy with a shot AND its whole descendant branch removed (O2 "delete
+    /// option" cascade). Remaining siblings re-rank 0…n. No-op if absent.
+    func removingBranch(holeNumber: Int, shotId: String) -> CoursePlan {
+        let all = holesByNumber[holeNumber]?.allShots ?? []
+        guard let removed = all.first(where: { $0.id == shotId }) else { return self }
+        var doomed = Set(descendants(holeNumber: holeNumber, of: shotId).map(\.id))
+        doomed.insert(shotId)
+
+        let survivors = all.filter { !doomed.contains($0.id) }
+        let siblingRanks = Dictionary(
+            survivors
+                .filter { $0.parentShotId == removed.parentShotId }
+                .sorted(by: Self.siblingRank)
+                .enumerated()
+                .map { ($0.element.id, $0.offset) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let shots = survivors.map { shot -> Shot in
+            guard let rank = siblingRanks[shot.id] else { return shot }
+            return Shot(
+                id: shot.id, position: shot.position, elevation: shot.elevation,
+                clubId: shot.clubId, clubName: shot.clubName, label: shot.label,
+                sortOrder: rank, parentShotId: shot.parentShotId
+            )
+        }
+        return replacingShots(holeNumber: holeNumber, with: shots)
+    }
+
+    /// Copy with `shotId` made rank 0 of its sibling group (O3: set-primary is
+    /// a sibling reorder, not a flag write). Other siblings keep their relative
+    /// order at ranks 1…n. No-op if absent or already primary.
+    func settingPrimary(holeNumber: Int, shotId: String) -> CoursePlan {
+        let all = holesByNumber[holeNumber]?.allShots ?? []
+        guard let target = all.first(where: { $0.id == shotId }) else { return self }
+        let group = all
+            .filter { $0.parentShotId == target.parentShotId }
+            .sorted(by: Self.siblingRank)
+        guard group.first?.id != shotId else { return self }
+
+        let ordered = [target] + group.filter { $0.id != shotId }
+        let newRank = Dictionary(
+            ordered.enumerated().map { ($0.element.id, $0.offset) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let shots = all.map { shot -> Shot in
+            guard let rank = newRank[shot.id] else { return shot }
+            return Shot(
+                id: shot.id, position: shot.position, elevation: shot.elevation,
+                clubId: shot.clubId, clubName: shot.clubName, label: shot.label,
+                sortOrder: rank, parentShotId: shot.parentShotId
+            )
+        }
+        return replacingShots(holeNumber: holeNumber, with: shots)
+    }
+
+    /// Sibling ordering shared by the tree mutations — same rule as
+    /// `HolePlan.siblingOrder` (rank, then id for determinism).
+    private static func siblingRank(_ lhs: Shot, _ rhs: Shot) -> Bool {
+        lhs.sortOrder != rhs.sortOrder ? lhs.sortOrder < rhs.sortOrder : lhs.id < rhs.id
     }
 
     // MARK: Wind (on-course wind editor)

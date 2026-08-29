@@ -35,6 +35,7 @@ struct PlanEditStore: Sendable {
                 await patchShot(id: shotId) { shot in shot.clubId = clubId }
             },
             removeShot: { shotId in await removeShot(id: shotId) },
+            setPrimaryShot: { shotId in await setPrimaryShot(id: shotId) },
             setPlanWind: { speedMps, directionDeg in
                 await setPlanWind(speedMps: speedMps, directionDeg: directionDeg)
             },
@@ -107,6 +108,18 @@ struct PlanEditStore: Sendable {
             print("Hole wind edit failed (kept in memory): \(error)")
         }
         await planSync.flush()
+    }
+
+    /// Set-primary (O3): reorders the sibling group locally, then pushes the
+    /// reorder through the dedicated endpoint (`PlanSyncService.setPrimary`) —
+    /// the row-level sync can't carry sortOrder changes.
+    private func setPrimaryShot(id: String) async {
+        do {
+            try await database.setPrimaryPlanShot(id: id)
+        } catch {
+            print("Plan set-primary failed (kept in memory): \(error)")
+        }
+        await planSync.setPrimary(localShotId: id, courseId: courseId)
     }
 
     private func removeShot(id: String) async {

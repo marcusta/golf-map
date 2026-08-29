@@ -3,7 +3,8 @@ import SwiftUI
 /// Bottom card while the PLANNER tool is active (replaces the distance card,
 /// like the measure/adjust/capture panels). Edits the course's game plan for
 /// the current hole:
-///  - **Add shot**: arm, then tap the map to drop a landing point (auto-clubbed).
+///  - **Add at aim**: pan the reticle to the landing spot, then tap to drop
+///    a point there (auto-clubbed) — same cursor as distance mode.
 ///  - **Drag**: move the `P1`, `P2`… handles on the map (persists on release).
 ///  - **Per-shot club**: a compact picker over the cached bag.
 ///  - **Remove**: a trash button per row.
@@ -25,14 +26,13 @@ struct PlanPanel: View {
             header
             let rows = model.planEditRows
             if rows.isEmpty {
-                Text(model.isAddingPlanShot
-                     ? "Tap the map to place a landing point."
-                     : "Tap “Add shot”, then tap the map to place a landing point.")
+                Text("Pan the map to aim, then tap “Add at aim” to place a landing point.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 caddySection
+                aimingFromTag
                 shotList(rows)
                 if model.selectedShotHasRecommendedAim {
                     applyAimButton
@@ -103,12 +103,30 @@ struct PlanPanel: View {
         .accessibilityLabel("Apply the caddy's recommended aim to the selected shot")
     }
 
+    /// Where the reticle measures from — the selected shot (or tee). Makes the
+    /// selection-scoped reticle origin visible instead of "why is the cursor
+    /// anchored on P3?".
+    @ViewBuilder private var aimingFromTag: some View {
+        if let origin = model.planPlacementOriginLabel {
+            HStack(spacing: 5) {
+                Image(systemName: "scope")
+                    .font(.system(size: 10))
+                Text("Aiming from \(origin)")
+                    .font(.caption2.weight(.medium))
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("The aim reticle measures from \(origin)")
+        }
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
             Label("Plan · H\(model.currentHoleNumber)", systemImage: "signpost.right.fill")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(Self.violet)
             Spacer()
+            addOptionButton
             addShotButton
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
@@ -122,21 +140,39 @@ struct PlanPanel: View {
 
     private var addShotButton: some View {
         Button {
-            model.setAddingPlanShot(!model.isAddingPlanShot)
+            model.addPlanShotAtReticle()
         } label: {
-            Label(model.isAddingPlanShot ? "Tap map…" : "Add shot",
-                  systemImage: model.isAddingPlanShot ? "hand.tap" : "plus.circle")
+            Label("Add at aim", systemImage: "plus.circle")
                 .font(.footnote.weight(.medium))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(
-                    (model.isAddingPlanShot ? Self.violet.opacity(0.28) : .white.opacity(0.08)),
-                    in: Capsule()
-                )
-                .foregroundStyle(model.isAddingPlanShot ? Self.violet : Color.primary)
+                .background(.white.opacity(0.08), in: Capsule())
+                .foregroundStyle(Color.primary)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(model.isAddingPlanShot ? "Cancel adding a shot" : "Add a plan shot")
+        .disabled(model.reticleTarget == nil)
+        .accessibilityLabel("Add a plan shot at the aim point")
+    }
+
+    /// Places a SIBLING of the selected shot at the aim point — an alternative
+    /// option for the same decision (same parent), not a continuation. Only
+    /// shown while a shot is selected; the tee default has no sibling group.
+    @ViewBuilder private var addOptionButton: some View {
+        if model.selectedPlanShotId != nil {
+            Button {
+                model.addPlanOptionAtReticle()
+            } label: {
+                Label("Add option", systemImage: "arrow.triangle.branch")
+                    .font(.footnote.weight(.medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.white.opacity(0.08), in: Capsule())
+                    .foregroundStyle(Color.primary)
+            }
+            .buttonStyle(.plain)
+            .disabled(model.reticleTarget == nil)
+            .accessibilityLabel("Add an alternative option at the aim point")
+        }
     }
 
     private func shotList(_ rows: [OnCourseModel.PlanEditRow]) -> some View {
@@ -150,16 +186,35 @@ struct PlanPanel: View {
     private func shotRow(_ row: OnCourseModel.PlanEditRow) -> some View {
         let selected = model.selectedPlanShotId == row.shotId
         return HStack(spacing: 8) {
-            Text("P\(row.index)")
+            Text(row.label)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(Self.violet)
-                .frame(width: 26)
+                .foregroundStyle(row.isBranch ? Self.violet.opacity(0.6) : Self.violet)
+                .frame(minWidth: 26, alignment: .leading)
             clubMenu(row)
             advisedClubChip(row)
             Spacer()
             MetricText(DistanceFormat.string(row.meters, unit: unit), unit: unit.abbreviation, size: 14)
+            if row.canMakePrimary {
+                Button {
+                    model.setPrimaryPlanShot(id: row.shotId)
+                } label: {
+                    Image(systemName: "star")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Make \(row.label) the primary option")
+            }
             Button {
-                model.removePlanShot(id: row.shotId)
+                // Branch trash removes the whole option (cascade); a primary-
+                // line trash splices the shot out and keeps its continuation.
+                if row.isBranch {
+                    model.removePlanBranch(id: row.shotId)
+                } else {
+                    model.removePlanShot(id: row.shotId)
+                }
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 13, weight: .semibold))
@@ -168,9 +223,12 @@ struct PlanPanel: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remove shot P\(row.index)")
+            .accessibilityLabel(row.isBranch
+                ? "Remove option \(row.label) and its continuation"
+                : "Remove shot \(row.label)")
         }
-        .padding(.horizontal, 8)
+        .padding(.leading, row.isBranch ? 20 : 8)
+        .padding(.trailing, 8)
         .padding(.vertical, 5)
         .background(
             (selected ? Self.violet.opacity(0.16) : .white.opacity(0.05)),
@@ -201,7 +259,7 @@ struct PlanPanel: View {
                 .foregroundStyle(.green)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Use advised club \(advised.name) for shot P\(row.index)")
+            .accessibilityLabel("Use advised club \(advised.name) for shot \(row.label)")
         }
     }
 
@@ -232,6 +290,6 @@ struct PlanPanel: View {
             .background(.white.opacity(0.08), in: Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Club for shot P\(row.index): \(row.clubName ?? "none")")
+        .accessibilityLabel("Club for shot \(row.label): \(row.clubName ?? "none")")
     }
 }
