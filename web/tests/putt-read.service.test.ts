@@ -348,8 +348,8 @@ test('deriveTourRead reads distance, grade and cross-slope off the surface', () 
     // Putt due east (straight downhill): no cross-slope, downhill grade.
     const east = deriveTourRead(surface, at(4, 10), at(12, 10), 10)!;
     expect(east.breakSide).toBe('straight');
-    // §3.4: plays-like = D + Δh/μ = 8 − 0.16/0.056 ≈ 5.1 m.
-    expect(east.playsLikeMeters).toBeCloseTo(8 - 0.16 / (0.56 / 10), 0);
+    // §3.4 calibrated: plays-like = D + Δh/μ_play = 8 − 0.16/0.088 ≈ 6.2 m.
+    expect(east.playsLikeMeters).toBeCloseTo(8 - 0.16 / (0.88 / 10), 0);
 
     // Off coverage → no honest inputs → null.
     expect(deriveTourRead(surface, at(0.3, 10), at(8, 6), 10)).toBeNull();

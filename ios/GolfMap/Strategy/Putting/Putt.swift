@@ -40,7 +40,8 @@ import Foundation
 ///  - aimOffsetM: signed lateral meters at the hole's range. Positive = aim
 ///    RIGHT of the hole as seen from the ball, negative = left.
 ///  - playsLikeM: flat-equivalent rollout of the chosen initial speed,
-///    v₀² / (2·g·μ).
+///    v₀² / (2·g·μ), with the excess over the straight distance rescaled to
+///    the calibrated plays-like friction (PLAYS_LIKE_FRICTION_CONSTANT).
 ///  - Off coverage: if the surface returns nil anywhere along a trajectory,
 ///    that trajectory stops there and the read degrades explicitly
 ///    (availability .degraded/.unavailable, minConfidence 0) — never
@@ -137,7 +138,8 @@ public struct PuttRead: Equatable, Sendable {
     public var aimOffsetM: Double
     /// Chosen initial ball speed, m/s.
     public var initialSpeedMps: Double
-    /// Flat-equivalent rollout of the chosen speed: v₀²/(2gμ), meters.
+    /// Flat-equivalent rollout of the chosen speed, meters — surcharge over
+    /// the straight distance calibrated to the plays-like friction.
     public var playsLikeM: Double
     /// Heuristic holed probability, 0..1 (uncalibrated; see header).
     public var holedProb: Double
@@ -531,12 +533,20 @@ public func readPutt(
     }
 
     let deltaDeg = normalizeDeltaDeg(best.bearingDeg - straightBearingDeg)
+    // Flat-equivalent rollout of the chosen speed under sim physics, with its
+    // excess over the straight distance (elevation surcharge + finish window)
+    // rescaled from the physical μ to the calibrated plays-like friction —
+    // keeps the integrator's terrain-aware surcharge while agreeing with the
+    // closed-form Tour Read (see PLAYS_LIKE_FRICTION_CONSTANT).
+    let flatEquivalentM = (best.v0 * best.v0) / (2 * PUTT_GRAVITY_MPS2 * mu)
+    let muPlay = stimpToPlaysLikeFriction(max(1, stimpFt))
+    let playsLikeM = holeDistanceM + (flatEquivalentM - holeDistanceM) * (mu / muPlay)
     return PuttRead(
         availability: finalStats.offCoverage ? .degraded : .ok,
         aimBearingDeg: best.bearingDeg,
         aimOffsetM: holeDistanceM * sin(deltaDeg * DEG_TO_RAD),
         initialSpeedMps: best.v0,
-        playsLikeM: (best.v0 * best.v0) / (2 * PUTT_GRAVITY_MPS2 * mu),
+        playsLikeM: playsLikeM,
         holedProb: finalScore.holedProb,
         canStop: canStop,
         holed: finalStats.holed,

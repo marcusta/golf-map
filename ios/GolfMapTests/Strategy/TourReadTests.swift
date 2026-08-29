@@ -138,6 +138,25 @@ final class TourReadTests: XCTestCase {
         XCTAssertEqual(fromP.playsLikeMeters, fromM.playsLikeMeters, accuracy: 5e-13)
     }
 
+    func testPlaysLikeMatchesGSProCalibrationAnchors() {
+        // The two fit anchors behind PLAYS_LIKE_FRICTION_CONSTANT (stimp 11):
+        // 8 cm rise → ~+1.0 m plays-like, 29 cm over 8 m → ~+3.6–3.7 m.
+        let small = tourRead(distanceM: 6, gradeDeltaM: 0.08, slopePct: 0, stimpFt: 11,
+                             breakToRight: true)
+        XCTAssertEqual(small.playsLikeMeters - 6, 1.0, accuracy: 0.05)
+        let big = tourRead(distanceM: 8, gradeDeltaM: 0.29, slopePct: 0, stimpFt: 11,
+                           breakToRight: true)
+        XCTAssertEqual(big.playsLikeMeters, 11.63, accuracy: 0.05)
+    }
+
+    func testCantStopVerdictStaysOnThePhysicalMu() {
+        // Δh = −0.6 on 10 m: 10 − 0.6/0.056 < 0 (can't stop physically), but
+        // 10 − 0.6/0.088 > 0 — a calibrated-μ canStop would wrongly say true.
+        let r = tourRead(distanceM: 10, gradeDeltaM: -0.6, slopePct: 0, stimpFt: 10,
+                         breakToRight: true)
+        XCTAssertFalse(r.canStop)
+    }
+
     func testCantStopDownhillCarriesCanStopFalseAndAFiniteAim() {
         let r = tourRead(distanceM: 10, gradeDeltaM: -1, slopePct: 2, stimpFt: 10,
                          breakToRight: true)
@@ -177,11 +196,12 @@ final class TourReadTests: XCTestCase {
         XCTAssertEqual(v.aim, "aim 35 cm left") // 14 in = 35.56 cm → 35
     }
 
-    func testMetricPaceLinePlaysLike154m() {
+    func testMetricPaceLinePlaysLike134m() {
+        // 10 m + 0.3/0.088 (calibrated plays-like μ at stimp 10) = 13.41.
         let r = tourRead(distanceM: 10, gradeDeltaM: 0.3, slopePct: 2, stimpFt: 10,
                          breakToRight: true)
         let v = formatTourRead(r, units: .metric)
-        XCTAssertEqual(v.pace, "plays like 15.4 m")
+        XCTAssertEqual(v.pace, "plays like 13.4 m")
     }
 
     func testImperialPaceLineUsesFeet() {

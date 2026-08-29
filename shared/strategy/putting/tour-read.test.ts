@@ -140,6 +140,23 @@ describe('assembled tourRead', () => {
         expect(fromP.playsLikeMeters).toBeCloseTo(fromM.playsLikeMeters, 12);
     });
 
+    test('plays-like matches the GSPro calibration anchors (stimp 11)', () => {
+        // The two fit anchors behind PLAYS_LIKE_FRICTION_CONSTANT: 8 cm rise →
+        // ~+1.0 m plays-like, and 29 cm over 8 m → ~+3.6–3.7 m.
+        const small = tourRead(6, 0.08, 0, 11, true);
+        expect(small.playsLikeMeters - 6).toBeCloseTo(1.0, 1);
+        const big = tourRead(8, 0.29, 0, 11, true);
+        expect(big.playsLikeMeters - 8).toBeCloseTo(3.6, 0);
+        expect(big.playsLikeMeters).toBeCloseTo(11.63, 1);
+    });
+
+    test('can\'t-stop verdict stays on the physical μ, not the calibrated one', () => {
+        // Δh = −0.6 on 10 m: 10 − 0.6/0.056 < 0 (can't stop physically), but
+        // 10 − 0.6/0.088 > 0 — a calibrated-μ canStop would wrongly say true.
+        const r = tourRead(10, -0.6, 0, 10, true);
+        expect(r.canStop).toBe(false);
+    });
+
     test('can\'t-stop downhill carries canStop false and a finite aim', () => {
         const r = tourRead(10, -1, 2, 10, true);
         expect(r.canStop).toBe(false);
@@ -172,10 +189,11 @@ describe('verbal formatter', () => {
         expect(v.aim).toBe('aim 35 cm left'); // 14 in = 35.56 cm → 35
     });
 
-    test('metric pace line: "plays like 15.4 m"', () => {
+    test('metric pace line: "plays like 13.4 m"', () => {
+        // 10 m + 0.3/0.088 (calibrated plays-like μ at stimp 10) = 13.41.
         const r = tourRead(10, 0.3, 2, 10, true);
         const v = formatTourRead(r, 'metric');
-        expect(v.pace).toBe('plays like 15.4 m');
+        expect(v.pace).toBe('plays like 13.4 m');
     });
 
     test('imperial pace line uses feet', () => {

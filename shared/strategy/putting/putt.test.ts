@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test';
 import { type Vec2 } from '../ellipse';
 import { type GreenSurface, planeSurface } from './green-surface';
 import { readPutt } from './putt';
-import { stimpToFriction } from './tour-read';
+import { stimpToFriction, stimpToPlaysLikeFriction } from './tour-read';
 
 const BALL: Vec2 = { x: 0, y: 0 };
 const HOLE_10M: Vec2 = { x: 0, y: 10 }; // straight putt due north
@@ -61,9 +61,10 @@ describe('flat putt', () => {
         expect(read.restBeyondHoleM!).toBeLessThan(0.6);
     });
 
-    test('plays-like is exactly the flat-equivalent of the chosen speed', () => {
+    test('plays-like is the flat-equivalent of the chosen speed, surcharge calibrated', () => {
         const mu = stimpToFriction(10);
-        const expected = (read.initialSpeedMps * read.initialSpeedMps) / (2 * 9.81 * mu);
+        const flatEquivalent = (read.initialSpeedMps * read.initialSpeedMps) / (2 * 9.81 * mu);
+        const expected = 10 + (flatEquivalent - 10) * (mu / stimpToPlaysLikeFriction(10));
         expect(read.playsLikeM).toBeCloseTo(expected, 9);
     });
 
@@ -114,22 +115,22 @@ describe('single-plane cross-slope (2% downhill east, putt north)', () => {
 describe('uphill / downhill along the line (§3.3, §3.4)', () => {
     const D = 10;
     const stimp = 10;
-    const mu = 0.56 / stimp;
+    const muPlay = 0.88 / stimp;
 
-    test('uphill plays-like matches D + Δh/μ within tolerance', () => {
-        // 2% up along the whole line: Δh = +0.2 m → +3.57 m (§3.4).
+    test('uphill plays-like matches D + Δh/μ_play within tolerance', () => {
+        // 2% up along the whole line: Δh = +0.2 m → +2.27 m calibrated (§3.4).
         const up = planeSurface({ slopePct: 2, fallLineBearingDeg: 180 });
         const read = readPutt(up, BALL, HOLE_10M, stimp);
-        const expected = D + (0.02 * D) / mu; // 13.57
+        const expected = D + (0.02 * D) / muPlay; // 12.27
         expect(read.canStop).toBe(true);
         expect(read.playsLikeM).toBeGreaterThan(expected - 0.2);
         expect(read.playsLikeM).toBeLessThan(expected + 1.2); // + finish window
     });
 
-    test('downhill plays-like matches D − Δh/μ within tolerance', () => {
+    test('downhill plays-like matches D − Δh/μ_play within tolerance', () => {
         const down = planeSurface({ slopePct: 2, fallLineBearingDeg: 0 });
         const read = readPutt(down, BALL, HOLE_10M, stimp);
-        const expected = D - (0.02 * D) / mu; // 6.43
+        const expected = D - (0.02 * D) / muPlay; // 7.73
         expect(read.canStop).toBe(true);
         expect(read.playsLikeM).toBeGreaterThan(expected - 0.2);
         expect(read.playsLikeM).toBeLessThan(expected + 1.2);

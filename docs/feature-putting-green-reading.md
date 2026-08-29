@@ -108,10 +108,17 @@ putt at stimp ~15 — the effect is comparable to several stimp feet and must ne
 Energy balance (friction loss + elevation gain):
 
 ```
-playsLikeLength = D + Δh/μ = D + Δh · S_ft / 0.56
+playsLikeLength = D + Δh/μ_play = D + Δh · S_ft / 0.88
 ```
 
-At stimp 10, ~18× the elevation change (10 m putt rising 0.3 m plays ~15.4 m). Degenerate
+The plays-like surcharge runs on a CALIBRATED friction constant, 0.88, not the stimpmeter's
+0.56. Pure Coulomb overstates what a struck putt costs to climb: the launch skid and
+speed-dependent rolling losses raise the effective friction over the roll. 0.88 is fit to GSPro
+readings at stimp 11 (8 cm rise → +1.0 m; 29 cm over 8 m → +3.6–3.7 m), valid to about 12 m and
+32 cm of rise. `canStop` and `breakMultiplier` keep the physical 0.56: whether the ball can stop
+is lag-speed stimpmeter physics.
+
+At stimp 10, ~11× the elevation change (10 m putt rising 0.3 m plays ~13.4 m). Degenerate
 case: as Δh/μ → −D the ball barely stops; beyond it the putt cannot be stopped near the hole —
 surface this explicitly ("can't stop this one — lag to the low side").
 

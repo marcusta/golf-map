@@ -42,8 +42,9 @@
 //  - aimOffsetM: signed lateral meters at the hole's range. Positive = aim
 //    RIGHT of the hole as seen from the ball, negative = left.
 //  - playsLikeM: flat-equivalent rollout of the chosen initial speed,
-//    v₀² / (2·g·μ) — on a plane this reproduces §3.4's D + Δh/μ plus the
-//    intended finish past the hole.
+//    v₀² / (2·g·μ), with the excess over the straight distance rescaled to
+//    the calibrated plays-like friction — on a plane this reproduces §3.4's
+//    D + Δh/μ_play plus the intended finish past the hole.
 //  - Off coverage: if the surface returns null anywhere along a
 //    trajectory, that trajectory stops there and the read degrades
 //    explicitly (availability 'degraded'/'unavailable', minConfidence 0) —
@@ -51,7 +52,7 @@
 
 import { bearingToUnitVector, type Vec2 } from '../ellipse';
 import { type GreenSurface } from './green-surface';
-import { stimpToFriction } from './tour-read';
+import { stimpToFriction, stimpToPlaysLikeFriction } from './tour-read';
 
 // ---------------------------------------------------------------------------
 // Named constants. Everything in this block awaits empirical calibration —
@@ -124,7 +125,8 @@ export interface PuttRead {
     aimOffsetM: number;
     /** Chosen initial ball speed, m/s. */
     initialSpeedMps: number;
-    /** Flat-equivalent rollout of the chosen speed: v₀²/(2gμ), meters. */
+    /** Flat-equivalent rollout of the chosen speed, meters — surcharge over
+     *  the straight distance calibrated to the plays-like friction. */
     playsLikeM: number;
     /** Heuristic holed probability, 0..1 (uncalibrated; see header). */
     holedProb: number;
@@ -505,12 +507,20 @@ export function readPutt(
     }
 
     const deltaDeg = normalizeDeltaDeg(best.bearingDeg - straightBearingDeg);
+    // Flat-equivalent rollout of the chosen speed under sim physics, with its
+    // excess over the straight distance (elevation surcharge + finish window)
+    // rescaled from the physical μ to the calibrated plays-like friction —
+    // keeps the integrator's terrain-aware surcharge while agreeing with the
+    // closed-form Tour Read (see PLAYS_LIKE_FRICTION_CONSTANT).
+    const flatEquivalentM = (best.v0 * best.v0) / (2 * GRAVITY_MPS2 * mu);
+    const muPlay = stimpToPlaysLikeFriction(Math.max(1, stimpFt));
+    const playsLikeM = holeDistanceM + (flatEquivalentM - holeDistanceM) * (mu / muPlay);
     return {
         availability: finalStats.offCoverage ? 'degraded' : 'ok',
         aimBearingDeg: best.bearingDeg,
         aimOffsetM: holeDistanceM * Math.sin(deltaDeg * DEG_TO_RAD),
         initialSpeedMps: best.v0,
-        playsLikeM: (best.v0 * best.v0) / (2 * GRAVITY_MPS2 * mu),
+        playsLikeM,
         holedProb,
         canStop,
         holed: finalStats.holed,

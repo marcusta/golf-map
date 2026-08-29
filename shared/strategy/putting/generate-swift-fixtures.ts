@@ -42,6 +42,7 @@ import {
     inchesToMeters,
     metersToPaces,
     PACE_METERS,
+    PLAYS_LIKE_FRICTION_CONSTANT,
     playsLikeLength,
     STIMP_BREAK_SCALE_PER_FT,
     STIMP_RELEASE_V0_MPS,
@@ -72,6 +73,7 @@ const constants = {
     GRAVITY_MPS2,
     FEET_TO_METERS,
     FRICTION_CONSTANT,
+    PLAYS_LIKE_FRICTION_CONSTANT,
     PACE_METERS,
     INCHES_TO_METERS,
     TOUR_READ_REFERENCE_STIMP_FT,
@@ -182,7 +184,7 @@ const tourReadCases = [
     tourReadCase('doc example: 4 paces 2% at reference', {
         distanceM: 4 * PACE_METERS, gradeDeltaM: 0, slopePct: 2, stimpFt: 10, breakToRight: false,
     }),
-    tourReadCase('uphill pace: plays like 15.4 m', {
+    tourReadCase('uphill pace: calibrated plays-like', {
         distanceM: 10, gradeDeltaM: 0.3, slopePct: 2, stimpFt: 10, breakToRight: true,
     }),
     tourReadCase("can't-stop downhill caps the aim", {

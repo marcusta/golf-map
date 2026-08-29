@@ -8,6 +8,7 @@
         "GRAVITY_MPS2": 9.8,
         "FEET_TO_METERS": 0.3048,
         "FRICTION_CONSTANT": 0.560571669612727,
+        "PLAYS_LIKE_FRICTION_CONSTANT": 0.88,
         "PACE_METERS": 0.9144000000000001,
         "INCHES_TO_METERS": 0.0254,
         "TOUR_READ_REFERENCE_STIMP_FT": 10,
@@ -377,7 +378,7 @@
             }
         },
         {
-            "name": "uphill pace: plays like 15.4 m",
+            "name": "uphill pace: calibrated plays-like",
             "input": {
                 "distanceM": 10,
                 "gradeDeltaM": 0.3,
@@ -389,20 +390,20 @@
                 "aimOffsetMeters": -0.6906808472232919,
                 "aimInches": 27.192159339499685,
                 "breakSide": "right",
-                "playsLikeMeters": 15.35167965600645,
+                "playsLikeMeters": 13.40909090909091,
                 "breakMultiplier": 0.6513945199532243,
                 "canStop": true
             },
             "verbal": {
                 "metric": {
                     "aim": "aim 70 cm left",
-                    "pace": "plays like 15.4 m",
-                    "combined": "aim 70 cm left · plays like 15.4 m"
+                    "pace": "plays like 13.4 m",
+                    "combined": "aim 70 cm left · plays like 13.4 m"
                 },
                 "imperial": {
                     "aim": "27 in left",
-                    "pace": "plays like 50 ft",
-                    "combined": "27 in left · plays like 50 ft"
+                    "pace": "plays like 44 ft",
+                    "combined": "27 in left · plays like 44 ft"
                 }
             }
         },
@@ -419,7 +420,7 @@
                 "aimOffsetMeters": 0,
                 "aimInches": 0,
                 "breakSide": "straight",
-                "playsLikeMeters": -7.838932186688165,
+                "playsLikeMeters": -1.363636363636365,
                 "breakMultiplier": "Infinity",
                 "canStop": false
             },
@@ -479,20 +480,20 @@
                 "aimOffsetMeters": -0.254579487325659,
                 "aimInches": 10.022814461640118,
                 "breakSide": "right",
-                "playsLikeMeters": 5.6198825405356985,
+                "playsLikeMeters": 4.9076,
                 "breakMultiplier": 0.6508321078987089,
                 "canStop": true
             },
             "verbal": {
                 "metric": {
                     "aim": "aim 25 cm left",
-                    "pace": "plays like 5.6 m",
-                    "combined": "aim 25 cm left · plays like 5.6 m"
+                    "pace": "plays like 4.9 m",
+                    "combined": "aim 25 cm left · plays like 4.9 m"
                 },
                 "imperial": {
                     "aim": "10 in left",
-                    "pace": "plays like 18 ft",
-                    "combined": "10 in left · plays like 18 ft"
+                    "pace": "plays like 16 ft",
+                    "combined": "10 in left · plays like 16 ft"
                 }
             }
         },
@@ -539,20 +540,20 @@
                 "aimOffsetMeters": 1.5759895645282016,
                 "aimInches": 62.0468332491418,
                 "breakSide": "left",
-                "playsLikeMeters": 8.78899220639613,
+                "playsLikeMeters": 9.954545454545455,
                 "breakMultiplier": 1.3653442531519233,
                 "canStop": true
             },
             "verbal": {
                 "metric": {
                     "aim": "aim 160 cm right",
-                    "pace": "plays like 8.8 m",
-                    "combined": "aim 160 cm right · plays like 8.8 m"
+                    "pace": "plays like 10.0 m",
+                    "combined": "aim 160 cm right · plays like 10.0 m"
                 },
                 "imperial": {
                     "aim": "62 in right",
-                    "pace": "plays like 29 ft",
-                    "combined": "62 in right · plays like 29 ft"
+                    "pace": "plays like 33 ft",
+                    "combined": "62 in right · plays like 33 ft"
                 }
             }
         },
@@ -609,7 +610,7 @@
                 "aimBearingDeg": 0,
                 "aimOffsetM": 0,
                 "initialSpeedMps": 3.377496872489848,
-                "playsLikeM": 10.37193443129248,
+                "playsLikeM": 10.236927164927371,
                 "holedProb": 0.16582347342998027,
                 "canStop": true,
                 "holed": true,
@@ -1045,7 +1046,7 @@
                 "aimBearingDeg": -7.37324628421849,
                 "aimOffsetM": -1.2833253119698882,
                 "initialSpeedMps": 3.7848493942648123,
-                "playsLikeM": 10.419743884381205,
+                "playsLikeM": 10.26738242054239,
                 "holedProb": 0.16355038839025954,
                 "canStop": true,
                 "holed": true,
@@ -1449,7 +1450,7 @@
                 "aimBearingDeg": -9.26579652129532,
                 "aimOffsetM": -1.610146756794904,
                 "initialSpeedMps": 3.3930475516501715,
-                "playsLikeM": 10.467663273127432,
+                "playsLikeM": 10.297907706629088,
                 "holedProb": 0.16501281499457607,
                 "canStop": true,
                 "holed": true,
@@ -1897,7 +1898,7 @@
                 "aimBearingDeg": -11.300687473849289,
                 "aimOffsetM": -1.9595791031205256,
                 "initialSpeedMps": 3.104512352677985,
-                "playsLikeM": 10.515692597531151,
+                "playsLikeM": 10.328503023187457,
                 "holedProb": 0.16387023254554461,
                 "canStop": true,
                 "holed": true,
@@ -2393,7 +2394,7 @@
                 "aimBearingDeg": 0,
                 "aimOffsetM": 0,
                 "initialSpeedMps": 3.9351405078979695,
-                "playsLikeM": 14.079600730433356,
+                "playsLikeM": 12.598759764559462,
                 "holedProb": 0.16602437771050194,
                 "canStop": true,
                 "holed": true,
@@ -2773,7 +2774,7 @@
                 "aimBearingDeg": 0,
                 "aimOffsetM": 0,
                 "initialSpeedMps": 2.7101642842631186,
-                "playsLikeM": 6.678225612044392,
+                "playsLikeM": 7.883985665076057,
                 "holedProb": 0.16657957966875658,
                 "canStop": true,
                 "holed": true,
@@ -3305,7 +3306,7 @@
                 "aimBearingDeg": -6.84375,
                 "aimOffsetM": -1.1916214385424433,
                 "initialSpeedMps": 1.3219389591155153,
-                "playsLikeM": 1.9066628356896393,
+                "playsLikeM": 4.844436901208873,
                 "holedProb": 0,
                 "canStop": false,
                 "holed": false,
@@ -4942,7 +4943,7 @@
                 "aimBearingDeg": -33.23318692333347,
                 "aimOffsetM": -2.6827377827732986,
                 "initialSpeedMps": 3.514344622230181,
-                "playsLikeM": 12.352396691719143,
+                "playsLikeM": 12.117291349273817,
                 "holedProb": 0.14513853166716875,
                 "canStop": true,
                 "holed": true,
@@ -5467,7 +5468,7 @@
                 "aimBearingDeg": -4.509186853277095,
                 "aimOffsetM": -0.7861894127889207,
                 "initialSpeedMps": 3.3852722120700096,
-                "playsLikeM": 10.419743884381207,
+                "playsLikeM": 10.267382420542392,
                 "holedProb": 0.16654057063115943,
                 "canStop": true,
                 "holed": true,
@@ -5908,7 +5909,7 @@
                 "aimBearingDeg": -10,
                 "aimOffsetM": -1.7364817766693033,
                 "initialSpeedMps": 3.315294155848556,
-                "playsLikeM": 9.993416490252573,
+                "playsLikeM": 9.99580621698747,
                 "holedProb": 2.907648823936143e-7,
                 "canStop": true,
                 "holed": false,
@@ -9778,7 +9779,7 @@
                     "aimBearingDeg": 25.068901336495653,
                     "aimOffsetM": -2.0451307321696066,
                     "initialSpeedMps": 3.33179937716058,
-                    "playsLikeM": 10.093168807558929,
+                    "playsLikeM": 10.059349765919473,
                     "holedProb": 0.1663040549167796,
                     "canStop": true,
                     "holed": true,
@@ -10233,7 +10234,7 @@
                     "aimBearingDeg": -41.01372595588502,
                     "aimOffsetM": -0.36130206993535646,
                     "initialSpeedMps": 2.807561935524969,
-                    "playsLikeM": 7.883539138350458,
+                    "playsLikeM": 6.836852669521319,
                     "holedProb": 0.2857105704623085,
                     "canStop": true,
                     "holed": true,
@@ -10496,7 +10497,7 @@
                     "aimBearingDeg": -2.0703125,
                     "aimOffsetM": -0.5057627004955341,
                     "initialSpeedMps": 5.053343782023148,
-                    "playsLikeM": 23.218146152069274,
+                    "playsLikeM": 19.872081339999554,
                     "holedProb": 0,
                     "canStop": true,
                     "holed": false,

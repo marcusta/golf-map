@@ -58,6 +58,27 @@ export function stimpToFriction(stimpFt: number): number {
     return FRICTION_CONSTANT / stimpFt;
 }
 
+/**
+ * Effective friction constant for the PLAYS-LIKE length — empirical, not the
+ * stimpmeter physics above. Pure Coulomb (Δh/μ with μ = 0.56/S) overstates the
+ * elevation surcharge of a struck putt: a real putt burns extra energy in the
+ * launch skid phase and in speed-dependent rolling losses, so the effective
+ * friction over the roll is higher than the stimpmeter's slow lag release.
+ * Fit to GSPro readings at stimp 11 (8 cm rise → +1.0 m plays-like; 29 cm over
+ * 8 m → +3.6–3.7 m): both anchors sit on Δh · S/0.88 (factors 12.5 and ~12.6).
+ * The fit's regime is ≤ ~12 m and ≤ ~32 cm of rise; beyond that the linear
+ * form extrapolates (the true response is sub-linear in distance and slope).
+ *
+ * canStop/breakMultiplier stay on FRICTION_CONSTANT — whether the ball can
+ * physically stop is lag-speed stimpmeter physics, exactly what 0.56 encodes.
+ */
+export const PLAYS_LIKE_FRICTION_CONSTANT = 0.88;
+
+/** Effective friction for the plays-like length (calibrated; see above). */
+export function stimpToPlaysLikeFriction(stimpFt: number): number {
+    return PLAYS_LIKE_FRICTION_CONSTANT / stimpFt;
+}
+
 // ── Unit bridge (Tour Read is paces & inches) ───────────────────────────────
 
 /** One Tour Read pace ≈ 3 ft (a full walking stride). */
@@ -210,7 +231,12 @@ export function tourRead(
     const sign = breakSide === 'right' ? -1 : breakSide === 'left' ? 1 : 0;
     const aimOffsetMeters = sign * inchesToMeters(aimInches);
 
-    const { playsLikeMeters, canStop } = playsLikeLength(distanceM, gradeDeltaM, mu);
+    // Plays-like uses the CALIBRATED effective friction; canStop keeps the
+    // physical μ (see PLAYS_LIKE_FRICTION_CONSTANT).
+    const { playsLikeMeters } = playsLikeLength(
+        distanceM, gradeDeltaM, stimpToPlaysLikeFriction(stimpFt),
+    );
+    const { canStop } = playsLikeLength(distanceM, gradeDeltaM, mu);
 
     return {
         aimOffsetMeters,

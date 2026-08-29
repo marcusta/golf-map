@@ -74,10 +74,11 @@ final class PuttTests: XCTestCase {
         XCTAssertLessThan(restBeyond, 0.6)
     }
 
-    func testFlatPlaysLikeIsExactlyTheFlatEquivalentOfTheChosenSpeed() {
+    func testFlatPlaysLikeIsTheFlatEquivalentOfTheChosenSpeedSurchargeCalibrated() {
         let read = Self.flatRead
         let mu = stimpToFriction(10)
-        let expected = (read.initialSpeedMps * read.initialSpeedMps) / (2 * 9.81 * mu)
+        let flatEquivalent = (read.initialSpeedMps * read.initialSpeedMps) / (2 * 9.81 * mu)
+        let expected = 10 + (flatEquivalent - 10) * (mu / stimpToPlaysLikeFriction(10))
         XCTAssertEqual(read.playsLikeM, expected, accuracy: 5e-10)
     }
 
@@ -133,12 +134,12 @@ final class PuttTests: XCTestCase {
     // MARK: - uphill / downhill along the line (§3.3, §3.4)
 
     func testUphillPlaysLikeMatchesFirstOrderWithinTolerance() {
-        // 2% up along the whole line: Δh = +0.2 m → +3.57 m (§3.4).
+        // 2% up along the whole line: Δh = +0.2 m → +2.27 m calibrated (§3.4).
         let d = 10.0
-        let mu = 0.56 / 10.0
+        let muPlay = 0.88 / 10.0
         let up = PlaneSurface(slopePct: 2, fallLineBearingDeg: 180)
         let read = readPutt(surface: up, ball: Self.ball, hole: Self.hole10m, stimpFt: 10)
-        let expected = d + (0.02 * d) / mu // 13.57
+        let expected = d + (0.02 * d) / muPlay // 12.27
         XCTAssertTrue(read.canStop)
         XCTAssertGreaterThan(read.playsLikeM, expected - 0.2)
         XCTAssertLessThan(read.playsLikeM, expected + 1.2) // + finish window
@@ -146,10 +147,10 @@ final class PuttTests: XCTestCase {
 
     func testDownhillPlaysLikeMatchesFirstOrderWithinTolerance() {
         let d = 10.0
-        let mu = 0.56 / 10.0
+        let muPlay = 0.88 / 10.0
         let down = PlaneSurface(slopePct: 2, fallLineBearingDeg: 0)
         let read = readPutt(surface: down, ball: Self.ball, hole: Self.hole10m, stimpFt: 10)
-        let expected = d - (0.02 * d) / mu // 6.43
+        let expected = d - (0.02 * d) / muPlay // 7.73
         XCTAssertTrue(read.canStop)
         XCTAssertGreaterThan(read.playsLikeM, expected - 0.2)
         XCTAssertLessThan(read.playsLikeM, expected + 1.2)

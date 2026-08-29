@@ -38,6 +38,8 @@ export {
     TOUR_READ_REFERENCE_STIMP_FT,
     STIMP_BREAK_SCALE_PER_FT,
     stimpToFriction,
+    PLAYS_LIKE_FRICTION_CONSTANT,
+    stimpToPlaysLikeFriction,
     metersToPaces,
     inchesToMeters,
     stimpBreakScale,

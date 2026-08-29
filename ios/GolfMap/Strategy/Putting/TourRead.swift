@@ -57,6 +57,26 @@ public func stimpToFriction(_ stimpFt: Double) -> Double {
     FRICTION_CONSTANT / stimpFt
 }
 
+/// Effective friction constant for the PLAYS-LIKE length — empirical, not the
+/// stimpmeter physics above. Pure Coulomb (Δh/μ with μ = 0.56/S) overstates
+/// the elevation surcharge of a struck putt: a real putt burns extra energy
+/// in the launch skid phase and in speed-dependent rolling losses, so the
+/// effective friction over the roll is higher than the stimpmeter's slow lag
+/// release. Fit to GSPro readings at stimp 11 (8 cm rise → +1.0 m plays-like;
+/// 29 cm over 8 m → +3.6–3.7 m): both anchors sit on Δh · S/0.88 (factors
+/// 12.5 and ~12.6). The fit's regime is ≤ ~12 m and ≤ ~32 cm of rise; beyond
+/// that the linear form extrapolates (the true response is sub-linear in
+/// distance and slope).
+///
+/// canStop/breakMultiplier stay on FRICTION_CONSTANT — whether the ball can
+/// physically stop is lag-speed stimpmeter physics, exactly what 0.56 encodes.
+public let PLAYS_LIKE_FRICTION_CONSTANT = 0.88
+
+/// Effective friction for the plays-like length (calibrated; see above).
+public func stimpToPlaysLikeFriction(_ stimpFt: Double) -> Double {
+    PLAYS_LIKE_FRICTION_CONSTANT / stimpFt
+}
+
 // MARK: - Unit bridge (Tour Read is paces & inches)
 
 /// One Tour Read pace ≈ 3 ft (a full walking stride). 0.9144 m.
@@ -203,7 +223,13 @@ public func tourRead(
     let sign: Double = breakSide == .right ? -1 : breakSide == .left ? 1 : 0
     let aimOffsetMeters = sign * inchesToMeters(aimInches)
 
-    let (playsLikeMeters, canStop) = playsLikeLength(
+    // Plays-like uses the CALIBRATED effective friction; canStop keeps the
+    // physical μ (see PLAYS_LIKE_FRICTION_CONSTANT).
+    let (playsLikeMeters, _) = playsLikeLength(
+        distanceM: distanceM, gradeDeltaM: gradeDeltaM,
+        mu: stimpToPlaysLikeFriction(stimpFt)
+    )
+    let (_, canStop) = playsLikeLength(
         distanceM: distanceM, gradeDeltaM: gradeDeltaM, mu: mu
     )
 
