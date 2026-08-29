@@ -18,6 +18,10 @@ final class WatchSyncService: NSObject {
     /// Payload built before the session finished activating (activation is
     /// async at launch); flushed from the activation callback.
     private var pendingBundle: WatchCourseBundle?
+    /// Pins offered before activation finished; flushed from the callback.
+    private var pendingPins: (courseId: String, pins: [Int: LatLon])?
+    /// Fingerprint of the last context actually sent (see `pinFingerprint`).
+    private var lastSentPinFingerprint: String?
 
     override init() {
         super.init()
@@ -44,6 +48,44 @@ final class WatchSyncService: NSObject {
             )
             self?.send(bundle)
         }
+    }
+
+    /// Overwrites the watch's application context with today's pins for one
+    /// course. Cheap and idempotent — the system keeps only the latest value,
+    /// so every pin edit can call this. No-ops without a paired watch with the
+    /// app installed, and skips a context identical to the last one sent.
+    func sendPins(courseId: String, pins: [Int: LatLon]) {
+        guard let session, session.activationState == .activated else {
+            pendingPins = (courseId, pins)
+            return
+        }
+        guard session.isPaired, session.isWatchAppInstalled else { return }
+        let context = WatchPinPayload.encode(
+            courseId: courseId,
+            day: WatchPinPayload.dayString(Date()),
+            pins: pins
+        )
+        let fingerprint = Self.pinFingerprint(context)
+        guard fingerprint != lastSentPinFingerprint else { return }
+        do {
+            try session.updateApplicationContext(context)
+            lastSentPinFingerprint = fingerprint
+        } catch {
+            print("Watch pin sync failed for \(courseId): \(error)")
+        }
+    }
+
+    /// Stable string over the pin context — the dedupe key (`updateApplication
+    /// Context` is cheap but not free, and pins republish on every model load).
+    private static func pinFingerprint(_ context: [String: Any]) -> String {
+        let courseId = context[WatchPinPayload.courseIdKey] as? String ?? ""
+        let day = context[WatchPinPayload.dayKey] as? String ?? ""
+        let pins = context[WatchPinPayload.pinsKey] as? [String: [Double]] ?? [:]
+        let body = pins.keys.sorted().map { key in
+            let pair = pins[key] ?? []
+            return "\(key):" + pair.map { String($0) }.joined(separator: ",")
+        }.joined(separator: ";")
+        return "\(courseId)|\(day)|\(body)"
     }
 
     private func send(_ bundle: WatchCourseBundle) {
@@ -94,6 +136,9 @@ final class WatchSyncService: NSObject {
         elevationSampler: GridElevationSampler? = nil
     ) async -> WatchCourseBundle {
         let polygons = featuresGeoJSON.flatMap { try? GreenPolygonStore(featuresGeoJSON: $0) }
+        // Full course ring set for ladder hazard crossings; each hole's routed
+        // line scopes it — no per-hole grouping needed.
+        let surfaces = featuresGeoJSON.flatMap { try? SurfaceFeatureStore(featuresGeoJSON: $0) }
 
         let teesByHole = Dictionary(grouping: furniture.tees, by: \.holeId)
         let greensByHole = Dictionary(
@@ -116,6 +161,18 @@ final class WatchSyncService: NSObject {
             var back: [Double]?
             if let lat = green.backLat, let lon = green.backLon { back = [lat, lon] }
 
+            // Playing line: tee → aim points (authored order) → green.
+            let aims = (aimsByHole[hole.id] ?? []).sorted(by: { $0.sortOrder < $1.sortOrder })
+            var path = [Sweref99TM.fromWGS84(LatLon(lat: tee.lat, lon: tee.lon))]
+            for aim in aims {
+                path.append(Sweref99TM.fromWGS84(LatLon(lat: aim.lat, lon: aim.lon)))
+            }
+            path.append(Sweref99TM.fromWGS84(center))
+
+            let targets = WatchTargetBuilder.targets(
+                path: path, aims: aims, surfaces: surfaces?.surfaces ?? []
+            )
+
             var greenGrid: WatchElevationGrid?
             var corridorGrid: WatchElevationGrid?
             var greenImage: WatchGreenImage?
@@ -128,12 +185,6 @@ final class WatchSyncService: NSObject {
                         rings: rings, sampler: sampler
                     )
                 }
-                // Playing line: tee → aim points (authored order) → green.
-                var path = [Sweref99TM.fromWGS84(LatLon(lat: tee.lat, lon: tee.lon))]
-                for aim in (aimsByHole[hole.id] ?? []).sorted(by: { $0.sortOrder < $1.sortOrder }) {
-                    path.append(Sweref99TM.fromWGS84(LatLon(lat: aim.lat, lon: aim.lon)))
-                }
-                path.append(Sweref99TM.fromWGS84(center))
                 corridorGrid = await WatchElevationPatchBuilder.corridorGrid(
                     path: path, sampler: sampler
                 )
@@ -149,7 +200,8 @@ final class WatchSyncService: NSObject {
                 greenPolygon: polygon?.wgs84Rings.first?.map { [$0.lat, $0.lon] },
                 greenGrid: greenGrid,
                 corridorGrid: corridorGrid,
-                greenImage: greenImage
+                greenImage: greenImage,
+                targets: targets.isEmpty ? nil : targets
             ))
         }
 
@@ -183,6 +235,10 @@ extension WatchSyncService: WCSessionDelegate {
             if let pending = self.pendingBundle {
                 self.pendingBundle = nil
                 self.send(pending)
+            }
+            if let pending = self.pendingPins {
+                self.pendingPins = nil
+                self.sendPins(courseId: pending.courseId, pins: pending.pins)
             }
         }
     }

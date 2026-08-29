@@ -76,6 +76,54 @@ final class HoleSelectorTests: XCTestCase {
         XCTAssertFalse(selector.isManual)
     }
 
+    func testManualSelectionNearAnotherTeeIsNotInstantlyReverted() {
+        // Chipping back to hole 1's green from beside hole 2's tee: auto has
+        // tee-snapped to hole 2, the player manually switches back to hole 1
+        // while still inside hole 2's tee radius — the override must hold.
+        var selector = HoleSelector()
+        selector.update(fix: point(northM: 250), holes: holes)
+        selector.update(fix: point(northM: 325), holes: holes)
+        XCTAssertEqual(selector.currentIndex, 1)
+
+        selector.select(index: 0, holeCount: holes.count)
+        XCTAssertFalse(selector.update(fix: point(northM: 325), holes: holes))
+        XCTAssertEqual(selector.currentIndex, 0)
+        XCTAssertTrue(selector.isManual)
+
+        // Walking clearly away and back onto hole 2's tee re-arms the snap.
+        selector.update(fix: point(northM: 250), holes: holes)
+        XCTAssertEqual(selector.currentIndex, 0)
+        XCTAssertTrue(selector.update(fix: point(northM: 322), holes: holes))
+        XCTAssertEqual(selector.currentIndex, 1)
+        XCTAssertFalse(selector.isManual)
+    }
+
+    func testBoundaryJitterDoesNotRearmTeeSnap() {
+        // Manual hold just inside hole 2's tee radius; jitter to just past
+        // teeSnapM (but inside the exit buffer) and back must not re-snap.
+        var selector = HoleSelector()
+        selector.update(fix: point(northM: 250), holes: holes)
+        selector.update(fix: point(northM: 325), holes: holes)
+        selector.select(index: 0, holeCount: holes.count)
+
+        // 320 - 42 → 42 m from the tee: outside 35 m, inside 35 + 15 m.
+        XCTAssertFalse(selector.update(fix: point(northM: 278), holes: holes))
+        XCTAssertFalse(selector.update(fix: point(northM: 325), holes: holes))
+        XCTAssertEqual(selector.currentIndex, 0)
+        XCTAssertTrue(selector.isManual)
+    }
+
+    func testReleaseManualResumesAutoSelection() {
+        var selector = HoleSelector()
+        selector.select(index: 1, holeCount: holes.count)
+        selector.releaseManual()
+        XCTAssertFalse(selector.isManual)
+        // Mid hole-1 fairway: auto takes over again (beats hole 2 by more
+        // than the hysteresis margin).
+        XCTAssertTrue(selector.update(fix: point(northM: 150), holes: holes))
+        XCTAssertEqual(selector.currentIndex, 0)
+    }
+
     func testMalformedHoleIsNeverSelected() {
         let withBroken = [
             WatchHole(number: 1, par: 4, tee: pair(northM: 0), greenCenter: pair(northM: 300)),

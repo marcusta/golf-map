@@ -8,6 +8,8 @@ import SwiftUI
 struct GreenMapView: View {
     @Bindable var tracker: ShotTracker
     let course: WatchCourseBundle
+    /// Today's pins from the phone — drawn on the green and measured to.
+    @Bindable var pins: PinStore
     let selector: HoleSelector
 
     /// How far off the image extent the player dot still draws (clamped to
@@ -17,6 +19,11 @@ struct GreenMapView: View {
     private var hole: WatchHole? {
         course.holes.indices.contains(selector.currentIndex)
             ? course.holes[selector.currentIndex] : nil
+    }
+
+    private var pin: LatLon? {
+        guard let hole else { return nil }
+        return pins.pin(courseId: course.courseId, holeNumber: hole.number)
     }
 
     var body: some View {
@@ -137,6 +144,17 @@ struct GreenMapView: View {
                     )
                 }
 
+                // Today's pin, as the phone's Green view placed it.
+                if let pin {
+                    let center = point(Sweref99TM.fromWGS84(pin))
+                    let dot = CGRect(x: center.x - 4, y: center.y - 4, width: 8, height: 8)
+                    context.fill(
+                        Path(ellipseIn: dot),
+                        with: .color(Color(red: 1.0, green: 0.83, blue: 0.23))
+                    )
+                    context.stroke(Path(ellipseIn: dot), with: .color(.black), lineWidth: 1.2)
+                }
+
                 if let fix = tracker.currentFix {
                     let p = Sweref99TM.fromWGS84(
                         LatLon(lat: fix.coordinate.latitude, lon: fix.coordinate.longitude)
@@ -170,16 +188,22 @@ struct GreenMapView: View {
     private var distancesRow: some View {
         if let fix = tracker.currentFix, let hole, let center = hole.greenCenterLatLon {
             let origin = LatLon(lat: fix.coordinate.latitude, lon: fix.coordinate.longitude)
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 if let front = hole.greenFrontLatLon {
                     Text("F \(Int(Distance.planarMeters(origin, front).rounded()))")
                         .foregroundStyle(.secondary)
                 }
                 Text("C \(Int(Distance.planarMeters(origin, center).rounded()))")
-                    .fontWeight(.semibold)
+                    .fontWeight(pin == nil ? .semibold : .regular)
+                    .foregroundStyle(pin == nil ? .primary : .secondary)
                 if let back = hole.greenBackLatLon {
                     Text("B \(Int(Distance.planarMeters(origin, back).rounded()))")
                         .foregroundStyle(.secondary)
+                }
+                if let pin {
+                    Text("P \(Int(Distance.planarMeters(origin, pin).rounded()))")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.yellow)
                 }
             }
             .font(.footnote)

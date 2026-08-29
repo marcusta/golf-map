@@ -59,6 +59,49 @@ synced.
 - Format stays v1 (all additive optional fields); older watch builds ignore
   the new keys.
 
+## v4: today's pin
+
+The pin the player marks in the phone's Green view carries to the hole view
+and to the watch.
+
+- **Phone**: every settled putt-read hole placement (tap or drag release) in
+  the Green view commits the current hole's today's-pin override
+  (`OnCourseModel.setPinFromGreenRead`, source `Visual`). Front/center/back
+  markers and the green polygon keep their stored positions, so the distance
+  card and the ladder show pin AND F/C/B. The pin expires with the local day,
+  like every other today's-pin (spec §5 / L3).
+- **Transport**: pins ride the WatchConnectivity *application context*, not
+  the course bundle — a pin changes mid-round, hours after the bundle was
+  transferred, and the context keeps only the latest value (delivered whenever
+  the watch is next reachable, including at watch launch via
+  `receivedApplicationContext`). Wire format in
+  `GolfMapWatchShared/WatchPinPayload.swift`: course id, local day, and
+  `hole number → [lat, lon]`. `WatchSyncService.sendPins` dedupes on a
+  fingerprint of that payload.
+- **Watch**: `PinStore` persists the last context and reports a pin only for
+  the matching course on the matching local day. `CourseLibrary` forwards the
+  context to it — WCSession allows exactly one delegate, and that is
+  `CourseLibrary`. The distance page makes the pin the headline number (with
+  the green center dropping into an F/C/B row), the ladder grows a `Pin` rung,
+  and the green map draws the pin dot plus a `P` figure.
+
+## v4: distance ladder + hole swipe
+
+- **Ladder page** (`LadderView`, between the distance page and mark shot):
+  hazard crossings and aim points ahead of the player, sorted near→far, with
+  the green row (pin or center, plus front/back) at the end. Hazard rows carry
+  front and carry figures.
+- **Precomputed targets**: the phone walks each hole's routed play line
+  (tee → aims → green) against the course ring set and ships the crossings as
+  fixed `[lat, lon]` points in the bundle (`WatchTargetBuilder`, `WatchTarget`;
+  capped at 6 hazards per hole). The watch measures fix→point and drops
+  targets it has already walked past. The watch owns no ring geometry.
+- **Hole swipe**: a horizontal drag on the distance page steps the hole and
+  sets a manual override (the `MANUAL` pill hands it back to GPS). The gesture
+  is simultaneous with the pager, and a dominance guard ignores drags that are
+  really vertical. Tee snap stays edge-triggered: it fires on entering a tee
+  radius, so a manual pick made while standing near another tee survives.
+
 ## What it does
 
 - **Mark shot** stores the current GPS fix as the shot position.

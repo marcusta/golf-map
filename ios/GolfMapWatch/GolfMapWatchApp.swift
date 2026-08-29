@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchKit
 
 @main
 struct GolfMapWatchApp: App {
@@ -13,8 +14,8 @@ struct GolfMapWatchApp: App {
 }
 
 /// Vertical pager: green distances on top (when a course is synced), the
-/// green map in the middle, the mark-shot tracker below. With nothing synced
-/// yet the tracker stands alone.
+/// distance ladder and mark-shot tracker below, the green map last. With
+/// nothing synced yet the tracker stands alone.
 struct RootView: View {
     @Bindable var tracker: ShotTracker
     @Bindable var library: CourseLibrary
@@ -27,6 +28,7 @@ struct RootView: View {
                 CoursePagesView(
                     tracker: tracker,
                     course: course,
+                    pins: library.pins,
                     onSwitchCourse: { showsCoursePicker = true },
                     courseCount: library.courses.count
                 )
@@ -55,6 +57,8 @@ struct RootView: View {
 struct CoursePagesView: View {
     @Bindable var tracker: ShotTracker
     let course: WatchCourseBundle
+    /// Today's pins, synced from the phone (empty until one is placed).
+    @Bindable var pins: PinStore
     let onSwitchCourse: () -> Void
     let courseCount: Int
 
@@ -65,14 +69,20 @@ struct CoursePagesView: View {
             OnCourseView(
                 tracker: tracker,
                 course: course,
+                pins: pins,
                 selector: $selector,
                 onSwitchCourse: onSwitchCourse,
                 courseCount: courseCount
             )
-            GreenMapView(tracker: tracker, course: course, selector: selector)
+            LadderView(tracker: tracker, course: course, pins: pins, selector: selector)
             DistanceView(tracker: tracker)
+            GreenMapView(tracker: tracker, course: course, pins: pins, selector: selector)
         }
         .tabViewStyle(.verticalPage)
+        // Horizontal axis = holes; vertical stays the page axis. Simultaneous
+        // so list scrolling and page swipes keep working — the dominance
+        // guard ignores drags that are really vertical.
+        .simultaneousGesture(holeSwipe)
         .onAppear { tracker.startUpdates() }
         .onChange(of: tracker.currentFix) { _, fix in
             guard let fix else { return }
@@ -81,5 +91,19 @@ struct CoursePagesView: View {
                 holes: course.holes
             )
         }
+    }
+
+    /// Swipe left → next hole, right → previous; clamped at the ends.
+    private var holeSwipe: some Gesture {
+        DragGesture(minimumDistance: 25)
+            .onEnded { value in
+                let w = value.translation.width
+                let h = value.translation.height
+                guard abs(w) > 40, abs(w) > abs(h) * 2 else { return }
+                let next = selector.currentIndex + (w < 0 ? 1 : -1)
+                guard course.holes.indices.contains(next) else { return }
+                selector.select(index: next, holeCount: course.holes.count)
+                WKInterfaceDevice.current().play(.click)
+            }
     }
 }

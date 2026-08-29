@@ -57,6 +57,10 @@ public struct WatchHole: Codable, Sendable, Equatable {
     public var corridorGrid: WatchElevationGrid?
     /// Phone-pre-rendered slope shading of the green (the mini green map).
     public var greenImage: WatchGreenImage?
+    /// Distance-ladder targets ahead of the player (hazard line-crossings +
+    /// aim points), precomputed by the phone along the routed play line. The
+    /// watch only measures fix→point. Nil on bundles from older phones.
+    public var targets: [WatchTarget]?
 
     public init(
         number: Int,
@@ -68,7 +72,8 @@ public struct WatchHole: Codable, Sendable, Equatable {
         greenPolygon: [[Double]]? = nil,
         greenGrid: WatchElevationGrid? = nil,
         corridorGrid: WatchElevationGrid? = nil,
-        greenImage: WatchGreenImage? = nil
+        greenImage: WatchGreenImage? = nil,
+        targets: [WatchTarget]? = nil
     ) {
         self.number = number
         self.par = par
@@ -80,6 +85,36 @@ public struct WatchHole: Codable, Sendable, Equatable {
         self.greenGrid = greenGrid
         self.corridorGrid = corridorGrid
         self.greenImage = greenImage
+        self.targets = targets
+    }
+}
+
+/// One distance-ladder target — a fixed geographic point the watch measures
+/// to live. Hazards carry a far edge so the row can show front / carry.
+public struct WatchTarget: Codable, Sendable, Equatable {
+    /// Display label, e.g. "Bunker", "Creek", "A1".
+    public var label: String
+    /// "hazard" or "aim" (row styling; unknown kinds render as aim).
+    public var kind: String
+    /// `[lat, lon]` — the hazard's near edge on the play line, or the aim
+    /// marker itself.
+    public var point: [Double]
+    /// `[lat, lon]` far edge on the play line (the carry); nil for aims.
+    public var farPoint: [Double]?
+
+    public init(label: String, kind: String, point: [Double], farPoint: [Double]? = nil) {
+        self.label = label
+        self.kind = kind
+        self.point = point
+        self.farPoint = farPoint
+    }
+
+    public var pointLatLon: LatLon? { Self.latLon(point) }
+    public var farPointLatLon: LatLon? { farPoint.flatMap(Self.latLon) }
+
+    private static func latLon(_ pair: [Double]) -> LatLon? {
+        guard pair.count >= 2 else { return nil }
+        return LatLon(lat: pair[0], lon: pair[1])
     }
 }
 

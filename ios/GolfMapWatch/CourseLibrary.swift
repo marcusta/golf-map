@@ -13,6 +13,10 @@ final class CourseLibrary: NSObject {
     private(set) var courses: [WatchCourseBundle] = []
     /// The user's explicit course choice (persisted); nil = newest synced.
     private var chosenCourseId: String?
+    /// Today's pins, received on the application-context channel. Owned here
+    /// because WCSession allows exactly one delegate — this class is it, and it
+    /// forwards pin contexts through.
+    let pins: PinStore
 
     private let defaults: UserDefaults
     private static let chosenKey = "courseLibrary.chosenCourseId"
@@ -24,8 +28,9 @@ final class CourseLibrary: NSObject {
         return courses.first
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, pins: PinStore = PinStore()) {
         self.defaults = defaults
+        self.pins = pins
         super.init()
         chosenCourseId = defaults.string(forKey: Self.chosenKey)
         loadFromDisk()
@@ -96,7 +101,22 @@ extension CourseLibrary: WCSessionDelegate {
         _ session: WCSession,
         activationDidCompleteWith activationState: WCSessionActivationState,
         error: (any Error)?
-    ) {}
+    ) {
+        guard activationState == .activated else { return }
+        // The context delivered while the app was not running is waiting here
+        // at activation — the delegate callback does not replay it.
+        guard let decoded = WatchPinPayload.decode(session.receivedApplicationContext)
+        else { return }
+        Task { @MainActor in self.pins.apply(decoded) }
+    }
+
+    nonisolated func session(
+        _ session: WCSession,
+        didReceiveApplicationContext applicationContext: [String: Any]
+    ) {
+        guard let decoded = WatchPinPayload.decode(applicationContext) else { return }
+        Task { @MainActor in self.pins.apply(decoded) }
+    }
 
     nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
         // Must complete before returning — the temp file dies with the call.

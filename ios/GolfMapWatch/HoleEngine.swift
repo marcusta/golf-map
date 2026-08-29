@@ -12,20 +12,34 @@ struct HoleSelector: Equatable {
     /// Standing within this of a tee always locks that hole (and releases a
     /// manual override) — walking onto the next tee is the strongest signal.
     static let teeSnapM = 35.0
+    /// A tee already in range only leaves it beyond teeSnapM + this buffer,
+    /// so GPS jitter at the boundary can't re-arm the edge trigger.
+    static let teeSnapExitBufferM = 15.0
 
     private(set) var currentIndex: Int
     /// True after `select(index:)`; auto-selection pauses until tee snap.
     private(set) var isManual = false
+    /// Hole indices whose tee radius contained the previous fix. Tee snap is
+    /// edge-triggered off this: it fires only on *entering* a radius, so a
+    /// manual selection made while already standing near another hole's tee
+    /// (chipping back from beside the next tee) is not instantly reverted.
+    private var teesInRange: Set<Int> = []
 
     init(currentIndex: Int = 0) {
         self.currentIndex = currentIndex
     }
 
-    /// Manual override from the UI (chevrons / picker).
+    /// Manual override from the UI (hole swipe / picker).
     mutating func select(index: Int, holeCount: Int) {
         guard (0..<holeCount).contains(index) else { return }
         currentIndex = index
         isManual = true
+    }
+
+    /// Hands the selection back to GPS (tap on the MANUAL pill). The next
+    /// fix re-runs auto-selection from the current hole.
+    mutating func releaseManual() {
+        isManual = false
     }
 
     /// Feeds a GPS fix; returns true when the selection changed.
@@ -35,14 +49,23 @@ struct HoleSelector: Equatable {
         let previous = currentIndex
         let fixPoint = Sweref99TM.fromWGS84(fix)
 
-        // Tee snap: standing on a tee wins outright, manual or not.
-        for (index, hole) in holes.enumerated() where index != currentIndex {
+        // Tee snap: walking onto a tee wins outright, manual or not — but
+        // only on entering its radius, never while lingering inside it.
+        var inRange: Set<Int> = []
+        for (index, hole) in holes.enumerated() {
             guard let tee = hole.teeLatLon else { continue }
-            if planarDistance(fixPoint, to: tee) <= Self.teeSnapM {
-                currentIndex = index
-                isManual = false
-                return true
+            let limit = teesInRange.contains(index)
+                ? Self.teeSnapM + Self.teeSnapExitBufferM : Self.teeSnapM
+            if planarDistance(fixPoint, to: tee) <= limit {
+                inRange.insert(index)
             }
+        }
+        let entered = inRange.subtracting(teesInRange)
+        teesInRange = inRange
+        for index in holes.indices where index != currentIndex && entered.contains(index) {
+            currentIndex = index
+            isManual = false
+            return true
         }
 
         guard !isManual else { return false }
