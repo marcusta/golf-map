@@ -26,6 +26,7 @@ import { createTerrainEditsApi } from './api/terrain-edits.api';
 import { createPublishApi } from './api/publish.api';
 import { createTapscoreBridgeApi } from './api/tapscore-bridge.api';
 import { createIngestRoutes } from './api/ingest.routes';
+import { createGeneratedFeaturesRoutes } from './api/generated-features.routes';
 
 type Services = ReturnType<typeof createServices>;
 
@@ -76,6 +77,10 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
     mount(app, '/api', createPinsApi(pinsService));
     mount(app, '/api', createAimPointsApi(aimPointsService));
     mount(app, '/api', createCourseFeaturesApi(courseFeaturesService));
+    // Pipeline bulk-replace of generated features (hand-mounted Hono route:
+    // it needs the `?source=` query on a PUT and 400s for bad bodies, which
+    // `mount()` does not offer). Same cookie-session auth as feature create.
+    app.route('/api', createGeneratedFeaturesRoutes(courseFeaturesService));
     mount(app, '/api', createClubsApi(clubsService));
     mount(app, '/api', createGamePlansApi(gamePlansService));
     mount(app, '/api', createRoundsApi(roundsService));

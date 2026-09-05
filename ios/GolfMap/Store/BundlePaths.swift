@@ -1,17 +1,40 @@
 import Foundation
 
 /// Tile layer within a course bundle. File extensions match what the server
-/// pipeline produces: JPEG orthophoto, PNG terrain-RGB.
+/// pipeline produces: JPEG orthophoto, PNG terrain-RGB (terrain, canopy,
+/// surface) and RGBA PNG (canopy-color). The raw value is the layer's name in
+/// the tile manifest and its directory name on disk / in the tile URL.
 public enum TileLayer: String, Sendable, CaseIterable {
     case ortho
     case terrain
+    /// Terrain-RGB, value = canopy height above ground in metres (0 = none).
+    case canopy
+    /// Pre-coloured canopy for display, transparent where there is none.
+    case canopyColor = "canopy-color"
+    /// Terrain-RGB digital surface model (ground + canopy).
+    case surface
 
     public var fileExtension: String {
         switch self {
         case .ortho: "jpg"
-        case .terrain: "png"
+        case .terrain, .canopy, .canopyColor, .surface: "png"
         }
     }
+
+    /// Layers a course bundle may lack (no lidar for the course). The store
+    /// downloads them only when the manifest lists them and tolerates a
+    /// server that has no tiles for them; everything renders without them.
+    public var isOptional: Bool {
+        switch self {
+        case .ortho, .terrain: false
+        case .canopy, .canopyColor, .surface: true
+        }
+    }
+
+    /// The layers every bundle must have.
+    public static let required: [TileLayer] = allCases.filter { !$0.isOptional }
+    /// The lidar-derived layers a bundle has only when the manifest lists them.
+    public static let optional: [TileLayer] = allCases.filter(\.isOptional)
 }
 
 /// On-disk layout of offline data:

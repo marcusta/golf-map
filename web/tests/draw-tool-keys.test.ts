@@ -78,6 +78,21 @@ describe('DrawToolService digit type switching (T39)', () => {
         expect(tool.drawType.peek()).toBe(before); // draw type untouched while retyping
     });
 
+    test('armed with a selection (chain-draw), a digit sets the NEXT shape type and never retypes', () => {
+        // create() selects each new shape, so mid-chain the previous shape is
+        // always selected; the pick must go to the shape being drawn.
+        const { tool, features } = armedTool();
+        features.selectedIds.set(new Set(['feat-1']));
+        const retype = mock((_t: string) => {});
+        tool.retypeSelection = retype as never;
+        tool.armDraw();
+
+        pressDigit('3'); // green
+
+        expect(retype).not.toHaveBeenCalled();
+        expect(tool.drawType.peek()).toBe('green');
+    });
+
     test('⌘/Ctrl/Alt + digit is ignored (reserved for browser tab switching)', () => {
         const { tool } = armedTool();
         pressDigit('2', { metaKey: true });

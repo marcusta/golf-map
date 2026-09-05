@@ -68,7 +68,7 @@ bands (RGB) are kept in the output.
 ```sh
 python -m golfpipe clean-ortho \
     --ortho data/sources/<mapKey>/ortho-orto-l2-2025.tif \
-    --trees trees.geojson \            # detect-trees output, or an exported features file
+    --trees trees.geojson \            # trees-features (preferred) or detect-trees output, or an exported features file
     --features features.geojson \      # typed course features (EPSG:3006 contract or WGS84 export)
     --shadow-azimuth 15 --shadow-length 18
 ```
@@ -171,6 +171,132 @@ reasons, handled differently:
   coverage) is still 0-filled at encode time as a last resort; pass
   `--edge-pad 0` to restore the old 0-fill-everywhere behavior.
 
+### `canopy` — lidar → canopy / canopy-color / surface tile pyramids
+
+```sh
+python -m golfpipe canopy --lidar work/lidar/m21c011-646_54.copc.laz \
+    --dem data/dem/<courseId>.tif --course-id <courseId> \
+    --tiles-dir data/tiles/<courseId> --workdir work/canopy \
+    [--bbox w,s,e,n | --aoi area.geojson] [--minzoom 12 --maxzoom 17] \
+    [--trees-out trees.geojson] [--min-hole-area 50]
+```
+
+Builds a 1 m canopy height grid from classified COPC lidar (the
+detect-trees nDSM: mean-z ground of classes 2/9 vs max-z of every non-noise
+return) and tiles three layers under `--tiles-dir`, zoom range as
+`tile-terrain` (default 12-17 here via flags; 12-16 without):
+
+- `canopy/{z}/{x}/{y}.png` — Terrain-RGB, value = height above ground in
+  metres, 0 where no canopy.
+- `canopy-color/{z}/{x}/{y}.png` — RGBA display ramp: transparent under
+  1 m, then 1 m yellow (255,255,0) → 8 m orange (255,140,0) → 15 m red
+  (230,30,30) → 25 m magenta (200,0,200) → 35 m+ blue-violet (80,40,255).
+- `surface/{z}/{x}/{y}.png` — Terrain-RGB DSM: `--dem` ground (resampled
+  to the 1 m grid; lidar ground where the DEM has no data) + canopy height,
+  shaped per `--surface-shape` (below).
+
+Processing (`golfpipe/canopy.py`): Lantmäteriet has no building class, so
+roofs are removed by return count — cells >= 2 m where under 10 % of the
+points have `number_of_returns > 1` are zeroed (a roof returns once, a
+crown splits the pulse). Then clamp to [0, 40] m, drop < 1 m, 3x3
+8-connected binary closing (filled cells take their 3x3 max) and a 7x7
+maximum filter so each cell holds its crown top. `canopy.tif` and
+`surface.tif` (float32, EPSG:3006) are left in `--workdir`; `canopy.tif`
+holds the cleaned canopy height in metres above ground with nodata 0 and is
+the input `trees-features` reads. The area is `--bbox`/`--aoi` if given,
+else the `--dem` extent.
+
+`--trees-out trees.geojson` also writes the `trees-features` GeoJSON
+(default thresholds, `source_ref` = the lidar basenames) from the same
+cleaned grid, so one run yields tiles and polygons that agree.
+`--min-hole-area` (default 50 m²) is passed through to it.
+
+`--surface-shape {crown,flat}` (default `crown`) controls only the
+`surface` layer; `canopy` and `canopy-color` are identical either way.
+`flat` adds the cleaned canopy as is, which renders as flat-topped mesas
+with 1 m vertical walls when draped in 3D. `crown`
+(`golfpipe.canopy.crown_shape`) rounds each footprint before adding it to
+the ground: distance-to-edge taper `sqrt(d / r)` with `r = 4 m` (or the
+crown's own half-width when smaller, so a lone spike keeps its top; edge
+cells of a broad crown drop to about 35 %), a dip of up to 25 % between the
+raw nDSM's local maxima so plateaus are not flat, then a footprint-
+normalised Gaussian blur (sigma 1 m). The result is re-masked to the
+footprint (no bleed onto fairways) and capped at 1.02x the cleaned canopy.
+
+`manifest.json` in `--tiles-dir` is backed up to `manifest.json.bak`
+(`.bak2`, `.bak3`, ... if that name is taken; backups are never overwritten)
+and rewritten with `canopy`, `canopy-color` and `surface` layer entries
+added; every other field (including server-written
+`orthoVintages`/`activeOrtho`) is kept and `generatedAt` is set to now (iOS
+keys its tile cache on it).
+
+### `trees-features` — tree polygons from the cleaned canopy grid
+
+```sh
+python -m golfpipe trees-features --canopy-tif work/canopy/canopy.tif \
+    --course-id <courseId> --out trees.geojson \
+    [--min-height 2.0] [--min-area 12] [--min-hole-area 50] [--close 1.0] [--round 1.5] [--simplify 0.3] \
+    [--source-ref m21c011-646_54.copc.laz] [--bbox e_min,n_min,e_max,n_max]
+# or grid the canopy in-process, exactly as `canopy` does:
+python -m golfpipe trees-features --lidar a.copc.laz --lidar b.copc.laz \
+    --dem data/dem/<courseId>.tif --course-id <courseId> --out trees.geojson
+```
+
+Derives one Polygon per connected canopy patch from the cleaned canopy grid
+the `canopy` command tiles (`canopy.tif` in its `--workdir`, or the same
+gridding + roof suppression + `clean_canopy` run on `--lidar`, area from
+`--bbox`, EPSG:3006 metres, else the `--dem` extent). Because the input is
+the grid behind the `canopy` / `canopy-color` layers, polygons and layers
+agree. Prefer it over `detect-trees` (raw nDSM closing + opening, no roof
+suppression) whenever canopy tiles exist for the course.
+
+Steps (`golfpipe/trees_features.py`): cells with canopy >= `--min-height`
+form the mask; binary closing with a disk of radius `--close` (1.0 m at 1 m
+cells = the 3x3 cross; bridges 1-cell gaps; `0` disables), then 8-connected
+components under `--min-area` are dropped. There is no opening, so every
+cell of a component that is large enough stays in a polygon (a 2 m wide
+hedge or a 3x3 crown survives). 8-connected polygonize with interior
+clearings as holes; interior rings under `--min-hole-area` (default 50 m²;
+`0` keeps every hole) are filled, larger clearings stay holes. Outline
+rounding with `--round` = r (default 1.5 m; `0` keeps the cell staircase):
+a vector closing of all polygons together (dilate r, union, erode r, round
+joins) fills notches and slits narrower than 2r and merges neighbours
+closer than 2r; a vector opening per part (erode r, dilate r) rounds convex
+corners; parts the opening removed come back when they are >= `--min-area`
+and >= 1 m wide, so thin hedges keep their footprint; then two Chaikin
+corner-cutting iterations per ring, topology-preserving simplify by
+`--simplify` (default 0.3 m; bounds the vertex count), `make_valid`, and a
+union so output polygons never overlap. Polygons under `--min-area` are
+dropped. Height stats come from the canopy cells inside each final polygon
+(>= min height; the polygon is rasterized once against the grid), so filled
+holes, whose cells are below min height, do not enter `heightMaxM` /
+`heightP90M` / `heightMeanM`. `areaM2` is the polygon area and does include
+filled holes. On Landeryd (3.1 x 3.1 km, 2.68 M canopy cells >= 2 m) the
+defaults put 98.4 % of those cells inside a polygon (99.3 % with `--round
+0`; what is left are corner shavings and stubs under 12 m²). The earlier
+open-close smoothing with a 3x3 disk covered 93.9 % and removed 7,200
+components outright, 7,100 of them isolated crowns under 25 m².
+
+Output: a GeoJSON FeatureCollection in EPSG:3006 with the legacy `crs`
+member (`urn:ogc:def:crs:EPSG::3006`, same as `detect-trees` /
+`fetch-water`), top-level `attribution` and `courseId`, and per feature
+exactly these properties:
+
+| property      | value                                                       |
+|---------------|-------------------------------------------------------------|
+| `type`        | `"trees"`                                                   |
+| `source`      | `"lidar-canopy"`                                            |
+| `source_ref`  | `--source-ref`, default the canopy tif basename or the comma-joined lidar basenames |
+| `license`     | `"CC0-1.0"`                                                 |
+| `heightMaxM`  | max canopy height inside the polygon, metres, 1 decimal     |
+| `heightP90M`  | 90th percentile, 1 decimal                                  |
+| `heightMeanM` | mean, 1 decimal                                             |
+| `areaM2`      | polygon area in m² (filled holes included), integer         |
+
+The server imports this body as is:
+`PUT /api/courses/:courseId/features/generated?source=lidar-canopy`
+(endpoint built separately from this pipeline).
+
 ### `manifest` — write manifest.json
 
 ```sh
@@ -178,9 +304,11 @@ python -m golfpipe manifest --course my-course --tiles-dir tiles \
     --dem work/dem.tif
 ```
 
-Scans `{tiles-dir}/ortho` and `{tiles-dir}/terrain` for their actual
-min/max zoom directories, samples elevation min/max from `--dem`, and
-writes:
+Scans `{tiles-dir}/ortho`, `terrain`, `hillshade`, `canopy`, `canopy-color`
+and `surface` for their actual min/max zoom directories, samples elevation
+min/max from `--dem`, and writes (merging over an existing manifest.json the
+same way `canopy` does: backup to `.bak`/`.bak2`/..., unknown fields kept,
+`generatedAt` bumped):
 
 ```json
 {

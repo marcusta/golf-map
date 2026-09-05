@@ -24,8 +24,11 @@ import {
 import { formatPercent, meanLabel, onScriptLabel } from './sim-histogram';
 import { variantChipText } from './sim-overlay';
 import { ElevationService } from '../map/elevation.service';
+import { treeRowText, treeStatusClass } from './tree-clearance';
 import { ElevationProfileService } from '../profile/elevation-profile.service';
 import { ElevationProfileComponent, signedMeters } from '../profile/elevation-profile.component';
+import { FlyoverButtonComponent } from '../flyover/flyover-button.component';
+import { WalkButtonComponent } from '../walk/walk-button.component';
 
 /** localStorage key for the training-mode toggle (default ON per doc §5.1). */
 const TRAINING_MODE_KEY = 'golf-map.putt.trainingMode';
@@ -128,6 +131,10 @@ const tpl = template(`
             <label class="plan-field">Preferred club (tee leg)
                 <select bind="preferredClub"></select>
             </label>
+            <div class="camera-actions">
+                <div bind="flyoverHost"></div>
+                <div bind="walkHost"></div>
+            </div>
         </div>
 
         <div class="plan-panel__section" data-testid="planner-wind-section">
@@ -429,6 +436,7 @@ export class PlannerPanelComponent extends Component {
 
             & .plan-field { ${field()} min-width: 0; flex: 1; }
             & .wind-row { display: flex; gap: ${s('sm')}; }
+            & .camera-actions { display: flex; gap: ${s('xs')}; align-items: flex-start; flex-wrap: wrap; }
             & .wind-effective {
                 font-size: 0.72rem;
                 color: ${t('color-text-secondary')};
@@ -538,6 +546,11 @@ export class PlannerPanelComponent extends Component {
                \`.metric-line\` (mono + tabular, normal weight). */
             & .metric { ${metric()} }
             & .metric-line { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+            /* Tree-clearance rows: status colour on the whole phrase. */
+            & .tree-row--good { color: var(--data-good); }
+            & .tree-row--risk { color: var(--data-risk); }
+            & .tree-row--bad { color: var(--data-bad); }
+            & .tree-row--neutral { color: ${t('color-text-tertiary')}; }
 
             & .shot-advice {
                 grid-column: 2 / span 2;
@@ -967,6 +980,8 @@ export class PlannerPanelComponent extends Component {
 
         this.bindTeeSelect(this.ref(frag, 'teeSelect') as HTMLSelectElement);
         this.bindPreferredClub(this.ref(frag, 'preferredClub') as HTMLSelectElement);
+        this.spawn(FlyoverButtonComponent, this.ref(frag, 'flyoverHost'));
+        this.spawn(WalkButtonComponent, this.ref(frag, 'walkHost'));
         this.bindWindEditor(frag);
         this.bindPuttSection(frag);
         this.bindNotes(this.ref(frag, 'notes') as HTMLTextAreaElement);
@@ -1873,6 +1888,7 @@ export class PlannerPanelComponent extends Component {
                 .findIndex(x => x.shot?.id === node.shot?.id);
             return `S${n + 1}`;
         };
+        const treeResults = this.tool.legTreeClearances.get();
         const lines = plan.legs.map(leg => {
             const light = lightChip(leg);
             const parts = [`<b>${light}${nodeName(leg.from)} → ${nodeName(leg.to)}</b>`,
@@ -1888,6 +1904,15 @@ export class PlannerPanelComponent extends Component {
             if (drift) {
                 // E2E hook (inert): the wind-hold readout for this leg.
                 parts.push(`<span class="metric-line" data-testid="planner-leg-drift">wind ${escapeHtml(drift)}</span>`);
+            }
+            // Height-aware tree clearance, one row per canopy the shot flies
+            // over (planner/tree-clearance.ts): green clears / amber marginal /
+            // red blocked / grey unknown height. Trees past the carry point are
+            // rollout hazards, not flight obstacles, and get no row.
+            for (const crossing of treeResults.get(leg.index)?.crossings ?? []) {
+                const cls = treeStatusClass(crossing.status);
+                // E2E hook (inert): data-tree-status exposes the clearance status.
+                parts.push(`<span class="metric-line tree-row tree-row--${cls}" data-testid="planner-leg-trees" data-tree-status="${crossing.status}">${escapeHtml(treeRowText(crossing))}</span>`);
             }
             if (leg.expectedStrokes !== undefined) {
                 // E2E hook (inert): the EV readout carries a testid so the smoke

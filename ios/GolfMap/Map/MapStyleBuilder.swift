@@ -8,6 +8,12 @@ public enum MapStyleIDs {
     public static let orthoSource = "course-ortho"
     public static let orthoLayer = "course-ortho"
 
+    /// Optional pre-coloured canopy raster (lidar courses only). Declared in
+    /// the style only when the bundle has the layer; hidden until the "Trees"
+    /// toggle flips its visibility at runtime.
+    public static let canopyColorSource = "course-canopy-color"
+    public static let canopyColorLayer = "course-canopy-color"
+
     public static let featuresSource = "course-features"
     public static let featuresFillLayer = "features-fill"
 
@@ -349,6 +355,17 @@ public enum MapStyleBuilder {
         return base + "tiles/ortho/{z}/{x}/{y}.\(fileExtension)"
     }
 
+    /// file:// XYZ template for any other bundle layer (the layer's own
+    /// directory name and file extension, see `TileLayer`).
+    public static func tileURLTemplate(bundleDirectory: URL, layer: TileLayer) -> String {
+        var base = bundleDirectory.absoluteString
+        if !base.hasSuffix("/") { base += "/" }
+        return base + "tiles/\(layer.rawValue)/{z}/{x}/{y}.\(layer.fileExtension)"
+    }
+
+    /// Opacity of the canopy-color raster when the "Trees" toggle is on.
+    public static let canopyColorOpacity = 0.7
+
     /// Probes a bundle's `tiles/ortho` directory for the extension its tiles
     /// were downloaded with. Returns `"webp"` if the layer is WebP, else
     /// `"jpg"`. A layer is homogeneous (one extension for the whole pyramid),
@@ -424,7 +441,7 @@ public enum MapStyleBuilder {
         }
 
         let emptyCollection: [String: Any] = ["type": "FeatureCollection", "features": [Any]()]
-        let sources: [String: Any] = [
+        var sources: [String: Any] = [
             MapStyleIDs.orthoSource: orthoSource,
             MapStyleIDs.featuresSource: ["type": "geojson", "data": features],
             MapStyleIDs.courseRouteSource: ["type": "geojson", "data": emptyCollection],
@@ -453,6 +470,30 @@ public enum MapStyleBuilder {
             MapStyleIDs.reticleNeighborsSource: ["type": "geojson", "data": emptyCollection],
             MapStyleIDs.reticleWindHoldSource: ["type": "geojson", "data": emptyCollection],
         ]
+
+        var canopyColorLayers: [[String: Any]] = []
+        if let canopyRange = configuration.canopyColorZoomRange {
+            sources[MapStyleIDs.canopyColorSource] = [
+                "type": "raster",
+                "tiles": [tileURLTemplate(
+                    bundleDirectory: configuration.bundleDirectory,
+                    layer: .canopyColor
+                )],
+                "tileSize": 256,
+                "minzoom": canopyRange.lowerBound,
+                "maxzoom": canopyRange.upperBound,
+                "bounds": boundsArray,
+            ] as [String: Any]
+            canopyColorLayers = [
+                [
+                    "id": MapStyleIDs.canopyColorLayer,
+                    "type": "raster",
+                    "source": MapStyleIDs.canopyColorSource,
+                    "layout": ["visibility": "none"],
+                    "paint": ["raster-opacity": canopyColorOpacity],
+                ]
+            ]
+        }
 
         var adjustHandleColorExpr: [Any] = ["match", ["get", "kind"]]
         for (kind, hex) in adjustHandleColors {
@@ -496,6 +537,7 @@ public enum MapStyleBuilder {
                 "type": "raster",
                 "source": MapStyleIDs.orthoSource,
             ],
+        ] + canopyColorLayers + [
             [
                 // Nice-mode parity with the web (features.service.ts): fills
                 // only, NO per-feature boundary strokes — web nice mode

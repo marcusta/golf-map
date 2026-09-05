@@ -2,7 +2,7 @@ import { test, expect, describe } from 'bun:test';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID, TEST_HOLE_1_ID, TEST_HOLE_2_ID } from '../db/seeds/course';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
-import { ConflictError } from '@basics/core/server/auth';
+import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { CourseFeaturesService, InvalidFeatureError, ODBL_ATTRIBUTION } from './course-features.service';
 import type { FeatureGeometry } from './geo';
 
@@ -658,5 +658,273 @@ describe('CourseFeaturesService — feature provenance (T49)', () => {
         const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
         expect(fc.attribution).toBeUndefined();
         expect('attribution' in fc).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Attributes (migration 015) and generated-feature replacement
+// ---------------------------------------------------------------------------
+
+function ring(cx: number, cy: number, half: number): number[][] {
+    return [
+        [cx - half, cy - half],
+        [cx + half, cy - half],
+        [cx + half, cy + half],
+        [cx - half, cy + half],
+        [cx - half, cy - half],
+    ];
+}
+
+function treeFeature(
+    cx: number,
+    cy: number,
+    source = 'lidar-canopy',
+    extraProps: Record<string, unknown> = {},
+    holes: number[][][] = [],
+) {
+    return {
+        type: 'Feature' as const,
+        geometry: { type: 'Polygon' as const, coordinates: [ring(cx, cy, 4), ...holes] },
+        properties: {
+            type: 'trees',
+            source,
+            source_ref: `blob/${cx}-${cy}`,
+            license: 'CC0',
+            heightMaxM: 18.2,
+            heightP90M: 16.1,
+            heightMeanM: 12.4,
+            areaM2: 64,
+            ...extraProps,
+        },
+    };
+}
+
+function collection(features: unknown[], crs?: unknown) {
+    return { type: 'FeatureCollection' as const, features, ...(crs !== undefined ? { crs } : {}) } as any;
+}
+
+describe('CourseFeaturesService attributes', () => {
+    test('create stores attributes and read/update round-trips them; null clears', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const created = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: null,
+            type: 'trees',
+            geometry: squareGeometry(),
+            attributes: { heightMaxM: 12.5, species: 'pine', evergreen: true },
+        });
+        expect(created.attributes).toEqual({ heightMaxM: 12.5, species: 'pine', evergreen: true });
+
+        const read = await svc.findById(created.id);
+        expect(read.attributes).toEqual({ heightMaxM: 12.5, species: 'pine', evergreen: true });
+
+        const listed = await svc.listByCourse(TEST_COURSE_ID);
+        expect(listed.find((f) => f.id === created.id)!.attributes).toEqual(created.attributes);
+
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        expect(fc.features.find((f) => f.id === created.id)!.properties.attributes).toEqual(created.attributes);
+
+        // Update without `attributes` leaves them untouched.
+        const moved = await svc.update(created.id, 1, { geometry: squareGeometry(1, 1) });
+        expect(moved.attributes).toEqual(created.attributes);
+
+        const replaced = await svc.update(created.id, 2, { attributes: { heightMaxM: 13 } });
+        expect(replaced.attributes).toEqual({ heightMaxM: 13 });
+
+        const cleared = await svc.update(created.id, 3, { attributes: null });
+        expect(cleared.attributes).toBeNull();
+    });
+
+    test('features created without attributes read back null', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const f = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'rough', geometry: squareGeometry() });
+        expect(f.attributes).toBeNull();
+        expect((await svc.findById(f.id)).attributes).toBeNull();
+    });
+
+    test('rejects nested values, arrays, non-finite numbers and more than 32 keys', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const base = { courseId: TEST_COURSE_ID, holeId: null, type: 'trees', geometry: squareGeometry() };
+
+        for (const bad of [
+            { nested: { a: 1 } },
+            { list: [1, 2] },
+            { nan: NaN },
+            [1, 2],
+            Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`k${i}`, i])),
+        ]) {
+            await expect(svc.create({ ...base, attributes: bad as any })).rejects.toBeInstanceOf(InvalidFeatureError);
+        }
+        // Exactly 32 keys is allowed.
+        const ok = await svc.create({
+            ...base,
+            attributes: Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`k${i}`, i])),
+        });
+        expect(Object.keys(ok.attributes!)).toHaveLength(32);
+    });
+});
+
+describe('CourseFeaturesService.replaceGenerated', () => {
+    test('replaces only features of the given source and keeps hand-drawn and other-source features', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const hand = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'trees', geometry: squareGeometry(0, 0) });
+        const osm = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: squareGeometry(50, 50), source: 'osm', license: 'ODbL',
+        });
+        const oldLidar = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'trees', geometry: squareGeometry(90, 90), source: 'lidar-canopy',
+        });
+        const oldLidarOnHole = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'trees', geometry: squareGeometry(70, 70), source: 'lidar-canopy',
+        });
+
+        const result = await svc.replaceGenerated(
+            TEST_COURSE_ID,
+            'lidar-canopy',
+            collection([treeFeature(100, 100), treeFeature(120, 100), treeFeature(140, 100)]),
+        );
+        expect(result).toEqual({ deleted: 2, inserted: 3 });
+
+        const all = await svc.listByCourse(TEST_COURSE_ID);
+        const ids = new Set(all.map((f) => f.id));
+        expect(ids.has(hand.id)).toBe(true);
+        expect(ids.has(osm.id)).toBe(true);
+        expect(ids.has(oldLidar.id)).toBe(false);
+        expect(ids.has(oldLidarOnHole.id)).toBe(false);
+
+        const lidar = all.filter((f) => f.source === 'lidar-canopy');
+        expect(lidar).toHaveLength(3);
+        for (const f of lidar) {
+            expect(f.holeId).toBeNull();
+            expect(f.type).toBe('trees');
+            expect(f.license).toBe('CC0');
+            expect(f.sourceRef).toMatch(/^blob\//);
+            expect(f.attributes).toEqual({ heightMaxM: 18.2, heightP90M: 16.1, heightMeanM: 12.4, areaM2: 64 });
+            expect(f.geometry.crs).toBe('EPSG:3006');
+            // Straight-edge ring: 4 corners, closing point dropped, no handles.
+            expect(f.geometry.rings[0].points).toHaveLength(4);
+            expect(f.geometry.rings[0].points.every((p) => p.hIn === undefined && p.hOut === undefined)).toBe(true);
+            expect(f.geojson!.type).toBe('Polygon');
+        }
+        // Input order preserved via sort_order; unique within the course group.
+        const orders = all.filter((f) => f.holeId === null).map((f) => f.sortOrder);
+        expect(new Set(orders).size).toBe(orders.length);
+        expect(lidar.map((f) => f.geometry.rings[0].points[0].x)).toEqual([96, 116, 136]);
+    });
+
+    test('inserted trees sit above lower-ranked surfaces and below bunkers in the course stack', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const rough = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'rough', geometry: squareGeometry(0, 0, 500) });
+        const bunker = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'bunker', geometry: squareGeometry(10, 10) });
+
+        await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection([treeFeature(100, 100), treeFeature(120, 120)]));
+
+        const group = (await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.holeId === null);
+        const order = (id: string) => group.find((f) => f.id === id)!.sortOrder;
+        const trees = group.filter((f) => f.type === 'trees').map((f) => f.sortOrder);
+        expect(Math.min(...trees)).toBeGreaterThan(order(rough.id));
+        expect(Math.max(...trees)).toBeLessThan(order(bunker.id));
+    });
+
+    test('a second call with an empty collection removes the previous generation', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection([treeFeature(0, 0), treeFeature(10, 0)]));
+        expect(await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection([]))).toEqual({ deleted: 2, inserted: 0 });
+        expect((await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.source === 'lidar-canopy')).toHaveLength(0);
+    });
+
+    test('hole rings round-trip as interior rings', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const hole = ring(0, 0, 1);
+        await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection([treeFeature(0, 0, 'lidar-canopy', {}, [hole])]));
+
+        const [f] = (await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.source === 'lidar-canopy');
+        expect(f.geometry.rings).toHaveLength(2);
+        expect(f.geometry.rings[1].points).toHaveLength(4);
+        expect(f.geometry.rings[1].points.map((p) => [p.x, p.y])).toEqual(hole.slice(0, 4));
+        expect(f.geojson!.coordinates).toHaveLength(2);
+        expect(f.geojson!.coordinates[1]).toHaveLength(5);
+    });
+
+    test('accepts an EPSG:3006 crs member in either GeoJSON form and rejects any other', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const f = [treeFeature(0, 0)];
+
+        expect(
+            (await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection(f, { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } }))).inserted,
+        ).toBe(1);
+        expect(
+            (await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection(f, { type: 'name', properties: { name: 'EPSG:3006' } }))).inserted,
+        ).toBe(1);
+        expect((await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection(f, { type: 'EPSG', properties: { code: 3006 } }))).inserted).toBe(1);
+
+        for (const bad of [
+            { type: 'name', properties: { name: 'urn:ogc:def:crs:OGC:1.3:CRS84' } },
+            { type: 'name', properties: { name: 'EPSG:4326' } },
+            { type: 'EPSG', properties: { code: 3857 } },
+            'EPSG:3006',
+        ]) {
+            await expect(svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection(f, bad))).rejects.toBeInstanceOf(InvalidFeatureError);
+        }
+        // The rejections above wrote nothing: still exactly the last accepted generation.
+        expect((await svc.listByCourse(TEST_COURSE_ID)).filter((x) => x.source === 'lidar-canopy')).toHaveLength(1);
+    });
+
+    test('rejects a source mismatch, an empty source, and bad features without touching existing rows', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const hand = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'trees', geometry: squareGeometry() });
+        await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection([treeFeature(0, 0)]));
+
+        const cases: Array<[string, unknown]> = [
+            ['lidar-canopy', collection([treeFeature(0, 0, 'osm')])], // source mismatch
+            ['', collection([treeFeature(0, 0, '')])], // empty source
+            ['   ', collection([])],
+            ['lidar-canopy', collection([{ ...treeFeature(0, 0), geometry: { type: 'MultiPolygon', coordinates: [] } }])],
+            ['lidar-canopy', collection([treeFeature(0, 0, 'lidar-canopy', { type: 'not-a-type' })])],
+            ['lidar-canopy', collection([treeFeature(0, 0, 'lidar-canopy', { nested: { a: 1 } })])],
+            ['lidar-canopy', collection([{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[0, 0], [1, 1]]] }, properties: { type: 'trees', source: 'lidar-canopy' } }])],
+            ['lidar-canopy', { type: 'Feature' }],
+        ];
+        for (const [source, body] of cases) {
+            await expect(svc.replaceGenerated(TEST_COURSE_ID, source, body as any)).rejects.toBeInstanceOf(InvalidFeatureError);
+        }
+
+        const all = await svc.listByCourse(TEST_COURSE_ID);
+        expect(all.some((f) => f.id === hand.id)).toBe(true);
+        expect(all.filter((f) => f.source === 'lidar-canopy')).toHaveLength(1);
+    });
+
+    test('null-valued properties are dropped from attributes; a feature with only reserved props has null attributes', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await svc.replaceGenerated(
+            TEST_COURSE_ID,
+            'lidar-canopy',
+            collection([
+                { type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring(0, 0, 3)] }, properties: { type: 'trees', source: 'lidar-canopy' } },
+                { type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring(20, 0, 3)] }, properties: { type: 'trees', source: 'lidar-canopy', heightMaxM: 9, note: null } },
+            ]),
+        );
+        const lidar = (await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.source === 'lidar-canopy');
+        expect(lidar.map((f) => f.attributes)).toEqual([null, { heightMaxM: 9 }]);
+        expect(lidar[0].sourceRef).toBeNull();
+        expect(lidar[0].license).toBeNull();
+    });
+
+    test('unknown course -> NotFoundError', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await expect(svc.replaceGenerated('nope', 'lidar-canopy', collection([]))).rejects.toBeInstanceOf(NotFoundError);
     });
 });

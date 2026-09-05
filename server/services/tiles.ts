@@ -11,7 +11,7 @@ import {
     renameSync,
 } from 'node:fs';
 import * as path from 'node:path';
-import type { AssetsService, TileLayer } from './assets.service';
+import { TILE_LAYERS, type AssetsService, type TileLayer } from './assets.service';
 
 const CONTENT_TYPE_BY_EXT: Record<string, string> = {
     '.jpg': 'image/jpeg',
@@ -24,7 +24,7 @@ const CONTENT_TYPE_BY_EXT: Record<string, string> = {
 // and never change in place; a new tile-generation run produces a new asset.
 const CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
-const VALID_LAYERS = new Set<TileLayer>(['ortho', 'terrain', 'hillshade']);
+const VALID_LAYERS = new Set<TileLayer>(TILE_LAYERS);
 
 // Dual photo state: `ortho-sim` serves the cleaned-photo overlay (sparse
 // copy-on-write tree of patch-affected tiles) with a per-tile fallback to

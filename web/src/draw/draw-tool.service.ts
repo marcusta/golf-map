@@ -289,9 +289,12 @@ export function containingTopDown(
     hidden: ReadonlySet<string>,
     p: Point,
     hiddenIds: ReadonlySet<string> = EMPTY_ID_SET,
+    hiddenSources: ReadonlySet<string> = EMPTY_ID_SET,
 ): CourseFeature[] {
     return stackTopDown.filter(f =>
-        !hidden.has(f.type) && !hiddenIds.has(f.id) && pointInGeometry(p, f.geometry));
+        !hidden.has(f.type) && !hiddenIds.has(f.id)
+        && !(f.source !== null && hiddenSources.has(f.source))
+        && pointInGeometry(p, f.geometry));
 }
 
 const EMPTY_ID_SET: ReadonlySet<string> = new Set();
@@ -511,7 +514,7 @@ export class DrawToolService {
         const distance = this.offsetDistance.get();
         const simplifyActive = this.simplifyActive.get();
         const epsilon = this.simplifyEpsilon.get();
-        const selected = this.features?.selected.get() ?? null;
+        const selected = this.features?.editableSelected.get() ?? null;
         if (!selected) return null;
         if (distance !== null) return offsetGeometry(selected.geometry, distance);
         if (simplifyActive) return simplifyGeometry(selected.geometry, epsilon);
@@ -772,7 +775,7 @@ export class DrawToolService {
         // Select mode. Edge click on the (single) selected feature inserts
         // a vertex — suspended in box-select mode (no geometry editing).
         const boxMode = this.state.boxSelect.peek() || this.spaceHeld.peek();
-        const selected = this.features?.selected.peek() ?? null;
+        const selected = this.features?.editableSelected.peek() ?? null;
         if (selected && !boxMode) {
             const insertion = this.edgeInsertionHit(selected, p, e.lngLat.lat);
             if (insertion) {
@@ -911,7 +914,7 @@ export class DrawToolService {
 
         const meta = e.originalEvent.metaKey || e.originalEvent.ctrlKey;
         const shift = e.originalEvent.shiftKey;
-        const single = features.selected.peek();
+        const single = features.editableSelected.peek();
 
         // 0. Box-select (sticky 'B' toggle or Space held): a left-drag
         //    rubber-bands features regardless of what it lands on — even a
@@ -985,7 +988,7 @@ export class DrawToolService {
         //     A sub-threshold drag decays to the Alt-cycle click in onMouseUp,
         //     so a stationary Alt-click still cycles the hit stack as before.
         if (e.originalEvent.altKey && !shift) {
-            const selectedFeatures = features.selectedFeatures.peek();
+            const selectedFeatures = features.editableSelectedFeatures.peek();
             if (selectedFeatures.some(f => pointInGeometry(p, f.geometry))) {
                 e.preventDefault();
                 map.dragPan.disable();
@@ -1016,7 +1019,7 @@ export class DrawToolService {
         }
 
         // 3. Drag inside a selected feature: move the whole selection.
-        const selectedFeatures = features.selectedFeatures.peek();
+        const selectedFeatures = features.editableSelectedFeatures.peek();
         if (selectedFeatures.some(f => pointInGeometry(p, f.geometry))) {
             e.preventDefault();
             map.dragPan.disable();
@@ -1160,13 +1163,11 @@ export class DrawToolService {
             if (marquee.kind === 'features') {
                 // Default 'contain' (fully inside); Alt = 'intersect'.
                 const mode = e.originalEvent.altKey ? 'intersect' : 'contain';
-                const hidden = this.features.hiddenTypes.peek();
-                const hiddenIds = this.features.hiddenIds.peek();
-                const visible = this.features.store.items.peek()
-                    .filter(f => !hidden.has(f.type) && !hiddenIds.has(f.id));
+                const features = this.features;
+                const visible = features.store.items.peek().filter(f => !features.isHidden(f));
                 this.features.setSelection(featuresInRect(visible, rect, mode));
             } else {
-                const single = this.features.selected.peek();
+                const single = this.features.editableSelected.peek();
                 if (single) this.vertexSelection.set(new Set(verticesInRect(single.geometry, rect)));
             }
             return;
@@ -1237,7 +1238,7 @@ export class DrawToolService {
 
     private onContextMenu(e: MapMouseEvent, map: MaplibreMap): void {
         if (!this.isMyClaim()) return;
-        const selected = this.features?.selected.peek();
+        const selected = this.features?.editableSelected.peek();
         if (!selected) return;
         const hit = this.hitVertexOrHandle(map, selected, e.point);
         if (!hit || hit.kind !== 'anchor') return;
@@ -1301,7 +1302,7 @@ export class DrawToolService {
                 this.closeDraft();
             }
         } else if (e.key === 'Delete' || e.key === 'Backspace') {
-            if (this.vertexSelection.peek().size > 0 && this.features?.selected.peek()) {
+            if (this.vertexSelection.peek().size > 0 && this.features?.editableSelected.peek()) {
                 e.preventDefault();
                 this.deleteSelectedVertices();
             } else if ((this.features?.selectedIds.peek().size ?? 0) > 0) {
@@ -1309,7 +1310,7 @@ export class DrawToolService {
                 void this.deleteSelected();
             }
         } else if ((e.key === 'i' || e.key === 'I') && !meta) {
-            if (this.vertexSelection.peek().size === 2 && this.features?.selected.peek()) {
+            if (this.vertexSelection.peek().size === 2 && this.features?.editableSelected.peek()) {
                 e.preventDefault();
                 this.insertBetweenSelectedVertices();
             }
@@ -1324,7 +1325,7 @@ export class DrawToolService {
                 this.state.toggleBoxSelect();
             }
         } else if (e.key === 'c' || e.key === 'C') {
-            if (!meta && !this.state.isDrawing.peek() && this.hoverVertex.peek() && this.features?.selected.peek()) {
+            if (!meta && !this.state.isDrawing.peek() && this.hoverVertex.peek() && this.features?.editableSelected.peek()) {
                 e.preventDefault();
                 this.toggleHoveredVertexCorner();
             }
@@ -1337,15 +1338,11 @@ export class DrawToolService {
                 void this.reorderSelected(e.key as 'PageUp' | 'PageDown' | 'Home' | 'End');
             }
         } else if (!meta && !e.altKey && DIGIT_FEATURE_TYPES[e.key]) {
-            // Bare digit = arm a draw feature type without opening the palette
+            // Bare digit = pick a feature type without opening the palette
             // dropdown (⌘/Ctrl/Alt-digit is browser tab switching etc. — never
-            // preventDefault there). Mirrors the palette button exactly:
-            // selection non-empty → retype, else set the draw type (which also
-            // recolors an in-progress draft, since there's no selection then).
+            // preventDefault there). Same verb as the palette button.
             e.preventDefault();
-            const type = DIGIT_FEATURE_TYPES[e.key];
-            if ((this.features?.selectedIds.peek().size ?? 0) > 0) this.retypeSelection(type);
-            else this.drawType.set(type);
+            this.chooseType(DIGIT_FEATURE_TYPES[e.key]);
         }
     }
 
@@ -1428,7 +1425,7 @@ export class DrawToolService {
 
     /** Toggle the hovered vertex smooth↔corner ('C' key / panel button). */
     toggleHoveredVertexCorner(): void {
-        const selected = this.features?.selected.peek();
+        const selected = this.features?.editableSelected.peek();
         const hover = this.hoverVertex.peek();
         if (!selected || !hover) return;
         if (!selected.geometry.rings[hover.ringIdx]?.points[hover.idx]) return;
@@ -1437,7 +1434,7 @@ export class DrawToolService {
 
     /** True when the hovered vertex is a corner (panel toggle label). */
     hoveredVertexIsCorner(): boolean {
-        const selected = this.features?.selected.get();
+        const selected = this.features?.editableSelected.get();
         const hover = this.hoverVertex.get();
         if (!selected || !hover) return false;
         if (!selected.geometry.rings[hover.ringIdx]?.points[hover.idx]) return false;
@@ -1450,7 +1447,7 @@ export class DrawToolService {
      * bezier → b-spline is lossy and not offered.
      */
     async convertSelectedToBezier(): Promise<void> {
-        const selected = this.features?.selected.peek();
+        const selected = this.features?.editableSelected.peek();
         if (!selected || selected.geometry.curveType !== 'bspline') return;
         const ok = await this.confirm.confirm({
             title: 'Convert spline to bezier?',
@@ -1501,7 +1498,7 @@ export class DrawToolService {
      */
     duplicateSelection(): void {
         const features = this.features;
-        const items = features?.selectedFeatures.peek() ?? [];
+        const items = features?.editableSelectedFeatures.peek() ?? [];
         if (!features || items.length === 0) return;
         void (async () => {
             const entry: HistoryEntry = [];
@@ -1533,7 +1530,7 @@ export class DrawToolService {
      */
     async autoSurroundSelection(chain = false): Promise<void> {
         const features = this.features;
-        const items = features?.selectedFeatures.peek() ?? [];
+        const items = features?.editableSelectedFeatures.peek() ?? [];
         if (!features || items.length === 0) return;
         const sources: SurroundSource[] = items.map(f => ({
             type: f.type as FeatureType,
@@ -1567,7 +1564,7 @@ export class DrawToolService {
      * (no chain hint to show).
      */
     selectionSurroundPairing(): { targetType: FeatureType; expandAmount: number; chainEnd: FeatureType } | null {
-        const items = this.features?.selectedFeatures.get() ?? [];
+        const items = this.features?.editableSelectedFeatures.get() ?? [];
         for (const f of items) {
             const pairing = SURROUND_PAIRINGS[f.type as FeatureType];
             if (pairing) {
@@ -1590,7 +1587,7 @@ export class DrawToolService {
         this.simplifyActive.set(false);
         this.actionNotice.set(null);
         if (distance !== null) {
-            const selected = this.features?.selected.peek();
+            const selected = this.features?.editableSelected.peek();
             if (!selected) return;
             if (offsetGeometry(selected.geometry, distance) === null) {
                 this.offsetDistance.set(null);
@@ -1603,7 +1600,7 @@ export class DrawToolService {
 
     /** Commit the armed offset preview (one history entry). */
     applyOffset(): void {
-        const selected = this.features?.selected.peek();
+        const selected = this.features?.editableSelected.peek();
         const geometry = this.offsetDistance.peek() !== null ? this.opPreviewGeometry.peek() : null;
         this.offsetDistance.set(null);
         if (!selected || !geometry) return;
@@ -1619,7 +1616,7 @@ export class DrawToolService {
 
     /** Commit the armed simplify preview (one history entry). */
     applySimplify(): void {
-        const selected = this.features?.selected.peek();
+        const selected = this.features?.editableSelected.peek();
         const geometry = this.simplifyActive.peek() ? this.opPreviewGeometry.peek() : null;
         this.simplifyActive.set(false);
         if (!selected || !geometry) return;
@@ -1642,7 +1639,7 @@ export class DrawToolService {
      * below 3 points. One history entry.
      */
     deleteSelectedVertices(): void {
-        const selected = this.features?.selected.peek();
+        const selected = this.features?.editableSelected.peek();
         const keys = this.vertexSelection.peek();
         if (!selected || keys.size === 0) return;
         const geometry = deleteVertices(selected.geometry, keys);
@@ -1661,7 +1658,7 @@ export class DrawToolService {
      * redistribution along the chord (see insertBetweenVertices).
      */
     insertBetweenSelectedVertices(): void {
-        const selected = this.features?.selected.peek();
+        const selected = this.features?.editableSelected.peek();
         const keys = [...this.vertexSelection.peek()];
         if (!selected || keys.length !== 2) return;
         const a = parseVertexKey(keys[0]);
@@ -1679,12 +1676,25 @@ export class DrawToolService {
     }
 
     /**
-     * Re-type the whole selection (panel type grid with a selection).
+     * The feature-type verb behind the palette buttons and the bare digits.
+     * While drawing is armed the pick is for the NEXT shape: `create()`
+     * selects every new feature, so mid-chain there is always a selection
+     * (the previous shape), and retyping it is never what the user meant.
+     * Not armed: a selection is retyped, otherwise the draw type is set.
+     */
+    chooseType(type: FeatureType): void {
+        const hasSelection = (this.features?.selectedIds.peek().size ?? 0) > 0;
+        if (!this.state.isDrawing.peek() && hasSelection) this.retypeSelection(type);
+        else this.drawType.set(type);
+    }
+
+    /**
+     * Re-type the whole selection (palette with a selection, not drawing).
      * ONE history entry covering every changed feature.
      */
     retypeSelection(type: FeatureType): void {
         const features = this.features;
-        const items = (features?.selectedFeatures.peek() ?? []).filter(f => f.type !== type);
+        const items = (features?.editableSelectedFeatures.peek() ?? []).filter(f => f.type !== type);
         if (!features || items.length === 0) return;
         this.history.push(items.map(f => ({
             featureId: f.id,
@@ -1698,7 +1708,7 @@ export class DrawToolService {
     /** Re-assign the selection's hole (panel select). ONE history entry. */
     assignSelectionHole(holeId: string | null): void {
         const features = this.features;
-        const items = (features?.selectedFeatures.peek() ?? []).filter(f => f.holeId !== holeId);
+        const items = (features?.editableSelectedFeatures.peek() ?? []).filter(f => f.holeId !== holeId);
         if (!features || items.length === 0) return;
         this.history.push(items.map(f => ({
             featureId: f.id,
@@ -1830,6 +1840,7 @@ export class DrawToolService {
             this.features.hiddenTypes.peek(),
             p,
             this.features.hiddenIds.peek(),
+            this.features.hiddenSources.peek(),
         );
     }
 
@@ -1839,7 +1850,7 @@ export class DrawToolService {
      * cleared only on selection change, not when the cursor leaves.
      */
     private trackHoverVertex(e: MapPointerEvent): void {
-        const selected = this.features?.selected.peek();
+        const selected = this.features?.editableSelected.peek();
         const map = this.ctx?.map.map.peek();
         if (!selected || !map) return;
         const hit = this.hitVertexOrHandle(map, selected, e.point);
@@ -2131,7 +2142,7 @@ export class DrawToolService {
 
     /** Reactive read of the selected feature (null when tool inactive). */
     private selectedForPreview(): CourseFeature | null {
-        return this.features ? this.features.selected.get() : null;
+        return this.features ? this.features.editableSelected.get() : null;
     }
 }
 

@@ -264,6 +264,14 @@ public struct TileManifestRecord: Codable, Sendable, Equatable, FetchableRecord,
     public var elevMax: Double
     public var generatedAt: String
     public var versionParam: String
+    /// Optional lidar layers (v11). Nil = the manifest did not list the layer,
+    /// so the bundle has no tiles for it. Both bounds are set together.
+    public var canopyMinZoom: Int?
+    public var canopyMaxZoom: Int?
+    public var canopyColorMinZoom: Int?
+    public var canopyColorMaxZoom: Int?
+    public var surfaceMinZoom: Int?
+    public var surfaceMaxZoom: Int?
 
     public init(
         courseId: String,
@@ -278,7 +286,13 @@ public struct TileManifestRecord: Codable, Sendable, Equatable, FetchableRecord,
         elevMin: Double,
         elevMax: Double,
         generatedAt: String,
-        versionParam: String
+        versionParam: String,
+        canopyMinZoom: Int? = nil,
+        canopyMaxZoom: Int? = nil,
+        canopyColorMinZoom: Int? = nil,
+        canopyColorMaxZoom: Int? = nil,
+        surfaceMinZoom: Int? = nil,
+        surfaceMaxZoom: Int? = nil
     ) {
         self.courseId = courseId
         self.west = west
@@ -293,6 +307,33 @@ public struct TileManifestRecord: Codable, Sendable, Equatable, FetchableRecord,
         self.elevMax = elevMax
         self.generatedAt = generatedAt
         self.versionParam = versionParam
+        self.canopyMinZoom = canopyMinZoom
+        self.canopyMaxZoom = canopyMaxZoom
+        self.canopyColorMinZoom = canopyColorMinZoom
+        self.canopyColorMaxZoom = canopyColorMaxZoom
+        self.surfaceMinZoom = surfaceMinZoom
+        self.surfaceMaxZoom = surfaceMaxZoom
+    }
+
+    /// Native zoom range of an optional layer, nil when the manifest did not
+    /// list it. The required layers (ortho, terrain) always return a range.
+    public func zoomRange(for layer: TileLayer) -> ClosedRange<Int>? {
+        func range(_ lo: Int?, _ hi: Int?) -> ClosedRange<Int>? {
+            guard let lo, let hi, lo <= hi else { return nil }
+            return lo...hi
+        }
+        switch layer {
+        case .ortho: return orthoStyleMinZoom...max(orthoStyleMinZoom, orthoMaxZoom)
+        case .terrain: return terrainMinZoom...max(terrainMinZoom, terrainQueryZoom)
+        case .canopy: return range(canopyMinZoom, canopyMaxZoom)
+        case .canopyColor: return range(canopyColorMinZoom, canopyColorMaxZoom)
+        case .surface: return range(surfaceMinZoom, surfaceMaxZoom)
+        }
+    }
+
+    /// Whether the manifest lists `layer` (required layers: always true).
+    public func hasLayer(_ layer: TileLayer) -> Bool {
+        zoomRange(for: layer) != nil
     }
 
     /// Fixed zoom the terrain sampler queries tiles at. Guards against a row

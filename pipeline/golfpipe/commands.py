@@ -18,6 +18,7 @@ from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 
+from golfpipe import canopy as canopy_mod
 from golfpipe import clean_ortho as clean_ortho_mod
 from golfpipe import dem_analysis as dem_analysis_mod
 from golfpipe import dem_edit as dem_edit_mod
@@ -29,9 +30,10 @@ from golfpipe import hydro as hydro_mod
 from golfpipe import osm as osm_mod
 from golfpipe import patches as patches_mod
 from golfpipe import stac
+from golfpipe import trees_features as trees_features_mod
 from golfpipe import water as water_mod
 from golfpipe.hillshade import write_hillshade_geotiff
-from golfpipe.manifest import build_manifest, write_manifest
+from golfpipe.manifest import build_manifest, merge_into_existing, write_manifest
 from golfpipe.raster import edge_pad_dem, mosaic_and_crop, open_warped_to_mercator
 from golfpipe.terrain_rgb import encode_terrain_rgb
 from golfpipe.tiling import generate_tile_pyramid, generate_tiles, pyramid_bounds_3857, raster_bounds_wgs84
@@ -1187,18 +1189,300 @@ def _noop_path(input_path: Path):
     yield input_path
 
 
-def cmd_manifest(course_id: str, tiles_dir: Path, dem_path: Path | None = None, out_path: Path | None = None) -> Path:
-    ortho_dir = tiles_dir / "ortho"
-    terrain_dir = tiles_dir / "terrain"
-    hillshade_dir = tiles_dir / "hillshade"
-    manifest = build_manifest(
+def _build_manifest_from_tiles_dir(course_id: str, tiles_dir: Path, dem_path: Path | None) -> dict:
+    def existing(name: str) -> Path | None:
+        d = tiles_dir / name
+        return d if d.exists() else None
+
+    return build_manifest(
         course_id,
-        ortho_tiles_dir=ortho_dir if ortho_dir.exists() else None,
-        terrain_tiles_dir=terrain_dir if terrain_dir.exists() else None,
-        hillshade_tiles_dir=hillshade_dir if hillshade_dir.exists() else None,
+        ortho_tiles_dir=existing("ortho"),
+        terrain_tiles_dir=existing("terrain"),
+        hillshade_tiles_dir=existing("hillshade"),
         dem_path=dem_path,
+        canopy_tiles_dir=existing("canopy"),
+        canopy_color_tiles_dir=existing("canopy-color"),
+        surface_tiles_dir=existing("surface"),
     )
+
+
+def cmd_manifest(course_id: str, tiles_dir: Path, dem_path: Path | None = None, out_path: Path | None = None) -> Path:
+    """Scans tiles_dir for layer pyramids and writes manifest.json. When the
+    target already exists it is backed up (.bak, .bak2, ...) and the new
+    layers/generatedAt are merged into it, keeping server-written fields
+    (orthoVintages, activeOrtho, builtOrtho, ...)."""
+    manifest = _build_manifest_from_tiles_dir(course_id, tiles_dir, dem_path)
     target = out_path or (tiles_dir / "manifest.json")
-    write_manifest(manifest, target)
+    _, backup = merge_into_existing(manifest, target)
+    if backup is not None:
+        print(f"Backed up manifest to {backup}")
     print(f"Wrote {target}")
     return target
+
+
+def _tile_canopy_color(canopy_tif: Path, out_dir: Path, minzoom: int, maxzoom: int) -> int:
+    """Tiles the canopy height GeoTIFF into RGBA PNGs coloured by
+    canopy.canopy_color_rgba (transparent under 1 m). Same WarpedVRT /
+    bilinear / pyramid path as cmd_tile_terrain, colourised per tile after
+    reprojection; no edge padding (outside the grid there is no canopy).
+    """
+    bbox_wgs84 = raster_bounds_wgs84(canopy_tif)
+    pyramid_bounds = pyramid_bounds_3857(bbox_wgs84, minzoom, maxzoom)
+    vrt = open_warped_to_mercator(canopy_tif, Resampling.bilinear, extra_bounds_3857=pyramid_bounds)
+    try:
+        nodata = vrt.nodata
+
+        def encode(data: np.ndarray):
+            heights = data[0].astype(np.float64)
+            if nodata is not None:
+                heights = np.where(heights == nodata, 0.0, heights)
+            heights = np.nan_to_num(heights, nan=0.0, posinf=0.0, neginf=0.0)
+            rgba = canopy_mod.canopy_color_rgba(heights)
+            from io import BytesIO
+
+            buf = BytesIO()
+            Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG")
+            return buf.getvalue()
+
+        count = generate_tile_pyramid(vrt, bbox_wgs84, minzoom, maxzoom, out_dir, encode, "png")
+    finally:
+        vrt.close()
+    print(f"Wrote {count} canopy-color tiles to {out_dir}")
+    return count
+
+
+def _dem_bbox_3006(dem_path: Path) -> tuple[float, float, float, float]:
+    from rasterio.crs import CRS
+    from rasterio.warp import transform_bounds
+
+    with rasterio.open(dem_path) as src:
+        if src.crs == CRS.from_epsg(3006):
+            return tuple(src.bounds)
+        return tuple(transform_bounds(src.crs, CRS.from_epsg(3006), *src.bounds))
+
+
+class CanopyGrid:
+    """Result of _build_canopy_grid: the cleaned canopy (what canopy.tif
+    holds and what trees-features polygonizes), plus the inputs the surface
+    DSM needs."""
+
+    def __init__(self, canopy, transform, ground_dem, suppressed_ndsm, resolution: float):
+        self.canopy = canopy
+        self.transform = transform
+        self.ground_dem = ground_dem
+        self.suppressed_ndsm = suppressed_ndsm
+        self.resolution = resolution
+
+
+def _build_canopy_grid(
+    lidar_paths: list[Path],
+    bbox_3006: tuple[float, float, float, float],
+    resolution: float = detect_trees_mod.DEFAULT_RESOLUTION,
+) -> CanopyGrid:
+    """Lidar -> ground grid, max-z surface, nDSM, roof suppression,
+    canopy.clean_canopy. Shared by cmd_canopy and cmd_trees_features so the
+    tiles and the polygons come from one grid.
+    """
+    print("Gridding ground returns (mean z) ...")
+    ground_sum, ground_count, transform, ground_counts = grid_dem_mod.grid_lidar_points(
+        lidar_paths, bbox_3006, resolution=resolution, classes=grid_dem_mod.DEFAULT_CLASSES,
+    )
+    ground_dem = grid_dem_mod.build_dem_grid(ground_sum, ground_count)
+    print(f"Ground points used: {ground_counts.points_used_for_grid:,}")
+
+    print(f"Gridding surface returns (max z, all classes except noise {detect_trees_mod.NOISE_CLASSES}) ...")
+    multi_count = np.zeros(grid_dem_mod.grid_shape(bbox_3006, resolution), dtype=np.float64)
+    surface_max, surface_count, _, surface_counts = grid_dem_mod.grid_lidar_points(
+        lidar_paths, bbox_3006, resolution=resolution,
+        classes=None, aggregate="max", exclude_classes=detect_trees_mod.NOISE_CLASSES,
+        multi_return_count=multi_count,
+    )
+    print(f"Surface points used: {surface_counts.points_used_for_grid:,} "
+          f"({int(multi_count.sum()):,} with more than one return)")
+
+    ndsm = detect_trees_mod.build_ndsm(ground_dem, surface_max, surface_count)
+    raw_cells = int(np.count_nonzero(ndsm >= canopy_mod.MIN_CANOPY_HEIGHT_M))
+    suppressed = canopy_mod.suppress_buildings(ndsm, surface_count, multi_count)
+    roof_cells = int(np.count_nonzero((ndsm >= canopy_mod.BUILDING_MIN_HEIGHT_M) & (suppressed == 0.0)))
+    canopy = canopy_mod.clean_canopy(suppressed)
+    canopy_cells = int(np.count_nonzero(canopy > 0))
+    print(f"Canopy cells >= {canopy_mod.MIN_CANOPY_HEIGHT_M} m: {raw_cells:,} raw, "
+          f"{roof_cells:,} suppressed as roofs, {canopy_cells:,} after cleaning "
+          f"(~{canopy_cells * resolution * resolution:,.0f} m²); max height {float(canopy.max()):.1f} m")
+    return CanopyGrid(canopy, transform, ground_dem, suppressed, resolution)
+
+
+def _write_trees_features(
+    canopy: np.ndarray,
+    transform,
+    out: Path,
+    source_ref: str,
+    course_id: str | None,
+    min_height_m: float = trees_features_mod.DEFAULT_MIN_HEIGHT_M,
+    min_area_m2: float = trees_features_mod.DEFAULT_MIN_AREA_M2,
+    close_m: float = trees_features_mod.DEFAULT_CLOSE_M,
+    round_m: float = trees_features_mod.DEFAULT_ROUND_M,
+    simplify_m: float = trees_features_mod.DEFAULT_SIMPLIFY_M,
+    min_hole_area_m2: float = trees_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
+) -> dict:
+    trees = trees_features_mod.trees_from_canopy(
+        canopy, transform, min_height_m=min_height_m, min_area_m2=min_area_m2,
+        close_m=close_m, round_m=round_m, simplify_m=simplify_m, min_hole_area_m2=min_hole_area_m2,
+    )
+    collection = trees_features_mod.build_trees_feature_collection(trees, source_ref, course_id=course_id)
+    water_mod.write_geojson(collection, out)
+    total_area = sum(t.area_m2 for t in trees)
+    holes = sum(len(t.geometry.interiors) for t in trees)
+    print(f"Tree polygons: {len(trees)} (>= {min_height_m} m, >= {min_area_m2} m², "
+          f"holes >= {min_hole_area_m2} m², close {close_m} m, round {round_m} m, simplify {simplify_m} m); "
+          f"{holes} holes; total area {total_area:,} m²")
+    if not trees:
+        print("(no canopy >= min height found; try a lower --min-height)")
+    print(f"Wrote {out}")
+    return collection
+
+
+def cmd_trees_features(
+    out: Path,
+    canopy_tif: Path | None = None,
+    lidar_paths: list[Path] | None = None,
+    dem_path: Path | None = None,
+    course_id: str | None = None,
+    bbox_3006: tuple[float, float, float, float] | None = None,
+    min_height_m: float = trees_features_mod.DEFAULT_MIN_HEIGHT_M,
+    min_area_m2: float = trees_features_mod.DEFAULT_MIN_AREA_M2,
+    close_m: float = trees_features_mod.DEFAULT_CLOSE_M,
+    round_m: float = trees_features_mod.DEFAULT_ROUND_M,
+    simplify_m: float = trees_features_mod.DEFAULT_SIMPLIFY_M,
+    min_hole_area_m2: float = trees_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
+    source_ref: str | None = None,
+    resolution: float = detect_trees_mod.DEFAULT_RESOLUTION,
+) -> Path:
+    """Tree polygons (GeoJSON, EPSG:3006) from the cleaned canopy grid the
+    `canopy` command tiles. Input is either canopy_tif (the canopy.tif in a
+    canopy workdir, optionally clipped to bbox_3006) or lidar_paths (+
+    dem_path for the area when bbox_3006 is not given), in which case the
+    grid is built exactly as cmd_canopy builds it. source_ref defaults to
+    the canopy tif basename or the comma-joined lidar basenames. See
+    golfpipe/trees_features.py for the polygon steps and property contract.
+    """
+    if canopy_tif is not None:
+        print(f"Reading cleaned canopy from {canopy_tif}")
+        canopy, transform = trees_features_mod.read_canopy_tif(canopy_tif, bbox_3006)
+        if source_ref is None:
+            source_ref = canopy_tif.name
+    elif lidar_paths:
+        if bbox_3006 is None:
+            if dem_path is None:
+                raise ValueError("trees-features from lidar needs --bbox or --dem to define the area")
+            bbox_3006 = _dem_bbox_3006(dem_path)
+        print(f"Area (EPSG:3006): {', '.join(f'{v:.1f}' for v in bbox_3006)}")
+        grid = _build_canopy_grid(lidar_paths, bbox_3006, resolution=resolution)
+        canopy, transform = grid.canopy, grid.transform
+        if source_ref is None:
+            source_ref = ",".join(p.name for p in lidar_paths)
+    else:
+        raise ValueError("trees-features needs --canopy-tif or --lidar")
+
+    _write_trees_features(
+        canopy, transform, out, source_ref, course_id,
+        min_height_m=min_height_m, min_area_m2=min_area_m2, close_m=close_m, round_m=round_m, simplify_m=simplify_m,
+        min_hole_area_m2=min_hole_area_m2,
+    )
+    return out
+
+
+def cmd_canopy(
+    lidar_paths: list[Path],
+    dem_path: Path | None,
+    course_id: str,
+    tiles_dir: Path,
+    workdir: Path,
+    bbox_wgs84: tuple[float, float, float, float] | None = None,
+    minzoom: int = DEFAULT_TERRAIN_MINZOOM,
+    maxzoom: int = DEFAULT_TERRAIN_MAXZOOM,
+    resolution: float = detect_trees_mod.DEFAULT_RESOLUTION,
+    surface_shape: str = "crown",
+    trees_out: Path | None = None,
+    min_hole_area_m2: float = trees_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
+) -> dict[str, int]:
+    """Lidar -> canopy height (nDSM, buildings suppressed, cleaned) ->
+    three XYZ tile pyramids under tiles_dir plus a manifest.json update:
+
+      canopy        Terrain-RGB PNG, value = height above ground (m), 0 = none
+      canopy-color  RGBA PNG display ramp (transparent < 1 m)
+      surface       Terrain-RGB PNG, value = ground DEM + canopy height (DSM)
+
+    Area: bbox_wgs84 when given, else the --dem extent. The ground in
+    surface.tif is the --dem GeoTIFF (resampled to the canopy grid) where it
+    has data, the lidar ground grid elsewhere. surface_shape "crown"
+    (default) passes the canopy through canopy.crown_shape (edge taper +
+    blur, plateau dips from the raw nDSM) before adding it to the ground;
+    "flat" adds the cleaned canopy as is. The canopy / canopy-color layers
+    are the same either way. Intermediates canopy.tif (cleaned canopy
+    height in metres AGL, nodata 0) and surface.tif (float32, EPSG:3006)
+    land in workdir. trees_out, when given, also writes the trees-features
+    GeoJSON (default thresholds; min_hole_area_m2 fills interior rings
+    smaller than that) from the same cleaned grid. Returns tile counts per
+    layer.
+    """
+    if surface_shape not in ("crown", "flat"):
+        raise ValueError(f"surface_shape must be 'crown' or 'flat', got {surface_shape!r}")
+    if bbox_wgs84 is not None:
+        bbox_3006 = cmd_reproject_bbox(bbox_wgs84, epsg=3006)
+    elif dem_path is not None:
+        bbox_3006 = _dem_bbox_3006(dem_path)
+    else:
+        raise ValueError("canopy needs --bbox/--aoi or --dem to define the area")
+    print(f"Area (EPSG:3006): {', '.join(f'{v:.1f}' for v in bbox_3006)}")
+
+    grid = _build_canopy_grid(lidar_paths, bbox_3006, resolution=resolution)
+    canopy, transform, ground_dem, suppressed = grid.canopy, grid.transform, grid.ground_dem, grid.suppressed_ndsm
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    canopy_tif = workdir / "canopy.tif"
+    grid_dem_mod.write_dem_geotiff(canopy, transform, canopy_tif, nodata_value=0.0)
+    print(f"Wrote {canopy_tif}")
+
+    if trees_out is not None:
+        _write_trees_features(
+            canopy, transform, trees_out, ",".join(p.name for p in lidar_paths), course_id,
+            min_hole_area_m2=min_hole_area_m2,
+        )
+
+    ground = ground_dem.astype(np.float64)
+    if dem_path is not None:
+        print(f"Resampling {dem_path} onto the {resolution} m grid ...")
+        dem_ground = canopy_mod.resample_dem_to_grid(dem_path, transform, canopy.shape)
+        has_dem = dem_ground != detect_trees_mod.NODATA
+        ground = np.where(has_dem, dem_ground, ground)
+        print(f"DEM covers {100.0 * np.count_nonzero(has_dem) / has_dem.size:.1f}% of the grid")
+    if surface_shape == "crown":
+        print("Shaping canopy crowns for the surface DSM ...")
+        surface_canopy = canopy_mod.crown_shape(canopy, resolution, ndsm=suppressed)
+    else:
+        surface_canopy = canopy
+    valid_ground = ground != detect_trees_mod.NODATA
+    surface = np.full(canopy.shape, detect_trees_mod.NODATA, dtype=np.float32)
+    surface[valid_ground] = (ground[valid_ground] + surface_canopy[valid_ground]).astype(np.float32)
+    surface_tif = workdir / "surface.tif"
+    grid_dem_mod.write_dem_geotiff(surface, transform, surface_tif)
+    print(f"Wrote {surface_tif}")
+
+    counts: dict[str, int] = {}
+    print("Tiling canopy ...")
+    counts["canopy"] = cmd_tile_terrain(
+        canopy_tif, tiles_dir / "canopy", minzoom=minzoom, maxzoom=maxzoom, fill_nodata=False, edge_pad_m=0.0,
+    )
+    print("Tiling canopy-color ...")
+    counts["canopy-color"] = _tile_canopy_color(canopy_tif, tiles_dir / "canopy-color", minzoom, maxzoom)
+    print("Tiling surface ...")
+    counts["surface"] = cmd_tile_terrain(surface_tif, tiles_dir / "surface", minzoom=minzoom, maxzoom=maxzoom)
+
+    manifest_path = tiles_dir / "manifest.json"
+    fresh = _build_manifest_from_tiles_dir(course_id, tiles_dir, dem_path)
+    _, backup = merge_into_existing(fresh, manifest_path)
+    if backup is not None:
+        print(f"Backed up manifest to {backup}")
+    print(f"Wrote {manifest_path}")
+    return counts

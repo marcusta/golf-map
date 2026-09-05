@@ -46,6 +46,33 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(unwrapped.manifest, furniture.manifest)
     }
 
+    func testManifestOptionalLayerColumnsRoundTrip() async throws {
+        let database = try AppDatabase.inMemory()
+        let furniture = StoreFixtures.furniture(lidarLayers: 12...17)
+
+        try await database.saveCompletedBundle(furniture)
+
+        let loaded = try await database.courseFurniture(courseId: furniture.course.id)
+        let manifest = try XCTUnwrap(loaded?.manifest)
+        XCTAssertEqual(manifest, furniture.manifest)
+        XCTAssertEqual(manifest.canopyMinZoom, 12)
+        XCTAssertEqual(manifest.surfaceMaxZoom, 17)
+        XCTAssertEqual(manifest.zoomRange(for: .canopy), 12...17)
+        XCTAssertEqual(manifest.zoomRange(for: .canopyColor), 12...17)
+        XCTAssertEqual(manifest.zoomRange(for: .surface), 12...17)
+        XCTAssertEqual(manifest.zoomRange(for: .terrain), 1...1)
+
+        // A manifest without the layers stores NULLs and reports no layer.
+        let plain = StoreFixtures.furniture(courseId: "course-2")
+        try await database.saveCompletedBundle(plain)
+        let plainLoaded = try await database.courseFurniture(courseId: "course-2")
+        let plainManifest = try XCTUnwrap(plainLoaded?.manifest)
+        XCTAssertNil(plainManifest.canopyColorMinZoom)
+        XCTAssertFalse(plainManifest.hasLayer(.canopyColor))
+        XCTAssertNil(plainManifest.zoomRange(for: .surface))
+        XCTAssertTrue(plainManifest.hasLayer(.ortho))
+    }
+
     func testSaveCompletedBundleReplacesPreviousFurniture() async throws {
         let database = try AppDatabase.inMemory()
         try await database.saveCompletedBundle(StoreFixtures.furniture(revision: 3))

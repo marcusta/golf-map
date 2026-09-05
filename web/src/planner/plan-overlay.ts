@@ -59,6 +59,7 @@ import {
     STATUS_RISK,
 } from '../map/map-palette';
 import type { LieMap } from './lie-map';
+import type { TreeSegment } from './tree-clearance';
 
 /** Overlay/source id for the plan rendering. */
 export const PLAN_OVERLAY_ID = 'plan';
@@ -827,6 +828,12 @@ export interface PlanOverlayInput {
      * (bearing/ellipse/EV) still works on the straight leg.
      */
     aimPoints?: readonly { lat: number; lon: number }[];
+    /**
+     * Height-aware tree crossings (planner/tree-clearance.ts): the pieces of a
+     * leg's shot line over a blocked (red) or marginal (amber) tree ring,
+     * drawn on top of the leg. Absent/empty mid-drag like other enrichment.
+     */
+    treeSegments?: readonly TreeSegment[];
 }
 
 function toPosition(p: Vec2): Position {
@@ -1031,6 +1038,21 @@ export function buildPlanGeojson(input: PlanOverlayInput): FeatureCollection {
                 geometry: { type: 'Point', coordinates: [node.lon, node.lat] },
             });
         }
+    }
+
+    // Tree-crossing tints over the leg lines (planner/tree-clearance.ts):
+    // blocked red, marginal amber. Computed from the same plan by the caller.
+    for (const seg of input.treeSegments ?? []) {
+        features.push({
+            type: 'Feature',
+            properties: {
+                role: 'leg-trees',
+                legIndex: seg.legIndex,
+                primary: seg.primary,
+                status: seg.status,
+            },
+            geometry: { type: 'LineString', coordinates: [toPosition(seg.from), toPosition(seg.to)] },
+        });
     }
 
     // Option score chips (T30): one labelled point per option at a decision
@@ -1271,6 +1293,24 @@ export function planLayers(): OverlayLayerSpec[] {
                     LEG_COLOR,
                 ] as never,
                 'line-width': SHOT_LINE_WIDTH,
+            },
+        },
+        {
+            // Tree-crossing tint: sits on the leg line over a blocked (red) or
+            // marginal (amber) canopy, slightly wider so it reads as a band.
+            id: `${PLAN_OVERLAY_ID}-leg-trees`,
+            type: 'line',
+            filter: role('leg-trees'),
+            layout: { 'line-cap': 'butt', 'line-join': 'round' },
+            paint: {
+                'line-color': [
+                    'match', ['get', 'status'],
+                    'blocked', LIGHT_RED_COLOR,
+                    'marginal', LIGHT_YELLOW_COLOR,
+                    LEG_COLOR,
+                ] as never,
+                'line-width': SHOT_LINE_WIDTH + 2,
+                'line-opacity': ['case', ['get', 'primary'], 0.95, 0.5] as never,
             },
         },
         {

@@ -243,6 +243,93 @@ final class MapStyleBuilderTests: XCTestCase {
         )
     }
 
+    // MARK: - Canopy (Trees) raster
+
+    private var canopyConfiguration: CourseMapConfiguration {
+        var configuration = configuration
+        configuration.canopyColorZoomRange = 12...17
+        return configuration
+    }
+
+    func testCanopyLayerAbsentWhenNotConfigured() throws {
+        let style = try buildStyle()
+        let sources = try XCTUnwrap(style["sources"] as? [String: Any])
+        XCTAssertNil(sources[MapStyleIDs.canopyColorSource])
+        let layers = try XCTUnwrap(style["layers"] as? [[String: Any]])
+        XCTAssertFalse(layers.contains { $0["id"] as? String == MapStyleIDs.canopyColorLayer })
+        XCTAssertFalse(configuration.hasCanopyColor)
+    }
+
+    func testCanopySourceAndHiddenLayerSitAboveOrtho() throws {
+        let style = try MapStyleBuilder.styleDictionary(
+            configuration: canopyConfiguration, featuresGeoJSON: tinyGeoJSON
+        )
+        let sources = try XCTUnwrap(style["sources"] as? [String: Any])
+        let source = try XCTUnwrap(sources[MapStyleIDs.canopyColorSource] as? [String: Any])
+        XCTAssertEqual(source["type"] as? String, "raster")
+        XCTAssertEqual(
+            source["tiles"] as? [String],
+            ["file:///tmp/bundles/COURSE-1/tiles/canopy-color/{z}/{x}/{y}.png"]
+        )
+        XCTAssertEqual(source["tileSize"] as? Int, 256)
+        XCTAssertEqual(source["minzoom"] as? Int, 12)
+        XCTAssertEqual(source["maxzoom"] as? Int, 17)
+        XCTAssertEqual(source["bounds"] as? [Double], [15.695, 58.343, 15.749, 58.371])
+
+        let layers = try XCTUnwrap(style["layers"] as? [[String: Any]])
+        let ids = layers.compactMap { $0["id"] as? String }
+        let orthoIndex = try XCTUnwrap(ids.firstIndex(of: MapStyleIDs.orthoLayer))
+        XCTAssertEqual(ids[orthoIndex + 1], MapStyleIDs.canopyColorLayer)
+        XCTAssertEqual(ids[orthoIndex + 2], MapStyleIDs.featuresFillLayer)
+
+        let layer = try XCTUnwrap(layers.first { $0["id"] as? String == MapStyleIDs.canopyColorLayer })
+        XCTAssertEqual(layer["type"] as? String, "raster")
+        XCTAssertEqual(layer["source"] as? String, MapStyleIDs.canopyColorSource)
+        XCTAssertEqual((layer["layout"] as? [String: Any])?["visibility"] as? String, "none")
+        XCTAssertEqual((layer["paint"] as? [String: Any])?["raster-opacity"] as? Double, 0.7)
+        XCTAssertEqual(MapStyleBuilder.canopyColorOpacity, 0.7)
+    }
+
+    func testTileURLTemplateUsesEachLayerExtension() {
+        XCTAssertEqual(
+            MapStyleBuilder.tileURLTemplate(bundleDirectory: bundleDirectory, layer: .surface),
+            "file:///tmp/bundles/COURSE-1/tiles/surface/{z}/{x}/{y}.png"
+        )
+        XCTAssertEqual(
+            MapStyleBuilder.tileURLTemplate(bundleDirectory: bundleDirectory, layer: .ortho),
+            MapStyleBuilder.orthoTileURLTemplate(bundleDirectory: bundleDirectory)
+        )
+    }
+
+    func testInstalledZoomRangeNeedsBothManifestEntryAndTileDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "canopy-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lidar = StoreFixtures.furniture(lidarLayers: 12...17).manifest
+        let plain = StoreFixtures.furniture().manifest
+
+        // Listed in the manifest, nothing on disk yet.
+        XCTAssertNil(CourseMapConfiguration.installedZoomRange(for: .canopyColor, bundleDirectory: root, manifest: lidar))
+
+        try FileManager.default.createDirectory(
+            at: root.appending(path: "tiles/canopy-color", directoryHint: .isDirectory),
+            withIntermediateDirectories: true
+        )
+        XCTAssertEqual(
+            CourseMapConfiguration.installedZoomRange(for: .canopyColor, bundleDirectory: root, manifest: lidar),
+            12...17
+        )
+        // Directory present but the manifest never listed the layer.
+        XCTAssertNil(CourseMapConfiguration.installedZoomRange(for: .canopyColor, bundleDirectory: root, manifest: plain))
+        // Sibling layer without a directory.
+        XCTAssertNil(CourseMapConfiguration.installedZoomRange(for: .surface, bundleDirectory: root, manifest: lidar))
+
+        let configuration = CourseMapConfiguration(bundleDirectory: root, manifest: lidar)
+        XCTAssertTrue(configuration.hasCanopyColor)
+        XCTAssertEqual(configuration.canopyColorZoomRange, 12...17)
+        XCTAssertFalse(CourseMapConfiguration(bundleDirectory: root, manifest: plain).hasCanopyColor)
+    }
+
     func testMeasureLayersUseWebMeasurePalette() throws {
         let style = try buildStyle()
         let line = try layer(MapStyleIDs.measureLineLayer, in: style)

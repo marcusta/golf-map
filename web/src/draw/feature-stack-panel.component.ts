@@ -7,6 +7,14 @@ import { DrawToolService } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
 import { icon } from '../ui/icons';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
+import {
+    generatedBadgeLabel,
+    generatedGroupLabel,
+    generatedHeightLabel,
+    groupStackRows,
+    isGeneratedFeature,
+    type StackRow,
+} from './generated-features';
 
 const tpl = template(`
     <div class="stack-panel" bind="root" data-testid="stack-panel">
@@ -30,8 +38,19 @@ const rowTpl = template(`
     <div bind="row" class="stack-row" data-testid="stack-row">
         <span bind="swatch" class="type-swatch"></span>
         <span bind="label" class="stack-row__label"></span>
+        <span bind="badge" class="stack-row__badge"></span>
         <span bind="count" class="stack-row__count"></span>
         <button bind="eye" type="button" class="stack-row__eye" data-testid="stack-row-eye"></button>
+    </div>
+`);
+
+/** One collapsed row per generated (source, type) group — never N tree rows. */
+const groupRowTpl = template(`
+    <div bind="row" class="stack-row stack-row--group" data-testid="stack-group-row">
+        <span bind="swatch" class="type-swatch"></span>
+        <span bind="label" class="stack-row__label"></span>
+        <span bind="count" class="stack-row__count"></span>
+        <button bind="eye" type="button" class="stack-row__eye" data-testid="stack-group-eye"></button>
     </div>
 `);
 
@@ -135,6 +154,23 @@ export class FeatureStackPanelComponent extends Component {
                 white-space: nowrap;
             }
 
+            /* Generated rows: provenance badge; the group row itself is
+               not selectable (nothing to edit), only toggled. */
+            & .stack-row__badge {
+                display: none;
+                flex-shrink: 0;
+                padding: 0 ${s('xs')};
+                border-radius: ${t('radius-sm')};
+                font-size: 0.65rem;
+                background: color-mix(in srgb, ${t('color-text-primary')} 8%, transparent);
+                color: ${t('color-text-secondary')};
+                &.show { display: inline-block; }
+            }
+            & .stack-row--group {
+                cursor: default;
+                & .stack-row__label { color: ${t('color-text-secondary')}; }
+            }
+
             & .stack-row__count {
                 flex-shrink: 0;
                 text-align: right;
@@ -191,7 +227,7 @@ export class FeatureStackPanelComponent extends Component {
     private scopeSelect!: HTMLSelectElement;
     private rowsHost!: HTMLElement;
 
-    /** Feature count in the current scope — the dock's collapsed rail badge. */
+    /** Row count in the current scope (generated groups count once) — the dock's collapsed rail badge. */
     readonly scopeCount = new Computed(() => this.stack().length);
 
     render(): DocumentFragment {
@@ -206,21 +242,23 @@ export class FeatureStackPanelComponent extends Component {
                     ? 'stack-panel__section reorder-ops show'
                     : 'stack-panel__section reorder-ops',
             },
+            // Reorder is a hand-drawn verb: disabled while any generated
+            // (read-only) row is in the selection.
             raiseBtn: {
                 onclick: () => void this.features.raise(this.selectedIds()),
-                disabled: () => this.selectedIds().length === 0,
+                disabled: () => !this.canReorder(),
             },
             lowerBtn: {
                 onclick: () => void this.features.lower(this.selectedIds()),
-                disabled: () => this.selectedIds().length === 0,
+                disabled: () => !this.canReorder(),
             },
             topBtn: {
                 onclick: () => void this.features.raiseToTop(this.selectedIds()),
-                disabled: () => this.selectedIds().length === 0,
+                disabled: () => !this.canReorder(),
             },
             bottomBtn: {
                 onclick: () => void this.features.lowerToBottom(this.selectedIds()),
-                disabled: () => this.selectedIds().length === 0,
+                disabled: () => !this.canReorder(),
             },
         });
 
@@ -255,8 +293,10 @@ export class FeatureStackPanelComponent extends Component {
         this.$each(
             this.rowsHost,
             () => this.stack(),
-            (feature, _index, track) => this.renderRow(feature, track),
-            feature => feature.id,
+            (row, _index, track) => row.kind === 'group'
+                ? this.renderGroupRow(row, track)
+                : this.renderRow(row.feature, track),
+            row => row.key,
         );
 
         // Follow the draw target while the stack filter is still implicit.
@@ -286,13 +326,59 @@ export class FeatureStackPanelComponent extends Component {
         return frag;
     }
 
-    /** Current scope's stack, topmost-first (D27 panel convention). */
-    private stack(): CourseFeature[] {
-        return [...this.features.stackFor(this.scopeHoleId.get())].reverse();
+    /**
+     * Current scope's stack, topmost-first (D27 panel convention), with
+     * generated features collapsed into one group row per source/type
+     * ("Trees (lidar) · 2200") and only the selected generated ones listed
+     * individually beneath it.
+     */
+    private stack(): StackRow[] {
+        const topDown = [...this.features.stackFor(this.scopeHoleId.get())].reverse();
+        return groupStackRows(topDown, this.features.selectedIds.get());
     }
 
     private selectedIds(): string[] {
         return [...this.features.selectedIds.get()];
+    }
+
+    private canReorder(): boolean {
+        const items = this.features.selectedFeatures.get();
+        return items.length > 0 && items.every(f => !isGeneratedFeature(f));
+    }
+
+    private renderGroupRow(group: Extract<StackRow, { kind: 'group' }>, track: (d: () => void) => void): HTMLElement {
+        const hidden = () => this.features.hiddenSources.get().has(group.source);
+        const el = this.wireEl(groupRowTpl, {
+            row: {
+                className: () => hidden() ? 'stack-row stack-row--group hidden' : 'stack-row stack-row--group',
+            },
+            eye: {
+                onclick: (e: Event) => {
+                    e.stopPropagation();
+                    this.features.toggleSourceVisibility(group.source);
+                },
+                innerHTML: () => icon(hidden() ? 'eye-off' : 'eye', 16),
+                title: () => hidden() ? 'Show' : 'Hide',
+            },
+            swatch: {
+                'style': () => {
+                    const style = FEATURE_STYLES[group.type as keyof typeof FEATURE_STYLES];
+                    return style ? `background:${style.fill}; border-color:${style.outline}` : '';
+                },
+            },
+            label: { textContent: generatedGroupLabel(group.type, group.source) },
+            count: { textContent: () => String(this.liveGroupCount(group)) },
+        }, track);
+        el.dataset.source = group.source;
+        el.dataset.featureType = group.type;
+        return el;
+    }
+
+    /** Live member count (the row is keyed by source/type and outlives deletes). */
+    private liveGroupCount(group: Extract<StackRow, { kind: 'group' }>): number {
+        return this.features.store.items.get()
+            .filter(f => f.source === group.source && f.type === group.type && f.holeId === this.scopeHoleId.get())
+            .length;
     }
 
     private renderRow(feature: CourseFeature, track: (d: () => void) => void): HTMLElement {
@@ -321,9 +407,14 @@ export class FeatureStackPanelComponent extends Component {
                 },
             },
             label: { textContent: () => FEATURE_STYLES[this.liveType(feature.id) as keyof typeof FEATURE_STYLES]?.label ?? this.liveType(feature.id) },
+            badge: {
+                className: () => this.generatedBadge(feature.id) ? 'stack-row__badge show' : 'stack-row__badge',
+                textContent: () => this.generatedBadge(feature.id) ?? '',
+            },
             count: { innerHTML: () => `${this.pointCount(feature.id)}<span class="metric__unit"> pts</span>` },
         }, track);
         el.dataset.featureId = feature.id;
+        if (isGeneratedFeature(feature)) el.dataset.generated = 'true';
         return el;
     }
 
@@ -333,6 +424,16 @@ export class FeatureStackPanelComponent extends Component {
 
     private liveType(id: string): string {
         return this.liveFeature(id)?.type ?? '';
+    }
+
+    /** "Generated from lidar · Height ~13 m" for generated rows, null otherwise. */
+    private generatedBadge(id: string): string | null {
+        const f = this.liveFeature(id);
+        if (!f) return null;
+        const badge = generatedBadgeLabel(f);
+        if (!badge) return null;
+        const height = generatedHeightLabel(f);
+        return height ? `${badge} · ${height}` : badge;
     }
 
     private pointCount(id: string): number {

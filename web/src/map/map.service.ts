@@ -8,14 +8,17 @@ import {
     boundsToArray,
     EDITOR_MAX_ZOOM,
     HILLSHADE_LAYER_ID,
+    CANOPY_COLOR_LAYER_ID,
     ORTHO_LAYER_ID,
     ORTHO_SOURCE_ID,
-    TERRAIN_SOURCE_ID,
     orthoLayerId,
     orthoSourceId,
+    terrainSourceId,
     tileUrlTemplate,
+    type TerrainMode,
 } from './map-style';
 import { InteractionClaims } from './interaction';
+import { canonicalTilesOverlap, type CanonicalTile } from './tile-overlap';
 
 /** Normalized pointer event handed to onClick/onMouseMove subscribers. */
 export interface MapPointerEvent {
@@ -80,6 +83,22 @@ export class MapService {
     readonly exaggeration = new Signal(1.0);
     /** Hillshade layer visibility. */
     readonly hillshadeVisible = new Signal(false);
+    /**
+     * Lidar canopy (`canopy-color`) layer visibility. Only meaningful when
+     * `hasCanopy` is true — the layer is absent from the style otherwise.
+     */
+    readonly canopyVisible = new Signal(false);
+    /**
+     * Which raster-dem drives 3D terrain: `ground` (bare-earth DEM, default)
+     * or `surface` (lidar DSM incl. canopy). Presentation only —
+     * ElevationService keeps sampling the ground DEM for every distance and
+     * plays-like figure.
+     */
+    readonly terrainMode = new Signal<TerrainMode>('ground');
+    /** True when the live map's manifest has the `canopy-color` layer. Set on init. */
+    readonly hasCanopy = new Signal(false);
+    /** True when the live map's manifest has the `surface` (DSM) layer. Set on init. */
+    readonly hasSurface = new Signal(false);
     /**
      * Ortho (photo) layer visibility. Turn off to inspect terrain/hillshade
      * alone — useful when splining bunkers/water against relief.
@@ -176,6 +195,8 @@ export class MapService {
             : [{ sourceId: ORTHO_SOURCE_ID }];
         this.mapKey = mapKey;
         this.activeOrtho.set(active ?? null);
+        this.hasCanopy.set(manifest.layers['canopy-color'] !== undefined);
+        this.hasSurface.set(manifest.layers.surface !== undefined);
 
         const map = new maplibregl.Map({
             container,
@@ -207,6 +228,9 @@ export class MapService {
         // render-to-texture tiles — see repairDrapedOverlays.
         map.on('moveend', () => this.scheduleDrapeRepair());
         map.on('zoomend', () => this.scheduleDrapeRepair());
+        // Per-tile drape invalidation for overlay sources — maplibre's own
+        // misses overscaled tiles; see freeDrapeForOverlayTile.
+        map.on('sourcedata', e => this.onOverlaySourceData(e));
         map.on('click', e => this.dispatch(this.clickHandlers, e));
         map.on('mousemove', e => this.dispatch(this.moveHandlers, e));
 
@@ -214,13 +238,22 @@ export class MapService {
         // change (and initially when `ready` flips true).
         this.disposers.push(effect(() => {
             const exaggeration = this.exaggeration.get();
+            // `surface` only when the style declares the DSM source; a stale
+            // mode from a previous (lidar) course falls back to ground.
+            const mode: TerrainMode = this.terrainMode.get() === 'surface' && this.hasSurface.get() ? 'surface' : 'ground';
             if (!this.ready.get()) return;
-            map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration });
+            map.setTerrain({ source: terrainSourceId(mode), exaggeration });
         }));
         this.disposers.push(effect(() => {
             const visible = this.hillshadeVisible.get();
             if (!this.ready.get()) return;
             map.setLayoutProperty(HILLSHADE_LAYER_ID, 'visibility', visible ? 'visible' : 'none');
+        }));
+        this.disposers.push(effect(() => {
+            const visible = this.canopyVisible.get();
+            if (!this.ready.get() || !this.hasCanopy.get()) return;
+            if (!map.getLayer(CANOPY_COLOR_LAYER_ID)) return;
+            map.setLayoutProperty(CANOPY_COLOR_LAYER_ID, 'visibility', visible ? 'visible' : 'none');
         }));
         // Ortho visibility: show only the active vintage's layer, and only when
         // the photo layer is on (off → hillshade/terrain-only). Toggling
@@ -373,6 +406,19 @@ export class MapService {
     /** Show/hide the hillshade layer. */
     setHillshade(visible: boolean): void {
         this.hillshadeVisible.set(visible);
+    }
+
+    /** Show/hide the lidar canopy layer (no-op visually on courses without it). */
+    setCanopy(visible: boolean): void {
+        this.canopyVisible.set(visible);
+    }
+
+    /**
+     * Switch the 3D terrain source: `ground` (bare-earth DEM) or `surface`
+     * (lidar DSM). Same exaggeration; only the visual relief changes.
+     */
+    setTerrainMode(mode: TerrainMode): void {
+        this.terrainMode.set(mode);
     }
 
     /** Show/hide the ortho (photo) layer — off leaves terrain/hillshade alone. */
@@ -595,7 +641,6 @@ export class MapService {
                 if (!source || source.type !== 'geojson') return;
                 await (source as maplibregl.GeoJSONSource).setData(data, true);
             }
-            this.scheduleDrapeRepair();
         } catch {
             // A destroyed map / removed source mid-await aborts the update;
             // the next updateOverlayData starts a fresh pump.
@@ -607,19 +652,78 @@ export class MapService {
     private drapeRepairTimer: ReturnType<typeof setTimeout> | null = null;
 
     /**
-     * Trailing-debounced terrain-drape repair after overlay updates settle.
-     *
      * With terrain enabled every fill/line layer is DRAPED: rasterized into
-     * the terrain's render-to-texture tile cache (circles/symbols are not).
-     * maplibre 5.x only frees that cache for a source update when the tile's
-     * reload `data` event actually arrives — a reload dropped by the worker
-     * race leaves the stale texture up permanently: the draft line vanishing
-     * after a fast pan/zoom mid-draw, or a committed fill not appearing
-     * until the next camera move (which happens to rebuild the cache).
-     * 6.x reworked this invalidation (#7812); on 5.x we free the cache
-     * ourselves once an update burst settles, and on gesture end. A full
-     * freeRtt costs one re-render of the visible draped tiles — the same
-     * work every camera move already does.
+     * the terrain's render-to-texture (RTT) tile cache (circles/symbols are
+     * not). When an overlay tile reloads after `setData`, maplibre frees the
+     * RTT tiles it touches via `freeRtt(tileID)`, which matches with
+     * `OverscaledTileID.equals`/`isChildOf` — and `isChildOf` demands a
+     * strictly deeper overscaledZ. RTT tiles run to z22 while a geojson
+     * source stops at maxzoom 18, so from zoom 19 up the overlay tile is
+     * overscaled to the SAME overscaledZ as the RTT tile drawing it and
+     * neither test matches: the reload frees nothing, and the stale texture
+     * stays up until a camera move rebuilds the cache. Seen as a committed
+     * shape's fill (or an edit) not appearing until the map is nudged.
+     *
+     * Why only sometimes: the RTT cache survives across frames only while
+     * the style renders as ONE draped stack. A visible circle/symbol layer
+     * between two draped layers splits the stacks, and the render pool then
+     * hands the second stack the first stack's textures (it frees all pool
+     * objects after each stack), so every frame re-stamps and re-renders
+     * every draped tile — which masks the missed free. In the editor the
+     * furniture overlay (circles/symbols) sits between the features and draw
+     * layers; when it is absent or hidden the stack is single and the stale
+     * fill shows. Verified against maplibre 5.24 in
+     * e2e/tests/19-draw-render.spec.ts (single-stack case).
+     *
+     * Fix: on every overlay tile `sourcedata` event, free the RTT tiles whose
+     * CANONICAL tile overlaps the reloaded tile's (the same relation the
+     * renderer itself uses in `_getTerrainCoordsForRegularTile`). This is
+     * exactly what upstream does at zoom <= 18, extended to the overscaled
+     * range; the cost is the re-render of the few touched RTT tiles.
+     */
+    private onOverlaySourceData(e: maplibregl.MapSourceDataEvent): void {
+        if (e.dataType !== 'source' || !e.tile || !this.overlays.has(e.sourceId)) return;
+        const canonical = (e.tile as { tileID?: { canonical?: CanonicalTile } }).tileID?.canonical;
+        if (!canonical) return;
+        this.freeDrapeForOverlayTile(canonical);
+    }
+
+    private freeDrapeForOverlayTile(canonical: CanonicalTile): void {
+        const map = this.map.peek();
+        if (!map || !this.ready.peek()) return;
+        try {
+            const tileManager = map.terrain?.tileManager as unknown as {
+                _tiles?: Record<string, { tileID: { canonical: CanonicalTile }; rtt: unknown[] }>;
+                freeRtt: () => void;
+            } | undefined;
+            if (!tileManager) return;
+            const tiles = tileManager._tiles;
+            if (!tiles) {
+                // Internals shifted (upgrade): fall back to the full free.
+                tileManager.freeRtt();
+                map.triggerRepaint();
+                return;
+            }
+            let freed = false;
+            for (const key in tiles) {
+                const tile = tiles[key];
+                if (canonicalTilesOverlap(tile.tileID.canonical, canonical)) {
+                    tile.rtt = [];
+                    freed = true;
+                }
+            }
+            if (freed) map.triggerRepaint();
+        } catch {
+            // Worst case the old "repaints on next camera move" behavior remains.
+        }
+    }
+
+    /**
+     * Trailing-debounced FULL drape free on gesture end — a belt-and-braces
+     * fallback behind the per-tile path above: a camera burst mid-edit can
+     * retile the overlay while its RTT tiles are being rebuilt, and one extra
+     * re-render of the visible draped tiles at settle costs the same as any
+     * camera move already does.
      */
     private scheduleDrapeRepair(): void {
         if (this.drapeRepairTimer !== null) clearTimeout(this.drapeRepairTimer);

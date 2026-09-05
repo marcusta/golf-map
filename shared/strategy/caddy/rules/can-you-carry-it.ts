@@ -23,6 +23,10 @@ import { lieFromFeatureType } from '../../lie';
 import { windEffect } from '../../wind';
 import { type CaddyAdvice, type CaddyContext, type CaddyRule } from '../rule';
 
+// The "over the trees" advisory lives in over-the-trees.ts (flying THROUGH
+// trees, not landing in a hazard); CaddyContext carries `trees` / `apexM` /
+// `shotCarryM` / `groundAt` for it.
+
 /**
  * How far past the target a club-up club may land before "club up" stops
  * being the fix (a carrying club that flies 40 m over the green is not

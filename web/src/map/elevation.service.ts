@@ -178,7 +178,16 @@ export class ElevationService {
     private cache = new LruCache<string, DecodedTile | null>(TILE_CACHE_CAPACITY);
     private inflight = new Map<string, Promise<DecodedTile | null>>();
 
-    constructor(private fetchTile: TileFetcher = fetchTerrainTile) {}
+    /**
+     * `layer` selects which Terrain-RGB tile tree is decoded. The DI
+     * singleton samples `terrain` (the ground DEM); CanopyService composes a
+     * second instance over the `canopy` layer — same addressing, cache and
+     * decode, different tiles.
+     */
+    constructor(
+        private fetchTile: TileFetcher = fetchTerrainTile,
+        private layer: 'terrain' | 'canopy' = 'terrain',
+    ) {}
 
     /** Point the service at a course's terrain tiles (null = teardown). Clears the cache. */
     configure(config: ElevationTileConfig | null): void {
@@ -249,7 +258,7 @@ export class ElevationService {
         const pending = this.inflight.get(key);
         if (pending) return pending;
 
-        const url = tileUrlTemplate(config.mapKey, 'terrain', 'png', config.version)
+        const url = tileUrlTemplate(config.mapKey, this.layer, 'png', config.version)
             .replace('{z}', String(config.zoom))
             .replace('{x}', String(x))
             .replace('{y}', String(y));

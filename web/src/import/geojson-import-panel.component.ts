@@ -39,6 +39,7 @@ const tpl = template(`
             <div bind="odblNote" class="license-note"></div>
             <div bind="fetchError" class="error"></div>
             <div bind="fileInfo" class="hint"></div>
+            <div bind="generatedNote" class="license-note" data-testid="geojson-generated-note"></div>
             <div bind="parseError" class="error"></div>
         </div>
 
@@ -245,6 +246,7 @@ export class GeojsonImportPanelComponent extends Component {
                 const skipped = p.skipped.length > 0 ? ` (${p.skipped.join('; ')})` : '';
                 return `${this.svc.fileName.get()} — ${p.features.length} importable features${skipped}`;
             },
+            generatedNote: () => this.svc.generatedSourceNote.get() ?? '',
             parseError: () => this.svc.parseError.get() ?? '',
             mappingSection: { className: () => parsed() ? 'geojson-import__section' : 'geojson-import__section hidden' },
             property: {

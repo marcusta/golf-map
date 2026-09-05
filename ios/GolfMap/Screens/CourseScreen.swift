@@ -163,6 +163,11 @@ struct CourseScreen: View {
             if let surfaceStore = try? SurfaceFeatureStore(featuresGeoJSON: featuresGeoJSON) {
                 newModel.setSurfaces(surfaceStore.surfaces)
             }
+            // Tree rings WITH their canopy heights (lidar-generated features
+            // carry heightP90M etc.) for the rail's height-aware "Trees" rows.
+            if let treeStore = try? TreeFeatureStore(featuresGeoJSON: featuresGeoJSON) {
+                newModel.setTrees(treeStore)
+            }
             newModel.updateUserLocation(locationProvider.location)
 
             // Fire-and-forget: queue this course's watch payload. The system
@@ -300,6 +305,15 @@ struct CourseScreen: View {
             // DEBUG-only and inert without the flag.
             if let holeNumber = UserDefaults.standard.string(forKey: "openHole").flatMap(Int.init) {
                 newModel.goToHole(number: holeNumber)
+            }
+            // `-flyover 1` starts the current hole's flyover once the style
+            // has loaded and the hole fit has settled, so a headless run can
+            // screenshot mid-flight. DEBUG-only and inert without the flag.
+            if UserDefaults.standard.string(forKey: "flyover") == "1" {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    newModel.startFlyover()
+                }
             }
             // `-placePinPhrase "<utterance>"` drives the pin-entry wiring
             // headlessly (voice + drag-confirm aren't scriptable via simctl):
@@ -617,6 +631,8 @@ private struct OnCourseContentView: View {
     @State private var showScorecard = false
     /// Wind editor sheet (the wind chip in the control rail opens it).
     @State private var showWind = false
+    /// "Trees" rail toggle: shows the lidar canopy raster (lidar courses only).
+    @State private var showsCanopy = false
     /// Pin-entry sheet (the pin button on the distance card opens it).
     @State private var showPinEntry = false
     /// One contextual laser entry (R7): pin / trilateration / residual refresh.
@@ -1006,6 +1022,9 @@ private struct OnCourseContentView: View {
                 analysis: isGreenView ? greenAnalysis.mapState : nil,
                 analysisProbe: isGreenView ? greenAnalysis.probe : nil,
                 putt: isGreenView ? puttRead.overlay : nil,
+                showsCanopy: showsCanopy,
+                flyover: model.flyoverCommand,
+                onFlyoverEnded: { model.flyoverDidEnd() },
                 onCameraChange: { model.noteMapCamera(center: $0, zoom: $1, bearing: $2) },
                 // The browse-mode long-press "move tee" is RETIRED — it fired
                 // simultaneously with MapLibre's quick-zoom (moving the tee
@@ -2017,6 +2036,10 @@ private struct OnCourseContentView: View {
                 measureButton
                 adjustButton
                 planButton
+                flyoverButton
+                if configuration.hasCanopyColor {
+                    treesButton
+                }
             }
             circleButton(systemImage: "scope", label: "Recenter on hole", size: 18) {
                 model.recenter()
@@ -2137,6 +2160,40 @@ private struct OnCourseContentView: View {
     /// Toggles the planner tool (edit the course's game plan: drag/add/remove
     /// landing points). Plan-violet while active; a dot badge marks a hole that
     /// already has plan content.
+    /// Flies the current hole tee → green (second tap cancels). Any touch on
+    /// the map also cancels; the camera returns to where it was.
+    private var flyoverButton: some View {
+        Button {
+            model.toggleFlyover()
+        } label: {
+            Image(systemName: model.isFlyingOver ? "airplane.circle.fill" : "airplane")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(model.isFlyingOver ? Color.statusPositive : Color.primary)
+                .frame(width: 44, height: 44)
+                .mapControl()
+        }
+        .buttonStyle(.plain)
+        .disabled(model.flyoverWaypoints == nil)
+        .accessibilityLabel(model.isFlyingOver ? "Stop flyover" : "Flyover")
+    }
+
+    /// Shows/hides the lidar tree canopy over the ortho. Only on the rail
+    /// when the bundle has the `canopy-color` layer.
+    private var treesButton: some View {
+        Button {
+            showsCanopy.toggle()
+        } label: {
+            Image(systemName: showsCanopy ? "tree.fill" : "tree")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(showsCanopy ? Color.statusPositive : Color.primary)
+                .frame(width: 44, height: 44)
+                .mapControl()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(showsCanopy ? "Hide trees" : "Trees")
+        .accessibilityAddTraits(showsCanopy ? .isSelected : [])
+    }
+
     private var planButton: some View {
         Button {
             if isPlan {

@@ -8,6 +8,10 @@ import {
     TERRAIN_SOURCE_ID,
     HILLSHADE_SOURCE_ID,
     HILLSHADE_LAYER_ID,
+    CANOPY_COLOR_SOURCE_ID,
+    CANOPY_COLOR_LAYER_ID,
+    SURFACE_SOURCE_ID,
+    terrainSourceId,
     BACKGROUND_LAYER_ID,
     orthoSourceId,
     orthoLayerId,
@@ -141,6 +145,60 @@ test('buildEditorStyle: no baked hillshade → falls back to client-side hillsha
     const layer = style.layers.find(l => l.id === HILLSHADE_LAYER_ID) as any;
     expect(layer.type).toBe('hillshade');
     expect((style.sources[HILLSHADE_SOURCE_ID] as any).type).toBe('raster-dem');
+});
+
+// ── Lidar layers (canopy-color raster + surface DSM) ──────────────────────
+
+const LIDAR_MANIFEST: TileManifest = {
+    ...MANIFEST,
+    layers: {
+        ...MANIFEST.layers,
+        canopy: { minzoom: 12, maxzoom: 17 },
+        'canopy-color': { minzoom: 12, maxzoom: 17 },
+        surface: { minzoom: 12, maxzoom: 17 },
+    },
+};
+
+test('buildEditorStyle: manifest without lidar layers declares no canopy/surface sources or layers', () => {
+    const style = buildEditorStyle('C-1', MANIFEST, 'V9');
+    expect(style.sources[CANOPY_COLOR_SOURCE_ID]).toBeUndefined();
+    expect(style.sources[SURFACE_SOURCE_ID]).toBeUndefined();
+    expect(style.layers.map(l => l.id)).toEqual([BACKGROUND_LAYER_ID, ORTHO_LAYER_ID, HILLSHADE_LAYER_ID]);
+});
+
+test('buildEditorStyle: canopy-color → hidden 0.7-opacity raster above ortho and hillshade', () => {
+    const style = buildEditorStyle('C-1', LIDAR_MANIFEST, 'V9');
+
+    const src = style.sources[CANOPY_COLOR_SOURCE_ID] as any;
+    expect(src.type).toBe('raster');
+    expect(src.tiles).toEqual(['/tiles/C-1/canopy-color/{z}/{x}/{y}.png?v=V9']);
+    expect(src.minzoom).toBe(12);
+    expect(src.maxzoom).toBe(17);
+    expect(src.bounds).toEqual([15.6954, 58.3431, 15.7489, 58.3712]);
+
+    const ids = style.layers.map(l => l.id);
+    expect(ids).toEqual([BACKGROUND_LAYER_ID, ORTHO_LAYER_ID, HILLSHADE_LAYER_ID, CANOPY_COLOR_LAYER_ID]);
+    const layer = style.layers[3] as any;
+    expect(layer.type).toBe('raster');
+    expect(layer.source).toBe(CANOPY_COLOR_SOURCE_ID);
+    expect(layer.layout.visibility).toBe('none');
+    expect(layer.paint['raster-opacity']).toBe(0.7);
+});
+
+test('buildEditorStyle: surface → raster-dem source (Terrain-RGB) with no layer of its own', () => {
+    const style = buildEditorStyle('C-1', LIDAR_MANIFEST, 'V9');
+    const src = style.sources[SURFACE_SOURCE_ID] as any;
+    expect(src.type).toBe('raster-dem');
+    expect(src.encoding).toBe('mapbox');
+    expect(src.tiles).toEqual(['/tiles/C-1/surface/{z}/{x}/{y}.png?v=V9']);
+    expect(style.layers.some(l => 'source' in l && l.source === SURFACE_SOURCE_ID)).toBe(false);
+    // The ground DEM source is untouched.
+    expect((style.sources[TERRAIN_SOURCE_ID] as any).tiles).toEqual(['/tiles/C-1/terrain/{z}/{x}/{y}.png?v=V9']);
+});
+
+test('terrainSourceId maps ground → terrain DEM, surface → DSM', () => {
+    expect(terrainSourceId('ground')).toBe(TERRAIN_SOURCE_ID);
+    expect(terrainSourceId('surface')).toBe(SURFACE_SOURCE_ID);
 });
 
 test('buildEditorStyle omits attribution when the manifest has none', () => {

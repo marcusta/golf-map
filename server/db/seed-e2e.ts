@@ -38,7 +38,7 @@ const HOME_LON = 15.5658;
  * Bounds are a small box around the seeded course home so MapLibre's initial
  * fitBounds lands sensibly; tile bytes themselves are never fetched to disk.
  */
-function tileManifestJson(): string {
+function tileManifestJson(opts: { lidar?: boolean } = {}): string {
     return JSON.stringify({
         bounds: {
             west: HOME_LON - 0.01,
@@ -49,6 +49,16 @@ function tileManifestJson(): string {
         layers: {
             ortho: { minzoom: 12, maxzoom: 20 },
             terrain: { minzoom: 12, maxzoom: 17 },
+            // Lidar canopy trio (e2e/tests/25-lidar-layers): the layer
+            // TOGGLES only render when the manifest carries these; tile
+            // bytes 404 like every other e2e tile, which the map tolerates.
+            ...(opts.lidar
+                ? {
+                    canopy: { minzoom: 12, maxzoom: 17 },
+                    'canopy-color': { minzoom: 12, maxzoom: 17 },
+                    surface: { minzoom: 12, maxzoom: 17 },
+                }
+                : {}),
         },
         elevation: { min: 70, max: 90 },
         generatedAt: '2026-07-06T00:00:00Z',
@@ -255,6 +265,8 @@ async function seedSandboxCourse(ctx: ReturnType<typeof createServices>): Promis
     }
 
     // Same site + tile-manifest wiring as course-1 so its editor map boots.
+    // The sandbox is the "lidar" course: its manifest carries the canopy
+    // layers so the layer toggles can be asserted against course-1's absence.
     await ctx.db.insertInto('sites').values({ id: SANDBOX_COURSE_ID, name: 'E2E Sandbox Site', version: 1 }).execute();
     await ctx.db.updateTable('courses').where('id', '=', SANDBOX_COURSE_ID).set({ site_id: SANDBOX_COURSE_ID }).execute();
     await ctx.db
@@ -265,7 +277,7 @@ async function seedSandboxCourse(ctx: ReturnType<typeof createServices>): Promis
             site_id: SANDBOX_COURSE_ID,
             kind: 'tile_manifest',
             filename: 'manifest.json',
-            meta_json: tileManifestJson(),
+            meta_json: tileManifestJson({ lidar: true }),
             version: 1,
         })
         .execute();

@@ -29,6 +29,15 @@ export interface TileManifest {
         terrain: TileLayerConfig;
         /** Baked opaque hillshade raster (present once a course is (re)built with it). */
         hillshade?: TileLayerConfig;
+        /**
+         * Lidar canopy trio — only on sites tiled with lidar canopy data.
+         * `canopy`: Terrain-RGB, value = canopy height above ground (m).
+         * `canopy-color`: RGBA display raster, transparent where no canopy.
+         * `surface`: Terrain-RGB DSM = ground + canopy.
+         */
+        canopy?: TileLayerConfig;
+        'canopy-color'?: TileLayerConfig;
+        surface?: TileLayerConfig;
     };
     /** Course elevation range in meters (RH2000). */
     elevation: { min: number; max: number };
@@ -65,7 +74,12 @@ export function parseTileManifest(metaJson: string | null | undefined): TileMani
     const b = m.bounds;
     const ortho = m.layers?.ortho;
     const terrain = m.layers?.terrain;
-    const hillshade = m.layers?.hillshade;
+    const optionalLayer = (name: string): { [k: string]: TileLayerConfig } => {
+        const l = m.layers?.[name];
+        return typeof l?.minzoom === 'number' && typeof l?.maxzoom === 'number'
+            ? { [name]: { minzoom: l.minzoom, maxzoom: l.maxzoom } }
+            : {};
+    };
     if (
         typeof b?.west !== 'number' || typeof b?.south !== 'number' ||
         typeof b?.east !== 'number' || typeof b?.north !== 'number' ||
@@ -78,9 +92,10 @@ export function parseTileManifest(metaJson: string | null | undefined): TileMani
         layers: {
             ortho: { minzoom: ortho.minzoom, maxzoom: ortho.maxzoom },
             terrain: { minzoom: terrain.minzoom, maxzoom: terrain.maxzoom },
-            ...(typeof hillshade?.minzoom === 'number' && typeof hillshade?.maxzoom === 'number'
-                ? { hillshade: { minzoom: hillshade.minzoom, maxzoom: hillshade.maxzoom } }
-                : {}),
+            ...optionalLayer('hillshade'),
+            ...optionalLayer('canopy'),
+            ...optionalLayer('canopy-color'),
+            ...optionalLayer('surface'),
         },
         elevation: {
             min: typeof m.elevation?.min === 'number' ? m.elevation.min : 0,

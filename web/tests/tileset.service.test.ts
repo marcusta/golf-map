@@ -78,6 +78,26 @@ test('parseTileManifest parses a real manifest', () => {
     expect(m.attribution).toBe('© Lantmäteriet, CC BY 4.0');
 });
 
+test('parseTileManifest keeps the optional lidar layers when present and omits them otherwise', () => {
+    const base = parseTileManifest(MANIFEST_JSON)!;
+    expect(base.layers.canopy).toBeUndefined();
+    expect(base.layers['canopy-color']).toBeUndefined();
+    expect(base.layers.surface).toBeUndefined();
+
+    const raw = JSON.parse(MANIFEST_JSON);
+    raw.layers.canopy = { minzoom: 12, maxzoom: 17 };
+    raw.layers['canopy-color'] = { minzoom: 12, maxzoom: 17 };
+    raw.layers.surface = { minzoom: 12, maxzoom: 17 };
+    const lidar = parseTileManifest(JSON.stringify(raw))!;
+    expect(lidar.layers.canopy).toEqual({ minzoom: 12, maxzoom: 17 });
+    expect(lidar.layers['canopy-color']).toEqual({ minzoom: 12, maxzoom: 17 });
+    expect(lidar.layers.surface).toEqual({ minzoom: 12, maxzoom: 17 });
+
+    // A malformed optional layer is dropped, not fatal.
+    raw.layers.surface = { minzoom: 'x' };
+    expect(parseTileManifest(JSON.stringify(raw))!.layers.surface).toBeUndefined();
+});
+
 test('parseTileManifest returns null for null, invalid JSON, and missing fields', () => {
     expect(parseTileManifest(null)).toBeNull();
     expect(parseTileManifest(undefined)).toBeNull();

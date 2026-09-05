@@ -16,7 +16,8 @@ enum StoreFixtures {
         siteId: String? = nil,
         revision: Int = 3,
         versionParam: String = "ver1",
-        orthoMaxZoom: Int = 20
+        orthoMaxZoom: Int = 20,
+        lidarLayers: ClosedRange<Int>? = nil
     ) -> CourseFurniture {
         let course = CourseRecord(
             id: courseId,
@@ -70,7 +71,10 @@ enum StoreFixtures {
             terrainMinZoom: 1, terrainMaxZoom: 1,
             elevMin: 12.5, elevMax: 87.0,
             generatedAt: "2026-06-30T08:00:00Z",
-            versionParam: versionParam
+            versionParam: versionParam,
+            canopyMinZoom: lidarLayers?.lowerBound, canopyMaxZoom: lidarLayers?.upperBound,
+            canopyColorMinZoom: lidarLayers?.lowerBound, canopyColorMaxZoom: lidarLayers?.upperBound,
+            surfaceMinZoom: lidarLayers?.lowerBound, surfaceMaxZoom: lidarLayers?.upperBound
         )
         return CourseFurniture(
             course: course,

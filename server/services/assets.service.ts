@@ -9,24 +9,39 @@ import { NotFoundError } from '@basics/core/server/auth';
 
 export type AssetKind = 'ortho_cog' | 'dem_cog' | 'svg_source' | 'tile_manifest';
 
-export type TileLayer = 'ortho' | 'terrain' | 'hillshade';
+/**
+ * Raster tile layers under `data/tiles/<siteId>/<layer>/`. The lidar-derived
+ * trio (`canopy`, `canopy-color`, `surface`) exists only for sites tiled with
+ * lidar canopy data — clients treat them as optional per the manifest.
+ *  - `canopy`: Terrain-RGB PNG, value = canopy height above ground (m, 0 = none)
+ *  - `canopy-color`: RGBA PNG, pre-coloured canopy for display (transparent = none)
+ *  - `surface`: Terrain-RGB PNG, DSM = ground + canopy
+ */
+export type TileLayer = 'ortho' | 'terrain' | 'hillshade' | 'canopy' | 'canopy-color' | 'surface';
 
-const TILE_LAYERS: readonly TileLayer[] = ['ortho', 'terrain', 'hillshade'];
+export const TILE_LAYERS: readonly TileLayer[] = ['ortho', 'terrain', 'hillshade', 'canopy', 'canopy-color', 'surface'];
 
 const TILE_EXTENSION_BY_LAYER: Record<TileLayer, 'jpg' | 'png' | 'webp'> = {
     ortho: 'jpg',
     terrain: 'png',
     hillshade: 'webp',
+    canopy: 'png',
+    'canopy-color': 'png',
+    surface: 'png',
 };
 
 // Candidate extensions per layer, in resolution-preference order. Ortho tiles
 // are migrating from JPEG to WebP: a WebP tile is preferred when present, with
 // the legacy JPEG as fallback so existing on-disk trees keep serving. Terrain
-// is PNG only; hillshade is opaque WebP only (baked by the pipeline).
+// and the lidar layers are PNG only; hillshade is opaque WebP only (baked by
+// the pipeline).
 const TILE_EXTENSIONS_BY_LAYER: Record<TileLayer, readonly string[]> = {
     ortho: ['webp', 'jpg'],
     terrain: ['png'],
     hillshade: ['webp'],
+    canopy: ['png'],
+    'canopy-color': ['png'],
+    surface: ['png'],
 };
 
 // A "safe id" — used to validate courseId before it touches the filesystem.

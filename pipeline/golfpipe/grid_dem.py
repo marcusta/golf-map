@@ -66,6 +66,13 @@ def _grid_shape(bbox_3006: tuple[float, float, float, float], resolution: float)
     return width, height, transform
 
 
+def grid_shape(bbox_3006: tuple[float, float, float, float], resolution: float) -> tuple[int, int]:
+    """(height, width) of the grid grid_lidar_points builds for bbox_3006 at
+    resolution — so callers can pre-allocate matching accumulators."""
+    width, height, _ = _grid_shape(bbox_3006, resolution)
+    return height, width
+
+
 def detect_available_classes(lidar_paths: list[Path]) -> set[int]:
     """Scans LAS/LAZ header point-count-by-return info is not enough for
     per-class detection, so this does a lightweight full pass over each
@@ -91,6 +98,7 @@ def grid_lidar_points(
     *,
     aggregate: str = "sum",
     exclude_classes: tuple[int, ...] = (),
+    multi_return_count: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, "rasterio.Affine", ClassCounts]:
     """Reads one or more LAS/LAZ/COPC files in chunks, filters points to
     bbox_3006 (e_min, n_min, e_max, n_max in EPSG:3006 metres) and to the
@@ -113,6 +121,14 @@ def grid_lidar_points(
     Class selection: `classes=None` uses ALL classification codes (the
     detect-trees "every return is surface" case); `exclude_classes` then
     drops codes from whatever `classes` selected (e.g. noise 7/18).
+
+    `multi_return_count` (keyword-only, optional): a caller-owned float64
+    accumulator of the grid's shape (see grid_shape). When given, every
+    gridded point whose `number_of_returns` > 1 also increments this grid,
+    so callers get a per-cell multi-return count from the same pass (the
+    canopy command uses multi / count as a roof-vs-foliage discriminator:
+    laser pulses hitting a roof return once, pulses into a crown split).
+    Return value and all other behaviour are unchanged when it is None.
     """
     if aggregate not in ("sum", "max"):
         raise ValueError(f"aggregate must be 'sum' or 'max', got {aggregate!r}")
@@ -120,6 +136,10 @@ def grid_lidar_points(
     init = 0.0 if aggregate == "sum" else -np.inf
     sum_grid = np.full((height, width), init, dtype=np.float64)
     count_grid = np.zeros((height, width), dtype=np.float64)
+    if multi_return_count is not None and multi_return_count.shape != (height, width):
+        raise ValueError(
+            f"multi_return_count shape {multi_return_count.shape} does not match grid shape {(height, width)}"
+        )
     class_counts = ClassCounts(used_classes=tuple(classes) if classes is not None else ())
 
     e_min, n_min, e_max, n_max = bbox_3006
@@ -132,6 +152,7 @@ def grid_lidar_points(
                 y = np.asarray(chunk.y, dtype=np.float64)
                 z = np.asarray(chunk.z, dtype=np.float64)
                 classification = np.asarray(chunk.classification)
+                num_returns = np.asarray(chunk.number_of_returns) if multi_return_count is not None else None
 
                 in_bbox = (x >= e_min) & (x < e_max) & (y >= n_min) & (y < n_max)
                 if not np.any(in_bbox):
@@ -154,6 +175,7 @@ def grid_lidar_points(
                 if not np.any(use_mask):
                     continue
                 x_u, y_u, z_u = x_b[use_mask], y_b[use_mask], z_b[use_mask]
+                multi_u = (num_returns[in_bbox][use_mask] > 1) if num_returns is not None else None
                 class_counts.points_used_for_grid += int(x_u.size)
 
                 # Row 0 is the north edge (from_origin uses n_max as top).
@@ -169,6 +191,9 @@ def grid_lidar_points(
                 else:
                     np.add.at(sum_grid.reshape(-1), flat_idx, z_u)
                 np.add.at(count_grid.reshape(-1), flat_idx, 1.0)
+                if multi_return_count is not None:
+                    multi_idx = flat_idx[multi_u[valid]]
+                    np.add.at(multi_return_count.reshape(-1), multi_idx, 1.0)
 
     return sum_grid, count_grid, transform, class_counts
 
@@ -211,7 +236,7 @@ def write_dem_geotiff(
     transform: "rasterio.Affine",
     out_path: Path,
     crs: CRS | int = 3006,
-    nodata_value: float = -9999.0,
+    nodata_value: float | None = -9999.0,
 ) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     profile = {

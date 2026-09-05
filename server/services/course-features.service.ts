@@ -2,7 +2,7 @@ import type { Kysely, Selectable } from 'kysely';
 import { sql } from 'kysely';
 import type { Database, CourseFeaturesTable } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
-import { ConflictError } from '@basics/core/server/auth';
+import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { toGeoJson, type FeatureGeometry, type GeoJsonPolygon, type GeoJsonMultiPolygon } from './geo';
 import { resolveSurfaceStack } from '../../shared/render/resolved-surface-stack';
 import type { FeatureCollection } from 'geojson';
@@ -100,8 +100,18 @@ export interface CourseFeature {
     sourceRef: string | null;
     /** License short name (e.g. 'ODbL'). */
     license: string | null;
+    /**
+     * Flat scalar attributes set by generators (e.g. lidar canopy: heightMaxM,
+     * heightP90M, heightMeanM, areaM2). Null for hand-drawn features.
+     */
+    attributes: FeatureAttributes | null;
     version: number;
 }
+
+export type FeatureAttributes = Record<string, number | string | boolean>;
+
+/** Upper bound on `attributes` keys; keeps the column a small flat object. */
+export const MAX_ATTRIBUTE_KEYS = 32;
 
 export interface CourseFeatureGeoJsonFeature {
     type: 'Feature';
@@ -115,6 +125,7 @@ export interface CourseFeatureGeoJsonFeature {
         source: string | null;
         sourceRef: string | null;
         license: string | null;
+        attributes: FeatureAttributes | null;
     };
     /** MultiPolygon only in `resolved` output (clipping can split a polygon). */
     geometry: GeoJsonPolygon | GeoJsonMultiPolygon;
@@ -147,8 +158,19 @@ function toCourseFeature(row: FeatureRow): CourseFeature {
         source: row.source,
         sourceRef: row.source_ref,
         license: row.license,
+        attributes: parseAttributes(row.attributes_json),
         version: row.version,
     };
+}
+
+function parseAttributes(raw: string | null): FeatureAttributes | null {
+    if (raw === null) return null;
+    try {
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as FeatureAttributes) : null;
+    } catch {
+        return null;
+    }
 }
 
 // --- Validation ---
@@ -199,6 +221,157 @@ function assertValidGeometry(geometry: FeatureGeometry): void {
     }
 }
 
+function isScalar(v: unknown): v is number | string | boolean {
+    return typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v));
+}
+
+/**
+ * `attributes` must be a flat object of finite numbers, strings and booleans
+ * with at most MAX_ATTRIBUTE_KEYS keys. `null`/`undefined` mean "none".
+ */
+function assertValidAttributes(attributes: unknown): void {
+    if (attributes === null || attributes === undefined) return;
+    if (typeof attributes !== 'object' || Array.isArray(attributes)) {
+        throw new InvalidFeatureError('attributes must be a flat object or null');
+    }
+    const entries = Object.entries(attributes as Record<string, unknown>);
+    if (entries.length > MAX_ATTRIBUTE_KEYS) {
+        throw new InvalidFeatureError(`attributes may have at most ${MAX_ATTRIBUTE_KEYS} keys (got ${entries.length})`);
+    }
+    for (const [key, value] of entries) {
+        if (!isScalar(value)) {
+            throw new InvalidFeatureError(`attributes.${key} must be a finite number, string or boolean`);
+        }
+    }
+}
+
+function serializeAttributes(attributes: FeatureAttributes | null | undefined): string | null {
+    if (attributes === null || attributes === undefined) return null;
+    return JSON.stringify(attributes);
+}
+
+// --- Generated-feature GeoJSON input (EPSG:3006 FeatureCollection) ---
+
+/**
+ * Body of `PUT /api/courses/:courseId/features/generated?source=`. Coordinates
+ * are [x, y] in EPSG:3006 metres. `crs` is optional; when present it must name
+ * EPSG:3006 (`{type:'name', properties:{name:'EPSG:3006' | 'urn:ogc:def:crs:EPSG::3006'}}`
+ * or `{type:'EPSG', properties:{code:3006}}`). Anything else is rejected.
+ */
+export interface GeneratedFeatureCollection {
+    type: 'FeatureCollection';
+    crs?: unknown;
+    features: GeneratedFeature[];
+}
+
+export interface GeneratedFeature {
+    type: 'Feature';
+    geometry: { type: 'Polygon'; coordinates: number[][][] };
+    /**
+     * `type` (feature type), `source` (must equal the query source),
+     * optional `source_ref` and `license`; every other scalar property
+     * becomes an `attributes` entry (nulls are dropped).
+     */
+    properties: Record<string, unknown>;
+}
+
+const GENERATED_CRS = 'EPSG:3006';
+const RESERVED_PROPERTY_KEYS = new Set(['type', 'source', 'source_ref', 'license']);
+
+function assertAcceptedCrs(crs: unknown): void {
+    if (crs === undefined || crs === null) return;
+    if (typeof crs !== 'object') throw new InvalidFeatureError('crs must be an object');
+    const c = crs as { type?: unknown; properties?: Record<string, unknown> };
+    const props = c.properties ?? {};
+    if (c.type === 'name') {
+        const name = typeof props.name === 'string' ? props.name : '';
+        if (/^(EPSG:3006|urn:ogc:def:crs:EPSG::3006)$/i.test(name)) return;
+        throw new InvalidFeatureError(`Unsupported crs ${name || '(missing name)'}; only ${GENERATED_CRS} is accepted`);
+    }
+    if (c.type === 'EPSG' && (props.code === 3006 || props.code === '3006')) return;
+    throw new InvalidFeatureError(`Unsupported crs; only ${GENERATED_CRS} is accepted`);
+}
+
+/**
+ * GeoJSON Polygon rings -> internal FeatureGeometry. Every edge is straight
+ * (no hIn/hOut handles), ring 0 is the exterior and later rings are holes,
+ * matching how the editor stores hand-drawn holes. The GeoJSON closing point
+ * is dropped; winding is normalised later by toGeoJson().
+ */
+function polygonToGeometry(coordinates: unknown, label: string): FeatureGeometry {
+    if (!Array.isArray(coordinates) || coordinates.length === 0) {
+        throw new InvalidFeatureError(`${label}: Polygon must have at least one ring`);
+    }
+    const rings = coordinates.map((ring, ringIdx) => {
+        if (!Array.isArray(ring)) throw new InvalidFeatureError(`${label}: ring ${ringIdx} is not an array`);
+        const points = ring.map((pos, i) => {
+            if (!Array.isArray(pos) || !Number.isFinite(pos[0]) || !Number.isFinite(pos[1])) {
+                throw new InvalidFeatureError(`${label}: ring ${ringIdx} position ${i} is not a finite [x, y]`);
+            }
+            return { x: pos[0] as number, y: pos[1] as number };
+        });
+        if (points.length > 1) {
+            const first = points[0];
+            const last = points[points.length - 1];
+            if (first.x === last.x && first.y === last.y) points.pop();
+        }
+        if (points.length < 3) throw new InvalidFeatureError(`${label}: ring ${ringIdx} needs at least 3 distinct points`);
+        return { points };
+    });
+    return { crs: GENERATED_CRS, rings };
+}
+
+interface ParsedGeneratedFeature {
+    type: string;
+    geometry: FeatureGeometry;
+    sourceRef: string | null;
+    license: string | null;
+    attributes: FeatureAttributes | null;
+}
+
+function parseGeneratedFeature(feature: unknown, index: number, source: string): ParsedGeneratedFeature {
+    const label = `features[${index}]`;
+    if (!feature || typeof feature !== 'object') throw new InvalidFeatureError(`${label}: not an object`);
+    const f = feature as Partial<GeneratedFeature>;
+    if (f.type !== 'Feature') throw new InvalidFeatureError(`${label}: type must be 'Feature'`);
+    if (!f.geometry || f.geometry.type !== 'Polygon') {
+        throw new InvalidFeatureError(`${label}: geometry.type must be 'Polygon'`);
+    }
+    const props = f.properties;
+    if (!props || typeof props !== 'object' || Array.isArray(props)) {
+        throw new InvalidFeatureError(`${label}: properties must be an object`);
+    }
+    if (typeof props.type !== 'string') throw new InvalidFeatureError(`${label}: properties.type is required`);
+    assertValidType(props.type);
+    if (props.source !== source) {
+        throw new InvalidFeatureError(
+            `${label}: properties.source (${String(props.source)}) must equal the requested source (${source})`,
+        );
+    }
+    for (const key of ['source_ref', 'license'] as const) {
+        const v = props[key];
+        if (v !== undefined && v !== null && typeof v !== 'string') {
+            throw new InvalidFeatureError(`${label}: properties.${key} must be a string or null`);
+        }
+    }
+    const attributes: FeatureAttributes = {};
+    for (const [key, value] of Object.entries(props)) {
+        if (RESERVED_PROPERTY_KEYS.has(key) || value === null || value === undefined) continue;
+        if (!isScalar(value)) throw new InvalidFeatureError(`${label}: properties.${key} must be a scalar`);
+        attributes[key] = value;
+    }
+    assertValidAttributes(attributes);
+    const geometry = polygonToGeometry(f.geometry.coordinates, label);
+    assertValidGeometry(geometry);
+    return {
+        type: props.type,
+        geometry,
+        sourceRef: (props.source_ref as string | undefined) ?? null,
+        license: (props.license as string | undefined) ?? null,
+        attributes: Object.keys(attributes).length > 0 ? attributes : null,
+    };
+}
+
 // --- Geometry parsing (defensive: tolerates legacy/malformed rows) ---
 
 function parseGeometry(raw: string): FeatureGeometry | null {
@@ -232,6 +405,7 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
         source: row.source,
         sourceRef: row.source_ref,
         license: row.license,
+        attributes: parseAttributes(row.attributes_json),
         version: row.version,
     };
 }
@@ -285,6 +459,7 @@ export class CourseFeaturesService {
             source: string | null;
             source_ref: string | null;
             license: string | null;
+            attributes_json?: string | null;
             version?: number;
         },
         trx: Kysely<Database> = this.db,
@@ -347,6 +522,7 @@ export class CourseFeaturesService {
                 'course_features.source',
                 'course_features.source_ref',
                 'course_features.license',
+                'course_features.attributes_json',
                 'course_features.version',
                 'holes.number as hole_number',
             ])
@@ -372,6 +548,7 @@ export class CourseFeaturesService {
                     source: feature.source,
                     sourceRef: feature.sourceRef,
                     license: feature.license,
+                    attributes: feature.attributes,
                 },
                 geometry: geojson,
             });
@@ -403,15 +580,19 @@ export class CourseFeaturesService {
         source?: string | null;
         sourceRef?: string | null;
         license?: string | null;
+        /** Flat scalar attributes; omitted/null for hand-drawn features. */
+        attributes?: FeatureAttributes | null;
     }): Promise<CourseFeature> {
         assertValidType(input.type);
         assertValidGeometry(input.geometry);
+        assertValidAttributes(input.attributes);
 
         const id = crypto.randomUUID();
         const holeId = input.holeId ?? null;
         const source = input.source ?? null;
         const sourceRef = input.sourceRef ?? null;
         const license = input.license ?? null;
+        const attributes = input.attributes ?? null;
         const geojson = toGeoJson(input.geometry);
 
         const sortOrder = await this.db.transaction().execute(async (trx) => {
@@ -438,6 +619,7 @@ export class CourseFeaturesService {
                     source,
                     source_ref: sourceRef,
                     license,
+                    attributes_json: serializeAttributes(attributes),
                 },
                 trx,
             ).execute();
@@ -456,6 +638,7 @@ export class CourseFeaturesService {
             source,
             sourceRef,
             license,
+            attributes,
             version: 1,
         };
     }
@@ -463,13 +646,20 @@ export class CourseFeaturesService {
     async update(
         id: string,
         version: number,
-        input: { holeId?: string | null; type?: string; geometry?: FeatureGeometry },
+        input: {
+            holeId?: string | null;
+            type?: string;
+            geometry?: FeatureGeometry;
+            /** `null` clears the attributes; omitted leaves them untouched. */
+            attributes?: FeatureAttributes | null;
+        },
     ): Promise<CourseFeature> {
         const row = await this.byId(id).executeTakeFirst();
         if (!row || row.version !== version) throw new VersionConflictError('course_features', id);
 
         if (input.type !== undefined) assertValidType(input.type);
         if (input.geometry !== undefined) assertValidGeometry(input.geometry);
+        if (input.attributes !== undefined) assertValidAttributes(input.attributes);
 
         const dbInput: Record<string, unknown> = {};
         const movingGroups = input.holeId !== undefined && input.holeId !== row.hole_id;
@@ -481,6 +671,7 @@ export class CourseFeaturesService {
             dbInput.geometry_json = JSON.stringify(input.geometry);
             dbInput.geojson = JSON.stringify(toGeoJson(input.geometry));
         }
+        if (input.attributes !== undefined) dbInput.attributes_json = serializeAttributes(input.attributes);
 
         if (movingGroups) {
             await this.db.transaction().execute(async (trx) => {
@@ -522,6 +713,100 @@ export class CourseFeaturesService {
         const row = await this.byId(id).executeTakeFirst();
         if (!row || row.version !== version) throw new VersionConflictError('course_features', id);
         await this.deleteById(id).execute();
+    }
+
+    /**
+     * Replaces every feature of `courseId` whose `source` equals `source` with
+     * the polygons in `collection`, in one transaction. Inserted features are
+     * course-level (hole_id NULL) and land in the course group's stack where
+     * create() would put a feature of their type (D26 insertion heuristic),
+     * in input order. Hand-drawn features (source NULL) are never touched:
+     * an empty source is rejected before anything is read.
+     *
+     * Throws InvalidFeatureError for a bad body (wrong CRS, non-Polygon
+     * geometry, source mismatch, bad attributes) and NotFoundError when the
+     * course does not exist. Nothing is written in either case.
+     */
+    async replaceGenerated(
+        courseId: string,
+        source: string,
+        collection: GeneratedFeatureCollection,
+    ): Promise<{ deleted: number; inserted: number }> {
+        if (typeof source !== 'string' || source.trim().length === 0) {
+            throw new InvalidFeatureError('source is required and must be non-empty (hand-drawn features are never replaced)');
+        }
+        if (!collection || typeof collection !== 'object' || collection.type !== 'FeatureCollection') {
+            throw new InvalidFeatureError("Body must be a GeoJSON FeatureCollection (type: 'FeatureCollection')");
+        }
+        assertAcceptedCrs(collection.crs);
+        if (!Array.isArray(collection.features)) throw new InvalidFeatureError('features must be an array');
+        const parsed = collection.features.map((f, i) => parseGeneratedFeature(f, i, source));
+
+        return this.db.transaction().execute(async (trx) => {
+            const course = await trx.selectFrom('courses').select('id').where('id', '=', courseId).executeTakeFirst();
+            if (!course) throw new NotFoundError(`Course ${courseId} not found`);
+
+            // Counted explicitly: the bun-sqlite dialect does not report
+            // numDeletedRows.
+            const existing = await trx
+                .selectFrom('course_features')
+                .select((eb) => eb.fn.countAll<number>().as('n'))
+                .where('course_id', '=', courseId)
+                .where('source', '=', source)
+                .executeTakeFirstOrThrow();
+            const deleted = Number(existing.n);
+            await trx
+                .deleteFrom('course_features')
+                .where('course_id', '=', courseId)
+                .where('source', '=', source)
+                .execute();
+
+            // Group by type so each type slots into the stack at its own
+            // z-order position; within a type, input order is preserved.
+            const byType = new Map<string, ParsedGeneratedFeature[]>();
+            for (const f of parsed) {
+                const list = byType.get(f.type) ?? [];
+                list.push(f);
+                byType.set(f.type, list);
+            }
+            const types = [...byType.keys()].sort((a, b) => typeRank(a) - typeRank(b));
+
+            let inserted = 0;
+            for (const type of types) {
+                const batch = byType.get(type)!;
+                const groupStack = await this.byGroup(courseId, null, trx).execute();
+                const pos = insertionPosition(groupStack, type);
+                await trx
+                    .updateTable('course_features')
+                    .set({ sort_order: sql`sort_order + ${batch.length}`, updated_at: sql`(datetime('now'))` })
+                    .where('course_id', '=', courseId)
+                    .where('hole_id', 'is', null)
+                    .where('sort_order', '>=', pos)
+                    .execute();
+
+                const rows = batch.map((f, i) => ({
+                    id: crypto.randomUUID(),
+                    course_id: courseId,
+                    hole_id: null,
+                    type: f.type,
+                    geometry_json: JSON.stringify(f.geometry),
+                    geojson: JSON.stringify(toGeoJson(f.geometry)),
+                    sort_order: pos + i,
+                    source,
+                    source_ref: f.sourceRef,
+                    license: f.license,
+                    attributes_json: serializeAttributes(f.attributes),
+                    version: 1,
+                }));
+                const CHUNK = 200;
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    await trx.insertInto('course_features').values(rows.slice(i, i + CHUNK)).execute();
+                }
+                inserted += rows.length;
+            }
+
+            return { deleted, inserted };
+        });
     }
 
     /**

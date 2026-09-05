@@ -198,6 +198,7 @@ public actor BundleDownloader {
                 mapKey: mapKey,
                 versionParam: manifest.versionParam
             ) && Self.mapFilesAreUsable(paths: paths, mapKey: mapKey)
+                && Self.mapHasListedOptionalLayers(paths: paths, mapKey: mapKey, manifest: manifest)
             var downloadedTiles = 0
             var totalBytes: Int64 = 0
             var completedMapBundle: MapBundleRecord?
@@ -212,24 +213,28 @@ public actor BundleDownloader {
                 // Never ask for ortho levels the server doesn't publish: a
                 // capped VPS (deploy split §9) rewrites the manifest's ortho
                 // maxzoom, and the archive request must respect it.
-                let layerSpecs: [(layer: TileLayer, maxzoom: Int?)] = [
-                    (.ortho, OrthoZoomPolicy.effectiveMaxZoom(publishedMaxZoom: manifest.orthoMaxZoom)),
-                    (.terrain, nil),
-                ]
+                let layerSpecs = Self.layerSpecs(manifest: manifest)
                 try await withThrowingTaskGroup(of: Int.self) { group in
                     for spec in layerSpecs {
                         group.addTask {
-                            try await Self.downloadLayerArchive(
-                                layer: spec.layer,
-                                maxzoom: spec.maxzoom,
-                                courseId: courseId,
-                                baseURL: baseURL,
-                                versionParam: manifest.versionParam,
-                                stagingDirectory: mapTmpDir,
-                                paths: bundlePaths,
-                                session: session,
-                                aggregator: aggregator
-                            )
+                            do {
+                                return try await Self.downloadLayerArchive(
+                                    layer: spec.layer,
+                                    maxzoom: spec.maxzoom,
+                                    courseId: courseId,
+                                    baseURL: baseURL,
+                                    versionParam: manifest.versionParam,
+                                    stagingDirectory: mapTmpDir,
+                                    paths: bundlePaths,
+                                    session: session,
+                                    aggregator: aggregator
+                                )
+                            } catch BundleDownloadError.layerHasNoTiles(let layer) where layer.isOptional {
+                                // The manifest listed a lidar layer the server
+                                // has no tiles for: the bundle simply lacks it.
+                                aggregator.reset(layer: layer)
+                                return 0
+                            }
                         }
                     }
                     for try await tilesInLayer in group {
@@ -338,11 +343,41 @@ public actor BundleDownloader {
         }.value
     }
 
+    /// The archives to fetch for a bundle: the required layers always, and
+    /// each optional lidar layer only when the manifest lists it. Ortho never
+    /// asks for levels the server doesn't publish: a capped VPS (deploy split
+    /// §9) rewrites the manifest's ortho maxzoom, and the archive request must
+    /// respect it. The other layers are fetched whole.
+    static func layerSpecs(manifest: TileManifestRecord) -> [(layer: TileLayer, maxzoom: Int?)] {
+        var specs: [(layer: TileLayer, maxzoom: Int?)] = [
+            (.ortho, OrthoZoomPolicy.effectiveMaxZoom(publishedMaxZoom: manifest.orthoMaxZoom)),
+            (.terrain, nil),
+        ]
+        for layer in TileLayer.optional where manifest.hasLayer(layer) {
+            specs.append((layer, nil))
+        }
+        return specs
+    }
+
     private static func mapFilesAreUsable(paths: BundlePaths, mapKey: String) -> Bool {
         let mapDirectory = paths.mapBundleDirectory(mapKey: mapKey)
         let fm = FileManager.default
         return fm.fileExists(atPath: paths.layerTilesDirectory(in: mapDirectory, layer: .ortho).path(percentEncoded: false))
             && fm.fileExists(atPath: paths.layerTilesDirectory(in: mapDirectory, layer: .terrain).path(percentEncoded: false))
+    }
+
+    /// False when the manifest lists an optional layer the installed map lacks
+    /// (a lidar layer added server-side under the same `generatedAt`), so the
+    /// next download fetches it instead of reusing the map.
+    private static func mapHasListedOptionalLayers(
+        paths: BundlePaths, mapKey: String, manifest: TileManifestRecord
+    ) -> Bool {
+        let mapDirectory = paths.mapBundleDirectory(mapKey: mapKey)
+        let fm = FileManager.default
+        return TileLayer.optional.allSatisfy { layer in
+            !manifest.hasLayer(layer)
+                || fm.fileExists(atPath: paths.layerTilesDirectory(in: mapDirectory, layer: layer).path(percentEncoded: false))
+        }
     }
 
     /// Downloads one layer's archive to a temp file, unpacks it into the

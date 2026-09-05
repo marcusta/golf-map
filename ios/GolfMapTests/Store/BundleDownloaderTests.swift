@@ -136,6 +136,149 @@ final class BundleDownloaderTests: XCTestCase {
         XCTAssertNotNil(furniture)
     }
 
+    // MARK: - Optional lidar layers
+
+    func testManifestWithLidarLayersDownloadsAllFiveLayers() async throws {
+        let lidar = makeTarArchive([("13/3/3.png", Data("lidar".utf8))])
+        let ortho = makeTarArchive(orthoEntries)
+        let terrain = makeTarArchive(terrainEntries)
+        StoreMockURLProtocol.setHandler { request in
+            let path = request.url!.path()
+            if path.contains("/ortho/") { return MockTileResponse(statusCode: 200, data: ortho) }
+            if path.contains("/terrain/") { return MockTileResponse(statusCode: 200, data: terrain) }
+            return MockTileResponse(statusCode: 200, data: lidar)
+        }
+
+        let furniture = StoreFixtures.furniture(lidarLayers: 12...17)
+        let result = try await downloader.download(makeRequest(furniture: furniture)) { _ in }
+
+        XCTAssertEqual(result.downloadedTiles, orthoEntries.count + terrainEntries.count + 3)
+        let requested = Set(StoreMockURLProtocol.requestedURLs.map { $0.path() })
+        XCTAssertEqual(requested.count, 5)
+        for layer in TileLayer.allCases {
+            XCTAssertTrue(
+                requested.contains { $0.hasSuffix("/\(layer.rawValue)/archive.tar") },
+                "no archive request for \(layer.rawValue)"
+            )
+        }
+        // Optional layers never carry the ortho maxzoom cap.
+        for url in StoreMockURLProtocol.requestedURLs where !url.path().contains("/ortho/") {
+            XCTAssertEqual(url.query(), "v=ver1")
+        }
+
+        let courseDir = paths.courseDirectory(courseId: "course-1")
+        for layer in TileLayer.optional {
+            let tile = courseDir.appending(path: "tiles/\(layer.rawValue)/13/3/3.png")
+            XCTAssertEqual(try Data(contentsOf: tile), Data("lidar".utf8), "missing \(layer.rawValue)")
+        }
+
+        // The manifest's optional zoom ranges survive the round trip.
+        let stored = try await database.courseFurniture(courseId: "course-1")
+        XCTAssertEqual(stored?.manifest.zoomRange(for: .canopyColor), 12...17)
+        XCTAssertTrue(stored?.manifest.hasLayer(.surface) ?? false)
+    }
+
+    func testManifestWithoutLidarLayersRequestsOnlyOrthoAndTerrain() async throws {
+        serveArchives()
+        let furniture = StoreFixtures.furniture()
+        XCTAssertFalse(furniture.manifest.hasLayer(.canopy))
+
+        _ = try await downloader.download(makeRequest(furniture: furniture)) { _ in }
+
+        let requested = StoreMockURLProtocol.requestedURLs.map { $0.path() }
+        XCTAssertEqual(requested.count, 2)
+        XCTAssertFalse(requested.contains { $0.contains("/canopy") || $0.contains("/surface/") })
+        let courseDir = paths.courseDirectory(courseId: "course-1")
+        for layer in TileLayer.optional {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: courseDir.appending(path: "tiles/\(layer.rawValue)").path()),
+                "\(layer.rawValue) directory should not exist"
+            )
+        }
+    }
+
+    func testListedLidarLayerThatTheServerLacksIsSkippedNotFatal() async throws {
+        // The manifest advertises the layers but the server has no archive
+        // for them (404): the bundle still installs with ortho + terrain.
+        let ortho = makeTarArchive(orthoEntries)
+        let terrain = makeTarArchive(terrainEntries)
+        StoreMockURLProtocol.setHandler { request in
+            let path = request.url!.path()
+            if path.contains("/ortho/") { return MockTileResponse(statusCode: 200, data: ortho) }
+            if path.contains("/terrain/") { return MockTileResponse(statusCode: 200, data: terrain) }
+            return MockTileResponse(statusCode: 404, data: Data())
+        }
+
+        let furniture = StoreFixtures.furniture(lidarLayers: 12...17)
+        let result = try await downloader.download(makeRequest(furniture: furniture)) { _ in }
+
+        XCTAssertEqual(result.downloadedTiles, orthoEntries.count + terrainEntries.count)
+        XCTAssertEqual(StoreMockURLProtocol.requestedURLs.count, 5)
+        let courseDir = paths.courseDirectory(courseId: "course-1")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: courseDir.appending(path: "tiles/terrain").path()))
+        for layer in TileLayer.optional {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: courseDir.appending(path: "tiles/\(layer.rawValue)").path())
+            )
+        }
+        let course = try await database.course(id: "course-1")
+        XCTAssertEqual(course?.bundleState, .complete)
+    }
+
+    func testInstalledMapWithoutListedLidarLayersIsRefetched() async throws {
+        // First install: manifest without lidar layers.
+        serveArchives()
+        _ = try await downloader.download(makeRequest(furniture: StoreFixtures.furniture())) { _ in }
+        XCTAssertEqual(StoreMockURLProtocol.requestedURLs.count, 2)
+
+        // Same versionParam, but the manifest now lists the lidar layers: the
+        // map is not reused, every layer is fetched and the new ones land.
+        let lidar = makeTarArchive([("13/3/3.png", Data("lidar".utf8))])
+        let ortho = makeTarArchive(orthoEntries)
+        let terrain = makeTarArchive(terrainEntries)
+        StoreMockURLProtocol.setHandler { request in
+            let path = request.url!.path()
+            if path.contains("/ortho/") { return MockTileResponse(statusCode: 200, data: ortho) }
+            if path.contains("/terrain/") { return MockTileResponse(statusCode: 200, data: terrain) }
+            return MockTileResponse(statusCode: 200, data: lidar)
+        }
+        _ = try await downloader.download(makeRequest(furniture: StoreFixtures.furniture(lidarLayers: 12...17))) { _ in }
+        XCTAssertEqual(StoreMockURLProtocol.requestedURLs.count, 5)
+        let courseDir = paths.courseDirectory(courseId: "course-1")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: courseDir.appending(path: "tiles/canopy-color/13/3/3.png").path()))
+
+        // A third download with the same manifest reuses the map: no requests.
+        _ = try await downloader.download(makeRequest(furniture: StoreFixtures.furniture(lidarLayers: 12...17))) { _ in }
+        XCTAssertEqual(StoreMockURLProtocol.requestedURLs.count, 5)
+    }
+
+    func testRequiredLayer404StillFailsWhenLidarLayersAreListed() async throws {
+        let lidar = makeTarArchive([("13/3/3.png", Data("lidar".utf8))])
+        StoreMockURLProtocol.setHandler { request in
+            if request.url!.path().contains("/terrain/") {
+                return MockTileResponse(statusCode: 404, data: Data())
+            }
+            return MockTileResponse(statusCode: 200, data: lidar)
+        }
+        do {
+            _ = try await downloader.download(makeRequest(furniture: StoreFixtures.furniture(lidarLayers: 12...17)))
+            XCTFail("expected layerHasNoTiles(.terrain)")
+        } catch let error as BundleDownloadError {
+            guard case .layerHasNoTiles(.terrain) = error else { return XCTFail("got \(error)") }
+        }
+    }
+
+    func testLayerSpecsFollowTheManifest() {
+        let plain = BundleDownloader.layerSpecs(manifest: StoreFixtures.furniture().manifest)
+        XCTAssertEqual(plain.map(\.layer), [.ortho, .terrain])
+        XCTAssertEqual(plain[0].maxzoom, 19)
+        XCTAssertNil(plain[1].maxzoom)
+
+        let lidar = BundleDownloader.layerSpecs(manifest: StoreFixtures.furniture(lidarLayers: 12...17).manifest)
+        XCTAssertEqual(lidar.map(\.layer), [.ortho, .terrain, .canopy, .canopyColor, .surface])
+        XCTAssertEqual(lidar.dropFirst().compactMap(\.maxzoom), [])
+    }
+
     func testStartDownloadStreamsProgressAndFinishes() async throws {
         serveArchives()
 

@@ -37,6 +37,79 @@ final class OnCourseModel {
     /// Bumped whenever the camera should re-apply (hole change, recenter).
     private(set) var cameraToken = 0
 
+    // MARK: Flyover
+
+    /// The flight the map is flying (nil = none). A new token starts a flight;
+    /// nil cancels one in progress and restores the pre-flight camera.
+    private(set) var flyoverCommand: FlyoverCommand?
+    /// True while the ground profile is being sampled before take-off.
+    private(set) var isPreparingFlyover = false
+    private var flyoverToken = 0
+    @ObservationIgnored private var flyoverBuildTask: Task<Void, Never>?
+
+    var isFlyingOver: Bool { flyoverCommand != nil || isPreparingFlyover }
+
+    /// Ground path of the flyover for the current hole: active tee → aim
+    /// points (in order) → green centre. Nil when either end is missing.
+    var flyoverWaypoints: [LatLon]? {
+        guard
+            let hole = currentHole,
+            let tee = teePosition(for: hole),
+            let green = greenCenterPosition(for: hole)
+        else { return nil }
+        return [tee] + hole.aimPoints.map { aimPosition(for: $0, in: hole) } + [green]
+    }
+
+    /// Rail action: starts a flyover of the current hole, or cancels the one
+    /// in progress (second tap).
+    func toggleFlyover() {
+        if isFlyingOver {
+            cancelFlyover()
+        } else {
+            startFlyover()
+        }
+    }
+
+    /// Samples the ground profile along the hole path (terrain tiles), then
+    /// hands the plan to the map. No-op without a tee and green.
+    func startFlyover() {
+        guard !isFlyingOver, let waypoints = flyoverWaypoints,
+            let path = FlyoverPath.build(waypoints: waypoints)
+        else { return }
+        isPreparingFlyover = true
+        let sampler = elevationSampler
+        flyoverBuildTask = Task { [weak self] in
+            let positions = FlyoverPlan.profileSamplePositions(for: path)
+            var elevations: [Double?] = []
+            elevations.reserveCapacity(positions.count)
+            for position in positions {
+                if Task.isCancelled { return }
+                elevations.append(await sampler?(position))
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.flyoverBuildTask = nil
+            self.isPreparingFlyover = false
+            self.flyoverToken += 1
+            self.flyoverCommand = FlyoverCommand(
+                plan: FlyoverPlan(path: path, groundElevations: elevations),
+                token: self.flyoverToken
+            )
+        }
+    }
+
+    /// Cancels the flight (the map restores the pre-flight camera).
+    func cancelFlyover() {
+        flyoverBuildTask?.cancel()
+        flyoverBuildTask = nil
+        isPreparingFlyover = false
+        flyoverCommand = nil
+    }
+
+    /// The map reports the flight finished or was cancelled by a touch.
+    func flyoverDidEnd() {
+        flyoverCommand = nil
+    }
+
     /// Distance-ladder tap focus: when set, `cameraCommand` centers here instead
     /// of the hole fit, until the next `recenter()` or hole change. Reversible —
     /// the user's own pan afterwards is left alone (the command applies once).
@@ -567,6 +640,10 @@ final class OnCourseModel {
     }
 
     private func holeDidChange() {
+        // A flyover belongs to the hole it was started on.
+        cancelFlyover()
+        // The tree ground profile follows the shot line, which just moved.
+        resetTreeGroundProfile()
         // Tools are per-hole/transient — navigating away always dismisses
         // (the screen observes `toolMode` and tears its tool UI down). An
         // in-flight Adjust drag is abandoned uncommitted.
@@ -2812,6 +2889,263 @@ final class OnCourseModel {
         surfacesVersion &+= 1
         strategyKey = nil
     }
+
+    // MARK: - Tree clearance (height-aware canopy readout)
+
+    /// Course tree features (outer ring + canopy attributes), EPSG:3006, parsed
+    /// once from features.geojson by the screen (`TreeFeatureStore`). Wider than
+    /// `hazardRings` (trees are not carry hazards) and separate from `surfaces`
+    /// (which keeps only the ring + type) because clearance needs the heights.
+    @ObservationIgnored private var treeStore = TreeFeatureStore(features: [])
+    /// Bumped on every `setTrees` install; keys the `treeClearanceRows` memo.
+    @ObservationIgnored private var treesVersion = 0
+
+    /// Terrain profile along the tree shot line: `samples[i]` is the ground
+    /// elevation `i * stepM` meters from `origin` (nil = no terrain there).
+    /// Observed: a finished sweep re-renders the rows with real ground.
+    struct TreeGroundProfile: Equatable {
+        var origin: LatLon
+        var target: LatLon
+        var stepM: Double
+        var samples: [Double?]
+    }
+    private var treeGroundProfile: TreeGroundProfile?
+    @ObservationIgnored private var treeGroundTask: Task<Void, Never>?
+    /// The (origin, target) a sweep is running for, so a getter re-entry does
+    /// not launch a second one.
+    @ObservationIgnored private var treeGroundInFlight: (origin: LatLon, target: LatLon)?
+    /// Ground sample spacing along the line, meters.
+    private static let treeGroundStepM = 10.0
+    /// Origin drift (m) under which the current ground profile is reused
+    /// (GPS jitter must not re-sample the whole line every fix).
+    private static let treeGroundReuseM = 4.0
+    /// Bbox pad for the tree candidate prefilter: a ring whose bbox misses the
+    /// segment by more than this cannot be crossed by it.
+    private static let treeScanPadM = 5.0
+
+    /// Install the course tree features. Called by the screen after parsing the
+    /// bundle. Invalidates the rows memo.
+    func setTrees(_ store: TreeFeatureStore) {
+        treeStore = store
+        treesVersion &+= 1
+    }
+
+    /// One tree ring the current shot line flies over, for the ladder rail.
+    struct TreeClearanceRow: Identifiable, Equatable {
+        let id: String
+        /// Distance along the line where the ball reaches the trees, whole meters.
+        let entryM: Int
+        /// Representative canopy height (`treeHeightM`), whole meters; nil = hand-drawn.
+        let treeHeightM: Int?
+        let status: TreeClearanceStatus
+        /// "clears by 6 m" / "blocked (ball 12 m)" / "height unknown".
+        let detail: String
+        /// The entry point on the line (WGS84), for tap-to-focus.
+        let position: LatLon?
+
+        /// "Trees 18 m", or "Trees" without height data.
+        var label: String {
+            treeHeightM.map { "Trees \($0) m" } ?? "Trees"
+        }
+    }
+
+    /// Fingerprint of every input `treeClearanceRows` reads.
+    private struct TreeRowsKey: Equatable {
+        var origin: LatLon
+        var target: LatLon
+        var carryM: Double
+        var treesVersion: Int
+        var ground: TreeGroundProfile?
+    }
+    @ObservationIgnored private var treeRowsKey: TreeRowsKey?
+    @ObservationIgnored private var treeRowsCache: [TreeClearanceRow] = []
+    /// Count of full `treeClearanceRows` rebuilds (cache misses); test seam.
+    @ObservationIgnored private(set) var treeClearanceBuildCount = 0
+
+    /// The first leg of the primary distance line: the routed aim ahead in GPS
+    /// mode, else the green center. The shot the trees readout evaluates.
+    private var treeShotTarget: LatLon? {
+        nextAimAhead?.position ?? targets.greenCenter
+    }
+
+    /// Planned carry for the trees readout: the line length, capped at the
+    /// longest club in the bag (a 400 m hole is not one 400 m carry). With an
+    /// empty bag the line length stands.
+    private func treeShotCarryM(lineLengthM: Double) -> Double {
+        guard let longest = clubs.map(\.carryM).max(), longest > 0 else { return lineLengthM }
+        return min(lineLengthM, longest)
+    }
+
+    /// Height-aware tree crossings on the current shot line, nearest first —
+    /// one row per tree ring the ball flies over before its carry point
+    /// (`treeClearance`, apex from `Apex.apexHeightM`). Ground comes from the
+    /// terrain profile when sampled, flat otherwise. Rings wholly past the carry
+    /// point are not rows (they are rollout hazards, not flight obstacles).
+    /// Measured geometry, so not gated in competition mode. Memoised like the
+    /// other reactive-path readouts.
+    var treeClearanceRows: [TreeClearanceRow] {
+        guard let origin, let target = treeShotTarget, !treeStore.features.isEmpty else { return [] }
+        let o = Self.planar(origin), t = Self.planar(target)
+        let lengthM = hypot(t.x - o.x, t.y - o.y)
+        guard lengthM > 0 else { return [] }
+        let carryM = treeShotCarryM(lineLengthM: lengthM)
+
+        let ground = usableTreeGroundProfile(origin: origin, target: target)
+        if ground == nil { requestTreeGroundProfile(origin: origin, target: target, lengthM: lengthM) }
+
+        let key = TreeRowsKey(origin: origin, target: target, carryM: carryM, treesVersion: treesVersion, ground: ground)
+        if key == treeRowsKey { return treeRowsCache }
+
+        let result = computeTreeClearanceRows(o: o, t: t, carryM: carryM, ground: ground)
+        treeRowsKey = key
+        treeRowsCache = result
+        treeClearanceBuildCount += 1
+        return result
+    }
+
+    private func computeTreeClearanceRows(
+        o: Vec2, t: Vec2, carryM: Double, ground: TreeGroundProfile?
+    ) -> [TreeClearanceRow] {
+        let candidates = treeStore.candidates(from: o, to: t, padM: Self.treeScanPadM)
+        guard !candidates.isEmpty else { return [] }
+        let shot = TreeClearanceShot(carryM: carryM, apexM: Apex.apexHeightM(carryM))
+        var opts = TreeClearanceOptions()
+        if let ground { opts.groundAt = Self.groundSampler(ground) }
+        let result = treeClearance(o, t, candidates, shot, opts)
+
+        let dir = Vec2(x: (t.x - o.x) / hypot(t.x - o.x, t.y - o.y), y: (t.y - o.y) / hypot(t.x - o.x, t.y - o.y))
+        return result.crossings.enumerated().map { index, c in
+            let entry = Int(c.entryM.rounded())
+            let height = c.treeHeightM.map { Int($0.rounded()) }
+            let detail: String
+            switch c.status {
+            case .unknown:
+                detail = "height unknown"
+            case .blocked:
+                // Ball height above the local ground at the worst point:
+                // tree top + (negative) clearance.
+                let ball = max(0, (c.treeHeightM ?? 0) + (c.minClearanceM ?? 0))
+                detail = "blocked (ball \(Int(ball.rounded())) m)"
+            case .marginal, .clears:
+                detail = "clears by \(Int((c.minClearanceM ?? 0).rounded())) m"
+            }
+            let entryPoint = Vec2(x: o.x + dir.x * c.entryM, y: o.y + dir.y * c.entryM)
+            return TreeClearanceRow(
+                id: "trees-\(c.feature.id ?? String(index))-\(entry)",
+                entryM: entry,
+                treeHeightM: height,
+                status: c.status,
+                detail: detail,
+                position: Sweref99TM.toWGS84(x: entryPoint.x, y: entryPoint.y)
+            )
+        }
+    }
+
+    /// The cached ground profile when it was sampled for (about) this line;
+    /// nil when there is none yet or it belongs to another line.
+    private func usableTreeGroundProfile(origin: LatLon, target: LatLon) -> TreeGroundProfile? {
+        guard let profile = treeGroundProfile, profile.target == target,
+              Distance.planarMeters(profile.origin, origin) <= Self.treeGroundReuseM,
+              profile.samples.contains(where: { $0 != nil })
+        else { return nil }
+        return profile
+    }
+
+    /// Linear interpolation over the sampled profile; gaps (nil samples) fall
+    /// back to the nearest sampled neighbour, so a partial DEM still yields a
+    /// continuous ground. Distances past the last sample clamp to it.
+    private static func groundSampler(_ profile: TreeGroundProfile) -> (Double) -> Double {
+        // Fill gaps once so the closure is a plain lookup.
+        var filled: [Double] = []
+        filled.reserveCapacity(profile.samples.count)
+        var last: Double? = nil
+        for s in profile.samples {
+            if let s { last = s }
+            filled.append(last ?? .nan)
+        }
+        if let firstReal = filled.first(where: { !$0.isNaN }) {
+            for i in filled.indices where filled[i].isNaN { filled[i] = firstReal }
+        }
+        let step = profile.stepM
+        return { d in
+            guard filled.count >= 2 else { return filled.first ?? 0 }
+            let u = max(0, d / step)
+            let i = Int(u.rounded(.down))
+            if i >= filled.count - 1 { return filled[filled.count - 1] }
+            let frac = u - Double(i)
+            return filled[i] + (filled[i + 1] - filled[i]) * frac
+        }
+    }
+
+    /// The WGS84 points a ground sweep samples for the line origin→target:
+    /// every `treeGroundStepM` from the origin plus the target itself.
+    private static func treeGroundSamplePositions(origin: LatLon, target: LatLon, lengthM: Double) -> [LatLon] {
+        let o = Self.planar(origin), t = Self.planar(target)
+        let n = Int((lengthM / treeGroundStepM).rounded(.down))
+        var out: [LatLon] = []
+        out.reserveCapacity(n + 2)
+        for i in 0...n {
+            let f = Double(i) * treeGroundStepM / lengthM
+            out.append(Sweref99TM.toWGS84(x: o.x + (t.x - o.x) * f, y: o.y + (t.y - o.y) * f))
+        }
+        return out
+    }
+
+    /// Fire-and-forget terrain sweep along the line (bundle terrain tiles).
+    /// No-op without a sampler or while a sweep for the same line is running.
+    private func requestTreeGroundProfile(origin: LatLon, target: LatLon, lengthM: Double) {
+        guard let sampler = elevationSampler else { return }
+        if let inFlight = treeGroundInFlight, inFlight.target == target,
+           Distance.planarMeters(inFlight.origin, origin) <= Self.treeGroundReuseM {
+            return
+        }
+        treeGroundTask?.cancel()
+        treeGroundInFlight = (origin, target)
+        let positions = Self.treeGroundSamplePositions(origin: origin, target: target, lengthM: lengthM)
+        treeGroundTask = Task { [weak self] in
+            var samples: [Double?] = []
+            samples.reserveCapacity(positions.count)
+            for position in positions {
+                if Task.isCancelled { return }
+                samples.append(await sampler(position))
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.treeGroundInFlight = nil
+            self.treeGroundTask = nil
+            self.treeGroundProfile = TreeGroundProfile(
+                origin: origin, target: target, stepM: Self.treeGroundStepM, samples: samples
+            )
+        }
+    }
+
+    /// Drop the ground profile (hole change: the line moved).
+    private func resetTreeGroundProfile() {
+        treeGroundTask?.cancel()
+        treeGroundTask = nil
+        treeGroundInFlight = nil
+        treeGroundProfile = nil
+    }
+
+    #if DEBUG
+    /// Test seam: sample the ground profile for the current tree shot line and
+    /// AWAIT it, so tests assert on terrain-aware rows deterministically.
+    /// Returns false when there is no sampler / origin / target.
+    @discardableResult
+    func refreshTreeGroundProfileAwaiting() async -> Bool {
+        guard let sampler = elevationSampler, let origin, let target = treeShotTarget else { return false }
+        let lengthM = Distance.planarMeters(origin, target)
+        guard lengthM > 0 else { return false }
+        treeGroundTask?.cancel()
+        treeGroundTask = nil
+        treeGroundInFlight = nil
+        var samples: [Double?] = []
+        for position in Self.treeGroundSamplePositions(origin: origin, target: target, lengthM: lengthM) {
+            samples.append(await sampler(position))
+        }
+        treeGroundProfile = TreeGroundProfile(origin: origin, target: target, stepM: Self.treeGroundStepM, samples: samples)
+        return true
+    }
+    #endif
 
     /// Hazard front/carry rows along the primary distance line (Part A): from
     /// the origin to the target the primary distance measures — the routed aim

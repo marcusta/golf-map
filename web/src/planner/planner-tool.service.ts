@@ -8,6 +8,7 @@ import type { Club } from '../../../shared/api/clubs.gen';
 import type { PlanGate, PlanShot } from '../../../shared/api/game-plans.gen';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import {
+    apexHeightM,
     bearingToUnitVector,
     closestClub,
     crosswindDriftM,
@@ -23,6 +24,7 @@ import {
     TAPPABLE_RING_TYPES,
     windComponents,
     windEffect,
+    buildTreeIndex,
     type DispersionEllipse,
     type AimResult,
     type CaddyAdvice,
@@ -36,6 +38,9 @@ import {
     type GreenSlopeSummary,
     type HoleHazard,
     type StrategyPoint,
+    type TreeClearanceResult,
+    type TreeFeatureInput,
+    type TreeIndex,
     type Vec2,
     type VariantHoleContext,
 } from '../../../shared/strategy';
@@ -45,6 +50,7 @@ import {
 import {
     greenSlopeHalfRule,
     noDoublesRule,
+    overTheTreesRule,
     par5AttackRule,
     shortSideGuardRule,
     specificTargetRule,
@@ -56,7 +62,7 @@ import { ElevationService } from '../map/elevation.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FurnitureService } from '../furniture/furniture.service';
 import { FeaturesService } from '../draw/features.service';
-import { lngLatToSweref99tm, sweref99tmToWgs84, wgs84ToSweref99tm } from '../geo/transform';
+import { lngLatToSweref99tm, sweref99tmToLngLat, sweref99tmToWgs84, wgs84ToSweref99tm } from '../geo/transform';
 import { PlanService, type PlanHoleRow } from './plan.service';
 import { ClubsService } from '../player/clubs.service';
 import {
@@ -84,6 +90,13 @@ import {
     type PlanLeg,
 } from './plan-overlay';
 import { buildLieMap, type LieMap } from './lie-map';
+import {
+    legGroundProfile,
+    legTreeClearance,
+    treeFeatureInputs,
+    treeSegmentsForLeg,
+    type TreeSegment,
+} from './tree-clearance';
 import { PuttReadService } from './putt-read.service';
 import {
     PUTT_OVERLAY_ID,
@@ -344,6 +357,7 @@ const CADDY_RULES: readonly CaddyRule[] = [
     noDoublesRule,
     takeYourMedicineRule,
     specificTargetRule,
+    overTheTreesRule,
 ];
 
 /** The inputs the locked leg-contract mapping decides on. */
@@ -642,6 +656,31 @@ export class PlannerToolService {
             this.features.store.items.get(),
             new Map(this.courseDetail.holes.get().map(h => [h.id, h.number])),
         ));
+
+    /** The course's tree rings as shared TreeFeatureInput (planner/tree-clearance.ts). */
+    readonly treeFeatures = new Computed<readonly TreeFeatureInput[]>(() =>
+        treeFeatureInputs(this.features.store.items.get()));
+
+    /**
+     * Bbox index over `treeFeatures` (shared buildTreeIndex), rebuilt only when
+     * the features change. `legTreeClearances` recomputes per drag frame and
+     * sweeps every leg against it; without the index each frame swept all
+     * ~2200 Landeryd tree rings per leg.
+     */
+    private readonly treeIndex = new Computed<TreeIndex>(() => buildTreeIndex(this.treeFeatures.get()));
+
+    /** Planar (EPSG:3006) ground sampler over the elevation service's cached tiles; null = not cached yet. */
+    private readonly groundAtPlanar = (p: Vec2): number | null =>
+        this.elevation.elevationAtSync(sweref99tmToLngLat(p.x, p.y));
+
+    /**
+     * Bumped (bounded retries) after a clearance pass met an uncached terrain
+     * tile, so the readout upgrades from the flat fallback once the tile the
+     * sync sampler kicked off has landed. The elevation cache itself is not
+     * reactive.
+     */
+    private readonly treeGroundTick = new Signal<number>(0);
+    private treeGroundRetries = 0;
 
     /**
      * Every hole's routed play line (first tee → aims → green center), planar —
@@ -1081,6 +1120,49 @@ export class PlannerToolService {
         const live = this.holePlan.get();
         const enriched = this.enrichedPlan.get();
         return enriched && enriched.base === live ? enriched.enriched : live;
+    });
+
+    /**
+     * Height-aware tree clearance per leg index (planner/tree-clearance.ts):
+     * carry = the leg's wind-adjusted carry, apex from the carry table, ground
+     * from the elevation service (flat fallback while tiles load). Empty when
+     * the hole has no plan, no clubbed leg, or the course has no tree rings.
+     */
+    readonly legTreeClearances = new Computed<ReadonlyMap<number, TreeClearanceResult>>(() => {
+        this.treeGroundTick.get();
+        const out = new Map<number, TreeClearanceResult>();
+        const plan = this.overlayPlan.get();
+        const trees = this.treeIndex.get();
+        if (!plan || trees.entries.length === 0) return out;
+        let missed = false;
+        const ground = (p: Vec2): number | null => {
+            const v = this.groundAtPlanar(p);
+            if (v === null) missed = true;
+            return v;
+        };
+        for (const leg of plan.allLegs) {
+            const result = legTreeClearance(leg, trees, ground);
+            if (result) out.set(leg.index, result);
+        }
+        if (missed && this.treeGroundRetries < 6) {
+            this.treeGroundRetries++;
+            setTimeout(() => this.treeGroundTick.set(this.treeGroundTick.peek() + 1), 700);
+        } else if (!missed) {
+            this.treeGroundRetries = 0;
+        }
+        return out;
+    });
+
+    /** Blocked/marginal shot-line pieces for the plan overlay, from `legTreeClearances`. */
+    private readonly treeSegments = new Computed<readonly TreeSegment[]>(() => {
+        const plan = this.overlayPlan.get();
+        if (!plan) return [];
+        const results = this.legTreeClearances.get();
+        const out: TreeSegment[] = [];
+        for (const leg of plan.allLegs) {
+            out.push(...treeSegmentsForLeg(leg, results.get(leg.index) ?? null));
+        }
+        return out;
     });
 
     // ── Hole simulation (feature-hole-sim-and-variants Phase B/C) ──────────
@@ -1742,7 +1824,20 @@ export class PlannerToolService {
         // A leg no rule can act on (no aim, not recovery, no slope) is skipped.
         if (!aim && legKind !== 'recovery' && !greenSlope) return null;
 
+        // Tree clearance inputs (over-the-trees rule): the course's tree rings,
+        // this leg's carry and table apex, and the terrain sampler along it.
+        const trees = this.treeFeatures.peek();
+        const treeCtx: Pick<CaddyContext, 'trees' | 'apexM' | 'shotCarryM' | 'groundAt'> = {};
+        if (trees.length > 0 && leg.adjustedCarryM !== undefined && leg.adjustedCarryM > 0) {
+            const ground = legGroundProfile(leg, this.groundAtPlanar);
+            treeCtx.trees = trees;
+            treeCtx.apexM = apexHeightM(leg.adjustedCarryM);
+            treeCtx.shotCarryM = leg.adjustedCarryM;
+            if (ground.groundAt) treeCtx.groundAt = ground.groundAt;
+        }
+
         return {
+            ...treeCtx,
             leg: legKind,
             origin: { x: origin.x, y: origin.y, elevation: leg.from.elevation },
             target: { greenPoly: { kind: 'green', points: [] }, center, front, back },
@@ -1839,6 +1934,7 @@ export class PlannerToolService {
             // aims (a 500 m fallback leg follows the doglegs, not a straight
             // cut to the flag) — see PlanOverlayInput.aimPoints.
             aimPoints: hole ? this.furniture.aimsForHole(hole.id) : undefined,
+            treeSegments: this.treeSegments.get(),
         });
     });
 

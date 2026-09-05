@@ -148,3 +148,75 @@ test('draw mode: draft line survives a zoom burst; closed ring fills without a c
         })
         .toBeGreaterThan(30);
 });
+
+/**
+ * Zoom >= 19 is where the terrain drape used to go stale for good: the
+ * features source (geojson maxzoom 18) is overscaled to the same overscaledZ
+ * as the render-to-texture tile drawing it, and maplibre's per-tile
+ * `freeRtt(tileID)` (equals/isChildOf on OverscaledTileID) matches nothing.
+ * MapService frees by canonical overlap instead.
+ *
+ * The stale texture only survives while the style renders as ONE draped
+ * stack (a visible circle/symbol layer between draped layers makes maplibre
+ * re-render every draped tile every frame, hiding the bug). The furniture
+ * overlay's circles/symbols sit between the features and draw layers, so
+ * hide them first — the field case where nothing splits the stack — and
+ * assert the single stack before drawing so the test cannot pass vacuously.
+ * Then draw and close a ring at zoom 19.5 and require the fill with no
+ * camera movement.
+ */
+test('draw mode at zoom 19.5: closed ring fills without a camera nudge', async ({ page }) => {
+    await page.goto(`/course/${TEST_COURSE_ID}`);
+    await expect(page.locator(tid('submode-trigger'))).toBeVisible();
+    await waitForMapReady(page);
+    await page.evaluate(() => {
+        const m = (window as unknown as { __map: { jumpTo: (o: { zoom: number }) => void } }).__map;
+        m.jumpTo({ zoom: 19.5 });
+    });
+    await page.waitForTimeout(800);
+    await selectSubMode(page, 'draw');
+    // Single draped stack: hide the furniture circles/symbols (see above).
+    const stacks = await page.evaluate(async () => {
+        type StyleLayer = { id: string; type: string };
+        const m = (window as unknown as {
+            __map: {
+                getStyle: () => { layers: StyleLayer[] };
+                setLayoutProperty: (id: string, name: string, value: string) => void;
+                triggerRepaint: () => void;
+                once: (ev: string, cb: () => void) => void;
+                painter: { renderToTexture: { _stacks: string[][] } };
+            };
+        }).__map;
+        for (const layer of m.getStyle().layers) {
+            if (layer.id.startsWith('furniture-') && (layer.type === 'circle' || layer.type === 'symbol')) {
+                m.setLayoutProperty(layer.id, 'visibility', 'none');
+            }
+        }
+        await new Promise<void>(resolve => { m.once('render', () => resolve()); m.triggerRepaint(); });
+        await new Promise<void>(resolve => { m.once('render', () => resolve()); m.triggerRepaint(); });
+        return m.painter.renderToTexture._stacks.length;
+    });
+    expect(stacks, 'precondition: one render-to-texture stack (otherwise the drape re-renders every frame and the test proves nothing)').toBe(1);
+    await page.keyboard.press('n');
+    const mid = await canvasCenter(page);
+    await place(page, mid.x - 90, mid.y + 60);
+    await place(page, mid.x, mid.y - 90);
+    await place(page, mid.x + 90, mid.y + 60);
+    const canvasRect = await page.evaluate(() => {
+        const m = (window as unknown as { __map: { getCanvas: () => HTMLCanvasElement } }).__map;
+        const r = m.getCanvas().getBoundingClientRect();
+        return { left: r.left, top: r.top };
+    });
+    const centroid = { x: mid.x - canvasRect.left, y: mid.y + 10 - canvasRect.top };
+    const preClose = await pixelAt(page, centroid.x, centroid.y);
+    await place(page, mid.x - 90, mid.y + 60);
+    await expect
+        .poll(async () => {
+            const p = await pixelAt(page, centroid.x, centroid.y);
+            return Math.abs(p[0] - preClose[0]) + Math.abs(p[1] - preClose[1]) + Math.abs(p[2] - preClose[2]);
+        }, {
+            message: 'committed fill repaints the ring interior at zoom 19.5 without panning/zooming',
+            timeout: 10_000,
+        })
+        .toBeGreaterThan(30);
+});

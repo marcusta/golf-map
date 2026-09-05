@@ -127,6 +127,44 @@ final class AssetsAndFeaturesTests: XCTestCase {
         XCTAssertEqual(v.lat, 58, accuracy: 1.0)
     }
 
+    func testFeatureDecodesAttributesAndSource() throws {
+        let json = """
+        {"type":"FeatureCollection","features":[
+          {"type":"Feature","id":"gen1","properties":{"courseId":"c1","holeId":null,"type":"trees","source":"lidar-canopy",
+            "attributes":{"heightMaxM":21.4,"heightP90M":18.2,"heightMeanM":12,"areaM2":340,"label":"copse","dense":true,"skip":null,"nested":{"a":1}}},
+           "geometry":{"type":"Polygon","coordinates":[[[15.70,58.36],[15.71,58.36],[15.71,58.37],[15.70,58.36]]]}},
+          {"type":"Feature","id":"hand1","properties":{"courseId":"c1","holeId":"h1","type":"bunker"},
+           "geometry":{"type":"Polygon","coordinates":[[[15.70,58.36],[15.71,58.36],[15.71,58.37],[15.70,58.36]]]}}
+        ]}
+        """
+        let collection = try decoder.decode(CourseFeatureCollection.self, from: Data(json.utf8))
+        XCTAssertEqual(collection.features.count, 2)
+
+        let gen = collection.features[0]
+        XCTAssertEqual(gen.source, "lidar-canopy")
+        XCTAssertNil(gen.holeId)
+        XCTAssertEqual(gen.attributes?["heightMaxM"], .number(21.4))
+        XCTAssertEqual(gen.attributes?["heightP90M"], .number(18.2))
+        XCTAssertEqual(gen.attributes?["areaM2"], .number(340))
+        XCTAssertEqual(gen.attributes?["label"], .string("copse"))
+        XCTAssertEqual(gen.attributes?["dense"], .bool(true))
+        XCTAssertNil(gen.attributes?["skip"], "null entries are dropped")
+        XCTAssertNil(gen.attributes?["nested"], "nested entries are dropped, the rest kept")
+        XCTAssertEqual(gen.attributes?["heightP90M"]?.doubleValue, 18.2)
+        XCTAssertNil(gen.attributes?["label"]?.doubleValue)
+
+        let hand = collection.features[1]
+        XCTAssertNil(hand.source)
+        XCTAssertNil(hand.attributes)
+        XCTAssertEqual(hand.holeId, "h1")
+    }
+
+    func testFeatureAttributeValueRoundTrips() throws {
+        let values: [String: FeatureAttributeValue] = ["n": .number(1.5), "s": .string("x"), "b": .bool(false)]
+        let data = try JSONEncoder().encode(values)
+        XCTAssertEqual(try decoder.decode([String: FeatureAttributeValue].self, from: data), values)
+    }
+
     private func makeRoutingClient() throws -> GolfAPIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [AssetRoutingURLProtocol.self]

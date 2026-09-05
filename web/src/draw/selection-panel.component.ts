@@ -5,12 +5,14 @@ import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from './features.service';
 import { DrawToolService, OFFSET_PRESETS } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
+import { generatedBadgeLabel, generatedHeightLabel, isGeneratedFeature } from './generated-features';
 
 const tpl = template(`
     <div class="sel-panel" bind="root" data-testid="selection-panel">
         <h4 class="section-title">Selection</h4>
         <div bind="selInfo" class="sel-info"></div>
-        <label class="move-field">Move selected to
+        <div bind="generatedBadge" class="generated-badge" data-testid="selection-generated-badge"></div>
+        <label bind="moveField" class="move-field">Move selected to
             <select bind="moveSelect" data-testid="draw-move-hole"></select>
         </label>
         <div bind="curveHint" class="curve-hint"></div>
@@ -84,7 +86,22 @@ export class SelectionPanelComponent extends Component {
                 color: ${t('color-text-secondary')};
             }
 
-            & .move-field { ${field()} }
+            & .move-field {
+                ${field()}
+                &.hidden { display: none; }
+            }
+
+            /* Read-only provenance badge for pipeline-generated rows. */
+            & .generated-badge {
+                display: none;
+                align-self: flex-start;
+                padding: 2px ${s('sm')};
+                border-radius: ${t('radius-sm')};
+                font-size: 0.7rem;
+                background: color-mix(in srgb, ${t('color-text-primary')} 8%, transparent);
+                color: ${t('color-text-secondary')};
+                &.show { display: inline-block; }
+            }
 
             & .curve-hint {
                 display: none;
@@ -206,21 +223,35 @@ export class SelectionPanelComponent extends Component {
                 const curve = f.geometry.curveType === 'bspline' ? 'Spline' : 'Bezier';
                 return `${label} · ${curve} · ${f.geometry.rings.length} ring${f.geometry.rings.length === 1 ? '' : 's'} · ${points} pts · v${f.version}`;
             },
+            // Generated (read-only) rows: badge on, every edit control off.
+            // Delete stays — false positives (roofs) are removed this way.
+            generatedBadge: {
+                className: () => this.generatedSelection() ? 'generated-badge show' : 'generated-badge',
+                textContent: () => {
+                    const f = this.generatedSelection();
+                    if (!f) return '';
+                    const height = generatedHeightLabel(f);
+                    return height ? `${generatedBadgeLabel(f)} · ${height}` : generatedBadgeLabel(f) ?? '';
+                },
+            },
+            moveField: {
+                className: () => this.editingAllowed() ? 'move-field' : 'move-field hidden',
+            },
             curveHint: {
-                className: () => this.features.selected.get()?.geometry.curveType === 'bspline'
+                className: () => this.features.editableSelected.get()?.geometry.curveType === 'bspline'
                     ? 'curve-hint show' : 'curve-hint',
                 textContent: 'Spline: points pull the curve — no bezier handles.',
             },
             cornerBtn: {
                 onclick: () => this.tool.toggleHoveredVertexCorner(),
-                className: () => this.features.selected.get() && this.tool.hoverVertex.get()
+                className: () => this.features.editableSelected.get() && this.tool.hoverVertex.get()
                     ? 'op-btn corner-btn show' : 'op-btn corner-btn',
                 textContent: () => this.tool.hoveredVertexIsCorner()
                     ? 'Make vertex smooth (C)'
                     : 'Make vertex corner (C)',
             },
             vertexOps: {
-                className: () => this.features.selected.get() && this.tool.vertexSelection.get().size > 0
+                className: () => this.features.editableSelected.get() && this.tool.vertexSelection.get().size > 0
                     ? 'vertex-ops show' : 'vertex-ops',
             },
             insertBetweenBtn: {
@@ -233,7 +264,7 @@ export class SelectionPanelComponent extends Component {
                 textContent: () => `Delete ${this.tool.vertexSelection.get().size} vertices (Del)`,
             },
             offsetSection: {
-                className: () => this.features.selected.get() ? 'offset-section show' : 'offset-section',
+                className: () => this.features.editableSelected.get() ? 'offset-section show' : 'offset-section',
             },
             offsetApply: {
                 className: () => this.tool.offsetDistance.get() !== null ? 'apply-row show' : 'apply-row',
@@ -248,7 +279,7 @@ export class SelectionPanelComponent extends Component {
             },
             offsetCancelBtn: { onclick: () => this.tool.setOffsetDistance(null) },
             simplifySection: {
-                className: () => this.features.selected.get() ? 'simplify-section show' : 'simplify-section',
+                className: () => this.features.editableSelected.get() ? 'simplify-section show' : 'simplify-section',
             },
             simplifyBtn: {
                 onclick: () => this.tool.setSimplifyActive(!this.tool.simplifyActive.peek()),
@@ -262,7 +293,7 @@ export class SelectionPanelComponent extends Component {
             simplifyInfo: {
                 textContent: () => {
                     if (!this.tool.simplifyActive.get()) return '';
-                    const before = this.features.selected.get()?.geometry.rings.reduce((sum, r) => sum + r.points.length, 0) ?? 0;
+                    const before = this.features.editableSelected.get()?.geometry.rings.reduce((sum, r) => sum + r.points.length, 0) ?? 0;
                     const after = this.tool.opPreviewGeometry.get()?.rings.reduce((sum, r) => sum + r.points.length, 0) ?? 0;
                     return `${before} → ${after} pts`;
                 },
@@ -285,11 +316,11 @@ export class SelectionPanelComponent extends Component {
             },
             duplicateBtn: {
                 onclick: () => this.tool.duplicateSelection(),
-                className: 'op-btn show',
+                className: () => this.editingAllowed() ? 'op-btn show' : 'op-btn',
             },
             convertBtn: {
                 onclick: () => void this.tool.convertSelectedToBezier(),
-                className: () => this.features.selected.get()?.geometry.curveType === 'bspline'
+                className: () => this.features.editableSelected.get()?.geometry.curveType === 'bspline'
                     ? 'op-btn convert-btn show' : 'op-btn convert-btn',
             },
             deleteBtn: {
@@ -360,5 +391,17 @@ export class SelectionPanelComponent extends Component {
         }));
 
         return frag;
+    }
+
+    /** The single selected feature when it is generated (read-only), else null. */
+    private generatedSelection() {
+        const f = this.features.selected.get();
+        return f && isGeneratedFeature(f) ? f : null;
+    }
+
+    /** False while any selected row is generated: hides move/duplicate. */
+    private editingAllowed(): boolean {
+        const items = this.features.selectedFeatures.get();
+        return items.length > 0 && items.every(f => !isGeneratedFeature(f));
     }
 }

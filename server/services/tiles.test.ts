@@ -66,6 +66,20 @@ test('GET serves the baked hillshade layer as opaque webp', async () => {
     expect(res.headers.get('Content-Type')).toBe('image/webp');
 });
 
+test('GET serves the lidar layers (canopy, canopy-color, surface) as png', async () => {
+    const { app } = await setup();
+    for (const layer of ['canopy', 'canopy-color', 'surface']) {
+        writeFakeTile(TEST_COURSE_ID, layer, 14, 100, 200, 'png', `${layer}-bytes`);
+        const res = await app.request(`/tiles/${TEST_COURSE_ID}/${layer}/14/100/200.png`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Content-Type')).toBe('image/png');
+        expect(await res.text()).toBe(`${layer}-bytes`);
+    }
+    // A site without lidar tiles: same routes answer 404, not 400.
+    const missing = await app.request(`/tiles/${TEST_COURSE_ID}/canopy/14/100/201.png`);
+    expect(missing.status).toBe(404);
+});
+
 test('GET ?c=<collection> serves the per-vintage ortho tile from ortho/<collection>/', async () => {
     const { app } = await setup();
     // Same coords in the flat tree and a vintage subdir → ?c must pick the subdir.

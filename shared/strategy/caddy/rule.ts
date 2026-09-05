@@ -24,6 +24,7 @@ import { type FlatRing } from '../corridor';
 import { type Vec2 } from '../ellipse';
 import { type FeatureDistance } from '../feature-distances';
 import { type StrategyPoint } from '../plays-like';
+import { type TreeFeatureInput } from '../tree-clearance';
 
 export { type FeatureDistance };
 
@@ -111,6 +112,21 @@ export interface CaddyContext {
     hole: { par: number; index: number };
     /** Player risk tolerance (D16). */
     risk: RiskProfile;
+    /**
+     * Tree rings with their canopy-height attributes (◄ tree-clearance.ts),
+     * planar meters. Absent → the over-the-trees rule is silent.
+     */
+    trees?: readonly TreeFeatureInput[];
+    /** Apex of the intended shot above the origin's ground, meters (◄ apex.ts). */
+    apexM?: number;
+    /**
+     * Carry of the intended shot, meters (the planner's assigned club, wind
+     * applied). When absent the over-the-trees rule falls back to the club
+     * nearest the remaining distance, as can-you-carry-it does.
+     */
+    shotCarryM?: number;
+    /** Ground elevation at distance d along the shot line, meters. Omit for flat ground. */
+    groundAt?: (distanceM: number) => number;
 }
 
 /** The category of a piece of advice — drives how the UI renders it. */

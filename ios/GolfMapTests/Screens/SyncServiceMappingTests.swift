@@ -128,6 +128,46 @@ final class SyncServiceMappingTests: XCTestCase {
         XCTAssertEqual(record.versionParam, "20260704T082859Z")
     }
 
+    func testManifestRecordMapsOptionalLidarLayers() throws {
+        let course = try decode(Course.self, "course-get.json")
+        let json = Data("""
+        {"bounds":{"west":15.69,"south":58.34,"east":15.75,"north":58.37},
+         "layers":{"ortho":{"minzoom":14,"maxzoom":20},"terrain":{"minzoom":12,"maxzoom":17},
+                   "canopy":{"minzoom":12,"maxzoom":17},
+                   "canopy-color":{"minzoom":13,"maxzoom":16},
+                   "surface":{"minzoom":12,"maxzoom":17}},
+         "elevation":{"min":50,"max":90},
+         "generatedAt":"2026-09-04T22:26:46Z","attribution":"x"}
+        """.utf8)
+        let manifest = try decoder.decode(TileManifest.self, from: json)
+        XCTAssertEqual(manifest.layers.canopyColor, .init(minzoom: 13, maxzoom: 16))
+
+        let record = SyncService.manifestRecord(course: course, manifest: manifest)
+        XCTAssertEqual(record.canopyMinZoom, 12)
+        XCTAssertEqual(record.canopyMaxZoom, 17)
+        XCTAssertEqual(record.canopyColorMinZoom, 13)
+        XCTAssertEqual(record.canopyColorMaxZoom, 16)
+        XCTAssertEqual(record.surfaceMinZoom, 12)
+        XCTAssertEqual(record.surfaceMaxZoom, 17)
+        XCTAssertEqual(record.zoomRange(for: .canopyColor), 13...16)
+    }
+
+    func testManifestRecordLeavesLidarLayersNilWhenAbsent() throws {
+        // The server fixture predates lidar layers.
+        let assets = try decode([CourseAsset].self, "assets-by-course.json")
+        let course = try decode(Course.self, "course-get.json")
+        let manifest = try XCTUnwrap(SyncService.tileManifest(from: assets))
+        XCTAssertNil(manifest.layers.canopy)
+        XCTAssertNil(manifest.layers.canopyColor)
+        XCTAssertNil(manifest.layers.surface)
+
+        let record = SyncService.manifestRecord(course: course, manifest: manifest)
+        XCTAssertNil(record.canopyMinZoom)
+        XCTAssertNil(record.canopyColorMaxZoom)
+        XCTAssertNil(record.surfaceMinZoom)
+        XCTAssertFalse(record.hasLayer(.canopyColor))
+    }
+
     /// Guards the asset-kind selection: `ortho_cog` (z14-19) is the FIRST asset
     /// and also parses as a manifest, but the authoritative served tile set is
     /// the `tile_manifest` asset (z14-20). Selection must key on kind, not order.

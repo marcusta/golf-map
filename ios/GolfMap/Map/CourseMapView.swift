@@ -58,6 +58,17 @@ public struct CourseMapView: UIViewRepresentable {
     /// `PuttOverlay.ballHandleID`/`.holeHandleID`) whenever `adjustEnabled`
     /// lets the drag recognizer run.
     public var putt: PuttReadGeometry.PuttOverlay?
+    /// Shows the optional `canopy-color` raster (lidar tree canopy) above the
+    /// ortho. Ignored when the configuration declares no canopy layer.
+    public var showsCanopy: Bool
+    /// Hole flyover request. Applied once per token change: the map flies the
+    /// plan's camera path and calls `onFlyoverEnded` when it finishes, is
+    /// cancelled (touch, second tap → nil, hole change) or is replaced. Setting
+    /// it back to nil cancels a flight in progress and restores the camera the
+    /// map had when the flight started.
+    public var flyover: FlyoverCommand?
+    /// Called (main actor) once a flight ends for any reason.
+    public var onFlyoverEnded: (() -> Void)?
     /// Called on the main actor once the style finished loading (and again
     /// after any style rebuild caused by a configuration/features change).
     public var onMapReady: (() -> Void)?
@@ -127,6 +138,9 @@ public struct CourseMapView: UIViewRepresentable {
         analysis: GreenAnalysisMapState? = nil,
         analysisProbe: SlopeProbe? = nil,
         putt: PuttReadGeometry.PuttOverlay? = nil,
+        showsCanopy: Bool = false,
+        flyover: FlyoverCommand? = nil,
+        onFlyoverEnded: (() -> Void)? = nil,
         onMapReady: (() -> Void)? = nil,
         onCameraChange: ((LatLon, Double, Double) -> Void)? = nil,
         longPressEnabled: Bool = false,
@@ -149,6 +163,9 @@ public struct CourseMapView: UIViewRepresentable {
         self.analysis = analysis
         self.analysisProbe = analysisProbe
         self.putt = putt
+        self.showsCanopy = showsCanopy
+        self.flyover = flyover
+        self.onFlyoverEnded = onFlyoverEnded
         self.onMapReady = onMapReady
         self.onCameraChange = onCameraChange
         self.longPressEnabled = longPressEnabled
@@ -259,9 +276,19 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.onHandleMove = onHandleMove
         coordinator.onHandleDrop = onHandleDrop
 
+        // Any touch cancels a flyover. A passive recognizer: it reports the
+        // touch-down and fails at once, so the map's own gestures run as usual.
+        let touchDown = TouchDownRecognizer { [weak coordinator] in
+            coordinator?.flyoverTouched()
+        }
+        mapView.addGestureRecognizer(touchDown)
+        coordinator.onFlyoverEnded = onFlyoverEnded
+
         coordinator.desiredOverlays = overlays
         coordinator.desiredAnalysis = analysis
         coordinator.desiredPutt = putt
+        coordinator.desiredShowsCanopy = showsCanopy
+        coordinator.lastFlyoverToken = flyover?.token
         coordinator.pendingCamera = camera
         coordinator.lastCameraCommand = camera
         // Seed the zoom baseline so the first real zoom command (a later token)
@@ -283,6 +310,7 @@ public struct CourseMapView: UIViewRepresentable {
     func applyUpdate(to mapView: MLNMapView, coordinator: Coordinator) {
         coordinator.onMapReady = onMapReady
         coordinator.onCameraChange = onCameraChange
+        coordinator.onFlyoverEnded = onFlyoverEnded
         coordinator.isReticleEnabled = isReticleEnabled
         coordinator.onReticleMove = onReticleMove
         coordinator.onLongPress = onLongPress
@@ -329,7 +357,9 @@ public struct CourseMapView: UIViewRepresentable {
         coordinator.desiredAnalysis = analysis
         coordinator.desiredAnalysisProbe = analysisProbe
         coordinator.desiredPutt = putt
+        coordinator.desiredShowsCanopy = showsCanopy
         if coordinator.isStyleLoaded, let style = mapView.style {
+            Coordinator.applyCanopyVisibility(showsCanopy, to: style)
             MapOverlayRenderer.apply(overlays, to: style)
             coordinator.routeLegLabelRenderer.apply(overlays.routeLegLabels, to: mapView)
             coordinator.ellipseLabelRenderer.apply(overlays.ellipseLabels, to: style)
@@ -340,12 +370,28 @@ public struct CourseMapView: UIViewRepresentable {
             coordinator.puttRenderer.apply(putt, to: style)
         }
 
+        // Flyover: start on a new token, cancel when the command goes nil. A
+        // cancel that coincides with a camera command change (hole change)
+        // skips the "restore previous view" animation — the new hole fit
+        // below owns the camera; only the pitch is levelled first.
+        let cameraChanged = camera != nil && camera?.token != coordinator.lastCameraCommand?.token
+        if flyover?.token != coordinator.lastFlyoverToken {
+            coordinator.lastFlyoverToken = flyover?.token
+            if let flyover {
+                coordinator.startFlyover(flyover.plan, in: mapView)
+            } else {
+                coordinator.stopFlyover(restoreCamera: !cameraChanged)
+            }
+        }
+
         // Apply ONLY when the token changes. The command also carries the hole
         // bounds, derived from live furniture positions — so an Adjust move /
         // Reset hole / tee change alters the bounds WITHOUT a token bump, and
         // gating on `==` would re-fit (zoom) the map on every such edit. Only
         // deliberate re-frames (hole nav, recenter, Green view) bump the token.
         if let camera, camera.token != coordinator.lastCameraCommand?.token {
+            // A deliberate re-frame during a flight ends the flight first.
+            coordinator.stopFlyover(restoreCamera: false)
             coordinator.lastCameraCommand = camera
             if coordinator.isStyleLoaded {
                 Coordinator.applyCamera(camera, to: mapView)
@@ -365,6 +411,7 @@ public struct CourseMapView: UIViewRepresentable {
     }
 
     public static func dismantleUIView(_ uiView: MLNMapView, coordinator: Coordinator) {
+        coordinator.flyoverAnimator.cancel()
         uiView.delegate = nil
         coordinator.removeStyleFile()
     }
@@ -389,6 +436,10 @@ public struct CourseMapView: UIViewRepresentable {
         var lastZoomCommand: MapZoomCommand?
         var pendingCamera: MapCameraCommand?
         var isStyleLoaded = false
+        var desiredShowsCanopy = false
+        var lastFlyoverToken: Int?
+        let flyoverAnimator = FlyoverAnimator()
+        var onFlyoverEnded: (() -> Void)?
         var onMapReady: (() -> Void)?
         var onCameraChange: ((LatLon, Double, Double) -> Void)?
         var isReticleEnabled = false
@@ -589,6 +640,37 @@ public struct CourseMapView: UIViewRepresentable {
             styleFileURL = nil
         }
 
+        // MARK: Canopy
+
+        /// Flips the optional canopy-color raster's visibility. A no-op when
+        /// the style declares no canopy layer (course without lidar).
+        static func applyCanopyVisibility(_ visible: Bool, to style: MLNStyle) {
+            guard let layer = style.layer(withIdentifier: MapStyleIDs.canopyColorLayer) else { return }
+            if layer.isVisible != visible { layer.isVisible = visible }
+        }
+
+        // MARK: Flyover
+
+        /// Starts (or replaces) a flight. The camera the map has right now is
+        /// what `stopFlyover(restoreCamera: true)` returns to.
+        func startFlyover(_ plan: FlyoverPlan, in mapView: MLNMapView) {
+            flyoverAnimator.start(plan, in: mapView) { [weak self] in
+                self?.onFlyoverEnded?()
+            }
+        }
+
+        /// Ends a flight in progress (no-op otherwise) and reports the end.
+        func stopFlyover(restoreCamera: Bool) {
+            guard flyoverAnimator.isFlying else { return }
+            flyoverAnimator.stop(restoreCamera: restoreCamera)
+            onFlyoverEnded?()
+        }
+
+        /// Any touch on the map during a flight cancels it.
+        func flyoverTouched() {
+            stopFlyover(restoreCamera: true)
+        }
+
         /// Applies a camera command. Exposed (internal) so tests can exercise
         /// the bbox-fit + bearing math against a real MLNMapView.
         static func applyCamera(_ command: MapCameraCommand, to mapView: MLNMapView) {
@@ -677,6 +759,7 @@ public struct CourseMapView: UIViewRepresentable {
 
         public func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             isStyleLoaded = true
+            Self.applyCanopyVisibility(desiredShowsCanopy, to: style)
             MapOverlayRenderer.apply(desiredOverlays, to: style)
             // A (re)loaded style starts without the runtime-registered label
             // images and analysis layers.

@@ -54,22 +54,33 @@ public struct CourseMapConfiguration: Equatable, Sendable {
     /// Imagery attribution shown in the MapLibre attribution sheet
     /// (e.g. "© Lantmäteriet, CC BY 4.0").
     public var attribution: String?
+    /// Native zoom range of the optional `canopy-color` raster layer
+    /// (`tiles/canopy-color/{z}/{x}/{y}.png`). Nil = the bundle has no canopy
+    /// layer, so the style declares no canopy source and the "Trees" toggle
+    /// is hidden.
+    public var canopyColorZoomRange: ClosedRange<Int>?
+
+    public var hasCanopyColor: Bool { canopyColorZoomRange != nil }
 
     public init(
         bundleDirectory: URL,
         orthoMinZoom: Int,
         orthoMaxZoom: Int,
         bounds: MapCoordinateBounds,
-        attribution: String? = nil
+        attribution: String? = nil,
+        canopyColorZoomRange: ClosedRange<Int>? = nil
     ) {
         self.bundleDirectory = bundleDirectory
         self.orthoMinZoom = orthoMinZoom
         self.orthoMaxZoom = orthoMaxZoom
         self.bounds = bounds
         self.attribution = attribution
+        self.canopyColorZoomRange = canopyColorZoomRange
     }
 
-    /// Adapt the Store's tile manifest record.
+    /// Adapt the Store's tile manifest record. The canopy layer is declared
+    /// only when the manifest lists it AND its tiles landed in the bundle (the
+    /// downloader skips an optional layer the server had no tiles for).
     public init(bundleDirectory: URL, manifest: TileManifestRecord, attribution: String? = nil) {
         self.init(
             bundleDirectory: bundleDirectory,
@@ -83,7 +94,28 @@ public struct CourseMapConfiguration: Equatable, Sendable {
                 east: manifest.east,
                 north: manifest.north
             ),
-            attribution: attribution
+            attribution: attribution,
+            canopyColorZoomRange: Self.installedZoomRange(
+                for: .canopyColor, bundleDirectory: bundleDirectory, manifest: manifest
+            )
         )
+    }
+
+    /// The manifest's zoom range for an optional layer when its tile directory
+    /// exists in the bundle; nil when either the manifest omits the layer or
+    /// nothing was downloaded for it.
+    static func installedZoomRange(
+        for layer: TileLayer,
+        bundleDirectory: URL,
+        manifest: TileManifestRecord
+    ) -> ClosedRange<Int>? {
+        guard let range = manifest.zoomRange(for: layer) else { return nil }
+        let directory = bundleDirectory
+            .appending(path: "tiles", directoryHint: .isDirectory)
+            .appending(path: layer.rawValue, directoryHint: .isDirectory)
+        guard FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) else {
+            return nil
+        }
+        return range
     }
 }

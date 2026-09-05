@@ -49,3 +49,8 @@ export {
     canYouCarryItRule,
     CLUB_UP_MAX_PAST_TARGET_M,
 } from './rules/can-you-carry-it';
+export {
+    overTheTreesRule,
+    TREES_BLOCKED_PRIORITY,
+    TREES_MARGINAL_PRIORITY,
+} from './rules/over-the-trees';

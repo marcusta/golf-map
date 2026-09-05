@@ -331,6 +331,29 @@ public struct TileManifest: Codable, Sendable, Equatable {
     public struct Layers: Codable, Sendable, Equatable {
         public let ortho: ZoomRange
         public let terrain: ZoomRange
+        /// Lidar-derived layers; absent for courses without lidar coverage.
+        public let canopy: ZoomRange?
+        public let canopyColor: ZoomRange?
+        public let surface: ZoomRange?
+
+        public init(
+            ortho: ZoomRange,
+            terrain: ZoomRange,
+            canopy: ZoomRange? = nil,
+            canopyColor: ZoomRange? = nil,
+            surface: ZoomRange? = nil
+        ) {
+            self.ortho = ortho
+            self.terrain = terrain
+            self.canopy = canopy
+            self.canopyColor = canopyColor
+            self.surface = surface
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case ortho, terrain, canopy, surface
+            case canopyColor = "canopy-color"
+        }
     }
 
     public struct ElevationRange: Codable, Sendable, Equatable {
@@ -376,6 +399,69 @@ public struct CourseFeature: Sendable, Equatable {
     public let type: String
     /// Polygon rings; ring[0] is the outer ring, the rest are holes.
     public let rings: [[Coordinate]]
+    /// Flat server-derived attributes (canopy trees: `heightMaxM`, `heightP90M`,
+    /// `heightMeanM`, `areaM2`). Nil on hand-drawn features and on bundles
+    /// written before the server exposed them.
+    public let attributes: [String: FeatureAttributeValue]?
+    /// Generator that produced the feature (`lidar-canopy`); nil = hand-drawn.
+    public let source: String?
+
+    public init(
+        id: String, courseId: String, holeId: String?, type: String, rings: [[Coordinate]],
+        attributes: [String: FeatureAttributeValue]? = nil, source: String? = nil
+    ) {
+        self.id = id
+        self.courseId = courseId
+        self.holeId = holeId
+        self.type = type
+        self.rings = rings
+        self.attributes = attributes
+        self.source = source
+    }
+}
+
+/// One value of a feature's flat `attributes` object — the server contract is
+/// `Record<string, number | string | boolean>`; nulls and nested values never
+/// arrive (the server drops / rejects them), so an unexpected shape decodes as
+/// nil and is skipped by the container decoder.
+public enum FeatureAttributeValue: Equatable, Sendable, Hashable {
+    case number(Double)
+    case string(String)
+    case bool(Bool)
+
+    /// The numeric payload, nil for strings and bools.
+    public var doubleValue: Double? {
+        if case .number(let n) = self { return n }
+        return nil
+    }
+}
+
+extension FeatureAttributeValue: Codable {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        // Bool first: JSONDecoder would otherwise read `true` as 1.
+        if let b = try? c.decode(Bool.self) {
+            self = .bool(b)
+        } else if let n = try? c.decode(Double.self) {
+            self = .number(n)
+        } else if let s = try? c.decode(String.self) {
+            self = .string(s)
+        } else {
+            throw DecodingError.typeMismatch(
+                FeatureAttributeValue.self,
+                .init(codingPath: decoder.codingPath, debugDescription: "attribute must be number, string or bool")
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .number(let n): try c.encode(n)
+        case .string(let s): try c.encode(s)
+        case .bool(let b): try c.encode(b)
+        }
+    }
 }
 
 /// A GeoJSON FeatureCollection of course features. Decodes the subset the app
@@ -399,6 +485,49 @@ public struct CourseFeatureCollection: Decodable, Sendable, Equatable {
             let courseId: String
             let holeId: String?
             let type: String
+            let source: String?
+            /// Decoded leniently: an entry of an unexpected shape (null, nested)
+            /// is dropped rather than failing the whole collection.
+            let attributes: [String: FeatureAttributeValue]?
+
+            private enum CodingKeys: String, CodingKey { case courseId, holeId, type, source, attributes }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                courseId = try c.decode(String.self, forKey: .courseId)
+                holeId = try c.decodeIfPresent(String.self, forKey: .holeId)
+                type = try c.decode(String.self, forKey: .type)
+                source = try c.decodeIfPresent(String.self, forKey: .source)
+                if let raw = try? c.decodeIfPresent([String: FeatureAttributeValue?].self, forKey: .attributes) {
+                    attributes = raw.compactMapValues { $0 }
+                } else if let lenient = try? c.decodeIfPresent(LenientAttributes.self, forKey: .attributes) {
+                    attributes = lenient.values
+                } else {
+                    attributes = nil
+                }
+            }
+        }
+
+        /// Fallback decoder for an `attributes` object containing values the
+        /// strict typed decode rejects: keeps the valid entries, drops the rest.
+        private struct LenientAttributes: Decodable {
+            let values: [String: FeatureAttributeValue]
+
+            private struct Key: CodingKey {
+                var stringValue: String
+                var intValue: Int? { nil }
+                init(stringValue: String) { self.stringValue = stringValue }
+                init?(intValue: Int) { nil }
+            }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: Key.self)
+                var out: [String: FeatureAttributeValue] = [:]
+                for key in c.allKeys {
+                    if let v = try? c.decode(FeatureAttributeValue.self, forKey: key) { out[key.stringValue] = v }
+                }
+                values = out
+            }
         }
         private struct Geometry: Decodable {
             // GeoJSON Polygon coordinates: [ring][vertex][lon, lat].
@@ -421,7 +550,9 @@ public struct CourseFeatureCollection: Decodable, Sendable, Equatable {
                 courseId: props.courseId,
                 holeId: props.holeId,
                 type: props.type,
-                rings: rings
+                rings: rings,
+                attributes: props.attributes,
+                source: props.source
             )
         }
     }

@@ -17,6 +17,8 @@ Commands:
   apply-ortho-patches  Full replay: re-bake every logged entry onto the pristine ortho + retile the affected subtree
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
+  canopy            Lidar -> canopy / canopy-color / surface tile pyramids + manifest update (--trees-out: tree polygons too)
+  trees-features    Cleaned canopy grid (canopy.tif or lidar) -> tree polygons GeoJSON with height stats
   manifest          Write manifest.json for a tiled course
   install           Copy tiles+manifest into data/tiles/{courseId}/...
   bbox-from-course  Compute a WGS84 bbox from a course's DB coordinates
@@ -41,6 +43,7 @@ from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro
 from golfpipe import osm
 from golfpipe import patches
+from golfpipe import trees_features
 from golfpipe import water
 from golfpipe.aoi import AoiError, resolve_bbox
 from golfpipe.bbox_course import bbox_from_course
@@ -312,6 +315,74 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--altitude", type=float, default=45.0, help="light altitude degrees (default 45)")
     p.add_argument("--z-factor", dest="z_factor", type=float, default=1.0, help="vertical exaggeration (default 1)")
 
+    p = sub.add_parser("canopy", help="Lidar -> canopy height, canopy-color and surface (DSM) tile pyramids + manifest update")
+    p.add_argument("--lidar", required=True, action="append", help="a .laz/.copc.laz point cloud (repeatable)")
+    p.add_argument("--dem", help="ground DEM GeoTIFF; used for surface = DEM + canopy, and as the area when no --bbox/--aoi")
+    p.add_argument("--course-id", dest="course_id", required=True, help="course id written to manifest.json")
+    p.add_argument("--tiles-dir", dest="tiles_dir", required=True, help="data/tiles/<courseId>; canopy/, canopy-color/, surface/ are written under it")
+    p.add_argument("--workdir", required=True, help="directory for canopy.tif / surface.tif intermediates")
+    area = p.add_mutually_exclusive_group(required=False)
+    area.add_argument("--bbox", help="west,south,east,north in WGS84 degrees (default: the --dem extent)")
+    area.add_argument("--aoi", help="GeoJSON file (WGS84); its bbox is used")
+    p.add_argument("--minzoom", type=int, default=commands.DEFAULT_TERRAIN_MINZOOM)
+    p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_TERRAIN_MAXZOOM)
+    p.add_argument(
+        "--surface-shape", dest="surface_shape", choices=("crown", "flat"), default="crown",
+        help="surface DSM canopy: 'crown' tapers/blurs plateaus into crown shapes (default), 'flat' adds the cleaned canopy as is",
+    )
+    p.add_argument(
+        "--trees-out", dest="trees_out",
+        help="also write trees-features GeoJSON (tree polygons from the same cleaned canopy grid, default thresholds)",
+    )
+    p.add_argument(
+        "--min-hole-area", dest="min_hole_area", type=float, default=trees_features.DEFAULT_MIN_HOLE_AREA_M2,
+        help=f"with --trees-out: fill interior rings (clearings) under this area in m² (default {trees_features.DEFAULT_MIN_HOLE_AREA_M2}; 0 = keep all)",
+    )
+
+    p = sub.add_parser(
+        "trees-features",
+        help="Tree polygons (GeoJSON, EPSG:3006) from the cleaned canopy grid the canopy command tiles",
+    )
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--canopy-tif", dest="canopy_tif", help="canopy.tif from a canopy --workdir (cleaned canopy heights, m AGL)")
+    src.add_argument("--lidar", action="append", help="a .laz/.copc.laz point cloud (repeatable); grids the canopy as `canopy` does")
+    p.add_argument("--dem", help="ground DEM GeoTIFF; with --lidar its extent is the area when no --bbox is given")
+    p.add_argument("--course-id", dest="course_id", help="course id written as a top-level courseId member")
+    p.add_argument("--out", required=True, help="output GeoJSON path")
+    p.add_argument(
+        "--min-height", dest="min_height", type=float, default=trees_features.DEFAULT_MIN_HEIGHT_M,
+        help=f"canopy height in metres a cell needs to count as trees (default {trees_features.DEFAULT_MIN_HEIGHT_M})",
+    )
+    p.add_argument(
+        "--min-area", dest="min_area", type=float, default=trees_features.DEFAULT_MIN_AREA_M2,
+        help=f"minimum polygon area in m² (default {trees_features.DEFAULT_MIN_AREA_M2})",
+    )
+    p.add_argument(
+        "--min-hole-area", dest="min_hole_area", type=float, default=trees_features.DEFAULT_MIN_HOLE_AREA_M2,
+        help=f"fill interior rings (clearings) under this area in m² (default {trees_features.DEFAULT_MIN_HOLE_AREA_M2}; 0 = keep all)",
+    )
+    p.add_argument(
+        "--close", type=float, default=trees_features.DEFAULT_CLOSE_M,
+        help=f"binary closing radius in metres on the canopy mask, bridges gaps narrower than 2x this (default {trees_features.DEFAULT_CLOSE_M}; 0 = off)",
+    )
+    p.add_argument(
+        "--round", type=float, default=trees_features.DEFAULT_ROUND_M,
+        help=f"outline rounding radius in metres: buffer close/open + Chaikin corner cutting (default {trees_features.DEFAULT_ROUND_M}; 0 = keep cell outlines)",
+    )
+    p.add_argument(
+        "--simplify", type=float, default=trees_features.DEFAULT_SIMPLIFY_M,
+        help=f"polygon simplification tolerance in metres, applied after rounding (default {trees_features.DEFAULT_SIMPLIFY_M})",
+    )
+    p.add_argument(
+        "--source-ref", dest="source_ref",
+        help="properties.source_ref (default: canopy tif basename, or comma-joined lidar basenames)",
+    )
+    p.add_argument("--bbox", help="e_min,n_min,e_max,n_max in EPSG:3006 metres to clip to (default: raster / DEM extent)")
+    p.add_argument(
+        "--resolution", type=float, default=detect_trees.DEFAULT_RESOLUTION,
+        help=f"grid cell size in metres when gridding from --lidar (default {detect_trees.DEFAULT_RESOLUTION})",
+    )
+
     p = sub.add_parser("manifest", help="Write manifest.json for a tiled course")
     p.add_argument("--course", required=True, help="course id")
     p.add_argument("--tiles-dir", required=True, help="directory containing ortho/, terrain/ and hillshade/ subdirs")
@@ -512,6 +583,41 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.input), Path(args.out),
                 minzoom=args.minzoom, maxzoom=args.maxzoom,
                 azimuth=args.azimuth, altitude=args.altitude, z=args.z_factor,
+            )
+
+        elif args.command == "canopy":
+            if not args.dem and not (args.bbox or args.aoi):
+                parser.error("canopy needs --bbox or --aoi when no --dem is given")
+            bbox = _resolve_area(args) if (args.bbox or args.aoi) else None
+            counts = commands.cmd_canopy(
+                [Path(p) for p in args.lidar],
+                Path(args.dem) if args.dem else None,
+                args.course_id, Path(args.tiles_dir), Path(args.workdir),
+                bbox_wgs84=bbox, minzoom=args.minzoom, maxzoom=args.maxzoom,
+                surface_shape=args.surface_shape,
+                trees_out=Path(args.trees_out) if args.trees_out else None,
+                min_hole_area_m2=args.min_hole_area,
+            )
+            print("Tiles written: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+
+        elif args.command == "trees-features":
+            bbox_3006 = None
+            if args.bbox:
+                bbox_3006 = tuple(float(v) for v in args.bbox.split(","))
+                if len(bbox_3006) != 4:
+                    parser.error("--bbox must have 4 comma-separated values (e_min,n_min,e_max,n_max in EPSG:3006)")
+            if args.lidar and not (args.dem or bbox_3006):
+                parser.error("trees-features with --lidar needs --dem or --bbox to define the area")
+            commands.cmd_trees_features(
+                Path(args.out),
+                canopy_tif=Path(args.canopy_tif) if args.canopy_tif else None,
+                lidar_paths=[Path(p) for p in args.lidar] if args.lidar else None,
+                dem_path=Path(args.dem) if args.dem else None,
+                course_id=args.course_id,
+                bbox_3006=bbox_3006,
+                min_height_m=args.min_height, min_area_m2=args.min_area,
+                close_m=args.close, round_m=args.round, simplify_m=args.simplify, min_hole_area_m2=args.min_hole_area,
+                source_ref=args.source_ref, resolution=args.resolution,
             )
 
         elif args.command == "manifest":

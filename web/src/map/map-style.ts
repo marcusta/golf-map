@@ -16,7 +16,27 @@ export const TERRAIN_SOURCE_ID = 'course-terrain';
  */
 export const HILLSHADE_SOURCE_ID = 'course-hillshade-dem';
 export const HILLSHADE_LAYER_ID = 'course-hillshade';
+/** Lidar canopy display raster (pre-coloured, transparent where no trees). */
+export const CANOPY_COLOR_SOURCE_ID = 'course-canopy-color';
+export const CANOPY_COLOR_LAYER_ID = 'course-canopy-color';
+/** Canopy display opacity — lets the ortho read through the tree crowns. */
+export const CANOPY_COLOR_OPACITY = 0.7;
+/** Lidar DSM (ground + canopy) raster-dem — the `surface` 3D terrain mode. */
+export const SURFACE_SOURCE_ID = 'course-surface';
 export const BACKGROUND_LAYER_ID = 'editor-background';
+
+/**
+ * Which raster-dem drives MapLibre's 3D terrain: `ground` (the bare-earth
+ * DEM, TERRAIN_SOURCE_ID — default) or `surface` (the lidar DSM incl. tree
+ * canopy, SURFACE_SOURCE_ID; only offered when the manifest has the layer).
+ * Visual only — ElevationService always samples the ground DEM.
+ */
+export type TerrainMode = 'ground' | 'surface';
+
+/** Raster-dem source id for a terrain mode. */
+export function terrainSourceId(mode: TerrainMode): string {
+    return mode === 'surface' ? SURFACE_SOURCE_ID : TERRAIN_SOURCE_ID;
+}
 
 /** Base color outside tile coverage. */
 export const BACKGROUND_COLOR = '#0b0e11';
@@ -47,7 +67,7 @@ export function orthoLayerId(collection: string): string {
  */
 export function tileUrlTemplate(
     mapKey: string,
-    layer: 'ortho' | 'ortho-sim' | 'terrain' | 'hillshade',
+    layer: 'ortho' | 'ortho-sim' | 'terrain' | 'hillshade' | 'canopy' | 'canopy-color' | 'surface',
     ext: 'jpg' | 'png' | 'webp',
     version: string,
     collection?: string,
@@ -66,7 +86,10 @@ export function boundsToArray(bounds: TileBounds): [number, number, number, numb
  * Assemble the editor map style for one course: dark empty background
  * (the ortho IS the basemap), ortho raster layer, terrain raster-dem
  * source (Terrain-RGB, `encoding: 'mapbox'`), and a hidden hillshade
- * layer toggled via MapService.setHillshade().
+ * layer toggled via MapService.setHillshade(). When the manifest carries the
+ * lidar layers, also a hidden `canopy-color` raster (MapService.setCanopy())
+ * above the hillshade and a `surface` raster-dem source for the DSM terrain
+ * mode (MapService.setTerrainMode()).
  *
  * 3D terrain itself is NOT declared in the style — MapService applies it
  * with `setTerrain()` once the style has loaded, so exaggeration stays a
@@ -169,6 +192,45 @@ export function buildEditorStyle(
         };
     }
 
+    // Lidar canopy display raster: above ortho + hillshade, below every vector
+    // overlay (tools append their layers after the style's, so last-in-style
+    // is still under them). Hidden until toggled.
+    const canopyColor = manifest.layers['canopy-color'];
+    const canopyLayers: LayerSpecification[] = [];
+    if (canopyColor) {
+        sources[CANOPY_COLOR_SOURCE_ID] = {
+            type: 'raster',
+            tiles: [tileUrlTemplate(mapKey, 'canopy-color', 'png', version)],
+            tileSize: 256,
+            minzoom: canopyColor.minzoom,
+            maxzoom: canopyColor.maxzoom,
+            bounds,
+        };
+        canopyLayers.push({
+            id: CANOPY_COLOR_LAYER_ID,
+            type: 'raster',
+            source: CANOPY_COLOR_SOURCE_ID,
+            layout: { visibility: 'none' },
+            paint: { 'raster-opacity': CANOPY_COLOR_OPACITY },
+        });
+    }
+
+    // Lidar DSM as an alternative 3D-terrain source. Declared only — no
+    // layer reads it until setTerrain() points at it, so its tiles aren't
+    // fetched in `ground` mode.
+    const surface = manifest.layers.surface;
+    if (surface) {
+        sources[SURFACE_SOURCE_ID] = {
+            type: 'raster-dem',
+            tiles: [tileUrlTemplate(mapKey, 'surface', 'png', version)],
+            tileSize: 256,
+            minzoom: surface.minzoom,
+            maxzoom: surface.maxzoom,
+            bounds,
+            encoding: 'mapbox',
+        };
+    }
+
     return {
         version: 8,
         sources,
@@ -180,6 +242,7 @@ export function buildEditorStyle(
             },
             ...orthoLayers,
             hillshadeLayer,
+            ...canopyLayers,
         ],
     };
 }

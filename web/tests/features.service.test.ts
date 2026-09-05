@@ -67,6 +67,7 @@ function fakeApi(initial: CourseFeature[] = []) {
                 source: input.source ?? null,
                 sourceRef: input.sourceRef ?? null,
                 license: input.license ?? null,
+                attributes: input.attributes ?? null,
                 version: 1,
             };
             rows.set(feature.id, feature);
@@ -108,7 +109,7 @@ function feature(id: string, type = 'bunker', version = 1, opts: { holeId?: stri
     return {
         id, courseId: 'c1', holeId: opts.holeId ?? null, type,
         geometry: squareGeometry(), geojson: null, sortOrder: opts.sortOrder ?? 0,
-        source: null, sourceRef: null, license: null, version,
+        source: null, sourceRef: null, license: null, attributes: null, version,
     };
 }
 
@@ -258,8 +259,9 @@ describe('nice rendering', () => {
         const map = {
             ready: new Signal(false),
             map: new Signal(null),
+            // Two sources (hand-drawn + generated) — collect every layer.
             addOverlayLayer: (_id: string, _data: unknown, nextLayers: Array<{ id: string; paint?: Record<string, unknown> }>) => {
-                layers = nextLayers;
+                layers = [...layers, ...nextLayers];
             },
             updateOverlayData: () => {},
             removeOverlayLayer: () => {},
@@ -301,17 +303,21 @@ describe('nice rendering', () => {
 
         const dispose = svc.attachOverlay(map as never);
 
-        expect(paintCalls.slice(-3).map(call => [call.layer, call.property, call.value])).toEqual([
+        expect(paintCalls.slice(-5).map(call => [call.layer, call.property, call.value])).toEqual([
             ['features-fill', 'fill-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0.4]],
             ['features-outline', 'line-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0]],
             ['features-rules-outline', 'line-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0]],
+            ['features-generated-fill', 'fill-opacity', 0.4],
+            ['features-generated-outline', 'line-opacity', 0],
         ]);
 
         svc.niceRendering.set(false);
-        expect(paintCalls.slice(-3).map(call => [call.layer, call.property, call.value])).toEqual([
+        expect(paintCalls.slice(-5).map(call => [call.layer, call.property, call.value])).toEqual([
             ['features-fill', 'fill-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0.86]],
             ['features-outline', 'line-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 1]],
             ['features-rules-outline', 'line-opacity', ['case', ['boolean', ['feature-state', 'dragging'], false], 0, 1]],
+            ['features-generated-fill', 'fill-opacity', 0.86],
+            ['features-generated-outline', 'line-opacity', 1],
         ]);
 
         dispose();

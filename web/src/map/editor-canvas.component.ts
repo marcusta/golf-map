@@ -5,6 +5,7 @@ import { s, btn, mapLabel, metric, panelTitle, glassPanel, selectedRow, OVERLAY_
 import { TilesetService, type OrthoVintage } from './tileset.service';
 import { MapService } from './map.service';
 import { ElevationService } from './elevation.service';
+import { CanopyService } from './canopy.service';
 import { EditorToolbarComponent } from '../editor/toolbar.component';
 import { MapBuildClientService } from '../map-build/map-build.service';
 import { ServerModeService } from '../app/server-mode.service';
@@ -37,6 +38,19 @@ const tpl = template(`
                         <span class="toggle-switch__knob"></span>
                     </button>
                 </div>
+                <div bind="canopyRow" class="layers-popover__row hidden" data-testid="layers-canopy-row">
+                    <span>Trees (lidar)</span>
+                    <button bind="canopyToggle" type="button" class="toggle-switch" role="switch" data-testid="layers-canopy-toggle" title="Toggle lidar tree canopy layer">
+                        <span class="toggle-switch__knob"></span>
+                    </button>
+                </div>
+                <div bind="terrainModeRow" class="layers-popover__row hidden" data-testid="layers-terrain-mode-row">
+                    <span>3D</span>
+                    <div class="map-canvas__vintages map-canvas__terrain-mode" role="radiogroup" aria-label="3D terrain source">
+                        <button bind="terrainGround" type="button" class="vintage-btn" role="radio" data-testid="layers-terrain-ground" title="3D terrain from the bare-earth DEM">ground</button>
+                        <button bind="terrainSurface" type="button" class="vintage-btn" role="radio" data-testid="layers-terrain-surface" title="3D terrain from the lidar surface model (ground + trees)">surface</button>
+                    </div>
+                </div>
                 <div class="layers-popover__row layers-popover__row--col">
                     <div class="layers-popover__row-head">
                         <span>Terrain exaggeration</span>
@@ -50,7 +64,7 @@ const tpl = template(`
                 </div>
             </div>
             <div class="map-canvas__control-buttons">
-                <button bind="layersBtn" type="button" class="control-pill" title="Map layers">
+                <button bind="layersBtn" type="button" class="control-pill" title="Map layers" data-testid="map-layers-btn">
                     <span class="layers-glyph"><span></span><span></span><span></span></span>Layers
                 </button>
                 <button bind="fit" type="button" class="control-pill" title="Fit view to course bounds">Fit course</button>
@@ -209,8 +223,10 @@ export class EditorCanvasComponent extends Component {
                     font-size: 0.8rem;
                     color: ${t('color-text-primary')};
                     &--col { flex-direction: column; align-items: stretch; }
-                    &--col.hidden { display: none; }
+                    &.hidden { display: none; }
                 }
+
+                & .map-canvas__terrain-mode { flex: 0 0 auto; }
 
                 & .layers-popover__row-head {
                     display: flex;
@@ -353,6 +369,7 @@ export class EditorCanvasComponent extends Component {
     private features = this.inject(FeaturesService);
     private mapSvc = this.inject(MapService);
     private elevation = this.inject(ElevationService);
+    private canopy = this.inject(CanopyService);
     private mapBuild = this.inject(MapBuildClientService);
     private serverMode = this.inject(ServerModeService);
     private router = this.inject(Router);
@@ -426,6 +443,24 @@ export class EditorCanvasComponent extends Component {
                 onclick: () => this.mapSvc.setHillshade(!this.mapSvc.hillshadeVisible.get()),
                 className: () => this.mapSvc.hillshadeVisible.get() ? 'toggle-switch active' : 'toggle-switch',
                 'aria-checked': () => String(this.mapSvc.hillshadeVisible.get()),
+            },
+            // Lidar rows: only on courses whose manifest carries the layers.
+            canopyRow: { className: () => this.mapSvc.hasCanopy.get() ? 'layers-popover__row' : 'layers-popover__row hidden' },
+            canopyToggle: {
+                onclick: () => this.mapSvc.setCanopy(!this.mapSvc.canopyVisible.get()),
+                className: () => this.mapSvc.canopyVisible.get() ? 'toggle-switch active' : 'toggle-switch',
+                'aria-checked': () => String(this.mapSvc.canopyVisible.get()),
+            },
+            terrainModeRow: { className: () => this.mapSvc.hasSurface.get() ? 'layers-popover__row' : 'layers-popover__row hidden' },
+            terrainGround: {
+                onclick: () => this.mapSvc.setTerrainMode('ground'),
+                className: () => this.mapSvc.terrainMode.get() === 'ground' ? 'vintage-btn active' : 'vintage-btn',
+                'aria-checked': () => String(this.mapSvc.terrainMode.get() === 'ground'),
+            },
+            terrainSurface: {
+                onclick: () => this.mapSvc.setTerrainMode('surface'),
+                className: () => this.mapSvc.terrainMode.get() === 'surface' ? 'vintage-btn active' : 'vintage-btn',
+                'aria-checked': () => String(this.mapSvc.terrainMode.get() === 'surface'),
             },
             exaggerationValue: () => `×${this.mapSvc.exaggeration.get().toFixed(2)}`,
             vintageRow: { className: () => this.vintages.get().length > 1 ? 'layers-popover__row layers-popover__row--col' : 'layers-popover__row layers-popover__row--col hidden' },
@@ -526,6 +561,11 @@ export class EditorCanvasComponent extends Component {
                     zoom: manifest.layers.terrain.maxzoom,
                     version,
                 });
+                // Canopy sampler (flyover / strategy consumers); null on
+                // courses without the lidar layer.
+                this.canopy.configure(manifest.layers.canopy
+                    ? { mapKey, zoom: manifest.layers.canopy.maxzoom, version }
+                    : null);
             });
         }));
 
@@ -559,6 +599,7 @@ export class EditorCanvasComponent extends Component {
         this.track(() => {
             this.mapSvc.destroy();
             this.elevation.configure(null);
+            this.canopy.configure(null);
         });
     }
 

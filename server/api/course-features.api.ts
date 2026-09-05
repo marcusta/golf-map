@@ -27,6 +27,13 @@ const FeatureGeometrySchema = Type.Object({
     rings: Type.Array(PathRingSchema),
 });
 
+// Flat scalar attributes (e.g. lidar tree heights); null clears on update.
+// Key-count and value checks live in the service (InvalidFeatureError).
+const FeatureAttributesSchema = Type.Union([
+    Type.Null(),
+    Type.Record(Type.String(), Type.Union([Type.Number(), Type.String(), Type.Boolean()])),
+]);
+
 const ListFeaturesInput = Type.Object({
     courseId: Type.String(),
 });
@@ -53,6 +60,7 @@ const CreateFeatureInput = Type.Object({
     source: Type.Optional(Type.String()),
     sourceRef: Type.Optional(Type.String()),
     license: Type.Optional(Type.String()),
+    attributes: Type.Optional(FeatureAttributesSchema),
 });
 
 const UpdateFeatureInput = Type.Object({
@@ -61,6 +69,7 @@ const UpdateFeatureInput = Type.Object({
     holeId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     type: Type.Optional(Type.String()),
     geometry: Type.Optional(FeatureGeometrySchema),
+    attributes: Type.Optional(FeatureAttributesSchema),
 });
 
 const RemoveFeatureInput = Type.Object({
@@ -113,6 +122,7 @@ export function createCourseFeaturesApi(svc: CourseFeaturesService) {
                     source: input.source,
                     sourceRef: input.sourceRef,
                     license: input.license,
+                    attributes: input.attributes,
                 }),
             schema: CreateFeatureInput,
             middleware: mw,
@@ -125,6 +135,7 @@ export function createCourseFeaturesApi(svc: CourseFeaturesService) {
                     holeId: input.holeId,
                     type: input.type,
                     geometry: input.geometry,
+                    attributes: input.attributes,
                 }),
             schema: UpdateFeatureInput,
             middleware: mw,

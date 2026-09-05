@@ -364,6 +364,20 @@ public struct AppDatabase: Sendable {
             }
         }
 
+        // v11: optional lidar tile layers (canopy, canopy-color, surface).
+        // Nullable — a course without lidar has no rows for them, and every
+        // pre-v11 manifest row reads back as "layer absent".
+        migrator.registerMigration("v11") { db in
+            try db.alter(table: "tileManifest") { t in
+                t.add(column: "canopyMinZoom", .integer)
+                t.add(column: "canopyMaxZoom", .integer)
+                t.add(column: "canopyColorMinZoom", .integer)
+                t.add(column: "canopyColorMaxZoom", .integer)
+                t.add(column: "surfaceMinZoom", .integer)
+                t.add(column: "surfaceMaxZoom", .integer)
+            }
+        }
+
         return migrator
     }
 

@@ -11,6 +11,7 @@ import type { MapService } from '../map/map.service';
 import { DRAW_FILL_OPACITY, NICE_FILL_OPACITY, typeColorExpression, SELECTION_COLOR } from './feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { resolveSurfaceStack } from '../../../shared/render/resolved-surface-stack';
+import { isGeneratedFeature } from './generated-features';
 
 /**
  * D24 global composition key: `groupRank * 4096 + sortOrder`, groupRank 0 =
@@ -23,8 +24,15 @@ const GROUP_RANK_SPAN = 4096;
 /** Flattening tolerance in meters — matches the server's GeoJSON derivation. */
 export const FLATTEN_TOLERANCE_M = 0.25;
 
-/** Overlay/source id for the persistent course-features rendering. */
+/** Overlay/source id for the persistent course-features rendering (hand-drawn). */
 export const FEATURES_OVERLAY_ID = 'features';
+/**
+ * Overlay/source id for GENERATED features (non-null `source`, e.g. the
+ * lidar canopy trees — ~2200 polygons / ~60k vertices on Landeryd). Kept in
+ * its own source so hand-drawn edits never re-send it to the worker; it
+ * only rebuilds when the generated set itself changes (load, delete).
+ */
+export const GENERATED_OVERLAY_ID = 'features-generated';
 
 // Flattened + reprojected rings are cached per geometry OBJECT — geometry
 // is replaced wholesale on every edit, so identity keying is exact and the
@@ -83,6 +91,11 @@ export class FeaturesService {
      */
     readonly hiddenIds = new Signal<ReadonlySet<string>>(new Set());
     /**
+     * Generated-feature SOURCES hidden from the overlay + hit tests (stack
+     * panel group-row eye, e.g. 'lidar-canopy'). Client-side view state.
+     */
+    readonly hiddenSources = new Signal<ReadonlySet<string>>(new Set());
+    /**
      * Nice mode is a photo-blended, stroke-free vector tint. Draw mode uses
      * a high-contrast palette with visible feature boundaries.
      */
@@ -128,6 +141,36 @@ export class FeaturesService {
     });
 
     /**
+     * `selected` when it is hand-drawn, null when it is generated (read-only):
+     * every geometry-editing affordance (vertex handles, edge insertion,
+     * offset/simplify previews, context-menu vertex delete) keys off THIS.
+     */
+    readonly editableSelected = new Computed<CourseFeature | null>(() => {
+        const f = this.selected.get();
+        return f && !isGeneratedFeature(f) ? f : null;
+    });
+
+    /** `selectedFeatures` minus generated (read-only) rows — move/duplicate/retype/rehole targets. */
+    readonly editableSelectedFeatures = new Computed<CourseFeature[]>(() =>
+        this.selectedFeatures.get().filter(f => !isGeneratedFeature(f)));
+
+    /**
+     * Generated (non-null `source`) features, identity-stable: the same array
+     * instance comes back while the generated set is unchanged (same rows in
+     * the same order), even though every store edit re-runs this. That
+     * stability is what keeps `generatedGeojson` from rebuilding ~60k
+     * vertices on each hand-drawn vertex drag.
+     */
+    readonly generatedFeatures = new Computed<CourseFeature[]>(() => {
+        const next = this.store.items.get().filter(isGeneratedFeature);
+        const prev = this.lastGenerated;
+        if (prev && prev.length === next.length && prev.every((f, i) => f === next[i])) return prev;
+        this.lastGenerated = next;
+        return next;
+    });
+    private lastGenerated: CourseFeature[] | null = null;
+
+    /**
      * All VISIBLE features as a WGS84 FeatureCollection with rendering
      * properties (`type`, `holeId`). Recomputes on store and visibility
      * changes; unchanged geometries hit the flatten cache. Hidden types
@@ -145,24 +188,68 @@ export class FeaturesService {
         const hidden = this.hiddenTypes.get();
         const hiddenIds = this.hiddenIds.get();
         const features: Feature[] = this.store.items.get()
-            .filter(f => !hidden.has(f.type) && !hiddenIds.has(f.id))
-            .map(f => ({
-                type: 'Feature',
-                id: f.id,
-                properties: {
-                    id: f.id,
-                    type: f.type,
-                    holeId: f.holeId,
-                    sortOrder: f.sortOrder,
-                    stackKey: this.stackKeyFor(f),
-                },
-                geometry: {
-                    type: 'Polygon',
-                    coordinates: geometryToWgs84Rings(f.geometry),
-                } satisfies Polygon,
-            }));
+            .filter(f => !isGeneratedFeature(f) && !hidden.has(f.type) && !hiddenIds.has(f.id))
+            .map(f => this.toGeojsonFeature(f));
         return { type: 'FeatureCollection', features };
     });
+
+    /**
+     * GENERATED features as their own WGS84 FeatureCollection (see
+     * `GENERATED_OVERLAY_ID`). Memoized on the identity-stable
+     * `generatedFeatures` array + the visibility sets, so a hand-drawn edit
+     * returns the SAME collection object and `attachOverlay` skips the
+     * source re-send entirely.
+     */
+    readonly generatedGeojson = new Computed<FeatureCollection>(() => {
+        const items = this.generatedFeatures.get();
+        const hidden = this.hiddenTypes.get();
+        const hiddenIds = this.hiddenIds.get();
+        const hiddenSources = this.hiddenSources.get();
+        const memo = this.generatedGeojsonMemo;
+        if (memo && memo.items === items && memo.hidden === hidden && memo.hiddenIds === hiddenIds
+            && memo.hiddenSources === hiddenSources) {
+            return memo.data;
+        }
+        const features: Feature[] = items
+            .filter(f => !hidden.has(f.type) && !hiddenIds.has(f.id) && !hiddenSources.has(f.source!))
+            .map(f => this.toGeojsonFeature(f));
+        const data: FeatureCollection = { type: 'FeatureCollection', features };
+        this.generatedRebuildCount++;
+        this.generatedGeojsonMemo = { items, hidden, hiddenIds, hiddenSources, data };
+        return data;
+    });
+    private generatedGeojsonMemo: {
+        items: CourseFeature[];
+        hidden: ReadonlySet<string>;
+        hiddenIds: ReadonlySet<string>;
+        hiddenSources: ReadonlySet<string>;
+        data: FeatureCollection;
+    } | null = null;
+
+    /** Number of times `generatedGeojson` actually rebuilt (perf tests / diagnostics). */
+    get generatedRebuilds(): number {
+        return this.generatedRebuildCount;
+    }
+    private generatedRebuildCount = 0;
+
+    private toGeojsonFeature(f: CourseFeature): Feature {
+        return {
+            type: 'Feature',
+            id: f.id,
+            properties: {
+                id: f.id,
+                type: f.type,
+                holeId: f.holeId,
+                sortOrder: f.sortOrder,
+                stackKey: this.stackKeyFor(f),
+                source: f.source,
+            },
+            geometry: {
+                type: 'Polygon',
+                coordinates: geometryToWgs84Rings(f.geometry),
+            } satisfies Polygon,
+        };
+    }
 
     /**
      * Every feature across the whole course (hidden types included — hit
@@ -295,6 +382,33 @@ export class FeaturesService {
         this.hiddenIds.set(next);
     }
 
+    /**
+     * Toggle a generated SOURCE's visibility (stack panel group-row eye).
+     * Hiding drops that source's features from the selection, like the
+     * type/id toggles.
+     */
+    toggleSourceVisibility(source: string): void {
+        const next = new Set(this.hiddenSources.peek());
+        if (next.has(source)) {
+            next.delete(source);
+        } else {
+            next.add(source);
+            const keep = new Set([...this.selectedIds.peek()].filter(id => {
+                const f = this.store.items.peek().find(item => item.id === id);
+                return f !== undefined && f.source !== source;
+            }));
+            if (keep.size !== this.selectedIds.peek().size) this.selectedIds.set(keep);
+        }
+        this.hiddenSources.set(next);
+    }
+
+    /** True when `f` is hidden by any of the three view toggles (type, id, source). */
+    isHidden(f: CourseFeature): boolean {
+        return this.hiddenTypes.peek().has(f.type)
+            || this.hiddenIds.peek().has(f.id)
+            || (f.source !== null && this.hiddenSources.peek().has(f.source));
+    }
+
     /** Create a feature (autosave on ring close). Selects it on success. */
     async create(input: {
         type: string;
@@ -392,6 +506,7 @@ export class FeaturesService {
         const rows = ids.map(id => this.store.items.peek().find(f => f.id === id));
         const first = rows[0];
         if (!first || rows.some(r => !r || r.holeId !== first.holeId)) return false;
+        if (rows.some(r => r && isGeneratedFeature(r))) return false; // generated rows are read-only
         const holeId = first.holeId;
         const order = this.stackFor(holeId).map(f => f.id);
         const nextOrder = compute(order);
@@ -423,6 +538,7 @@ export class FeaturesService {
      */
     attachOverlay(map: MapService): () => void {
         let added = false;
+        let lastGeneratedSent: FeatureCollection | null = null;
         this.overlayMap = map;
         // Per-feature "dragging" state hides originals while the draw
         // tool renders their ghost (paint-only — no source/layout work).
@@ -433,8 +549,12 @@ export class FeaturesService {
             const nice = this.niceRendering.get();
             const rawData = this.geojson.get();
             const data = nice ? resolveSurfaceStack(rawData) : rawData;
+            // Generated trees overlay the surface stack (no occlusion
+            // resolution needed — they are never differenced against it).
+            const generated = this.generatedGeojson.get();
             if (!ready) {
                 added = false; // overlay died with the map
+                lastGeneratedSent = null;
                 return;
             }
             if (!added) {
@@ -494,15 +614,58 @@ export class FeaturesService {
                         },
                     },
                 ]);
+                // Generated features: own source, slotted just under the
+                // hand-drawn selection highlight (above hand-drawn fills, so
+                // canopy reads as the topmost surface, like drawn trees).
+                map.addOverlayLayer(GENERATED_OVERLAY_ID, generated, [
+                    {
+                        id: 'features-generated-fill',
+                        type: 'fill',
+                        layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
+                        paint: {
+                            'fill-color': typeColorExpression('draw') as never,
+                            'fill-opacity': nice ? NICE_FILL_OPACITY : DRAW_FILL_OPACITY,
+                        },
+                    },
+                    {
+                        id: 'features-generated-outline',
+                        type: 'line',
+                        layout: { 'line-sort-key': ['get', 'stackKey'] as never },
+                        paint: {
+                            'line-color': typeColorExpression('outline') as never,
+                            'line-width': 1.5,
+                            'line-opacity': nice ? 0 : 1,
+                        },
+                    },
+                    {
+                        id: 'features-generated-selected',
+                        type: 'line',
+                        filter: selectionFilter(this.selectedIds.peek()),
+                        paint: {
+                            'line-color': SELECTION_COLOR,
+                            'line-width': 2.5,
+                        },
+                    },
+                ], { beforeId: 'features-selected' });
+                lastGeneratedSent = generated;
                 added = true;
             } else {
                 map.updateOverlayData(FEATURES_OVERLAY_ID, data);
+                // Identity check: `generatedGeojson` hands back the same
+                // object while the generated set is unchanged, so hand-drawn
+                // edits never re-send the ~60k-vertex canopy collection.
+                if (generated !== lastGeneratedSent) {
+                    lastGeneratedSent = generated;
+                    map.updateOverlayData(GENERATED_OVERLAY_ID, generated);
+                }
             }
         });
         const disposeSelection = effect(() => {
             const ids = this.selectedIds.get();
             if (!map.ready.get() || !added) return;
-            map.map.get()?.setFilter('features-selected', selectionFilter(ids));
+            const raw = map.map.get();
+            raw?.setFilter('features-selected', selectionFilter(ids));
+            raw?.setFilter('features-generated-selected', selectionFilter(ids));
         });
         const disposeTint = effect(() => {
             // Nice mode uses the proven MapLibre fill path as a baseline:
@@ -518,10 +681,14 @@ export class FeaturesService {
                 rawMap.setPaintProperty('features-fill', 'fill-opacity', draggingHide(NICE_FILL_OPACITY) as never);
                 rawMap.setPaintProperty('features-outline', 'line-opacity', draggingHide(0) as never);
                 rawMap.setPaintProperty('features-rules-outline', 'line-opacity', draggingHide(0) as never);
+                rawMap.setPaintProperty('features-generated-fill', 'fill-opacity', NICE_FILL_OPACITY);
+                rawMap.setPaintProperty('features-generated-outline', 'line-opacity', 0);
             } else {
                 rawMap.setPaintProperty('features-fill', 'fill-opacity', draggingHide(DRAW_FILL_OPACITY) as never);
                 rawMap.setPaintProperty('features-outline', 'line-opacity', draggingHide(1) as never);
                 rawMap.setPaintProperty('features-rules-outline', 'line-opacity', draggingHide(1) as never);
+                rawMap.setPaintProperty('features-generated-fill', 'fill-opacity', DRAW_FILL_OPACITY);
+                rawMap.setPaintProperty('features-generated-outline', 'line-opacity', 1);
             }
         });
         return () => {
@@ -529,7 +696,10 @@ export class FeaturesService {
             disposeSelection();
             disposeTint();
             this.overlayMap = null;
-            if (added) map.removeOverlayLayer(FEATURES_OVERLAY_ID);
+            if (added) {
+                map.removeOverlayLayer(GENERATED_OVERLAY_ID);
+                map.removeOverlayLayer(FEATURES_OVERLAY_ID);
+            }
         };
     }
 

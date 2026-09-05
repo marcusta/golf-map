@@ -177,6 +177,22 @@ export class GeojsonImportService {
         return this.courseId;
     }
 
+    /**
+     * Pipeline-generated tree polygons (`source: 'lidar-canopy'`) are bulk-
+     * replaced through `PUT /features/generated`, not created one by one
+     * here (server/AGENTS.md "Generated features"). When a picked file
+     * carries them, say so — the wizard still imports, as hand-drawn rows.
+     */
+    readonly generatedSourceNote = new Computed<string | null>(() => {
+        const parsed = this.parsed.get();
+        if (!parsed) return null;
+        const n = parsed.features.filter(f => f.properties['source'] === 'lidar-canopy').length;
+        if (n === 0) return null;
+        return `${n} feature${n === 1 ? '' : 's'} carry source "lidar-canopy". Lidar tree polygons are imported by the pipeline `
+            + `(golfpipe detect-trees → PUT /api/courses/:id/features/generated), which replaces the whole set and keeps them read-only; `
+            + `importing them here creates ordinary hand-drawn copies.`;
+    });
+
     /** Current mapping rows (re-binned whenever the property changes). */
     readonly buckets = new Computed<GeojsonBucket[]>(() => {
         const parsed = this.parsed.get();

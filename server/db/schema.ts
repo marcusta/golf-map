@@ -145,6 +145,7 @@ export interface CourseFeaturesTable {
     source: string | null; // import provenance: producer id (e.g. 'osm'), null = hand-drawn (T49)
     source_ref: string | null; // source-local ref (e.g. 'way/123456')
     license: string | null; // license short name (e.g. 'ODbL') — any ODbL feature makes the course's map data ODbL
+    attributes_json: string | null; // flat JSON object of scalar per-feature attributes (e.g. lidar tree heights), null = none
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

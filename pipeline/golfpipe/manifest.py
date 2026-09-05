@@ -54,6 +54,9 @@ def build_manifest(
     hillshade_tiles_dir: Path | None = None,
     dem_path: Path | None = None,
     bounds_wgs84: tuple[float, float, float, float] | None = None,
+    canopy_tiles_dir: Path | None = None,
+    canopy_color_tiles_dir: Path | None = None,
+    surface_tiles_dir: Path | None = None,
 ) -> dict:
     """Assembles the manifest dict. bounds_wgs84, if not given explicitly,
     is derived from dem_path (preferred) since the DEM defines the
@@ -77,6 +80,14 @@ def build_manifest(
     hillshade_summary = _layer_summary(hillshade_tiles_dir)
     if hillshade_summary:
         layers["hillshade"] = hillshade_summary
+    for name, tiles_dir in (
+        ("canopy", canopy_tiles_dir),
+        ("canopy-color", canopy_color_tiles_dir),
+        ("surface", surface_tiles_dir),
+    ):
+        summary = _layer_summary(tiles_dir)
+        if summary:
+            layers[name] = summary
 
     manifest = {
         "courseId": course_id,
@@ -94,10 +105,65 @@ def build_manifest(
             if elevation_range is not None
             else None
         ),
-        "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "generatedAt": _now_iso(),
         "attribution": ATTRIBUTION,
     }
     return manifest
+
+
+def merge_manifest_layers(existing: dict | None, fresh: dict) -> dict:
+    """Merges a freshly built manifest into an existing one without losing
+    fields the pipeline does not know about (the server adds
+    orthoVintages/activeOrtho/builtOrtho). Existing top-level fields win,
+    except `layers` (union, fresh entries override) and `generatedAt`
+    (always fresh). With no existing manifest the fresh one is returned.
+    """
+    if not existing:
+        return fresh
+    merged = dict(fresh)
+    merged.update(existing)
+    merged["layers"] = {**(existing.get("layers") or {}), **(fresh.get("layers") or {})}
+    # Clients (iOS bundle downloader) key their tile cache on generatedAt, so a
+    # merge that adds or re-tiles layers must always move it forward.
+    merged["generatedAt"] = fresh.get("generatedAt") or _now_iso()
+    return merged
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def next_backup_path(manifest_path: Path) -> Path:
+    """First free backup name next to manifest_path: manifest.json.bak, then
+    .bak2, .bak3, ... Existing backups are never overwritten."""
+    candidate = manifest_path.with_suffix(".json.bak")
+    n = 1
+    while candidate.exists():
+        n += 1
+        candidate = manifest_path.with_suffix(f".json.bak{n}")
+    return candidate
+
+
+def merge_into_existing(fresh: dict, manifest_path: Path) -> tuple[dict, Path | None]:
+    """Writes `fresh` to manifest_path, merged over any manifest already there
+    (merge_manifest_layers semantics) after copying the old file to
+    next_backup_path(). Returns (written manifest, backup path or None)."""
+    import shutil
+
+    existing = read_manifest(manifest_path)
+    backup = None
+    if existing is not None:
+        backup = next_backup_path(manifest_path)
+        shutil.copy2(manifest_path, backup)
+    merged = merge_manifest_layers(existing, fresh)
+    write_manifest(merged, manifest_path)
+    return merged, backup
+
+
+def read_manifest(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def write_manifest(manifest: dict, out_path: Path) -> Path:

@@ -142,6 +142,20 @@ test('resolveTilePath returns expected path for terrain layer', async () => {
     expect(p).toBe(`${DATA_DIR}/tiles/${TEST_COURSE_ID}/terrain/14/100/200.png`);
 });
 
+test('resolveTilePath resolves the lidar layers (canopy, canopy-color, surface) as png', async () => {
+    const { svc } = await setup();
+    for (const layer of ['canopy', 'canopy-color', 'surface'] as const) {
+        expect(svc.resolveTilePath(TEST_COURSE_ID, layer, 14, 100, 200))
+            .toBe(`${DATA_DIR}/tiles/${TEST_COURSE_ID}/${layer}/14/100/200.png`);
+        expect(svc.resolveTilePathCandidates(TEST_COURSE_ID, layer, 14, 100, 200))
+            .toEqual([`${DATA_DIR}/tiles/${TEST_COURSE_ID}/${layer}/14/100/200.png`]);
+        expect(svc.resolveTileLayerDir(TEST_COURSE_ID, layer))
+            .toBe(`${DATA_DIR}/tiles/${TEST_COURSE_ID}/${layer}`);
+        // Vintage collections are an ortho-only concept.
+        expect(() => svc.resolveTilePathCandidates(TEST_COURSE_ID, layer, 14, 100, 200, 'orto-l2-2023')).toThrow();
+    }
+});
+
 test('resolveTilePath rejects path traversal in courseId', async () => {
     const { svc } = await setup();
     expect(() => svc.resolveTilePath('../../etc', 'ortho', 1, 1, 1)).toThrow();

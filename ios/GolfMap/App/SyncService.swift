@@ -233,7 +233,16 @@ struct SyncService: Sendable {
             terrainMinZoom: m.layers.terrain.minzoom(or: TileManifest.ZoomDefaults.terrainMinZoom),
             terrainMaxZoom: m.layers.terrain.maxzoom(or: TileManifest.ZoomDefaults.terrainMaxZoom),
             elevMin: m.elevation.min, elevMax: m.elevation.max,
-            generatedAt: m.generatedAt, versionParam: m.versionParam
+            generatedAt: m.generatedAt, versionParam: m.versionParam,
+            // Optional lidar layers: stored only when the manifest lists them.
+            // Their tiles share the terrain pyramid's zoom conventions, so an
+            // undeclared bound falls back to the terrain defaults.
+            canopyMinZoom: m.layers.canopy?.minzoom(or: TileManifest.ZoomDefaults.terrainMinZoom),
+            canopyMaxZoom: m.layers.canopy?.maxzoom(or: TileManifest.ZoomDefaults.terrainMaxZoom),
+            canopyColorMinZoom: m.layers.canopyColor?.minzoom(or: TileManifest.ZoomDefaults.terrainMinZoom),
+            canopyColorMaxZoom: m.layers.canopyColor?.maxzoom(or: TileManifest.ZoomDefaults.terrainMaxZoom),
+            surfaceMinZoom: m.layers.surface?.minzoom(or: TileManifest.ZoomDefaults.terrainMinZoom),
+            surfaceMaxZoom: m.layers.surface?.maxzoom(or: TileManifest.ZoomDefaults.terrainMaxZoom)
         )
     }
 }

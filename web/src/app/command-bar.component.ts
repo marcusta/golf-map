@@ -829,16 +829,18 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             const sw = btn.querySelector<HTMLElement>('.cmd-ft__sw')!;
             sw.style.background = style.fill;
             sw.style.borderColor = style.outline;
-            // Same select/retype behavior the draw panel's type grid used.
+            // Armed → type for the next shape; else retype the selection or
+            // set the draw type (DrawToolService.chooseType).
             btn.onclick = () => {
-                if (this.features.selectedIds.peek().size > 0) this.tool.retypeSelection(type);
-                else this.tool.drawType.set(type);
+                this.tool.chooseType(type);
                 close();
             };
             track(effect(() => {
+                const drawing = this.tool.state.isDrawing.get();
                 const multi = this.features.selectedIds.get().size > 1;
                 const selected = this.features.selected.get();
-                const current = multi ? null : selected ? selected.type : this.tool.drawType.get();
+                const current = drawing ? this.tool.drawType.get()
+                    : multi ? null : selected ? selected.type : this.tool.drawType.get();
                 btn.setAttribute('aria-selected', String(current === type));
             }));
 

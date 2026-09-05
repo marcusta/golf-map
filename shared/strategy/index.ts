@@ -63,6 +63,39 @@ export {
     type CarryOverHazard,
     hazardsAlongLine,
 } from './carry';
+// Height-aware tree clearance: planned flight height vs canopy height for
+// every 'trees' ring the shot line crosses. Structural input (server-derived
+// `attributes` on tree features); see tree-clearance.ts header.
+export {
+    type TreeHeights,
+    type TreeFeatureInput,
+    type TreeCrossing,
+    type TrajectorySample,
+    type TreeClearanceStatus,
+    type TreeClearanceShot,
+    type TreeClearanceOptions,
+    type TreeClearanceCrossing,
+    type TreeClearanceResult,
+    type TreeIndex,
+    type TreeFeatureSource,
+    APEX_CARRY_FRACTION,
+    DEFAULT_TREE_MARGIN_M,
+    treeHeightM,
+    treeCrossingsAlongLine,
+    buildTreeIndex,
+    trajectoryHeightAt,
+    treeClearance,
+} from './tree-clearance';
+// Default apex height by carry (TrackMan tour table, amateur-scaled) — the
+// flight-height input for tree clearance when no trajectory sampler exists.
+export {
+    type ApexClubHint,
+    type ApexOptions,
+    APEX_TABLE,
+    AMATEUR_APEX_SCALE,
+    tableApexM,
+    apexHeightM,
+} from './apex';
 export {
     type RingSide,
     type RingLineExtent,

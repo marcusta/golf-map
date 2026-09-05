@@ -78,8 +78,11 @@ export function contentHash(parts: Array<Buffer | string>): string {
     return h.digest('hex');
 }
 
-/** Tile layers packaged in a bundle. Only `ortho` is zoom-capped. */
-export const BUNDLE_TILE_LAYERS = ['ortho', 'terrain', 'hillshade'] as const;
+/**
+ * Tile layers packaged in a bundle. Only `ortho` is zoom-capped. The lidar
+ * layers are copied when present (sites without lidar have no such dirs).
+ */
+export const BUNDLE_TILE_LAYERS = ['ortho', 'terrain', 'hillshade', 'canopy', 'canopy-color', 'surface'] as const;
 
 export type BundleTileLayer = (typeof BUNDLE_TILE_LAYERS)[number];
 
