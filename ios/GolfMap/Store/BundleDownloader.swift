@@ -8,6 +8,7 @@ public struct BundleDownloadRequest: Sendable {
     /// `<base>/<courseId>/<layer>/archive.tar?v=<versionParam>[&maxzoom=<n>]`.
     public var tileBaseURL: URL
     /// Course row, children, and the tile manifest (bounds/zooms/version).
+    public var treeStemsPath: String?
     public var furniture: CourseFurniture
     /// Provides the `features.geojson` payload (typically an API call).
     public var featuresGeoJSON: @Sendable () async throws -> Data
@@ -19,10 +20,12 @@ public struct BundleDownloadRequest: Sendable {
     public init(
         tileBaseURL: URL,
         furniture: CourseFurniture,
+        treeStemsPath: String? = nil,
         featuresGeoJSON: @escaping @Sendable () async throws -> Data,
         resolvedFeaturesGeoJSON: (@Sendable () async throws -> Data)? = nil
     ) {
         self.tileBaseURL = tileBaseURL
+        self.treeStemsPath = treeStemsPath
         self.furniture = furniture
         self.featuresGeoJSON = featuresGeoJSON
         self.resolvedFeaturesGeoJSON = resolvedFeaturesGeoJSON
@@ -192,6 +195,20 @@ public actor BundleDownloader {
             try features.write(to: courseTmpDir.appending(path: "features.geojson"))
             if let resolvedFeatures = try await request.resolvedFeaturesGeoJSON?() {
                 try resolvedFeatures.write(to: courseTmpDir.appending(path: "features-resolved.geojson"))
+            }
+
+            if let assetPath = request.treeStemsPath, assetPath == "tree-stems.json" {
+                var components = URLComponents(url: request.tileBaseURL.appending(path: courseId).appending(path: assetPath), resolvingAgainstBaseURL: false)!
+                components.queryItems = [URLQueryItem(name: "v", value: manifest.versionParam)]
+                let url = components.url!
+                let (data, response) = try await session.data(from: url)
+                guard let response = response as? HTTPURLResponse else { throw BundleDownloadError.badResponse(url) }
+                if response.statusCode == 200 {
+                    _ = try TreeStemsAsset.parse(data)
+                    try data.write(to: courseTmpDir.appending(path: "tree-stems.json"))
+                } else if response.statusCode != 404 {
+                    throw BundleDownloadError.httpStatus(response.statusCode, url)
+                }
             }
 
             let canReuseMap = try await database.hasCurrentMapBundle(

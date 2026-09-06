@@ -48,6 +48,7 @@ export interface TileManifest {
     orthoVintages?: OrthoVintage[];
     /** Which vintage is currently tiled/served. */
     activeOrtho?: string;
+    assets?: { 'tree-stems'?: { path: string; format: 'tree-stems-v1'; count: number } };
 }
 
 /** One orthophoto vintage (flight) available to switch to. */
@@ -108,6 +109,8 @@ export function parseTileManifest(metaJson: string | null | undefined): TileMani
                 .filter((v: any) => typeof v?.collection === 'string')
                 .map((v: any) => ({ collection: v.collection, dates: Array.isArray(v.dates) ? v.dates : [] }))
             : undefined,
+        assets: m.assets?.['tree-stems']?.path === 'tree-stems.json' && m.assets['tree-stems'].format === 'tree-stems-v1'
+            ? { 'tree-stems': { path: 'tree-stems.json', format: 'tree-stems-v1', count: m.assets['tree-stems'].count } } : undefined,
         activeOrtho: typeof m.activeOrtho === 'string' ? m.activeOrtho : undefined,
     };
 }

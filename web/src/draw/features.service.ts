@@ -613,7 +613,8 @@ export class FeaturesService {
                             'line-opacity': draggingHide(1) as never,
                         },
                     },
-                ]);
+                // Temporarily disabled for renderer CPU comparison. Keep the ordinary fills.
+                ], { waterSurface: false });
                 // Generated features: own source, slotted just under the
                 // hand-drawn selection highlight (above hand-drawn fills, so
                 // canopy reads as the topmost surface, like drawn trees).

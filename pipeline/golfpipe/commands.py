@@ -1266,12 +1266,20 @@ class CanopyGrid:
     holds and what trees-features polygonizes), plus the inputs the surface
     DSM needs."""
 
-    def __init__(self, canopy, transform, ground_dem, suppressed_ndsm, resolution: float):
+    def __init__(self, canopy, transform, ground_dem, suppressed_ndsm, resolution: float,
+                 surface_count=None, multi_count=None, roof_mask=None):
         self.canopy = canopy
         self.transform = transform
         self.ground_dem = ground_dem
         self.suppressed_ndsm = suppressed_ndsm
         self.resolution = resolution
+        # Per-cell surface return count and count of returns from multi-return
+        # pulses; trees-stems uses their ratio as a crown-porosity feature.
+        self.surface_count = surface_count
+        self.multi_count = multi_count
+        # Bool grid of the cells suppress_buildings zeroed; the roof guard in
+        # trees-features and trees-stems keeps small tall crowns away from it.
+        self.roof_mask = roof_mask
 
 
 def _build_canopy_grid(
@@ -1303,13 +1311,25 @@ def _build_canopy_grid(
     ndsm = detect_trees_mod.build_ndsm(ground_dem, surface_max, surface_count)
     raw_cells = int(np.count_nonzero(ndsm >= canopy_mod.MIN_CANOPY_HEIGHT_M))
     suppressed = canopy_mod.suppress_buildings(ndsm, surface_count, multi_count)
-    roof_cells = int(np.count_nonzero((ndsm >= canopy_mod.BUILDING_MIN_HEIGHT_M) & (suppressed == 0.0)))
+    roof_mask = (ndsm >= canopy_mod.BUILDING_MIN_HEIGHT_M) & (suppressed == 0.0)
+    roof_cells = int(np.count_nonzero(roof_mask))
     canopy = canopy_mod.clean_canopy(suppressed)
     canopy_cells = int(np.count_nonzero(canopy > 0))
     print(f"Canopy cells >= {canopy_mod.MIN_CANOPY_HEIGHT_M} m: {raw_cells:,} raw, "
           f"{roof_cells:,} suppressed as roofs, {canopy_cells:,} after cleaning "
           f"(~{canopy_cells * resolution * resolution:,.0f} m²); max height {float(canopy.max()):.1f} m")
-    return CanopyGrid(canopy, transform, ground_dem, suppressed, resolution)
+    return CanopyGrid(canopy, transform, ground_dem, suppressed, resolution, surface_count, multi_count, roof_mask)
+
+
+def _write_roof_mask(roof_mask: np.ndarray, transform, path: Path) -> None:
+    grid_dem_mod.write_dem_geotiff(roof_mask.astype(np.float32), transform, path, nodata_value=-1.0)
+
+
+def _read_roof_mask(path: Path, bbox_3006, shape) -> np.ndarray:
+    roof, _ = trees_features_mod.read_canopy_tif(path, bbox_3006)
+    if roof.shape != shape:
+        raise ValueError(f"{path} is {roof.shape}, the canopy grid is {shape}; both must come from one canopy run")
+    return roof > 0.0
 
 
 def _write_trees_features(
@@ -1324,10 +1344,15 @@ def _write_trees_features(
     round_m: float = trees_features_mod.DEFAULT_ROUND_M,
     simplify_m: float = trees_features_mod.DEFAULT_SIMPLIFY_M,
     min_hole_area_m2: float = trees_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
+    roof_mask: np.ndarray | None = None,
 ) -> dict:
+    if roof_mask is None:
+        print(f"No roof mask: polygons under {trees_features_mod.ROOF_GUARD_AREA_M2:g} m² are dropped "
+              "(pass --roof-tif from the canopy workdir to keep small crowns away from roofs)")
     trees = trees_features_mod.trees_from_canopy(
         canopy, transform, min_height_m=min_height_m, min_area_m2=min_area_m2,
         close_m=close_m, round_m=round_m, simplify_m=simplify_m, min_hole_area_m2=min_hole_area_m2,
+        roof_mask=roof_mask,
     )
     collection = trees_features_mod.build_trees_feature_collection(trees, source_ref, course_id=course_id)
     water_mod.write_geojson(collection, out)
@@ -1357,18 +1382,24 @@ def cmd_trees_features(
     min_hole_area_m2: float = trees_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
     source_ref: str | None = None,
     resolution: float = detect_trees_mod.DEFAULT_RESOLUTION,
+    roof_tif: Path | None = None,
 ) -> Path:
     """Tree polygons (GeoJSON, EPSG:3006) from the cleaned canopy grid the
     `canopy` command tiles. Input is either canopy_tif (the canopy.tif in a
-    canopy workdir, optionally clipped to bbox_3006) or lidar_paths (+
-    dem_path for the area when bbox_3006 is not given), in which case the
-    grid is built exactly as cmd_canopy builds it. source_ref defaults to
-    the canopy tif basename or the comma-joined lidar basenames. See
-    golfpipe/trees_features.py for the polygon steps and property contract.
+    canopy workdir, optionally clipped to bbox_3006; roof_tif is the roof.tif
+    beside it, which enables the roof guard for small crowns) or lidar_paths
+    (+ dem_path for the area when bbox_3006 is not given), in which case the
+    grid and its roof mask are built exactly as cmd_canopy builds them.
+    source_ref defaults to the canopy tif basename or the comma-joined lidar
+    basenames. See golfpipe/trees_features.py for the polygon steps and
+    property contract.
     """
+    roof_mask = None
     if canopy_tif is not None:
         print(f"Reading cleaned canopy from {canopy_tif}")
         canopy, transform = trees_features_mod.read_canopy_tif(canopy_tif, bbox_3006)
+        if roof_tif is not None:
+            roof_mask = _read_roof_mask(roof_tif, bbox_3006, canopy.shape)
         if source_ref is None:
             source_ref = canopy_tif.name
     elif lidar_paths:
@@ -1378,7 +1409,7 @@ def cmd_trees_features(
             bbox_3006 = _dem_bbox_3006(dem_path)
         print(f"Area (EPSG:3006): {', '.join(f'{v:.1f}' for v in bbox_3006)}")
         grid = _build_canopy_grid(lidar_paths, bbox_3006, resolution=resolution)
-        canopy, transform = grid.canopy, grid.transform
+        canopy, transform, roof_mask = grid.canopy, grid.transform, grid.roof_mask
         if source_ref is None:
             source_ref = ",".join(p.name for p in lidar_paths)
     else:
@@ -1387,9 +1418,76 @@ def cmd_trees_features(
     _write_trees_features(
         canopy, transform, out, source_ref, course_id,
         min_height_m=min_height_m, min_area_m2=min_area_m2, close_m=close_m, round_m=round_m, simplify_m=simplify_m,
-        min_hole_area_m2=min_hole_area_m2,
+        min_hole_area_m2=min_hole_area_m2, roof_mask=roof_mask,
     )
     return out
+
+
+def cmd_trees_stems(lidar_paths: list[Path], out: Path, tiles_dir: Path, course_id: str,
+                    bbox_3006=None, dem_path=None, resolution=1.0, workdir=None,
+                    min_height_m=None, min_area_m2=None, tall_height_m=None, tall_min_area_m2=None,
+                    leaf_off_ortho="auto"):
+    """Extract crown maxima, write GeoJSON + compact asset, merge its manifest entry.
+    Threshold arguments left as None take the trees_stems module defaults.
+
+    leaf_off_ortho picks the ortho pyramid the crown kind is read from: "auto"
+    takes the newest Oct-Apr vintage listed in tiles_dir/manifest.json, a Path
+    names a pyramid directory, None skips kind (every stem unknown)."""
+    import json
+    import time
+    from golfpipe import trees_stems as trees_stems_mod
+    from golfpipe.trees_stems import stems_from_ndsm, compact_asset, feature_collection
+    from golfpipe.manifest import _now_iso
+
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution must be positive")
+    if bbox_3006 is None:
+        if dem_path is None:
+            raise ValueError("trees-stems needs --bbox or --dem")
+        bbox_3006 = _dem_bbox_3006(dem_path)
+    if len(bbox_3006) != 4 or not np.all(np.isfinite(bbox_3006)) or bbox_3006[0] >= bbox_3006[2] or bbox_3006[1] >= bbox_3006[3]:
+        raise ValueError("bbox must have increasing finite EPSG:3006 bounds")
+    started = time.monotonic()
+    grid = _build_canopy_grid(lidar_paths, bbox_3006, resolution=resolution)
+    if workdir is not None:
+        workdir.mkdir(parents=True, exist_ok=True)
+        grid_dem_mod.write_dem_geotiff(grid.suppressed_ndsm.astype(np.float32), grid.transform, workdir / "stems-ndsm.tif", nodata_value=0.0)
+        grid_dem_mod.write_dem_geotiff(grid.ground_dem, grid.transform, workdir / "stems-ground.tif")
+        grid_dem_mod.write_dem_geotiff(grid.surface_count.astype(np.float32), grid.transform, workdir / "stems-surface-count.tif", nodata_value=-1.0)
+        grid_dem_mod.write_dem_geotiff(grid.multi_count.astype(np.float32), grid.transform, workdir / "stems-multi-count.tif", nodata_value=-1.0)
+        _write_roof_mask(grid.roof_mask, grid.transform, workdir / "stems-roof.tif")
+    thresholds = dict(
+        min_height_m=trees_stems_mod.DEFAULT_MIN_HEIGHT_M if min_height_m is None else min_height_m,
+        min_area_m2=trees_stems_mod.DEFAULT_MIN_AREA_M2 if min_area_m2 is None else min_area_m2,
+        tall_height_m=trees_stems_mod.TALL_HEIGHT_M if tall_height_m is None else tall_height_m,
+        tall_min_area_m2=trees_stems_mod.TALL_MIN_AREA_M2 if tall_min_area_m2 is None else tall_min_area_m2,
+    )
+    if leaf_off_ortho == "auto":
+        manifest_path = tiles_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+        leaf_off_ortho = trees_stems_mod.leaf_off_ortho_dir(tiles_dir, manifest)
+        if leaf_off_ortho is None:
+            print("No leaf-off ortho vintage in manifest; crown kind left unknown", file=sys.stderr)
+    leaf_off_rgb = None
+    if leaf_off_ortho is not None:
+        leaf_off_rgb = trees_stems_mod.sample_ortho_rgb(Path(leaf_off_ortho), grid.transform, grid.suppressed_ndsm.shape)
+        covered = np.isfinite(leaf_off_rgb[..., 0]).mean()
+        print(f"Leaf-off ortho {leaf_off_ortho} covers {covered:.0%} of the grid")
+    stems = stems_from_ndsm(grid.suppressed_ndsm, grid.ground_dem, grid.transform, leaf_off_rgb=leaf_off_rgb,
+                            roof_mask=grid.roof_mask, **thresholds)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    source_ref = ",".join(p.name for p in lidar_paths)
+    out.write_text(json.dumps(feature_collection(stems, source_ref, course_id), separators=(",", ":")) + "\n")
+    tiles_dir.mkdir(parents=True, exist_ok=True)
+    asset = tiles_dir / "tree-stems.json"
+    asset.write_text(json.dumps(compact_asset(stems), separators=(",", ":")) + "\n")
+    fresh = {"courseId": course_id, "generatedAt": _now_iso(), "assets": {
+        "tree-stems": {"path": asset.name, "format": "tree-stems-v1", "count": len(stems)}}}
+    merge_into_existing(fresh, tiles_dir / "manifest.json")
+    kinds = np.bincount([stem.kind for stem in stems], minlength=3)
+    print(f"Wrote {len(stems):,} crown estimates ({kinds[0]:,} broadleaf, {kinds[1]:,} conifer, {kinds[2]:,} unknown), "
+          f"{asset.stat().st_size:,} asset bytes in {time.monotonic() - started:.1f} s")
+    return stems
 
 
 def cmd_canopy(
@@ -1443,11 +1541,14 @@ def cmd_canopy(
     canopy_tif = workdir / "canopy.tif"
     grid_dem_mod.write_dem_geotiff(canopy, transform, canopy_tif, nodata_value=0.0)
     print(f"Wrote {canopy_tif}")
+    roof_tif = workdir / "roof.tif"
+    _write_roof_mask(grid.roof_mask, transform, roof_tif)
+    print(f"Wrote {roof_tif}")
 
     if trees_out is not None:
         _write_trees_features(
             canopy, transform, trees_out, ",".join(p.name for p in lidar_paths), course_id,
-            min_hole_area_m2=min_hole_area_m2,
+            min_hole_area_m2=min_hole_area_m2, roof_mask=grid.roof_mask,
         )
 
     ground = ground_dem.astype(np.float64)

@@ -64,6 +64,25 @@ function baseAwareManifest(): Plugin {
     };
 }
 
+/**
+ * Dev-only pages under web/dev/ (the vegetation test scene). `vite dev` serves
+ * any html in the root, so /dev/vegetation.html works as is; this middleware
+ * lets the extension-less /dev/vegetation resolve too. The pages join the
+ * production build only with WEB_DEV_PAGES=1.
+ */
+function devPages(): Plugin {
+    return {
+        name: 'dev-pages',
+        configureServer(server) {
+            server.middlewares.use((req, _res, next) => {
+                const path = (req.url ?? '').split('?')[0] ?? '';
+                if (/^\/dev\/[a-z-]+$/.test(path) && (req.headers.accept ?? '').includes('text/html')) req.url = `${path}.html${(req.url ?? '').slice(path.length)}`;
+                next();
+            });
+        },
+    };
+}
+
 export default defineConfig(({ command }) => ({
     // Served behind Caddy at https://app.swedenindoorgolf.se/golf-map/ in
     // production (Caddy `handle_path` strips the /golf-map prefix before
@@ -85,7 +104,7 @@ export default defineConfig(({ command }) => ({
     // in front — overrides it: `WEB_BASE=/ bun run build`.
     // See docs/reference/sig-infra-deploy.md.
     base: process.env.WEB_BASE ?? (command === 'build' ? '/golf-map/' : '/'),
-    plugins: [mobileSpaFallback(), baseAwareManifest()],
+    plugins: [mobileSpaFallback(), baseAwareManifest(), devPages()],
     // @basics/core ships TypeScript source, not a bundle. Excluding it from
     // pre-bundling lets `bun link @basics/core` HMR framework source during
     // active framework work; harmless when consuming the vendored tarball.
@@ -98,6 +117,7 @@ export default defineConfig(({ command }) => ({
             input: {
                 main: resolve(__dirname, 'index.html'),
                 mobile: resolve(__dirname, 'mobile.html'),
+                ...(process.env.WEB_DEV_PAGES ? { vegetation: resolve(__dirname, 'dev/vegetation.html') } : {}),
             },
         },
     },

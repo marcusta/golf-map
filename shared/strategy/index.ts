@@ -225,3 +225,5 @@ export {
 // Putting & green reading — Phase A physics core
 // (docs/feature-putting-green-reading.md). See putting/index.ts.
 export * from './putting';
+
+export * from "./tree-stems";

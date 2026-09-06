@@ -20,7 +20,148 @@ python -m golfpipe --help
 
 ## Commands
 
-Every command that takes an area accepts **either** `--bbox` **or** `--aoi`
+### `trees-stems`
+
+Extract individual crown estimates from local COPC lidar without downloading data.
+This command uses an EPSG:3006 metre bbox, or the extent of `--dem`.
+
+```sh
+python -m golfpipe trees-stems \
+    --lidar /path/to/tile.copc.laz \
+    --bbox 540677,6467116,543845,6470284 \
+    --course-id COURSE_ID --tiles-dir ../data/tiles/SITE_ID \
+    --out /path/to/session-scratch/tree-stems.geojson \
+    --workdir /path/to/session-scratch/stems
+```
+
+Repeat `--lidar` for multiple tiles. `--workdir` is optional and stores the
+roof-suppressed nDSM, ground raster, roof mask and the surface / multi-return
+count rasters for inspection. `--leaf-off-ortho DIR` names the XYZ webp pyramid the
+crown kind is read from (default: the newest Oct-Apr vintage in the tiles-dir
+manifest, `ortho/<collection>` or `ortho` when it is the active one);
+`--no-kind` skips the classifier. Existing ortho and terrain tiles are never
+written by this command; the leaf-off pyramid is only read.
+
+The detector uses the roof-suppressed nDSM before the canopy layer's 7x7 spread.
+That raster has no height floor (the 1 m floor belongs to `clean_canopy`, which
+this command does not use), so the thresholds below are free choices.
+A 0.8 m Gaussian smooths sampling noise. Peak windows grow with height, then
+marker-controlled watershed assigns crown area. Support is two-tier: cells
+join the candidate mask at `--min-height` (default 1.0 m) in components of at
+least `--min-area` (default 4 m²); a segmented crown whose top is at or above
+`--tall-height` (default 3 m) needs `--tall-min-area` (default 2 m²) of
+support, and when that support is under 12 m² it must also lie more than
+3 m from any cell the roof suppressor zeroed (the roof guard). Radius is
+the equal-area circle, capped at 35% of height but never below 1.5 m (bushes are wider than they are tall), and at 10 m.
+Heights are clamped to 40 m. Positions estimate visible crown tops;
+they are not surveyed trunk locations.
+
+#### Crown kind
+
+Each stem carries `kind`: 0 broadleaf, 1 conifer, 2 unknown. The feature is
+crown colour in a leaf-off ortho: the mean of (G - R) / (R + G + B) over the
+upper crown (segment cells at or above half the segment's top height), sampled
+from the z18 tiles of the newest ortho vintage flown in Oct-Apr (Landeryd and
+Linkan: `orto-l2-2023`, 2023-04-21/22). A crown that is green in April is a
+conifer; a bare grey one is broadleaf. Greenness maps linearly onto a conifer
+score, 0 at 0.02 and 1 at 0.12; the threshold is 0.5 (greenness 0.07). A stem
+is unknown when its top is under 4 m (drawn as a shrub anyway), when the
+leaf-off pyramid covers less than half of its upper-crown cells, or when the
+score is within 0.05 of the threshold (greenness 0.065-0.075).
+
+Lidar-only features were tried first and dropped. On 40 Landeryd stems >= 8 m
+(seed 20260908) labelled by eye from the 2023 leaf-off ortho (20 broadleaf,
+20 conifer), crown radius / height, apex sharpness (mean smoothed height within
+1 m of the top / top), the fraction of the segment above 70% of the top, the
+mean of the three, the multi-return fraction and the return density had AUC
+0.31-0.65; the lidar is leaf-off (gps_time March-April 2021) at about 2.6
+surface returns/m², so bare broadleaf crowns and spruce look alike on a 1 m
+nDSM. Leaf-off greenness had AUC 0.985 on the same stems. The threshold was
+picked on that Landeryd sample (every greenness in 0.064-0.074 gives 39/40):
+
+| Landeryd, 40 stems | pred. broadleaf | pred. conifer | unknown |
+|---|---|---|---|
+| labelled broadleaf | 20 | 0 | 0 |
+| labelled conifer | 1 | 19 | 0 |
+
+Linkan was not used for tuning; 20 stems >= 8 m (seed 20260908, 14 broadleaf,
+6 conifer) give 16/19 on decided stems, one unknown:
+
+| Linkan, 20 stems | pred. broadleaf | pred. conifer | unknown |
+|---|---|---|---|
+| labelled broadleaf | 13 | 1 | 0 |
+| labelled conifer | 2 | 3 | 1 |
+
+The Linkan misses: labelled conifers at greenness 0.059 and 0.004 (the second
+a low-confidence label), a labelled broadleaf at 0.105, and the unknown is a
+conifer at exactly 0.070.
+Counts after regeneration: Landeryd 44,638 stems, 15,442 broadleaf, 7,981
+conifer, 21,215 unknown (6,583 under 4 m, 13,228 tall stems outside the 2023
+pyramid, which covers the course area only, 1,374 inside the band); Linkan
+5,886 stems, 3,499 broadleaf, 1,597 conifer, 790 unknown (481 under 4 m, 299
+inside the band). Positions, heights, radii and ground values are identical
+to the previous asset.
+
+Limits: the classifier needs a leaf-off vintage in the tiles-dir manifest and
+labels nothing outside its tiles; merged crowns (a spruce under a birch canopy,
+or two touching crowns segmented as one) get one kind for the whole segment;
+larch, dead spruce and evergreen broadleaf are misread; the sample sizes above
+are small, so the accuracy is indicative. Species beyond conifer / broadleaf is
+not inferred.
+
+The defaults come from Landeryd measurements. An isolated 7 m² bush on
+Masters hole 5 (EPSG:3006 542275, 6469434) tops out at 1.96 m and was missed
+by the earlier single-tier 2 m / 12 m² rule. On the Landeryd grid, components
+of the >= 1 m nDSM with a top in [1, 2) m number 1,867 with a median area of
+5 m²; 90% are under 12 m². Eight random orthophoto checks of those showed
+bushes, young plantation and understory in six, silage bales and a residential
+yard in the other two. Roof-edge fragments that survive multi-return
+suppression are tall, and a 12 m² requirement for crowns from 3 m up removed
+them, but it also removed thin birches: with few coarse branches they give 1
+to 2 returns per m² at this density, and five of them in the east corner of
+Masters hole 5 (8.9 to 13.3 m tall, return-height spread 4.7 to 8.2 m) occupy
+4, 6, 6, 8 and 11 cells. Distance to a roof separates the two. At 4 m² the
+300 m clubhouse window gains 69 tall stems, 52 of them within 3 m of a
+roof-suppressed cell; the kept 17 are planted trees along the parking rows
+and the range fence. The 200 m hole 5 window gains 31, 6 near roofs, and all
+five birches survive. A forest holdout window gains 32, 16 near roofs (the
+suppressor also fires inside dense stands, where neighbouring stems already
+cover the spot). Young 2 to 3 m birches stay under the low-crown rule: at
+1 to 3 returns they look like a parked car, and a 2 m² floor added 84
+detections in the clubhouse window, mostly on cars.
+Lowering the mask floor also widens existing crowns: on Landeryd 36,892 of
+the earlier 36,894 stems 4 m and taller keep their position, 8,269 of them
+gain crown radius (mean +0.22 m, still under the 35% cap), and 1,161 tall
+crowns whose support fell short of 12 m² at a 2 m floor now qualify. The
+apps split rendering by height: stems under 4 m draw as shrubs, taller ones
+as trees.
+
+The compact `tree-stems.json` asset has version 2, CRS `EPSG:3006`, fields
+`["x","y","heightM","crownRadiusM","groundM","kind"]`, and a `trees` array of
+numeric rows; `kind` is the integer above. Readers in shared, web and iOS also
+accept version 1 (five fields, kind read as unknown). The manifest descriptor
+format stays `tree-stems-v1`.
+Ground elevations use the class-2 ground raster in RH2000 metres. Coordinates
+and ground elevations retain two decimals; crown height and radius retain one.
+The companion GeoJSON contains points with named properties and CC0 attribution.
+The command merges `assets["tree-stems"]` into `manifest.json`, preserving tile
+layers and other metadata while advancing `generatedAt`.
+
+Roof-edge returns can survive multi-return suppression. The roof guard keeps
+small tall crowns 3 m away from suppressed cells but cannot identify a roof
+the suppressor missed. Dense crowns and understory can split or merge, and
+leaf-off imagery cannot verify hidden stems.
+
+#### Regenerating a course
+
+`bun run trees:regen -- <courseId|siteId>` from the repo root runs `canopy` (tiles and
+`trees.geojson`) and `trees-stems` against `data/sources/<siteId>` and
+re-registers the manifest. The Create-mode actions menu has the same job as
+"Regenerate trees".
+
+### Area arguments for other commands
+
+Fetch and tile commands accept **either** `--bbox` **or** `--aoi`
 (mutually exclusive):
 
 - `--bbox west,south,east,north` — WGS84 degrees.
@@ -200,8 +341,9 @@ roofs are removed by return count — cells >= 2 m where under 10 % of the
 points have `number_of_returns > 1` are zeroed (a roof returns once, a
 crown splits the pulse). Then clamp to [0, 40] m, drop < 1 m, 3x3
 8-connected binary closing (filled cells take their 3x3 max) and a 7x7
-maximum filter so each cell holds its crown top. `canopy.tif` and
-`surface.tif` (float32, EPSG:3006) are left in `--workdir`; `canopy.tif`
+maximum filter so each cell holds its crown top. `canopy.tif`, `roof.tif`
+(1 where a cell was zeroed as roof) and `surface.tif` (float32, EPSG:3006)
+are left in `--workdir`; `canopy.tif`
 holds the cleaned canopy height in metres above ground with nodata 0 and is
 the input `trees-features` reads. The area is `--bbox`/`--aoi` if given,
 else the `--dem` extent.
@@ -235,7 +377,8 @@ keys its tile cache on it).
 ```sh
 python -m golfpipe trees-features --canopy-tif work/canopy/canopy.tif \
     --course-id <courseId> --out trees.geojson \
-    [--min-height 2.0] [--min-area 12] [--min-hole-area 50] [--close 1.0] [--round 1.5] [--simplify 0.3] \
+    [--roof-tif work/canopy/roof.tif] \
+    [--min-height 2.0] [--min-area 4] [--min-hole-area 50] [--close 1.0] [--round 1.5] [--simplify 0.3] \
     [--source-ref m21c011-646_54.copc.laz] [--bbox e_min,n_min,e_max,n_max]
 # or grid the canopy in-process, exactly as `canopy` does:
 python -m golfpipe trees-features --lidar a.copc.laz --lidar b.copc.laz \
@@ -249,6 +392,13 @@ gridding + roof suppression + `clean_canopy` run on `--lidar`, area from
 the grid behind the `canopy` / `canopy-color` layers, polygons and layers
 agree. Prefer it over `detect-trees` (raw nDSM closing + opening, no roof
 suppression) whenever canopy tiles exist for the course.
+
+Polygons under 12 m² (thin birches are 4 to 11 cells at 1.4 points/m²) need
+the roof mask: `--lidar` builds it, `--canopy-tif` needs `--roof-tif` from
+the same canopy workdir. With the mask, a polygon under 12 m² is kept when no
+roof-suppressed cell lies within 3 m of it; without the mask the minimum
+area is 12 m² and the command says so. The numbers behind the rule are in
+the `trees-stems` section.
 
 Steps (`golfpipe/trees_features.py`): cells with canopy >= `--min-height`
 form the mask; binary closing with a disk of radius `--close` (1.0 m at 1 m

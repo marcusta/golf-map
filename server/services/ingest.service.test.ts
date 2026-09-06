@@ -45,9 +45,14 @@ async function seedBuilder(db: Kysely<Database>, dataDir: string): Promise<void>
     writeTile('ortho/vintage-2023/19/1/1.jpg'); // collection subdir — must be skipped
     writeTile('terrain/14/1/1.png');
     writeTile('hillshade/14/1/1.png');
+    writeFileSync(path.join(tilesRoot, 'tree-stems.json'), JSON.stringify({
+        version: 1, crs: 'EPSG:3006', fields: ['x', 'y', 'heightM', 'crownRadiusM', 'groundM'],
+        trees: [[540000, 6470000, 20, 4, 80]],
+    }));
     writeFileSync(
         path.join(tilesRoot, 'manifest.json'),
         JSON.stringify({
+            assets: { 'tree-stems': { path: 'tree-stems.json', format: 'tree-stems-v1', count: 1 } },
             layers: {
                 ortho: { minzoom: 14, maxzoom: 20 },
                 terrain: { minzoom: 14, maxzoom: 14 },
@@ -120,6 +125,9 @@ describe('ingest (serve-mode publish apply)', () => {
         // Manifest capped.
         const manifest = JSON.parse(await Bun.file(path.join(liveTiles, 'manifest.json')).text());
         expect(manifest.layers.ortho.maxzoom).toBe(19);
+        expect(manifest.assets['tree-stems'].count).toBe(1);
+        const stems = await Bun.file(path.join(liveTiles, 'tree-stems.json')).json();
+        expect(stems.trees).toEqual([[540000, 6470000, 20, 4, 80]]);
 
         // courseId → siteId symlink (course-1 differs from site-1).
         const link = path.join(vpsData, 'tiles', TEST_COURSE_ID);

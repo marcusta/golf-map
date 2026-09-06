@@ -1,3 +1,4 @@
+import { buildTreeStemIndex } from '../../tree-stems';
 import { describe, expect, test } from 'bun:test';
 import { type ClubSpec } from '../../club';
 import { type TreeFeatureInput } from '../../tree-clearance';
@@ -134,4 +135,12 @@ describe('over-the-trees — gating', () => {
         expect(overTheTreesRule.appliesTo(ctx({ clubs: [] }))).toBe(false);
         expect(overTheTreesRule.appliesTo(ctx({ clubs: [], shotCarryM: 150 }))).toBe(true);
     });
+});
+
+
+test('stem index uses absolute ground and stays silent without origin elevation', () => {
+    const trees = buildTreeStemIndex([{x:0,y:60,heightM:30,crownRadiusM:5,groundM:80}]);
+    expect(run(ctx({trees, originGroundM:80, originGroundKnown:true}))).toHaveLength(1);
+    expect(run(ctx({trees, originGroundKnown:false}))).toHaveLength(0);
+    expect(run(ctx({trees:buildTreeStemIndex([])}))).toHaveLength(0);
 });

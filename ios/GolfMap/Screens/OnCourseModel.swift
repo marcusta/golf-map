@@ -3010,6 +3010,7 @@ final class OnCourseModel {
         guard !candidates.isEmpty else { return [] }
         let shot = TreeClearanceShot(carryM: carryM, apexM: Apex.apexHeightM(carryM))
         var opts = TreeClearanceOptions()
+        opts.originGroundKnown = ground != nil
         if let ground { opts.groundAt = Self.groundSampler(ground) }
         let result = treeClearance(o, t, candidates, shot, opts)
 

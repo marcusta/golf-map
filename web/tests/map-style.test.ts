@@ -90,7 +90,7 @@ test('buildEditorStyle assembles ortho + terrain sources from the manifest', () 
 
     const terrain = style.sources[TERRAIN_SOURCE_ID] as any;
     expect(terrain.type).toBe('raster-dem');
-    expect(terrain.tiles).toEqual(['/tiles/C-1/terrain/{z}/{x}/{y}.png?v=V9']);
+    expect(terrain.tiles).toEqual(['smooth-terrain:///tiles/C-1/terrain/{z}/{x}/{y}.png?v=V9']);
     expect(terrain.encoding).toBe('mapbox');
     expect(terrain.minzoom).toBe(12);
     expect(terrain.maxzoom).toBe(17);
@@ -192,8 +192,8 @@ test('buildEditorStyle: surface → raster-dem source (Terrain-RGB) with no laye
     expect(src.encoding).toBe('mapbox');
     expect(src.tiles).toEqual(['/tiles/C-1/surface/{z}/{x}/{y}.png?v=V9']);
     expect(style.layers.some(l => 'source' in l && l.source === SURFACE_SOURCE_ID)).toBe(false);
-    // The ground DEM source is untouched.
-    expect((style.sources[TERRAIN_SOURCE_ID] as any).tiles).toEqual(['/tiles/C-1/terrain/{z}/{x}/{y}.png?v=V9']);
+    // Ground rendering keeps display smoothing when the DSM is available.
+    expect((style.sources[TERRAIN_SOURCE_ID] as any).tiles).toEqual(['smooth-terrain:///tiles/C-1/terrain/{z}/{x}/{y}.png?v=V9']);
 });
 
 test('terrainSourceId maps ground → terrain DEM, surface → DSM', () => {

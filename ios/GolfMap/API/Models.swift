@@ -361,6 +361,13 @@ public struct TileManifest: Codable, Sendable, Equatable {
         public let max: Double
     }
 
+    public struct StemAsset: Codable, Sendable, Equatable {
+        public let path: String
+        public let format: String
+        public let count: Int
+    }
+    public var assets: [String: StemAsset]? = nil
+
     public let bounds: Bounds
     public let layers: Layers
     public let elevation: ElevationRange

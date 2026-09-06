@@ -54,6 +54,7 @@ export type PlanarGroundSampler = (p: Vec2) => number | null;
 export interface LegGroundProfile {
     /** Ground at `leg.from`: sampled, else the node elevation, else 0. */
     originGroundM: number;
+    originGroundKnown: boolean;
     /** Ground at distance d along the leg bearing; absent without a sampler (flat). */
     groundAt?: (distanceM: number) => number;
 }
@@ -64,11 +65,14 @@ export interface LegGroundProfile {
  */
 export function legGroundProfile(leg: PlanLeg, groundAt?: PlanarGroundSampler): LegGroundProfile {
     const origin: Vec2 = { x: leg.from.x, y: leg.from.y };
-    const originGroundM = groundAt?.(origin) ?? leg.from.elevation ?? 0;
-    if (!groundAt) return { originGroundM };
+    const sampledOrigin = groundAt?.(origin) ?? leg.from.elevation;
+    const originGroundKnown = sampledOrigin !== null && sampledOrigin !== undefined && Number.isFinite(sampledOrigin);
+    const originGroundM = originGroundKnown ? sampledOrigin! : 0;
+    if (!groundAt) return { originGroundM, originGroundKnown };
     const dir = bearingToUnitVector(leg.bearingDeg);
     return {
         originGroundM,
+        originGroundKnown,
         groundAt: (d: number): number =>
             groundAt({ x: origin.x + dir.x * d, y: origin.y + dir.y * d }) ?? originGroundM,
     };
@@ -96,6 +100,7 @@ export function legTreeClearance(
     const ground = legGroundProfile(leg, groundAt);
     return treeClearance(origin, target, trees, { carryM, apexM: apexHeightM(carryM) }, {
         originGroundM: ground.originGroundM,
+        originGroundKnown: ground.originGroundKnown,
         ...(ground.groundAt ? { groundAt: ground.groundAt } : {}),
     });
 }

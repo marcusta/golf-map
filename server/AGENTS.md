@@ -62,3 +62,28 @@ bun scripts/import-generated-features.ts <courseId> <geojson-path> [--source lid
 ```
 
 Runs migrations, then `CourseFeaturesService.replaceGenerated` against the given sqlite file, printing `deleted`/`inserted`. Same validation and same transaction as the endpoint. Exit 1 with the reason on invalid input.
+
+## Regenerate trees for a site
+
+`MapBuildService.reTrees` (`POST /api/mapbuild/re-trees`, the "Regenerate trees"
+item in the Create-mode actions menu) runs `canopy` (with `--trees-out
+data/sources/<siteId>/trees.geojson`) and `trees-stems` against the persisted
+lidar and DEM, then re-registers the tile manifest. Job kind `trees`, steps
+`canopy`, `trees-stems`, `register`. The same steps run from the shell with
+`bun run trees:regen -- <courseId|siteId>` (`scripts/regen-trees.sh`). Neither imports
+the polygons; use `import-generated-features` for that.
+
+## Register an installed tile manifest
+
+After `trees-stems` updates `data/tiles/<siteId>/manifest.json`, refresh the API's
+`course_assets.meta_json`. Apps read this database metadata when discovering assets.
+
+```sh
+# cwd = server/; accepts a course id or its shared site id
+bun scripts/register-tile-manifest.ts <course-or-site-id> --db ../data/app.sqlite --data-dir ../data
+```
+
+The command reads only the fixed installed manifest and its declared stems asset.
+It validates stem schema and count, updates existing tile-manifest rows and increments
+their versions, or registers a row if absent. Other assets and all tile files remain
+unchanged. The pipeline's `generatedAt` remains the cache version used by apps.

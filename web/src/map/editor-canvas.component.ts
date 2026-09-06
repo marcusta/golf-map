@@ -44,6 +44,18 @@ const tpl = template(`
                         <span class="toggle-switch__knob"></span>
                     </button>
                 </div>
+                <div bind="trees3dRow" class="layers-popover__row hidden" data-testid="layers-trees3d-row">
+                    <span>3D trees</span>
+                    <button bind="trees3dToggle" type="button" class="toggle-switch" role="switch" data-testid="layers-trees3d-toggle" title="Show individual lidar trees on the ground terrain">
+                        <span class="toggle-switch__knob"></span>
+                    </button>
+                </div>
+                <div bind="treeSwayRow" class="layers-popover__row hidden" data-testid="layers-tree-sway-row">
+                    <span>Tree sway</span>
+                    <button bind="treeSwayToggle" type="button" class="toggle-switch" role="switch" data-testid="layers-tree-sway-toggle" title="Animate wind in the 3D trees (repaints every frame while on)">
+                        <span class="toggle-switch__knob"></span>
+                    </button>
+                </div>
                 <div bind="terrainModeRow" class="layers-popover__row hidden" data-testid="layers-terrain-mode-row">
                     <span>3D</span>
                     <div class="map-canvas__vintages map-canvas__terrain-mode" role="radiogroup" aria-label="3D terrain source">
@@ -450,6 +462,18 @@ export class EditorCanvasComponent extends Component {
                 onclick: () => this.mapSvc.setCanopy(!this.mapSvc.canopyVisible.get()),
                 className: () => this.mapSvc.canopyVisible.get() ? 'toggle-switch active' : 'toggle-switch',
                 'aria-checked': () => String(this.mapSvc.canopyVisible.get()),
+            },
+            trees3dRow: { className: () => this.mapSvc.hasTreeStems.get() ? 'layers-popover__row' : 'layers-popover__row hidden' },
+            trees3dToggle: {
+                onclick: () => this.mapSvc.setTrees3d(!this.mapSvc.trees3dVisible.get()),
+                className: () => this.mapSvc.trees3dVisible.get() ? 'toggle-switch active' : 'toggle-switch',
+                'aria-checked': () => String(this.mapSvc.trees3dVisible.get()),
+            },
+            treeSwayRow: { className: () => this.mapSvc.hasTreeStems.get() && this.mapSvc.trees3dVisible.get() ? 'layers-popover__row' : 'layers-popover__row hidden' },
+            treeSwayToggle: {
+                onclick: () => this.mapSvc.setTreeSway(!this.mapSvc.treeSway.get()),
+                className: () => this.mapSvc.treeSway.get() ? 'toggle-switch active' : 'toggle-switch',
+                'aria-checked': () => String(this.mapSvc.treeSway.get()),
             },
             terrainModeRow: { className: () => this.mapSvc.hasSurface.get() ? 'layers-popover__row' : 'layers-popover__row hidden' },
             terrainGround: {

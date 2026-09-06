@@ -2,7 +2,7 @@ import maplibregl from 'maplibre-gl';
 import { Signal, di, effect } from '@basics/core/client/core';
 import { MapService } from '../map/map.service';
 import { ElevationService } from '../map/elevation.service';
-import type { TerrainMode } from '../map/map-style';
+import { TERRAIN_SOURCE_ID, SURFACE_SOURCE_ID, type TerrainMode } from '../map/map-style';
 import { FlyoverService } from '../flyover/flyover.service';
 import { easeInOutCubic } from '../flyover/flyover-path';
 import {
@@ -60,6 +60,7 @@ interface SavedCamera {
 /** Terrain source saved on entry and restored on exit. The canopy ("Trees") toggle is left alone. */
 interface SavedLidar {
     terrainMode: TerrainMode;
+    trees3d: boolean;
 }
 
 type MapHandlerName = 'dragPan' | 'dragRotate' | 'scrollZoom' | 'keyboard' | 'doubleClickZoom' | 'touchZoomRotate' | 'boxZoom';
@@ -369,6 +370,8 @@ export class WalkService {
             container.removeEventListener('touchstart', swallow, true);
             container.removeEventListener('wheel', onWheel, true);
             map.off('remove', onRemove);
+            map.off('terrain', onTerrainChange);
+            map.off('sourcedata', onTerrainData);
             hud.remove();
             if (this.run?.token === token) this.run = null;
             if (this.active.peek() === req.holeId) this.active.set(null);
@@ -390,6 +393,10 @@ export class WalkService {
             }
         };
         const onRemove = (): void => { removed = true; finish(false); };
+        const onTerrainChange = (): void => { dirty = true; };
+        const onTerrainData = (event: maplibregl.MapSourceDataEvent): void => {
+            if (event.sourceId === TERRAIN_SOURCE_ID || event.sourceId === SURFACE_SOURCE_ID) dirty = true;
+        };
 
         window.addEventListener('keydown', onKeyDown, true);
         window.addEventListener('keyup', onKeyUp, true);
@@ -405,6 +412,8 @@ export class WalkService {
         container.addEventListener('touchstart', swallow, true);
         container.addEventListener('wheel', onWheel, { capture: true, passive: false });
         map.on('remove', onRemove);
+        map.on('terrain', onTerrainChange);
+        map.on('sourcedata', onTerrainData);
         this.run = { token, cancel: finish };
 
         const tick = (now: number): void => {
@@ -448,6 +457,10 @@ export class WalkService {
                 ground = sampled;
                 dirty = true;
             }
+            // A terrain-source change can adjust MapLibre's transform after its
+            // tile event. Keep the stored physical eye pose even while standing still.
+            const actualAltitude = map.transform.getCameraAltitude() / exaggeration();
+            if (Math.abs(actualAltitude - (ground + this.eyeHeight.peek())) > 0.05) dirty = true;
             if (dirty) {
                 dirty = false;
                 pose = { ...pose, eyeAlt: ground + this.eyeHeight.peek() };
@@ -474,12 +487,14 @@ export class WalkService {
      * toggle stays as it was, on or off.
      */
     private enterLidarView(): SavedLidar {
-        const saved: SavedLidar = { terrainMode: this.mapSvc.terrainMode.peek() };
-        if (this.mapSvc.hasSurface.peek()) this.mapSvc.setTerrainMode('surface');
+        const saved: SavedLidar = { terrainMode: this.mapSvc.terrainMode.peek(), trees3d: this.mapSvc.trees3dVisible.peek() };
+        if (this.mapSvc.hasTreeStems.peek()) this.mapSvc.setTrees3d(true);
+        else if (this.mapSvc.hasSurface.peek()) this.mapSvc.setTerrainMode('surface');
         return saved;
     }
 
     private restoreLidarView(saved: SavedLidar): void {
+        this.mapSvc.setTrees3d(saved.trees3d);
         this.mapSvc.setTerrainMode(saved.terrainMode);
     }
 

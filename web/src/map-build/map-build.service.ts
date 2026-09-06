@@ -23,7 +23,22 @@ export const BUILD_STEPS = [
     'fetch-lidar', 'grid-dem', 'apply-dem-edits', 'fetch-ortho', 'tile-ortho', 'tile-terrain', 'tile-hillshade', 'manifest', 'install', 'register',
 ] as const;
 
-export type BuildStep = (typeof BUILD_STEPS)[number];
+/** Ordered steps of the fast re-terrain job — mirrors the server's RE_TERRAIN_STEPS. */
+export const RE_TERRAIN_STEPS = [
+    'apply-dem-edits', 'tile-terrain', 'tile-hillshade', 'install', 'manifest', 'register',
+] as const;
+
+/** Ordered steps of the tree regeneration job — mirrors the server's TREES_STEPS. */
+export const TREES_STEPS = ['canopy', 'trees-stems', 'register'] as const;
+
+export type BuildStep = (typeof BUILD_STEPS)[number] | (typeof RE_TERRAIN_STEPS)[number] | (typeof TREES_STEPS)[number];
+
+/** The ordered step list a job of `kind` walks through (drives the progress UI). */
+export function stepsForKind(kind: MapBuildJob['kind']): readonly BuildStep[] {
+    if (kind === 're-terrain') return RE_TERRAIN_STEPS;
+    if (kind === 'trees') return TREES_STEPS;
+    return BUILD_STEPS;
+}
 
 /** Human labels for each pipeline step. */
 export const STEP_LABELS: Record<BuildStep, string> = {
@@ -37,6 +52,8 @@ export const STEP_LABELS: Record<BuildStep, string> = {
     'manifest': 'Write manifest',
     'install': 'Install tiles',
     'register': 'Register assets',
+    'canopy': 'Canopy tiles from lidar',
+    'trees-stems': 'Detect tree stems',
 };
 
 const POLL_MS = 1500;
@@ -51,6 +68,8 @@ export class MapBuildClientService {
     readonly error = new Signal<RequestError | null>(null);
     /** Collection currently being tiled on-demand (drives the vintage button "preparing" state), or null. */
     readonly ensuringOrtho = new Signal<string | null>(null);
+    /** Label of the running tree-regeneration step, or null when idle. */
+    readonly treesStep = new Signal<string | null>(null);
 
     private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -99,6 +118,31 @@ export class MapBuildClientService {
             return job.status === 'succeeded';
         } finally {
             this.ensuringOrtho.set(null);
+        }
+    }
+
+    /**
+     * Regenerate the lidar tree layers (canopy tiles + tree-stems asset) for
+     * a course and wait for the job to finish. Runs independently of the
+     * build `job` signal like `ensureOrtho`; `treesStep` carries the running
+     * step label for the caller's progress line. Resolves the terminal job.
+     */
+    async regenerateTrees(courseId: string): Promise<MapBuildJob> {
+        let job = await this.mapBuildApi.reTrees({ courseId });
+        this.treesStep.set(job.step ? STEP_LABELS[job.step] : 'Starting');
+        try {
+            while (!isTerminal(job)) {
+                await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+                try {
+                    job = await this.mapBuildApi.status({ jobId: job.id });
+                    if (job.step) this.treesStep.set(STEP_LABELS[job.step]);
+                } catch {
+                    // Transient poll failure — keep polling.
+                }
+            }
+            return job;
+        } finally {
+            this.treesStep.set(null);
         }
     }
 

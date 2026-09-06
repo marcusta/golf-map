@@ -1,7 +1,7 @@
-import { Component, Signal, template } from '@basics/core/client/core';
+import { Component, Signal, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s } from '../css';
-import { MapBuildClientService, BUILD_STEPS, STEP_LABELS, type BuildStep, type MapBuildJob } from './map-build.service';
+import { MapBuildClientService, BUILD_STEPS, STEP_LABELS, stepsForKind, type BuildStep, type MapBuildJob } from './map-build.service';
 import { icon } from '../ui/icons';
 
 const tpl = template(`
@@ -27,8 +27,9 @@ type StepState = 'pending' | 'active' | 'done' | 'failed';
 function stepState(job: MapBuildJob | null, step: BuildStep): StepState {
     if (!job) return 'pending';
     if (job.status === 'succeeded') return 'done';
-    const current = job.step ? BUILD_STEPS.indexOf(job.step) : -1;
-    const idx = BUILD_STEPS.indexOf(step);
+    const steps = stepsForKind(job.kind);
+    const current = job.step ? steps.indexOf(job.step) : -1;
+    const idx = steps.indexOf(step);
     if (job.status === 'failed') {
         if (idx < current) return 'done';
         if (idx === current) return 'failed';
@@ -128,6 +129,11 @@ export class BuildProgressComponent extends Component {
     private stepList = new Signal<BuildStep[]>([...BUILD_STEPS]);
 
     render(): DocumentFragment {
+        // The step list follows the job kind (full build / re-terrain / trees).
+        this.track(effect(() => {
+            const steps = stepsForKind(this.build.job.get()?.kind ?? 'build');
+            if (this.stepList.peek().join() !== steps.join()) this.stepList.set([...steps]);
+        }));
         const frag = this.wire(tpl, {
             errorBox: { className: () => this.build.job.get()?.status === 'failed' ? 'build-progress__error show' : 'build-progress__error' },
             errorText: () => this.build.job.get()?.error ?? 'Build failed',

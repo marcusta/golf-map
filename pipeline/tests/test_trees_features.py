@@ -216,6 +216,48 @@ def test_trees_from_canopy_min_height_and_min_area_filters():
     assert trees_features.trees_from_canopy(np.zeros((10, 10)), TRANSFORM) == []
 
 
+def test_trees_from_canopy_roof_guard_keeps_small_crown_away_from_roofs():
+    """3x3 10 m crowns (a thin birch after the 7x7 canopy spread): kept only
+    with a roof mask and no roof cell within 3 m."""
+    g = np.zeros((SIZE, SIZE), dtype=np.float32)
+    g[10:30, 10:30] = 12.0                     # 400 m² tree, roof right beside it: never guarded
+    g[80:83, 80:83] = 10.0                     # small crown, roof 5 cells away
+    g[50:53, 50:53] = 10.0                     # small crown, roof 2 cells away
+    roof = np.zeros(g.shape, dtype=bool); roof[10:30, 31:40] = True; roof[88:95, 75:90] = True; roof[55:60, 48:56] = True
+    assert [t.area_m2 for t in _by_area(trees_features.trees_from_canopy(g, TRANSFORM))] == pytest.approx([400], rel=0.15)
+    guarded = _by_area(trees_features.trees_from_canopy(g, TRANSFORM, roof_mask=roof))
+    assert len(guarded) == 2 and guarded[1].area_m2 < 12 and guarded[1].height_max_m == pytest.approx(10.0, abs=0.05)
+    assert guarded[1].geometry.centroid.x == pytest.approx(E0 + 81.5, abs=0.5)
+    assert len(trees_features.trees_from_canopy(g, TRANSFORM, roof_mask=roof, roof_guard_m=1.0)) == 3
+    assert len(trees_features.trees_from_canopy(g, TRANSFORM, roof_mask=np.zeros(g.shape, bool))) == 3
+    with pytest.raises(ValueError, match="roof_mask"):
+        trees_features.trees_from_canopy(g, TRANSFORM, roof_mask=roof[:50])
+
+
+def test_roof_guard_runs_before_rounding_can_merge_roof_islands():
+    """Two 4-cell roof-edge islands 2 m apart: rounding (closing radius
+    1.5 m) would merge them into a 20 m² polygon that escapes a
+    polygon-level guard. The component-level guard removes them first."""
+    g = np.zeros((SIZE, SIZE), dtype=np.float32)
+    g[50:52, 50:52] = 10.0
+    g[50:52, 54:56] = 10.0
+    roof = np.zeros(g.shape, dtype=bool); roof[54:60, 45:60] = True
+    assert trees_features.trees_from_canopy(g, TRANSFORM, roof_mask=roof) == []
+    assert len(trees_features.trees_from_canopy(g, TRANSFORM, roof_mask=np.zeros(g.shape, bool))) == 1
+    kept = trees_features.drop_small_components_near_roofs(g > 0, np.zeros(g.shape, bool), 1.0)
+    assert kept.sum() == 8
+    assert trees_features.drop_small_components_near_roofs(g > 0, roof, 1.0).sum() == 0
+    assert trees_features.drop_small_components_near_roofs(g > 0, roof, 1.0, guard_area_m2=4.0).sum() == 8
+
+
+def test_near_roof_mask_dilates_by_the_guard_distance():
+    roof = np.zeros((11, 11), dtype=bool); roof[5, 5] = True
+    near = trees_features.near_roof_mask(roof, 1.0, 3.0)
+    assert near[5, 2] and near[2, 5] and near[3, 3] and not near[5, 1] and not near[2, 2]
+    assert near.sum() == 29
+    assert trees_features.near_roof_mask(roof, 1.0, 0.0) is roof
+
+
 def test_trees_from_canopy_keeps_hole():
     g = np.zeros((SIZE, SIZE), dtype=np.float32)
     g[20:60, 20:60] = 9.0
@@ -329,6 +371,22 @@ def test_cmd_trees_features_from_canopy_tif(tmp_path: Path, capsys):
     assert fc["features"][0]["properties"]["source_ref"] == "canopy.tif"
     assert fc["courseId"] == "c1"
     assert "Tree polygons: 2" in capsys.readouterr().out
+
+
+def test_cmd_trees_features_roof_tif_enables_small_crowns(tmp_path: Path, capsys):
+    g = _grid(); g[80:83, 80:83] = 10.0                     # 9 m² crown 12 cells from the roof
+    tif = _write_tif(tmp_path / "canopy.tif", g)
+    roof = np.zeros((SIZE, SIZE), dtype=np.float32); roof[95:100, 95:100] = 1.0
+    roof_tif = _write_tif(tmp_path / "roof.tif", roof, nodata=-1.0)
+    out = tmp_path / "trees.geojson"
+    cmd_trees_features(out, canopy_tif=tif, roof_tif=roof_tif)
+    assert len(json.loads(out.read_text(encoding="utf-8"))["features"]) == 3
+    assert "No roof mask" not in capsys.readouterr().out
+    cmd_trees_features(out, canopy_tif=tif)
+    assert len(json.loads(out.read_text(encoding="utf-8"))["features"]) == 2
+    assert "No roof mask" in capsys.readouterr().out
+    with pytest.raises(ValueError, match="canopy grid"):
+        cmd_trees_features(out, canopy_tif=tif, roof_tif=_write_tif(tmp_path / "bad.tif", roof[:50]))
 
 
 def test_cmd_trees_features_requires_an_input(tmp_path: Path):

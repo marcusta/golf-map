@@ -24,7 +24,7 @@ import { type FlatRing } from '../corridor';
 import { type Vec2 } from '../ellipse';
 import { type FeatureDistance } from '../feature-distances';
 import { type StrategyPoint } from '../plays-like';
-import { type TreeFeatureInput } from '../tree-clearance';
+import { type TreeFeatureInput, type TreeFeatureSource } from '../tree-clearance';
 
 export { type FeatureDistance };
 
@@ -116,7 +116,7 @@ export interface CaddyContext {
      * Tree rings with their canopy-height attributes (◄ tree-clearance.ts),
      * planar meters. Absent → the over-the-trees rule is silent.
      */
-    trees?: readonly TreeFeatureInput[];
+    trees?: TreeFeatureSource<TreeFeatureInput>;
     /** Apex of the intended shot above the origin's ground, meters (◄ apex.ts). */
     apexM?: number;
     /**
@@ -126,6 +126,8 @@ export interface CaddyContext {
      */
     shotCarryM?: number;
     /** Ground elevation at distance d along the shot line, meters. Omit for flat ground. */
+    originGroundM?: number;
+    originGroundKnown?: boolean;
     groundAt?: (distanceM: number) => number;
 }
 

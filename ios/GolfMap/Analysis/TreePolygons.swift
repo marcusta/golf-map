@@ -55,7 +55,13 @@ public struct TreeFeatureStore: Sendable {
         self.features = features
         self.sources = sources ?? Array(repeating: nil, count: features.count)
         self.holeIds = holeIds ?? Array(repeating: nil, count: features.count)
-        self.bboxes = features.map { BBox.of($0.points) }
+        self.bboxes = features.map {
+            if let s = $0.stem {
+                return BBox(minX: s.x-s.crownRadiusM, minY: s.y-s.crownRadiusM,
+                            maxX: s.x+s.crownRadiusM, maxY: s.y+s.crownRadiusM)
+            }
+            return BBox.of($0.points)
+        }
     }
 
     /// Parses every 'trees' Polygon/MultiPolygon feature. Throws only on

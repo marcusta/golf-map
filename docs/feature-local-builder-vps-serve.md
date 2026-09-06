@@ -82,7 +82,7 @@ tile routes (`createTileRoutes`).
 
 | API | Why local |
 |---|---|
-| `map-build` (`/mapbuild/*`) | spawns golfpipe, lidar download (Lantmäteriet creds), re-terrain job |
+| `map-build` (`/mapbuild/*`) | spawns golfpipe, lidar download (Lantmäteriet creds), re-terrain and re-trees jobs |
 | `ortho-patches` | LaMa weights (`models/big-lama.pt`), pristine sources, patch log |
 | `hydro` (`/course-features/fetch-hydro`) | external fetch + creds from `.env` |
 | `osm` (`/course-features/fetch-osm`) | external fetch |

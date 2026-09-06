@@ -22,7 +22,7 @@ import { adjustedCarryM } from '../../wind';
 import { bearingToUnitVector, type Vec2 } from '../../ellipse';
 import { closestClub } from '../../club';
 import { windEffect } from '../../wind';
-import { trajectoryHeightAt, treeClearance } from '../../tree-clearance';
+import { treeClearance } from '../../tree-clearance';
 import { type CaddyAdvice, type CaddyContext, type CaddyRule } from '../rule';
 
 /** Base priority of a blocked crossing (a penalty-hazard-class concern). */
@@ -39,7 +39,7 @@ export const overTheTreesRule: CaddyRule = {
     id: 'over-the-trees',
 
     appliesTo(ctx: CaddyContext): boolean {
-        return (ctx.trees?.length ?? 0) > 0
+        return (ctx.trees ? ('kind' in ctx.trees ? ctx.trees.entries.length : ctx.trees.length) : 0) > 0
             && typeof ctx.apexM === 'number' && ctx.apexM > 0
             && (ctx.shotCarryM !== undefined || ctx.clubs.length > 0);
     },
@@ -69,6 +69,8 @@ export const overTheTreesRule: CaddyRule = {
         const along = bearingToUnitVector(bearing);
         const target = { x: origin.x + along.x * carryM, y: origin.y + along.y * carryM };
         const result = treeClearance(origin, target, trees, { carryM, apexM }, {
+            originGroundM: ctx.originGroundM,
+            originGroundKnown: ctx.originGroundKnown,
             ...(ctx.groundAt ? { groundAt: ctx.groundAt } : {}),
         });
         const worst = result.summary.worst;
@@ -78,7 +80,7 @@ export const overTheTreesRule: CaddyRule = {
 
         const atM = worst.worstAtM;
         const heightM = worst.treeHeightM ?? 0;
-        const ballM = trajectoryHeightAt(atM, carryM, apexM);
+        const ballM = Math.max(0, heightM + worst.minClearanceM);
         const anchor = { x: origin.x + along.x * atM, y: origin.y + along.y * atM };
         const where = `Trees ${heightM.toFixed(0)} m high at ${atM.toFixed(0)} m, `
             + `ball at about ${ballM.toFixed(0)} m`;

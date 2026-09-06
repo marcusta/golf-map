@@ -98,6 +98,18 @@ function fakeRunner(opts: {
             if (argValue(args, '--hillshade')) await mkdir(path.join(root, 'hillshade'), { recursive: true });
             if (argValue(args, '--manifest')) await writeFile(path.join(root, 'manifest.json'), JSON.stringify(MANIFEST));
         }
+        if (step === 'canopy' || step === 'trees-stems') {
+            // Both merge into the INSTALLED manifest (keeping every field the
+            // pipeline does not own) and bump generatedAt; canopy adds its
+            // layer entries, trees-stems its asset entry.
+            const target = path.join(argValue(args, '--tiles-dir')!, 'manifest.json');
+            const existing = JSON.parse(await Bun.file(target).text());
+            const merged = step === 'canopy'
+                ? { ...existing, layers: { ...existing.layers, canopy: { minzoom: 12, maxzoom: 17 } }, generatedAt: REGENERATED_AT }
+                : { ...existing, assets: { 'tree-stems': { path: 'tree-stems.json', format: 'tree-stems-v1', count: 3 } }, generatedAt: REGENERATED_AT };
+            await writeFile(target, JSON.stringify(merged));
+            if (step === 'canopy') await writeFile(argValue(args, '--trees-out')!, '{"type":"FeatureCollection","features":[]}');
+        }
         if (step === 'tile-ortho') {
             // Materialize the output dir so "is this vintage tiled" checks see it.
             const out = argValue(args, '--out')!;
@@ -623,6 +635,108 @@ test('reconcileOrphans fails jobs left running by a restart', async () => {
         const job = await svc.get('orphan-1');
         expect(job.status).toBe('failed');
         expect(job.error).toContain('restart');
+    } finally {
+        await cleanup();
+    }
+});
+
+// --- Tree regeneration job (canopy tiles + tree-stems asset from persisted sources) ---
+
+test('re-trees runs canopy + trees-stems against the persisted lidar and DEM, then refreshes the manifest asset', async () => {
+    const { svc, assets, dataDir, calls, cleanup } = await setup();
+    try {
+        const build = await svc.start(TEST_COURSE_ID, BBOX);
+        await svc.waitForJob(build.id);
+        const siteId = (await svc.get(build.id)).siteId!;
+        const before = Object.fromEntries((await assets.listBySite(siteId)).map((a) => [a.kind, a]));
+        calls.length = 0;
+
+        const job = await svc.reTrees(TEST_COURSE_ID);
+        expect(job.kind).toBe('trees');
+        await svc.waitForJob(job.id);
+        const final = await svc.get(job.id);
+        expect(final.status).toBe('succeeded');
+        expect(final.error).toBeNull();
+        expect(final.step).toBe('register');
+
+        // No fetch, no install: the two commands write into the installed tree.
+        expect(calls.map((c) => c.step)).toEqual(['canopy', 'trees-stems']);
+        const lidarFile = path.join(dataDir, 'sources', siteId, 'lidar', 'item_648_52.copc.laz');
+        const installedRoot = path.join(dataDir, 'tiles', siteId);
+        for (const call of calls) {
+            expect(argValue(call.args, '--lidar')).toBe(lidarFile);
+            expect(argValue(call.args, '--dem')).toBe(path.join(dataDir, 'sources', siteId, 'dem.tif'));
+            expect(argValue(call.args, '--tiles-dir')).toBe(installedRoot);
+            expect(argValue(call.args, '--course-id')).toBe(siteId); // manifest courseId is the tile key
+        }
+        // The polygon GeoJSON lands next to the persisted sources for the import wizard.
+        const treesOut = path.join(dataDir, 'sources', siteId, 'trees.geojson');
+        expect(argValue(calls[0].args, '--trees-out')).toBe(treesOut);
+        expect(await Bun.file(treesOut).exists()).toBe(true);
+
+        // The manifest asset was re-registered with the merged manifest: new
+        // generatedAt, the canopy layer, the stems asset, vintages intact.
+        const after = Object.fromEntries((await assets.listBySite(siteId)).map((a) => [a.kind, a]));
+        expect(Object.keys(after).sort()).toEqual(['dem_cog', 'ortho_cog', 'tile_manifest']);
+        const meta = JSON.parse(after.tile_manifest.metaJson!);
+        expect(meta.generatedAt).toBe(REGENERATED_AT);
+        expect(meta.layers.canopy).toEqual({ minzoom: 12, maxzoom: 17 });
+        expect(meta.assets['tree-stems'].count).toBe(3);
+        expect(meta.activeOrtho).toBe('orto-l2-2025');
+        expect(after.tile_manifest.id).not.toBe(before.tile_manifest.id);
+        expect(after.ortho_cog.id).toBe(before.ortho_cog.id);
+        expect(after.dem_cog.id).toBe(before.dem_cog.id);
+    } finally {
+        await cleanup();
+    }
+});
+
+test('re-trees prefers the edited DEM and refuses without lidar files', async () => {
+    const { svc, assets, dataDir, calls, cleanup } = await setup();
+    try {
+        const build = await svc.start(TEST_COURSE_ID, BBOX);
+        await svc.waitForJob(build.id);
+        const siteId = (await svc.get(build.id)).siteId!;
+        const edited = path.join(dataDir, 'sources', siteId, 'dem-edited.tif');
+        await writeFile(edited, 'fake edited dem');
+        calls.length = 0;
+
+        const job = await svc.reTrees(TEST_COURSE_ID);
+        await svc.waitForJob(job.id);
+        expect((await svc.get(job.id)).status).toBe('succeeded');
+        expect(argValue(calls[0].args, '--dem')).toBe(edited);
+
+        // Legacy layout: no sources/dem*.tif, dem_cog registered as dem/<siteId>.tif.
+        await rm(edited);
+        await rm(path.join(dataDir, 'sources', siteId, 'dem.tif'));
+        await mkdir(path.join(dataDir, 'dem'), { recursive: true });
+        await writeFile(path.join(dataDir, 'dem', `${siteId}.tif`), 'fake legacy dem');
+        for (const a of await assets.listBySite(siteId)) if (a.kind === 'dem_cog') await assets.remove(a.id, a.version);
+        await assets.register({ siteId, courseId: TEST_COURSE_ID, kind: 'dem_cog', filename: `dem/${siteId}.tif` });
+        calls.length = 0;
+        const legacy = await svc.reTrees(TEST_COURSE_ID);
+        await svc.waitForJob(legacy.id);
+        expect((await svc.get(legacy.id)).status).toBe('succeeded');
+        expect(argValue(calls[0].args, '--dem')).toBe(path.join(dataDir, 'dem', `${siteId}.tif`));
+
+        await svc.deleteLidar(TEST_COURSE_ID);
+        await expect(svc.reTrees(TEST_COURSE_ID)).rejects.toThrow(/No lidar files/);
+    } finally {
+        await cleanup();
+    }
+});
+
+test('re-trees fails the job (not the request) when the pipeline step exits nonzero', async () => {
+    const { svc, cleanup } = await setup({ failAt: 'trees-stems' });
+    try {
+        const build = await svc.start(TEST_COURSE_ID, BBOX);
+        await svc.waitForJob(build.id);
+        const job = await svc.reTrees(TEST_COURSE_ID);
+        await svc.waitForJob(job.id);
+        const final = await svc.get(job.id);
+        expect(final.status).toBe('failed');
+        expect(final.step).toBe('trees-stems');
+        expect(final.error).toContain('boom');
     } finally {
         await cleanup();
     }

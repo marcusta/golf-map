@@ -37,10 +37,11 @@ struct SyncService: Sendable {
     /// fetched (e.g. no network, auth failure, or the course has no tile
     /// manifest).
     func startBundleDownload(courseId: String) async throws -> BundleDownloadHandle {
-        let furniture = try await fetchFurniture(courseId: courseId)
+        let (furniture, manifest) = try await fetchFurnitureAndManifest(courseId: courseId)
         let request = BundleDownloadRequest(
             tileBaseURL: serverOrigin.appendingPathComponent("tiles"),
             furniture: furniture,
+            treeStemsPath: manifest.assets?["tree-stems"].flatMap { $0.format == "tree-stems-v1" && $0.path == "tree-stems.json" ? $0.path : nil },
             featuresGeoJSON: { [client] in
                 try await client.featuresGeoJSONData(courseId: courseId)
             },
@@ -64,6 +65,10 @@ struct SyncService: Sendable {
     /// per-course in one call and grouped by green. Throws
     /// `SyncError.noTileManifest` if the course has no `tile_manifest` asset.
     func fetchFurniture(courseId: String) async throws -> CourseFurniture {
+        try await fetchFurnitureAndManifest(courseId: courseId).0
+    }
+
+    private func fetchFurnitureAndManifest(courseId: String) async throws -> (CourseFurniture, TileManifest) {
         // Asset ownership depends on the course's site identity, so resolve the
         // course first. The remaining independent requests still run together.
         let course = try await client.course(id: courseId)
@@ -99,7 +104,7 @@ struct SyncService: Sendable {
             throw SyncError.noTileManifest(courseId: courseId)
         }
 
-        return Self.makeFurniture(
+        return (Self.makeFurniture(
             course: course,
             holes: holes,
             tees: tees,
@@ -107,7 +112,7 @@ struct SyncService: Sendable {
             pinsByCourse: pinsByCourse,
             aimPoints: aimPoints,
             manifest: manifest
-        )
+        ), manifest)
     }
 
     enum AssetScope: Equatable {

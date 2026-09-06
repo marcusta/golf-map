@@ -13,11 +13,14 @@
     "dependencies": {
         "@basics/core": "file:../vendor/basics-core-1.1.0.tgz",
         "maplibre-gl": "^5.24.0",
-        "polygon-clipping": "^0.15.7"
+        "polygon-clipping": "^0.15.7",
+        "three": "0.180.0"
     },
     "devDependencies": {
         "@types/bun": "^1",
         "@types/geojson": "^7946.0.16",
+        "@types/three": "0.180.0",
+        "@webgpu/types": "^0.1.72",
         "happy-dom": "^20.6.1",
         "typescript": "^5.9.3",
         "vite": "^7.3.1"

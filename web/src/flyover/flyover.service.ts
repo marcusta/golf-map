@@ -50,6 +50,7 @@ interface SavedCamera {
 /** Terrain source saved on start and restored with the camera. The canopy ("Trees") toggle is left alone. */
 interface SavedLidar {
     terrainMode: TerrainMode;
+    trees3d: boolean;
 }
 
 /**
@@ -231,12 +232,14 @@ export class FlyoverService {
      * Surface tiles may still be loading for the first frames; that is fine.
      */
     private enterLidarView(): SavedLidar {
-        const saved: SavedLidar = { terrainMode: this.mapSvc.terrainMode.peek() };
-        if (this.mapSvc.hasSurface.peek()) this.mapSvc.setTerrainMode('surface');
+        const saved: SavedLidar = { terrainMode: this.mapSvc.terrainMode.peek(), trees3d: this.mapSvc.trees3dVisible.peek() };
+        if (this.mapSvc.hasTreeStems.peek()) this.mapSvc.setTrees3d(true);
+        else if (this.mapSvc.hasSurface.peek()) this.mapSvc.setTerrainMode('surface');
         return saved;
     }
 
     private restoreLidarView(saved: SavedLidar): void {
+        this.mapSvc.setTrees3d(saved.trees3d);
         this.mapSvc.setTerrainMode(saved.terrainMode);
     }
 

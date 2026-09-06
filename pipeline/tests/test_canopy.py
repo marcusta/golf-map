@@ -298,6 +298,10 @@ def test_cmd_canopy_end_to_end(tmp_path: Path, scene):
     # Crown block (rows 23..35 north-up, cols 5..17) kept at 8 m; roof block zeroed.
     assert c[SIZE - 17:SIZE - 5, 5:17].min() == pytest.approx(8.0)
     assert c[SIZE - 35:SIZE - 25, 25:35].max() == 0.0
+    with rasterio.open(tmp_path / "work" / "roof.tif") as src:
+        roof = src.read(1)
+        assert src.nodata == -1.0 and roof.shape == c.shape
+    assert roof[SIZE - 35:SIZE - 25, 25:35].min() == 1.0 and roof[SIZE - 17:SIZE - 5, 5:17].max() == 0.0
     with rasterio.open(tmp_path / "work" / "surface.tif") as src:
         s = src.read(1)
     assert s[SIZE - 10, 10] == pytest.approx(28.0, rel=0.02)  # DEM 20 + canopy 8 (crown-shaped: centre within 2 %)

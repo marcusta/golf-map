@@ -18,6 +18,8 @@ import { ServerModeService, visibleEditorTools } from './server-mode.service';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
 import { GeojsonImportService } from '../import/geojson-import.service';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
+import { TilesetService } from '../map/tileset.service';
+import { MapService } from '../map/map.service';
 import { PublishClientService, PUBLISH_STEP_LABELS, type PublishState } from './publish-client.service';
 
 type CommandBarMode = 'create' | 'plan';
@@ -503,6 +505,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private importSvc = this.inject(SvgImportService);
     private geojsonImportSvc = this.inject(GeojsonImportService);
     private mapBuild = this.inject(MapBuildClientService);
+    private tileset = this.inject(TilesetService);
+    private mapSvc = this.inject(MapService);
     private publishVps = this.inject(PublishClientService);
     private confirm = this.inject(ConfirmService);
     private helpModal = this.inject(HelpModalService);
@@ -956,6 +960,21 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             // names the reclaimable size, and the delete is confirmed first.
             this.mountDeleteLidar(host, close);
 
+            // Regenerate trees — re-runs the lidar canopy tiling and the stem
+            // detector against the persisted lidar + DEM (a server job, same
+            // plumbing as re-terrain). Needs the lidar files to still exist.
+            const treesBtn = document.createElement('button');
+            treesBtn.type = 'button';
+            treesBtn.className = 'menu-item';
+            treesBtn.dataset.testid = 'course-regenerate-trees-btn';
+            treesBtn.innerHTML = `<span class="menu-item__icon">${icon('tree-pine', 16)}</span><span class="menu-item__label">Regenerate trees</span>`;
+            treesBtn.onclick = () => {
+                const course = this.svc.course.peek();
+                close();
+                if (course) void this.confirmRegenerateTrees(course.id);
+            };
+            host.appendChild(treesBtn);
+
             const divider = document.createElement('div');
             divider.className = 'menu-divider';
             host.appendChild(divider);
@@ -1162,6 +1181,62 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 tone: 'warning',
             });
         }
+    }
+
+    /**
+     * Confirm, run the tree-regeneration job, then reload the tileset so the
+     * canvas re-inits against the new manifest `generatedAt` (canopy tiles
+     * carry immutable cache headers; the stems asset URL carries `?v=`).
+     * The camera is restored after the re-init (terrain-edit pattern).
+     */
+    private async confirmRegenerateTrees(courseId: string): Promise<void> {
+        const ok = await this.confirm.confirm({
+            title: 'Regenerate trees?',
+            body: 'Rebuilds the canopy layers and the individual tree stems from the stored lidar and DEM.',
+            detail: 'Takes a few minutes for a full course. Tree polygons are written to the site sources as trees.geojson for Import GeoJSON; existing tree features are not changed.',
+            confirmLabel: 'Regenerate trees',
+            cancelLabel: 'Cancel',
+            tone: 'primary',
+        });
+        if (!ok) return;
+        try {
+            const job = await this.mapBuild.regenerateTrees(courseId);
+            if (job.status !== 'succeeded') throw new Error(job.error ?? 'unknown error');
+            await this.reloadTilesKeepingCamera(courseId);
+            const count = this.tileset.manifest.peek()?.assets?.['tree-stems']?.count;
+            await this.confirm.confirm({
+                title: 'Trees regenerated',
+                body: count !== undefined ? `${count.toLocaleString()} tree stems detected.` : 'Canopy layers and tree stems rebuilt.',
+                confirmLabel: 'Done',
+                cancelLabel: 'Close',
+                tone: 'primary',
+            });
+        } catch (e) {
+            await this.confirm.confirm({
+                title: 'Could not regenerate trees',
+                body: e instanceof Error ? e.message : String(e),
+                confirmLabel: 'OK',
+                cancelLabel: 'Close',
+                tone: 'warning',
+            });
+        }
+    }
+
+    private async reloadTilesKeepingCamera(courseId: string): Promise<void> {
+        const map = this.mapSvc.map.peek();
+        const camera = map
+            ? { center: map.getCenter(), zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() }
+            : null;
+        await this.tileset.reload(courseId);
+        if (!camera) return;
+        let restored = false;
+        const stop = effect(() => {
+            if (restored || !this.mapSvc.ready.get()) return;
+            restored = true;
+            this.mapSvc.map.peek()?.jumpTo(camera);
+            queueMicrotask(() => stop());
+        });
+        setTimeout(() => { if (!restored) stop(); }, 15_000);
     }
 
     private buildAvatarPanel(host: HTMLElement, close: () => void): void {

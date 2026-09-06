@@ -1,7 +1,10 @@
 import maplibregl from 'maplibre-gl';
+import { loadSmoothedTerrain } from './terrain-smoothing-protocol';
+import { TERRAIN_SMOOTHING_PROTOCOL } from './terrain-smoothing';
 import type { LayerSpecification, MapMouseEvent } from 'maplibre-gl';
-import type { GeoJSON } from 'geojson';
-import { Signal, batch, effect } from '@basics/core/client/core';
+import type { GeoJSON, FeatureCollection } from 'geojson';
+import { WaterLayer, WATER_LAYER_ID } from './water-layer';
+import { Signal, batch, effect, di } from '@basics/core/client/core';
 import type { TileManifest } from './tileset.service';
 import {
     buildEditorStyle,
@@ -17,8 +20,27 @@ import {
     tileUrlTemplate,
     type TerrainMode,
 } from './map-style';
+import { TreeStemsService } from './tree-stems.service';
+import { TreesLayer, TREES_LAYER_ID, type TreesLayerOptions } from './trees-layer';
 import { InteractionClaims } from './interaction';
 import { canonicalTilesOverlap, type CanonicalTile } from './tile-overlap';
+
+/**
+ * Dev-only LOD override for the tree layer: `?treeLod=<fullM>[,<halfM>]` on the page
+ * URL. The e2e harness runs on a software GPU where a full-detail stand costs a
+ * second per frame; pulling the bands in keeps the trees spec deterministic.
+ * Ignored in production builds.
+ */
+export function treeLodOverride(search = typeof location === 'undefined' ? '' : location.search): TreesLayerOptions {
+    if (!import.meta.env.DEV) return {};
+    const raw = new URLSearchParams(search).get('treeLod');
+    if (!raw) return {};
+    const [full, half] = raw.split(',').map(Number);
+    const options: TreesLayerOptions = {};
+    if (Number.isFinite(full) && full > 0) options.lodFullM = full;
+    if (Number.isFinite(half) && half > 0) options.lodHalfM = half;
+    return options;
+}
 
 /** Normalized pointer event handed to onClick/onMouseMove subscribers. */
 export interface MapPointerEvent {
@@ -99,6 +121,11 @@ export class MapService {
     readonly hasCanopy = new Signal(false);
     /** True when the live map's manifest has the `surface` (DSM) layer. Set on init. */
     readonly hasSurface = new Signal(false);
+    readonly trees3dVisible = new Signal(false);
+    /** Wind sway on the 3D trees. Off stops the per-frame repaint the sway needs. */
+    readonly treeSway = new Signal(false);
+    readonly hasTreeStems = new Signal(false);
+    private readonly stems = di.get(TreeStemsService);
     /**
      * Ortho (photo) layer visibility. Turn off to inspect terrain/hillshade
      * alone — useful when splining bunkers/water against relief.
@@ -126,6 +153,7 @@ export class MapService {
     private disposers: Array<() => void> = [];
     /** overlay id → layer ids added for it */
     private overlays = new Map<string, string[]>();
+    private waterSourceId: string | null = null;
     /** Overlays that must stay above later-added overlays (tool previews). */
     private onTopOverlays = new Set<string>();
     /** Latest queued (not yet sent) overlay data per source (see updateOverlayData). */
@@ -197,7 +225,10 @@ export class MapService {
         this.activeOrtho.set(active ?? null);
         this.hasCanopy.set(manifest.layers['canopy-color'] !== undefined);
         this.hasSurface.set(manifest.layers.surface !== undefined);
+        this.stems.configure(manifest.assets?.['tree-stems']
+            ? `/tiles/${encodeURIComponent(mapKey)}/tree-stems.json?v=${encodeURIComponent(version)}` : null);
 
+        maplibregl.addProtocol(TERRAIN_SMOOTHING_PROTOCOL, loadSmoothedTerrain);
         const map = new maplibregl.Map({
             container,
             style: buildEditorStyle(mapKey, manifest, version),
@@ -250,10 +281,34 @@ export class MapService {
             map.setLayoutProperty(HILLSHADE_LAYER_ID, 'visibility', visible ? 'visible' : 'none');
         }));
         this.disposers.push(effect(() => {
-            const visible = this.canopyVisible.get();
+            const visible = this.canopyVisible.get() && !this.trees3dVisible.get();
             if (!this.ready.get() || !this.hasCanopy.get()) return;
             if (!map.getLayer(CANOPY_COLOR_LAYER_ID)) return;
             map.setLayoutProperty(CANOPY_COLOR_LAYER_ID, 'visibility', visible ? 'visible' : 'none');
+        }));
+        let treesLayer: TreesLayer | null = null;
+        let loadedStems: unknown = null;
+        this.disposers.push(effect(() => {
+            const stems = this.stems.stems.get();
+            const visible = this.trees3dVisible.get();
+            const sway = this.treeSway.get();
+            const exaggeration = this.exaggeration.get();
+            const ready = this.ready.get();
+            this.hasTreeStems.set(stems !== null);
+            if (!ready) return;
+            if (stems !== loadedStems) {
+                if (map.getLayer(TREES_LAYER_ID)) map.removeLayer(TREES_LAYER_ID);
+                treesLayer = stems !== null ? new TreesLayer(stems, treeLodOverride()) : null;
+                loadedStems = stems;
+                if (treesLayer) map.addLayer(treesLayer);
+                (window as any).__trees3d = treesLayer?.stats ?? null;
+            }
+            if (treesLayer) {
+                treesLayer.enabled = visible;
+                treesLayer.sway = sway;
+                treesLayer.exaggeration = exaggeration;
+                map.triggerRepaint();
+            }
         }));
         // Ortho visibility: show only the active vintage's layer, and only when
         // the photo layer is on (off → hillshade/terrain-only). Toggling
@@ -337,12 +392,16 @@ export class MapService {
         for (const dispose of this.disposers) dispose();
         this.disposers = [];
         this.overlays.clear();
+        this.waterSourceId = null;
         this.onTopOverlays.clear();
         this.pendingOverlayData.clear();
         if (this.drapeRepairTimer !== null) {
             clearTimeout(this.drapeRepairTimer);
             this.drapeRepairTimer = null;
         }
+        this.stems.configure(null);
+        this.hasTreeStems.set(false);
+        this.trees3dVisible.set(false);
         this.tiles = null;
         this.orthoSources = [];
         this.mapKey = null;
@@ -418,7 +477,19 @@ export class MapService {
      * (lidar DSM). Same exaggeration; only the visual relief changes.
      */
     setTerrainMode(mode: TerrainMode): void {
+        if (mode === 'surface') this.trees3dVisible.set(false);
         this.terrainMode.set(mode);
+    }
+
+    setTreeSway(on: boolean): void {
+        this.treeSway.set(on);
+    }
+
+    setTrees3d(visible: boolean): void {
+        batch(() => {
+            if (visible) this.terrainMode.set('ground');
+            this.trees3dVisible.set(visible && this.hasTreeStems.peek());
+        });
     }
 
     /** Show/hide the ortho (photo) layer — off leaves terrain/hillshade alone. */
@@ -544,6 +615,23 @@ export class MapService {
         return this.claims.claim(mode);
     }
 
+    /** Persistent feature surfaces supply both the editor fills and the 3D water. */
+    private setWaterFeatures(data: FeatureCollection): void {
+        const map = this.requireMap();
+        let layer = map.getLayer(WATER_LAYER_ID) as WaterLayer | undefined;
+        if (!layer) {
+            if (!data.features.some(f => f.properties?.type === 'water' || f.properties?.type === 'water_creek')) return;
+            layer = new WaterLayer();
+            map.addLayer(layer, map.getLayer(TREES_LAYER_ID) ? TREES_LAYER_ID : undefined);
+        }
+        layer.setData(data);
+    }
+
+    private clearWaterFeatures(): void {
+        const map = this.map.peek();
+        if (map?.getLayer(WATER_LAYER_ID)) map.removeLayer(WATER_LAYER_ID);
+    }
+
     // ── GeoJSON overlays for tools ────────────────────────────────────────
 
     /**
@@ -557,7 +645,7 @@ export class MapService {
         id: string,
         data: GeoJSON,
         layers: OverlayLayerSpec[],
-        opts: { beforeId?: string; keepOnTop?: boolean } = {},
+        opts: { beforeId?: string; keepOnTop?: boolean; waterSurface?: boolean } = {},
     ): void {
         const map = this.requireMap();
         map.addSource(id, { type: 'geojson', data });
@@ -571,6 +659,10 @@ export class MapService {
             map.addLayer({ ...layer, source: id } as LayerSpecification, beforeId);
         }
         this.overlays.set(id, layers.map(l => l.id));
+        if (opts.waterSurface && data.type === 'FeatureCollection') {
+            this.waterSourceId = id;
+            this.setWaterFeatures(data);
+        }
         // `keepOnTop` overlays (tool previews — draft outline, vertex/handle
         // markers) stay above overlays added LATER: layer z-order is add
         // order, and on a cold load the draw preview can beat the features
@@ -625,6 +717,7 @@ export class MapService {
      */
     updateOverlayData(id: string, data: GeoJSON): void {
         this.requireMap();
+        if (id === this.waterSourceId && data.type === 'FeatureCollection') this.setWaterFeatures(data);
         this.pendingOverlayData.set(id, data);
         if (!this.overlayDataInFlight.has(id)) void this.pumpOverlayData(id);
     }
@@ -778,6 +871,10 @@ export class MapService {
 
     /** Remove an overlay's layers and source. No-op if absent. */
     removeOverlayLayer(id: string): void {
+        if (id === this.waterSourceId) {
+            this.clearWaterFeatures();
+            this.waterSourceId = null;
+        }
         this.pendingOverlayData.delete(id);
         this.onTopOverlays.delete(id);
         const map = this.map.get();

@@ -37,6 +37,10 @@ const ReTerrainInput = Type.Object({
     courseId: Type.String(),
 });
 
+const ReTreesInput = Type.Object({
+    courseId: Type.String(),
+});
+
 // --- API descriptor ---
 
 export function createMapBuildApi(svc: MapBuildService) {
@@ -78,6 +82,15 @@ export function createMapBuildApi(svc: MapBuildService) {
             path: '/mapbuild/re-terrain',
             fn: (input: Static<typeof ReTerrainInput>) => svc.reTerrain(input.courseId),
             schema: ReTerrainInput,
+            middleware: mw,
+        },
+        // Tree regeneration: canopy tiles + tree-stems asset from the persisted
+        // lidar + DEM — no refetch. Same job/polling contract as `start`.
+        reTrees: {
+            method: 'POST' as const,
+            path: '/mapbuild/re-trees',
+            fn: (input: Static<typeof ReTreesInput>) => svc.reTrees(input.courseId),
+            schema: ReTreesInput,
             middleware: mw,
         },
         // Persisted lidar (.laz) source assets — listed for the editor menu and

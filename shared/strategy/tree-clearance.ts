@@ -16,9 +16,10 @@
 // Crossing geometry reuses carry.ts hazardsAlongLine (ray/ring intersection,
 // origin-inside handling); this module adds the height dimension only.
 
+import type { TreeStem } from './tree-stems';
 import { hazardsAlongLine } from './carry';
 import { type FlatRing } from './corridor';
-import { bearingToUnitVector, type Vec2 } from './ellipse';
+import { type Vec2 } from './ellipse';
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -40,6 +41,8 @@ export interface TreeHeights {
 export interface TreeFeatureInput {
     /** Course-feature type; only 'trees' is considered. */
     type: string;
+    /** Individual crown, using absolute ground elevation. */
+    stem?: TreeStem;
     /** Flattened outer ring, planar meters, implicitly closed. */
     points: readonly Vec2[];
     /** Server-derived attributes; absent/null on hand-drawn features. */
@@ -52,6 +55,7 @@ export interface TreeFeatureInput {
  * Non-finite or non-positive values count as missing.
  */
 export function treeHeightM(feature: TreeFeatureInput): number | null {
+    if (feature.stem) return feature.stem.heightM;
     const attrs = feature.attributes;
     if (!attrs) return null;
     const p90 = numberOrNull(attrs.heightP90M);
@@ -117,7 +121,13 @@ export interface TreeIndex<F extends TreeFeatureInput = TreeFeatureInput> {
 export function buildTreeIndex<F extends TreeFeatureInput>(features: readonly F[]): TreeIndex<F> {
     const entries: TreeIndexEntry<F>[] = [];
     for (const f of features) {
-        if (f.type !== 'trees' || f.points.length < 3) continue;
+        if (f.type !== 'trees') continue;
+        if (f.stem) {
+            const { x, y, crownRadiusM: r } = f.stem;
+            entries.push({ feature: f, ring: {kind: 'trees', points: []}, minX: x-r, minY: y-r, maxX: x+r, maxY: y+r });
+            continue;
+        }
+        if (f.points.length < 3) continue;
         let minX = Infinity;
         let minY = Infinity;
         let maxX = -Infinity;
@@ -216,18 +226,31 @@ export function treeCrossingsAlongLine<F extends TreeFeatureInput>(
 ): TreeCrossing<F>[] {
     if (Math.hypot(target.x - origin.x, target.y - origin.y) <= 0) return [];
     const bearing = bearingDeg(origin, target);
-    const dir = bearingToUnitVector(bearing);
+    const length = Math.hypot(target.x-origin.x, target.y-origin.y);
+    const dir = {x: (target.x-origin.x)/length, y: (target.y-origin.y)/length};
     const index = resolveTreeIndex(features);
 
+    const out: TreeCrossing<F>[] = [];
     const rings: FlatRing[] = [];
     const byRing = new Map<FlatRing, F>();
     for (const e of index.entries) {
         if (!rayHitsBbox(origin, dir, e)) continue;
+        if (e.feature.stem) {
+            const stem = e.feature.stem;
+            const dx = stem.x-origin.x, dy = stem.y-origin.y;
+            const along = dx*dir.x + dy*dir.y;
+            const lateral = dx*dir.y - dy*dir.x;
+            const halfSquared = stem.crownRadiusM ** 2 - lateral ** 2;
+            if (halfSquared < -1e-9) continue;
+            const half = Math.sqrt(Math.max(0, halfSquared));
+            if (along + half < 0) continue;
+            out.push({feature: e.feature, entryM: Math.max(0, along-half), exitM: along+half, treeHeightM: stem.heightM});
+            continue;
+        }
         rings.push(e.ring);
         byRing.set(e.ring, e.feature);
     }
 
-    const out: TreeCrossing<F>[] = [];
     for (const hit of hazardsAlongLine(origin, bearing, rings)) {
         const feature = byRing.get(hit.ring)!;
         out.push({ feature, entryM: hit.frontM, exitM: hit.carryM, treeHeightM: treeHeightM(feature) });
@@ -325,6 +348,8 @@ export interface TreeClearanceShot {
 export interface TreeClearanceOptions {
     /** Clearance below which a crossing is 'marginal', meters. Default 2. */
     marginM?: number;
+    /** False when an absolute origin elevation is unavailable; stems report unknown. */
+    originGroundKnown?: boolean;
     /** Ground elevation at the origin, meters. Default groundAt(0) if given, else 0. */
     originGroundM?: number;
     /** Ground elevation at distance d along the line, meters. Omit for flat ground. */
@@ -398,7 +423,7 @@ export function treeClearance<F extends TreeFeatureInput>(
         const landsIn = carryM >= crossing.entryM && carryM <= crossing.exitM;
         const height = crossing.treeHeightM;
 
-        if (height === null) {
+        if (height === null || (crossing.feature.stem && opts.originGroundKnown === false)) {
             crossings.push({ ...crossing, minClearanceM: null, worstAtM: null, status: 'unknown', landsIn });
             continue;
         }
@@ -408,7 +433,7 @@ export function treeClearance<F extends TreeFeatureInput>(
         let worstAtM = crossing.entryM;
         const evaluate = (d: number): void => {
             const ball = originGroundM + trajectoryHeightAt(d, carryM, shot.apexM, shot.samples);
-            const top = ground(d) + height;
+            const top = (crossing.feature.stem?.groundM ?? ground(d)) + height;
             const c = ball - top;
             if (c < minClearanceM) {
                 minClearanceM = c;
@@ -417,6 +442,10 @@ export function treeClearance<F extends TreeFeatureInput>(
         };
         for (let d = crossing.entryM; d < endM; d += STEP_M) evaluate(d);
         evaluate(endM);
+        // Piecewise linear profiles can have a narrow minimum between metre samples.
+        for (const sample of shot.samples ?? []) {
+            if (sample.d >= crossing.entryM && sample.d <= endM) evaluate(sample.d);
+        }
 
         const status: TreeClearanceStatus =
             minClearanceM < 0 ? 'blocked' : minClearanceM < marginM ? 'marginal' : 'clears';

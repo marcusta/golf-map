@@ -1,0 +1,12 @@
+{
+  "total": 37980,
+  "visible": 622,
+  "detailed": 18,
+  "triangles": 566616,
+  "drawCalls": 15,
+  "frameMedianMs": 16.7,
+  "frameP95Ms": 17.8,
+  "movingSamples": 120,
+  "gpu": "Apple M5 Pro",
+  "note": "Hole 1 flyover sample; does not establish sustained performance in dense close views."
+}

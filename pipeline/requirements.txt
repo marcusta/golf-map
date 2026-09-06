@@ -10,6 +10,8 @@ pytest>=8,<10
 # the pure-Rust LAZ decompressor backend (no system laszip/PDAL needed).
 laspy[lazrs]>=2.5,<3
 scipy>=1.11,<2
+# C-accelerated marker-controlled watershed for individual crown segmentation.
+scikit-image>=0.25,<1
 # shapely: pure wheels bundling their own GEOS (no system GDAL/GEOS needed).
 # Used by fetch-water for GeoPackage WKB parsing, bbox clipping and
 # creek-line buffering.

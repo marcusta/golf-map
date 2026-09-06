@@ -1,0 +1,13 @@
+{
+  "context": "Landeryd hole 1 walk after terrain switches; rolling 120 moving render intervals includes warmup/terrain changes",
+  "total": 37980,
+  "visible": 857,
+  "drawCalls": 4,
+  "cpuMs": 0.7999999523162842,
+  "frames": 187,
+  "movingSamples": 120,
+  "frameMedianMs": 16.700000047683716,
+  "frameP95Ms": 44.799999952316284,
+  "medianFps": 59.880239349981295,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro, Unspecified Version)"
+}

@@ -123,6 +123,8 @@ def merge_manifest_layers(existing: dict | None, fresh: dict) -> dict:
     merged = dict(fresh)
     merged.update(existing)
     merged["layers"] = {**(existing.get("layers") or {}), **(fresh.get("layers") or {})}
+    if "assets" in existing or "assets" in fresh:
+        merged["assets"] = {**(existing.get("assets") or {}), **(fresh.get("assets") or {})}
     # Clients (iOS bundle downloader) key their tile cache on generatedAt, so a
     # merge that adds or re-tiles layers must always move it forward.
     merged["generatedAt"] = fresh.get("generatedAt") or _now_iso()

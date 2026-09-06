@@ -57,6 +57,7 @@ public struct TreeHeights: Equatable, Sendable {
 /// straight through. Mirror of `TreeFeatureInput`.
 public struct TreeFeatureInput: Equatable, Sendable {
     /// Course-feature type; only 'trees' is considered.
+    public var stem: TreeStem?
     public var type: String
     /// Flattened outer ring, planar meters, implicitly closed.
     public var points: [Vec2]
@@ -65,7 +66,8 @@ public struct TreeFeatureInput: Equatable, Sendable {
     /// Optional caller identity (feature id) — not read by this module.
     public var id: String?
 
-    public init(type: String, points: [Vec2], attributes: [String: FeatureAttributeValue]? = nil, id: String? = nil) {
+    public init(type: String, points: [Vec2], attributes: [String: FeatureAttributeValue]? = nil, id: String? = nil, stem: TreeStem? = nil) {
+        self.stem = stem
         self.type = type
         self.points = points
         self.attributes = attributes
@@ -78,6 +80,7 @@ public struct TreeFeatureInput: Equatable, Sendable {
 /// Non-finite, non-positive or non-numeric values count as missing.
 /// Mirror of `treeHeightM`.
 public func treeHeightM(_ feature: TreeFeatureInput) -> Double? {
+    if let stem = feature.stem { return stem.heightM }
     guard let attrs = feature.attributes else { return nil }
     if let p90 = numberOrNil(attrs["heightP90M"]) { return p90 }
     return numberOrNil(attrs["heightMaxM"])
@@ -119,15 +122,28 @@ public func treeCrossingsAlongLine(
     if hypot(target.x - origin.x, target.y - origin.y) <= 0 { return [] }
     let bearing = bearingDeg(origin, target)
 
+    var out: [TreeCrossing] = []
+    let length = hypot(target.x-origin.x, target.y-origin.y)
+    let ux = (target.x-origin.x)/length, uy = (target.y-origin.y)/length
     var rings: [FlatRing] = []
     var byRing: [TreeFeatureInput] = [] // parallel to `rings`
     for f in features {
-        if f.type != "trees" || f.points.count < 3 { continue }
+        if f.type != "trees" { continue }
+        if let stem = f.stem {
+            let dx = stem.x-origin.x, dy = stem.y-origin.y
+            let along = dx*ux + dy*uy, lateral = dx*uy - dy*ux
+            let square = stem.crownRadiusM*stem.crownRadiusM-lateral*lateral
+            if square < -1e-9 { continue }
+            let half = sqrt(max(0, square))
+            if along+half < 0 { continue }
+            out.append(TreeCrossing(feature: f, entryM: max(0, along-half), exitM: along+half, treeHeightM: stem.heightM))
+            continue
+        }
+        if f.points.count < 3 { continue }
         rings.append(FlatRing(points: f.points, kind: "trees"))
         byRing.append(f)
     }
 
-    var out: [TreeCrossing] = []
     // `hazardsAlongLine` preserves input order, so hits map back by position.
     var ringIndex = 0
     for hit in hazardsAlongLine(origin, bearing, rings) {
@@ -251,6 +267,7 @@ public struct TreeClearanceShot: Equatable, Sendable {
 /// Mirror of `TreeClearanceOptions`.
 public struct TreeClearanceOptions {
     /// Clearance below which a crossing is `.marginal`, meters. Default 2.
+    public var originGroundKnown: Bool = true
     public var marginM: Double?
     /// Ground elevation at the origin, meters. Default `groundAt(0)` if given, else 0.
     public var originGroundM: Double?
@@ -332,7 +349,7 @@ public func treeClearance(
 
         let landsIn = carryM >= crossing.entryM && carryM <= crossing.exitM
 
-        guard let height = crossing.treeHeightM else {
+        guard let height = crossing.treeHeightM, crossing.feature.stem == nil || opts.originGroundKnown else {
             crossings.append(TreeClearanceCrossing(
                 crossing: crossing, minClearanceM: nil, worstAtM: nil, status: .unknown, landsIn: landsIn
             ))
@@ -344,7 +361,7 @@ public func treeClearance(
         var worstAtM = crossing.entryM
         func evaluate(_ d: Double) {
             let ball = originGroundM + trajectoryHeightAt(d, carryM: carryM, apexM: shot.apexM, samples: shot.samples)
-            let top = ground(d) + height
+            let top = (crossing.feature.stem?.groundM ?? ground(d)) + height
             let c = ball - top
             if c < minClearanceM {
                 minClearanceM = c
@@ -357,6 +374,9 @@ public func treeClearance(
             d += TREE_STEP_M
         }
         evaluate(endM)
+        for sample in shot.samples ?? [] where sample.d >= crossing.entryM && sample.d <= endM {
+            evaluate(sample.d)
+        }
 
         let status: TreeClearanceStatus = minClearanceM < 0 ? .blocked : (minClearanceM < marginM ? .marginal : .clears)
         crossings.append(TreeClearanceCrossing(

@@ -7,7 +7,7 @@ import type { Database, MapBuildJobsTable } from '../db/schema';
 import type { AssetsService } from './assets.service';
 import { TerrainEditsService, type TerrainEdit } from './terrain-edits.service';
 import { sweref99tmToWgs84 } from './geo';
-import { NotFoundError } from '@basics/core/server/auth';
+import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 
 // --- Public types ---
 
@@ -15,10 +15,11 @@ export type BuildStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 
 export type BuildStep =
     | 'fetch-lidar' | 'grid-dem' | 'apply-dem-edits' | 'fetch-ortho' | 'tile-ortho'
-    | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register';
+    | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register'
+    | 'canopy' | 'trees-stems';
 
-/** Job kind: the full pipeline, or the fast terrain-edit replay (T56). */
-export type BuildJobKind = 'build' | 're-terrain';
+/** Job kind: the full pipeline, the fast terrain-edit replay (T56), or the tree regeneration. */
+export type BuildJobKind = 'build' | 're-terrain' | 'trees';
 
 /**
  * Ordered pipeline steps the runner walks through. Also drives the web
@@ -41,6 +42,15 @@ export const BUILD_STEPS: readonly BuildStep[] = [
 export const RE_TERRAIN_STEPS: readonly BuildStep[] = [
     'apply-dem-edits', 'tile-terrain', 'tile-hillshade', 'install', 'manifest', 'register',
 ];
+
+/**
+ * Ordered steps of the tree regeneration job (`kind: 'trees'`): rebuild the
+ * canopy / canopy-color / surface tile pyramids and the tree-stems asset from
+ * the persisted lidar + DEM, then re-register the manifest. No fetches. The
+ * pipeline commands write straight into the installed tile tree and merge
+ * their own manifest entries, so there is no install step.
+ */
+export const TREES_STEPS: readonly BuildStep[] = ['canopy', 'trees-stems', 'register'];
 
 export interface Bbox {
     west: number;
@@ -523,6 +533,93 @@ export class MapBuildService {
             // analysis sampling agrees with the visible terrain (T57).
             await this.registerDemAsset(siteId, courseId, demEdited !== null);
 
+            await this.setStatus(jobId, 'succeeded');
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            await this.fail(jobId, null, message, env).catch(() => {});
+        } finally {
+            await rm(work, { recursive: true, force: true }).catch(() => {});
+        }
+    }
+
+    /**
+     * Regenerate the lidar tree layers for a course's site: canopy tiles
+     * (`canopy`, with `trees.geojson` written next to the persisted sources
+     * for the GeoJSON import wizard) and the `tree-stems.json` asset
+     * (`trees-stems`), from the persisted lidar + DEM. Needs a completed map
+     * build whose lidar files were not deleted. Same job/polling contract as
+     * `reTerrain`.
+     */
+    async reTrees(courseId: string): Promise<MapBuildJob> {
+        const siteId = await this.siteIdForCourse(courseId);
+        const demSrc = siteId ? await this.persistedDem(siteId) : null;
+        if (!siteId || !demSrc) {
+            throw new ConflictError(
+                'No persisted DEM (sources/dem.tif) for this course’s site — '
+                + 'run a full map build first, then regenerate trees.',
+            );
+        }
+        const lidar = await this.listLidar(this.lidarDir(siteId));
+        if (lidar.length === 0) {
+            throw new ConflictError(
+                'No lidar files (sources/lidar/*.laz) for this course’s site — '
+                + 'they were deleted or never fetched; rebuild the map to fetch them again.',
+            );
+        }
+
+        const running = await this.jobs()
+            .where('course_id', '=', courseId)
+            .where((eb) => eb('status', '=', 'running').or('status', '=', 'pending'))
+            .executeTakeFirst();
+        if (running) throw new ConflictError(`A build is already running for course ${courseId}`);
+
+        const id = crypto.randomUUID();
+        const bbox = await this.siteBbox(siteId);
+        await this.db.insertInto('map_build_jobs').values({
+            id, course_id: courseId, site_id: siteId, kind: 'trees',
+            status: 'pending', step: null, bbox_json: JSON.stringify(bbox), log: '', error: null,
+        }).execute();
+
+        const promise = this.runTrees(id, siteId, courseId, demSrc, lidar).finally(() => this.inflight.delete(id));
+        this.inflight.set(id, promise);
+        promise.catch(() => {});
+        return this.get(id);
+    }
+
+    /**
+     * The DEM to build tree layers from: the edited DEM when terrain edits are
+     * applied, else the raw one, else whatever GeoTIFF the site's `dem_cog`
+     * asset points at (courses built before DEMs moved under `sources/` are
+     * registered as `dem/<siteId>.tif`). Null when none exists.
+     */
+    private async persistedDem(siteId: string): Promise<string | null> {
+        const candidates = ['dem-edited.tif', 'dem.tif'].map(name => path.join(this.sourcesDir(siteId), name));
+        const dem = (await this.assets.listBySite(siteId)).find(a => a.kind === 'dem_cog');
+        if (dem && dem.filename.endsWith('.tif')) candidates.push(path.join(this.dataDir, dem.filename));
+        for (const candidate of candidates) {
+            if (await Bun.file(candidate).exists()) return candidate;
+        }
+        return null;
+    }
+
+    private async runTrees(jobId: string, siteId: string, courseId: string, dem: string, lidar: string[]): Promise<void> {
+        const env = { ...process.env };
+        const work = await mkdtemp(path.join(tmpdir(), `golftrees-${jobId}-`));
+        const installedRoot = path.join(this.dataDir, 'tiles', siteId);
+        const lidarArgs = lidar.flatMap(f => ['--lidar', f]);
+
+        try {
+            await this.setStatus(jobId, 'running');
+            // Both commands back up and merge the installed manifest themselves;
+            // read it first so the vintage fields can be re-patched at register.
+            const oldManifest = await this.readInstalledManifest(siteId);
+
+            // Canopy zoom range matches the existing course data (terrain range + 1).
+            if (!await this.exec(jobId, 'canopy', gp('canopy', ...lidarArgs, '--dem', dem, '--course-id', siteId, '--tiles-dir', installedRoot, '--workdir', path.join(work, 'canopy'), '--minzoom', '12', '--maxzoom', '17', '--trees-out', path.join(this.sourcesDir(siteId), 'trees.geojson')), env)) return;
+            if (!await this.exec(jobId, 'trees-stems', gp('trees-stems', ...lidarArgs, '--dem', dem, '--course-id', siteId, '--tiles-dir', installedRoot, '--out', path.join(work, 'tree-stems.geojson')), env)) return;
+
+            await this.setStep(jobId, 'register');
+            await this.refreshManifestAsset(siteId, courseId, oldManifest);
             await this.setStatus(jobId, 'succeeded');
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

@@ -86,6 +86,29 @@ export function cachingTileKeyLookup(lookup: TileKeyLookup, ttlMs = 60_000): Til
 export function createTileRoutes(assetsService: AssetsService, tileKeyLookup?: TileKeyLookup): Hono {
     const app = new Hono();
 
+    app.get('/tiles/:courseId/tree-stems.json', async (c) => {
+        const courseId = c.req.param('courseId');
+        if (!/^[A-Za-z0-9_-]+$/.test(courseId)) return c.json({ error: 'Invalid course id' }, 400);
+        const tileKey = (tileKeyLookup && (await tileKeyLookup(courseId))) ?? courseId;
+        let filePath: string;
+        try {
+            filePath = assetsService.resolveTreeStemsPath(tileKey);
+        } catch {
+            return c.json({ error: 'Invalid site id' }, 400);
+        }
+        const file = Bun.file(filePath);
+        if (!await file.exists()) return c.json({ error: 'Not found' }, 404);
+        // The pipeline replaces this filename. Revalidate even without a version query.
+        const etag = `W/"${file.size}-${file.lastModified}"`;
+        const headers = {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'public, max-age=0, must-revalidate',
+            ETag: etag,
+        };
+        if (c.req.header('If-None-Match') === etag) return new Response(null, { status: 304, headers });
+        return new Response(file, { headers });
+    });
+
     app.get('/tiles/:courseId/:layer/:z/:x/:y', async (c) => {
         const { courseId, layer, z, x } = c.req.param();
         const yParam = c.req.param('y');

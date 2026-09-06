@@ -225,6 +225,7 @@ const tpl = template(`
             <div><b>+ Gate</b>: click near a leg — drag the endpoints to set widths.</div>
             <div>Drag markers to move · <b>Del</b> deletes the selection.</div>
             <div><b>⌘-drag</b> pans the map from anywhere, even off a marker.</div>
+            <div><b>B</b> then drag a box: copies its EPSG:3006 bounds (click copies a point).</div>
         </div>
     </div>
 `);
@@ -1780,6 +1781,7 @@ export class PlannerPanelComponent extends Component {
     private hintText(): string | null {
         const notice = this.tool.notice.get();
         if (notice) return notice;
+        if (this.tool.boxArmed.get()) return 'Drag a box on the map to copy its EPSG:3006 bounds. Esc cancels.';
         if (!this.tool.selectedHole.get()) return 'Select a hole from the list to plan it.';
         const mode = this.tool.mode.get();
         if (mode === 'add-shot') return 'Click the map to append shots — Esc to stop.';

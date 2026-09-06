@@ -24,6 +24,29 @@ async function setup() {
     return { app, assetsService };
 }
 
+test('tree stems serve without auth through course/site aliases and revalidate replaced files', async () => {
+    const { assetsService } = await setup();
+    const app = createTileRoutes(assetsService, cachingTileKeyLookup(async (id) => id === TEST_COURSE_ID ? 'shared-site' : null));
+    const assetPath = assetsService.resolveTreeStemsPath('shared-site');
+    fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+    const data = { version: 1, crs: 'EPSG:3006', fields: ['x', 'y', 'heightM', 'crownRadiusM', 'groundM'], trees: [[540000, 6470000, 20, 4, 80]] };
+    fs.writeFileSync(assetPath, JSON.stringify(data));
+    const response = await app.request(`/tiles/${TEST_COURSE_ID}/tree-stems.json`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('application/json');
+    expect(response.headers.get('Cache-Control')).toContain('must-revalidate');
+    expect(await response.json()).toEqual(data);
+    const etag = response.headers.get('ETag')!;
+    expect((await app.request('/tiles/shared-site/tree-stems.json', { headers: { 'If-None-Match': etag } })).status).toBe(304);
+    fs.writeFileSync(assetPath, JSON.stringify({ ...data, trees: [] }));
+    const refreshed = await app.request(`/tiles/${TEST_COURSE_ID}/tree-stems.json`, { headers: { 'If-None-Match': etag } });
+    expect(refreshed.status).toBe(200);
+    expect((await refreshed.json()).trees).toEqual([]);
+    expect((await app.request('/tiles/no-lidar/tree-stems.json')).status).toBe(404);
+    expect((await app.request('/tiles/bad%2Fid/tree-stems.json')).status).toBe(400);
+    expect(() => assetsService.resolveTreeStemsPath('../outside')).toThrow();
+});
+
 function writeFakeTile(courseId: string, layer: string, z: number, x: number, y: number, ext: string, contents = 'fake-tile-bytes') {
     const dir = path.join(dataDir, 'tiles', courseId, layer, String(z), String(x));
     fs.mkdirSync(dir, { recursive: true });

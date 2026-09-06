@@ -41,6 +41,7 @@ from golfpipe import detect_trees
 from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro
+from golfpipe import trees_stems
 from golfpipe import osm
 from golfpipe import patches
 from golfpipe import trees_features
@@ -345,6 +346,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--canopy-tif", dest="canopy_tif", help="canopy.tif from a canopy --workdir (cleaned canopy heights, m AGL)")
+    p.add_argument(
+        "--roof-tif", dest="roof_tif",
+        help=f"roof.tif from the same canopy --workdir (roof-suppressed cells); with it polygons under "
+             f"{trees_features.ROOF_GUARD_AREA_M2:g} m² are kept when no roof cell is within {trees_features.ROOF_GUARD_M:g} m, "
+             "without it they are dropped (--lidar builds the mask itself)",
+    )
     src.add_argument("--lidar", action="append", help="a .laz/.copc.laz point cloud (repeatable); grids the canopy as `canopy` does")
     p.add_argument("--dem", help="ground DEM GeoTIFF; with --lidar its extent is the area when no --bbox is given")
     p.add_argument("--course-id", dest="course_id", help="course id written as a top-level courseId member")
@@ -355,7 +362,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--min-area", dest="min_area", type=float, default=trees_features.DEFAULT_MIN_AREA_M2,
-        help=f"minimum polygon area in m² (default {trees_features.DEFAULT_MIN_AREA_M2})",
+        help=f"minimum polygon area in m² (default {trees_features.DEFAULT_MIN_AREA_M2}; under "
+             f"{trees_features.ROOF_GUARD_AREA_M2:g} m² needs the roof mask, see --roof-tif)",
     )
     p.add_argument(
         "--min-hole-area", dest="min_hole_area", type=float, default=trees_features.DEFAULT_MIN_HOLE_AREA_M2,
@@ -382,6 +390,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--resolution", type=float, default=detect_trees.DEFAULT_RESOLUTION,
         help=f"grid cell size in metres when gridding from --lidar (default {detect_trees.DEFAULT_RESOLUTION})",
     )
+
+    p = sub.add_parser("trees-stems", help="Individual crown maxima from lidar, GeoJSON and compact tree-stems asset")
+    p.add_argument("--lidar", action="append", required=True)
+    p.add_argument("--out", required=True, help="output EPSG:3006 GeoJSON")
+    p.add_argument("--tiles-dir", required=True)
+    p.add_argument("--course-id", required=True)
+    p.add_argument("--bbox", help="e_min,n_min,e_max,n_max in EPSG:3006")
+    p.add_argument("--dem", help="DEM extent when --bbox is omitted")
+    p.add_argument("--resolution", type=float, default=1.0)
+    p.add_argument("--workdir", help="optional scratch directory for suppressed nDSM and ground rasters")
+    p.add_argument(
+        "--min-height", type=float, default=trees_stems.DEFAULT_MIN_HEIGHT_M,
+        help=f"nDSM height in metres a cell needs to join a crown (default {trees_stems.DEFAULT_MIN_HEIGHT_M})",
+    )
+    p.add_argument(
+        "--min-area", type=float, default=trees_stems.DEFAULT_MIN_AREA_M2,
+        help=f"segmented support in m² for crowns under --tall-height (default {trees_stems.DEFAULT_MIN_AREA_M2})",
+    )
+    p.add_argument(
+        "--tall-height", type=float, default=trees_stems.TALL_HEIGHT_M,
+        help=f"crown top in metres from which --tall-min-area applies (default {trees_stems.TALL_HEIGHT_M})",
+    )
+    p.add_argument(
+        "--tall-min-area", type=float, default=trees_stems.TALL_MIN_AREA_M2,
+        help=f"segmented support in m² for crowns at or above --tall-height (default {trees_stems.TALL_MIN_AREA_M2}; "
+             f"under {trees_stems.ROOF_GUARD_AREA_M2:g} m² a crown must also be more than {trees_stems.ROOF_GUARD_M:g} m from a roof-suppressed cell)",
+    )
+    p.add_argument(
+        "--leaf-off-ortho",
+        help="XYZ webp pyramid the crown kind is read from (default: newest Oct-Apr vintage in the tiles-dir manifest)",
+    )
+    p.add_argument("--no-kind", action="store_true", help="skip crown kind; every stem is written as unknown")
 
     p = sub.add_parser("manifest", help="Write manifest.json for a tiled course")
     p.add_argument("--course", required=True, help="course id")
@@ -618,6 +658,18 @@ def main(argv: list[str] | None = None) -> int:
                 min_height_m=args.min_height, min_area_m2=args.min_area,
                 close_m=args.close, round_m=args.round, simplify_m=args.simplify, min_hole_area_m2=args.min_hole_area,
                 source_ref=args.source_ref, resolution=args.resolution,
+                roof_tif=Path(args.roof_tif) if args.roof_tif else None,
+            )
+
+        elif args.command == "trees-stems":
+            commands.cmd_trees_stems(
+                [Path(p) for p in args.lidar], Path(args.out), Path(args.tiles_dir), args.course_id,
+                bbox_3006=tuple(float(v) for v in args.bbox.split(",")) if args.bbox else None,
+                dem_path=Path(args.dem) if args.dem else None, resolution=args.resolution,
+                workdir=Path(args.workdir) if args.workdir else None,
+                min_height_m=args.min_height, min_area_m2=args.min_area,
+                tall_height_m=args.tall_height, tall_min_area_m2=args.tall_min_area,
+                leaf_off_ortho=None if args.no_kind else (Path(args.leaf_off_ortho) if args.leaf_off_ortho else "auto"),
             )
 
         elif args.command == "manifest":

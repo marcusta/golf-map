@@ -187,3 +187,73 @@ test('resolveTilePath rejects NaN coordinates', async () => {
     const { svc } = await setup();
     expect(() => svc.resolveTilePath(TEST_COURSE_ID, 'ortho', Number.NaN, 1, 1)).toThrow();
 });
+
+// Real installed files and migrated SQLite, no HTTP or credential access.
+test('register installed manifest resolves course/site, validates stems and preserves other assets', async () => {
+    const { mkdtemp, mkdir, writeFile, rm, symlink } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const scratch = await mkdtemp(`${tmpdir()}/golf-map-manifest-`);
+    const { db } = await setup();
+    try {
+        const svc = new AssetsService(db, scratch);
+        const siteId = 'shared-site';
+        await db.insertInto('sites').values({id:siteId,name:'Shared',notes:null,version:1}).execute();
+        await db.updateTable('courses').set({site_id:siteId}).where('id','=',TEST_COURSE_ID).execute();
+        const directory = `${scratch}/tiles/${siteId}`;
+        await mkdir(directory, {recursive:true});
+        const manifest = {
+            bounds:{west:15,south:58,east:16,north:59},
+            layers:{ortho:{minzoom:14,maxzoom:20},terrain:{minzoom:12,maxzoom:17}},
+            generatedAt:'2026-09-05T12:00:00Z',
+            assets:{'tree-stems':{path:'tree-stems.json',format:'tree-stems-v1',count:1}},
+        };
+        const stems = {version:1,crs:'EPSG:3006',fields:['x','y','heightM','crownRadiusM','groundM'],trees:[[540000,6460000,12,3,80]]};
+        await writeFile(`${directory}/manifest.json`,JSON.stringify(manifest));
+        await writeFile(`${directory}/tree-stems.json`,JSON.stringify(stems));
+        const other = await svc.register({siteId,courseId:TEST_COURSE_ID,kind:'ortho_cog',filename:'original.tif',metaJson:'{"keep":true}'});
+        const [created] = await svc.registerInstalledTileManifest(TEST_COURSE_ID);
+        expect(created.siteId).toBe(siteId);
+        expect(created.filename).toBe(`tiles/${siteId}/manifest.json`);
+        expect(created.version).toBe(1);
+        expect(JSON.parse(created.metaJson!)).toEqual(manifest);
+        // Direct site registration resolves its owning course when no asset exists.
+        const freshSite = 'fresh-site';
+        await db.insertInto('sites').values({id:freshSite,name:'Fresh',notes:null,version:1}).execute();
+        await db.insertInto('courses').values({id:'fresh-course',site_id:freshSite,name:'Fresh course',status:'draft',revision:1,crs:'EPSG:3006',georeference_json:null,home_lat:null,home_lon:null,notes:null,version:1}).execute();
+        await mkdir(`${scratch}/tiles/${freshSite}`, {recursive:true});
+        await writeFile(`${scratch}/tiles/${freshSite}/manifest.json`,JSON.stringify(manifest));
+        await writeFile(`${scratch}/tiles/${freshSite}/tree-stems.json`,JSON.stringify(stems));
+        const [fresh] = await svc.registerInstalledTileManifest(freshSite);
+        expect(fresh.siteId).toBe(freshSite);
+        expect(fresh.courseId).toBe('fresh-course');
+        expect(fresh.filename).toBe(`tiles/${freshSite}/manifest.json`);
+        expect(fresh.version).toBe(1);
+        // A version-2 asset (kind column) registers under the same tree-stems-v1 descriptor.
+        const stemsV2 = {version:2,crs:'EPSG:3006',fields:[...stems.fields,'kind'],trees:[[540000,6460000,12,3,80,1]]};
+        await writeFile(`${directory}/tree-stems.json`,JSON.stringify(stemsV2));
+        const [updated] = await svc.registerInstalledTileManifest(siteId);
+        expect(updated.id).toBe(created.id);
+        expect(updated.version).toBe(2);
+        await writeFile(`${directory}/tree-stems.json`,JSON.stringify({...stemsV2, trees:[[540000,6460000,12,3,80,7]]}));
+        await expect(svc.registerInstalledTileManifest(siteId)).rejects.toThrow('Invalid tree stem');
+        await writeFile(`${directory}/tree-stems.json`,JSON.stringify(stems));
+        expect(await svc.get(other.id)).toEqual(other);
+        manifest.assets['tree-stems'].count = 2;
+        await writeFile(`${directory}/manifest.json`,JSON.stringify(manifest));
+        await expect(svc.registerInstalledTileManifest(siteId)).rejects.toThrow('count differs');
+        expect(await svc.get(created.id)).toEqual(updated);
+        manifest.assets['tree-stems'].count = 1;
+        manifest.assets['tree-stems'].path = '../tree-stems.json';
+        await writeFile(`${directory}/manifest.json`,JSON.stringify(manifest));
+        await expect(svc.registerInstalledTileManifest(siteId)).rejects.toThrow('descriptor');
+        await expect(svc.registerInstalledTileManifest('../escape')).rejects.toThrow('Invalid');
+        await expect(svc.registerInstalledTileManifest('missing')).rejects.toBeInstanceOf(NotFoundError);
+        await rm(`${directory}/manifest.json`);
+        await writeFile(`${scratch}/outside.json`,JSON.stringify(manifest));
+        await symlink(`${scratch}/outside.json`,`${directory}/manifest.json`);
+        await expect(svc.registerInstalledTileManifest(siteId)).rejects.toThrow('escapes');
+    } finally {
+        await db.destroy();
+        await rm(scratch,{recursive:true,force:true});
+    }
+});

@@ -216,6 +216,14 @@ export async function buildBundle(deps: PublishDeps, opts: BuildBundleOptions): 
 
     // Manifest with ortho maxzoom capped.
     const manifest = JSON.parse(await Bun.file(manifestPath).text());
+    const stems = manifest.assets?.['tree-stems'];
+    if (stems !== undefined) {
+        if (stems.path !== 'tree-stems.json' || stems.format !== 'tree-stems-v1') {
+            throw new Error('Invalid tree-stems manifest descriptor');
+        }
+        // Copy the declared asset or fail the build; never publish a dangling descriptor.
+        copyFileSync(path.join(srcTiles, 'tree-stems.json'), path.join(stagingDir, 'tiles', 'tree-stems.json'));
+    }
     if (manifest.layers?.ortho && typeof manifest.layers.ortho.maxzoom === 'number') {
         manifest.layers.ortho.maxzoom = Math.min(manifest.layers.ortho.maxzoom, orthoMaxzoom);
     }

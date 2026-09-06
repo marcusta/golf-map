@@ -9,6 +9,7 @@
  *   content/<table>.jsonl           — one JSON row per line, per content table
  *   tiles/<layer>/<z>/<x>/<y>.<ext> — ortho capped at meta.orthoMaxzoom
  *   tiles/manifest.json             — manifest with ortho maxzoom rewritten to the cap
+ *   tiles/tree-stems.json           — optional individual crowns, declared in manifest.assets
  *   dem/dem-analysis.tif            — the analysis DEM (v1: the full edited DEM, D2)
  */
 

@@ -14,6 +14,7 @@
         "feature-gates:generate": "bun ./scripts/generate-feature-gates.ts",
         "feature-gates:check": "bun ./scripts/generate-feature-gates.ts --check",
         "ios:deploy": "bash scripts/deploy-ios.sh",
+        "trees:regen": "bash scripts/regen-trees.sh",
         "e2e": "playwright test --config e2e/playwright.config.ts",
         "e2e:headed": "playwright test --config e2e/playwright.config.ts --headed",
         "e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",

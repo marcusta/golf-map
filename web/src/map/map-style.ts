@@ -4,6 +4,7 @@
 import type { StyleSpecification, LayerSpecification, RasterSourceSpecification } from 'maplibre-gl';
 import { BASE_PATH } from '@basics/core/client/base';
 import type { TileBounds, TileManifest } from './tileset.service';
+import { TERRAIN_SMOOTHING_PROTOCOL } from './terrain-smoothing';
 
 /** Source/layer ids — stable public constants downstream tools may reference. */
 export const ORTHO_SOURCE_ID = 'course-ortho';
@@ -143,7 +144,7 @@ export function buildEditorStyle(
         ...orthoSources,
         [TERRAIN_SOURCE_ID]: {
             type: 'raster-dem',
-            tiles: [tileUrlTemplate(mapKey, 'terrain', 'png', version)],
+            tiles: [`${TERRAIN_SMOOTHING_PROTOCOL}://${tileUrlTemplate(mapKey, 'terrain', 'png', version)}`],
             tileSize: 256,
             minzoom: manifest.layers.terrain.minzoom,
             maxzoom: manifest.layers.terrain.maxzoom,

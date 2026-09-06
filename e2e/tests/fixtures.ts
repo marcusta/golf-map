@@ -145,8 +145,10 @@ export async function dragShotByPixels(
 }
 
 /** Navigate to the planner for a hole and wait for the map + panel to be live. */
-export async function openPlanner(page: Page, courseId: string, hole: number): Promise<void> {
-    await page.goto(`/planner/${courseId}?hole=${hole}`);
+/** `query`: extra URL parameters, e.g. the dev-only `treeLod` band override. */
+export async function openPlanner(page: Page, courseId: string, hole: number, query: Record<string, string> = {}): Promise<void> {
+    const params = new URLSearchParams({ hole: String(hole), ...query });
+    await page.goto(`/planner/${courseId}?${params}`);
     await expect(page.locator(tid('planner'))).toBeVisible();
     await waitForMapReady(page);
     // The planner panel lives in the right contextual dock (shared with

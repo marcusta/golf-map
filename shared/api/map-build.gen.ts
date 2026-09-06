@@ -5,9 +5,9 @@ export interface MapBuildJob {
     id: string;
     courseId: string;
     siteId: null | string;
-    kind: 'build' | 're-terrain';
+    kind: 'build' | 're-terrain' | 'trees';
     status: 'running' | 'succeeded' | 'failed' | 'pending';
-    step: null | 'fetch-lidar' | 'grid-dem' | 'apply-dem-edits' | 'fetch-ortho' | 'tile-ortho' | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register';
+    step: null | 'fetch-lidar' | 'grid-dem' | 'apply-dem-edits' | 'fetch-ortho' | 'tile-ortho' | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register' | 'canopy' | 'trees-stems';
     bbox: Bbox;
     log: string;
     error: null | string;
@@ -33,6 +33,7 @@ export interface MapBuildApi {
     latest(input: { courseId: string }): Promise<null | MapBuildJob>;
     ensureOrtho(input: { courseId: string; collection: string }): Promise<MapBuildJob>;
     reTerrain(input: { courseId: string }): Promise<MapBuildJob>;
+    reTrees(input: { courseId: string }): Promise<MapBuildJob>;
     lidarInfo(input: { courseId: string }): Promise<LidarInfo>;
     deleteLidar(input: { courseId: string }): Promise<{ freedBytes: number }>;
 }
@@ -61,6 +62,9 @@ export function createMapBuildClient(baseUrl: string): MapBuildApi {
         },
         async reTerrain(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/mapbuild/re-terrain`, body: input });
+        },
+        async reTrees(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/mapbuild/re-trees`, body: input });
         },
         async lidarInfo(input) {
             const params = new URLSearchParams();

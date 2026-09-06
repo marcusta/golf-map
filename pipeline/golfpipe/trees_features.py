@@ -34,6 +34,14 @@ Steps (trees_from_canopy):
    round_m <= 0 keeps the cell outlines and only simplifies by simplify_m
    (topology preserving).
 5. Explode to single Polygons, drop those under min_area_m2.
+   Roof guard: a mask component (before step 3, so before rounding can
+   merge it with a neighbour) or a final polygon under roof_guard_area_m2
+   (12 m²) is kept only when roof_mask (cells the building suppressor
+   zeroed) is given and no roof cell lies within roof_guard_m (3 m) of it;
+   without a roof mask the effective minimum area is roof_guard_area_m2. Thin birches at 1.4
+   points/m² occupy 4 to 11 cells, the same support as the roof-edge
+   fragments that survive multi-return suppression; distance to a roof is
+   what separates them (see near_roof_mask).
 6. Per-polygon height stats against the canopy grid: every polygon is
    rasterized once (rasterio.features.rasterize with its index as the
    burn value), then heightMaxM / heightP90M / heightMeanM are taken over
@@ -60,7 +68,7 @@ import numpy as np
 import rasterio
 import rasterio.features
 import rasterio.windows
-from scipy.ndimage import binary_closing, label
+from scipy.ndimage import binary_closing, binary_dilation, label
 from shapely import make_valid, unary_union
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
@@ -77,12 +85,19 @@ __all__ = [
     "DEFAULT_MIN_HEIGHT_M", "DEFAULT_MIN_AREA_M2", "DEFAULT_MIN_HOLE_AREA_M2", "DEFAULT_CLOSE_M",
     "DEFAULT_ROUND_M", "DEFAULT_SIMPLIFY_M", "CHAIKIN_ITERATIONS", "THIN_KEEP_WIDTH_M", "FEATURE_TYPE", "SOURCE", "LICENSE",
     "TreePolygon",
-    "disk_structure", "denoise_mask", "fill_small_holes", "chaikin_ring", "chaikin_polygon",
+    "ROOF_GUARD_AREA_M2", "ROOF_GUARD_M",
+    "disk_structure", "denoise_mask", "near_roof_mask", "drop_small_components_near_roofs", "fill_small_holes", "chaikin_ring", "chaikin_polygon",
     "round_outlines", "trees_from_canopy", "build_trees_feature_collection", "read_canopy_tif",
 ]
 
 DEFAULT_MIN_HEIGHT_M = 2.0
-DEFAULT_MIN_AREA_M2 = 12.0
+DEFAULT_MIN_AREA_M2 = 4.0
+# Polygons under ROOF_GUARD_AREA_M2 need a roof mask and no roof cell within
+# ROOF_GUARD_M. Landeryd, hole 5 east corner: five thin birches 8.9 to 13.3 m
+# tall occupy 4 to 11 cells; the clubhouse window at 4 m² without the guard
+# gains 69 stems, 52 of them roof-edge fragments within 3 m of a roof cell.
+ROOF_GUARD_AREA_M2 = 12.0
+ROOF_GUARD_M = 3.0
 DEFAULT_MIN_HOLE_AREA_M2 = 50.0
 DEFAULT_CLOSE_M = 1.0
 DEFAULT_ROUND_M = 1.5
@@ -139,6 +154,49 @@ def denoise_mask(mask: np.ndarray, cell_size: float, close_m: float, min_area_m2
             keep[0] = False
             out = keep[labels]
     return out
+
+
+def near_roof_mask(roof_mask: np.ndarray, cell_size: float, guard_m: float = ROOF_GUARD_M) -> np.ndarray:
+    """Cells within guard_m of a roof cell (binary dilation of roof_mask by
+    disk_structure(guard_m / cell_size)). guard_m <= 0 returns roof_mask."""
+    roof = np.asarray(roof_mask, dtype=bool)
+    if guard_m <= 0.0 or not roof.any():
+        return roof
+    structure = disk_structure(guard_m / cell_size)
+    if structure.shape == (1, 1):
+        return roof
+    return binary_dilation(roof, structure=structure)
+
+
+def drop_small_components_near_roofs(mask: np.ndarray, roof_mask: np.ndarray, cell_size: float,
+                                     guard_area_m2: float = ROOF_GUARD_AREA_M2, guard_m: float = ROOF_GUARD_M) -> np.ndarray:
+    """Removes 8-connected components of mask with fewer than guard_area_m2 /
+    cell_size**2 cells that have a cell within guard_m of a roof cell."""
+    if not mask.any():
+        return mask
+    near = near_roof_mask(roof_mask, cell_size, guard_m)
+    labels, count = label(mask, structure=np.ones((3, 3), dtype=bool))
+    if count == 0:
+        return mask
+    cells = np.bincount(labels.ravel(), minlength=count + 1)
+    touches = np.zeros(count + 1, dtype=bool)
+    touches[np.unique(labels[near & mask])] = True
+    min_cells = int(np.ceil(guard_area_m2 / (cell_size * cell_size)))
+    drop = (cells < min_cells) & touches
+    drop[0] = False
+    return mask & ~drop[labels]
+
+
+def _touches_mask(polygons: list[Polygon], mask: np.ndarray, transform: "rasterio.Affine") -> list[bool]:
+    """Per polygon: does any cell it touches lie in mask (all_touched rasterize)."""
+    if not polygons or not mask.any():
+        return [False] * len(polygons)
+    burned = rasterio.features.rasterize(
+        [(polygon, i) for i, polygon in enumerate(polygons, 1)],
+        out_shape=mask.shape, transform=transform, fill=0, dtype="int32", all_touched=True,
+    )
+    hits = set(np.unique(burned[mask]).tolist())
+    return [i in hits for i in range(1, len(polygons) + 1)]
 
 
 def fill_small_holes(geom: BaseGeometry, min_hole_area_m2: float) -> BaseGeometry:
@@ -326,19 +384,40 @@ def trees_from_canopy(
     round_m: float = DEFAULT_ROUND_M,
     simplify_m: float = DEFAULT_SIMPLIFY_M,
     min_hole_area_m2: float = DEFAULT_MIN_HOLE_AREA_M2,
+    roof_mask: np.ndarray | None = None,
+    roof_guard_area_m2: float = ROOF_GUARD_AREA_M2,
+    roof_guard_m: float = ROOF_GUARD_M,
 ) -> list[TreePolygon]:
     """Cleaned canopy grid (metres above ground, 0 = none; float, north-up
     affine transform in EPSG:3006) -> tree polygons with height stats. See
-    the module docstring for the steps.
+    the module docstring for the steps. roof_mask is a canopy-shaped bool
+    grid of the cells the building suppressor zeroed; polygons under
+    roof_guard_area_m2 are dropped when it is None or when a roof cell lies
+    within roof_guard_m of them.
     """
     heights = np.nan_to_num(np.asarray(canopy, dtype=np.float64), nan=0.0)
     cell_size = float(abs(transform.a))
+    if roof_mask is None:
+        min_area_m2 = max(min_area_m2, roof_guard_area_m2)
+    elif np.shape(roof_mask) != heights.shape:
+        raise ValueError("roof_mask must match the canopy grid shape")
     mask = denoise_mask(heights >= min_height_m, cell_size, close_m, min_area_m2)
+    if roof_mask is not None and roof_guard_area_m2 > min_area_m2:
+        # Before rounding: the vector closing in round_outlines merges
+        # neighbours closer than 2 * round_m, so roof-edge islands must go
+        # while they are still small components.
+        mask = drop_small_components_near_roofs(mask, roof_mask, cell_size, roof_guard_area_m2, roof_guard_m)
     if not mask.any():
         return []
 
     raw = [fill_small_holes(geom, min_hole_area_m2) for geom in mask_to_polygons(mask, transform)]
     polygons = [p for p in round_outlines(raw, round_m, simplify_m, min_area_m2) if p.area >= min_area_m2]
+    if roof_mask is not None and roof_guard_area_m2 > min_area_m2:
+        # After rounding: parts the opening removed and brought back can still be small.
+        small = [p for p in polygons if p.area < roof_guard_area_m2]
+        near = _touches_mask(small, near_roof_mask(roof_mask, cell_size, roof_guard_m), transform)
+        dropped = {id(p) for p, hit in zip(small, near) if hit}
+        polygons = [p for p in polygons if id(p) not in dropped]
 
     stats = _height_stats(heights, polygons, transform, min_height_m)
     return [

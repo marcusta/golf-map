@@ -1,0 +1,677 @@
+{
+  "seed": 20260906,
+  "bounds3006": [
+    541550,
+    6469000,
+    541850,
+    6469300
+  ],
+  "population": 385,
+  "sample": [
+    {
+      "number": 1,
+      "treeIndex": 8715,
+      "tree": [
+        541805.5,
+        6469260.5,
+        17.2,
+        4.4,
+        71.32
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 2,
+      "treeIndex": 8728,
+      "tree": [
+        541665.5,
+        6469258.5,
+        21.1,
+        4.5,
+        76.52
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 3,
+      "treeIndex": 8743,
+      "tree": [
+        541820.5,
+        6469256.5,
+        19.8,
+        6.9,
+        68.53
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 4,
+      "treeIndex": 8774,
+      "tree": [
+        541840.5,
+        6469253.5,
+        14.6,
+        4.3,
+        65.64
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 5,
+      "treeIndex": 8839,
+      "tree": [
+        541843.5,
+        6469247.5,
+        9.3,
+        2.6,
+        65.76
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 6,
+      "treeIndex": 8859,
+      "tree": [
+        541660.5,
+        6469244.5,
+        19.0,
+        3.9,
+        75.92
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 7,
+      "treeIndex": 8864,
+      "tree": [
+        541651.5,
+        6469243.5,
+        15.3,
+        4.4,
+        75.77
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 8,
+      "treeIndex": 8889,
+      "tree": [
+        541786.5,
+        6469240.5,
+        27.9,
+        9.8,
+        75.06
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 9,
+      "treeIndex": 8906,
+      "tree": [
+        541844.5,
+        6469239.5,
+        20.2,
+        3.9,
+        65.85
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 10,
+      "treeIndex": 9003,
+      "tree": [
+        541723.5,
+        6469227.5,
+        14.8,
+        4.9,
+        74.12
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 11,
+      "treeIndex": 9040,
+      "tree": [
+        541836.5,
+        6469223.5,
+        27.2,
+        4.6,
+        69.86
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 12,
+      "treeIndex": 9052,
+      "tree": [
+        541740.5,
+        6469221.5,
+        25.3,
+        7.7,
+        76.27
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 13,
+      "treeIndex": 9131,
+      "tree": [
+        541714.5,
+        6469212.5,
+        15.4,
+        4.1,
+        74.42
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 14,
+      "treeIndex": 9188,
+      "tree": [
+        541756.5,
+        6469206.5,
+        6.2,
+        2.2,
+        82.59
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 15,
+      "treeIndex": 9261,
+      "tree": [
+        541722.5,
+        6469196.5,
+        20.1,
+        5.4,
+        77.52
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 16,
+      "treeIndex": 9406,
+      "tree": [
+        541691.5,
+        6469179.5,
+        16.0,
+        2.4,
+        74.48
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 17,
+      "treeIndex": 9427,
+      "tree": [
+        541728.5,
+        6469177.5,
+        16.2,
+        2.8,
+        81.75
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 18,
+      "treeIndex": 9456,
+      "tree": [
+        541817.5,
+        6469173.5,
+        26.9,
+        9.4,
+        81.31
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 19,
+      "treeIndex": 9537,
+      "tree": [
+        541734.5,
+        6469161.5,
+        18.1,
+        4.1,
+        84.32
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 20,
+      "treeIndex": 9538,
+      "tree": [
+        541816.5,
+        6469161.5,
+        27.6,
+        8.1,
+        82.05
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 21,
+      "treeIndex": 9551,
+      "tree": [
+        541684.5,
+        6469158.5,
+        5.3,
+        1.9,
+        75.66
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 22,
+      "treeIndex": 9568,
+      "tree": [
+        541745.5,
+        6469155.5,
+        20.3,
+        6.1,
+        86.12
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 23,
+      "treeIndex": 9612,
+      "tree": [
+        541820.5,
+        6469149.5,
+        25.7,
+        6.2,
+        82.29
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 24,
+      "treeIndex": 9659,
+      "tree": [
+        541677.5,
+        6469142.5,
+        14.9,
+        4.7,
+        76.77
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 25,
+      "treeIndex": 9660,
+      "tree": [
+        541797.5,
+        6469142.5,
+        8.3,
+        2.5,
+        85.33
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 26,
+      "treeIndex": 9714,
+      "tree": [
+        541762.5,
+        6469135.5,
+        25.1,
+        5.1,
+        87.06
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 27,
+      "treeIndex": 9762,
+      "tree": [
+        541807.5,
+        6469130.5,
+        27.7,
+        6.9,
+        84.72
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 28,
+      "treeIndex": 9858,
+      "tree": [
+        541781.5,
+        6469117.5,
+        30.2,
+        7.0,
+        86.38
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 29,
+      "treeIndex": 9884,
+      "tree": [
+        541828.5,
+        6469113.5,
+        28.2,
+        7.7,
+        82.9
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 30,
+      "treeIndex": 9971,
+      "tree": [
+        541679.5,
+        6469103.5,
+        6.2,
+        2.2,
+        79.33
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 31,
+      "treeIndex": 9972,
+      "tree": [
+        541702.5,
+        6469103.5,
+        15.7,
+        4.4,
+        83.17
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 32,
+      "treeIndex": 9975,
+      "tree": [
+        541833.5,
+        6469103.5,
+        28.0,
+        6.9,
+        82.67
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 33,
+      "treeIndex": 9990,
+      "tree": [
+        541712.5,
+        6469102.5,
+        18.0,
+        3.4,
+        84.29
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 34,
+      "treeIndex": 10015,
+      "tree": [
+        541683.5,
+        6469098.5,
+        5.6,
+        2.0,
+        79.85
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 35,
+      "treeIndex": 10121,
+      "tree": [
+        541809.5,
+        6469084.5,
+        29.2,
+        3.4,
+        84.39
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 36,
+      "treeIndex": 10122,
+      "tree": [
+        541818.5,
+        6469084.5,
+        29.4,
+        3.4,
+        84.02
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 37,
+      "treeIndex": 10151,
+      "tree": [
+        541685.5,
+        6469081.5,
+        11.2,
+        3.9,
+        80.59
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 38,
+      "treeIndex": 10161,
+      "tree": [
+        541737.5,
+        6469080.5,
+        15.9,
+        2.9,
+        85.38
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 39,
+      "treeIndex": 10162,
+      "tree": [
+        541795.5,
+        6469080.5,
+        27.4,
+        7.8,
+        85.27
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 40,
+      "treeIndex": 10269,
+      "tree": [
+        541700.5,
+        6469069.5,
+        14.8,
+        5.2,
+        81.69
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 41,
+      "treeIndex": 10295,
+      "tree": [
+        541733.5,
+        6469066.5,
+        22.9,
+        3.4,
+        84.73
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 42,
+      "treeIndex": 10321,
+      "tree": [
+        541713.5,
+        6469063.5,
+        10.4,
+        3.7,
+        82.12
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "ambiguous-shadow-overlap-or-duplicate"
+    },
+    {
+      "number": 43,
+      "treeIndex": 10384,
+      "tree": [
+        541737.5,
+        6469056.5,
+        23.3,
+        6.6,
+        84.09
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 44,
+      "treeIndex": 10404,
+      "tree": [
+        541757.5,
+        6469054.5,
+        23.7,
+        5.6,
+        85.51
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 45,
+      "treeIndex": 10521,
+      "tree": [
+        541825.5,
+        6469042.5,
+        24.9,
+        7.4,
+        82.5
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 46,
+      "treeIndex": 10625,
+      "tree": [
+        541805.5,
+        6469031.5,
+        25.2,
+        8.8,
+        82.61
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 47,
+      "treeIndex": 10654,
+      "tree": [
+        541779.5,
+        6469028.5,
+        26.1,
+        9.1,
+        83.58
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 48,
+      "treeIndex": 10716,
+      "tree": [
+        541837.5,
+        6469022.5,
+        26.4,
+        6.3,
+        79.9
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 49,
+      "treeIndex": 10766,
+      "tree": [
+        541596.5,
+        6469015.5,
+        11.5,
+        2.8,
+        79.19
+      ],
+      "visualAssessment": "ambiguous-shadow-overlap-or-offset",
+      "initialVisualAssessment": "identifiable-crown"
+    },
+    {
+      "number": 50,
+      "treeIndex": 10817,
+      "tree": [
+        541817.5,
+        6469010.5,
+        20.3,
+        3.2,
+        80.65
+      ],
+      "visualAssessment": "identifiable-crown-center",
+      "initialVisualAssessment": "identifiable-crown"
+    }
+  ],
+  "visualSummary": {
+    "identifiable": 40,
+    "ambiguous": 10,
+    "clearNonTree": 0,
+    "denominator": 50,
+    "interpretation": "80% confirmed crown matches by eye; not surveyed stem precision or a recall estimate. Leaf-off 2023 orthophoto; lidar capture may differ."
+  },
+  "review": {
+    "criterion": "Detection center matches a distinct crown visible in the 24m orthophoto crop. Shadows, overlaps and uncertain offsets remain unresolved.",
+    "confirmed": 33,
+    "ambiguous": 17,
+    "clearRoofDetections": 0,
+    "confirmedFraction": 0.66,
+    "note": "Visual confirmation fraction in one wooded 300m window; no surveyed trunk positions or recall measurement."
+  }
+}

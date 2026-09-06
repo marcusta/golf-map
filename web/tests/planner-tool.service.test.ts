@@ -293,3 +293,42 @@ describe('PlannerToolService — green-slope caddy seam (D10)', () => {
         for (const dispose of disposers) dispose();
     });
 });
+
+describe('PlannerToolService — box query (B + drag copies EPSG:3006 bounds)', () => {
+    afterEach(() => { di.reset(); _reset(); });
+
+    test('B arms the box pick, B again or Esc disarms it, and typing in a field is ignored', async () => {
+        seedHoleWithGreen(hole('h1', 1));
+        selectHole(1);
+        const { api } = stubAnalysisApi(tiltedGreenGrid());
+        const svc = new PlannerToolService(api);
+        const disposers: Array<() => void> = [];
+        svc.start(d => disposers.push(d));
+        await settle();
+
+        const press = (key: string, target?: EventTarget) => {
+            const e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+            (target ?? window).dispatchEvent(e);
+            return e.defaultPrevented;
+        };
+        expect(svc.boxArmed.get()).toBe(false);
+        expect(press('b')).toBe(true);
+        expect(svc.boxArmed.get()).toBe(true);
+        expect(press('Escape')).toBe(true);
+        expect(svc.boxArmed.get()).toBe(false);
+        press('B');
+        expect(svc.boxArmed.get()).toBe(true);
+        press('b');
+        expect(svc.boxArmed.get()).toBe(false);
+
+        const input = document.createElement('input');
+        document.body.appendChild(input);
+        expect(press('b', input)).toBe(false);
+        expect(svc.boxArmed.get()).toBe(false);
+        input.remove();
+
+        press('b');
+        for (const d of disposers) d();
+        expect(svc.boxArmed.get()).toBe(false);   // teardown disarms
+    });
+});

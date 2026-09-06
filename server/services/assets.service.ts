@@ -1,6 +1,8 @@
 import type { Kysely, Selectable } from 'kysely';
 import { sql } from 'kysely';
 import * as path from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
+import { parseTreeStemsAsset } from '../../shared/strategy/tree-stems';
 import type { Database, CourseAssetsTable } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { NotFoundError } from '@basics/core/server/auth';
@@ -95,6 +97,12 @@ function assertTileCoordinate(name: string, value: number): void {
 export class AssetsService {
     constructor(private db: Kysely<Database>, private dataDir: string) {}
 
+    /** Fixed filename asset alongside the raster layers, shared by courses at a site. */
+    resolveTreeStemsPath(siteId: string): string {
+        if (!SAFE_ID_RE.test(siteId)) throw new Error('Invalid site id');
+        return path.join(this.dataDir, 'tiles', siteId, 'tree-stems.json');
+    }
+
     // --- Queries (read) ---
 
     private assets() {
@@ -131,6 +139,66 @@ export class AssetsService {
     }
 
     // --- Methods ---
+
+    /** Refresh API metadata after the pipeline changes the installed manifest. */
+    async registerInstalledTileManifest(courseOrSiteId: string): Promise<CourseAsset[]> {
+        if (!SAFE_ID_RE.test(courseOrSiteId)) throw new Error('Invalid course or site id');
+        const course = await this.db.selectFrom('courses').select(['id', 'site_id'])
+            .where('id', '=', courseOrSiteId).executeTakeFirst();
+        const siteId = course?.site_id ?? courseOrSiteId;
+        if (!SAFE_ID_RE.test(siteId)) throw new Error('Invalid site id');
+        if (!course) {
+            const site = await this.db.selectFrom('sites').select('id').where('id', '=', siteId).executeTakeFirst();
+            if (!site) throw new NotFoundError(`Course or site ${courseOrSiteId} not found`);
+        }
+        const tilesRoot = await realpath(path.join(this.dataDir, 'tiles'));
+        const readInstalled = async (filename: string): Promise<unknown> => {
+            const file = await realpath(path.join(tilesRoot, siteId, filename));
+            if (!file.startsWith(tilesRoot + path.sep)) throw new Error('Installed asset escapes tiles directory');
+            return JSON.parse(await readFile(file, 'utf8'));
+        };
+        const raw = await readInstalled('manifest.json');
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid tile manifest');
+        const manifest = raw as Record<string, any>;
+        const bounds = manifest.bounds;
+        if (!bounds || !['west', 'south', 'east', 'north'].every(key => Number.isFinite(bounds[key]))
+            || bounds.west >= bounds.east || bounds.south >= bounds.north
+            || !manifest.layers?.ortho || !manifest.layers?.terrain
+            || typeof manifest.generatedAt !== 'string' || !Number.isFinite(Date.parse(manifest.generatedAt))) {
+            throw new Error('Invalid tile manifest bounds, layers or generatedAt');
+        }
+        const descriptor = manifest.assets?.['tree-stems'];
+        if (descriptor !== undefined) {
+            if (!descriptor || descriptor.path !== 'tree-stems.json' || descriptor.format !== 'tree-stems-v1'
+                || !Number.isInteger(descriptor.count) || descriptor.count < 0) {
+                throw new Error('Invalid tree-stems descriptor');
+            }
+            const stems = parseTreeStemsAsset(await readInstalled('tree-stems.json'));
+            if (stems.length !== descriptor.count) throw new Error('Tree-stems count differs from manifest');
+        }
+        const metaJson = JSON.stringify(manifest);
+        return this.db.transaction().execute(async trx => {
+            const existing = await trx.selectFrom('course_assets').selectAll()
+                .where('kind', '=', 'tile_manifest')
+                .where(eb => eb.or([
+                    eb('site_id', '=', siteId),
+                    eb.and([eb('site_id', 'is', null), eb('course_id', '=', course?.id ?? siteId)]),
+                ])).execute();
+            const service = new AssetsService(trx, this.dataDir);
+            if (!existing.length) {
+                // course_assets retains a required course FK even for site-owned rows.
+                const owner = course ?? await trx.selectFrom('courses').select('id')
+                    .where('site_id', '=', siteId).orderBy('id').executeTakeFirst();
+                if (!owner) throw new Error('Site has no course to own its tile manifest');
+                return [await service.register({
+                    siteId, courseId: owner.id, kind: 'tile_manifest', filename: `tiles/${siteId}/manifest.json`, metaJson,
+                })];
+            }
+            const updated: CourseAsset[] = [];
+            for (const asset of existing) updated.push(await service.update(asset.id, asset.version, { metaJson }));
+            return updated;
+        });
+    }
 
     async listByCourse(courseId: string): Promise<CourseAsset[]> {
         const rows = await this.byCourse(courseId).execute();

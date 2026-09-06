@@ -165,7 +165,10 @@ struct CourseScreen: View {
             }
             // Tree rings WITH their canopy heights (lidar-generated features
             // carry heightP90M etc.) for the rail's height-aware "Trees" rows.
-            if let treeStore = try? TreeFeatureStore(featuresGeoJSON: featuresGeoJSON) {
+            if let data = try? Data(contentsOf: env.bundlePaths.courseDataDirectory(courseId: courseId).appending(path: "tree-stems.json")),
+               let stems = try? TreeStemsAsset.parse(data) {
+                newModel.setTrees(TreeFeatureStore(features: stems.map(\.feature)))
+            } else if let treeStore = try? TreeFeatureStore(featuresGeoJSON: featuresGeoJSON) {
                 newModel.setTrees(treeStore)
             }
             newModel.updateUserLocation(locationProvider.location)

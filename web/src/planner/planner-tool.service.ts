@@ -1,3 +1,5 @@
+import { TreeStemsService } from '../map/tree-stems.service';
+import { buildTreeStemIndex } from '../../../shared/strategy/tree-stems';
 import { API_BASE } from '@basics/core/client/base';
 import { Signal, Computed, effect, untrack, di, Router } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
@@ -64,6 +66,7 @@ import { FurnitureService } from '../furniture/furniture.service';
 import { FeaturesService } from '../draw/features.service';
 import { lngLatToSweref99tm, sweref99tmToLngLat, sweref99tmToWgs84, wgs84ToSweref99tm } from '../geo/transform';
 import { PlanService, type PlanHoleRow } from './plan.service';
+import { describeBoxQuery } from './box-query';
 import { ClubsService } from '../player/clubs.service';
 import {
     COURSE_ROUTE_OVERLAY_ID,
@@ -489,6 +492,9 @@ export class PlannerToolService {
 
     private drag: Drag | null = null;
     private suppressClick = false;
+    /** B toggles a one-shot "drag a box, copy its EPSG:3006 bounds" pick. */
+    readonly boxArmed = new Signal(false);
+    private box: { start: { x: number; y: number }; el: HTMLDivElement } | null = null;
     private overlayAdded = false;
     private caddyOverlayAdded = false;
     private puttOverlayAdded = false;
@@ -667,7 +673,11 @@ export class PlannerToolService {
      * sweeps every leg against it; without the index each frame swept all
      * ~2200 Landeryd tree rings per leg.
      */
-    private readonly treeIndex = new Computed<TreeIndex>(() => buildTreeIndex(this.treeFeatures.get()));
+    private readonly stems = di.get(TreeStemsService);
+    private readonly treeIndex = new Computed<TreeIndex>(() => {
+        const stems = this.stems.stems.get();
+        return stems !== null ? buildTreeStemIndex(stems) : buildTreeIndex(this.treeFeatures.get());
+    });
 
     /** Planar (EPSG:3006) ground sampler over the elevation service's cached tiles; null = not cached yet. */
     private readonly groundAtPlanar = (p: Vec2): number | null =>
@@ -1826,11 +1836,13 @@ export class PlannerToolService {
 
         // Tree clearance inputs (over-the-trees rule): the course's tree rings,
         // this leg's carry and table apex, and the terrain sampler along it.
-        const trees = this.treeFeatures.peek();
-        const treeCtx: Pick<CaddyContext, 'trees' | 'apexM' | 'shotCarryM' | 'groundAt'> = {};
-        if (trees.length > 0 && leg.adjustedCarryM !== undefined && leg.adjustedCarryM > 0) {
+        const trees = this.treeIndex.peek();
+        const treeCtx: Pick<CaddyContext, 'trees' | 'apexM' | 'shotCarryM' | 'groundAt' | 'originGroundM' | 'originGroundKnown'> = {};
+        if (trees.entries.length > 0 && leg.adjustedCarryM !== undefined && leg.adjustedCarryM > 0) {
             const ground = legGroundProfile(leg, this.groundAtPlanar);
             treeCtx.trees = trees;
+            treeCtx.originGroundM = ground.originGroundM;
+            treeCtx.originGroundKnown = ground.originGroundKnown;
             treeCtx.apexM = apexHeightM(leg.adjustedCarryM);
             treeCtx.shotCarryM = leg.adjustedCarryM;
             if (ground.groundAt) treeCtx.groundAt = ground.groundAt;
@@ -2285,6 +2297,7 @@ export class PlannerToolService {
      */
     start(track: (dispose: () => void) => void): void {
         track(this.map.claimInteraction(PLANNER_TOOL_ID));
+        track(() => this.cancelBox());
 
         track(this.map.onClick(e => this.onClick(e)));
         track(this.map.onMouseMove(e => this.onMouseMove(e)));
@@ -3160,6 +3173,10 @@ export class PlannerToolService {
 
     private onMouseMove(e: MapPointerEvent): void {
         if (!this.isMyClaim()) return;
+        if (this.box) {
+            this.drawBox(e.point);
+            return;
+        }
         const drag = this.drag;
         if (!drag) return;
         if (!drag.moved && this.pxDist(drag.startScreen, e.point) < DRAG_MOVE_THRESHOLD_PX) return;
@@ -3201,6 +3218,13 @@ export class PlannerToolService {
         if (!this.isMyClaim()) return;
         if (e.originalEvent.button !== 0) return;
 
+        if (this.boxArmed.peek()) {
+            e.preventDefault();
+            map.dragPan.disable();
+            this.startBox(e.point, map);
+            return;
+        }
+
         // ⌘/Ctrl-drag is the guaranteed pan escape hatch (same convention as
         // the draw tool): never grab a marker, and return WITHOUT
         // preventDefault/dragPan.disable so MapLibre's native dragPan takes
@@ -3231,6 +3255,12 @@ export class PlannerToolService {
     }
 
     private onMouseUp(map: MaplibreMap): void {
+        if (this.box) {
+            this.finishBox(map);
+            this.suppressClick = true;
+            setTimeout(() => { this.suppressClick = false; }, 0);
+            return;
+        }
         const drag = this.drag;
         if (!drag) return;
         this.endDrag(map);
@@ -3253,7 +3283,10 @@ export class PlannerToolService {
         ) return;
 
         if (e.key === 'Escape') {
-            if (this.mode.peek() !== 'select') {
+            if (this.boxArmed.peek()) {
+                this.cancelBox();
+                e.preventDefault();
+            } else if (this.mode.peek() !== 'select') {
                 this.mode.set('select');
                 this.notice.set(null);
                 e.preventDefault();
@@ -3268,7 +3301,71 @@ export class PlannerToolService {
                 e.preventDefault();
                 void this.deleteSelected();
             }
+            return;
         }
+        if ((e.key === 'b' || e.key === 'B') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+            e.preventDefault();
+            if (this.boxArmed.peek()) this.cancelBox();
+            else {
+                this.notice.set(null);
+                this.boxArmed.set(true);
+            }
+        }
+    }
+
+    // ── Box query (B + drag → EPSG:3006 bounds on the clipboard) ─────────────
+
+    private startBox(point: { x: number; y: number }, map: MaplibreMap): void {
+        const el = document.createElement('div');
+        el.className = 'plan-box-query';
+        el.style.cssText = 'position:absolute;pointer-events:none;z-index:5;border:2px dashed #ffd400;'
+            + 'background:rgba(255,212,0,0.15);left:0;top:0;width:0;height:0';
+        map.getContainer().appendChild(el);
+        this.box = { start: { x: point.x, y: point.y }, el };
+        this.drawBox(point);
+    }
+
+    private drawBox(point: { x: number; y: number }): void {
+        const box = this.box;
+        if (!box) return;
+        const left = Math.min(box.start.x, point.x);
+        const top = Math.min(box.start.y, point.y);
+        box.el.style.left = `${left}px`;
+        box.el.style.top = `${top}px`;
+        box.el.style.width = `${Math.abs(point.x - box.start.x)}px`;
+        box.el.style.height = `${Math.abs(point.y - box.start.y)}px`;
+    }
+
+    /**
+     * Unproject all four screen corners (a pitched camera turns the box into a
+     * ground trapezoid), take their EPSG:3006 extent, copy and show it.
+     */
+    private finishBox(map: MaplibreMap): void {
+        const box = this.box;
+        if (!box) return;
+        const rect = box.el.getBoundingClientRect();
+        const host = map.getContainer().getBoundingClientRect();
+        const x0 = rect.left - host.left, y0 = rect.top - host.top;
+        const x1 = x0 + rect.width, y1 = y0 + rect.height;
+        const corners = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]
+            .map(([x, y]) => lngLatToSweref99tm(map.unproject([x, y])));
+        this.cancelBox();
+        const query = describeBoxQuery(corners);
+        console.info(`[planner] box query: ${query.text}`);
+        this.notice.set(`Copied ${query.text}`);
+        void navigator.clipboard?.writeText(query.text).catch(() => {
+            this.notice.set(query.text);
+        });
+    }
+
+    /** Disarm and remove any half-drawn box; restores the map's drag-pan. */
+    private cancelBox(): void {
+        this.boxArmed.set(false);
+        const box = this.box;
+        if (!box) return;
+        this.box = null;
+        box.el.remove();
+        this.map.map.peek()?.dragPan.enable();
     }
 
     // ── Placement ───────────────────────────────────────────────────────────
