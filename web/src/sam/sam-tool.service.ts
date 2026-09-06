@@ -6,7 +6,8 @@
 //
 //   click → planCrop (sam-crop.ts) → compose crop (tile fetch, seam below)
 //   → SamClient./segment → largestPolygon → crop px → EPSG:3006
-//   → rdpSimplifyClosed (SAM_SIMPLIFY_EPS_M) → fitClosedBspline (T40)
+//   → rdpSimplifyClosed (SAM_SIMPLIFY_EPS_M) → fitClosedBspline (T40, with
+//     a perimeter-scaled control floor and curvature-weighted spacing)
 //   → FeaturesService.create → ONE create history entry (⌘Z in draw undoes).
 //
 // Health-gated: the panel shows sidecar state and clicks are ignored while
@@ -30,11 +31,40 @@ import { planCrop, cropPolygonToSweref, fillTileUrl, type CropPlan } from './sam
 /** Interaction-claim id for the SAM tool (also its registry id). */
 export const SAM_TOOL_ID = 'sam';
 
-/** RDP epsilon (meters) applied to the mask contour before fitting. */
-export const SAM_SIMPLIFY_EPS_M = 0.4;
-/** B-spline fit tolerance (meters) — contours are raster-quantized, so a
- * touch tighter than the freehand trace's 0.75 (the source is steadier). */
-export const SAM_FIT_TOLERANCE_M = 0.5;
+/** RDP epsilon (meters) applied to the mask contour before fitting. Ortho
+ * pixels are ~0.15 m, so 0.2 strips the staircase and keeps real detail. */
+export const SAM_SIMPLIFY_EPS_M = 0.2;
+/** B-spline fit tolerance (meters) — contours are raster-quantized, so
+ * tighter than the freehand trace's 0.75 (the source is steadier). */
+export const SAM_FIT_TOLERANCE_M = 0.3;
+/** Vertex-density floor: the fit starts at one control per this many
+ * metres of contour perimeter (a 34 m bunker outline → 14 controls, where
+ * the tolerance alone settled at 8) and still climbs until it meets
+ * SAM_FIT_TOLERANCE_M. */
+export const SAM_METERS_PER_CONTROL = 2.5;
+/** Adaptive-ladder cap. The 512 px crop bounds shapes to ~75 m across, so
+ * 48 covers a full-crop green at ~3 m spacing. */
+export const SAM_MAX_CONTROLS = 48;
+/** Share of the controls placed by turning angle rather than arc length
+ * (geo/spline-fit FitOptions.curvatureShare): straight stretches thin out,
+ * bends pick up the difference. */
+export const SAM_CURVATURE_SHARE = 0.5;
+
+/** Closed-ring perimeter (meters) of a point list. */
+export function ringPerimeter(pts: Array<{ x: number; y: number }>): number {
+    let sum = 0;
+    for (let i = 0; i < pts.length; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        sum += Math.hypot(b.x - a.x, b.y - a.y);
+    }
+    return sum;
+}
+
+/** SAM's perimeter-scaled ladder floor, clamped to the cap. */
+export function samMinControls(perimeterM: number): number {
+    return Math.min(SAM_MAX_CONTROLS, Math.round(perimeterM / SAM_METERS_PER_CONTROL));
+}
 
 /** Sidecar reachability, as shown by the panel. */
 export type SamHealth = 'checking' | 'online' | 'offline';
@@ -214,7 +244,10 @@ export class SamToolService {
         }
         const ring = cropPolygonToSweref(plan, mask);
         const simplified = rdpSimplifyClosed(ring, SAM_SIMPLIFY_EPS_M);
-        const { controls } = fitClosedBspline(simplified, SAM_FIT_TOLERANCE_M);
+        const { controls } = fitClosedBspline(simplified, SAM_FIT_TOLERANCE_M, SAM_MAX_CONTROLS, {
+            minControls: samMinControls(ringPerimeter(simplified)),
+            curvatureShare: SAM_CURVATURE_SHARE,
+        });
         if (controls.length < MIN_RING_POINTS) {
             this.notice.set('The segmented shape was too small to keep.');
             return undefined;

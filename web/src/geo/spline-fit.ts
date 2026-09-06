@@ -23,6 +23,9 @@
 // tolerance (capped at `maxControls`, default 20 — the best fit so far is
 // returned regardless). GeoJSON import (T52) raises the cap with ring
 // perimeter so long shorelines keep enough controls to follow the shape.
+// FitOptions add a ladder floor (minControls) and a curvature-weighted
+// parameterisation (curvatureShare) — the SAM assist uses both so its
+// outlines carry more vertices, concentrated in the bends.
 
 import { flattenRing, type Point } from './bezier';
 import { rdpSimplify } from '../draw/draw-state';
@@ -41,16 +44,38 @@ export interface ClosedBsplineFit {
 /** Default adaptive-ladder cap — the T40 trace / T45 SAM behavior. */
 const DEFAULT_MAX_CONTROLS = 20;
 
+export interface FitOptions {
+    /**
+     * Lowest rung of the adaptive ladder (default 8, clamped to the cap).
+     * Callers that want a guaranteed vertex density (SAM: one control per
+     * so many metres of perimeter) raise it; the ladder still climbs past
+     * it until the fit meets tolerance.
+     */
+    minControls?: number;
+    /**
+     * Share of the spline's parameter domain handed out by TURNING ANGLE
+     * instead of arc length, in [0, 0.95]. 0 (default) is plain
+     * chord-length parameterisation: controls spread evenly along the
+     * outline, so a long straight edge costs as many controls as a tight
+     * lobe of the same length. At 0.5 half the controls follow arc length
+     * and half follow curvature, so straight stretches thin out and bends
+     * pick up the difference. Scale-free: a simple closed ring turns 2π in
+     * total whatever its size.
+     */
+    curvatureShare?: number;
+}
+
 /**
  * Adaptive control-count ladder: 8 → 12 → 16 → 20 (T40's exact ladder when
  * the cap is the default 20), then geometric ×1.4 rungs (rounded up to a
  * multiple of 4) so large caps stay a dozen solves, always ending exactly
- * at the cap.
+ * at the cap. `minControls` replaces the 8 floor (clamped to the cap).
  */
-function controlLadder(maxControls: number): number[] {
+function controlLadder(maxControls: number, minControls = 0): number[] {
     const cap = Math.max(3, Math.floor(maxControls));
+    const floor = Math.min(cap, Math.max(8, Math.floor(minControls)));
     const counts: number[] = [];
-    let m = Math.min(8, cap);
+    let m = floor;
     while (m < cap) {
         counts.push(m);
         m = m < 20 ? m + 4 : Math.min(cap, Math.ceil((m * 1.4) / 4) * 4);
@@ -78,6 +103,7 @@ export function fitClosedBspline(
     stroke: Point[],
     toleranceM: number,
     maxControls: number = DEFAULT_MAX_CONTROLS,
+    options: FitOptions = {},
 ): ClosedBsplineFit {
     const pts = dedupeClosed(stroke);
     if (pts.length < 3) {
@@ -89,10 +115,11 @@ export function fitClosedBspline(
     // here (it only pins the stroke's own start/end as kept samples).
     const simplified = rdpSimplify(pts, toleranceM / 2);
     const ring = simplified.length >= 3 ? simplified : pts;
+    const curvatureShare = Math.min(0.95, Math.max(0, options.curvatureShare ?? 0));
 
     let best: ClosedBsplineFit | null = null;
-    for (const m of controlLadder(maxControls)) {
-        const controls = solveControls(ring, m);
+    for (const m of controlLadder(maxControls, options.minControls ?? 0)) {
+        const controls = solveControls(ring, m, curvatureShare);
         const maxDeviation = maxStrokeDeviation(pts, controls, toleranceM);
         if (!best || maxDeviation < best.maxDeviation) best = { controls, maxDeviation };
         if (maxDeviation <= toleranceM) break;
@@ -117,13 +144,15 @@ function dedupeClosed(stroke: Point[]): Point[] {
 }
 
 /**
- * Least-squares solve for m closed-B-spline controls approximating the
- * closed polyline `ring`. Samples are chord-length parameterised over
- * [0, m) and long edges (including the closing edge) are densified to at
- * most half a segment's arc length, so every control's basis window has
- * sample support and the normal equations stay well-conditioned.
+ * Per-edge parameter weights for the solve. With `curvatureShare` = 0 the
+ * weight is the edge's length (chord-length parameterisation). Otherwise
+ * each vertex's absolute turning angle is split onto its two adjacent
+ * edges, and the weight blends the edge's share of the perimeter with its
+ * share of the ring's total turning: w_i = (1 - s)·len_i/P + s·turn_i/T.
+ * Parameter then advances faster through bends, so the evenly-spaced
+ * controls crowd there and thin out along straights.
  */
-function solveControls(ring: Point[], m: number): Point[] {
+function edgeWeights(ring: Point[], curvatureShare: number): number[] {
     const n = ring.length;
     const edges: number[] = [];
     let perimeter = 0;
@@ -134,10 +163,49 @@ function solveControls(ring: Point[], m: number): Point[] {
         edges.push(len);
         perimeter += len;
     }
+    if (curvatureShare <= 0 || perimeter === 0) return edges;
+
+    // Absolute turning angle at each vertex i (between edge i-1 and edge i).
+    const turn: number[] = [];
+    let totalTurn = 0;
+    for (let i = 0; i < n; i++) {
+        const p = ring[(i + n - 1) % n];
+        const q = ring[i];
+        const r = ring[(i + 1) % n];
+        const ax = q.x - p.x;
+        const ay = q.y - p.y;
+        const bx = r.x - q.x;
+        const by = r.y - q.y;
+        const angle = Math.abs(Math.atan2(ax * by - ay * bx, ax * bx + ay * by));
+        turn.push(Number.isFinite(angle) ? angle : 0);
+        totalTurn += turn[i];
+    }
+    if (totalTurn === 0) return edges;
+
+    // Edge i runs from vertex i to vertex i+1: half of each end's turn.
+    return edges.map((len, i) => {
+        const t = (turn[i] + turn[(i + 1) % n]) / 2;
+        return (1 - curvatureShare) * (len / perimeter) + curvatureShare * (t / totalTurn);
+    });
+}
+
+/**
+ * Least-squares solve for m closed-B-spline controls approximating the
+ * closed polyline `ring`. Samples are parameterised over [0, m) by the
+ * edge weights (chord length, optionally curvature-blended — see
+ * edgeWeights) and long edges (including the closing edge) are densified
+ * to at most half a segment's parameter span, so every control's basis
+ * window has sample support and the normal equations stay well-conditioned.
+ */
+function solveControls(ring: Point[], m: number, curvatureShare = 0): Point[] {
+    const n = ring.length;
+    const weights = edgeWeights(ring, curvatureShare);
+    let total = 0;
+    for (const w of weights) total += w;
 
     // Linear samples along the ring: each edge contributes its start point
-    // plus enough interpolated points to keep spacing ≤ perimeter / (2m).
-    const maxSpacing = perimeter / (2 * m);
+    // plus enough interpolated points to keep parameter spacing ≤ 1 / 2.
+    const maxSpacing = total / (2 * m);
     const su: number[] = [];
     const sx: number[] = [];
     const sy: number[] = [];
@@ -145,14 +213,14 @@ function solveControls(ring: Point[], m: number): Point[] {
     for (let i = 0; i < n; i++) {
         const a = ring[i];
         const b = ring[(i + 1) % n];
-        const pieces = Math.max(1, Math.ceil(edges[i] / maxSpacing));
+        const pieces = Math.max(1, Math.ceil(weights[i] / maxSpacing));
         for (let s = 0; s < pieces; s++) {
             const t = s / pieces;
-            su.push(((acc + edges[i] * t) / perimeter) * m);
+            su.push(((acc + weights[i] * t) / total) * m);
             sx.push(a.x + (b.x - a.x) * t);
             sy.push(a.y + (b.y - a.y) * t);
         }
-        acc += edges[i];
+        acc += weights[i];
     }
 
     // Center coordinates on the centroid: EPSG:3006 magnitudes (~1e5/1e6 m)
