@@ -30,8 +30,12 @@ The transfer is therefore two different things:
 - **One-time migration of the current sites.** The full `data/` dir is 10 G (8.5 G of it
   lidar and orthos under `sources/`). Copying it once over the LAN or an SSD takes minutes,
   carries user data (rounds, plans, calibration) and every derived artifact unchanged, and
-  needs no rebuild whose reproducibility is untested. Recommended. Re-downloading through
-  the site bundle (section 5) works too, and is the fallback if copying is impractical.
+  needs no rebuild whose reproducibility is untested. Done 2026-09-06 onto an exFAT USB
+  NVMe drive under `golf-map-data/` with a README for the restore. Two things learned:
+  macOS mounts NTFS read-only, so the drive had to be exFAT; and exFAT allocates 128 KB
+  per file, so `tiles/` (171k small PNGs, 1.1 G) was written as `tiles.tar.zst` instead of
+  files (46 G on disk otherwise). SQLite files were copied with `sqlite3 .backup` while the
+  server held them open.
 - **Ongoing two-way movement of single sites.** Content lives on Windows. The Mac needs
   sites back as development fixtures, and a site built on either machine should be
   reproducible on the other. That is what the bundle plus recipe below is for.
