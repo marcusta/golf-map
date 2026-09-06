@@ -31,6 +31,7 @@ from golfpipe import osm as osm_mod
 from golfpipe import patches as patches_mod
 from golfpipe import stac
 from golfpipe import trees_features as trees_features_mod
+from golfpipe import sources as sources_mod
 from golfpipe import water as water_mod
 from golfpipe.hillshade import write_hillshade_geotiff
 from golfpipe.manifest import build_manifest, merge_into_existing, write_manifest
@@ -66,13 +67,18 @@ def cmd_reproject_bbox(
     return (left, bottom, right, top)
 
 
-def cmd_fetch_dem(bbox: tuple[float, float, float, float], workdir: Path, out: Path, buffer_m: float = DEFAULT_FETCH_BUFFER_M) -> Path:
+def cmd_fetch_dem(bbox: tuple[float, float, float, float], workdir: Path, out: Path, buffer_m: float = DEFAULT_FETCH_BUFFER_M,
+                  items: list[str] | None = None) -> Path:
     """STAC-searches dtm-cog for bbox, downloads matching COG(s) with basic
     auth into workdir, mosaics/crops to bbox+buffer, writes out (kept in the
     source CRS — EPSG:3006/RH2000 — since terrain-RGB tiling reprojects at
     tile time anyway).
+
+    `items` pins STAC item ids (from a sources.json recipe) instead of
+    searching. Every fetch records what it downloaded in the recipe next to
+    `out` (golfpipe.sources).
     """
-    items = stac.search_dem(bbox)
+    items = stac.search_dem(bbox, ids=items)
     if not items:
         print(f"No dtm-cog items found for bbox {bbox}", file=sys.stderr)
         raise SystemExit(1)
@@ -86,6 +92,8 @@ def cmd_fetch_dem(bbox: tuple[float, float, float, float], workdir: Path, out: P
         downloaded.append(dest)
 
     mosaic_and_crop(downloaded, bbox, out, buffer_m=buffer_m)
+    sources_mod.record_fetch(sources_mod.recipe_path_for(out), "dem", collection=stac.DEM_COLLECTION,
+                             items=[it.id for it in items], bbox_wgs84=bbox, files=[out.name], buffer_m=buffer_m)
     print(f"Wrote {out}")
     return out
 
@@ -104,7 +112,8 @@ def cmd_list_ortho_vintages(bbox: tuple[float, float, float, float]) -> list[dic
     return out
 
 
-def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out: Path, buffer_m: float = DEFAULT_FETCH_BUFFER_M, collection: str | None = None) -> Path:
+def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out: Path, buffer_m: float = DEFAULT_FETCH_BUFFER_M, collection: str | None = None,
+                    items: list[str] | None = None) -> Path:
     """STAC-searches stac-bild across all collections for bbox (newest
     coverage first, see golfpipe.stac.search_ortho), downloads the item(s)
     with basic auth, mosaics/crops to bbox+buffer.
@@ -114,8 +123,11 @@ def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out:
 
     Ortho items are RGBI (4-band); only the first 3 bands (RGB) are kept
     since tile-ortho produces opaque WebP (no alpha/NIR).
+
+    `items` pins STAC item ids (from a sources.json recipe) instead of
+    searching; the fetch is recorded in the recipe next to `out`.
     """
-    items = stac.search_ortho(bbox)
+    items = stac.search_ortho(bbox, ids=items)
     if not items:
         print(f"No orthophoto items found for bbox {bbox}", file=sys.stderr)
         raise SystemExit(1)
@@ -138,6 +150,8 @@ def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out:
 
     mosaic_and_crop(downloaded, bbox, out, buffer_m=buffer_m)
     _drop_to_rgb_bands(out)
+    sources_mod.record_fetch(sources_mod.recipe_path_for(out), "ortho", collection=target_collection,
+                             items=[it.id for it in selected], bbox_wgs84=bbox, files=[out.name], buffer_m=buffer_m)
     print(f"Wrote {out}")
     return out
 
@@ -157,7 +171,7 @@ def _drop_to_rgb_bands(path: Path) -> None:
         dst.write(data)
 
 
-def cmd_fetch_lidar(bbox: tuple[float, float, float, float], workdir: Path, out_dir: Path) -> list[Path]:
+def cmd_fetch_lidar(bbox: tuple[float, float, float, float], workdir: Path, out_dir: Path, items: list[str] | None = None) -> list[Path]:
     """STAC-searches dsm-skoglig-copc (classified lidar point clouds) for
     bbox, downloads each matching .copc.laz asset with basic auth into
     out_dir. Unlike fetch-dem/fetch-ortho, this does not mosaic/crop —
@@ -168,8 +182,11 @@ def cmd_fetch_lidar(bbox: tuple[float, float, float, float], workdir: Path, out_
 
     Files already present in out_dir with a size matching the remote
     Content-Length are skipped (safe to re-run after a partial fetch).
+
+    `items` pins STAC item ids (from a sources.json recipe) instead of
+    searching; the fetch is recorded in `out_dir/../sources.json`.
     """
-    items = stac.search_lidar(bbox)
+    items = stac.search_lidar(bbox, ids=items)
     if not items:
         print(f"No dsm-skoglig-copc items found for bbox {bbox}", file=sys.stderr)
         raise SystemExit(1)
@@ -184,6 +201,8 @@ def cmd_fetch_lidar(bbox: tuple[float, float, float, float], workdir: Path, out_
         stac.download_asset_with_progress(href, dest)
         downloaded.append(dest)
 
+    sources_mod.record_fetch(sources_mod.recipe_path_for(out_dir), "lidar", collection=stac.LIDAR_COLLECTION,
+                             items=[it.id for it in items], bbox_wgs84=bbox, files=[p.name for p in downloaded])
     return downloaded
 
 

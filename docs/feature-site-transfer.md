@@ -1,6 +1,6 @@
 # Plan: site transfer between build machines
 
-**Status:** proposal
+**Status:** decided 2026-09-06 (option B, full stack on Windows); W1 built
 **Date:** 2026-09-06
 **Scope:** `server/scripts` (export/import CLIs), `pipeline` (source recipe), small `docs`
 change. Reuses the publish bundle format.
@@ -20,10 +20,21 @@ Two options exist, and they are not exclusive.
 - **Option B, site transfer.** Windows runs the full golf-map stack. A site bundle carries
   the manual data and a source recipe; an import step refetches sources and rebuilds.
 
-Option A is the smaller job and covers the GSPro use case as long as the Unity export is
-generated on the Mac. Option B is needed when the Windows box should itself build maps and
-run the web editor. This plan specifies B, since A's package falls out of the Unity
-exporter regardless.
+Decision: option B. The Windows machine becomes the content machine (map builds, web
+editor, GSPro export); the Mac stays the development machine. Option A's package still
+falls out of the Unity exporter and is what the Mac would use if it ever needs to feed
+Unity directly.
+
+The transfer is therefore two different things:
+
+- **One-time migration of the current sites.** The full `data/` dir is 10 G (8.5 G of it
+  lidar and orthos under `sources/`). Copying it once over the LAN or an SSD takes minutes,
+  carries user data (rounds, plans, calibration) and every derived artifact unchanged, and
+  needs no rebuild whose reproducibility is untested. Recommended. Re-downloading through
+  the site bundle (section 5) works too, and is the fallback if copying is impractical.
+- **Ongoing two-way movement of single sites.** Content lives on Windows. The Mac needs
+  sites back as development fixtures, and a site built on either machine should be
+  reproducible on the other. That is what the bundle plus recipe below is for.
 
 ## 2. What is manual, downloaded, derived
 
@@ -112,16 +123,45 @@ parameters go in. Ortho patches are baked onto one vintage and are wrong on anot
 Sizes: bundle under 1 M, downloads about 1.4 G per site from Lantmateriet, build time as
 for a fresh site.
 
-## 6. Windows
+## 6. Windows setup
 
-The golf-map stack on Windows means bun, SQLite, Python with rasterio, pdal and the
-golfpipe requirements. WSL2 with Ubuntu is the path of least surprise for the Python
-side; the Unity project stays native. Not verified on a Windows machine yet. If this
-turns out heavy, fall back to option A and treat the Windows box as Unity only.
+Run the whole golf-map stack inside WSL2 (Ubuntu). Unity and GSPro stay native Windows.
+Reasons, from the repo as it is:
+
+- `data/tiles/` contains a courseId to siteId symlink (`7CE5...` to `26D3...`). Native
+  Windows symlinks need Developer Mode and behave differently in Explorer. WSL2 keeps them.
+- `package.json` scripts and `scripts/*.sh` assume bash (`ios:deploy`, `trees:regen`).
+- Map builds default to `pipeline/.venv/bin/python` (`MAP_PIPELINE_PYTHON` overrides).
+- `tools/sam-server` and LaMa inpainting are torch; CUDA works under WSL2 and gives the
+  Windows GPU to both.
+
+What is not a blocker: the Python requirements are pure wheels (rasterio bundles GDAL,
+laspy with lazrs, shapely bundles GEOS). No PDAL, no system GDAL. `bun` runs natively on
+both sides.
+
+Setup on the Windows box:
+
+1. WSL2 Ubuntu, `git clone` of golf-map and `../mackans-client-fw` beside it (only
+   `fw:update` needs the sibling; the vendored tarball under `vendor/` is what installs).
+2. `bun install`, `cd web && bun install`, `pipeline/.venv` with `requirements.txt`,
+   `tools/sam-server/venv` with its requirements, `curl` of `big-lama.pt` into
+   `data/models/` (pipeline/README.md).
+3. `.env` with `LANTMATERIET_USER`/`LANTMATERIET_PASS`, `PUBLISH_URL`/`PUBLISH_TOKEN`.
+4. `data/` copied in (migration) or built from bundles.
+5. Keep `data/` on the Linux filesystem (`~/`), not under `/mnt/c`. Cross-filesystem I/O
+   in WSL2 is slow enough to hurt tiling. Write the Unity export to `/mnt/c/...` or read it
+   from `\\wsl$\Ubuntu\...` in Unity.
+
+Publishing to the VPS runs from Windows afterwards with the same `bun run publish`.
 
 ## 7. Work items
 
-- W1: fetch commands record and accept STAC item ids; `sources.json` written and merged.
+- W1 (built 2026-09-06): `fetch-lidar`, `fetch-ortho`, `fetch-dem` record collection,
+  STAC item ids, files, bbox and buffer into `sources/<site>/sources.json`
+  (`golfpipe/sources.py`, merged per kind and per ortho vintage) and accept
+  `--items id,id` to refetch a pinned set. Recipes only exist for sites fetched after
+  this change; earlier sites get one on their next rebuild, or by hand from the file
+  names under `sources/<site>/` (lidar file name = STAC item id).
 - W2: `site-export` CLI reusing publish's content writer; add edits and recipe.
 - W3: `site-import` CLI with `--fetch` and `--build`.
 - W4: round-trip test: export Landeryd, import into an empty data dir, build, compare

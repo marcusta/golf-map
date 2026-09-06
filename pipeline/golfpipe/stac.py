@@ -87,8 +87,11 @@ def search(
     collections: Iterable[str] | None = None,
     limit: int = 10,
     session: requests.Session | None = None,
+    ids: Iterable[str] | None = None,
 ) -> list[StacItem]:
     """Anonymous STAC item search. bbox is (west, south, east, north) in WGS84.
+    `ids` restricts the result to those item ids (STAC `ids` query parameter),
+    used to refetch a pinned recipe instead of the newest coverage.
 
     When `collections` is omitted, searches across all collections in the
     catalog (used for orthophoto, where coverage is split into many
@@ -102,6 +105,10 @@ def search(
     }
     if collections:
         params["collections"] = ",".join(collections)
+    if ids:
+        ids = list(ids)
+        params["ids"] = ",".join(ids)
+        params["limit"] = max(limit, len(ids))
 
     resp = sess.get(f"{stac_url}/search", params=params, timeout=30)
     resp.raise_for_status()
@@ -113,20 +120,22 @@ def search_dem(
     bbox: tuple[float, float, float, float],
     limit: int = 10,
     session: requests.Session | None = None,
+    ids: Iterable[str] | None = None,
 ) -> list[StacItem]:
-    return search(DEM_STAC_URL, bbox, collections=[DEM_COLLECTION], limit=limit, session=session)
+    return search(DEM_STAC_URL, bbox, collections=[DEM_COLLECTION], limit=limit, session=session, ids=ids)
 
 
 def search_lidar(
     bbox: tuple[float, float, float, float],
     limit: int = 10,
     session: requests.Session | None = None,
+    ids: Iterable[str] | None = None,
 ) -> list[StacItem]:
     """Searches the classified lidar point-cloud collection (dsm-skoglig-copc)
     on the elevation STAC catalog. Items' 'data' asset is a COPC (cloud-
     optimized point cloud) .copc.laz file — see download_asset for fetching.
     """
-    return search(DEM_STAC_URL, bbox, collections=[LIDAR_COLLECTION], limit=limit, session=session)
+    return search(DEM_STAC_URL, bbox, collections=[LIDAR_COLLECTION], limit=limit, session=session, ids=ids)
 
 
 def search_marktacke(
@@ -146,6 +155,7 @@ def search_ortho(
     bbox: tuple[float, float, float, float],
     limit: int = 10,
     session: requests.Session | None = None,
+    ids: Iterable[str] | None = None,
 ) -> list[StacItem]:
     """Search all orthophoto collections for bbox coverage.
 
@@ -156,7 +166,7 @@ def search_ortho(
     and de-duplicating by covered area gives the freshest available
     coverage without needing to special-case a "best" collection name.
     """
-    return search(ORTHO_STAC_URL, bbox, collections=None, limit=limit, session=session)
+    return search(ORTHO_STAC_URL, bbox, collections=None, limit=limit, session=session, ids=ids)
 
 
 def ortho_vintages(

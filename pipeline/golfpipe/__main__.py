@@ -41,6 +41,7 @@ from golfpipe import detect_trees
 from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro
+from golfpipe import sources
 from golfpipe import trees_stems
 from golfpipe import osm
 from golfpipe import patches
@@ -76,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workdir", required=True, help="directory to download source COGs into")
     p.add_argument("--out", required=True, help="output path for cropped/mosaicked dem.tif")
     p.add_argument("--buffer", type=float, default=commands.DEFAULT_FETCH_BUFFER_M, help="crop buffer in metres (default 250)")
+    p.add_argument("--items", help="comma-separated STAC item ids to fetch instead of searching (from sources.json)")
 
     p = sub.add_parser("fetch-ortho", help="STAC search + download orthophoto COG(s), mosaic/crop to bbox")
     _add_area_args(p)
@@ -83,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="output path for cropped/mosaicked ortho.tif")
     p.add_argument("--buffer", type=float, default=commands.DEFAULT_FETCH_BUFFER_M, help="crop buffer in metres (default 250)")
     p.add_argument("--collection", help="fetch a specific vintage collection (default: newest); see list-ortho-vintages")
+    p.add_argument("--items", help="comma-separated STAC item ids to fetch instead of searching (from sources.json)")
 
     p = sub.add_parser("list-ortho-vintages", help="List ortho vintages covering an area (JSON, newest first)")
     _add_area_args(p)
@@ -91,6 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_area_args(p)
     p.add_argument("--workdir", help="alias for --out-dir (kept for symmetry with fetch-dem/fetch-ortho)")
     p.add_argument("--out-dir", help="directory to download .copc.laz assets into")
+    p.add_argument("--items", help="comma-separated STAC item ids to fetch instead of searching (from sources.json)")
 
     p = sub.add_parser("fetch-water", help="Download Marktäcke vector data and extract water as typed GeoJSON (EPSG:3006)")
     _add_area_args(p)
@@ -482,11 +486,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "fetch-dem":
             bbox = _resolve_area(args)
-            commands.cmd_fetch_dem(bbox, Path(args.workdir), Path(args.out), buffer_m=args.buffer)
+            commands.cmd_fetch_dem(bbox, Path(args.workdir), Path(args.out), buffer_m=args.buffer, items=sources.parse_items_arg(args.items))
 
         elif args.command == "fetch-ortho":
             bbox = _resolve_area(args)
-            commands.cmd_fetch_ortho(bbox, Path(args.workdir), Path(args.out), buffer_m=args.buffer, collection=args.collection)
+            commands.cmd_fetch_ortho(bbox, Path(args.workdir), Path(args.out), buffer_m=args.buffer, collection=args.collection, items=sources.parse_items_arg(args.items))
 
         elif args.command == "list-ortho-vintages":
             bbox = _resolve_area(args)
@@ -497,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
             out_dir = args.out_dir or args.workdir
             if not out_dir:
                 parser.error("fetch-lidar requires --out-dir (or --workdir)")
-            commands.cmd_fetch_lidar(bbox, Path(out_dir), Path(out_dir))
+            commands.cmd_fetch_lidar(bbox, Path(out_dir), Path(out_dir), items=sources.parse_items_arg(args.items))
 
         elif args.command == "fetch-water":
             bbox = _resolve_area(args)

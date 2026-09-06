@@ -587,3 +587,19 @@ BBOX=$(python -m golfpipe bbox-from-course \
 and pass `--bbox "$BBOX"` to whichever fetch/tile step needs an explicit
 area (tile-ortho/tile-terrain infer their area from the input raster
 itself, so this only matters if re-cropping the source rasters first).
+
+## Source recipe (sources.json)
+
+Every `fetch-lidar`, `fetch-ortho` and `fetch-dem` run records what it downloaded into
+`sources/<siteId>/sources.json`: STAC collection, item ids, output files, WGS84 bbox and
+crop buffer. Ortho vintages are keyed by collection so several coexist. The recipe lets
+another machine fetch the same bytes instead of the newest coverage:
+
+```sh
+python -m golfpipe fetch-lidar --bbox W,S,E,N --out-dir data/sources/<siteId>/lidar --items m21c011-647_53
+python -m golfpipe fetch-ortho --bbox W,S,E,N --collection orto-l2-2023 --items <id,id> --workdir work/ortho-src --out data/sources/<siteId>/ortho-orto-l2-2023.tif
+```
+
+Pinning matters for replay steps: terrain edits replay onto the gridded DEM (same lidar
+tiles and grid parameters give the same raster) and ortho patches are baked onto one
+vintage. See docs/feature-site-transfer.md.
