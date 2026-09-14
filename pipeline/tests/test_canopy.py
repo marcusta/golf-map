@@ -61,7 +61,7 @@ def test_suppress_buildings_zeroes_single_return_tall_cells_only():
     count = np.array([[10.0, 10.0, 10.0], [10.0, 0.0, 10.0]])
     multi = np.array([[0.0, 0.5, 6.0], [0.0, 0.0, 1.0]])  # fractions 0, .05, .6 / 0, -, .1
 
-    out = canopy.suppress_buildings(ndsm, count, multi)
+    out = canopy.suppress_buildings(ndsm, count, multi, min_area_m2=0)  # per-cell rule only
 
     assert out[0, 0] == 0.0  # roof: tall, no multi returns
     assert out[0, 1] == 0.0  # roof: 5 % < 10 %
@@ -70,6 +70,28 @@ def test_suppress_buildings_zeroes_single_return_tall_cells_only():
     assert out[1, 1] == 0.0  # no points, untouched
     assert out[1, 2] == 9.0  # exactly 10 % is not under the threshold
     assert ndsm[0, 0] == 9.0  # input not mutated
+
+
+def test_suppress_buildings_needs_a_roof_sized_patch():
+    """Vreta: lone single-return cells inside a small crown form a 5 m²
+    patch, not a roof. A real roof is a contiguous patch; the floor is in
+    metres, so it scales with the cell size."""
+    ndsm = np.full((12, 12), 4.0)
+    count = np.full(ndsm.shape, 1.0)
+    multi = np.ones(ndsm.shape)                      # foliage everywhere ...
+    multi[:5, :3] = 0.0                              # ... except a 15 m² single-return block
+    multi[8:10, 8:10] = 0.0                          # ... and a 4 m² one
+
+    out = canopy.suppress_buildings(ndsm, count, multi)
+
+    assert (out[:5, :3] == 0.0).all()                # roof-sized patch zeroed
+    assert (out[8:10, 8:10] == 4.0).all()            # too small a patch: crown interior
+    assert (out[5:, :] == 4.0).all() and (out[:, 3:8] == 4.0).all()
+    # At 0.5 m cells the same 15 cells are 3.75 m² and stay; a zero floor is the per-cell rule.
+    assert (canopy.suppress_buildings(ndsm, count, multi, cell_size_m=0.5)[:5, :3] == 4.0).all()
+    assert (canopy.suppress_buildings(ndsm, count, multi, min_area_m2=0)[8:10, 8:10] == 0.0).all()
+    with pytest.raises(ValueError):
+        canopy.suppress_buildings(ndsm, count, multi, cell_size_m=0)
 
 
 # ─── morphology ──────────────────────────────────────────────────────────────

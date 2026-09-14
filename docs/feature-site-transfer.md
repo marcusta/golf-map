@@ -158,6 +158,40 @@ Setup on the Windows box:
 
 Publishing to the VPS runs from Windows afterwards with the same `bun run publish`.
 
+### 6.1 Native Windows, no WSL (done 2026-09-06)
+
+The stack also runs natively on Windows 11; WSL2 turned out not to be needed. What
+was set up on the D:\golf-map checkout and what it took:
+
+- `data/` restored from the USB snapshot with Windows' built-in `tar.exe` (bsdtar 3.8
+  reads `.tar.zst` directly, no zstd needed for that step). The courseId tile symlink
+  is an NTFS **junction** instead (`New-Item -ItemType Junction`), which needs no admin
+  rights or Developer Mode and is transparent to the server: tiles serve through it.
+- `pipeline/.venv` and `tools/sam-server/venv` are plain `python -m venv`. The pipeline
+  requirements are pure wheels on Windows too (no PDAL, no OSGeo4W/QGIS needed).
+  `pipeline/.venv/bin` is a junction to `.venv/Scripts` so callers that hardcode
+  `.venv/bin/python` (ortho-patches service, `scripts/regen-trees.sh`) resolve; `.env`
+  also sets `MAP_PIPELINE_PYTHON` to the `.exe` for the callers that honour it.
+- torch for the SAM server: pip's default is CPU-only. The RTX 5070 Ti (Blackwell)
+  needs the cu130 wheels: `pip install torch==2.14.0+cu130 torchvision==0.29.0+cu130
+  --index-url https://download.pytorch.org/whl/cu130`.
+- `zstd` CLI via `winget install Meta.Zstandard` (publish/ingest shell out to it).
+- `bash scripts/*.sh` run under Git Bash.
+- Bun 1.3.x on Windows throws EEXIST from `mkdirSync('../data', {recursive: true})`
+  when the dir exists; `server/env-paths.ts` resolves the data-path env vars to
+  absolute paths before the config module reads them.
+- `golfpipe.raster.open_warped_to_mercator` now closes the source dataset with the
+  VRT (Windows locks the file otherwise, breaking `edge_pad_dem`'s temp dir cleanup).
+  Tree-stem peak picking quantises the smoothed nDSM to 1 mm and breaks ties toward
+  the plateau centre, because float32 gaussian noise differs between arm64 and x86
+  and used to decide flat-top markers.
+
+Known gaps, none blocking a builder box: `bun test` in `server/` has 14 Windows-only
+failures (tests that create real symlinks need Developer Mode; a few assert `/`
+separated paths; `bundle-archive.test.ts` crafts with `tar -cf C:\...`, which bsdtar
+reads as a remote host). Serve-mode ingest recreates courseId symlinks with
+`fs.symlink`, so a Windows *serve* box would need Developer Mode; the VPS is Linux.
+
 ## 7. Work items
 
 - W1 (built 2026-09-06): `fetch-lidar`, `fetch-ortho`, `fetch-dem` record collection,

@@ -14,7 +14,7 @@ const tpl = template(`
         <div class="wizard__map" bind="mapHost"></div>
         <aside class="wizard__panel">
             <h2 bind="title">Set map area</h2>
-            <p class="wizard__hint">Search or pan in <b>Navigate</b> mode to find the course, then switch to <b>Draw area</b> and drag out the region to import. The area is forced to a whole-metre square (GSPro-ready). Building replaces any existing map for this course.</p>
+            <p class="wizard__hint">Search or pan in <b>Navigate</b> mode to find the course, then switch to <b>Draw area</b> and drag out the region to import. The area is forced to a square with its side on a 10 m step (2010 m, 1870 m, …) — the GSPro inner terrain, so leave 50–75 m of ground around the outermost holes. Building replaces any existing map for this course.</p>
             <div class="wizard__size" bind="size"></div>
             <button bind="build" type="button">Build map</button>
             <div class="wizard__reuse" bind="reuseBox">

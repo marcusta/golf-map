@@ -1,31 +1,41 @@
 import { test, expect } from 'bun:test';
-import { bboxMetrics, formatBboxSize, squareBox } from '../src/map-build/bbox-math';
+import { bboxMetrics, formatBboxSize, squareBox, snapSide, SIDE_STEP_M } from '../src/map-build/bbox-math';
 
 // A Swedish golf-course latitude for realistic lon/lat scaling.
 const ANCHOR_LNG = 15.56;
 const ANCHOR_LAT = 58.40;
 
-test('squareBox produces an integer-metre square (width == height, both whole)', () => {
+test('squareBox produces a square whose side is a whole number of tens of metres', () => {
     // Drag roughly 800 m east, 500 m south — the larger side (≈800) drives it.
     const box = squareBox(ANCHOR_LNG, ANCHOR_LAT, ANCHOR_LNG + 0.014, ANCHOR_LAT - 0.0045);
     const m = bboxMetrics(box);
 
     expect(Math.round(m.widthM)).toBe(Math.round(m.heightM)); // square
     expect(m.widthM).toBeCloseTo(Math.round(m.widthM), 3);     // whole metres
+    expect(Math.round(m.widthM) % SIDE_STEP_M).toBe(0);         // …and on the 10 m step
     expect(m.heightM).toBeCloseTo(Math.round(m.heightM), 3);
 });
 
-test('squareBox side equals the rounded larger dragged dimension', () => {
+test('squareBox side equals the larger dragged dimension snapped to the nearest ten', () => {
     const cursorLng = ANCHOR_LNG + 0.02; // wide
     const cursorLat = ANCHOR_LAT - 0.001; // short
     const raw = bboxMetrics({
         west: Math.min(ANCHOR_LNG, cursorLng), east: Math.max(ANCHOR_LNG, cursorLng),
         south: Math.min(ANCHOR_LAT, cursorLat), north: Math.max(ANCHOR_LAT, cursorLat),
     });
-    const expectedSide = Math.round(Math.max(raw.widthM, raw.heightM));
+    const expectedSide = snapSide(Math.max(raw.widthM, raw.heightM));
+    expect(expectedSide % SIDE_STEP_M).toBe(0);
+    expect(Math.abs(expectedSide - Math.max(raw.widthM, raw.heightM))).toBeLessThanOrEqual(SIDE_STEP_M / 2);
 
     const box = squareBox(ANCHOR_LNG, ANCHOR_LAT, cursorLng, cursorLat);
     expect(Math.round(bboxMetrics(box).widthM)).toBe(expectedSide);
+});
+
+test('snapSide rounds to the nearest ten and never below ten', () => {
+    expect(snapSide(2009.37)).toBe(2010);
+    expect(snapSide(1874.9)).toBe(1870);
+    expect(snapSide(1875)).toBe(1880);
+    expect(snapSide(0)).toBe(10);
 });
 
 test('anchor corner stays fixed; box extends toward the cursor', () => {
@@ -48,9 +58,9 @@ test('formatBboxSize renders whole metres and hectares', () => {
     expect(formatBboxSize(box)).toMatch(/^\d+ m × \d+ m · [\d.]+ ha$/);
 });
 
-test('degenerate drag (no movement) yields a minimal 1 m square, not zero', () => {
+test('degenerate drag (no movement) yields a minimal 10 m square, not zero', () => {
     const box = squareBox(ANCHOR_LNG, ANCHOR_LAT, ANCHOR_LNG, ANCHOR_LAT);
     const m = bboxMetrics(box);
-    expect(m.widthM).toBeCloseTo(1, 3);
-    expect(m.heightM).toBeCloseTo(1, 3);
+    expect(m.widthM).toBeCloseTo(SIDE_STEP_M, 3);
+    expect(m.heightM).toBeCloseTo(SIDE_STEP_M, 3);
 });

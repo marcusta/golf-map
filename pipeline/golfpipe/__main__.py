@@ -95,6 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workdir", help="alias for --out-dir (kept for symmetry with fetch-dem/fetch-ortho)")
     p.add_argument("--out-dir", help="directory to download .copc.laz assets into")
     p.add_argument("--items", help="comma-separated STAC item ids to fetch instead of searching (from sources.json)")
+    p.add_argument("--skip-forbidden", action="store_true", dest="skip_forbidden",
+                   help="warn and skip tiles Lantmäteriet withholds (HTTP 403) instead of aborting")
 
     p = sub.add_parser("fetch-water", help="Download Marktäcke vector data and extract water as typed GeoJSON (EPSG:3006)")
     _add_area_args(p)
@@ -125,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="output DEM GeoTIFF path")
     p.add_argument(
         "--classes", default=",".join(str(c) for c in grid_dem_mod.DEFAULT_CLASSES),
-        help="comma-separated classification codes to use as terrain surface (default 2,9 = ground,water)",
+        help="comma-separated classification codes to use as terrain surface (default 2,9,17 = ground,water,bridge)",
     )
 
     p = sub.add_parser(
@@ -426,6 +428,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="XYZ webp pyramid the crown kind is read from (default: newest Oct-Apr vintage in the tiles-dir manifest)",
     )
     p.add_argument("--no-kind", action="store_true", help="skip crown kind; every stem is written as unknown")
+    p.add_argument("--tile-m", type=float, default=commands.DEFAULT_TREES_TILE_M, dest="tile_m",
+                   help="detect in parallel on tiles of about this side in metres (default 0 = whole box in one process; "
+                        "tiling re-reads the lidar per tile, so it only pays on very large or dense boxes)")
+    p.add_argument("--workers", type=int, help="processes for tiled detection (default: every core)")
 
     p = sub.add_parser("manifest", help="Write manifest.json for a tiled course")
     p.add_argument("--course", required=True, help="course id")
@@ -501,7 +507,8 @@ def main(argv: list[str] | None = None) -> int:
             out_dir = args.out_dir or args.workdir
             if not out_dir:
                 parser.error("fetch-lidar requires --out-dir (or --workdir)")
-            commands.cmd_fetch_lidar(bbox, Path(out_dir), Path(out_dir), items=sources.parse_items_arg(args.items))
+            commands.cmd_fetch_lidar(bbox, Path(out_dir), Path(out_dir), items=sources.parse_items_arg(args.items),
+                                     skip_forbidden=args.skip_forbidden)
 
         elif args.command == "fetch-water":
             bbox = _resolve_area(args)
@@ -674,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_height_m=args.min_height, min_area_m2=args.min_area,
                 tall_height_m=args.tall_height, tall_min_area_m2=args.tall_min_area,
                 leaf_off_ortho=None if args.no_kind else (Path(args.leaf_off_ortho) if args.leaf_off_ortho else "auto"),
+                tile_m=args.tile_m, workers=args.workers,
             )
 
         elif args.command == "manifest":

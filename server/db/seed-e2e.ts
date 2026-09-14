@@ -345,7 +345,16 @@ export async function seedE2eDatabase(dbPath: string): Promise<{ courseId: strin
     await db.destroy();
     for (const suffix of ['-wal', '-shm']) {
         const p = dbPath + suffix;
-        if (fs.existsSync(p)) fs.rmSync(p);
+        // EBUSY: Windows can still hold the sidecar briefly after destroy().
+        // The checkpoint above already folded the WAL into the main file, so a
+        // sidecar left behind is empty and harmless — dropping it is a tidy-up,
+        // not a correctness step. Failing here would take the whole harness
+        // down (the seed runs before every e2e run).
+        try {
+            if (fs.existsSync(p)) fs.rmSync(p);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code !== 'EBUSY') throw error;
+        }
     }
     return { courseId: TEST_COURSE_ID };
 }

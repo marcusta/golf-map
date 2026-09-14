@@ -17,6 +17,7 @@ import { EditorModeService } from '../editor/editor-mode.service';
 import { ServerModeService, visibleEditorTools } from './server-mode.service';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
 import { GeojsonImportService } from '../import/geojson-import.service';
+import { GsproExportService } from '../export/gspro-export.service';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
 import { TilesetService } from '../map/tileset.service';
 import { MapService } from '../map/map.service';
@@ -504,6 +505,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private mode = this.inject(EditorModeService);
     private importSvc = this.inject(SvgImportService);
     private geojsonImportSvc = this.inject(GeojsonImportService);
+    private gsproExportSvc = this.inject(GsproExportService);
     private mapBuild = this.inject(MapBuildClientService);
     private tileset = this.inject(TilesetService);
     private mapSvc = this.inject(MapService);
@@ -974,6 +976,22 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 if (course) void this.confirmRegenerateTrees(course.id);
             };
             host.appendChild(treesBtn);
+
+            // Export to GSPro SVG — the outbound counterpart to the two
+            // importers: the course's drawn features as a layered, fill-only
+            // OPCD SVG written to a folder on this machine (per course,
+            // default Downloads). The panel does the work; this just opens it.
+            const gsproBtn = document.createElement('button');
+            gsproBtn.type = 'button';
+            gsproBtn.className = 'menu-item';
+            gsproBtn.dataset.testid = 'course-export-gspro-btn';
+            gsproBtn.innerHTML = `<span class="menu-item__icon">${icon('download', 16)}</span><span class="menu-item__label">Export to GSPro</span>`;
+            gsproBtn.onclick = () => {
+                const course = this.svc.course.peek();
+                close();
+                if (course) void this.gsproExportSvc.openFor(course.id, course.name);
+            };
+            host.appendChild(gsproBtn);
 
             const divider = document.createElement('div');
             divider.className = 'menu-divider';

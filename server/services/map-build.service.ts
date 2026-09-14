@@ -7,6 +7,8 @@ import type { Database, MapBuildJobsTable } from '../db/schema';
 import type { AssetsService } from './assets.service';
 import { TerrainEditsService, type TerrainEdit } from './terrain-edits.service';
 import { sweref99tmToWgs84 } from './geo';
+import { innerSquareFromWgs84, squareArg, squareSideM, terrainManifestField } from './terrain-square';
+import type { Bbox3006 } from './course-bbox';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 
 // --- Public types ---
@@ -326,15 +328,15 @@ export class MapBuildService {
                 await this.fail(jobId, 'grid-dem', 'fetch-lidar downloaded no .laz files for this area — the bbox may be outside Laserdata Skog coverage.', env);
                 return;
             }
-            // grid-dem crops in SWEREF99 TM metres, so reproject the WGS84 bbox first.
-            const reproj = await this.runner(gp('reproject-bbox', '--bbox', bboxArg, '--to', '3006'), { cwd: this.pipelineDir, env });
-            await this.appendLog(jobId, 'grid-dem', reproj.stdout, reproj.stderr, env);
-            if (reproj.code !== 0) {
-                await this.fail(jobId, 'grid-dem', explainPipelineError('grid-dem', reproj.stderr || 'reproject-bbox failed'), env);
-                return;
-            }
-            const bbox3006 = reproj.stdout.trim();
-            if (!await this.exec(jobId, 'grid-dem', gp('grid-dem', '--lidar', ...lidarFiles, '--bbox-3006', bbox3006, '--out', demTif), env)) return;
+            // grid-dem crops in SWEREF99 TM metres — to the INNER TERRAIN: the
+            // drawn area's metre envelope squared and snapped to the 10 m step
+            // (terrain-square.ts). That square IS the site's map from here on:
+            // the manifest bounds come from this DEM, and the GSPro exports
+            // read the square back from the manifest.
+            const inner = innerSquareFromWgs84(bbox);
+            await this.appendLog(jobId, 'grid-dem', `inner terrain: ${squareSideM(inner)} m square, EPSG:3006 ${squareArg(inner)}
+`, '', env);
+            if (!await this.exec(jobId, 'grid-dem', gp('grid-dem', '--lidar', ...lidarFiles, '--bbox-3006', squareArg(inner), '--out', demTif), env)) return;
 
             // Persist the DEM for reuse (gspro hillshade, rebuilds).
             await mkdir(sources, { recursive: true });
@@ -389,7 +391,7 @@ export class MapBuildService {
 
             // register step is TS, not a subprocess: the server owns the DB.
             await this.setStep(jobId, 'register');
-            await this.registerAssets(siteId, courseId, chosen, active, demEdited !== null);
+            await this.registerAssets(siteId, courseId, chosen, active, demEdited !== null, inner);
 
             await this.setStatus(jobId, 'succeeded');
         } catch (err) {
@@ -654,6 +656,7 @@ export class MapBuildService {
         if (old && Array.isArray(old.orthoVintages)) manifest.orthoVintages = old.orthoVintages;
         if (old && typeof old.activeOrtho === 'string') manifest.activeOrtho = old.activeOrtho;
         if (old && typeof old.builtOrtho === 'string') manifest.builtOrtho = old.builtOrtho;
+        if (old && old.terrain && typeof old.terrain === 'object') manifest.terrain = old.terrain;
         const json = JSON.stringify(manifest);
         await writeFile(manifestPath, json);
 
@@ -763,8 +766,8 @@ export class MapBuildService {
      * The tile_manifest metaJson is what the web tileset.service reads to flip
      * `hasTiles` and (now) to populate the vintage switcher.
      */
-    private async registerAssets(siteId: string, courseId: string, vintages: OrthoVintage[], active: string, demEdited: boolean): Promise<void> {
-        const manifestJson = await this.writeManifestVintages(siteId, vintages, active);
+    private async registerAssets(siteId: string, courseId: string, vintages: OrthoVintage[], active: string, demEdited: boolean, inner: Bbox3006): Promise<void> {
+        const manifestJson = await this.writeManifestVintages(siteId, vintages, active, inner);
 
         // Idempotent rebuild: drop any prior tile assets for this site first.
         const existing = await this.assets.listBySite(siteId);
@@ -801,18 +804,20 @@ export class MapBuildService {
 
     /**
      * Patch the on-disk manifest with orthoVintages + activeOrtho +
-     * builtOrtho; returns the JSON. `builtOrtho` is the explicit
+     * builtOrtho + terrain; returns the JSON. `builtOrtho` is the explicit
      * built-vintage marker: the collection the flat ortho tile tree was
      * tiled from this build — the single source of truth ortho patches
      * (T55) replay onto. `activeOrtho` (same value on a fresh build) is
-     * what the web shows by default.
+     * what the web shows by default. `terrain.inner` is the exact EPSG:3006
+     * square the DEM was cut to — the inner GSPro terrain.
      */
-    private async writeManifestVintages(siteId: string, vintages: OrthoVintage[], active: string): Promise<string> {
+    private async writeManifestVintages(siteId: string, vintages: OrthoVintage[], active: string, inner: Bbox3006): Promise<string> {
         const manifestPath = path.join(this.dataDir, 'tiles', siteId, 'manifest.json');
         const manifest = JSON.parse(await Bun.file(manifestPath).text());
         manifest.orthoVintages = vintages;
         manifest.activeOrtho = active;
         manifest.builtOrtho = active;
+        manifest.terrain = terrainManifestField(inner);
         const json = JSON.stringify(manifest);
         await writeFile(manifestPath, json);
         return json;

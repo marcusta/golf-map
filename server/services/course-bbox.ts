@@ -8,11 +8,18 @@
 //      (WGS84 — the DB row, not the tile file, so it works wherever the
 //      asset registry does);
 //   3. else a clear ConflictError — there is no map area to fetch for.
+//
+// A site built since terrains got snapped also carries its exact INNER
+// terrain square (`terrain.inner.square3006` in the manifest, see
+// terrain-square.ts); `resolveCourseMapBbox` hands that back as
+// `terrainSquare` so the GSPro exports render over the very square the DEM
+// was cut to, instead of re-deriving one from the WGS84 bounds.
 
 import { ConflictError } from '@basics/core/server/auth';
 import { sweref99tmToWgs84, wgs84ToSweref99tm } from './geo';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
+import { parseTerrainSquare } from './terrain-square';
 
 export interface BboxWgs84 {
     west: number;
@@ -34,7 +41,7 @@ export async function resolveCourseMapBbox(
     assets: AssetsService,
     courseId: string,
     purpose: string,
-): Promise<{ wgs84: BboxWgs84; sweref: Bbox3006 }> {
+): Promise<{ wgs84: BboxWgs84; sweref: Bbox3006; terrainSquare: Bbox3006 | null }> {
     const course = await courses.get(courseId);
 
     const georef = parseGeoreferenceBbox(course.georeferenceJson);
@@ -53,6 +60,7 @@ export async function resolveCourseMapBbox(
                 north: Math.max(...corners.map(c => c.lat)),
             },
             sweref: georef,
+            terrainSquare: null,
         };
     }
 
@@ -75,6 +83,7 @@ export async function resolveCourseMapBbox(
                     Math.max(...corners.map(c => c.x)),
                     Math.max(...corners.map(c => c.y)),
                 ],
+                terrainSquare: parseManifestTerrain(manifest?.metaJson),
             };
         }
     }
@@ -98,6 +107,16 @@ function parseGeoreferenceBbox(georeferenceJson: string | null): Bbox3006 | null
         // fall through
     }
     return null;
+}
+
+/** The exact inner terrain square a build persisted in the manifest, if any. */
+function parseManifestTerrain(metaJson: string | null | undefined): Bbox3006 | null {
+    if (!metaJson) return null;
+    try {
+        return parseTerrainSquare(JSON.parse(metaJson));
+    } catch {
+        return null;
+    }
 }
 
 /** WGS84 `bounds` from a tile_manifest asset's metaJson. */

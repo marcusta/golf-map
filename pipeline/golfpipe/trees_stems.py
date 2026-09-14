@@ -268,16 +268,37 @@ def segment_crowns(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, m
     if not mask.any():
         return None
     smooth = gaussian_filter(raw, 0.8 / cell, mode="constant")
+    # Peak picking compares heights quantised to a millimetre: float32 rounding
+    # in the gaussian differs between CPUs (arm64 Mac vs x86 Windows), and on a
+    # flat top that noise would otherwise decide which cell wins.
+    quantised = np.round(smooth, 3)
     # Choose a window per pixel, in whole-cell radius bands.
     radii = np.ceil(np.clip(1 + .15 * smooth, 2, 7) / cell).astype(np.int16)
     candidates = np.zeros(mask.shape, dtype=bool)
     for radius in np.unique(radii[mask]):
-        local_max = maximum_filter(smooth, size=2 * int(radius) + 1, mode="constant")
-        candidates |= mask & (radii == radius) & (smooth == local_max) & (raw >= min_height_m)
+        local_max = maximum_filter(quantised, size=2 * int(radius) + 1, mode="constant")
+        candidates |= mask & (radii == radius) & (quantised == local_max) & (raw >= min_height_m)
     plateaus, count = label(candidates, structure=np.ones((3, 3)))
-    # One marker per plateau. Stable ordering gives byte-identical repeated runs.
-    from scipy.ndimage import maximum_position
-    peaks = maximum_position(smooth, plateaus, range(1, count + 1)) if count else []
+    # One marker per plateau: the highest cell, ties broken toward the plateau's
+    # centre so a flat crown seeds in its middle. Stable ordering gives
+    # byte-identical repeated runs.
+    # find_objects gives each plateau's bounding box, so the search is a few
+    # cells per plateau instead of a full-grid scan per plateau (that scan was
+    # 70% of the run on a course, and hours on a 5 km forest square).
+    from scipy.ndimage import find_objects
+    peaks = []
+    for k, sl in enumerate(find_objects(plateaus), 1):
+        if sl is None:
+            continue
+        cells = np.argwhere(plateaus[sl] == k)
+        cells[:, 0] += sl[0].start
+        cells[:, 1] += sl[1].start
+        heights = quantised[cells[:, 0], cells[:, 1]]
+        top = cells[heights == heights.max()]
+        d2 = ((top - top.mean(axis=0)) ** 2).sum(axis=1)
+        # Equal distance (even-sized tops): the last cell in row-major order,
+        # i.e. south-east of centre, which is where markers landed before.
+        peaks.append(tuple(int(v) for v in top[np.flatnonzero(d2 == d2.min())[-1]]))
     if not peaks:
         return None
     markers = np.zeros(mask.shape, dtype=np.int32)

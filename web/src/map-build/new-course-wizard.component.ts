@@ -15,7 +15,7 @@ const tpl = template(`
             <label class="wizard__field">Course name
                 <input bind="name" type="text" placeholder="e.g. Landeryd" />
             </label>
-            <p class="wizard__hint">Search or pan in <b>Navigate</b> mode to find the course, then switch to <b>Draw area</b> and drag out the region to import. The area is forced to a whole-metre square (GSPro-ready). Keep it tight — larger areas take longer to fetch and tile.</p>
+            <p class="wizard__hint">Search or pan in <b>Navigate</b> mode to find the course, then switch to <b>Draw area</b> and drag out the region to import. The area is forced to a square with its side on a 10 m step (2010 m, 1870 m, …) — the GSPro inner terrain. Leave 50–75 m of ground around the outermost holes, but no more — larger areas take longer to fetch and tile.</p>
             <div class="wizard__size" bind="size"></div>
             <div class="wizard__error" bind="startError"><span bind="startErrorText"></span></div>
             <button bind="build" type="button">Create &amp; build map</button>

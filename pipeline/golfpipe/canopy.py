@@ -8,7 +8,14 @@ turns it into a per-cell canopy HEIGHT raster rather than crown polygons:
    show up in the nDSM exactly like crowns. Laser pulses that hit a roof
    return once; pulses into foliage split into several returns. Cells with
    nDSM >= 2 m whose fraction of multi-return points is under 10 % are
-   treated as roofs and zeroed (suppress_buildings).
+   roof candidates; 8-connected patches of them covering at least
+   BUILDING_MIN_AREA_M2 are zeroed (suppress_buildings). The area floor
+   comes from Vreta: this sparse scan gives one to three returns per cell,
+   so the interior of a small crown holds cells with a lone single return,
+   and ten such cells inside two 4 m crowns were zeroed as two 5 m²
+   "roofs", hollowing both crowns so trees-stems merged them and the roof
+   guard dropped the survivor. A per-cell point floor cannot separate
+   them: real roof cells have the same one to three returns.
 2. Clamp to [0, 40] m, drop cells under 1 m, binary closing (3x3,
    8-connected) of the >= 1 m mask to bridge sampling holes (cells the
    closing fills take the max of their 3x3 neighbourhood), then a 3 m
@@ -40,14 +47,14 @@ import numpy as np
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.vrt import WarpedVRT
-from scipy.ndimage import binary_closing, distance_transform_edt, gaussian_filter, maximum_filter
+from scipy.ndimage import binary_closing, distance_transform_edt, gaussian_filter, label, maximum_filter
 
 from golfpipe.detect_common import STRUCTURE_8
 from golfpipe.detect_trees import NODATA
 
 __all__ = [
     "MIN_CANOPY_HEIGHT_M", "MAX_CANOPY_HEIGHT_M", "BUILDING_MIN_HEIGHT_M",
-    "BUILDING_MAX_MULTI_FRACTION", "CROWN_FILTER_SIZE", "COLOR_STOPS",
+    "BUILDING_MAX_MULTI_FRACTION", "BUILDING_MIN_AREA_M2", "CROWN_FILTER_SIZE", "COLOR_STOPS",
     "CROWN_TAPER_RADIUS_M", "CROWN_BLUR_SIGMA_M", "CROWN_MAX_GAIN", "CROWN_PLATEAU_DIP",
     "suppress_buildings", "clean_canopy", "crown_shape", "canopy_color_rgba", "resample_dem_to_grid",
 ]
@@ -56,6 +63,8 @@ MIN_CANOPY_HEIGHT_M = 1.0
 MAX_CANOPY_HEIGHT_M = 40.0
 BUILDING_MIN_HEIGHT_M = 2.0
 BUILDING_MAX_MULTI_FRACTION = 0.10
+# A roof is a contiguous patch; smaller candidate patches are crown interiors.
+BUILDING_MIN_AREA_M2 = 15.0
 # 3 m radius at 1 m resolution: 7x7 window.
 CROWN_FILTER_SIZE = 7
 # crown_shape (surface DSM only): edge taper radius, Gaussian sigma, the
@@ -83,16 +92,29 @@ def suppress_buildings(
     multi_return_count: np.ndarray,
     min_height_m: float = BUILDING_MIN_HEIGHT_M,
     max_multi_fraction: float = BUILDING_MAX_MULTI_FRACTION,
+    min_area_m2: float = BUILDING_MIN_AREA_M2,
+    cell_size_m: float = 1.0,
 ) -> np.ndarray:
     """Zeroes nDSM cells that look like roofs: height >= min_height_m and
-    (multi-return points / all points) < max_multi_fraction. Cells with no
-    points are left alone (their nDSM is already 0). Returns a new array.
+    (multi-return points / all points) < max_multi_fraction, in 8-connected
+    patches of at least min_area_m2. Smaller patches are left alone: they
+    are single-return sampling holes inside crowns, not buildings. Cells
+    with no points are left alone too (their nDSM is already 0). Returns a
+    new array.
     """
+    if min_area_m2 < 0 or cell_size_m <= 0:
+        raise ValueError("roof rule needs a non-negative area and a positive cell size")
     out = np.array(ndsm, dtype=np.float64, copy=True)
     has_points = point_count > 0
     fraction = np.zeros(ndsm.shape, dtype=np.float64)
     fraction[has_points] = multi_return_count[has_points] / point_count[has_points]
     roof = has_points & (out >= min_height_m) & (fraction < max_multi_fraction)
+    min_cells = int(np.ceil(min_area_m2 / (cell_size_m * cell_size_m)))
+    if min_cells > 1 and roof.any():
+        patches, count = label(roof, structure=STRUCTURE_8)
+        big = np.bincount(patches.ravel(), minlength=count + 1) >= min_cells
+        big[0] = False
+        roof = big[patches]
     out[roof] = 0.0
     return out
 

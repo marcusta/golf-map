@@ -16,10 +16,10 @@ export interface Tee {
 export interface TeesApi {
     listByHole(input: { holeId: string }): Promise<Tee[]>;
     listByCourse(input: { courseId: string }): Promise<Tee[]>;
-    create(input: { color?: string; elevation?: number; name: string; holeId: string; lat: number; lon: number }): Promise<Tee>;
-    update(input: { name?: string; color?: string; lat?: number; lon?: number; elevation?: number; id: string; version: number }): Promise<Tee>;
+    create(input: { elevation?: number; color?: string; holeId: string; lat: number; lon: number; name: string }): Promise<Tee>;
+    update(input: { lat?: number; lon?: number; elevation?: number; name?: string; color?: string; id: string; version: number }): Promise<Tee>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
-    reorder(input: { orderedIds: string[]; holeId: string }): Promise<{ ok: boolean }>;
+    reorder(input: { holeId: string; orderedIds: string[] }): Promise<{ ok: boolean }>;
 }
 
 export function createTeesClient(baseUrl: string): TeesApi {

@@ -48,9 +48,9 @@ export interface CourseFeaturesApi {
     listByHole(input: { holeId: string }): Promise<CourseFeature[]>;
     geojsonByCourse(input: { resolved?: boolean; courseId: string }): Promise<CourseFeatureFeatureCollection>;
     create(input: { holeId?: null | string; source?: string; sourceRef?: string; license?: string; attributes?: null | { [x: string]: string | number | boolean; }; courseId: string; geometry: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; type: string }): Promise<CourseFeature>;
-    update(input: { geometry?: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; holeId?: null | string; type?: string; attributes?: null | { [x: string]: string | number | boolean; }; id: string; version: number }): Promise<CourseFeature>;
+    update(input: { holeId?: null | string; geometry?: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; type?: string; attributes?: null | { [x: string]: string | number | boolean; }; id: string; version: number }): Promise<CourseFeature>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
-    reorder(input: { holeId?: null | string; courseId: string; orderedIds: string[] }): Promise<{ ok: boolean }>;
+    reorder(input: { holeId?: null | string; orderedIds: string[]; courseId: string }): Promise<{ ok: boolean }>;
 }
 
 export function createCourseFeaturesClient(baseUrl: string): CourseFeaturesApi {

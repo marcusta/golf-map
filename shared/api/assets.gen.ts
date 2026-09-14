@@ -17,7 +17,7 @@ export interface AssetsApi {
     listByCourse(input: { courseId: string }): Promise<CourseAsset[]>;
     listBySite(input: { siteId: string }): Promise<CourseAsset[]>;
     get(input: { id: string }): Promise<CourseAsset>;
-    register(input: { courseId?: string; metaJson?: string; kind: 'ortho_cog' | 'dem_cog' | 'svg_source' | 'tile_manifest'; siteId: string; filename: string }): Promise<CourseAsset>;
+    register(input: { courseId?: string; metaJson?: string; siteId: string; kind: 'ortho_cog' | 'dem_cog' | 'svg_source' | 'tile_manifest'; filename: string }): Promise<CourseAsset>;
     update(input: { metaJson?: string; id: string; version: number }): Promise<CourseAsset>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
 }

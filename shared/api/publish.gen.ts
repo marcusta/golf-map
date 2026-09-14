@@ -2,7 +2,7 @@
 import { apiFetch } from '@basics/core/client/fetch';
 
 export interface PublishState {
-    status: 'idle' | 'running' | 'succeeded' | 'failed';
+    status: 'running' | 'succeeded' | 'failed' | 'idle';
     step: null | 'preflight' | 'bundle' | 'pack' | 'upload';
     siteId: null | string;
     courseId: null | string;

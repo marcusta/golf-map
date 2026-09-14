@@ -1,3 +1,4 @@
+import './env-paths';
 import * as path from 'node:path';
 import { mkdirSync } from 'node:fs';
 import type { Database } from './db/schema';

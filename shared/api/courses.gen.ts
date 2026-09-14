@@ -48,8 +48,8 @@ export interface RoutingHole {
 export interface CoursesApi {
     list(input: { offset: number; limit: number }): Promise<Page>;
     get(input: { id: string }): Promise<Course>;
-    create(input: { crs?: string; georeferenceJson?: string; homeLat?: number; homeLon?: number; notes?: string; siteId?: string; name: string }): Promise<Course>;
-    update(input: { crs?: string; name?: string; georeferenceJson?: string; homeLat?: number; homeLon?: number; notes?: string; siteId?: null | string; id: string; version: number }): Promise<Course>;
+    create(input: { crs?: string; siteId?: string; georeferenceJson?: string; homeLat?: number; homeLon?: number; notes?: string; name: string }): Promise<Course>;
+    update(input: { crs?: string; siteId?: null | string; name?: string; georeferenceJson?: string; homeLat?: number; homeLon?: number; notes?: string; id: string; version: number }): Promise<Course>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
     publish(input: { id: string; version: number }): Promise<Course>;
 }

@@ -56,8 +56,8 @@ export interface Shot {
 export interface RoundsApi {
     listByCourse(input: { courseId: string }): Promise<Round[]>;
     get(input: { id: string }): Promise<RoundWithShots>;
-    start(input: { stimpFt?: number; windSpeedMps?: number; windDirectionDeg?: number; startedAt?: string; gamePlanId?: string; courseId: string }): Promise<Round>;
-    end(input: { stimpFt?: number; notes?: string; windSpeedMps?: number; windDirectionDeg?: number; gamePlanId?: string; id: string; version: number; endedAt: string }): Promise<Round>;
+    start(input: { windSpeedMps?: number; windDirectionDeg?: number; stimpFt?: number; startedAt?: string; gamePlanId?: string; courseId: string }): Promise<Round>;
+    end(input: { notes?: string; windSpeedMps?: number; windDirectionDeg?: number; stimpFt?: number; gamePlanId?: string; id: string; version: number; endedAt: string }): Promise<Round>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
     addShot(input: { clubId?: string; lie?: string; shotType?: 'full' | 'partial' | 'putt' | 'recovery'; targetLat?: number; targetLon?: number; penaltyStrokes?: number; recordedAt?: string; lat: number; lon: number; holeNumber: number; roundId: string }): Promise<Shot>;
     updateShot(input: { lat?: number; lon?: number; holeNumber?: number; clubId?: string; lie?: string; shotType?: 'full' | 'partial' | 'putt' | 'recovery'; targetLat?: number; targetLon?: number; penaltyStrokes?: number; recordedAt?: string; id: string; version: number }): Promise<Shot>;

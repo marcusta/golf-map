@@ -130,6 +130,22 @@ def edge_pad_dem(input_path: Path, pad_m: float):
         yield padded_path
 
 
+class _OwningWarpedVRT(WarpedVRT):
+    """WarpedVRT that also closes the source dataset it wraps.
+
+    open_warped_to_mercator opens the source itself, so nothing else holds
+    a handle to close. Leaving it open is harmless on Linux/macOS but on
+    Windows keeps the file locked, which breaks deleting the temp dir that
+    edge_pad_dem yields its padded DEM from (WinError 32).
+    """
+
+    def close(self):
+        super().close()
+        src = getattr(self, "src_dataset", None)
+        if src is not None and not src.closed:
+            src.close()
+
+
 def open_warped_to_mercator(
     path: Path,
     resampling,
@@ -151,7 +167,7 @@ def open_warped_to_mercator(
     src = rasterio.open(path)
 
     if extra_bounds_3857 is None:
-        return WarpedVRT(src, crs=WEB_MERCATOR, resampling=resampling)
+        return _OwningWarpedVRT(src, crs=WEB_MERCATOR, resampling=resampling)
 
     natural_transform, natural_width, natural_height = calculate_default_transform(
         src.crs, WEB_MERCATOR, src.width, src.height, *src.bounds
@@ -176,7 +192,7 @@ def open_warped_to_mercator(
 
     transform = Affine(pixel_size_x, 0.0, left, 0.0, -pixel_size_y, top)
 
-    return WarpedVRT(
+    return _OwningWarpedVRT(
         src,
         crs=WEB_MERCATOR,
         resampling=resampling,

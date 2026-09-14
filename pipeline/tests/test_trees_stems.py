@@ -41,7 +41,8 @@ def test_kind_from_leaf_off_greenness():
     stems = {int(s.x): s for s in stems_from_ndsm(h, ground, transform, leaf_off_rgb=rgb)}
     assert stems[540020].kind == trees_stems.KIND_CONIFER and stems[540020].conifer_score == 1.0
     assert stems[540033].kind == trees_stems.KIND_BROADLEAF and stems[540033].conifer_score == 0.0
-    assert stems[540051].kind == trees_stems.KIND_UNKNOWN and np.isnan(stems[540051].conifer_score)
+    # The 4-wide flat bush seeds south-east of centre (deterministic tie-break), so column 52.
+    assert stems[540052].kind == trees_stems.KIND_UNKNOWN and np.isnan(stems[540052].conifer_score)
     rows = compact_asset(list(stems.values()))["trees"]
     assert sorted(row[5] for row in rows) == [0, 1, 2]
     # Coverage below half of the upper crown or a score inside the band stays unknown.
@@ -190,6 +191,67 @@ def test_las_command_roof_suppression_and_manifest_preservation(tmp_path):
     assert cmd_trees_stems([lidar], tmp_path / "none.geojson", tiles, "course",
                            bbox_3006=(540000, 6469940, 540060, 6470000), min_height_m=25.0) == []
     assert json.loads((tiles / "manifest.json").read_text())["assets"]["tree-stems"]["count"] == 0
+
+
+def test_las_command_keeps_two_small_crowns_with_single_return_interiors(tmp_path):
+    """Vreta 530042,6487605,530055,6487621: two 4 m crowns in a north-south
+    line with a couple of lone single-return cells in each interior. Those
+    cells used to become 5 m² roofs, hollowing the crowns so the northern
+    segment swallowed half of the southern one and the roof guard dropped
+    the rest. Both stems must survive."""
+    yy, xx = np.mgrid[:40, :40]
+    ground = np.full((40, 40), 75.0)
+    h = np.zeros((40, 40))
+    for cy in (14, 24):                              # two crowns 10 m apart, ~5 m across
+        h[(xx - 20) ** 2 + (yy - cy) ** 2 <= 6] = 4.0
+    multi = np.where(h > 0, 2, 1)
+    for cy in (14, 24):                              # lone single returns in each interior
+        multi[cy, 20] = 1; multi[cy, 21] = 1; multi[cy + 1, 20] = 1
+    x = (540000 + xx + .5).ravel(); y = (6470000 - yy - .5).ravel()
+    header = laspy.LasHeader(point_format=6, version="1.4")
+    header.scales = np.array([.01, .01, .01])
+    las = laspy.LasData(header)
+    las.x = np.concatenate([x, x]); las.y = np.concatenate([y, y])
+    las.z = np.concatenate([ground.ravel(), (ground + h).ravel()])
+    las.classification = np.concatenate([np.full(x.size, 2), np.full(x.size, 1)]).astype(np.uint8)
+    las.number_of_returns = np.concatenate([np.ones(x.size), multi.ravel()]).astype(np.uint8)
+    lidar = tmp_path / "scene.las"; las.write(lidar)
+    stems = cmd_trees_stems([lidar], tmp_path / "trees.geojson", tmp_path / "tiles", "course",
+                            bbox_3006=(540000, 6469960, 540040, 6470000), leaf_off_ortho=None)
+    assert sorted((round(s.x, 1), round(s.y, 1), round(s.height_m, 1)) for s in stems) == [
+        (540020.5, 6469975.5, 4.0), (540020.5, 6469985.5, 4.0)]
+
+
+def test_tiled_detection_matches_the_untiled_run_and_counts_each_stem_once(tmp_path):
+    """Two crowns 13 m apart, a tile edge between them: with the 30 m margin
+    each tile sees both trees whole and keeps only the one whose peak is in
+    its core, so the merged result equals the one-process run."""
+    from golfpipe.commands import _trees_tiles
+    h, ground, transform = scene()
+    yy, xx = np.mgrid[:60, :60]
+    x = (540000 + xx + .5).ravel(); y = (6470000 - yy - .5).ravel()
+    header = laspy.LasHeader(point_format=6, version="1.4")
+    header.scales = np.array([.01, .01, .01])
+    las = laspy.LasData(header)
+    las.x = np.concatenate([x, x]); las.y = np.concatenate([y, y])
+    las.z = np.concatenate([ground.ravel(), (ground + h).ravel()])
+    las.classification = np.concatenate([np.full(x.size, 2), np.full(x.size, 1)]).astype(np.uint8)
+    las.number_of_returns = np.concatenate([np.ones(x.size), np.where(h > 1, 2, 1).ravel()]).astype(np.uint8)
+    lidar = tmp_path / "scene.las"; las.write(lidar)
+    bbox = (540000, 6469940, 540060, 6470000)
+
+    tiles = _trees_tiles(bbox, 1.0, 30.0, 30.0)
+    assert [t[0] for t in tiles] == [
+        (540000, 6469970, 540030, 6470000), (540030, 6469970, 540060, 6470000),
+        (540000, 6469940, 540030, 6469970), (540030, 6469940, 540060, 6469970)]
+    assert tiles[0][1] == (540000, 6469940, 540060, 6470000)  # margin clipped to the box
+
+    whole = cmd_trees_stems([lidar], tmp_path / "whole.geojson", tmp_path / "t1", "course",
+                            bbox_3006=bbox, leaf_off_ortho=None, tile_m=0)
+    tiled = cmd_trees_stems([lidar], tmp_path / "tiled.geojson", tmp_path / "t2", "course",
+                            bbox_3006=bbox, leaf_off_ortho=None, tile_m=30.0, workers=2)
+    assert len(whole) == 2
+    assert compact_asset(tiled) == compact_asset(whole)
 
 
 def test_thin_tall_tree_keeps_two_square_metres_of_support():

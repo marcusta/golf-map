@@ -5,6 +5,14 @@ export type { Bbox };
 const R = 6371000; // mean earth radius, m
 export const M_PER_DEG_LAT = (R * Math.PI) / 180; // ≈ 111195 m per degree latitude
 
+/**
+ * The drawn square's side snaps to this step (metres). A GSPro inner terrain
+ * is 2010 m or 1870 m or 2200 m on a side, never 2009.37 m — the server
+ * snaps the built terrain to the same step in EPSG:3006 (its
+ * terrain-square.ts), so what the picker shows is what gets built.
+ */
+export const SIDE_STEP_M = 10;
+
 export interface BboxMetrics {
     widthM: number;
     heightM: number;
@@ -36,19 +44,24 @@ export function normalize(aLng: number, aLat: number, bLng: number, bLat: number
     };
 }
 
+/** `n` metres snapped to the nearest SIDE_STEP_M, never below one step. */
+export function snapSide(n: number): number {
+    return Math.max(SIDE_STEP_M, Math.round(n / SIDE_STEP_M) * SIDE_STEP_M);
+}
+
 /**
  * Build a bbox from a fixed `anchor` corner toward a `cursor`, forced to a
- * SQUARE whose side is a whole number of metres (GSPro courses require square
- * areas, and integer metres keep the exported material clean). The side is the
- * larger of the dragged width/height, rounded; the opposite corner is derived
- * so width == height == side exactly — measured the same way `bboxMetrics`
- * measures, via the box's mid-latitude.
+ * SQUARE whose side is a whole number of tens of metres (GSPro courses
+ * require square areas, and a side like 2010 m keeps the exported material
+ * clean). The side is the larger of the dragged width/height, snapped; the
+ * opposite corner is derived so width == height == side exactly — measured
+ * the same way `bboxMetrics` measures, via the box's mid-latitude.
  */
 export function squareBox(anchorLng: number, anchorLat: number, cursorLng: number, cursorLat: number): Bbox {
     const sx = cursorLng >= anchorLng ? 1 : -1;
     const sy = cursorLat >= anchorLat ? 1 : -1;
     const m = bboxMetrics(normalize(anchorLng, anchorLat, cursorLng, cursorLat));
-    const side = Math.max(1, Math.round(Math.max(m.widthM, m.heightM)));
+    const side = snapSide(Math.max(m.widthM, m.heightM));
 
     const dLat = side / M_PER_DEG_LAT;
     const midLat = (anchorLat + (sy * dLat) / 2) * (Math.PI / 180);

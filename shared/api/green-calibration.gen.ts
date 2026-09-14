@@ -33,7 +33,7 @@ export interface GreenBias {
 }
 
 export interface GreenCalibrationApi {
-    ingestScan(input: { quality?: unknown; greenId: string; kind: 'corridor' | 'spot_level'; capturedAt: string; payload: unknown }): Promise<{ scan: GreenScan; calibration: null | GreenCalibration }>;
+    ingestScan(input: { quality?: unknown; kind: 'corridor' | 'spot_level'; greenId: string; capturedAt: string; payload: unknown }): Promise<{ scan: GreenScan; calibration: null | GreenCalibration }>;
     courseConfidence(input: { courseId: string }): Promise<{ greens: GreenConfidence[] }>;
 }
 

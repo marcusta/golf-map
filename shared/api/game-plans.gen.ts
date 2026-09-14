@@ -54,16 +54,16 @@ export interface PlanGate {
 
 export interface GamePlansApi {
     getByCourse(input: { userId?: string; courseId: string }): Promise<null | GamePlan>;
-    upsert(input: { userId?: string; version?: number; windSpeedMps?: null | number; windDirectionDeg?: null | number; courseId: string }): Promise<GamePlan>;
-    remove(input: { userId?: string; courseId: string; version: number }): Promise<{ ok: boolean }>;
+    upsert(input: { version?: number; userId?: string; windSpeedMps?: null | number; windDirectionDeg?: null | number; courseId: string }): Promise<GamePlan>;
+    remove(input: { userId?: string; version: number; courseId: string }): Promise<{ ok: boolean }>;
     setHole(input: { version?: number; notes?: null | string; windSpeedMps?: null | number; windDirectionDeg?: null | number; teeId?: null | string; preferredClubId?: null | string; plannedDirectionDeg?: null | number; planId: string; holeNumber: number }): Promise<GamePlanHole>;
-    addShot(input: { elevation?: null | number; parentShotId?: null | string; clubId?: null | string; label?: null | string; lat: number; lon: number; gamePlanHoleId: string }): Promise<PlanShot>;
-    updateShot(input: { lat?: number; lon?: number; elevation?: null | number; clubId?: null | string; label?: null | string; id: string; version: number }): Promise<PlanShot>;
+    addShot(input: { elevation?: null | number; label?: null | string; parentShotId?: null | string; clubId?: null | string; lat: number; lon: number; gamePlanHoleId: string }): Promise<PlanShot>;
+    updateShot(input: { lat?: number; lon?: number; elevation?: null | number; label?: null | string; clubId?: null | string; id: string; version: number }): Promise<PlanShot>;
     removeShot(input: { mode?: 'splice' | 'cascade'; id: string; version: number }): Promise<{ ok: boolean }>;
     reorderShots(input: { orderedIds: string[]; gamePlanHoleId: string }): Promise<{ ok: boolean }>;
     setPrimary(input: { id: string }): Promise<{ ok: boolean }>;
     addGate(input: { source?: 'manual' | 'computed'; lat: number; lon: number; gamePlanHoleId: string; directionDeg: number; halfWidthLeftM: number; halfWidthRightM: number }): Promise<PlanGate>;
-    updateGate(input: { lat?: number; lon?: number; directionDeg?: number; halfWidthLeftM?: number; halfWidthRightM?: number; source?: 'manual' | 'computed'; id: string; version: number }): Promise<PlanGate>;
+    updateGate(input: { lat?: number; lon?: number; source?: 'manual' | 'computed'; directionDeg?: number; halfWidthLeftM?: number; halfWidthRightM?: number; id: string; version: number }): Promise<PlanGate>;
     removeGate(input: { id: string; version: number }): Promise<{ ok: boolean }>;
 }
 

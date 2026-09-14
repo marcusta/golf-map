@@ -138,3 +138,55 @@ def test_fetch_ortho_records_selected_collection(tmp_path: Path, monkeypatch):
     assert recipe["orthos"]["orto-l2-2023"]["items"] == ["o-2023"]
     assert recipe["orthos"]["orto-l2-2023"]["files"] == ["ortho-orto-l2-2023.tif"]
     assert recipe["orthos"]["orto-l2-2023"]["bufferM"] == 200
+
+
+def test_fetch_lidar_skip_forbidden_warns_and_records_only_what_came_down(tmp_path: Path, monkeypatch, capsys):
+    import requests
+
+    def fake_search(bbox, limit=10, session=None, ids=None):
+        return [
+            _item("m21c011-648_52", stac.LIDAR_COLLECTION, "https://dl/m21c011-648_52.copc.laz"),
+            _item("m21c011-649_53", stac.LIDAR_COLLECTION, "https://dl/m21c011-649_53.copc.laz"),
+        ]
+
+    def fake_download(href, dest, session=None):
+        if "649_53" in href:
+            resp = requests.Response()
+            resp.status_code = 403
+            raise requests.HTTPError("403 Client Error: Forbidden", response=resp)
+        Path(dest).write_bytes(b"laz")
+        return dest
+
+    monkeypatch.setattr(stac, "search_lidar", fake_search)
+    monkeypatch.setattr(stac, "download_asset_with_progress", fake_download)
+    out_dir = tmp_path / "sources" / "site-1" / "outer-lidar"
+    bbox = (15.47, 58.50, 15.56, 58.55)
+
+    # Default: a withheld tile aborts (a course's own terrain must be complete).
+    with pytest.raises(requests.HTTPError):
+        commands.cmd_fetch_lidar(bbox, out_dir, out_dir)
+
+    got = commands.cmd_fetch_lidar(bbox, out_dir, out_dir, skip_forbidden=True)
+    assert [p.name for p in got] == ["m21c011-648_52.copc.laz"]
+    assert "warning: lidar item m21c011-649_53 is withheld" in capsys.readouterr().err
+    recipe = json.loads((tmp_path / "sources" / "site-1" / "sources.json").read_text())
+    assert recipe["lidar"]["items"] == ["m21c011-648_52"]
+    assert recipe["lidar"]["files"] == ["m21c011-648_52.copc.laz"]
+
+
+def test_fetch_lidar_skip_forbidden_still_fails_when_nothing_came_down(tmp_path: Path, monkeypatch):
+    import requests
+
+    def fake_search(bbox, limit=10, session=None, ids=None):
+        return [_item("m21c011-649_53", stac.LIDAR_COLLECTION, "https://dl/m21c011-649_53.copc.laz")]
+
+    def fake_download(href, dest, session=None):
+        resp = requests.Response()
+        resp.status_code = 403
+        raise requests.HTTPError("403", response=resp)
+
+    monkeypatch.setattr(stac, "search_lidar", fake_search)
+    monkeypatch.setattr(stac, "download_asset_with_progress", fake_download)
+    out_dir = tmp_path / "lidar"
+    with pytest.raises(SystemExit):
+        commands.cmd_fetch_lidar((15.5, 58.3, 15.6, 58.4), out_dir, out_dir, skip_forbidden=True)

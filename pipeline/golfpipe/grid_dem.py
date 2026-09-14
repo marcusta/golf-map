@@ -3,10 +3,11 @@
 Used by the `grid-dem` command to build an authoritative bare-earth-ish
 surface directly from Lantmateriet's classified point clouds
 (`dsm-skoglig-copc` collection), replacing the old reverse-engineered
-local rasters. Ground (class 2) and water (class 9) points are the
-default "terrain surface" classes; bridge deck (class 17) is included
-too when present in the source data, since it should behave like solid
-ground for a walkable course DEM.
+local rasters. Ground (class 2), water (class 9) and bridge deck (class 17)
+points are the default "terrain surface" classes — a bridge should behave
+like solid ground for a walkable course DEM (OPCD's CloudCompare recipe
+filters the same three, plus roads, which Laserdata Skog does not
+classify). Asking for a class the data lacks is harmless.
 
 Memory strategy: point clouds here can be 100M+ points and several
 hundred MB to ~1 GB compressed. Reading the whole file into a single
@@ -33,8 +34,8 @@ from rasterio.fill import fillnodata
 from rasterio.transform import from_origin
 from scipy.ndimage import median_filter
 
-DEFAULT_CLASSES = (2, 9)  # ground, water
 BRIDGE_CLASS = 17
+DEFAULT_CLASSES = (2, 9, BRIDGE_CLASS)  # ground, water, bridge deck
 DEFAULT_RESOLUTION = 0.5
 DEFAULT_CHUNK_SIZE = 2_000_000
 SPIKE_THRESHOLD_M = 2.0  # used by describe_spikes, not by gridding itself

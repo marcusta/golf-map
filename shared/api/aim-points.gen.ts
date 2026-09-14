@@ -17,7 +17,7 @@ export interface AimPointsApi {
     create(input: { elevation?: number; label?: string; holeId: string; lat: number; lon: number }): Promise<AimPoint>;
     update(input: { lat?: number; lon?: number; elevation?: number; label?: string; id: string; version: number }): Promise<AimPoint>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
-    reorder(input: { orderedIds: string[]; holeId: string }): Promise<{ ok: boolean }>;
+    reorder(input: { holeId: string; orderedIds: string[] }): Promise<{ ok: boolean }>;
 }
 
 export function createAimPointsClient(baseUrl: string): AimPointsApi {

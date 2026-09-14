@@ -5,7 +5,7 @@ export interface MapBuildJob {
     id: string;
     courseId: string;
     siteId: null | string;
-    kind: 'build' | 're-terrain' | 'trees';
+    kind: 'trees' | 'build' | 're-terrain';
     status: 'running' | 'succeeded' | 'failed' | 'pending';
     step: null | 'fetch-lidar' | 'grid-dem' | 'apply-dem-edits' | 'fetch-ortho' | 'tile-ortho' | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register' | 'canopy' | 'trees-stems';
     bbox: Bbox;

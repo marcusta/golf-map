@@ -60,6 +60,7 @@ export interface CoursesTable {
     home_lon: number | null;
     notes: string | null;
     site_id: string | null; // the site whose map this course uses (null = no map yet)
+    gspro_export_dir: string | null; // GSPro SVG export folder; null = the server default (Downloads)
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

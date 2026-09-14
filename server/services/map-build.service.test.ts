@@ -7,6 +7,7 @@ import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { AssetsService } from './assets.service';
 import { TerrainEditsService } from './terrain-edits.service';
 import { MapBuildService, type PipelineRunner, type BuildStep } from './map-build.service';
+import { innerSquareFromWgs84, squareArg, terrainManifestField } from './terrain-square';
 
 const BBOX = { west: 15.55, south: 58.39, east: 15.58, north: 58.41 };
 
@@ -26,7 +27,6 @@ interface RunnerCall { step: string; args: string[] }
  * writes a real manifest.json + tile dirs into dataDir so the post-install
  * asset registration (which reads the manifest) succeeds — no Python runs.
  */
-const BBOX_3006 = '529108.19,6486714.12,530872.23,6488954.32';
 const VINTAGES = [
     { collection: 'orto-l2-2025', dates: ['2025-05-01'] },
     { collection: 'orto-l2-2023', dates: ['2023-08-15'] },
@@ -59,9 +59,6 @@ function fakeRunner(opts: {
             const dir = argValue(args, '--out-dir')!;
             await mkdir(dir, { recursive: true });
             await writeFile(path.join(dir, 'item_648_52.copc.laz'), 'fake');
-        }
-        if (step === 'reproject-bbox') {
-            return { code: 0, stdout: `${BBOX_3006}\n`, stderr: '' };
         }
         if (step === 'list-ortho-vintages') {
             return { code: 0, stdout: JSON.stringify(VINTAGES), stderr: '' };
@@ -171,7 +168,7 @@ test('happy path: runs the lidar→dem→ortho chain in order and registers 3 ti
         // (post-install) tile the older vintage into ortho/<collection>/ so the
         // client can switch without a re-tile.
         expect(calls.map((c) => c.step)).toEqual([
-            'fetch-lidar', 'reproject-bbox', 'grid-dem',
+            'fetch-lidar', 'grid-dem',
             'list-ortho-vintages', 'fetch-ortho', 'fetch-ortho',
             'tile-ortho', 'tile-terrain', 'tile-hillshade', 'manifest', 'install', 'tile-ortho',
         ]);
@@ -189,8 +186,14 @@ test('happy path: runs the lidar→dem→ortho chain in order and registers 3 ti
         // install/manifest are keyed by the SITE id.
         expect(argValue(calls.find((c) => c.step === 'install')!.args, '--course')).toBe(siteId);
 
+        // The DEM is cut to the INNER TERRAIN: the drawn area squared in
+        // EPSG:3006 with its side on the 10 m step (terrain-square.ts).
         const gridDem = calls.find((c) => c.step === 'grid-dem')!;
-        expect(argValue(gridDem.args, '--bbox-3006')).toBe(BBOX_3006);
+        const inner = innerSquareFromWgs84(BBOX);
+        expect(argValue(gridDem.args, '--bbox-3006')).toBe(squareArg(inner));
+        const [x0, y0, x1, y1] = inner;
+        expect(x1 - x0).toBe(y1 - y0);
+        expect((x1 - x0) % 10).toBe(0);
 
         // Persisted sources live under the SITE id.
         for (const f of ['dem.tif', 'ortho-orto-l2-2025.tif', 'ortho-orto-l2-2023.tif']) {
@@ -210,6 +213,7 @@ test('happy path: runs the lidar→dem→ortho chain in order and registers 3 ti
         expect(await Bun.file(path.join(dataDir, byKind.dem_cog.filename)).exists()).toBe(true);
 
         const meta = JSON.parse(byKind.tile_manifest.metaJson!);
+        expect(meta.terrain).toEqual(terrainManifestField(inner));
         expect(meta.activeOrtho).toBe('orto-l2-2025');
         // Explicit built-vintage marker: the collection the flat ortho tree
         // was tiled from — what T55 ortho patches replay onto.
@@ -426,7 +430,7 @@ test('full build replays enabled terrain edits: D-TE5 export, edited-DEM threadi
 
         // apply-dem-edits runs between grid-dem and the ortho steps.
         expect(calls.map((c) => c.step)).toEqual([
-            'fetch-lidar', 'reproject-bbox', 'grid-dem', 'apply-dem-edits',
+            'fetch-lidar', 'grid-dem', 'apply-dem-edits',
             'list-ortho-vintages', 'fetch-ortho', 'fetch-ortho',
             'tile-ortho', 'tile-terrain', 'tile-hillshade', 'manifest', 'install', 'tile-ortho',
         ]);

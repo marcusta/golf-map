@@ -171,7 +171,8 @@ def _drop_to_rgb_bands(path: Path) -> None:
         dst.write(data)
 
 
-def cmd_fetch_lidar(bbox: tuple[float, float, float, float], workdir: Path, out_dir: Path, items: list[str] | None = None) -> list[Path]:
+def cmd_fetch_lidar(bbox: tuple[float, float, float, float], workdir: Path, out_dir: Path, items: list[str] | None = None,
+                    skip_forbidden: bool = False) -> list[Path]:
     """STAC-searches dsm-skoglig-copc (classified lidar point clouds) for
     bbox, downloads each matching .copc.laz asset with basic auth into
     out_dir. Unlike fetch-dem/fetch-ortho, this does not mosaic/crop —
@@ -185,7 +186,14 @@ def cmd_fetch_lidar(bbox: tuple[float, float, float, float], workdir: Path, out_
 
     `items` pins STAC item ids (from a sources.json recipe) instead of
     searching; the fetch is recorded in `out_dir/../sources.json`.
+
+    Lantmäteriet withholds some tiles (HTTP 403 although the STAC index
+    lists them — restricted areas). `skip_forbidden` warns and carries on
+    without those, for background scenery where a flat patch beats no DEM;
+    the default aborts, as a course's own terrain must be complete.
     """
+    import requests
+
     items = stac.search_lidar(bbox, ids=items)
     if not items:
         print(f"No dsm-skoglig-copc items found for bbox {bbox}", file=sys.stderr)
@@ -193,16 +201,29 @@ def cmd_fetch_lidar(bbox: tuple[float, float, float, float], workdir: Path, out_
 
     out_dir.mkdir(parents=True, exist_ok=True)
     downloaded = []
+    fetched_items = []
     for item in items:
         href = item.data_href
         filename = href.rsplit("/", 1)[-1]
         dest = out_dir / filename
         print(f"Fetching lidar item {item.id} -> {dest}")
-        stac.download_asset_with_progress(href, dest)
+        try:
+            stac.download_asset_with_progress(href, dest)
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", None)
+            if skip_forbidden and status == 403:
+                print(f"warning: lidar item {item.id} is withheld by Lantmäteriet (HTTP 403); skipped — "
+                      f"that area will have no points", file=sys.stderr)
+                continue
+            raise
         downloaded.append(dest)
+        fetched_items.append(item)
+    if not downloaded:
+        print("error: every lidar item for the bbox was withheld (HTTP 403)", file=sys.stderr)
+        raise SystemExit(1)
 
     sources_mod.record_fetch(sources_mod.recipe_path_for(out_dir), "lidar", collection=stac.LIDAR_COLLECTION,
-                             items=[it.id for it in items], bbox_wgs84=bbox, files=[p.name for p in downloaded])
+                             items=[it.id for it in fetched_items], bbox_wgs84=bbox, files=[p.name for p in downloaded])
     return downloaded
 
 
@@ -1329,7 +1350,7 @@ def _build_canopy_grid(
 
     ndsm = detect_trees_mod.build_ndsm(ground_dem, surface_max, surface_count)
     raw_cells = int(np.count_nonzero(ndsm >= canopy_mod.MIN_CANOPY_HEIGHT_M))
-    suppressed = canopy_mod.suppress_buildings(ndsm, surface_count, multi_count)
+    suppressed = canopy_mod.suppress_buildings(ndsm, surface_count, multi_count, cell_size_m=resolution)
     roof_mask = (ndsm >= canopy_mod.BUILDING_MIN_HEIGHT_M) & (suppressed == 0.0)
     roof_cells = int(np.count_nonzero(roof_mask))
     canopy = canopy_mod.clean_canopy(suppressed)
@@ -1442,16 +1463,97 @@ def cmd_trees_features(
     return out
 
 
+# Tree-stems tiling (opt-in, --tile-m): the square is cut into tiles of about
+# that side, each detected in its own process with TREES_TILE_MARGIN_M of
+# neighbouring ground around it (a crown is at most 10 m in radius and the
+# peak window 7 m, so a tree straddling a tile edge is seen whole from both
+# sides); a stem is kept by the tile whose core holds its peak. Tile edges
+# sit on the global cell grid, so the per-tile grids are sub-grids of the
+# untiled one and the result matched it stem for stem on Vreta.
+#
+# Off by default because it did not pay: on Vreta's 2050 m square the
+# untiled run takes 22 s of which ~18 s is reading the two 1 GB LAZ files,
+# and every tile re-reads the files that touch it while the lazrs
+# decompressor already uses every core — nine tiles took 60 s. Tiling wins
+# only when detection itself dominates, i.e. very large or very dense
+# boxes; reach for it there.
+DEFAULT_TREES_TILE_M = 0.0
+TREES_TILE_MARGIN_M = 30.0
+
+
+def _lidar_bounds_3006(path: Path) -> tuple[float, float, float, float]:
+    """(x_min, y_min, x_max, y_max) from the LAS header, no point reading."""
+    import laspy
+    with laspy.open(str(path)) as reader:
+        h = reader.header
+        return float(h.mins[0]), float(h.mins[1]), float(h.maxs[0]), float(h.maxs[1])
+
+
+def _trees_tiles(bbox_3006, resolution: float, tile_m: float, margin_m: float):
+    """[(core, padded)] boxes in EPSG:3006 covering bbox_3006: cores partition
+    the box into roughly tile_m squares, padded grows each by margin_m and
+    clips to the box; every edge is a whole number of cells from the box's
+    north-west corner, the origin of the untiled grid."""
+    e_min, n_min, e_max, n_max = bbox_3006
+    cols = int(np.ceil((e_max - e_min) / resolution))
+    rows = int(np.ceil((n_max - n_min) / resolution))
+    n_x = max(1, int(np.ceil((e_max - e_min) / tile_m)))
+    n_y = max(1, int(np.ceil((n_max - n_min) / tile_m)))
+    margin = int(np.ceil(margin_m / resolution))
+    col_edges = [int(round(cols * i / n_x)) for i in range(n_x + 1)]
+    row_edges = [int(round(rows * j / n_y)) for j in range(n_y + 1)]
+    tiles = []
+    for j in range(n_y):
+        for i in range(n_x):
+            c0, c1, r0, r1 = col_edges[i], col_edges[i + 1], row_edges[j], row_edges[j + 1]
+            core = (e_min + c0 * resolution, n_max - r1 * resolution, e_min + c1 * resolution, n_max - r0 * resolution)
+            pc0, pc1 = max(0, c0 - margin), min(cols, c1 + margin)
+            pr0, pr1 = max(0, r0 - margin), min(rows, r1 + margin)
+            padded = (e_min + pc0 * resolution, n_max - pr1 * resolution, e_min + pc1 * resolution, n_max - pr0 * resolution)
+            tiles.append((core, padded))
+    return tiles
+
+
+def _stems_for_tile(job):
+    """One tile's stems (module-level so a process pool can pickle it):
+    grid the padded box from the lidar files that touch it, detect, keep the
+    stems whose peak lies in the core. Returns (index, stems, cells)."""
+    from golfpipe import trees_stems as trees_stems_mod
+    from golfpipe.trees_stems import stems_from_ndsm
+    index, lidar_paths, core, padded, resolution, thresholds, leaf_off_ortho = job
+    touching = [p for p in lidar_paths if _touches(_lidar_bounds_3006(p), padded)]
+    if not touching:
+        return index, [], 0
+    grid = _build_canopy_grid(touching, padded, resolution=resolution)
+    leaf_off_rgb = None
+    if leaf_off_ortho is not None:
+        leaf_off_rgb = trees_stems_mod.sample_ortho_rgb(Path(leaf_off_ortho), grid.transform, grid.suppressed_ndsm.shape)
+    stems = stems_from_ndsm(grid.suppressed_ndsm, grid.ground_dem, grid.transform, leaf_off_rgb=leaf_off_rgb,
+                            roof_mask=grid.roof_mask, **thresholds)
+    x0, y0, x1, y1 = core
+    kept = [s for s in stems if x0 <= s.x < x1 and y0 <= s.y < y1]
+    return index, kept, int(grid.suppressed_ndsm.size)
+
+
+def _touches(a, b) -> bool:
+    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+
 def cmd_trees_stems(lidar_paths: list[Path], out: Path, tiles_dir: Path, course_id: str,
                     bbox_3006=None, dem_path=None, resolution=1.0, workdir=None,
                     min_height_m=None, min_area_m2=None, tall_height_m=None, tall_min_area_m2=None,
-                    leaf_off_ortho="auto"):
+                    leaf_off_ortho="auto", tile_m: float = DEFAULT_TREES_TILE_M, workers: int | None = None):
     """Extract crown maxima, write GeoJSON + compact asset, merge its manifest entry.
     Threshold arguments left as None take the trees_stems module defaults.
 
     leaf_off_ortho picks the ortho pyramid the crown kind is read from: "auto"
     takes the newest Oct-Apr vintage listed in tiles_dir/manifest.json, a Path
-    names a pyramid directory, None skips kind (every stem unknown)."""
+    names a pyramid directory, None skips kind (every stem unknown).
+
+    tile_m > 0 cuts the box into tiles of about that side detected in
+    parallel on up to `workers` processes (default: every core); 0 (the
+    default, see DEFAULT_TREES_TILE_M for why) detects the whole box in this
+    process, which is also what `workdir`'s diagnostic rasters need."""
     import json
     import time
     from golfpipe import trees_stems as trees_stems_mod
@@ -1467,14 +1569,6 @@ def cmd_trees_stems(lidar_paths: list[Path], out: Path, tiles_dir: Path, course_
     if len(bbox_3006) != 4 or not np.all(np.isfinite(bbox_3006)) or bbox_3006[0] >= bbox_3006[2] or bbox_3006[1] >= bbox_3006[3]:
         raise ValueError("bbox must have increasing finite EPSG:3006 bounds")
     started = time.monotonic()
-    grid = _build_canopy_grid(lidar_paths, bbox_3006, resolution=resolution)
-    if workdir is not None:
-        workdir.mkdir(parents=True, exist_ok=True)
-        grid_dem_mod.write_dem_geotiff(grid.suppressed_ndsm.astype(np.float32), grid.transform, workdir / "stems-ndsm.tif", nodata_value=0.0)
-        grid_dem_mod.write_dem_geotiff(grid.ground_dem, grid.transform, workdir / "stems-ground.tif")
-        grid_dem_mod.write_dem_geotiff(grid.surface_count.astype(np.float32), grid.transform, workdir / "stems-surface-count.tif", nodata_value=-1.0)
-        grid_dem_mod.write_dem_geotiff(grid.multi_count.astype(np.float32), grid.transform, workdir / "stems-multi-count.tif", nodata_value=-1.0)
-        _write_roof_mask(grid.roof_mask, grid.transform, workdir / "stems-roof.tif")
     thresholds = dict(
         min_height_m=trees_stems_mod.DEFAULT_MIN_HEIGHT_M if min_height_m is None else min_height_m,
         min_area_m2=trees_stems_mod.DEFAULT_MIN_AREA_M2 if min_area_m2 is None else min_area_m2,
@@ -1487,13 +1581,41 @@ def cmd_trees_stems(lidar_paths: list[Path], out: Path, tiles_dir: Path, course_
         leaf_off_ortho = trees_stems_mod.leaf_off_ortho_dir(tiles_dir, manifest)
         if leaf_off_ortho is None:
             print("No leaf-off ortho vintage in manifest; crown kind left unknown", file=sys.stderr)
-    leaf_off_rgb = None
-    if leaf_off_ortho is not None:
-        leaf_off_rgb = trees_stems_mod.sample_ortho_rgb(Path(leaf_off_ortho), grid.transform, grid.suppressed_ndsm.shape)
-        covered = np.isfinite(leaf_off_rgb[..., 0]).mean()
-        print(f"Leaf-off ortho {leaf_off_ortho} covers {covered:.0%} of the grid")
-    stems = stems_from_ndsm(grid.suppressed_ndsm, grid.ground_dem, grid.transform, leaf_off_rgb=leaf_off_rgb,
-                            roof_mask=grid.roof_mask, **thresholds)
+
+    tiles = _trees_tiles(bbox_3006, resolution, tile_m, TREES_TILE_MARGIN_M) if tile_m and tile_m > 0 else []
+    if len(tiles) > 1 and workdir is None:
+        from concurrent.futures import ProcessPoolExecutor
+        import os
+        n_workers = max(1, min(workers or os.cpu_count() or 1, len(tiles)))
+        print(f"Detecting on {len(tiles)} tiles of ~{tile_m:g} m (+{TREES_TILE_MARGIN_M:g} m margin) on {n_workers} process(es) ...")
+        jobs = [(i, list(lidar_paths), core, padded, resolution, thresholds,
+                 None if leaf_off_ortho is None else Path(leaf_off_ortho)) for i, (core, padded) in enumerate(tiles)]
+        results = []
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            for index, kept, cells in pool.map(_stems_for_tile, jobs):
+                print(f"  tile {index + 1}/{len(tiles)}: {len(kept):,} stems from {cells:,} cells")
+                results.extend(kept)
+        # The untiled run lists stems north to south, west to east (peak
+        # label order); sort the merged set the same way.
+        stems = sorted(results, key=lambda s: (-s.y, s.x))
+    else:
+        if len(tiles) > 1:
+            print("Tiling skipped: --workdir rasters cover the whole box", file=sys.stderr)
+        grid = _build_canopy_grid(lidar_paths, bbox_3006, resolution=resolution)
+        if workdir is not None:
+            workdir.mkdir(parents=True, exist_ok=True)
+            grid_dem_mod.write_dem_geotiff(grid.suppressed_ndsm.astype(np.float32), grid.transform, workdir / "stems-ndsm.tif", nodata_value=0.0)
+            grid_dem_mod.write_dem_geotiff(grid.ground_dem, grid.transform, workdir / "stems-ground.tif")
+            grid_dem_mod.write_dem_geotiff(grid.surface_count.astype(np.float32), grid.transform, workdir / "stems-surface-count.tif", nodata_value=-1.0)
+            grid_dem_mod.write_dem_geotiff(grid.multi_count.astype(np.float32), grid.transform, workdir / "stems-multi-count.tif", nodata_value=-1.0)
+            _write_roof_mask(grid.roof_mask, grid.transform, workdir / "stems-roof.tif")
+        leaf_off_rgb = None
+        if leaf_off_ortho is not None:
+            leaf_off_rgb = trees_stems_mod.sample_ortho_rgb(Path(leaf_off_ortho), grid.transform, grid.suppressed_ndsm.shape)
+            covered = np.isfinite(leaf_off_rgb[..., 0]).mean()
+            print(f"Leaf-off ortho {leaf_off_ortho} covers {covered:.0%} of the grid")
+        stems = stems_from_ndsm(grid.suppressed_ndsm, grid.ground_dem, grid.transform, leaf_off_rgb=leaf_off_rgb,
+                                roof_mask=grid.roof_mask, **thresholds)
     out.parent.mkdir(parents=True, exist_ok=True)
     source_ref = ",".join(p.name for p in lidar_paths)
     out.write_text(json.dumps(feature_collection(stems, source_ref, course_id), separators=(",", ":")) + "\n")

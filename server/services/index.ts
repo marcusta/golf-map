@@ -20,6 +20,7 @@ import { AnalysisService } from './analysis.service';
 import { GreenCalibrationService } from './green-calibration.service';
 import { PuttEstimateService } from './putt-estimate.service';
 import { MapBuildService } from './map-build.service';
+import { GsproExportService } from './gspro-export.service';
 import { OrthoPatchesService } from './ortho-patches.service';
 import { HydroService } from './hydro.service';
 import { OsmService } from './osm.service';
@@ -73,6 +74,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const hydroService = new HydroService({ courses: coursesService, assets: assetsService });
     const osmService = new OsmService({ courses: coursesService, assets: assetsService });
     const terrainEditsService = new TerrainEditsService(db);
+    const gsproExportService = new GsproExportService({ db, courses: coursesService, assets: assetsService, dataDir });
     const publishService = new PublishService({ db, dataDir });
     // Serve-mode ingest endpoint (§8); the service is cheap to construct in
     // either mode — only its API is mounted (serve only) by main.ts.
@@ -103,6 +105,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         hydroService,
         osmService,
         terrainEditsService,
+        gsproExportService,
         publishService,
         tapscoreBridgeService,
         ingestService,
