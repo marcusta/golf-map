@@ -33,6 +33,7 @@ namespace GolfMap.Editor
     {
         public GolfMapBiomeAsset asset;
         public double scale, heightError, widthError, score, rotation;
+        public double widthScale;   // 0 = uniform (scale); set for hand-edited stems on mesh terrains
         public bool review;
     }
     // Same uniform fit and species race as tree-matching.mjs. No Unity dependency.

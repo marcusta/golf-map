@@ -89,6 +89,31 @@ render distances are zero; billboard atlases use the prepared material tints.
 Native TerrainInstances/GameObjects remain available for inner planting only when
 billboard-only mode is off. Check terrain compatibility before using native trees.
 
+### Tree editor (manual fixes in the Scene view)
+
+`GolfMapTreeEditor.cs` (+ `GolfMapTreeEdits.cs`) adds a **Tree editor** section to the
+planter window for PersistentStorage mode. With the trees file, terrain, biome and the
+planted storage selected, **Start editing planted trees** indexes every planted stem and
+takes over the Scene view:
+
+- click a tree to select it (shift-click adds, Esc clears); nearby stems show as faint discs
+- drag the position handle to move (snaps to the ground meshes/terrain on release), the red
+  disc to rotate, the cube above the crown to resize height and crown radius together
+- the window shows height, crown radius, rotation, species and asset for a single selection;
+  **Apply** re-matches the tree with the biome rules restricted to that species/asset
+- **Delete** (button or key) removes the selection; **Click adds a tree** places a new stem of
+  the chosen species/size where you click
+- **Reset to survey** drops the record and re-places the tree as the survey has it
+
+Every change is applied to VSP storage immediately and recorded in
+`<course>-<terrain>-tree-edits.json` next to the trees file (one record per tree id:
+`modify`, `delete` or `add`, with the resolved state and any species/asset/rotation
+override). The planter applies that file on every **Load and check** / **Plant**, so
+replanting, regenerating the survey or rebuilding the project keeps the manual work.
+A record whose id no longer exists falls back to the nearest survey stem within 1 m of its
+original position; unmatched records are reported and left in the file. There is no Unity
+undo for editor changes: use Reset to survey or the planting backups.
+
 ## Trees file format: unity-trees-v1
 
 Produced by `gspro.py trees` (the app's "Export inner/outer trees") from the lidar

@@ -12,6 +12,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -64,6 +65,8 @@ namespace GolfMap.Editor
         partial void PlantStorage();
         partial void ClearImported();
         partial void StorageAvailable(ref bool available);
+        partial void DrawTreeEditor();
+        partial void OnFileReloaded();
 
         const string kFormat = "unity-trees-v1";
         const string kParentName = "GolfMapTrees";
@@ -78,6 +81,12 @@ namespace GolfMap.Editor
         GolfMapBiome biome;
         readonly Dictionary<string,GameObject> biomePrefabs = new Dictionary<string,GameObject>();
         readonly Dictionary<GolfMapTree,GolfMapBiomeMatch> biomeMatches = new Dictionary<GolfMapTree,GolfMapBiomeMatch>();
+        readonly HashSet<GolfMapTree> woodlandTrees = new HashSet<GolfMapTree>();
+        // Manual edits (GolfMapTreeEdits.cs) applied on top of the loaded survey: tree -> its record.
+        readonly Dictionary<GolfMapTree,GolfMapTreeEdit> treeEdits = new Dictionary<GolfMapTree,GolfMapTreeEdit>();
+        GolfMapTreeEditFile editFile;
+        string editsPath = "";
+        List<string> editWarnings = new List<string>();
         [SerializeField] List<GameObject> broadleafPrefabs = new List<GameObject>();
         [SerializeField] List<GameObject> coniferPrefabs = new List<GameObject>();
         [SerializeField] List<GameObject> unknownPrefabs = new List<GameObject>();
@@ -162,12 +171,14 @@ namespace GolfMap.Editor
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("Load and check")) { try { LoadFile(); if (loaded != null) { ValidateTarget(); status = AlignmentReport()+PrepareBiome(); } } catch(Exception e) {status=e.Message;Debug.LogError("[GolfMap] "+status);} }
+                if (GUILayout.Button("Load and check")) { try { LoadFile(); if (loaded != null) { ValidateTarget(); status = AlignmentReport()+PrepareBiome()+EditsReport(); } } catch(Exception e) {status=e.Message;Debug.LogError("[GolfMap] "+status);} }
                 using (new EditorGUI.DisabledScope(terrain == null || string.IsNullOrEmpty(filePath)))
                     if (GUILayout.Button("Plant")) Plant();
                 if (mode == Mode.PersistentStorage && GUILayout.Button("Clear imported")) ClearImported();
             }
             if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
+
+            DrawTreeEditor();
 
             EditorGUILayout.EndScrollView();
             so.ApplyModifiedProperties();
@@ -178,6 +189,7 @@ namespace GolfMap.Editor
         void LoadFile()
         {
             loaded = null;
+            OnFileReloaded();
             try
             {
                 var text = File.ReadAllText(filePath);
@@ -186,7 +198,16 @@ namespace GolfMap.Editor
                 if (file.plot == null || file.plot.sizeM <= 0) throw new Exception("plot.sizeM missing");
                 if (file.trees == null) throw new Exception("trees missing");
                 foreach (var t in file.trees)
+                {
                     if (t==null || !ValidNumber(t.x)||!ValidNumber(t.z)||!ValidNumber(t.g)||!ValidNumber(t.h)||!ValidNumber(t.r)||t.h <= 0 || t.r <= 0||t.k<0||t.k>2) throw new Exception("Invalid tree coordinates, height, radius or kind");
+                    if(string.IsNullOrEmpty(t.id))t.id=t.x.ToString("R",System.Globalization.CultureInfo.InvariantCulture)+":"+t.z.ToString("R",System.Globalization.CultureInfo.InvariantCulture);
+                }
+                // Manual edits overlay the survey before anything looks at the trees.
+                treeEdits.Clear();
+                editsPath = GolfMapTreeEdits.PathFor(filePath);
+                editFile = GolfMapTreeEdits.Load(editsPath);
+                editWarnings = GolfMapTreeEdits.Apply(file.trees, editFile.edits, treeEdits);
+                foreach (var w in editWarnings) Debug.LogWarning("[GolfMap] " + w);
                 loaded = file;
                 loadedPath = filePath;
                 // An outer-plot file switches billboards on; the toggle stays editable.
@@ -197,6 +218,43 @@ namespace GolfMap.Editor
                 status = $"Load failed: {e.Message}";
                 Debug.LogError($"[GolfMap] {status}");
             }
+        }
+
+        string EditsReport()
+        {
+            if (editFile == null || editFile.edits.Count == 0) return "";
+            int modified = 0, deleted = 0, added = 0;
+            foreach (var e in editFile.edits) { if (e.op == "delete") deleted++; else if (e.op == "add") added++; else modified++; }
+            var text = "\nManual edits: " + modified + " changed, " + deleted + " deleted, " + added + " added (" + Path.GetFileName(editsPath) + ").";
+            if (editWarnings.Count > 0) text += "\nWARNING " + editWarnings.Count + " edit(s) match no survey tree: " + editWarnings[0];
+            return text;
+        }
+
+        // Biome match for one stem, honouring a manual species/asset/rotation override.
+        GolfMapBiomeMatch MatchTree(GolfMapTree t, bool woodland)
+        {
+            GolfMapTreeEdit edit; treeEdits.TryGetValue(t, out edit);
+            var source = biome; int kind = t.k;
+            if (edit != null && (!string.IsNullOrEmpty(edit.species) || !string.IsNullOrEmpty(edit.guid)))
+            {
+                var assets = biome.assets.Where(a => a.enabled && (string.IsNullOrEmpty(edit.guid) ? a.species == edit.species : a.guid == edit.guid)).ToList();
+                if (assets.Count == 0) throw new Exception("No enabled biome asset for species '" + edit.species + "' / asset '" + edit.guid + "' (tree " + t.id + ").");
+                source = new GolfMapBiome { format = biome.format, seed = biome.seed, rules = biome.rules, assets = assets };
+                kind = assets.All(a => a.kind == "conifer") ? 1 : assets.All(a => a.kind == "broadleaf") ? 0 : 2;
+            }
+            var m = GolfMapBiomeMatcher.Match(source, t.id, t.h, t.r, kind, woodland);
+            if (m != null && edit != null && edit.rotationSet) m.rotation = edit.rotation;
+            if (m != null && edit != null)
+            {
+                // A hand-edited stem must follow its height and crown radius exactly, so
+                // the palette's scale clamp (meant for automatic best-fit picks) is lifted
+                // and width gets its own axis. Outer billboards can only scale uniformly.
+                m.scale = t.h / m.asset.heightM;
+                m.widthScale = forceBillboards ? 0 : 2 * t.r / m.asset.crownWidthM;
+                m.heightError = 0;
+                m.widthError = m.widthScale > 0 ? 0 : Math.Abs(Math.Log(m.asset.crownWidthM * m.scale / (2 * t.r)));
+            }
+            return m;
         }
 
         string AlignmentReport()
@@ -249,12 +307,13 @@ namespace GolfMap.Editor
         }
         string PrepareBiome()
         {
-            biomeMatches.Clear();biomePrefabs.Clear();biome=null;
+            biomeMatches.Clear();biomePrefabs.Clear();woodlandTrees.Clear();biome=null;
             if(!useBiome)return "";
             biome=JsonUtility.FromJson<GolfMapBiome>(File.ReadAllText(biomePath).TrimStart('\uFEFF'));
             if(biome==null||biome.format!="golfmap-tree-palette-v1"||biome.rules==null||biome.assets==null||biome.assets.Count==0)throw new Exception("Invalid biome palette.");
             var rules=biome.rules;
             if(!(rules.minScale>0&&rules.maxScale>=rules.minScale&&rules.variationBand>=0&&rules.speciesFitSlack>=0&&rules.maxHeightError>=0&&rules.maxWidthError>=0))throw new Exception("Invalid biome rules.");
+            var renderIssues=new List<string>();
             foreach(var a in biome.assets){
                 if(!a.enabled)continue;
                 if(!(a.heightM>0&&a.crownWidthM>0)||double.IsInfinity(a.heightM)||double.IsInfinity(a.crownWidthM))throw new Exception("Invalid dimensions: "+a.name);
@@ -277,8 +336,10 @@ namespace GolfMap.Editor
                     }
                 }
                 if(meshRenderers==0)throw new Exception("No usable mesh renderers: "+a.name);
+                if(mode==Mode.PersistentStorage){var issue=VspRenderIssue(a,prefab);if(issue!=null)renderIssues.Add(issue);}
                 biomePrefabs.Add(a.guid,prefab);
             }
+            if(renderIssues.Count>0)throw new Exception("Palette assets VSP cannot draw faithfully (use VS_/baked variants):\n"+string.Join("\n",renderIssues.ToArray()));
             minScale=(float)rules.minScale;maxScale=(float)rules.maxScale;scaleWidth=false;
             int matched=0,review=0,unmatched=0,woodlandCount=0;var ids=new HashSet<string>();
             var grid=new Dictionary<string,List<GolfMapTree>>();
@@ -290,8 +351,7 @@ namespace GolfMap.Editor
             }
             foreach(var t in loaded.trees){
                 if(!InsidePlot(t)||t.h<minHeightM)continue;
-                string id=string.IsNullOrEmpty(t.id)?t.x.ToString("R",System.Globalization.CultureInfo.InvariantCulture)+":"+t.z.ToString("R",System.Globalization.CultureInfo.InvariantCulture):t.id;
-                if(!ids.Add(id))throw new Exception("Duplicate stem ID/coordinate: "+id);
+                if(!ids.Add(t.id))throw new Exception("Duplicate stem ID/coordinate: "+t.id);
                 int neighbours=0;
                 if(grid.Count>0&&t.h>rules.shrubMaxHeightM){
                     double gx=Math.Floor(t.x/cell),gz=Math.Floor(t.z/cell);
@@ -301,14 +361,38 @@ namespace GolfMap.Editor
                     }
                 }
                 bool woodland=grid.Count>0&&neighbours>=rules.woodlandMinNeighbours;
-                if(woodland)woodlandCount++;
-                var m=GolfMapBiomeMatcher.Match(biome,id,t.h,t.r,t.k,woodland);
+                if(woodland){woodlandCount++;woodlandTrees.Add(t);}
+                var m=MatchTree(t,woodland);
                 if(m==null){unmatched++;continue;}if(m.review)review++;
                 if(!m.review||includeReviewMatches){biomeMatches.Add(t,m);matched++;}
             }
             var speciesCounts=new Dictionary<string,int>();foreach(var m in biomeMatches.Values){string label=string.IsNullOrEmpty(m.asset.species)?m.asset.kind:m.asset.species;if(!speciesCounts.ContainsKey(label))speciesCounts[label]=0;speciesCounts[label]++;}
             var mix="";foreach(var pair in speciesCounts)mix+=pair.Key+" "+pair.Value+"; ";
             return "\nBiome: "+matched+" eligible, "+review+" imperfect/unknown fits, "+unmatched+" unmatched (skipped). "+woodlandCount+" woodland stems use canopy matching. Uniform scale "+minScale+"–"+maxScale+". Uses prepared material colours.\n"+mix;
+        }
+
+        // VSP draws one mesh per LOD (the LOD's first renderer) with the instance
+        // transform in place of the prefab root: extra renderers vanish and any
+        // transform on the mesh object below the root is dropped. NM's "High
+        // Quality" poplars (leaves + trunk per LOD, leaf mesh tilted -90 X)
+        // rendered as flat blobs. The root's own transform never matters.
+        static string VspRenderIssue(GolfMapBiomeAsset a,GameObject prefab)
+        {
+            var root=prefab.transform;
+            var group=prefab.GetComponentInChildren<LODGroup>(true);
+            if(!group)return null;
+            var lods=group.GetLODs();
+            for(int i=0;i<lods.Length;i++){
+                var renderers=lods[i].renderers.Where(r=>r&&!(r is BillboardRenderer)).ToArray();
+                if(renderers.Length==0)continue;
+                if(renderers.Length>1)return a.name+" LOD"+i+" has "+renderers.Length+" renderers ("+string.Join(", ",renderers.Select(r=>r.name).ToArray())+"); VSP draws only the first.";
+                var t=renderers[0].transform;
+                var local=root.worldToLocalMatrix*t.localToWorldMatrix;
+                var p=local.GetColumn(3);var q=Quaternion.LookRotation(local.GetColumn(2),local.GetColumn(1));
+                if(new Vector3(p.x,p.y,p.z).magnitude>0.5f||Quaternion.Angle(q,Quaternion.identity)>1f||(local.lossyScale-Vector3.one).magnitude>0.05f)
+                    return a.name+" LOD"+i+" mesh object "+t.name+" is offset/rotated/scaled relative to the root; VSP ignores that.";
+            }
+            return null;
         }
 
         Vector3 WorldPos(GolfMapTree t) => terrain.transform.position + new Vector3(t.x, 0, t.z);
@@ -425,7 +509,7 @@ namespace GolfMap.Editor
         }
 
         float HeightScale(GolfMapTree t, Proto p) => useBiome ? (float)biomeMatches[t].scale : Mathf.Clamp(t.h / p.heightM, minScale, maxScale);
-        float WidthScale(GolfMapTree t, Proto p, float hs) => useBiome ? hs : scaleWidth ? Mathf.Clamp(2f * t.r / p.widthM, minScale, maxScale) : hs;
+        float WidthScale(GolfMapTree t, Proto p, float hs) => useBiome ? (biomeMatches[t].widthScale > 0 ? (float)biomeMatches[t].widthScale : hs) : scaleWidth ? Mathf.Clamp(2f * t.r / p.widthM, minScale, maxScale) : hs;
         float TreeRotation(GolfMapTree t,System.Random rng) {return useBiome?(float)biomeMatches[t].rotation:(float)(rng.NextDouble()*360);}
 
         int PlantTerrainInstances(Dictionary<GameObject, Proto> protos, System.Random rng, out int skipped)

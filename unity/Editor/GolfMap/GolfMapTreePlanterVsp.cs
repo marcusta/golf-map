@@ -302,9 +302,130 @@ namespace GolfMap.Editor
 
         struct PreparedTree
         {
+            public GolfMapTree tree;
             public GameObject prefab;
             public Vector3 position, scale;
             public Quaternion rotation;
+        }
+
+        // Ground height for a stem: course meshes first (temporary colliders),
+        // the terrain otherwise. Dispose removes the probe objects.
+        class GroundProbe : IDisposable
+        {
+            readonly Terrain terrain;
+            readonly List<GameObject> temporary = new List<GameObject>();
+            readonly List<MeshCollider> colliders = new List<MeshCollider>();
+            public GroundProbe(Terrain terrain, IEnumerable<GameObject> roots)
+            {
+                this.terrain = terrain;
+                var filters = roots.Where(g => g).SelectMany(g => g.GetComponentsInChildren<MeshFilter>()).Where(m => m.sharedMesh && m.gameObject.activeInHierarchy).Distinct().ToList();
+                foreach (var filter in filters)
+                {
+                    if (filter.gameObject.scene != terrain.gameObject.scene) { Dispose(); throw new InvalidOperationException("Ground meshes must belong to the terrain scene."); }
+                    var go = new GameObject("GolfMap ground probe") { hideFlags = HideFlags.HideAndDontSave };
+                    temporary.Add(go);
+                    go.transform.SetParent(filter.transform, false);
+                    var collider = go.AddComponent<MeshCollider>();
+                    collider.sharedMesh = filter.sharedMesh;
+                    colliders.Add(collider);
+                }
+                Physics.SyncTransforms();
+            }
+            public float Height(Vector3 pos, out bool meshHit)
+            {
+                float best = float.NegativeInfinity;
+                foreach (var collider in colliders)
+                {
+                    var b = collider.bounds;
+                    if (pos.x < b.min.x || pos.x > b.max.x || pos.z < b.min.z || pos.z > b.max.z) continue;
+                    RaycastHit hit;
+                    if (collider.Raycast(new Ray(new Vector3(pos.x, b.max.y + 1, pos.z), Vector3.down), out hit, b.size.y + 2)) best = Mathf.Max(best, hit.point.y);
+                }
+                meshHit = !float.IsNegativeInfinity(best);
+                return meshHit ? best : terrain.SampleHeight(pos) + terrain.transform.position.y;
+            }
+            public void Dispose() { foreach (var go in temporary) if (go) DestroyImmediate(go); temporary.Clear(); colliders.Clear(); }
+        }
+
+        // Prefab, ground position, scale and rotation for one survey stem.
+        // prefab is null when the stem has no mapping (biome: unmatched).
+        PreparedTree PrepareOne(GolfMapTree tree, GroundProbe probe, Dictionary<GameObject, Proto> cache, ref int meshHits, ref int terrainHits, ref int clamped)
+        {
+            var rng = new System.Random(StemSeed(tree, seed));
+            var prefab = Pick(tree, rng);
+            if (!prefab) return new PreparedTree { tree = tree };
+            var proto = Measure(prefab, cache);
+            var pos = WorldPos(tree);
+            bool meshHit; pos.y = probe.Height(pos, out meshHit);
+            if (meshHit) meshHits++; else terrainHits++;
+            GolfMapTreeEdit edit; if (treeEdits.TryGetValue(tree, out edit)) pos.y += edit.dy;
+            float hs = HeightScale(tree, proto), ws = WidthScale(tree, proto, hs);
+            if (Mathf.Abs(hs - tree.h / proto.heightM) > 0.0001f || (scaleWidth && Mathf.Abs(ws - 2 * tree.r / proto.widthM) > 0.0001f)) clamped++;
+            return new PreparedTree { tree = tree, prefab = prefab, position = pos, scale = new Vector3(ws, hs, ws), rotation = Quaternion.Euler(0, TreeRotation(tree, rng), 0) };
+        }
+
+        // VSP resolves a position with a zero-size rect (also inside AddVegetationItemInstance), which misses
+        // points lying exactly on a cell edge. Survey stems use whole-metre coordinates, so thousands sit on the
+        // cell grid. Nudge those a centimetre into the nearest cell instead of dropping them.
+        static bool ResolveCell(VegetationSystemPro system, ref Vector3 position)
+        {
+            var cells = new List<VegetationCell>();
+            system.VegetationCellQuadTree.Query(new Rect(new Vector2(position.x, position.z), Vector2.zero), cells);
+            if (cells.Count == 1) return false;
+            const float eps = 0.01f;
+            cells.Clear();
+            system.VegetationCellQuadTree.Query(new Rect(position.x - eps, position.z - eps, 2 * eps, 2 * eps), cells);
+            if (cells.Count == 0) throw new InvalidOperationException("Tree at " + position + " falls outside VSP coverage " + system.VegetationSystemBounds + ". Existing import retained.");
+            var r = cells[0].Rectangle;
+            position.x = Mathf.Clamp(position.x, r.xMin + eps, r.xMax - eps);
+            position.z = Mathf.Clamp(position.z, r.yMin + eps, r.yMax - eps);
+            cells.Clear();
+            system.VegetationCellQuadTree.Query(new Rect(new Vector2(position.x, position.z), Vector2.zero), cells);
+            if (cells.Count != 1) throw new InvalidOperationException("Tree at " + position + " maps to " + cells.Count + " VSP cells after nudging. Existing import retained.");
+            return true;
+        }
+
+        string CatalogName { get { return forceBillboards ? "GolfMap imported trees (billboards)" : "GolfMap imported trees"; } }
+
+        // The selected storage must be enabled, in the terrain scene and laid out for the system's cells.
+        void CheckStorageReady(out VegetationSystemPro system, out PersistentVegetationStoragePackage package)
+        {
+            EnsureStorage();
+            system = storage.VegetationSystemPro;
+            package = storage.PersistentVegetationStoragePackage;
+            if (!system || !package || storage.DisablePersistentStorage || system.gameObject.scene != terrain.gameObject.scene)
+                throw new InvalidOperationException("Storage must be enabled and reference a system and package in the terrain scene.");
+            if (!storage.HasValidPersistentStorage(system.VegetationCellList.Count) || system.VegetationCellList.Count == 0)
+                throw new InvalidOperationException("Persistent storage cell layout does not match VSP. Refusing to reset existing storage.");
+        }
+
+        // Adds the prefabs to the GolfMap catalogue (creating it if needed) and returns prefab -> vegetation item id.
+        Dictionary<GameObject, string> EnsureCatalog(VegetationSystemPro system, IEnumerable<GameObject> prefabs, bool rebake)
+        {
+            var mapping = new Dictionary<GameObject, string>();
+            var catalog = system.VegetationPackageProList.FirstOrDefault(p => p && p.PackageName == CatalogName);
+            if (!catalog)
+            {
+                catalog = CreateInstance<VegetationPackagePro>();
+                catalog.PackageName = CatalogName;
+                AssetDatabase.CreateAsset(catalog, AssetDatabase.GenerateUniqueAssetPath(VretaFolder + "TreeCatalog.asset"));
+                system.AddVegetationPackage(catalog);
+            }
+            bool changed = false;
+            foreach (var prefab in prefabs.Distinct())
+            {
+                var item = catalog.VegetationInfoList.FirstOrDefault(i => i.VegetationPrefab == prefab);
+                if (item == null) { catalog.AddVegetationItem(prefab, VegetationType.Tree, false); item = catalog.VegetationInfoList.Last(); changed = true; }
+                if(useBiome)SyncPrefabColours(item);
+                item.EnableRuntimeSpawn = false;
+                item.UseBillboards = forceBillboards;
+                if(forceBillboards&&(rebake||!item.BillboardTexture)){BakeBiomeBillboard(catalog,item);changed=true;}
+                mapping.Add(prefab, item.VegetationItemID);
+            }
+            EditorUtility.SetDirty(catalog);
+            if (changed) system.RefreshVegetationSystem();
+            if(!storage.HasValidPersistentStorage(system.VegetationCellList.Count))throw new InvalidOperationException("Storage layout changed on catalogue refresh. Import stopped.");
+            return mapping;
         }
 
         static int StemSeed(GolfMapTree t, int seedValue)
@@ -360,10 +481,10 @@ namespace GolfMap.Editor
 
         partial void PlantStorage()
         {
-            var temporary = new List<GameObject>();
+            GroundProbe probe = null;
             var prepared = new List<PreparedTree>();
             var cache = new Dictionary<GameObject, Proto>();
-            int meshHits = 0, terrainHits = 0, skipped = 0, clamped = 0;
+            int meshHits = 0, terrainHits = 0, skipped = 0, clamped = 0, nudged = 0;
             try
             {
                 if (terrain.transform.rotation != Quaternion.identity || terrain.transform.lossyScale != Vector3.one)
@@ -387,101 +508,31 @@ namespace GolfMap.Editor
                 if(storage&&storage.VegetationSystemPro){
                     if(!StorageMatchesTerrain(storage,terrain))throw new InvalidOperationException("Storage does not match the current terrain/bounds. Click Create / select storage for this terrain to select or create a matching system. The old storage will be preserved.");
                     var catalogs=storage.VegetationSystemPro.VegetationPackageProList;
-                    if(catalogs.Any(p=>p&&p.VegetationInfoList.Count>0&&p.PackageName!=(forceBillboards?"GolfMap imported trees (billboards)":"GolfMap imported trees")))throw new InvalidOperationException("Storage contains a different planting layer. Inner and outer must use separate systems.");
+                    if(catalogs.Any(p=>p&&p.VegetationInfoList.Count>0&&p.PackageName!=CatalogName))throw new InvalidOperationException("Storage contains a different planting layer. Inner and outer must use separate systems.");
                 }
-                var filters = (forceBillboards?new List<GameObject>():groundMeshes).Where(g => g).SelectMany(g => g.GetComponentsInChildren<MeshFilter>()).Where(m => m.sharedMesh && m.gameObject.activeInHierarchy).Distinct().ToList();
-                var colliders = new List<MeshCollider>();
-                foreach (var filter in filters)
-                {
-                    if (filter.gameObject.scene != terrain.gameObject.scene) throw new InvalidOperationException("Ground meshes must belong to the terrain scene.");
-                    var go = new GameObject("GolfMap ground probe") { hideFlags = HideFlags.HideAndDontSave };
-                    temporary.Add(go);
-                    go.transform.SetParent(filter.transform, false);
-                    var collider = go.AddComponent<MeshCollider>();
-                    collider.sharedMesh = filter.sharedMesh;
-                    colliders.Add(collider);
-                }
-                Physics.SyncTransforms();
+                probe = new GroundProbe(terrain, forceBillboards ? new List<GameObject>() : groundMeshes);
                 foreach (var tree in loaded.trees)
                 {
                     if (!InsidePlot(tree) || tree.h < minHeightM) { skipped++; continue; }
-                    var rng = new System.Random(StemSeed(tree, seed));
-                    var prefab = Pick(tree, rng);
-                    if (!prefab) {if(useBiome){skipped++;continue;}throw new InvalidOperationException("No prefab mapping for kind " + tree.k + ". Existing import retained.");}
-                    var proto = Measure(prefab, cache);
-                    var pos = WorldPos(tree);
-                    pos.y = terrain.SampleHeight(pos) + terrain.transform.position.y;
-                    float best = float.NegativeInfinity;
-                    foreach (var collider in colliders)
-                    {
-                        var b = collider.bounds;
-                        if (pos.x < b.min.x || pos.x > b.max.x || pos.z < b.min.z || pos.z > b.max.z) continue;
-                        RaycastHit hit;
-                        if (collider.Raycast(new Ray(new Vector3(pos.x, b.max.y + 1, pos.z), Vector3.down), out hit, b.size.y + 2)) best = Mathf.Max(best, hit.point.y);
-                    }
-                    if (!float.IsNegativeInfinity(best)) { pos.y = best; meshHits++; } else terrainHits++;
-                    float hs = HeightScale(tree, proto), ws = WidthScale(tree, proto, hs);
-                    if (Mathf.Abs(hs - tree.h / proto.heightM) > 0.0001f || (scaleWidth && Mathf.Abs(ws - 2 * tree.r / proto.widthM) > 0.0001f)) clamped++;
-                    prepared.Add(new PreparedTree { prefab = prefab, position = pos, scale = new Vector3(ws, hs, ws), rotation = Quaternion.Euler(0, TreeRotation(tree,rng), 0) });
+                    var t = PrepareOne(tree, probe, cache, ref meshHits, ref terrainHits, ref clamped);
+                    if (!t.prefab) {if(useBiome){skipped++;continue;}throw new InvalidOperationException("No prefab mapping for kind " + tree.k + ". Existing import retained.");}
+                    prepared.Add(t);
                 }
                 if (prepared.Count == 0) throw new InvalidOperationException("No eligible trees. Existing import retained.");
-                EnsureStorage();
-                var system = storage.VegetationSystemPro;
-                var package = storage.PersistentVegetationStoragePackage;
-                if (!system || !package || storage.DisablePersistentStorage || system.gameObject.scene != terrain.gameObject.scene)
-                    throw new InvalidOperationException("Storage must be enabled and reference a system and package in the terrain scene.");
-                if (!storage.HasValidPersistentStorage(system.VegetationCellList.Count) || system.VegetationCellList.Count == 0)
-                    throw new InvalidOperationException("Persistent storage cell layout does not match VSP. Refusing to reset existing storage.");
+                VegetationSystemPro system; PersistentVegetationStoragePackage package;
+                CheckStorageReady(out system, out package);
                 system.PersistentVegetationStorage = storage;
                 system.VegetationCellSpawner.PersistentVegetationStorage = storage;
                 // This VSP billboard generator uses X scale for both billboard axes.
                 // The survey uses independent crown width and height: retain mesh LODs.
                 system.VegetationSettings.AdditionalTreeMeshDistance = forceBillboards ? 0 : 3000;
                 if(forceBillboards){system.VegetationSettings.PlantDistance=0;system.VegetationSettings.AdditionalBillboardDistance=outerBillboardDistance;system.VegetationSettings.TreeShadows=false;}
-                int nudged = 0;
                 for (int i = 0; i < prepared.Count; i++)
                 {
                     var t = prepared[i];
-                    var cells = new List<VegetationCell>();
-                    system.VegetationCellQuadTree.Query(new Rect(new Vector2(t.position.x, t.position.z), Vector2.zero), cells);
-                    if (cells.Count == 1) continue;
-                    // VSP resolves a position with a zero-size rect (also inside AddVegetationItemInstance), which misses
-                    // points lying exactly on a cell edge. Survey stems use whole-metre coordinates, so thousands sit on the
-                    // cell grid. Nudge those a centimetre into the nearest cell instead of dropping them.
-                    const float eps = 0.01f;
-                    cells.Clear();
-                    system.VegetationCellQuadTree.Query(new Rect(t.position.x - eps, t.position.z - eps, 2 * eps, 2 * eps), cells);
-                    if (cells.Count == 0) throw new InvalidOperationException("Tree at " + t.position + " falls outside VSP coverage " + system.VegetationSystemBounds + ". Existing import retained.");
-                    var r = cells[0].Rectangle;
-                    t.position.x = Mathf.Clamp(t.position.x, r.xMin + eps, r.xMax - eps);
-                    t.position.z = Mathf.Clamp(t.position.z, r.yMin + eps, r.yMax - eps);
-                    cells.Clear();
-                    system.VegetationCellQuadTree.Query(new Rect(new Vector2(t.position.x, t.position.z), Vector2.zero), cells);
-                    if (cells.Count != 1) throw new InvalidOperationException("Tree at " + t.position + " maps to " + cells.Count + " VSP cells after nudging. Existing import retained.");
-                    prepared[i] = t; nudged++;
+                    if (ResolveCell(system, ref t.position)) { prepared[i] = t; nudged++; }
                 }
-                var mapping = new Dictionary<GameObject, string>();
-                var catalogName = forceBillboards ? "GolfMap imported trees (billboards)" : "GolfMap imported trees";
-                var catalog = system.VegetationPackageProList.FirstOrDefault(p => p && p.PackageName == catalogName);
-                if (!catalog)
-                {
-                    catalog = CreateInstance<VegetationPackagePro>();
-                    catalog.PackageName = catalogName;
-                    AssetDatabase.CreateAsset(catalog, AssetDatabase.GenerateUniqueAssetPath(VretaFolder + "TreeCatalog.asset"));
-                    system.AddVegetationPackage(catalog);
-                }
-                foreach (var prefab in prepared.Select(t => t.prefab).Distinct())
-                {
-                    var item = catalog.VegetationInfoList.FirstOrDefault(i => i.VegetationPrefab == prefab);
-                    if (item == null) { catalog.AddVegetationItem(prefab, VegetationType.Tree, false); item = catalog.VegetationInfoList.Last(); }
-                    if(useBiome)SyncPrefabColours(item);
-                    item.EnableRuntimeSpawn = false;
-                    item.UseBillboards = forceBillboards;
-                    if(forceBillboards&&(regenerateBillboards||!item.BillboardTexture))BakeBiomeBillboard(catalog,item);
-                    mapping.Add(prefab, item.VegetationItemID);
-                }
-                system.RefreshVegetationSystem();
-                if(!storage.HasValidPersistentStorage(system.VegetationCellList.Count))throw new InvalidOperationException("Storage layout changed on catalogue refresh. Import stopped.");
+                var mapping = EnsureCatalog(system, prepared.Select(t => t.prefab), regenerateBillboards);
                 var backup=BackupStorage(package);
                 Undo.RegisterCompleteObjectUndo(package, "Import GolfMap trees");
                 int prior = SourceCount(package);
@@ -491,7 +542,7 @@ namespace GolfMap.Editor
                 int expected = prepared.Count + (clearExisting ? 0 : prior);
                 if (SourceCount(package) != expected) throw new InvalidOperationException("Stored count differs from expected count.");
                 } catch {EditorJsonUtility.FromJsonOverwrite(backup,package);EditorUtility.SetDirty(package);RefreshStorage();throw;}
-                EditorUtility.SetDirty(package); EditorUtility.SetDirty(catalog); EditorUtility.SetDirty(system); EditorUtility.SetDirty(storage);
+                EditorUtility.SetDirty(package); EditorUtility.SetDirty(system); EditorUtility.SetDirty(storage);
                 EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
                 RefreshStorage();
                 AssetDatabase.SaveAssets();
@@ -501,7 +552,7 @@ namespace GolfMap.Editor
                 Debug.Log("[GolfMap] " + status);
             }
             catch (Exception e) { status = "Import stopped: " + e.Message; Debug.LogException(e); }
-            finally { foreach (var go in temporary) if (go) DestroyImmediate(go); }
+            finally { if (probe != null) probe.Dispose(); }
         }
     }
 }

@@ -40,3 +40,28 @@ elm 2,039 (18.0%), maple 1,052 (9.3%), broadleaf 555 (4.9%). All eight tests and
 25,563-stem parity pass. Installed files verified; scene not replanted or visually
 reviewed. Tall and tall-bare variants have the same measured bounds but different
 geometry; the bare variant should be reviewed for woodland canopy coverage.
+
+## Poplar prefabs swapped for the VS_ builds (2026-09-14)
+
+Vegetation Studio Pro draws one mesh per LOD (the LOD group's first renderer)
+with the instance transform only. NatureManufacture's "High Quality" poplars have
+two or three renderers per LOD, a leaf mesh rotated -90 on X and a root 45 m off
+origin, so VSP rendered `prefab_01_Poplar` and `prefab_06_Poplar_skan` as flat
+leaf blobs without trunks (found while testing the scene tree editor). All five
+poplar entries now come from NM's `Trees/VS Prefabs`, one mesh per LOD with an
+identity root: `VS_prefab_01_Poplar` (7.85 m, 4.45 m), `VS_prefab_03_Poplar`
+(18.21 m, 11.61 m), `VS_prefab_05_Poplar` (24.38 m, 14.45 m), `VS_prefab_06_Poplar`
+(25.21 m, 14.48 m) and `VS_prefab_07_Poplar` (25.48 m, 15.46 m). The three baked
+poplars rendered correctly but were swapped too so every poplar uses the same
+build. The copies reuse the tuned private `M_Poplar_leaves` material; bark
+materials stay original. Total: 31 entries.
+
+Only the two prefab copies and the palette were installed from the rerun of
+`unity/expand-vreta-palette.mjs`; its regenerated material files were not copied,
+since later colour passes tuned the installed ones. Forecast over the 25,563-stem
+fixture: birch 2,241, poplar 2,184, oak 3,282, elm 2,004, maple 1,071, broadleaf 555.
+
+The planter now refuses palette assets VSP cannot draw faithfully (more than one
+renderer per LOD, or a transform on the root or the mesh object) at Load and check
+in PersistentStorage mode. Replant the inner storage with "Clear existing trees
+first" to replace the planted poplars.

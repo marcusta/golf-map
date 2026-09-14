@@ -10,7 +10,12 @@ const guid=p=>crypto.createHash('md5').update('golfmap-expanded-palette:'+p).dig
 const catalogue=JSON.parse(fs.readFileSync('tree-export/GolfMapCatalogue-20260911-205056-6fc852/catalogue.json','utf8').replace(/^\uFEFF/,''));
 const p=JSON.parse(read('Assets/GolfMap/Vreta/palette.json'));
 p.rules.speciesWeights={poplar:.10,broadleaf:.15,elm:.20,birch:.10,oak:.30,maple:.15};
-const names=['prefab_01_Poplar','prefab_Baked_07_Poplar','prefab_Baked_05_Poplar','prefab_Baked_03_Poplar','prefab_06_Poplar_skan','Broadleaf_Desktop','Elm-Split PREFAB','Maple','Elm','PF_Oak_tall_bare Terrain','PF_Oak_tall Terrain'];
+// VSP draws one renderer per LOD with the instance transform only, so the
+// "High Quality" poplars (two or three renderers per LOD, tilted leaf meshes,
+// offset roots) render as flat leaf blobs. The VS_ prefabs are NM's one-mesh
+// per LOD builds for Vegetation Studio; all poplars use them.
+const names=['VS_prefab_01_Poplar','VS_prefab_07_Poplar','VS_prefab_05_Poplar','VS_prefab_03_Poplar','VS_prefab_06_Poplar','Broadleaf_Desktop','Elm-Split PREFAB','Maple','Elm','PF_Oak_tall_bare Terrain','PF_Oak_tall Terrain'];
+const retired=['prefab_01_Poplar','prefab_06_Poplar_skan','prefab_Baked_03_Poplar','prefab_Baked_05_Poplar','prefab_Baked_07_Poplar'];
 const folder='Assets/GolfMap/Vreta/FoliageTrialV2';
 for(const name of names){
  const found=catalogue.assets.filter(a=>a.name===name&&a.path.endsWith('.prefab'));
@@ -52,6 +57,7 @@ for(const name of names){
  if(next!==a.guid)Object.assign(entry,{catalogueGuid:a.guid,originalPath:a.path});
  const existing=p.assets.findIndex(x=>x.name===name);if(existing>=0)p.assets[existing]=entry;else p.assets.push(entry);
 }
+p.assets=p.assets.filter(a=>!retired.includes(a.name));
 save('Assets/GolfMap/Vreta/palette.json',JSON.stringify(p,null,2)+'\n');
 const rows=fs.readFileSync('tree-export/canopy-pass-v2/parity.tsv','utf8').trim().split(/\r?\n/),fixtures=[],counts={};
 for(const row of rows){const f=row.split('\t');const t={id:f[0],h:+f[1],r:+f[2],k:+f[3],woodland:f[8]==='true',x:0,z:0};

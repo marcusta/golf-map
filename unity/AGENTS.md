@@ -28,8 +28,9 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
 3. **After each edit that should be tested, copy the changed file(s) into the Unity copy**
    (plain file copy; Unity recompiles on focus). Leave the `.meta` files in the Unity project alone
    and do not add `.meta` files to the repo.
-4. Compile check without opening Unity: `unity/check-planter.ps1` builds the planter files against the
-   installed Unity/VSP assemblies with the C# 6 compiler.
+4. Compile check without opening Unity: `unity/check-planter.ps1` builds the planter files (planter, VSP
+   partial, biome, edits, editor) against the installed Unity/VSP assemblies with the C# 6 compiler.
+   Add new planter partials to its file list. It writes into `tree-export/` (gitignored, create it if missing).
 5. The user tests in the Unity editor and reports console output / screenshots. Read the stack
    trace's line numbers against the repo file (the copies are identical).
 
@@ -40,6 +41,14 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
   pre-check. Survey stems use whole-metre coordinates and cells are 100 m, so thousands of trees sit
   exactly on an edge and would match no cell. The planter nudges those 1 cm into the nearest cell
   (`GolfMapTreePlanterVsp.cs`, `PlantStorage`). Keep that when touching cell lookup.
+- **Manual tree edits live in `<course>-<terrain>-tree-edits.json`** next to the trees file, written
+  by the Scene-view tree editor (`GolfMapTreeEditor.cs`, model in `GolfMapTreeEdits.cs`). `LoadFile`
+  overlays it on the survey before matching, so every planting path honours it. Never let a replant
+  or survey regeneration discard that file. The editor has no Unity undo by design (a full storage
+  undo snapshot per edit is too slow); it re-adds instances through the same helpers planting uses.
+- **VSP draws one mesh per LOD** (the LOD group's first renderer) with the instance transform only. Prefabs
+  with several renderers per LOD, a tilted mesh object or a non-identity root (NM's "High Quality" poplars)
+  render as flat blobs. Use NM's `VS_` or baked variants; `PrepareBiome` rejects offenders in storage mode.
 - Persistent storage is never reinitialised over an existing package; inner and outer use
   separate VSP systems and storage assets, matched to their terrain by bounds.
 - Imported trees carry VSP source id 42; clear/replace only touch that source.
