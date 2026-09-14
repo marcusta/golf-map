@@ -21,25 +21,25 @@ namespace GolfMap.Editor
 
         static void Write(StringBuilder sb, object value, int indent)
         {
-            switch (value)
-            {
-                case null: sb.Append("null"); return;
-                case string s: WriteString(sb, s); return;
-                case bool b: sb.Append(b ? "true" : "false"); return;
-                case float f: WriteNumber(sb, f); return;
-                case double d: WriteNumber(sb, d); return;
-                case int i: sb.Append(i.ToString(CultureInfo.InvariantCulture)); return;
-                case long l: sb.Append(l.ToString(CultureInfo.InvariantCulture)); return;
-                case Vector3 v: Write(sb, new object[] { v.x, v.y, v.z }, -1); return;
-                case Vector2 v: Write(sb, new object[] { v.x, v.y }, -1); return;
-                case Quaternion q: Write(sb, new object[] { q.x, q.y, q.z, q.w }, -1); return;
-                case Color c: Write(sb, new object[] { c.r, c.g, c.b, c.a }, -1); return;
-                case Bounds bo: Write(sb, new Dictionary<string, object> { { "center", bo.center }, { "size", bo.size } }, -1); return;
-                case Enum e: WriteString(sb, e.ToString()); return;
-                case IDictionary dict: WriteObject(sb, dict, indent); return;
-                case IEnumerable list: WriteArray(sb, list, indent); return;
-                default: WriteString(sb, value.ToString()); return;
-            }
+            // C# 6 (Unity 2018.2): no type patterns, so an is/cast ladder.
+            if (value == null) { sb.Append("null"); return; }
+            if (value is string) { WriteString(sb, (string)value); return; }
+            if (value is bool) { sb.Append((bool)value ? "true" : "false"); return; }
+            if (value is float) { WriteNumber(sb, (float)value); return; }
+            if (value is double) { WriteNumber(sb, (double)value); return; }
+            if (value is int) { sb.Append(((int)value).ToString(CultureInfo.InvariantCulture)); return; }
+            if (value is long) { sb.Append(((long)value).ToString(CultureInfo.InvariantCulture)); return; }
+            if (value is Vector3) { var v = (Vector3)value; Write(sb, new object[] { v.x, v.y, v.z }, -1); return; }
+            if (value is Vector2) { var v = (Vector2)value; Write(sb, new object[] { v.x, v.y }, -1); return; }
+            if (value is Quaternion) { var q = (Quaternion)value; Write(sb, new object[] { q.x, q.y, q.z, q.w }, -1); return; }
+            if (value is Color) { var c = (Color)value; Write(sb, new object[] { c.r, c.g, c.b, c.a }, -1); return; }
+            if (value is Bounds) { var bo = (Bounds)value; Write(sb, new Dictionary<string, object> { { "center", bo.center }, { "size", bo.size } }, -1); return; }
+            if (value is Enum) { WriteString(sb, value.ToString()); return; }
+            var dict = value as IDictionary;
+            if (dict != null) { WriteObject(sb, dict, indent); return; }
+            var list = value as IEnumerable;
+            if (list != null) { WriteArray(sb, list, indent); return; }
+            WriteString(sb, value.ToString());
         }
 
         static void WriteNumber(StringBuilder sb, double d)

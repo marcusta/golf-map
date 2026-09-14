@@ -1,0 +1,22 @@
+// bun unity/prepare-hole-review.ts
+import {Database} from 'bun:sqlite';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {wgs84ToSweref99tm} from '../web/src/geo/transform';
+const read=(p:string)=>JSON.parse(readFileSync(p,'utf8').replace(/^\uFEFF/,''));
+const report=read(process.argv[2] || 'tree-export/vreta-assignments-v1.json');
+const palette=read('docs/gspro/vreta/palette.json');
+const catalogue=read(palette.catalogue);
+const db=new Database('data/app.sqlite',{readonly:true});
+const hole=db.query(`select t.lat,t.lon,g.center_lat,g.center_lon from holes h join tees t on t.hole_id=h.id join greens g on g.hole_id=h.id where h.course_id=? and h.number=1 order by t.sort_order limit 1`).get('88E5F5B7-B1E6-4EBA-9D47-49B289C59EAE') as any;
+db.close();if(!hole)throw Error('Hole 1 missing');
+const local=(lat:number,lon:number)=>{const p=wgs84ToSweref99tm(lat,lon);return {x:p.x-report.plot.originX,z:p.y-report.plot.originY};};
+const tee=local(hole.lat,hole.lon),green=local(hole.center_lat,hole.center_lon);
+const distance=(p:any)=>{const dx=green.x-tee.x,dz=green.z-tee.z;const t=Math.max(0,Math.min(1,((p.x-tee.x)*dx+(p.z-tee.z)*dz)/(dx*dx+dz*dz)));return Math.hypot(p.x-tee.x-t*dx,p.z-tee.z-t*dz);};
+const selected=report.assignments.filter((a:any)=>a.position&&distance(a.position)<=60);
+if(!selected.length)throw Error('Empty sample; check coordinate projection');
+const summary:any={};for(const a of selected)summary[a.status]=(summary[a.status]||0)+1;
+writeFileSync('tree-export/vreta-hole1-assignments.json',JSON.stringify({...report,selection:{hole:1,method:'60 m around straight tee-green line',tee,green},summary,assignments:selected},null,2));
+const data={tee,green,assignments:selected,assets:palette.assets.map((a:any)=>({...a,preview:catalogue.assets.find((c:any)=>c.guid===(a.catalogueGuid||a.guid))?.preview})),catalogueDir:palette.catalogue.split('/').slice(1,-1).join('/')};
+const template=readFileSync('unity/hole-review.html','utf8');
+writeFileSync('tree-export/vreta-hole1-review.html',template.replace('__DATA__',()=>JSON.stringify(data).replace(/</g,'\\u003c')));
+console.log(JSON.stringify({tee,green,trees:selected.length,summary}));

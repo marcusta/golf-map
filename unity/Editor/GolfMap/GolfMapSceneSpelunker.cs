@@ -144,7 +144,11 @@ namespace GolfMap.Editor
             {
                 var assetPath = AssetDatabase.GetAssetPath(source);
                 d["prefab"] = assetPath;
+#if UNITY_2018_3_OR_NEWER
                 if (PrefabUtility.IsAnyPrefabInstanceRoot(go)) Bump(prefabSourceCounts, assetPath);
+#else
+                if (PrefabUtility.FindPrefabRoot(go) == go) Bump(prefabSourceCounts, assetPath);
+#endif
             }
 
             var comps = new List<object>();
@@ -191,8 +195,10 @@ namespace GolfMap.Editor
             {
                 if (c == null || c is Transform) continue;
                 Bump(componentCounts, c.GetType().Name);
-                if (c is Renderer r) foreach (var m in r.sharedMaterials) CountMaterial(m);
-                if (c is Collider col) { if (col.sharedMaterial != null) Bump(physicsMaterialCounts, col.sharedMaterial.name); }
+                var r = c as Renderer;
+                if (r != null) foreach (var m in r.sharedMaterials) CountMaterial(m);
+                var col = c as Collider;
+                if (col != null && col.sharedMaterial != null) Bump(physicsMaterialCounts, col.sharedMaterial.name);
                 if (IsCustomScript(c)) Bump(customScriptCounts, c.GetType().FullName);
             }
             for (int i = 0; i < go.transform.childCount; i++) CountOnly(go.transform.GetChild(i).gameObject);
@@ -208,18 +214,17 @@ namespace GolfMap.Editor
         Dictionary<string, object> DescribeComponent(Component c, string path)
         {
             var d = new Dictionary<string, object> { { "type", c.GetType().Name } };
-            switch (c)
-            {
-                case Terrain t: DescribeTerrain(t, path, d); break;
-                case MeshFilter mf: DescribeMesh(mf.sharedMesh, mf.transform, path, d); break;
-                case SkinnedMeshRenderer smr: DescribeMesh(smr.sharedMesh, smr.transform, path, d); DescribeRenderer(smr, d); break;
-                case Renderer r: DescribeRenderer(r, d); break;
-                case TerrainCollider tc: d["terrainData"] = tc.terrainData != null ? tc.terrainData.name : null; break;
-                case Collider col: DescribeCollider(col, d); break;
-                case Light l: d["lightType"] = l.type; d["intensity"] = l.intensity; d["color"] = l.color; d["shadows"] = l.shadows; break;
-                case Camera cam: d["fov"] = cam.fieldOfView; d["near"] = cam.nearClipPlane; d["far"] = cam.farClipPlane; d["cullingMask"] = cam.cullingMask; break;
-            }
-            if (c is Behaviour b) d["enabled"] = b.enabled;
+            // C# 6 (Unity 2018.2): no type patterns; same order as the switch it replaces.
+            if (c is Terrain) DescribeTerrain((Terrain)c, path, d);
+            else if (c is MeshFilter) { var mf = (MeshFilter)c; DescribeMesh(mf.sharedMesh, mf.transform, path, d); }
+            else if (c is SkinnedMeshRenderer) { var smr = (SkinnedMeshRenderer)c; DescribeMesh(smr.sharedMesh, smr.transform, path, d); DescribeRenderer(smr, d); }
+            else if (c is Renderer) DescribeRenderer((Renderer)c, d);
+            else if (c is TerrainCollider) { var tc = (TerrainCollider)c; d["terrainData"] = tc.terrainData != null ? tc.terrainData.name : null; }
+            else if (c is Collider) DescribeCollider((Collider)c, d);
+            else if (c is Light) { var l = (Light)c; d["lightType"] = l.type; d["intensity"] = l.intensity; d["color"] = l.color; d["shadows"] = l.shadows; }
+            else if (c is Camera) { var cam = (Camera)c; d["fov"] = cam.fieldOfView; d["near"] = cam.nearClipPlane; d["far"] = cam.farClipPlane; d["cullingMask"] = cam.cullingMask; }
+            var b = c as Behaviour;
+            if (b != null) d["enabled"] = b.enabled;
             if (IsCustomScript(c))
             {
                 var full = c.GetType().FullName;
@@ -250,15 +255,17 @@ namespace GolfMap.Editor
                 { "size", data.size }, { "heightmapResolution", data.heightmapResolution },
                 { "alphamapResolution", data.alphamapResolution }, { "detailResolution", data.detailResolution },
                 { "baseMapResolution", data.baseMapResolution },
-                { "terrainLayers", data.terrainLayers.Select(l => l == null ? null : new Dictionary<string, object> {
-                    { "name", l.name }, { "diffuse", l.diffuseTexture != null ? AssetDatabase.GetAssetPath(l.diffuseTexture) : null }, { "tileSize", l.tileSize } }).ToList() },
+                { "terrainLayers", TerrainLayers(data) },
                 { "treePrototypes", data.treePrototypes.Select(p => p.prefab != null ? AssetDatabase.GetAssetPath(p.prefab) : "(null)").ToList() },
                 { "treeInstanceCount", data.treeInstanceCount },
                 { "treeInstancesByPrototype", TreeCounts(data) },
                 { "detailPrototypes", data.detailPrototypes.Select(p => p.prototype != null ? AssetDatabase.GetAssetPath(p.prototype) : (p.prototypeTexture != null ? AssetDatabase.GetAssetPath(p.prototypeTexture) : "(null)")).ToList() },
                 { "materialTemplate", t.materialTemplate != null ? t.materialTemplate.name : null },
                 { "materialShader", t.materialTemplate != null && t.materialTemplate.shader != null ? t.materialTemplate.shader.name : null },
-                { "drawInstanced", t.drawInstanced }, { "treeDistance", t.treeDistance }, { "detailObjectDistance", t.detailObjectDistance },
+#if UNITY_2018_3_OR_NEWER
+                { "drawInstanced", t.drawInstanced },
+#endif
+                { "treeDistance", t.treeDistance }, { "detailObjectDistance", t.detailObjectDistance },
                 { "heightRange", HeightRange(data) },
             };
             terrains.Add(td);
@@ -342,7 +349,8 @@ namespace GolfMap.Editor
                 Bump(physicsMaterialCounts, col.sharedMaterial.name);
                 d["physicsMaterialAsset"] = AssetDatabase.GetAssetPath(col.sharedMaterial);
             }
-            if (col is MeshCollider mc) { d["convex"] = mc.convex; d["colliderMesh"] = mc.sharedMesh != null ? mc.sharedMesh.name : null; }
+            var mc = col as MeshCollider;
+            if (mc != null) { d["convex"] = mc.convex; d["colliderMesh"] = mc.sharedMesh != null ? mc.sharedMesh.name : null; }
             d["worldBounds"] = col.bounds;
         }
 
@@ -394,7 +402,7 @@ namespace GolfMap.Editor
                 { "tags", UnityEditorInternal.InternalEditorUtility.tags.ToList() },
                 { "layers", layers },
                 { "sortingLayers", SortingLayer.layers.Select(l => l.name).ToList() },
-                { "renderPipeline", UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline != null ? UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline.GetType().Name : "Built-in" },
+                { "renderPipeline", RenderPipelineName() },
                 { "colorSpace", PlayerSettings.colorSpace.ToString() },
                 { "physicsMaterialAssets", FindAssets("t:PhysicMaterial") },
                 { "terrainDataAssets", FindAssets("t:TerrainData") },
@@ -424,6 +432,32 @@ namespace GolfMap.Editor
             return byFolder;
         }
 
+        static string RenderPipelineName()
+        {
+#if UNITY_2019_3_OR_NEWER
+            var rp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+#else
+            var rp = UnityEngine.Rendering.GraphicsSettings.renderPipelineAsset;
+#endif
+            return rp != null ? rp.GetType().Name : "Built-in";
+        }
+
+        /// Terrain layers (2018.3+) or splat prototypes (2018.2) as name/diffuse/tileSize rows.
+        static List<object> TerrainLayers(TerrainData data)
+        {
+            var rows = new List<object>();
+#if UNITY_2018_3_OR_NEWER
+            foreach (var l in data.terrainLayers)
+                rows.Add(l == null ? null : new Dictionary<string, object> {
+                    { "name", l.name }, { "diffuse", l.diffuseTexture != null ? AssetDatabase.GetAssetPath(l.diffuseTexture) : null }, { "tileSize", l.tileSize } });
+#else
+            foreach (var p in data.splatPrototypes)
+                rows.Add(new Dictionary<string, object> {
+                    { "name", p.texture != null ? p.texture.name : null }, { "diffuse", p.texture != null ? AssetDatabase.GetAssetPath(p.texture) : null }, { "tileSize", p.tileSize } });
+#endif
+            return rows;
+        }
+
         static List<object> Packages()
         {
             var list = new List<object>();
@@ -440,7 +474,7 @@ namespace GolfMap.Editor
 
         // ---- helpers -------------------------------------------------------
 
-        static void Bump(Dictionary<string, int> d, string key) { d.TryGetValue(key, out var n); d[key] = n + 1; }
+        static void Bump(Dictionary<string, int> d, string key) { int n; d.TryGetValue(key, out n); d[key] = n + 1; }
 
         static Dictionary<string, object> Sorted(Dictionary<string, int> d) =>
             d.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key).ToDictionary(kv => kv.Key, kv => (object)kv.Value);
@@ -477,7 +511,7 @@ namespace GolfMap.Editor
             sb.AppendLine();
             sb.AppendLine($"Unity {report["unityVersion"]}, {project["renderPipeline"]} pipeline, {project["colorSpace"]} color space.");
             sb.AppendLine($"{scene["objectCount"]} objects, {terrains.Count} terrains, {meshes.Count} meshes.");
-            if (scene["bounds"] is Bounds b) sb.AppendLine($"Scene bounds min {Fmt(b.min)} max {Fmt(b.max)} size {Fmt(b.size)}.");
+            if (scene["bounds"] is Bounds) { var b = (Bounds)scene["bounds"]; sb.AppendLine($"Scene bounds min {Fmt(b.min)} max {Fmt(b.max)} size {Fmt(b.size)}."); }
             sb.AppendLine();
 
             sb.AppendLine("## Terrains");
@@ -537,7 +571,8 @@ namespace GolfMap.Editor
             sb.AppendLine("Top-level hierarchy:");
             foreach (var root in (List<object>)report["hierarchy"])
             {
-                if (!(root is Dictionary<string, object> r)) continue;
+                var r = root as Dictionary<string, object>;
+                if (r == null) continue;
                 int kids = r.ContainsKey("children") ? ((List<object>)r["children"]).Count : 0;
                 if (r.ContainsKey("childrenTruncated")) kids = (int)((Dictionary<string, object>)r["childrenTruncated"])["total"];
                 var comps = string.Join(", ", ((List<object>)r["components"]).Select(c => (string)((Dictionary<string, object>)c)["type"]));

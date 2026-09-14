@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GolfMap asset catalogue</title>
+<style>
+body{font:16px system-ui;background:#202427;color:#eee;margin:24px}header{max-width:1100px}input,button{font:inherit;padding:10px;border:1px solid #6a7a80;border-radius:5px}input{width:min(600px,90%)}button{cursor:pointer;background:#35454b;color:#fff}button:disabled{opacity:.4;cursor:default}nav{display:flex;gap:16px;align-items:center;margin:20px 0}main{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}article{background:#30373b;padding:14px;overflow-wrap:anywhere}img,.placeholder{width:100%;aspect-ratio:1;object-fit:contain;background:#3b4145}.placeholder{display:grid;place-items:center}h2{font-size:18px}small{color:#bcc8ce}a{color:#b9daf7}#empty{padding:32px}footer{margin-top:24px}
+</style>
+<header><h1>GolfMap asset catalogue</h1><p id="summary"></p><p>Preview lighting may differ from the course. Dimensions are static mesh bounds. Models and prefabs may duplicate geometry.</p><p><a href="catalogue.json">Full JSON catalogue</a></p><input id="search" type="search" placeholder="Filter by asset name or path" aria-label="Filter assets"></header>
+<nav><button id="prev">Previous</button><span id="page" aria-live="polite"></span><button id="next">Next</button></nav>
+<main id="cards"></main><p id="empty" hidden>No matching assets.</p>
+<footer>24 assets per page. Open an asset's metadata only when needed.</footer>
+<script id="catalogue-data" type="application/json">__GOLFMAP_DATA__</script>
+<script>
+'use strict';
+const data=JSON.parse(document.getElementById('catalogue-data').textContent);
+const assets=data.assets, pageSize=24;
+let filtered=assets,page=0,timer;
+const cards=document.getElementById('cards'),search=document.getElementById('search');
+document.getElementById('summary').textContent=assets.length+' assets · Unity '+data.unityVersion+' · '+(data.complete?'Complete':'Export contains warnings; see asset metadata and full JSON.');
+function element(tag,text){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;}
+function render(){
+ const pages=Math.max(1,Math.ceil(filtered.length/pageSize));page=Math.max(0,Math.min(page,pages-1));
+ const fragment=document.createDocumentFragment();
+ for(const asset of filtered.slice(page*pageSize,(page+1)*pageSize)){
+  const card=element('article');
+  if(asset.preview){const img=element('img');img.src=asset.preview;img.alt=asset.name;img.width=512;img.height=512;img.loading='lazy';img.decoding='async';card.append(img);}
+  else {const p=element('div','Preview unavailable');p.className='placeholder';card.append(p);}
+  card.append(element('h2',asset.name),element('small',asset.path));
+  card.append(element('p','Height '+Number(asset.heightM).toFixed(2)+' m · width '+Number(asset.crownWidthM).toFixed(2)+' m'));
+  const link=element('a','Materials, LODs and metadata');link.href='details/'+asset.guid+'.html';link.target='_blank';link.rel='noopener';card.append(link);fragment.append(card);
+ }
+ cards.replaceChildren(fragment);
+ document.getElementById('page').textContent='Page '+(page+1)+' of '+pages+' · '+filtered.length+' matches';
+ document.getElementById('prev').disabled=page===0;document.getElementById('next').disabled=page>=pages-1;document.getElementById('empty').hidden=filtered.length!==0;
+ const url=new URL(location.href);url.searchParams.set('q',search.value);url.searchParams.set('page',String(page+1));history.replaceState(null,'',url);
+}
+function filter(){const q=search.value.trim().toLowerCase();filtered=assets.filter(a=>(a.name+' '+a.path).toLowerCase().includes(q));}
+search.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(()=>{page=0;filter();render();},120);});
+document.getElementById('prev').onclick=()=>{page--;render();};document.getElementById('next').onclick=()=>{page++;render();};
+const params=new URLSearchParams(location.search);search.value=params.get('q')||'';page=Math.max(0,(Number(params.get('page'))||1)-1);filter();render();
+</script></html>

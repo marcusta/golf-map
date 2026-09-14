@@ -15,6 +15,7 @@ e2e/.tests-reordered
 
 # Python tile pipeline (pipeline/) and Python tools (tools/)
 pipeline/.venv
+tools/sam-server/venv
 pipeline/**/__pycache__
 pipeline/**/*.egg-info
 tools/**/__pycache__
@@ -36,3 +37,6 @@ gspro-files/
 # (deploy-tmp/db.sqlite) for local migration rehearsal. Real user data —
 # must never be committed. deploy_preflight warns if this line is missing.
 deploy-tmp/
+
+# Unity tree catalogue exports and parity runs (generated, hundreds of MB)
+tree-export/

@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>Vreta hole 1 tree review</title>
+<style>body{font:16px system-ui;background:#202729;color:#eee;margin:24px}main{display:flex;gap:24px}svg{width:65vw;height:70vh;background:#35413b}aside{max-width:400px}img{width:260px;height:260px;object-fit:contain}button,input,select{font:inherit;padding:8px;margin:4px;max-width:360px}circle{cursor:pointer}pre{white-space:pre-wrap}a{color:#aaddff}</style>
+<h1>Vreta · hole 1 tree review</h1><p>60 m around the straight tee–green line. This is a schematic, not a surveyed hole boundary. Orange dots need review; green dots passed the fit rules. Click a tree to inspect or choose another asset.</p>
+<button id="download">Download saved overrides</button><span id="count">0 saved choices</span><p>Choices stay in this page until downloaded. Feed the downloaded JSON into the matching command, then prepare the hole report again.</p>
+<main><svg id="map" aria-label="Tree positions, north up"></svg><aside><h2 id="name">Select a tree</h2><img id="preview" alt="Selected asset preview"><pre id="info"></pre><select id="asset" aria-label="Asset"></select><p><label>Uniform scale <input id="scale" type="number" step="0.05" min="0.1"></label></p><button id="save">Save choice</button><button id="exclude">Exclude tree</button></aside></main>
+<script type="application/json" id="data">__DATA__</script><script>
+const data=JSON.parse(document.getElementById('data').textContent),choices={};let selected; for(const a of data.assignments){if(a.status==="excluded")choices[a.stemId]={exclude:true};else if(a.status==="authored")choices[a.stemId]={guid:a.guid,scale:a.scale,rotationY:a.rotationY};}
+const map=document.getElementById('map'),select=document.getElementById('asset'),scale=document.getElementById('scale');
+for(const a of data.assets){const o=document.createElement('option');o.value=a.guid;o.textContent=a.name;select.append(o);}
+const points=data.assignments.map(a=>a.position).concat([data.tee,data.green]);const minX=Math.min(...points.map(p=>p.x))-10,maxX=Math.max(...points.map(p=>p.x))+10,minZ=Math.min(...points.map(p=>p.z))-10,maxZ=Math.max(...points.map(p=>p.z))+10;
+map.setAttribute('viewBox',`${minX} ${-maxZ} ${maxX-minX} ${maxZ-minZ}`);
+function svg(tag,attrs){const e=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const k in attrs)e.setAttribute(k,attrs[k]);map.append(e);return e;}
+svg('line',{x1:data.tee.x,y1:-data.tee.z,x2:data.green.x,y2:-data.green.z,stroke:'#ddd','stroke-width':1});
+for(const [p,label] of [[data.tee,'Tee'],[data.green,'Green']]){const e=svg('text',{x:p.x,y:-p.z,fill:'white','font-size':7});e.textContent=label;}
+function showImage(){const a=data.assets.find(a=>a.guid===select.value);document.getElementById('preview').src=data.catalogueDir+'/'+a.preview;}
+for(const a of data.assignments){const dot=svg('circle',{cx:a.position.x,cy:-a.position.z,r:2.2,fill:a.status==='review'?'#f2a94b':'#7ac88e'});dot.onclick=()=>{selected=a;document.getElementById('name').textContent=a.stemId;document.getElementById('info').textContent=JSON.stringify({measured:a.measured,status:a.status,reasons:a.reasons,alternatives:a.alternatives},null,2);select.value=choices[a.stemId]?.guid||a.guid||data.assets[0].guid;scale.value=choices[a.stemId]?.scale||a.scale||1;showImage();};}
+select.onchange=showImage;count();
+function count(){document.getElementById('count').textContent=Object.keys(choices).length+' saved choices';}
+document.getElementById('save').onclick=()=>{if(!selected)return;const value=Number(scale.value);if(!(value>0&&Number.isFinite(value)))return;choices[selected.stemId]={guid:select.value,scale:value,rotationY:selected.rotationY||0};count();};
+document.getElementById('exclude').onclick=()=>{if(selected){choices[selected.stemId]={exclude:true};count();}};
+document.getElementById('download').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(choices,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='vreta-overrides.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+</script>
+

@@ -10,7 +10,7 @@ Ground-up rebuild of a golf course map system. Server is source of truth; web bu
 | [web/](web/AGENTS.md) | Vite + TS, `@basics/core` client, MapLibre | Course building (SVG/vector), strategy planning, analytics. |
 | [ios/](ios/AGENTS.md) | SwiftUI (iOS 17+), MapLibre, GRDB | On-course GPS, distances, plays-like. No course building. |
 | [pipeline/](pipeline/AGENTS.md) | Python, rasterio | Lantmäteriet DEM + orthophoto GeoTIFFs → XYZ tile pyramids. |
-| `unity/` | C# editor scripts | OPCD/GSPro side: scene spelunker report + tree planter reading `unity-trees-v1`. Not part of the build. |
+| [unity/](unity/AGENTS.md) | C# editor scripts (Unity 2018.2, C# 6) | OPCD/GSPro side: terrain importer (builds both GSPro terrains from an export folder), scene spelunker report, tree planter reading `unity-trees-v1`. Not part of the build; scripts are copied into the current Unity project — see unity/AGENTS.md for the project path and the edit→copy workflow. |
 | `shared/` | TS | `api/*.gen.ts` (codegen'd typed clients — never hand-edit), `strategy/` (shared strategy math: ellipse, corridor, wind, plays-like). |
 
 ## Layout & conventions
