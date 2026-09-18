@@ -1,5 +1,5 @@
 import {
-    Camera, Color, DirectionalLight, DynamicDrawUsage, Frustum, HalfFloatType, HemisphereLight,
+    Camera, Color, DirectionalLight, DoubleSide, DynamicDrawUsage, Frustum, HalfFloatType, HemisphereLight,
     InstancedBufferAttribute, InstancedBufferGeometry, InstancedMesh, LinearFilter, LinearMipmapLinearFilter,
     LinearSRGBColorSpace, Matrix4, Mesh, MeshLambertMaterial, NoColorSpace, RepeatWrapping, Scene,
     ShaderMaterial, Sphere, SRGBColorSpace, Texture, TextureLoader, Vector3, WebGLRenderer, WebGLRenderTarget,
@@ -9,6 +9,7 @@ import {
     isShrubHeight, leanFor, LOD_FULL_M, LOD_HALF_M, lodFor, midFractionFor, renderCrownRadius, SPECIES, shadowGeometry, shrubGeometry, speciesFor,
     STAND_SHADOW_DISTANCE_M, stemHash, treeGeometry, VARIANTS, variantFor, type StandStem, type TreeLod,
 } from './tree-geometry';
+import { SHRUB_DETAIL_M } from './shrub-geometry';
 import { defaultLighting, impostorMaterial, shadowMaterial, shadowOffsetPerMetre, sharedUniforms, sunDirection, treeMaterial, type SharedUniforms, type TreeLighting } from './tree-material';
 
 /**
@@ -153,7 +154,7 @@ export class TreeRenderer {
     private readonly impostorMesh: Mesh;
     private readonly shadows: InstanceSet;
     private readonly shadowMesh: Mesh;
-    private readonly shrubs: InstancedMesh;
+    private readonly shrubs: InstancedMesh[];
     private readonly sun: DirectionalLight;
     private readonly textures: Record<string, Texture> = {};
     private texturesLoaded = 0;
@@ -168,25 +169,29 @@ export class TreeRenderer {
         this.stats.shrubs = trees.filter(tree => tree.shrub).length;
         this.loadTextures(options.onTextureLoaded);
         this.shared = sharedUniforms(this.lighting);
-        // Shrubs keep the lit Lambert mesh from the first renderer.
+        // Shrub leaves and woody stems use the scene lights.
         const sky = new HemisphereLight(0xdfe9f1, 0x55523a, 2.1);
         sky.position.set(0, 0, 1);
         this.sun = new DirectionalLight(0xffedca, 2.2);
         this.sun.position.copy(this.lighting.sunDir).multiplyScalar(200);
         this.scene.add(sky, this.sun);
 
-        const counts = SPECIES.map((_, s) => trees.filter(tree => !tree.shrub && tree.species === s).length);
+        const counts = SPECIES.flatMap((_, s) => Array.from({ length: VARIANTS }, (_, v) =>
+            trees.filter(tree => !tree.shrub && tree.species === s && tree.variant === v).length));
         const treeCount = counts.reduce((a, b) => a + b, 0);
         const foliage = { broadleaf: this.textures.broadleaf, spruce: this.textures.conifer, pine: this.textures.conifer };
+        // Batch each form separately so a tree submits only its own branches and foliage.
         SPECIES.forEach((species, s) => {
-            const geometry = toInstanced(treeGeometry(species).geometry);
-            const set = new InstanceSet(geometry, counts[s]);
-            const mesh = new Mesh(geometry, treeMaterial(this.shared, { foliage: foliage[species], bark: this.textures.bark, barkNormal: this.textures['bark-normal'] },
-                { needle: species !== 'broadleaf', midFraction: midFractionFor(species) }));
-            mesh.frustumCulled = false;
-            this.species.push(set);
-            this.speciesMeshes.push(mesh);
-            this.scene.add(mesh);
+            for (let variant = 0; variant < VARIANTS; variant++) {
+                const geometry = toInstanced(treeGeometry(species, variant).geometry);
+                const set = new InstanceSet(geometry, counts[s * VARIANTS + variant]);
+                const mesh = new Mesh(geometry, treeMaterial(this.shared, { foliage: foliage[species], bark: this.textures.bark, barkNormal: this.textures['bark-normal'] },
+                    { needle: species !== 'broadleaf', midFraction: midFractionFor(species) }));
+                mesh.frustumCulled = false;
+                this.species.push(set);
+                this.speciesMeshes.push(mesh);
+                this.scene.add(mesh);
+            }
         });
 
         this.impostorAtlas = new WebGLRenderTarget(IMPOSTOR_COLUMNS * 256, IMPOSTOR_ROWS * 512, {
@@ -200,18 +205,21 @@ export class TreeRenderer {
         this.scene.add(this.impostorMesh);
 
         const shadowGeo = toInstanced(shadowGeometry());
-        this.shadows = new InstanceSet(shadowGeo, treeCount);
+        this.shadows = new InstanceSet(shadowGeo, trees.length);
         this.shadowMesh = new Mesh(shadowGeo, shadowMaterial(this.shared, this.textures.shadow));
         this.shadowMesh.frustumCulled = false;
         this.shadowMesh.renderOrder = -1;
         this.scene.add(this.shadowMesh);
 
-        this.shrubs = new InstancedMesh(shrubGeometry(false), new MeshLambertMaterial({ color: 0xffffff, vertexColors: true }),
-            Math.max(1, this.stats.shrubs));
-        this.shrubs.instanceMatrix.setUsage(DynamicDrawUsage);
-        this.shrubs.frustumCulled = false;
-        this.shrubs.count = 0;
-        this.scene.add(this.shrubs);
+        this.shrubs = [true, false].map(detailed => {
+            const mesh = new InstancedMesh(shrubGeometry(detailed), new MeshLambertMaterial({ color: 0xffffff, vertexColors: true, side: DoubleSide }),
+                Math.max(1, this.stats.shrubs));
+            mesh.instanceMatrix.setUsage(DynamicDrawUsage);
+            mesh.frustumCulled = false;
+            mesh.count = 0;
+            this.scene.add(mesh);
+            return mesh;
+        });
         this.applyLod();
     }
 
@@ -219,12 +227,12 @@ export class TreeRenderer {
 
     /** Number of instanced draw calls the last update produced (species, impostors, shadows, shrubs). */
     get drawCalls(): number {
-        return this.drawSets().filter(set => set.count > 0).length + (this.shrubs.count > 0 ? 1 : 0);
+        return this.drawSets().filter(set => set.count > 0).length + this.shrubs.filter(mesh => mesh.count > 0).length;
     }
 
-    /** Every tree and impostor mesh in outline form (the shrubs stay solid). */
+    /** Every tree, shrub and impostor mesh in outline form. */
     set wireframe(on: boolean) {
-        for (const mesh of [...this.speciesMeshes, this.impostorMesh]) (mesh.material as ShaderMaterial).wireframe = on;
+        for (const mesh of [...this.speciesMeshes, this.impostorMesh, ...this.shrubs]) (mesh.material as ShaderMaterial).wireframe = on;
     }
 
     /** Moves the sun for the foliage shaders, the shadow decals and the shrub light. */
@@ -290,9 +298,9 @@ export class TreeRenderer {
             const height = impostorBakeHeight(species);
             const geometry = toInstanced(treeGeometry(species).geometry);
             const set = new InstanceSet(geometry, 1);
-            const material = (this.speciesMeshes[s].material as ShaderMaterial).clone();
+            const material = (this.speciesMeshes[s * VARIANTS].material as ShaderMaterial).clone();
             // Shared uniform objects stay shared so the fog and sway overrides above apply.
-            material.uniforms = { ...this.shared, ...pick(this.speciesMeshes[s].material as ShaderMaterial) };
+            material.uniforms = { ...this.shared, ...pick(this.speciesMeshes[s * VARIANTS].material as ShaderMaterial) };
             material.wireframe = false;
             const mesh = new Mesh(geometry, material);
             mesh.frustumCulled = false;
@@ -344,8 +352,7 @@ export class TreeRenderer {
         const treesReady = this.texturesReady;
         if (treesReady && !this.impostorBaked) this.bakeImpostors();
         for (const set of this.drawSets()) set.count = 0;
-        const shrubs = this.shrubs;
-        shrubs.count = 0;
+        for (const shrubs of this.shrubs) shrubs.count = 0;
         const lodCounts = [0, 0, 0];
         for (const tree of this.trees) {
             const dx = tree.x - eye.x, dy = tree.y - eye.y;
@@ -354,10 +361,14 @@ export class TreeRenderer {
             this.sphere.radius = Math.hypot(tree.height / 2, tree.radius * 1.4);
             if (!this.frustum.intersectsSphere(this.sphere)) continue;
             if (tree.shrub) {
-                this.matrix.makeRotationZ(tree.yaw).scale(this.scale.set(tree.radius, tree.radius, tree.height))
+                const distance = Math.hypot(dx, dy, tree.ground - eye.z);
+                const detailed = this.forcedLod === null ? distance < SHRUB_DETAIL_M : this.forcedLod === 0;
+                const shrubs = this.shrubs[detailed ? 0 : 1];
+                this.matrix.makeRotationZ(tree.yaw).scale(this.scale.set(tree.radius * tree.scaleX, tree.radius * tree.scaleY, tree.height))
                     .setPosition(tree.x, tree.y, tree.ground);
                 shrubs.setMatrixAt(shrubs.count, this.matrix);
-                shrubs.setColorAt(shrubs.count++, tree.color);
+                shrubs.setColorAt(shrubs.count++, tintScratch.setRGB(tree.tintR, tree.tintG, tree.tintB));
+                if (treesReady) this.shadows.push(tree, 2);
                 continue;
             }
             if (!treesReady) continue;
@@ -365,26 +376,29 @@ export class TreeRenderer {
             const lod: TreeLod = this.forcedLod ?? lodFor(Math.sqrt(dx * dx + dy * dy + dz * dz), this.lodFullM, this.lodHalfM);
             lodCounts[lod]++;
             if (lod === 2) this.impostors.push(tree, impostorCell(SPECIES[tree.species], tree.variant));
-            else this.species[tree.species].push(tree, tree.variant);
+            else this.species[tree.species * VARIANTS + tree.variant].push(tree, tree.variant);
             this.shadows.push(tree, tree.nearestM < STAND_SHADOW_DISTANCE_M ? 1 : 0);
         }
         for (const set of this.drawSets()) set.commit();
-        shrubs.instanceMatrix.clearUpdateRanges();
-        if (shrubs.count > 0) shrubs.instanceMatrix.addUpdateRange(0, shrubs.count * 16);
-        shrubs.instanceMatrix.needsUpdate = shrubs.count > 0;
-        if (shrubs.instanceColor) {
-            shrubs.instanceColor.clearUpdateRanges();
-            if (shrubs.count > 0) shrubs.instanceColor.addUpdateRange(0, shrubs.count * 3);
-            shrubs.instanceColor.needsUpdate = shrubs.count > 0;
+        for (const shrubs of this.shrubs) {
+            shrubs.instanceMatrix.clearUpdateRanges();
+            if (shrubs.count > 0) shrubs.instanceMatrix.addUpdateRange(0, shrubs.count * 16);
+            shrubs.instanceMatrix.needsUpdate = shrubs.count > 0;
+            if (shrubs.instanceColor) {
+                shrubs.instanceColor.clearUpdateRanges();
+                if (shrubs.count > 0) shrubs.instanceColor.addUpdateRange(0, shrubs.count * 3);
+                shrubs.instanceColor.needsUpdate = shrubs.count > 0;
+            }
         }
+        const visibleShrubs = this.shrubs.reduce((sum, mesh) => sum + mesh.count, 0);
         this.shared.uCamera.value.copy(eye);
         this.shared.uTime.value = timeS;
         this.shared.uSway.value = this.sway ? 1 : 0;
-        this.stats.visibleShrubs = shrubs.count;
+        this.stats.visibleShrubs = visibleShrubs;
         this.stats.detailed = lodCounts[0];
         this.stats.half = lodCounts[1];
         this.stats.impostors = lodCounts[2];
-        this.stats.visible = lodCounts[0] + lodCounts[1] + lodCounts[2] + shrubs.count;
+        this.stats.visible = lodCounts[0] + lodCounts[1] + lodCounts[2] + visibleShrubs;
         this.stats.drawCalls = this.drawCalls;
     }
 
@@ -400,7 +414,7 @@ export class TreeRenderer {
     get swaying(): boolean { return this.sway && this.stats.visible - this.stats.visibleShrubs > 0; }
 
     dispose(): void {
-        for (const mesh of [...this.speciesMeshes, this.impostorMesh, this.shadowMesh, this.shrubs]) {
+        for (const mesh of [...this.speciesMeshes, this.impostorMesh, this.shadowMesh, ...this.shrubs]) {
             mesh.geometry.dispose();
             (mesh.material as ShaderMaterial | MeshLambertMaterial).dispose();
             if (mesh instanceof InstancedMesh) mesh.dispose();

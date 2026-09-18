@@ -1,0 +1,23 @@
+{
+  "capturedAt": "2026-09-08T19:15:08.215Z",
+  "scene": "vegetation test scene, spruce inspector, auto LOD, sway on",
+  "note": "One native in-app browser frame window. Does not establish performance in dense course views or on other GPUs.",
+  "total": 253,
+  "shrubs": 31,
+  "visible": 198,
+  "visibleShrubs": 0,
+  "detailed": 74,
+  "half": 124,
+  "impostors": 0,
+  "triangles": 922706,
+  "drawCalls": 14,
+  "cpuMs": 0,
+  "frames": 16594,
+  "movingSamples": 0,
+  "frameMedianMs": 8.300000190734863,
+  "frameP95Ms": 0,
+  "medianFps": 0,
+  "gpu": "",
+  "texturesReady": true,
+  "distanceM": 24
+}

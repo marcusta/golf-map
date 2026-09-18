@@ -11,13 +11,14 @@ import { resolve } from 'node:path';
  */
 const PRESETS_M = [3, 10, 40, 150, 600];
 const OUT_DIR = resolve(__dirname, '../../docs/validation/vegetation');
-/** Species passes (3) + impostors + shadows + shrubs + ground + atlas overlay. */
-const MAX_DRAW_CALLS = 8;
+/** Species x form passes (12) + impostors + shadows + two shrub detail levels + ground + atlas overlay. */
+const MAX_DRAW_CALLS = 18;
 
 interface PanelStats { drawCalls: number; visible: number; triangles: number; frameMedianMs: number; texturesReady: boolean; distanceM: number }
 
 test('vegetation scene renders every camera preset within the draw-call budget', async ({ page }) => {
-    test.setTimeout(120_000);
+    // SwiftShader takes roughly 0.6 s per frame for the branch meshes. Six captures need more than two minutes.
+    test.setTimeout(180_000);
     await page.setViewportSize({ width: 960, height: 600 });
     await mkdir(OUT_DIR, { recursive: true });
     await page.goto('/dev/vegetation?lod=half&sway=0&preset=40');
@@ -48,5 +49,25 @@ test('vegetation scene renders every camera preset within the draw-call budget',
     await page.getByTestId('atlas-select').selectOption('impostor');
     await page.waitForTimeout(400);
     await page.screenshot({ path: resolve(OUT_DIR, 'atlas-impostor.png') });
+    expect((await stats()).drawCalls).toBeLessThanOrEqual(MAX_DRAW_CALLS);
+});
+
+// The close and distant shrubs have different index buffers, not only shader-hidden leaves.
+test('shrub detail reduces submitted triangles and auto restores the close mesh', async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 960, height: 600 });
+    await page.goto('/dev/vegetation?lod=full&sway=0&preset=40');
+    const panel = page.getByTestId('vegetation-panel');
+    const stats = async (): Promise<PanelStats & { visibleShrubs: number }> => JSON.parse((await panel.getAttribute('data-stats')) ?? '{}');
+    await expect.poll(async () => (await stats()).texturesReady, { timeout: 60_000 }).toBe(true);
+    await page.getByTestId('focus-tree').selectOption({ label: 'shrub' });
+    await expect.poll(async () => (await stats()).distanceM).toBeCloseTo(7, 1);
+    await expect.poll(async () => (await stats()).visibleShrubs).toBeGreaterThan(0);
+    const near = await stats();
+    await page.getByTestId('lod-select').selectOption('half');
+    await expect.poll(async () => (await stats()).triangles).toBeLessThan(near.triangles);
+    expect((await stats()).visibleShrubs).toBe(near.visibleShrubs);
+    await page.getByTestId('lod-select').selectOption('auto');
+    await expect.poll(async () => (await stats()).triangles).toBe(near.triangles);
     expect((await stats()).drawCalls).toBeLessThanOrEqual(MAX_DRAW_CALLS);
 });

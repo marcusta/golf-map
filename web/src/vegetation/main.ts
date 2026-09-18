@@ -38,6 +38,12 @@ function saveState(state: SceneState): void {
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const panel = document.getElementById('panel')!;
 const labelLayer = document.getElementById('labels')!;
+const controlsToggle = document.getElementById('controls-toggle')!;
+controlsToggle.onclick = () => {
+    panel.hidden = !panel.hidden;
+    controlsToggle.textContent = panel.hidden ? 'Show controls' : 'Hide controls';
+    controlsToggle.setAttribute('aria-expanded', String(!panel.hidden));
+};
 const scene = new VegetationScene(canvas, loadState());
 
 // ---------------------------------------------------------------------------
@@ -72,6 +78,20 @@ for (const distance of CAMERA_PRESETS_M) {
     presetRow.append(button);
 }
 panel.append(presetRow);
+
+// Focus one form without panning through the whole lineup.
+const focusSelect = el('select', { 'data-testid': 'focus-tree', 'aria-label': 'Inspect tree' });
+focusSelect.append(el('option', { value: '' }, 'Whole lineup'));
+const lineup = scene.stems.filter(stem => stem.group === 'lineup');
+lineup.forEach((stem, i) => focusSelect.append(el('option', { value: String(i) }, stem.label)));
+focusSelect.onchange = () => {
+    const stem = focusSelect.value === '' ? undefined : lineup[Number(focusSelect.value)];
+    scene.state = stem ? { ...scene.state, targetX: stem.x, targetY: stem.y, targetZ: stem.height * 0.5,
+        distanceM: stem.shrub ? Math.max(5, stem.radius * 3.5) : 24, yawDeg: 0, pitchDeg: 0 } : presetState(scene.state, 150);
+    commit();
+};
+row('Inspect', focusSelect);
+
 
 // Sun.
 const sunAz = el('input', { type: 'range', min: '0', max: '360', step: '1', 'data-testid': 'sun-azimuth' });

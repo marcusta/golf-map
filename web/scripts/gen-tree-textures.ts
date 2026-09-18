@@ -359,62 +359,32 @@ function drawNeedleTwig(canvas: Canvas, p: Needles, x0: number, y0: number, angl
     return [tx, ty];
 }
 
-/**
- * Spruce needle cluster: a hint of wood at the centre, then 7 to 10 short twigs radiating
- * outward, most of them sideways or downward, each buried in short needles with branchlets
- * hanging from it. Back twigs are drawn first and darker so the cluster has depth.
- */
+/** Spruce bough along the card's long axis, with needled lateral shoots and hanging tips. */
 function drawSpruceCluster(canvas: Canvas, rect: AtlasRect, seed: number): void {
     const random = rng(seed);
-    const p: Needles = { random, dark: SPRUCE_DARK, light: SPRUCE_LIGHT, tip: SPRUCE_TIP, shade: 1 };
+    const p: Needles = { random, dark: SPRUCE_DARK, light: SPRUCE_LIGHT, tip: SPRUCE_TIP, shade: 0.85 };
     const size = rect.w, scale = size / 512;
-    const cx = rect.x + size * 0.5, cy = rect.y + size * (0.42 + random() * 0.05);
-    const reach = size * 0.42;
-    const twigOpts = { wood: SPRUCE_WOOD, density: 7, needleLength: 8, spread: 1.0 };
-    type Twig = { angle: number; length: number; shade: number; bend: number };
-    const twigs: Twig[] = [];
-    const count = 11 + Math.floor(random() * 4);
-    for (let k = 0; k < count; k++) {
-        // Angles in screen space (y down): spread around the circle but longer in the lower half.
-        const a = (k + random() * 0.8) / count * Math.PI * 2;
-        const down = Math.sin(a); // +1 straight down
-        const length = reach * (0.5 + 0.4 * (down * 0.5 + 0.5)) * (0.8 + random() * 0.3);
-        twigs.push({ angle: a, length, shade: 0.5 + random() * 0.5, bend: (down < 0 ? 0.7 : 0.3) * Math.sign(Math.cos(a) || 1) * (random() * 0.8 + 0.2) });
-    }
-    twigs.sort((a, b) => a.shade - b.shade);
-    // Wood hint: short dark stubs from the centre along each twig root.
-    for (const twig of twigs) canvas.stroke(cx, cy, cx + Math.cos(twig.angle) * size * 0.05, cy + Math.sin(twig.angle) * size * 0.05, 2.4 * scale, () => SPRUCE_WOOD, 0.9);
-    for (const twig of twigs) {
-        const local: Needles = { ...p, shade: twig.shade };
-        const at = (u: number): [number, number] => [cx + Math.cos(twig.angle + twig.bend * u * 0.5) * twig.length * u, cy + Math.sin(twig.angle + twig.bend * u * 0.5) * twig.length * u];
-        // Side branchlets, then hanging branchlets, then the twig itself on top.
-        const sides = Math.round(twig.length / (14 * scale));
-        for (let h = 0; h < sides; h++) {
-            const u = 0.2 + (h + random()) / sides * 0.75;
-            const [bx, by] = at(u);
-            const side = random() < 0.5 ? -1 : 1;
-            const len = twig.length * (0.15 + random() * 0.25) * (1 - u * 0.5);
-            drawNeedleTwig(canvas, { ...local, shade: twig.shade * (0.85 + random() * 0.15) }, bx, by, twig.angle + twig.bend * u + side * (0.5 + random() * 0.5), len, side * 0.3, scale,
-                { ...twigOpts, t0: 0.15 + 0.3 * u, t1: 0.5 + 0.3 * u, density: 6 });
+    const x0 = rect.x + size * 0.12, y0 = rect.y + size * 0.5;
+    const length = size * 0.73;
+    const opts = { wood: SPRUCE_WOOD, density: 5, needleLength: 6, spread: 1.1, t0: 0.25, t1: 0.65 };
+    // Paired shoots follow the same woody spine, with unequal lengths and spacing.
+    for (let k = 0; k < 12; k++) {
+        const t = 0.10 + k / 12 * 0.84;
+        for (const side of [-1, 1]) {
+            const x = x0 + length * (t + random() * 0.025), y = y0 + size * 0.025 * Math.sin(t * 4);
+            const reach = size * (0.19 + random() * 0.09) * Math.sin(Math.PI * (0.16 + t * 0.78));
+            const angle = side * (0.85 + random() * 0.35);
+            const local = { ...p, shade: 0.62 + random() * 0.32 };
+            drawNeedleTwig(canvas, local, x, y, angle, reach, side * 0.32, scale, opts);
+            // Fine branchlets break the silhouette into needles rather than a solid fan.
+            for (let j = 1; j <= 3; j++) {
+                const u = j / 4;
+                drawNeedleTwig(canvas, local, x + Math.cos(angle) * reach * u, y + Math.sin(angle) * reach * u,
+                    angle + side * 0.7, reach * (0.30 - u * 0.12), side * 0.3, scale, opts);
+            }
         }
-        const hangers = Math.round(twig.length / (11 * scale));
-        for (let h = 0; h < hangers; h++) {
-            if (random() < 0.15) continue;
-            const u = 0.12 + (h + random() * 0.8) / hangers * 0.85;
-            const [bx, by] = at(u);
-            const hang = twig.length * (0.25 + random() * 0.4) * Math.sin(Math.PI * Math.min(1, u / 0.98));
-            if (hang < 6 * scale) continue;
-            drawNeedleTwig(canvas, { ...local, shade: twig.shade * (0.8 + random() * 0.2) }, bx, by, Math.PI / 2 + (random() - 0.5) * 0.7, hang, (random() - 0.5) * 0.5, scale,
-                { ...twigOpts, t0: 0.15 + 0.3 * u, t1: 0.55 + 0.25 * u, density: 6, needleLength: 7 });
-        }
-        drawNeedleTwig(canvas, local, cx, cy, twig.angle, twig.length, twig.bend, scale, { ...twigOpts, t0: 0.2, t1: 0.75 });
     }
-    // Fill the middle with short upright shoots so the centre is not a bare hub.
-    for (let k = 0; k < 10; k++) {
-        const a = random() * Math.PI * 2, r = size * 0.06 * random();
-        drawNeedleTwig(canvas, { ...p, shade: 0.7 + random() * 0.3 }, cx + Math.cos(a) * r, cy + Math.sin(a) * r, -Math.PI / 2 + (random() - 0.5) * 2.4, size * (0.08 + random() * 0.1), (random() - 0.5) * 0.6, scale,
-            { ...twigOpts, t0: 0.35, t1: 0.8, density: 6 });
-    }
+    drawNeedleTwig(canvas, p, x0, y0, 0, length, 0.025, scale, opts);
 }
 
 /** A pine needle brush: several overlapping fans of long needles around a centre, bud at the middle. */
