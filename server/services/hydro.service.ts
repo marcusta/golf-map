@@ -160,15 +160,17 @@ export function defaultHydroCredentials(): HydroCredentials {
     let pass = process.env.LANTMATERIET_PASS;
     if (!user || !pass) {
         let dir = process.cwd();
-        for (let i = 0; i < 4; i++) {
+        // Keep walking past a .env that lacks the keys (server/.env holds only
+        // the publish settings; the credentials live in the repo root's).
+        for (let i = 0; i < 4 && (!user || !pass); i++) {
             try {
                 const parsed = parseDotenv(readFileSync(path.join(dir, '.env'), 'utf8'));
                 user = user || parsed.LANTMATERIET_USER;
                 pass = pass || parsed.LANTMATERIET_PASS;
-                break;
             } catch {
-                dir = path.dirname(dir);
+                // no .env at this level
             }
+            dir = path.dirname(dir);
         }
     }
     if (!user || !pass) {
