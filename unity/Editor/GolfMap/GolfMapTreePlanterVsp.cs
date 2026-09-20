@@ -8,6 +8,7 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using AwesomeTechnologies.VegetationSystem;
 using AwesomeTechnologies.Vegetation.PersistentStorage;
+using Mode = GolfMap.GolfMapTrees.Mode;
 
 namespace GolfMap.Editor
 {
@@ -15,24 +16,24 @@ namespace GolfMap.Editor
     {
         const byte ImportSource = 42;
         const string VretaFolder = "Assets/GolfMap/Vreta/";
-        [SerializeField] PersistentVegetationStorage storage;
-        [SerializeField] List<GameObject> groundMeshes = new List<GameObject>();
-        [SerializeField] float outerBillboardDistance = 10000;
-        [SerializeField] bool regenerateBillboards = true;
-        [SerializeField] string lastPlantingBackup;
+        PersistentVegetationStorage storage { get { return T.storage; } set { T.storage = value; } }
+        List<GameObject> groundMeshes { get { return T.groundMeshes; } set { T.groundMeshes = value; } }
+        float outerBillboardDistance { get { return T.outerBillboardDistance; } set { T.outerBillboardDistance = value; } }
+        bool regenerateBillboards { get { return T.regenerateBillboards; } set { T.regenerateBillboards = value; } }
+        string lastPlantingBackup { get { return T.lastPlantingBackup; } set { T.lastPlantingBackup = value; } }
         partial void StorageAvailable(ref bool available) {available=true;}
         static bool Finite(float v) { return !float.IsNaN(v) && !float.IsInfinity(v); }
 
         [MenuItem("GolfMap/Vreta/Configure manual biome planter %&g")]
         public static void ImportVreta()
         {
-            var window = GetWindow<GolfMapTreePlanter>("GolfMap Trees");
-            try { window.ConfigureVreta(); }
+            var planter = Select();
+            try { planter.ConfigureVreta(); }
             catch(Exception e) {
-                window.status = "Vreta setup stopped: " + e.Message;
-                Debug.LogWarning("[GolfMap] " + window.status);
+                planter.status = "Vreta setup stopped: " + e.Message;
+                Debug.LogWarning("[GolfMap] " + planter.status);
             }
-            window.Show(); // Configuring must never replant the whole course.
+            planter.Repaint(); // Configuring must never replant the whole course.
         }
 
         void ConfigureVreta()
@@ -64,7 +65,7 @@ namespace GolfMap.Editor
             storage = systems.Length == 1 ? systems[0] : null;
             loaded = null;
             status = "Vreta preset ready: " + groundMeshes.Count + " course meshes, terrain fallback. Plant creates dedicated VSP storage if needed.";
-            so = new SerializedObject(this);
+            Dirty();
         }
 
         partial void DrawStorageOptions()
@@ -153,17 +154,17 @@ namespace GolfMap.Editor
             try {
                 LoadFile();if(loaded==null)return;
                 ValidateTarget();
-                string targetName=forceBillboards?"GolfMap Outer Trees":"GolfMap Vreta Trees";
+                string targetName=forceBillboards?"outer":"inner";
                 var matches=createNew?new PersistentVegetationStorage[0]:FindObjectsOfType<PersistentVegetationStorage>().Where(s=>
-                    (s.name==targetName||s.name.StartsWith(targetName+" ("))&&StorageMatchesTerrain(s,terrain)).ToArray();
-                if(matches.Length>1)throw new InvalidOperationException("Several "+targetName+" systems exist. Resolve duplicates before selecting storage.");
+                    IsGolfMapStorage(s)&&StorageMatchesTerrain(s,terrain)).ToArray();
+                if(matches.Length>1)throw new InvalidOperationException("Several GolfMap "+targetName+" systems match this terrain. Resolve duplicates before selecting storage.");
                 if(matches.Length==1){
                     var candidate=matches[0];
-                    storage=candidate;status="Selected existing "+targetName+". No trees changed.";
+                    storage=candidate;Dirty();status="Selected the existing "+targetName+" system ("+AssetDatabase.GetAssetPath(candidate.PersistentVegetationStoragePackage)+"). No trees changed.";
                 } else {
                     storage=null;EnsureStorage(createNew);
                     AssetDatabase.SaveAssets();EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
-                    status="Created and selected "+storage.name+" with a new empty storage asset. Existing systems preserved. Save the scene, then Load and check.";
+                    status="Created and selected a new "+targetName+" system ("+AssetDatabase.GetAssetPath(storage.PersistentVegetationStoragePackage)+"). Existing systems preserved. Save the scene, then Load and check.";
                 }
             } catch(Exception e){storage=previous;status="Storage setup stopped: "+e.Message;Debug.LogException(e);}
         }
@@ -173,9 +174,14 @@ namespace GolfMap.Editor
             if (storage && storage.VegetationSystemPro) { storage.VegetationSystemPro.ClearCache(); SceneView.RepaintAll(); }
         }
 
+        internal static bool IsImportedCatalogue(VegetationPackagePro catalog)
+        {
+            return catalog&&(catalog.PackageName=="GolfMap imported trees"||catalog.PackageName=="GolfMap imported trees (billboards)");
+        }
+
         // VSP caches NM colours separately and overrides the prefab's material.
         // Find bark by shader, not the first _Color (leaf materials also have it).
-        static bool SyncPrefabColours(VegetationItemInfoPro item)
+        internal static bool SyncPrefabColours(VegetationItemInfoPro item)
         {
             if(!item.VegetationPrefab||item.ShaderControllerSettings==null)return false;
             var settings=item.ShaderControllerSettings;
@@ -201,9 +207,12 @@ namespace GolfMap.Editor
         {
             try {
                 if(!storage||!storage.VegetationSystemPro)throw new InvalidOperationException("Select the planted storage first.");
+                // Import material files edited outside Unity first; otherwise the sync reads the
+                // previous in-memory colours and writes those back into the catalogue.
+                AssetDatabase.Refresh();
                 int updated=0;
                 foreach(var catalog in storage.VegetationSystemPro.VegetationPackageProList){
-                    if(!catalog||(catalog.PackageName!="GolfMap imported trees"&&catalog.PackageName!="GolfMap imported trees (billboards)"))continue;
+                    if(!IsImportedCatalogue(catalog))continue;
                     Undo.RegisterCompleteObjectUndo(catalog,"Refresh planted colours");
                     foreach(var item in catalog.VegetationInfoList)if(SyncPrefabColours(item))updated++;
                     EditorUtility.SetDirty(catalog);
@@ -238,6 +247,15 @@ namespace GolfMap.Editor
             status = "Cleared " + count + " imported instances. Other sources preserved. Undo is available.";
         }
 
+        // Every system is named VegetationSystemPro for GSPro's sake (GolfMapVspRig), so identity
+        // comes from the storage asset the planter created for it, never from the object's name.
+        static bool IsGolfMapStorage(PersistentVegetationStorage candidate)
+        {
+            if(!candidate||!candidate.PersistentVegetationStoragePackage)return false;
+            return AssetDatabase.GetAssetPath(candidate.PersistentVegetationStoragePackage)
+                .StartsWith(VretaFolder,StringComparison.OrdinalIgnoreCase);
+        }
+
         static bool StorageMatchesTerrain(PersistentVegetationStorage candidate,Terrain target)
         {
             if(!candidate||!target||!target.terrainData||!candidate.VegetationSystemPro||
@@ -263,29 +281,22 @@ namespace GolfMap.Editor
 
         void EnsureStorage(bool createNew=false)
         {
-            if (!FindObjectOfType<AwesomeTechnologies.VegetationStudio.VegetationStudioManager>())
-            {
-                var manager = new GameObject("VegetationStudioPro");
-                Undo.RegisterCreatedObjectUndo(manager, "Create VSP manager");
-                manager.AddComponent<AwesomeTechnologies.VegetationStudio.VegetationStudioManager>();
-            }
+            var manager = GolfMapVspRig.EnsureManager(terrain.gameObject.scene);
             if (storage&&!createNew) return;
-            string baseName=forceBillboards?"GolfMap Outer Trees":"GolfMap Vreta Trees";
-            var candidates=FindObjectsOfType<PersistentVegetationStorage>().Where(s=>s.gameObject.scene==terrain.gameObject.scene&&
-                (s.name==baseName||s.name.StartsWith(baseName+" ("))).ToArray();
+            var candidates=FindObjectsOfType<PersistentVegetationStorage>()
+                .Where(s=>s.gameObject.scene==terrain.gameObject.scene&&IsGolfMapStorage(s)).ToArray();
             var compatible=candidates.Where(s=>StorageMatchesTerrain(s,terrain)).ToArray();
             if(!createNew&&compatible.Length>1)throw new InvalidOperationException("Several matching GolfMap systems exist. Select the intended storage explicitly.");
             if(!createNew&&compatible.Length==1){storage=compatible[0];return;}
-            string newName=baseName;int suffix=2;
-            var usedNames=new HashSet<string>(FindObjectsOfType<Transform>().Where(t=>t.gameObject.scene==terrain.gameObject.scene).Select(t=>t.name));
-            while(usedNames.Contains(newName))newName=baseName+" ("+(suffix++)+")";
-            var go = new GameObject(newName);
+            var go = new GameObject(GolfMapVspRig.SystemObjectName);
             Undo.RegisterCreatedObjectUndo(go, "Create GolfMap VSP system");
             SceneManager.MoveGameObjectToScene(go, terrain.gameObject.scene);
             storage = go.AddComponent<PersistentVegetationStorage>();
             var system = go.AddComponent<VegetationSystemPro>();
             storage.VegetationSystemPro = system;
             system.PersistentVegetationStorage = storage;
+            // Match the shape VSP's own wizard builds, which is what GSPro expects to find.
+            GolfMapVspRig.Standardise(system, manager);
             system.AutomaticBoundsCalculation = false;
             var size = terrain.terrainData.size;
             system.VegetationSystemBounds = new Bounds(terrain.transform.position + size / 2, size + new Vector3(2, 100, 2));
@@ -542,11 +553,14 @@ namespace GolfMap.Editor
                 int expected = prepared.Count + (clearExisting ? 0 : prior);
                 if (SourceCount(package) != expected) throw new InvalidOperationException("Stored count differs from expected count.");
                 } catch {EditorJsonUtility.FromJsonOverwrite(backup,package);EditorUtility.SetDirty(package);RefreshStorage();throw;}
+                // Retired palette prefabs would otherwise stay in the catalogue for good and keep
+                // failing VSP's per-item validation at load. Only safe once the instances are in.
+                int pruned=GolfMapVspRig.PruneCatalogues(system);
                 EditorUtility.SetDirty(package); EditorUtility.SetDirty(system); EditorUtility.SetDirty(storage);
                 EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
                 RefreshStorage();
                 AssetDatabase.SaveAssets();
-                status = "Imported " + prepared.Count + " trees: " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges. Source 42. Save the scene to retain setup.";
+                status = "Imported " + prepared.Count + " trees: " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup.";
                 Directory.CreateDirectory("GolfMapSpelunk");
                 File.WriteAllText("GolfMapSpelunk/Vreta_tree_import.txt", DateTime.UtcNow.ToString("o") + "\n" + status + "\n" + AlignmentReport() + "\nStorage: " + AssetDatabase.GetAssetPath(package));
                 Debug.Log("[GolfMap] " + status);

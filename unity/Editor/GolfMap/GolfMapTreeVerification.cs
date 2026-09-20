@@ -13,7 +13,7 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Vreta/Verify imported trees and clear safety %&v")]
         public static void VerifyVreta()
         {
-            var window = GetWindow<GolfMapTreePlanter>("GolfMap Trees");
+            var window = Select();
             window.ConfigureVreta();
             window.LoadFile();
             if (!window.storage || window.loaded == null) throw new InvalidOperationException("Import Vreta first.");

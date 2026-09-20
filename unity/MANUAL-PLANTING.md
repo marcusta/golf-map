@@ -1,14 +1,17 @@
 # Manual biome planting in Vreta
 
-Main window: `GolfMapTreePlanter.cs`. Install it together with `GolfMapBiome.cs`,
-`GolfMapTreePlanterVsp.cs` and `GolfMapBiomeAtlas.shader` under `Assets/Editor/GolfMap`.
+The planter is the Inspector of a **GolfMap Trees** scene object (one per terrain;
+`GolfMap > Tree Planter` selects or creates it). Logic: `GolfMapTreePlanter.cs`. Install
+it together with `GolfMapBiome.cs`, `GolfMapTreePlanterVsp.cs`, `GolfMapVspRig.cs`,
+`GolfMapTreesInspector.cs` and `GolfMapBiomeAtlas.shader` under `Assets/Editor/GolfMap`,
+and the component `GolfMapTrees.cs` under `Assets/GolfMap/Runtime`.
 The VSP partial is now kept in this repository; do not maintain a separate older
 copy with the same class/methods in the Unity project.
 
 ## Inner terrain
 
 1. Open `Vreta_lidar_scene` and choose **GolfMap > Vreta > Configure manual biome planter**.
-   This only configures the window; it no longer imports automatically.
+   This only configures the selected GolfMap Trees object; it does not import.
 2. Set the inner trees JSON and its matching inner Terrain. The preset uses
    `Assets/GolfMap/Vreta/Vreta_trees.json` and `Vreta_lidar_inner`.
 3. Leave **Use biome palette** on, with `Assets/GolfMap/Vreta/palette.json`.
@@ -72,6 +75,23 @@ and an average of NM healthy/dry tints. This is a distant approximation: it does
 not reproduce location-dependent NM noise, wind, or identical lit highlights.
 Original materials are not edited while baking. Verify colour and visibility in
 GSPro before committing to a full outer course build.
+
+## Before building the course for GSPro
+
+Run **GolfMap > Vreta > Fix vegetation systems for GSPro** once on any scene planted
+before `GolfMapVspRig.cs` existed. It renames each system object to `VegetationSystemPro`
+(GSPro's shader-controller remap looks it up by that name and null-refs otherwise, and
+then nothing renders), parents it under the `VegetationStudioPro` manager, adds the
+missing `TerrainSystemPro`/`ColliderSystemPro`, removes the `Camera.main` entry VSP baked
+into the camera list when the component was added, and prunes catalogue items nothing is
+planted from. Save the scene afterwards, then build. Newly created systems already have
+this shape.
+
+**Retiring a prefab needs a replant.** Dropping an asset from the palette does not remove
+it from the `TreeCatalog` asset, and VSP validates every item in the package at load — so
+a bad prefab keeps erroring even with nothing planted from it. The prune only removes
+items with no instances left, so replant that terrain with **Clear existing trees first**
+enabled and the retired items go with it.
 
 ## Backups and checks
 

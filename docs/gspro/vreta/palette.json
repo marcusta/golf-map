@@ -11,12 +11,11 @@
     "maxHeightError": 0.25,
     "scalePenalty": 0.2,
     "speciesWeights": {
-      "poplar": 0.1,
-      "broadleaf": 0.15,
-      "elm": 0.2,
-      "birch": 0.1,
-      "oak": 0.3,
-      "maple": 0.15
+      "poplar": 0.118,
+      "broadleaf": 0.176,
+      "elm": 0.235,
+      "birch": 0.118,
+      "oak": 0.353
     },
     "speciesFitSlack": 0.8,
     "woodlandRadiusM": 20,
@@ -309,7 +308,7 @@
       "form": "tree",
       "species": "maple",
       "assetType": "prefab",
-      "enabled": true
+      "enabled": false
     },
     {
       "guid": "7f0b17e40094d22b8f114ec4618fe6e1",
@@ -321,7 +320,7 @@
       "form": "tree",
       "species": "elm",
       "assetType": "prefab",
-      "enabled": true,
+      "enabled": false,
       "catalogueGuid": "4b1be7029a1269343a330a1e6a7c321c",
       "originalPath": "Assets/Trees/Elm/Elm.prefab"
     },

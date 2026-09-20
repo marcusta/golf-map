@@ -204,10 +204,13 @@ namespace GolfMap.Editor
 
                 // Overlays: the 8192 px JPEGs. Outer ones carry "-outer-". The
                 // "-terrain" twins (darkened for the terrain shader) come first,
-                // patched photos before pristine, hillshades last, so the
-                // default pick is the one meant for the terrain.
+                // patched photos before pristine, then the "-meshes" variants
+                // (the tinted texture meant for the course meshes, listed so it
+                // can be compared) and hillshades last, so the default pick is
+                // the one meant for the terrain.
                 var jpgs = Directory.GetFiles(folder, "*.jpg")
                     .OrderBy(p => p.Contains("-hillshade-"))
+                    .ThenBy(p => p.EndsWith("-meshes.jpg", StringComparison.OrdinalIgnoreCase))
                     .ThenBy(p => !p.EndsWith("-terrain.jpg", StringComparison.OrdinalIgnoreCase))
                     .ThenBy(p => !p.Contains("-patched-"))
                     .ThenBy(p => p).ToList();

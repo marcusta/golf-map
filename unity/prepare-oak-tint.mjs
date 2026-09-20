@@ -12,7 +12,11 @@ shader=shader.replace('Shader "CTI/LOD Leaves 301"','Shader "GolfMap/CTI Oak Lea
 const expression='o.Albedo = lerp(c.rgb, (c.rgb + _HueVariation.rgb) * 0.5, IN.color.r * _HueVariation.a);';
 if(!shader.includes(expression))throw Error('Unexpected CTI shader source');
 shader=shader.replace(expression,expression+'\n            o.Albedo *= _GolfMapLeafTint.rgb;');
-shader=shader.replace('o.Specular = norspc.b;', 'o.Specular = min(norspc.b, 0.02);').replace('o.Smoothness = trngls.a', 'o.Smoothness = min(trngls.a, 0.15)');
+// Unity's BRDF pushes specular toward white at glancing angles: FresnelTerm and FresnelLerp both
+// climb to 1/grazingTerm however small the specular colour is, and that sheen is not multiplied by
+// albedo. Against oak's tinted, dark leaves it dominates and the canopy reads white from behind
+// while looking correct head on. Leaves here need no specular lobe, so drop both to zero.
+shader=shader.replace('o.Specular = norspc.b;', 'o.Specular = 0.0;').replace('o.Smoothness = trngls.a', 'o.Smoothness = min(trngls.a, 0.0)');
 const dest=path.join(stage,folder);fs.mkdirSync(dest,{recursive:true});
 // CTI's default deferred pass encodes Lux translucency into specular G/B.
 // Vreta uses Unity's ordinary deferred lighting, which reads those as colour.

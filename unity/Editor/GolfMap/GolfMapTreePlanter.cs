@@ -1,5 +1,12 @@
 // Plants trees from a golf-map "unity-trees-v1" file onto a Unity Terrain.
-// Menu: GolfMap > Tree Planter. See unity/README.md for the file format.
+// See unity/README.md for the file format.
+//
+// The settings live on a GolfMapTrees component (Runtime/GolfMap/GolfMapTrees.cs,
+// one scene object per terrain); GolfMap > Tree Planter selects or creates one.
+// This class is the editor-only logic behind that component's Inspector
+// (GolfMapTreesInspector.cs): a hidden ScriptableObject per component that
+// outlives Inspector instances, so loaded surveys, biome matches and a running
+// tree-editor session survive selecting something else and coming back.
 //
 // Two placement modes:
 //   TerrainInstances: TreeInstance entries on the terrain (batched, LOD,
@@ -15,6 +22,7 @@ using System.IO;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
+using Mode = GolfMap.GolfMapTrees.Mode;
 
 namespace GolfMap.Editor
 {
@@ -53,12 +61,15 @@ namespace GolfMap.Editor
 
     // partial: a course project may extend the planter in its own files (e.g. a
     // Vegetation Studio Pro placement mode) without touching this one.
-    public partial class GolfMapTreePlanter : EditorWindow
+    public partial class GolfMapTreePlanter : ScriptableObject
     {
         // PersistentStorage is implemented in GolfMapTreePlanterVsp.cs.
         // Missing backends are reported explicitly before planting.
-        public enum Mode { TerrainInstances, GameObjects, PersistentStorage }
-
+        [SerializeField] GolfMapTrees component;   // the scene component whose settings this planter edits
+        GolfMapTrees T { get { return component; } }
+        internal GolfMapTrees Component { get { return component; } }
+        internal UnityEditor.Editor inspector;     // the component's open Inspector, if any
+        [SerializeField] bool showSetup = true;
         // Extension hooks (C# partial methods: no-ops unless a project-local
         // partial class implements them).
         partial void DrawStorageOptions();
@@ -71,13 +82,13 @@ namespace GolfMap.Editor
         const string kFormat = "unity-trees-v1";
         const string kParentName = "GolfMapTrees";
 
-        [SerializeField] string filePath = "";
-        [SerializeField] Terrain terrain;
-        [SerializeField] Mode mode = Mode.PersistentStorage;
-        [SerializeField] bool useBiome = true;
-        [SerializeField] string biomePath = "Assets/GolfMap/Vreta/palette.json";
-        [SerializeField] Terrain innerExclusion;
-        [SerializeField] bool includeReviewMatches = true;
+        string filePath { get { return T.filePath; } set { T.filePath = value; } }
+        Terrain terrain { get { return T.terrain; } set { T.terrain = value; } }
+        Mode mode { get { return T.mode; } set { T.mode = value; } }
+        bool useBiome { get { return T.useBiome; } set { T.useBiome = value; } }
+        string biomePath { get { return T.biomePath; } set { T.biomePath = value; } }
+        Terrain innerExclusion { get { return T.innerExclusion; } set { T.innerExclusion = value; } }
+        bool includeReviewMatches { get { return T.includeReviewMatches; } set { T.includeReviewMatches = value; } }
         GolfMapBiome biome;
         readonly Dictionary<string,GameObject> biomePrefabs = new Dictionary<string,GameObject>();
         readonly Dictionary<GolfMapTree,GolfMapBiomeMatch> biomeMatches = new Dictionary<GolfMapTree,GolfMapBiomeMatch>();
@@ -87,39 +98,91 @@ namespace GolfMap.Editor
         GolfMapTreeEditFile editFile;
         string editsPath = "";
         List<string> editWarnings = new List<string>();
-        [SerializeField] List<GameObject> broadleafPrefabs = new List<GameObject>();
-        [SerializeField] List<GameObject> coniferPrefabs = new List<GameObject>();
-        [SerializeField] List<GameObject> unknownPrefabs = new List<GameObject>();
-        [SerializeField] List<GameObject> bushPrefabs = new List<GameObject>();
-        [SerializeField] float minScale = 0.5f;
-        [SerializeField] float maxScale = 2.0f;
-        [SerializeField] float minHeightM = 0f;
-        [SerializeField] bool scaleWidth = true;
-        [SerializeField] bool clearExisting = false;
-        [SerializeField] int seed = 1;
-        [SerializeField] float alignmentToleranceM = 1.0f;
-        [SerializeField] bool ignoreAlignment = false;
+        List<GameObject> broadleafPrefabs { get { return T.broadleafPrefabs; } set { T.broadleafPrefabs = value; } }
+        List<GameObject> coniferPrefabs { get { return T.coniferPrefabs; } set { T.coniferPrefabs = value; } }
+        List<GameObject> unknownPrefabs { get { return T.unknownPrefabs; } set { T.unknownPrefabs = value; } }
+        List<GameObject> bushPrefabs { get { return T.bushPrefabs; } set { T.bushPrefabs = value; } }
+        float minScale { get { return T.minScale; } set { T.minScale = value; } }
+        float maxScale { get { return T.maxScale; } set { T.maxScale = value; } }
+        float minHeightM { get { return T.minHeightM; } set { T.minHeightM = value; } }
+        bool scaleWidth { get { return T.scaleWidth; } set { T.scaleWidth = value; } }
+        bool clearExisting { get { return T.clearExisting; } set { T.clearExisting = value; } }
+        int seed { get { return T.seed; } set { T.seed = value; } }
+        float alignmentToleranceM { get { return T.alignmentToleranceM; } set { T.alignmentToleranceM = value; } }
+        bool ignoreAlignment { get { return T.ignoreAlignment; } set { T.ignoreAlignment = value; } }
         // Outer-plot trees are always far from the player, so they go in as
         // billboards only: TerrainInstances mode sets the terrain's billboard
         // start distance to its minimum; the VSP partial reads this too.
-        [SerializeField] bool forceBillboards = false;
-
+        bool forceBillboards { get { return T.forceBillboards; } set { T.forceBillboards = value; } }
         GolfMapTreeFile loaded;
         string loadedPath;
         string status = "";
-        Vector2 scroll;
-        SerializedObject so;
+        SerializedObject soCache;
+        SerializedObject so { get { if (soCache == null || soCache.targetObject != component) soCache = new SerializedObject(component); return soCache; } }
 
-        [MenuItem("GolfMap/Tree Planter")]
-        public static void Open() => GetWindow<GolfMapTreePlanter>("GolfMap Trees");
+        // ---- component binding ---------------------------------------------
 
-        void OnEnable() { so = new SerializedObject(this); }
-
-        void OnGUI()
+        // The planter for a component: reused across Inspector instances and domain reloads.
+        public static GolfMapTreePlanter For(GolfMapTrees target)
         {
-            so.Update();
-            scroll = EditorGUILayout.BeginScrollView(scroll);
+            foreach (var p in Resources.FindObjectsOfTypeAll<GolfMapTreePlanter>()) if (p && p.component == target) return p;
+            var planter = CreateInstance<GolfMapTreePlanter>();
+            planter.hideFlags = HideFlags.HideAndDontSave;
+            planter.component = target;
+            return planter;
+        }
 
+        // Selects the GolfMap Trees object to work with: the selected one, else the first in the
+        // scene, else a new one. Returns its planter.
+        [MenuItem("GolfMap/Tree Planter")]
+        public static void Open() { Select(); }
+        public static GolfMapTreePlanter Select()
+        {
+            var target = Selection.activeGameObject ? Selection.activeGameObject.GetComponent<GolfMapTrees>() : null;
+            if (!target) target = FindObjectsOfType<GolfMapTrees>().OrderBy(c => c.name).FirstOrDefault();
+            if (!target)
+            {
+                var go = new GameObject("GolfMap Trees");
+                Undo.RegisterCreatedObjectUndo(go, "Create GolfMap Trees");
+                target = go.AddComponent<GolfMapTrees>();
+            }
+            Selection.activeGameObject = target.gameObject;
+            EditorGUIUtility.PingObject(target.gameObject);
+            return For(target);
+        }
+
+        void Repaint() { if (inspector) inspector.Repaint(); }
+
+        // Settings changed from code (presets, auto-detected billboards): make the scene save them.
+        void Dirty()
+        {
+            if (!component) return;
+            EditorUtility.SetDirty(component);
+            if (component.gameObject.scene.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(component.gameObject.scene);
+        }
+
+        // ---- Inspector -----------------------------------------------------
+
+        internal void OnGUI()
+        {
+            if (!component) return;
+            so.Update();
+            Undo.RecordObject(component, "GolfMap Trees settings");
+            EditorGUI.BeginChangeCheck();
+
+            showSetup = EditorGUILayout.Foldout(showSetup, "Setup", true);
+            if (showSetup) DrawSetup();
+            DrawActions();
+            if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
+
+            DrawTreeEditor();
+
+            if (EditorGUI.EndChangeCheck()) Dirty();
+            so.ApplyModifiedProperties();
+        }
+
+        void DrawSetup()
+        {
             EditorGUILayout.LabelField("Input", EditorStyles.boldLabel);
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -167,7 +230,10 @@ namespace GolfMap.Editor
             forceBillboards = EditorGUILayout.Toggle("Billboards only (outer plot)", forceBillboards);
             if(forceBillboards)innerExclusion=(Terrain)EditorGUILayout.ObjectField("Inner terrain to exclude",innerExclusion,typeof(Terrain),true);
             DrawStorageOptions();
+        }
 
+        void DrawActions()
+        {
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -176,12 +242,6 @@ namespace GolfMap.Editor
                     if (GUILayout.Button("Plant")) Plant();
                 if (mode == Mode.PersistentStorage && GUILayout.Button("Clear imported")) ClearImported();
             }
-            if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
-
-            DrawTreeEditor();
-
-            EditorGUILayout.EndScrollView();
-            so.ApplyModifiedProperties();
         }
 
         // ---- loading -------------------------------------------------------
@@ -211,7 +271,7 @@ namespace GolfMap.Editor
                 loaded = file;
                 loadedPath = filePath;
                 // An outer-plot file switches billboards on; the toggle stays editable.
-                if (file.plot.terrain == "outer" || file.plot.terrain == "inner") forceBillboards = file.plot.terrain == "outer";
+                if (file.plot.terrain == "outer" || file.plot.terrain == "inner") { forceBillboards = file.plot.terrain == "outer"; Dirty(); }
             }
             catch (Exception e)
             {
@@ -313,7 +373,7 @@ namespace GolfMap.Editor
             if(biome==null||biome.format!="golfmap-tree-palette-v1"||biome.rules==null||biome.assets==null||biome.assets.Count==0)throw new Exception("Invalid biome palette.");
             var rules=biome.rules;
             if(!(rules.minScale>0&&rules.maxScale>=rules.minScale&&rules.variationBand>=0&&rules.speciesFitSlack>=0&&rules.maxHeightError>=0&&rules.maxWidthError>=0))throw new Exception("Invalid biome rules.");
-            var renderIssues=new List<string>();
+            var renderIssues=new List<string>();var shaderIssues=new List<string>();
             foreach(var a in biome.assets){
                 if(!a.enabled)continue;
                 if(!(a.heightM>0&&a.crownWidthM>0)||double.IsInfinity(a.heightM)||double.IsInfinity(a.crownWidthM))throw new Exception("Invalid dimensions: "+a.name);
@@ -333,6 +393,7 @@ namespace GolfMap.Editor
                         string location=a.name+" / "+renderer.name+" / material slot "+slot;
                         if(!material)throw new Exception("Missing material: "+location);
                         if(!material.shader||!material.shader.isSupported)throw new Exception("Unsupported shader: "+location+" ("+material.name+")");
+                        if(mode==Mode.PersistentStorage&&!VspKnowsShader(material.shader.name))shaderIssues.Add(location+" ("+material.name+") uses '"+material.shader.name+"'");
                     }
                 }
                 if(meshRenderers==0)throw new Exception("No usable mesh renderers: "+a.name);
@@ -340,6 +401,7 @@ namespace GolfMap.Editor
                 biomePrefabs.Add(a.guid,prefab);
             }
             if(renderIssues.Count>0)throw new Exception("Palette assets VSP cannot draw faithfully (use VS_/baked variants):\n"+string.Join("\n",renderIssues.ToArray()));
+            if(shaderIssues.Count>0)throw new Exception("Shader names GSPro's Vegetation Studio build cannot resolve a controller for. It has no DefaultShaderController fallback: one of these null-refs in VegetationItemModelInfo.SetShaderControllers and stops every tree in the package from loading, silently. Use a stock shader name (NatureManufacture Shaders/Trees/Tree {Bark,Leaves} {Metalic,Specular}, CTI/LOD {Bark,Leaves,Bark Array}, Nature/SpeedTree) and drive colour through the item's shader-controller settings instead:\n"+string.Join("\n",shaderIssues.ToArray()));
             minScale=(float)rules.minScale;maxScale=(float)rules.maxScale;scaleWidth=false;
             int matched=0,review=0,unmatched=0,woodlandCount=0;var ids=new HashSet<string>();
             var grid=new Dictionary<string,List<GolfMapTree>>();
@@ -369,6 +431,43 @@ namespace GolfMap.Editor
             var speciesCounts=new Dictionary<string,int>();foreach(var m in biomeMatches.Values){string label=string.IsNullOrEmpty(m.asset.species)?m.asset.kind:m.asset.species;if(!speciesCounts.ContainsKey(label))speciesCounts[label]=0;speciesCounts[label]++;}
             var mix="";foreach(var pair in speciesCounts)mix+=pair.Key+" "+pair.Value+"; ";
             return "\nBiome: "+matched+" eligible, "+review+" imperfect/unknown fits, "+unmatched+" unmatched (skipped). "+woodlandCount+" woodland stems use canopy matching. Uniform scale "+minScale+"–"+maxScale+". Uses prepared material colours.\n"+mix;
+        }
+
+        // VSP picks a shader controller by *exact* shader name (ShaderSelector, matched against
+        // the hard-coded lists in NMTreeShaderControler/CTIShaderController/Speedtree/...). The
+        // Asset Store build in this project ends GetShaderControler with `return new
+        // DefaultShaderController()`, so an unrecognised name is completely invisible in the
+        // editor. GSPro ships a forked VSP runtime - it has SetShaderControllers(GameObject
+        // _sourceLOD0), Arb_* controllers and useShaderControllerOverrides, none of which exist
+        // here - and that lookup has no such fallback: an unknown shader throws a
+        // NullReferenceException out of the VegetationItemModelInfo constructor, which aborts
+        // SetupVegetationItemModels for the whole package. One renamed shader therefore stops
+        // every tree in that system from loading, with nothing said in the Unity console.
+        // Renaming a copied NM/CTI shader is enough to trigger it.
+        // GSPro's VSP is newer than this project's and knows a few names the local controllers do
+        // not. Read out of its shipped AwesomeTechnologies.VegetationStudioPro.Runtime.dll, so the
+        // check does not reject what the course will actually render - the palette's pines use
+        // Cross Model Shader, which only the GSPro side lists.
+        static readonly string[] GsproExtraShaders=
+        {
+            "NatureManufacture Shaders/Trees/Cross Model Shader",
+            "NatureManufacture Shaders/Trees/Cross Model Shader Snow",
+            "NatureManufacture Shaders/Trees/Tree_Leaves_Metalic",
+            "NatureManufacture Shaders/Trees/Tree Bark Metalic Snow",
+            "NatureManufacture Shaders/Trees/Tree Bark Specular Snow",
+            "NatureManufacture Shaders/Trees/Tree Leaves Metalic Snow",
+            "NatureManufacture Shaders/Trees/Tree Leaves Specular Snow",
+            "SyntyStudios/Trees",
+        };
+        static readonly Dictionary<string,bool> KnownShaders=new Dictionary<string,bool>();
+        static bool VspKnowsShader(string shaderName)
+        {
+            bool known;
+            if(KnownShaders.TryGetValue(shaderName,out known))return known;
+            known=GsproExtraShaders.Contains(shaderName)||
+                !(AwesomeTechnologies.Shaders.ShaderSelector.GetShaderControler(shaderName) is AwesomeTechnologies.Shaders.DefaultShaderController);
+            KnownShaders[shaderName]=known;
+            return known;
         }
 
         // VSP draws one mesh per LOD (the LOD's first renderer) with the instance

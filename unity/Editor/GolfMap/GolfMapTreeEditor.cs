@@ -1,10 +1,13 @@
 // Scene-view editor for planted trees (PersistentStorage mode).
 //
-// Activated from the planter window. Click a tree in the Scene view to select
-// it (shift adds), then move it with the position handle, rotate with the
-// disc, resize with the scale cube above the crown, or change species/asset,
-// height and radius in the window. Delete removes the selection; "Click adds
-// a tree" places new ones on the ground.
+// Started from the GolfMap Trees Inspector (or GolfMap > Tree Editor). While
+// that object is selected its Inspector shows the controls and its Editor
+// draws the handles (GolfMapTreesInspector.cs); the session survives selecting
+// something else and coming back. Click a tree in the Scene view to select it
+// (shift adds), then move it with the position handle, rotate with the disc,
+// resize with the scale cube above the crown, or change species/asset, height
+// and radius in the Inspector. Delete removes the selection; "Click adds a
+// tree" places new ones on the ground.
 //
 // Every change is applied to VSP storage at once and recorded in the edits
 // file next to the survey (GolfMapTreeEdits.cs), so replanting keeps it.
@@ -18,6 +21,7 @@ using UnityEditor;
 using UnityEngine;
 using AwesomeTechnologies.VegetationSystem;
 using AwesomeTechnologies.Vegetation.PersistentStorage;
+using Mode = GolfMap.GolfMapTrees.Mode;
 
 namespace GolfMap.Editor
 {
@@ -34,11 +38,13 @@ namespace GolfMap.Editor
             public int cellIndex = -1;        // VSP cell holding the instance (-1 unknown)
         }
 
-        [SerializeField] bool addMode;
-        [SerializeField] string addSpecies = "";
-        [SerializeField] float addHeight = 8, addRadius = 2.5f;
-        [SerializeField] bool showStems = true;
+        bool addMode { get { return T.addMode; } set { T.addMode = value; } }
+        string addSpecies { get { return T.addSpecies; } set { T.addSpecies = value; } }
+        float addHeight { get { return T.addHeight; } set { T.addHeight = value; } }
+        float addRadius { get { return T.addRadius; } set { T.addRadius = value; } }
+        bool showStems { get { return T.showStems; } set { T.showStems = value; } }
         bool editing;
+        internal bool Editing { get { return editing; } }
         readonly Dictionary<string, EditorTree> index = new Dictionary<string, EditorTree>();
         readonly List<string> selection = new List<string>();
         readonly Dictionary<GameObject, Proto> editProtoCache = new Dictionary<GameObject, Proto>();
@@ -55,6 +61,13 @@ namespace GolfMap.Editor
         static readonly Color SelectedColour = new Color(1f, 0.85f, 0.1f, 1f);
 
         void OnDisable() { StopEditing(); }
+
+        [MenuItem("GolfMap/Tree Editor")]
+        public static void OpenTreeEditor()
+        {
+            var p = Select();
+            if (!p.editing) p.StartEditing();
+        }
         partial void OnFileReloaded() { if (editing) { StopEditing(); editStatus = "Editing stopped: the trees file was reloaded. Start again to continue."; } }
 
         partial void DrawTreeEditor()
@@ -71,6 +84,7 @@ namespace GolfMap.Editor
                 return;
             }
             if (GUILayout.Button("Stop editing")) { StopEditing(); return; }
+            EditorGUILayout.HelpBox("Editing in the Scene view while this object is selected. Selecting something else pauses the editor; select \"" + component.name + "\" again to continue.", MessageType.None);
             showStems = EditorGUILayout.Toggle("Show stems near camera", showStems);
             addMode = EditorGUILayout.Toggle("Click adds a tree", addMode);
             var tool = Tools.current == Tool.Rotate ? Tool.Rotate : Tools.current == Tool.Scale ? Tool.Scale : Tool.Move;
@@ -148,8 +162,9 @@ namespace GolfMap.Editor
 
         // ---- lifecycle -----------------------------------------------------
 
-        void StartEditing()
+        internal void StartEditing()
         {
+            if (editing) return;
             try
             {
                 LoadFile(); if (loaded == null) throw new Exception(status);
@@ -177,9 +192,8 @@ namespace GolfMap.Editor
                     if (et.stored) stored++;
                     index.Add(tree.id, et);
                 }
-                editing = true;
-                SceneView.onSceneGUIDelegate -= OnSceneGUI;
-                SceneView.onSceneGUIDelegate += OnSceneGUI;
+                editing = true; showSetup = false;
+                Tools.hidden = true;   // no transform gizmo for the host object while editing
                 editStatus = "Editing " + stored + " planted trees (" + (index.Count - stored) + " eligible stems not found in storage)." + report + EditsReport();
                 SceneView.RepaintAll();
             }
@@ -188,7 +202,7 @@ namespace GolfMap.Editor
 
         void StopEditing()
         {
-            SceneView.onSceneGUIDelegate -= OnSceneGUI;
+            if (editing) Tools.hidden = false;
             if (editProbe != null) { editProbe.Dispose(); editProbe = null; }
             index.Clear(); selection.Clear(); survey.Clear(); editing = false; addMode = false;
             editSystem = null; editPackage = null;
@@ -440,13 +454,17 @@ namespace GolfMap.Editor
 
         // ---- scene view ----------------------------------------------------
 
-        void OnSceneGUI(SceneView view)
+        // Called from the component's Inspector (Editor.OnSceneGUI) while the object is selected.
+        internal void OnSceneGUI()
         {
-            if (!editing || editSystem == null) { SceneView.onSceneGUIDelegate -= OnSceneGUI; return; }
+            if (!editing || editSystem == null) return;
+            var view = SceneView.currentDrawingSceneView;
+            var cam = view ? view.camera : Camera.current;
+            if (!cam) return;
+            Tools.hidden = true;
             var e = Event.current;
             int control = GUIUtility.GetControlID(FocusType.Passive);
             if (!e.alt) HandleUtility.AddDefaultControl(control);
-            var cam = view.camera;
             if (e.type == EventType.Repaint) DrawTrees(cam);
             DrawHandles(e);
             if (e.type == EventType.MouseDown && e.button == 0 && !e.alt && HandleUtility.nearestControl == control)
@@ -471,9 +489,10 @@ namespace GolfMap.Editor
                 if (e.keyCode == KeyCode.Delete && selection.Count > 0) { DeleteSelected(); e.Use(); }
                 else if (e.keyCode == KeyCode.Escape && selection.Count > 0) { selection.Clear(); e.Use(); Repaint(); SceneView.RepaintAll(); }
             }
-            if ((e.type == EventType.ValidateCommand || e.type == EventType.ExecuteCommand) && (e.commandName == "SoftDelete" || e.commandName == "Delete") && selection.Count > 0)
+            // Swallow Delete even with no tree selected: it must never delete the GolfMap Trees object.
+            if ((e.type == EventType.ValidateCommand || e.type == EventType.ExecuteCommand) && (e.commandName == "SoftDelete" || e.commandName == "Delete"))
             {
-                if (e.type == EventType.ExecuteCommand) DeleteSelected();
+                if (e.type == EventType.ExecuteCommand && selection.Count > 0) DeleteSelected();
                 e.Use();
             }
         }

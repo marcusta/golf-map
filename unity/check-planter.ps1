@@ -7,7 +7,8 @@ $references+=Get-ChildItem -LiteralPath (Join-Path $UnityProject 'Library/Script
 $compilerArgs=@('/nologo','/target:library','/langversion:6','/define:UNITY_EDITOR,UNITY_2018_2_OR_NEWER',('/out:'+$checkOutput))
 $compilerArgs+=$references | ForEach-Object { '/reference:'+ $_.FullName }
 $compilerArgs+=@('mscorlib.dll','System.dll','System.Core.dll') | ForEach-Object { '/reference:'+(Join-Path $UnityData ('MonoBleedingEdge/lib/mono/4.5/'+$_)) }
-$compilerArgs+=@('GolfMapBiome.cs','GolfMapTreePlanter.cs','GolfMapTreePlanterVsp.cs','GolfMapTreeEdits.cs','GolfMapTreeEditor.cs') | ForEach-Object { Join-Path $PSScriptRoot ('Editor/GolfMap/'+$_) }
+$compilerArgs+=@('GolfMapBiome.cs','GolfMapTreePlanter.cs','GolfMapTreePlanterVsp.cs','GolfMapTreeEdits.cs','GolfMapTreeEditor.cs','GolfMapTreeVerification.cs','GolfMapTreesInspector.cs','GolfMapVegetationRefresh.cs','GolfMapTreeRenderingTests.cs','GolfMapVspRig.cs','GolfMapBuildingPlanter.cs','GolfMapZones.cs','GolfMapZoneImporter.cs','GolfMapZoneImporterVsp.cs') | ForEach-Object { Join-Path $PSScriptRoot ('Editor/GolfMap/'+$_) }
+$compilerArgs+=Join-Path $PSScriptRoot 'Runtime/GolfMap/GolfMapTrees.cs'
 & (Join-Path $UnityData 'Tools/Roslyn/csc.exe') @compilerArgs
 if($LASTEXITCODE -ne 0){throw 'Planter compilation failed'}
 Write-Output 'Compiled planter against installed Unity/VSP assemblies (C# 6).'
