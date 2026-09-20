@@ -8,8 +8,11 @@ import type { FilterSpecification } from 'maplibre-gl';
 import { flattenRing, type FeatureGeometry } from '../geo/bezier';
 import { sweref99tmToWgs84 } from '../geo/transform';
 import type { MapService } from '../map/map.service';
-import { DRAW_FILL_OPACITY, NICE_FILL_OPACITY, typeColorExpression, SELECTION_COLOR } from './feature-palette';
+import {
+    DRAW_FILL_OPACITY, NICE_FILL_OPACITY, typeColorExpression, featureFillColorExpression, SELECTION_COLOR,
+} from './feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
+import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
 import { resolveSurfaceStack } from '../../../shared/render/resolved-surface-stack';
 import { isGeneratedFeature } from './generated-features';
 
@@ -20,6 +23,19 @@ import { isGeneratedFeature } from './generated-features';
  * GeoJSON and server-materialized GeoJSON agree.
  */
 const GROUP_RANK_SPAN = 4096;
+
+/**
+ * Feature attributes as the API takes them on create/update: a flat object of
+ * scalars. The generated client types the READ side (`CourseFeature`) as an
+ * opaque interface — the codegen cannot express an index signature — so this
+ * is the one place that bridges the two.
+ */
+export type FeatureAttributesPatch = Record<string, number | string | boolean>;
+
+/** A feature's stored attributes as a writable patch (null when it has none). */
+export function attributesPatchOf(attributes: unknown): FeatureAttributesPatch | null {
+    return (attributes ?? null) as FeatureAttributesPatch | null;
+}
 
 /** Flattening tolerance in meters — matches the server's GeoJSON derivation. */
 export const FLATTEN_TOLERANCE_M = 0.25;
@@ -108,6 +124,8 @@ export class FeaturesService {
 
     /** Hole numbers for the D24 `stackKey` groupRank — set before `geojson`/`stackTopDown` (both Computed eagerly on construction). */
     private courseDetail = di.get(CourseDetailService);
+    /** The course's zone-type legend: colours for the zone fills, defaults for a new zone. */
+    private zoneTypes = di.get(ZoneTypesService);
 
     private loadedCourseId: string | null = null;
 
@@ -155,7 +173,7 @@ export class FeaturesService {
         this.selectedFeatures.get().filter(f => !isGeneratedFeature(f)));
 
     /**
-     * Generated (non-null `source`) features, identity-stable: the same array
+     * Generated (pipeline bulk-replace) features, identity-stable: the same array
      * instance comes back while the generated set is unchanged (same rows in
      * the same order), even though every store edit re-runs this. That
      * stability is what keeps `generatedGeojson` from rebuilding ~60k
@@ -233,6 +251,11 @@ export class FeaturesService {
     private generatedRebuildCount = 0;
 
     private toGeojsonFeature(f: CourseFeature): Feature {
+        // A vegetation zone carries its zone-type key (so the map can style,
+        // filter and label by zone) and, when the course's table knows that
+        // key, the type's own colour for the fill expression.
+        const zoneType = f.type === 'vegetation_zone' ? zoneTypeKeyOf(f.attributes) : '';
+        const zoneColor = zoneType ? this.zoneTypes.colorFor(zoneType) : '';
         return {
             type: 'Feature',
             id: f.id,
@@ -243,6 +266,8 @@ export class FeaturesService {
                 sortOrder: f.sortOrder,
                 stackKey: this.stackKeyFor(f),
                 source: f.source,
+                ...(zoneType ? { zoneType } : {}),
+                ...(zoneColor ? { zoneColor } : {}),
             },
             geometry: {
                 type: 'Polygon',
@@ -409,16 +434,28 @@ export class FeaturesService {
             || (f.source !== null && this.hiddenSources.peek().has(f.source));
     }
 
-    /** Create a feature (autosave on ring close). Selects it on success. */
+    /**
+     * Create a feature (autosave on ring close). Selects it on success.
+     *
+     * A `vegetation_zone` always reaches the server with its four zone
+     * attributes: a caller that has them (duplicate, stamp) passes them
+     * through, and one that doesn't (a freshly drawn ring) gets the course
+     * zone-type table's defaults filled in here — the server rejects a zone
+     * with no `zoneType`, and this is the one funnel every create goes down.
+     */
     async create(input: {
         type: string;
         holeId?: string | null;
         geometry: FeatureGeometry;
+        attributes?: FeatureAttributesPatch | null;
     }): Promise<CourseFeature | undefined> {
         const courseId = this.loadedCourseId;
         if (!courseId) return undefined;
+        const attributes = input.type === 'vegetation_zone' && !zoneTypeKeyOf(input.attributes)
+            ? { ...this.zoneTypes.defaultAttributes(), ...(input.attributes ?? {}) }
+            : input.attributes;
         const created = await request(this.saving, this.saveError, () =>
-            this.featuresApi.create({ courseId, ...input }));
+            this.featuresApi.create({ courseId, ...input, attributes }));
         if (created) {
             this.store.add(created);
             this.selectedIds.set(new Set([created.id]));
@@ -438,13 +475,20 @@ export class FeaturesService {
     }
 
     /**
-     * Persist a partial update (geometry / type / holeId) with optimistic
-     * locking. On version conflict or other failure, `saveError` is set and
-     * the store re-syncs from the server (dropping local patches).
+     * Persist a partial update (geometry / type / holeId / attributes) with
+     * optimistic locking. On version conflict or other failure, `saveError`
+     * is set and the store re-syncs from the server (dropping local patches).
+     * `attributes` replaces the whole object (that is the server's contract),
+     * so the zone section in the selection panel sends all four keys.
      */
     async update(
         id: string,
-        patch: { geometry?: FeatureGeometry; type?: string; holeId?: string | null },
+        patch: {
+            geometry?: FeatureGeometry;
+            type?: string;
+            holeId?: string | null;
+            attributes?: FeatureAttributesPatch | null;
+        },
     ): Promise<CourseFeature | undefined> {
         const result = await request(this.saving, this.saveError, () =>
             this.store.mutate(id, version => this.featuresApi.update({ id, version: version!, ...patch })));
@@ -574,7 +618,7 @@ export class FeaturesService {
                         // stack features render on top within this one layer.
                         layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
                         paint: {
-                            'fill-color': typeColorExpression('draw') as never,
+                            'fill-color': featureFillColorExpression('draw') as never,
                             'fill-opacity': fillOpacity as never,
                         },
                     },
@@ -624,7 +668,7 @@ export class FeaturesService {
                         type: 'fill',
                         layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
                         paint: {
-                            'fill-color': typeColorExpression('draw') as never,
+                            'fill-color': featureFillColorExpression('draw') as never,
                             'fill-opacity': nice ? NICE_FILL_OPACITY : DRAW_FILL_OPACITY,
                         },
                     },

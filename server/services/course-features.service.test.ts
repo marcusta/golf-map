@@ -71,6 +71,20 @@ describe('CourseFeaturesService.create', () => {
         }
     });
 
+    test('accepts a vegetation_zone (with its zone attributes)', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const feature = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: TEST_HOLE_1_ID,
+            type: 'vegetation_zone',
+            geometry: squareGeometry(),
+            attributes: { zoneType: 'shrub', weight: 1, feather: 2, noise: 0 },
+        });
+        expect(feature.type).toBe('vegetation_zone');
+    });
+
     test('rejects an invalid type', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);
@@ -769,6 +783,26 @@ describe('CourseFeaturesService attributes', () => {
 });
 
 describe('CourseFeaturesService.replaceGenerated', () => {
+    test('only bulk-replace output is generated; wizard imports with the same source survive', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        // The GeoJSON import wizard creates ordinary editable features that
+        // merely record where they came from (T49).
+        const importedWater = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: squareGeometry(10, 10),
+            source: 'osm', sourceRef: 'way/1', license: 'ODbL',
+        });
+        expect(importedWater.generated).toBe(false);
+        expect((await svc.findById(importedWater.id)).generated).toBe(false);
+
+        // A generator claiming the same source id replaces only its own rows.
+        await svc.replaceGenerated(TEST_COURSE_ID, 'osm', collection([treeFeature(200, 200, 'osm')]));
+        const all = await svc.listByCourse(TEST_COURSE_ID);
+        expect(all.find((f) => f.id === importedWater.id)?.generated).toBe(false);
+        expect(all.filter((f) => f.generated)).toHaveLength(1);
+    });
+
     test('replaces only features of the given source and keeps hand-drawn and other-source features', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);
@@ -777,12 +811,14 @@ describe('CourseFeaturesService.replaceGenerated', () => {
         const osm = await svc.create({
             courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: squareGeometry(50, 50), source: 'osm', license: 'ODbL',
         });
-        const oldLidar = await svc.create({
-            courseId: TEST_COURSE_ID, holeId: null, type: 'trees', geometry: squareGeometry(90, 90), source: 'lidar-canopy',
-        });
-        const oldLidarOnHole = await svc.create({
-            courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'trees', geometry: squareGeometry(70, 70), source: 'lidar-canopy',
-        });
+        // The previous generation comes from the route itself — create()
+        // never marks a feature generated, however it is stamped.
+        await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection([treeFeature(90, 90), treeFeature(70, 70)]));
+        const previous = (await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.generated);
+        expect(previous).toHaveLength(2);
+        // A generated row sitting on a hole (legacy data — the route inserts
+        // at course level) is replaced too: the delete is not hole-scoped.
+        await db.updateTable('course_features').set({ hole_id: TEST_HOLE_1_ID }).where('id', '=', previous[1].id).execute();
 
         const result = await svc.replaceGenerated(
             TEST_COURSE_ID,
@@ -795,8 +831,7 @@ describe('CourseFeaturesService.replaceGenerated', () => {
         const ids = new Set(all.map((f) => f.id));
         expect(ids.has(hand.id)).toBe(true);
         expect(ids.has(osm.id)).toBe(true);
-        expect(ids.has(oldLidar.id)).toBe(false);
-        expect(ids.has(oldLidarOnHole.id)).toBe(false);
+        for (const f of previous) expect(ids.has(f.id)).toBe(false);
 
         const lidar = all.filter((f) => f.source === 'lidar-canopy');
         expect(lidar).toHaveLength(3);
@@ -926,5 +961,145 @@ describe('CourseFeaturesService.replaceGenerated', () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);
         await expect(svc.replaceGenerated('nope', 'lidar-canopy', collection([]))).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    // D-VZ7: the lidar low-vegetation detector PUTs shrub proposals here with
+    // the zone attributes as ordinary GeoJSON properties.
+    test('vegetation_zone proposals carry their zone attributes through', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const result = await svc.replaceGenerated(
+            TEST_COURSE_ID,
+            'lidar-lowveg',
+            collection([
+                {
+                    type: 'Feature',
+                    geometry: { type: 'Polygon', coordinates: [ring(0, 0, 5)] },
+                    properties: {
+                        type: 'vegetation_zone', source: 'lidar-lowveg',
+                        zoneType: 'shrub', weight: 0.8, feather: 3, noise: 0.5, areaM2: 100,
+                    },
+                },
+                {
+                    type: 'Feature',
+                    geometry: { type: 'Polygon', coordinates: [ring(40, 0, 5)] },
+                    properties: { type: 'vegetation_zone', source: 'lidar-lowveg', zoneType: 'shrub' },
+                },
+            ]),
+        );
+        expect(result.inserted).toBe(2);
+
+        const zones = (await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.type === 'vegetation_zone');
+        expect(zones).toHaveLength(2);
+        expect(zones[0].generated).toBe(true);
+        expect(zones[0].attributes).toEqual({ zoneType: 'shrub', weight: 0.8, feather: 3, noise: 0.5, areaM2: 100 });
+        // Only zoneType is required; the rest fall back to the defaults.
+        expect(zones[1].attributes).toEqual({ zoneType: 'shrub' });
+
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        expect(fc.features.find((f) => f.id === zones[0].id)!.properties.attributes!.zoneType).toBe('shrub');
+    });
+
+    test('a vegetation_zone proposal without a zoneType is rejected whole', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const bad = [
+            { type: 'vegetation_zone', source: 'lidar-lowveg' },
+            { type: 'vegetation_zone', source: 'lidar-lowveg', zoneType: '' },
+            { type: 'vegetation_zone', source: 'lidar-lowveg', zoneType: 'shrub', weight: 1.4 },
+            { type: 'vegetation_zone', source: 'lidar-lowveg', zoneType: 'shrub', feather: -1 },
+        ];
+        for (const properties of bad) {
+            await expect(svc.replaceGenerated(TEST_COURSE_ID, 'lidar-lowveg', collection([
+                { type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring(0, 0, 5)] }, properties },
+            ]))).rejects.toBeInstanceOf(InvalidFeatureError);
+        }
+        expect((await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.type === 'vegetation_zone')).toHaveLength(0);
+    });
+});
+
+describe('CourseFeaturesService — vegetation_zone', () => {
+    const zoneAttributes = { zoneType: 'shrub', weight: 1, feather: 2, noise: 0 };
+
+    test('create stores the four zone attributes and update round-trips them', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const zone = await svc.create({
+            courseId: TEST_COURSE_ID,
+            holeId: null,
+            type: 'vegetation_zone',
+            geometry: squareGeometry(),
+            attributes: zoneAttributes,
+        });
+        expect(zone.type).toBe('vegetation_zone');
+        expect(zone.attributes).toEqual(zoneAttributes);
+
+        const updated = await svc.update(zone.id, 1, {
+            attributes: { zoneType: 'fern', weight: 0.5, feather: 4.5, noise: 1.25 },
+        });
+        expect(updated.attributes).toEqual({ zoneType: 'fern', weight: 0.5, feather: 4.5, noise: 1.25 });
+        expect((await svc.findById(zone.id)).attributes).toEqual(updated.attributes);
+    });
+
+    test('the numeric keys are optional (absent = the defaults), zoneType is not', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const zone = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone',
+            geometry: squareGeometry(), attributes: { zoneType: 'meadow' },
+        });
+        expect(zone.attributes).toEqual({ zoneType: 'meadow' });
+
+        for (const attributes of [undefined, null, {}, { zoneType: '  ' }, { zoneType: 7 }]) {
+            await expect(svc.create({
+                courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone',
+                geometry: squareGeometry(), attributes: attributes as never,
+            })).rejects.toBeInstanceOf(InvalidFeatureError);
+        }
+    });
+
+    test('rejects out-of-range weight / feather / noise on create and update', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const zone = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone',
+            geometry: squareGeometry(), attributes: zoneAttributes,
+        });
+
+        for (const bad of [
+            { zoneType: 'shrub', weight: -0.1 },
+            { zoneType: 'shrub', weight: 1.0001 },
+            { zoneType: 'shrub', feather: -0.5 },
+            { zoneType: 'shrub', noise: -1 },
+            { zoneType: 'shrub', weight: 'lots' },
+        ]) {
+            await expect(svc.create({
+                courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone',
+                geometry: squareGeometry(), attributes: bad as never,
+            })).rejects.toBeInstanceOf(InvalidFeatureError);
+            await expect(svc.update(zone.id, 1, { attributes: bad as never }))
+                .rejects.toBeInstanceOf(InvalidFeatureError);
+        }
+        // The rejected updates never bumped the version.
+        expect((await svc.findById(zone.id)).version).toBe(1);
+    });
+
+    test('is an overlay in the stack: it lands above green and below trees', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const at = async (type: string, attributes?: Record<string, unknown>) => svc.create({
+            courseId: TEST_COURSE_ID, holeId: TEST_HOLE_2_ID, type,
+            geometry: squareGeometry(), attributes: attributes as never,
+        });
+
+        await at('trees');
+        await at('green');
+        await at('vegetation_zone', zoneAttributes);
+
+        const stack = (await svc.listByHole(TEST_HOLE_2_ID)).map((f) => f.type);
+        expect(stack).toEqual(['green', 'vegetation_zone', 'trees']);
     });
 });

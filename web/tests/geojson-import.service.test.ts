@@ -6,9 +6,11 @@ import {
     osmToFeatureCollection,
     HYDRO_FETCH_FILENAME,
     OSM_FETCH_FILENAME,
+    ROADS_FETCH_FILENAME,
 } from '../src/import/geojson-import.service';
 import type { HydroApi, HydroFetchResult } from '../../shared/api/hydro.gen';
 import type { OsmApi, OsmFetchResult } from '../../shared/api/osm.gen';
+import type { TerrainGeneratorsApi, RoadsFetchResult } from '../../shared/api/terrain-generators.gen';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 // Pipeline-shaped draft (fetch-water convention): EPSG:3006 crs member,
@@ -522,5 +524,68 @@ describe('GeojsonImportService.fetchFromOsm (T53)', () => {
         await pending;
         expect(svc.fetching.get()).toBe(false);
         expect(svc.fetchSource.get()).toBeNull();
+    });
+});
+
+describe('GeojsonImportService.fetchFromRoads (T-roads)', () => {
+    const ROADS: RoadsFetchResult = {
+        bbox: { west: 15.70, south: 58.34, east: 15.75, north: 58.37 },
+        centerlines: '/data/sources/site-1/roads-centerlines.geojson',
+        report: ['Road polygons: 2 (path=1, road=1)'],
+        geojson: {
+            type: 'FeatureCollection',
+            crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
+            attribution: '© OpenStreetMap contributors, ODbL (opendatacommons.org/licenses/odbl)',
+            features: [
+                { type: 'Feature', properties: { type: 'path', road_class: 'road', source: 'osm', osm_ids: [1, 2] },
+                    geometry: { type: 'Polygon', coordinates: [square(531500, 6473000, 20)] } },
+                { type: 'Feature', properties: { type: 'path', road_class: 'path', source: 'osm', osm_ids: [3] },
+                    geometry: { type: 'Polygon', coordinates: [square(532000, 6474000, 10)] } },
+            ],
+        },
+    };
+
+    function roadsService(result: RoadsFetchResult | Error = ROADS) {
+        const { api, created } = fakeApi();
+        const calls: Array<{ courseId: string }> = [];
+        const generators: TerrainGeneratorsApi = {
+            fetchRoads: async input => {
+                calls.push(input);
+                if (result instanceof Error) throw result;
+                return result;
+            },
+            generate: () => Promise.reject(new Error('not under test')),
+        };
+        const hydro: HydroApi = { fetchHydro: () => Promise.reject(new Error('not under test')) };
+        const osm: OsmApi = { fetchOsm: () => Promise.reject(new Error('not under test')) };
+        const svc = new GeojsonImportService(api, hydro, osm, generators);
+        svc.openFor('course-1');
+        return { svc, created, calls };
+    }
+
+    test('the road polygons load into the wizard as path features, bucketable by road_class', async () => {
+        const { svc, calls } = roadsService();
+        await svc.fetchFromRoads();
+        expect(calls).toEqual([{ courseId: 'course-1' }]);
+        expect(svc.fileName.get()).toBe(ROADS_FETCH_FILENAME);
+        expect(svc.fetchError.get()).toBeNull();
+        const parsed = svc.parsed.get()!;
+        expect(parsed.features).toHaveLength(2);
+        expect(svc.buckets.get().map(b => [b.value, b.suggestedType])).toEqual([['path', 'path']]);
+        svc.setPropertyKey('road_class');
+        expect(svc.buckets.get().map(b => b.value).sort()).toEqual(['path', 'road']);
+    });
+
+    test('no roads and a failed fetch both surface as the wizard\'s fetch error', async () => {
+        const empty = roadsService({ ...ROADS, geojson: { type: 'FeatureCollection', features: [] } });
+        await empty.svc.fetchFromRoads();
+        expect(empty.svc.fetchError.get()).toMatch(/No OSM roads/);
+        expect(empty.svc.fileName.get()).toBeNull();
+
+        const failed = roadsService(new Error('Road fetch failed: Overpass 504'));
+        await failed.svc.fetchFromRoads();
+        expect(failed.svc.fetchError.get()).toBe('Road fetch failed: Overpass 504');
+        expect(failed.svc.fetching.get()).toBe(false);
+        expect(failed.svc.fetchSource.get()).toBeNull();
     });
 });

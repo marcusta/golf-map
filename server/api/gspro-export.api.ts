@@ -21,16 +21,20 @@ const StartInput = Type.Object({
     courseId: Type.String(),
     kind: Type.Union([
         Type.Literal('svg'), Type.Literal('ortho'), Type.Literal('outer-ortho'),
-        Type.Literal('dem'), Type.Literal('hillshade'), Type.Literal('trees'),
+        Type.Literal('dem'), Type.Literal('hillshade'), Type.Literal('trees'), Type.Literal('buildings'),
     ]),
     /** `ortho`: a `source` file name from `orthoSources`. */
     source: Type.Optional(Type.String()),
     /** `outer-ortho`: Lantmäteriet collection to fetch the outer square from, e.g. `orto-l2-2025`. */
     collection: Type.Optional(Type.String()),
-    /** `dem`, `hillshade`, `trees`: which GSPro terrain. */
+    /** `dem`, `hillshade`, `trees`, `buildings`: which GSPro terrain. */
     terrain: Type.Optional(TerrainInput),
     /** `ortho`, `outer-ortho`: light multiplier for the `-terrain` texture twin (linear light); omitted = the server default. */
     darken: Type.Optional(Type.Number({ minimum: 0.05, maximum: 1 })),
+    /** `ortho`, `outer-ortho`: also write the `-meshes` variant for the course meshes — the darkened twin with the grass surfaces tinted from the drawn features. */
+    tint: Type.Optional(Type.Boolean()),
+    /** With `tint`: the tint layer's opacity 0..1; omitted = the server default (0.3). */
+    tintOpacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
 });
 
 const JobInput = Type.Object({

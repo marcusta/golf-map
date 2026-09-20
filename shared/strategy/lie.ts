@@ -29,6 +29,11 @@ const FEATURE_TO_LIE: Record<string, Lie> = {
     oob: 'penalty',
     outside: 'penalty',
     path: 'fairway',
+    // A vegetation zone is a VSPro authoring overlay, not a playing surface:
+    // it has no gameplay meaning (docs/feature-vegetation-zones.md §5) and is
+    // mapped explicitly so it reads as the neutral middle rather than falling
+    // through the unknown-type default by accident.
+    vegetation_zone: 'rough',
 };
 
 /**

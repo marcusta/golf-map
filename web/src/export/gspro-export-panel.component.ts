@@ -65,6 +65,11 @@ const tpl = template(`
                 <input bind="terrainDarken" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" />
             </label>
             <div class="hint">Light multiplier for the -terrain twin, in linear light: 1 keeps the photo as-is, 0.4 (the default when blank) brings a sun-lit photo down to about the reflectance of real grass so Unity's own lighting does the rest. Try 0.3–0.6 and compare in Unity.</div>
+            <label class="gspro-export__check"><input bind="tintTerrain" type="checkbox" /> Mesh texture (grass surfaces tinted)</label>
+            <label bind="tintOpacityField" class="gspro-export__field">Surface tint opacity
+                <input bind="tintOpacity" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" />
+            </label>
+            <div class="hint">Adds a -meshes variant for the course meshes: the darkened texture with a dark-green layer over the fairways, greens, tees and rough, masked by the course's own drawn features — the Photoshop step OPCD builders do by hand from the SVG. Water bodies and creeks get a darker brown layer instead, fading into the green over about 4 m of shoreline; bunkers and paths are cut out and ground that isn't drawn is left alone. 0.3 (the default when blank) is the grass layer's opacity, the usual Photoshop value.</div>
             <button bind="runOrtho" type="button" class="gspro-export__run gspro-export__run-ortho"></button>
             <button bind="runOuterOrtho" type="button" class="gspro-export__run gspro-export__run-outer-ortho"></button>
             <div bind="outerOrthoHint" class="hint"></div>
@@ -86,6 +91,12 @@ const tpl = template(`
             <button bind="runInnerTrees" type="button" class="gspro-export__run gspro-export__run-inner-trees"></button>
             <button bind="runOuterTrees" type="button" class="gspro-export__run gspro-export__run-outer-trees"></button>
             <div class="hint">The terrain's lidar tree stems as a unity-trees file for the Unity Tree Planter. Inner: from the map's regenerated trees. Outer: detected the first time from the outer lidar, without the stems on the inner square; the planter puts them in billboard mode. Export the terrain's heightmap first — the trees take its height range.</div>
+        </div>
+
+        <div class="gspro-export__section actions">
+            <button bind="runInnerBuildings" type="button" class="gspro-export__run gspro-export__run-inner-buildings"></button>
+            <button bind="runOuterBuildings" type="button" class="gspro-export__run gspro-export__run-outer-buildings"></button>
+            <div class="hint">The terrain's buildings (footprints, rectangle, lidar roof heights) as a unity-buildings file for the Unity building planter, from the survey "Generate building pads" made in the terrain tool. Export the heightmap first, with the pads applied — the buildings take its height range and stand on those pads.</div>
         </div>
     </div>
 `);
@@ -135,6 +146,13 @@ export class GsproExportPanelComponent extends Component {
                 gap: var(--space-2);
                 &.hidden { display: none; }
                 &.actions:last-child { border-bottom: none; }
+            }
+
+            & .gspro-export__check {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                font-size: 12px;
             }
 
             & .gspro-export__terrain {
@@ -289,8 +307,23 @@ export class GsproExportPanelComponent extends Component {
                 if (sources.length === 0) {
                     return 'No orthophoto on this machine for this course — build its map first.';
                 }
-                return 'Two square 8192 × 8192 px JPEGs (quality 92) over the inner terrain, the same square as the SVG: '
-                    + 'the photo as-is, and a -terrain twin dimmed for the Unity terrain (its shader lights the photo again).';
+                return 'Square 8192 × 8192 px JPEGs (quality 92) over the inner terrain, the same square as the SVG: '
+                    + 'the photo as-is, a -terrain twin dimmed for the Unity terrain (its shader lights the photo again) '
+                    + 'and, with the mesh texture on, a -meshes variant for the course meshes.';
+            },
+            tintTerrain: {
+                checked: () => this.svc.tintTerrain.get(),
+                disabled: busy,
+                onchange: (e: Event) => this.svc.tintTerrain.set((e.target as HTMLInputElement).checked),
+            },
+            tintOpacityField: {
+                className: () => (this.svc.tintTerrain.get() ? 'gspro-export__field' : 'gspro-export__field hidden'),
+            },
+            tintOpacity: {
+                value: () => this.svc.tintOpacity.get(),
+                placeholder: () => '0.3',
+                disabled: busy,
+                oninput: (e: Event) => this.svc.tintOpacity.set((e.target as HTMLInputElement).value),
             },
             runOrtho: {
                 textContent: () => (busy() ? 'Exporting…' : 'Export inner orthophoto JPEG'),
@@ -341,6 +374,16 @@ export class GsproExportPanelComponent extends Component {
                 textContent: () => (busy() ? 'Exporting…' : 'Export outer trees'),
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runTrees('outer'); },
+            },
+            runInnerBuildings: {
+                textContent: () => (busy() ? 'Exporting…' : 'Export inner buildings'),
+                disabled: () => busy() || noTerrain(),
+                onclick: () => { void this.svc.runBuildings('inner'); },
+            },
+            runOuterBuildings: {
+                textContent: () => (busy() ? 'Exporting…' : 'Export outer buildings'),
+                disabled: () => busy() || noTerrain(),
+                onclick: () => { void this.svc.runBuildings('outer'); },
             },
         });
 

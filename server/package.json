@@ -10,6 +10,7 @@
         "test": "bun ../../mackans-client-fw/tools/assert-not-linked.ts && bun test",
         "test:server": "bun test .",
         "create-user": "DB_PATH=../data/app.sqlite bun db/create-user.ts",
+        "import-terrain-edits": "DB_PATH=../data/app.sqlite bun db/import-terrain-edits.ts",
         "import": "DB_PATH=../data/app.sqlite bun db/import.ts",
         "publish": "DATA_DIR=../data DB_PATH=../data/app.sqlite bun scripts/publish.ts",
         "import-generated-features": "bun scripts/import-generated-features.ts",

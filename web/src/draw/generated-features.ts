@@ -3,24 +3,30 @@ import { FEATURE_STYLES } from './feature-palette';
 
 /**
  * Generated features (server/AGENTS.md "Generated features"): rows written
- * by a pipeline bulk-replace carry a non-null `source` (today
- * `lidar-canopy` tree canopies). Hand-drawn rows have `source = null`.
- * Generated rows are read-only in the editor: no vertex/handle editing,
- * no move, no reshape, no retype/rehole. Plain selection (read-only panel)
- * and delete (false positives such as roofs) stay allowed.
+ * by a pipeline bulk-replace (`PUT /features/generated?source=`, today the
+ * `lidar-canopy` tree canopies) carry `generated: true`. That set is owned
+ * by the generator — the next run replaces it wholesale — so those rows are
+ * read-only in the editor: no vertex/handle editing, no move, no reshape,
+ * no retype/rehole. Plain selection (read-only panel) and delete (false
+ * positives such as roofs) stay allowed.
+ *
+ * `source` is provenance only (T49) and says nothing about editability: the
+ * GeoJSON import wizard stamps it on ordinary shapes it creates from
+ * fetch-osm / fetch-hydro / fetch-roads output, and those are meant to be
+ * reshaped, re-holed and reordered like anything hand-drawn.
  *
  * Pure predicates and the stack-panel grouping live here so they unit-test
  * without the map-coupled services.
  */
 
-type SourceCarrier = Pick<CourseFeature, 'source'>;
+type SourceCarrier = Pick<CourseFeature, 'source' | 'generated'>;
 
-/** True for any feature with a non-empty `source` (pipeline-generated). */
+/** True only for pipeline bulk-replace output (read-only in the editor). */
 export function isGeneratedFeature(f: SourceCarrier): boolean {
-    return typeof f.source === 'string' && f.source.length > 0;
+    return f.generated === true;
 }
 
-/** Editable = hand-drawn (`source` null). */
+/** Editable = anything not owned by a generator (hand-drawn or imported). */
 export function isEditableFeature(f: SourceCarrier): boolean {
     return !isGeneratedFeature(f);
 }
@@ -35,6 +41,17 @@ export function generatedSourceLabel(source: string): string {
 export function generatedBadgeLabel(f: SourceCarrier): string | null {
     if (!isGeneratedFeature(f)) return null;
     return `Generated from ${generatedSourceLabel(f.source!)}`;
+}
+
+/**
+ * Selection-panel badge: "Generated from lidar" (read-only) for generator
+ * output, "Imported from osm" for a wizard import (editable — the badge is
+ * provenance only, no lock implied), null for a hand-drawn feature.
+ */
+export function provenanceBadgeLabel(f: SourceCarrier): string | null {
+    if (isGeneratedFeature(f)) return generatedBadgeLabel(f);
+    if (typeof f.source !== 'string' || f.source.length === 0) return null;
+    return `Imported from ${generatedSourceLabel(f.source)}`;
 }
 
 /**

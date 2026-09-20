@@ -5,6 +5,7 @@ import {
     isGeneratedFeature,
     isEditableFeature,
     generatedBadgeLabel,
+    provenanceBadgeLabel,
     generatedHeightLabel,
     generatedGroupLabel,
     groupStackRows,
@@ -35,14 +36,14 @@ function feature(id: string, opts: Partial<CourseFeature> = {}): CourseFeature {
     return {
         id, courseId: 'c1', holeId: null, type: 'bunker',
         geometry: polygon(4, 10, base.x, base.y), geojson: null, sortOrder: 0,
-        source: null, sourceRef: null, license: null, attributes: null, version: 1,
+        source: null, generated: false, sourceRef: null, license: null, attributes: null, version: 1,
         ...opts,
     };
 }
 
 function tree(id: string, sortOrder: number, extra: Partial<CourseFeature> = {}): CourseFeature {
     return feature(id, {
-        type: 'trees', sortOrder, source: 'lidar-canopy',
+        type: 'trees', sortOrder, source: 'lidar-canopy', generated: true,
         attributes: { heightMaxM: 17.2, heightP90M: 13.4, heightMeanM: 9.1, areaM2: 88 } as never,
         ...extra,
     });
@@ -79,13 +80,23 @@ function withNoHoles(): void {
 }
 
 describe('generated / editable predicate', () => {
-    test('non-null source is generated, null source is editable', () => {
-        expect(isGeneratedFeature({ source: 'lidar-canopy' })).toBe(true);
-        expect(isGeneratedFeature({ source: 'osm' })).toBe(true);
-        expect(isGeneratedFeature({ source: null })).toBe(false);
-        expect(isGeneratedFeature({ source: '' })).toBe(false);
-        expect(isEditableFeature({ source: null })).toBe(true);
-        expect(isEditableFeature({ source: 'lidar-canopy' })).toBe(false);
+    test('the generated flag decides, not the provenance source', () => {
+        expect(isGeneratedFeature({ source: 'lidar-canopy', generated: true })).toBe(true);
+        expect(isEditableFeature({ source: 'lidar-canopy', generated: true })).toBe(false);
+        // Wizard imports carry provenance but stay editable (waters from the
+        // Lantmäteriet fetch, roads and everything else from fetch-osm).
+        expect(isGeneratedFeature({ source: 'osm', generated: false })).toBe(false);
+        expect(isEditableFeature({ source: 'osm', generated: false })).toBe(true);
+        expect(isEditableFeature({ source: 'lantmateriet-hydrografi', generated: false })).toBe(true);
+        expect(isGeneratedFeature({ source: null, generated: false })).toBe(false);
+        expect(isEditableFeature({ source: null, generated: false })).toBe(true);
+    });
+
+    test('provenance badge separates generator output from imports', () => {
+        expect(provenanceBadgeLabel(tree('a', 0))).toBe('Generated from lidar');
+        expect(provenanceBadgeLabel(feature('w', { source: 'lantmateriet-hydrografi' }))).toBe('Imported from lantmateriet');
+        expect(provenanceBadgeLabel(feature('r', { source: 'osm' }))).toBe('Imported from osm');
+        expect(provenanceBadgeLabel(feature('h'))).toBeNull();
     });
 
     test('badge + height labels', () => {

@@ -6,6 +6,7 @@ import { EditorCanvasComponent } from '../map/editor-canvas.component';
 import { SvgImportPanelComponent } from '../import/svg-import-panel.component';
 import { GeojsonImportPanelComponent } from '../import/geojson-import-panel.component';
 import { GsproExportPanelComponent } from '../export/gspro-export-panel.component';
+import { ZoneTypesPanelComponent } from '../zones/zone-types-panel.component';
 import { HoleInfoPanelComponent } from './hole-info-panel.component';
 import { HoleSidebarComponent } from './hole-sidebar.component';
 import { ContextDockComponent } from '../draw/feature-dock.component';
@@ -118,6 +119,8 @@ export class CourseDetailComponent extends Component {
         // GSPro/OPCD SVG export — the outbound counterpart to the importers,
         // opened from the same ⋯ menu, docked the same way.
         this.spawn(GsproExportPanelComponent, this.ref(frag, 'editorCanvas'));
+        // The course's vegetation zone-type table — same ⋯ menu, same dock.
+        this.spawn(ZoneTypesPanelComponent, this.ref(frag, 'editorCanvas'));
 
         // Right contextual dock — permanent across all Create sub-modes; its
         // body follows the active sub-mode (draw selection + stack, or the

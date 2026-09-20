@@ -9,9 +9,11 @@ import { AssetsService } from './assets.service';
 import {
     GsproExportService, defaultExportDir, exportFileName, orthoExportFileName, parseOrthoSourceName,
     outerOrthoExportFileName, demExportFileName, demSidecarName, hillshadeExportFileName, outerOrthoSourceName,
-    terrainTextureFileName, TERRAIN_TEXTURE_DARKEN, treesExportFileName, OUTER_TREES_DIR, OUTER_TREES_RESOLUTION_M,
+    terrainTextureFileName, TERRAIN_TEXTURE_DARKEN, meshTextureFileName, TERRAIN_TINT_OPACITY, treesExportFileName, OUTER_TREES_DIR, OUTER_TREES_RESOLUTION_M,
     ORTHO_EXPORT_SIZE, ORTHO_EXPORT_QUALITY, DEM_EXPORT_RESOLUTION_M, OUTER_DEM_SOURCE, OUTER_LIDAR_DIR, type ExportRunner,
+    buildingsExportFileName, BUILDINGS_SURVEY_SOURCE, OUTER_DEM_EDITED_SOURCE, describeRequest,
 } from './gspro-export.service';
+import { TerrainEditsService } from './terrain-edits.service';
 import { innerSquareFrom3006, outerSquareFor, squareArg, terrainManifestField, toSquareBox, OUTER_TERRAIN_SIDE_M } from './terrain-square';
 import { NotFoundError, ConflictError } from '@basics/core/server/auth';
 
@@ -356,6 +358,21 @@ test('exportOrtho renders the chosen source as an 8192px quality-92 JPEG over th
     await expect(t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', 0)).rejects.toBeInstanceOf(ConflictError);
     await expect(t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', 1.5)).rejects.toBeInstanceOf(ConflictError);
     expect(calls).toHaveLength(2);
+
+    // The surface tint is opt-in: a third file next to the twin, masked by the
+    // course's own features (the pipeline reads them by course id), at the
+    // default opacity or the caller's; nonsense is refused before the run.
+    expect(args).not.toContain('--tint-out');
+    await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, {});
+    const tinted = calls[2].args;
+    expect(flag(tinted, '--tint-out')).toBe(path.join(dir, 'linkan-orto-l2-2025-8192-meshes.jpg'));
+    expect(flag(tinted, '--tint-course')).toBe(TEST_COURSE_ID);
+    expect(flag(tinted, '--tint-opacity')).toBe(String(TERRAIN_TINT_OPACITY));
+    expect(flag(tinted, '--terrain-out')).toBe(path.join(dir, 'linkan-orto-l2-2025-8192-terrain.jpg'));
+    await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, { opacity: 0.2 });
+    expect(flag(calls[3].args, '--tint-opacity')).toBe('0.2');
+    await expect(t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, { opacity: 2 })).rejects.toBeInstanceOf(ConflictError);
+    expect(calls).toHaveLength(4);
     // Same square as the SVG export, so the two overlay in GSPro.
     expect(flag(args, '--square-3006')).toBe(squareArg(GEOREF_INNER));
 });
@@ -510,6 +527,69 @@ test('the outer DEM export hands the pipeline the inner sidecar when it is in th
     const second = await t.svc.exportDem(TEST_COURSE_ID, 'outer');
     expect(flag(calls[1].args, '--inner-sidecar')).toBe(innerSidecar);
     expect(second.report.join('\n')).not.toMatch(/export the inner DEM first/);
+});
+
+test('the outer DEM export replays the site\'s enabled terrain edits onto the outer DEM first', async () => {
+    const { calls, runner } = recordingRunner();
+    const t = await setup(runner);
+    const srcDir = await buildSite(t, ['dem.tif', OUTER_DEM_SOURCE]);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    // No enabled edits: the raw outer DEM is the source, no replay call.
+    const edits = new TerrainEditsService(t.db);
+    const off = await edits.create({ siteId: SITE_ID, op: 'plane', params: { featherM: 2, flat: true }, enabled: false,
+        rings: [[{ x: 530000, y: 6487000 }, { x: 530010, y: 6487000 }, { x: 530010, y: 6487010 }]] });
+    const command = (c: { args: string[] }) => (c.args[1] === 'golfpipe' ? c.args[2] : c.args[1]);
+    await t.svc.exportDem(TEST_COURSE_ID, 'outer');
+    expect(calls.map(command)).toEqual(['dem']);
+    expect(flag(calls[0].args, '--dem')).toBe(path.join(srcDir, OUTER_DEM_SOURCE));
+
+    // An enabled one (a generated pad, say): apply-dem-edits onto the outer
+    // DEM, and the export renders from the edited copy.
+    await edits.update(off.id, off.version, { enabled: true });
+    calls.length = 0;
+    const result = await t.svc.exportDem(TEST_COURSE_ID, 'outer');
+    expect(calls.map(command)).toEqual(['apply-dem-edits', 'dem']);
+    expect(flag(calls[0].args, '--input')).toBe(path.join(srcDir, OUTER_DEM_SOURCE));
+    expect(flag(calls[0].args, '--out')).toBe(path.join(srcDir, OUTER_DEM_EDITED_SOURCE));
+    expect(flag(calls[0].args, '--edits')).toMatch(/terrain-edits\.geojson$/);
+    expect(flag(calls[1].args, '--dem')).toBe(path.join(srcDir, OUTER_DEM_EDITED_SOURCE));
+    expect(result.report).toContain('replayed 1 terrain edit(s) onto the outer DEM');
+});
+
+test('the buildings export needs the heightmap sidecar and the survey, then writes unity-buildings over the square', async () => {
+    const { calls, runner } = recordingRunner();
+    const t = await setup(runner, { georeference: false });
+    const srcDir = await buildSite(t, ['dem.tif'], 'orto-l2-2025', BUILT_MANIFEST);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    await expect(t.svc.exportBuildings(TEST_COURSE_ID, 'inner')).rejects.toThrow(/Export the inner heightmap first/);
+    const sidecar = path.join(dir, demSidecarName(demExportFileName('Linkan', 'inner', 2010)));
+    await writeFile(sidecar, '{}');
+    await expect(t.svc.exportBuildings(TEST_COURSE_ID, 'inner')).rejects.toThrow(/Generate building pads/);
+    await writeFile(path.join(srcDir, BUILDINGS_SURVEY_SOURCE), '{}');
+
+    const result = await t.svc.exportBuildings(TEST_COURSE_ID, 'inner');
+    expect(result.path).toBe(path.join(dir, buildingsExportFileName('Linkan', 'inner')));
+    expect(path.basename(result.path)).toBe('linkan-inner-buildings.json');
+    const args = calls.at(-1)!.args;
+    expect(args[1]).toBe('buildings');
+    expect(flag(args, '--square-3006')).toBe(squareArg(BUILT_INNER));
+    expect(flag(args, '--survey')).toBe(path.join(srcDir, BUILDINGS_SURVEY_SOURCE));
+    expect(flag(args, '--sidecar')).toBe(sidecar);
+    expect(flag(args, '--terrain')).toBe('inner');
+    expect(args).not.toContain('--exclude-square');
+
+    // The outer leaves the inner square out, like the trees.
+    await writeFile(path.join(dir, demSidecarName(demExportFileName('Linkan', 'outer', OUTER_TERRAIN_SIDE_M))), '{}');
+    await t.svc.exportBuildings(TEST_COURSE_ID, 'outer');
+    const outerArgs = calls.at(-1)!.args;
+    expect(flag(outerArgs, '--terrain')).toBe('outer');
+    expect(flag(outerArgs, '--exclude-square')).toBe(squareArg(BUILT_INNER));
+    expect(describeRequest({ kind: 'buildings', terrain: 'outer' })).toBe('outer buildings');
+    expect(() => describeRequest({ kind: 'buildings' })).toThrow(ConflictError);
 });
 
 test('the hillshade export renders the terrain\'s DEM as an 8192 px JPEG over its square', async () => {
@@ -780,11 +860,13 @@ test('a job carries the request through to the export it names', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     await t.svc.setDir(TEST_COURSE_ID, dir);
 
-    const ortho = await t.svc.start(TEST_COURSE_ID, { kind: 'ortho', source: 'ortho-orto-l2-2025.tif', darken: 0.5 });
+    const ortho = await t.svc.start(TEST_COURSE_ID, { kind: 'ortho', source: 'ortho-orto-l2-2025.tif', darken: 0.5, tint: true, tintOpacity: 0.4 });
     await t.svc.whenIdle(TEST_COURSE_ID);
     expect(ortho.label).toBe('inner orthophoto');
     expect(t.svc.job(ortho.id).result?.path).toBe(path.join(dir, 'linkan-orto-l2-2025-8192.jpg'));
     expect(flag(calls[0].args, '--darken')).toBe('0.5');
+    expect(flag(calls[0].args, '--tint-opacity')).toBe('0.4');
+    expect(flag(calls[0].args, '--tint-course')).toBe(TEST_COURSE_ID);
 
     const dem = await t.svc.start(TEST_COURSE_ID, { kind: 'dem', terrain: 'outer' });
     expect(dem.label).toBe('outer heightmap');
@@ -792,9 +874,10 @@ test('a job carries the request through to the export it names', async () => {
     expect(t.svc.job(dem.id).result?.path).toBe(path.join(dir, `linkan-outer-dem-${OUTER_TERRAIN_SIDE_M}m.tif`));
 });
 
-test('the terrain texture twin is named after its orthophoto', () => {
+test('the terrain texture twins are named after their orthophoto', () => {
     expect(terrainTextureFileName('vreta-orto-l2-2025-8192.jpg')).toBe('vreta-orto-l2-2025-8192-terrain.jpg');
     expect(terrainTextureFileName('vreta-outer-orto-l2-2025-8192.JPG')).toBe('vreta-outer-orto-l2-2025-8192-terrain.jpg');
+    expect(meshTextureFileName('vreta-orto-l2-2025-8192.jpg')).toBe('vreta-orto-l2-2025-8192-meshes.jpg');
 });
 
 test('hillshade file names carry course, terrain and size', () => {

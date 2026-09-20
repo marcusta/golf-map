@@ -20,6 +20,9 @@ public enum CourseFeatureType: String, CaseIterable, Sendable {
     case oob
     case path
     case outside
+    /// Lower-vegetation authoring overlay (docs/feature-vegetation-zones.md).
+    /// No gameplay meaning; it renders like any other area.
+    case vegetationZone = "vegetation_zone"
 
     /// Semi-transparent fill color (opacity applied via `fill-opacity`).
     public var fillHex: String {
@@ -39,6 +42,7 @@ public enum CourseFeatureType: String, CaseIterable, Sendable {
         case .oob: "#efeae0"
         case .path: "#c2a879"
         case .outside: "#8a8e90"
+        case .vegetationZone: "#7c8f3a"
         }
     }
 
@@ -60,6 +64,7 @@ public enum CourseFeatureType: String, CaseIterable, Sendable {
         case .oob: "#3a4148"
         case .path: "#866b47"
         case .outside: "#565c61"
+        case .vegetationZone: "#4c5a20"
         }
     }
 }
@@ -81,7 +86,7 @@ public enum FeaturePalette {
     /// features (bunkers, water, paths) on top. Ported from web TYPE_Z_ORDER.
     public static let zOrder: [CourseFeatureType] = [
         .outside, .deepRough, .rough, .semiRough, .fairway,
-        .tee, .green, .trees, .bunker, .water, .waterCreek,
+        .tee, .green, .vegetationZone, .trees, .bunker, .water, .waterCreek,
         .penaltyYellow, .penaltyRed, .oob, .path,
     ]
 

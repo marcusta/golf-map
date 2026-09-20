@@ -30,6 +30,12 @@ const tpl = template(`
                 <span>Dead flat (level pad)</span>
             </label>
         </div>
+        <div class="section">
+            <h4 class="section-title">Generate</h4>
+            <button bind="genPadsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-pads"></button>
+            <button bind="genRoadsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-roads"></button>
+            <div class="hint">Building pads: every OSM building footprint in the map area, measured on the lidar, gets a flat pad. Road grades: every OSM road, smoothed along and levelled across. Each run replaces its own previous edits only — yours stay. Then Apply to terrain.</div>
+        </div>
         <div bind="savingLine" class="busy-line">Saving…</div>
         <div bind="notice" class="notice" data-testid="terrain-edit-notice"></div>
         <div class="section">
@@ -149,7 +155,11 @@ export class TerrainEditPanelComponent extends Component {
             & .edit-row__params { font-size: 0.72rem; color: ${t('color-text-secondary')}; }
             & .edit-row__btn { ${iconBtn()} flex: none; }
 
-            & .apply-btn {
+            & .hint {
+                color: ${t('color-text-tertiary')};
+                line-height: 1.4;
+            }
+            & .gen-btn, & .apply-btn {
                 font: inherit;
                 font-weight: 600;
                 padding: ${s('sm')};
@@ -187,6 +197,18 @@ export class TerrainEditPanelComponent extends Component {
             },
             empty: {
                 className: () => !this.tool.loading.get() && this.tool.edits.get().length === 0 ? 'empty show' : 'empty',
+            },
+            genPadsBtn: {
+                disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
+                textContent: () => this.tool.generating.get() === 'building-pads' ? 'Surveying buildings…' : 'Generate building pads',
+                title: 'OSM building footprints + lidar roof heights → one flat pad per building (replaces the previous pads)',
+                onclick: () => void this.tool.generate('building-pads'),
+            },
+            genRoadsBtn: {
+                disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
+                textContent: () => this.tool.generating.get() === 'road-grades' ? 'Grading roads…' : 'Grade roads',
+                title: 'OSM road centerlines → one corridor edit per road, smooth along, level across (replaces the previous grades)',
+                onclick: () => void this.tool.generate('road-grades'),
             },
             applyBtn: {
                 disabled: () => !this.tool.canApply.get(),

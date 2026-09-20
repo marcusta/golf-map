@@ -1,5 +1,6 @@
 import { Component, effect, template, untrack } from '@basics/core/client/core';
 import { MapService } from '../map/map.service';
+import { ZoneTypesService } from '../zones/zone-types.service';
 import { EditorModeService } from './editor-mode.service';
 import { ServerModeService, visibleEditorTools } from '../app/server-mode.service';
 import { drawTool } from '../draw/draw-tool';
@@ -37,6 +38,7 @@ export class EditorToolbarComponent extends Component {
     `;
 
     private mapSvc = this.inject(MapService);
+    private zoneTypes = this.inject(ZoneTypesService);
     private mode = this.inject(EditorModeService);
     private serverMode = this.inject(ServerModeService);
 
@@ -63,6 +65,10 @@ export class EditorToolbarComponent extends Component {
         // just because the (builder-only) draw tool isn't attached there.
         const ctx = this.mode.makeContext(d => this.track(d));
         void ctx.features.load(ctx.courseId);
+        // The course's vegetation zone-type legend: the feature overlay tints
+        // zones with it, so it loads with the features rather than with the
+        // (builder-only) editor panel.
+        void this.zoneTypes.load(ctx.courseId);
         this.track(ctx.features.attachOverlay(ctx.map));
 
         // One-time attach hooks (persistent overlays, data loads) — their

@@ -24,6 +24,7 @@ export interface Database {
     putt_estimate_samples: PuttEstimateSamplesTable;
     map_build_jobs: MapBuildJobsTable;
     terrain_edits: TerrainEditsTable;
+    course_zone_types: CourseZoneTypesTable;
     tapscore_published_scores: TapscorePublishedScoresTable;
 }
 
@@ -144,6 +145,7 @@ export interface CourseFeaturesTable {
     geojson: string | null; // derived WGS84 GeoJSON
     sort_order: number; // per-group (course_id, hole_id) stack z-order; higher = on top (D23)
     source: string | null; // import provenance: producer id (e.g. 'osm'), null = hand-drawn (T49)
+    generated: Generated<number>; // 1 = written by the pipeline bulk-replace route (read-only in the editor), 0 = hand-drawn or imported
     source_ref: string | null; // source-local ref (e.g. 'way/123456')
     license: string | null; // license short name (e.g. 'ODbL') — any ODbL feature makes the course's map data ODbL
     attributes_json: string | null; // flat JSON object of scalar per-feature attributes (e.g. lidar tree heights), null = none
@@ -367,7 +369,25 @@ export interface TerrainEditsTable {
     params_json: string; // JSON { featherM, radiusM?, flat? }
     rings_json: string; // JSON straight-segment rings in the DEM CRS (EPSG:3006)
     enabled: number; // bool as 0/1
+    origin: string | null; // generator that wrote the row ('building-pads'); NULL = hand-drawn
+    origin_ref: string | null; // what it was generated for (a building id); replaced/kept by this on regeneration
     version: number;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+}
+
+// --- Course zone types (the legend `vegetation_zone` features point at) ---
+
+export interface CourseZoneTypesTable {
+    id: string;
+    course_id: string;
+    key: string; // [a-z0-9_]+, unique per course — what a feature's `zoneType` attribute names
+    name: string; // display name
+    color: string; // '#rrggbb', editor tint
+    texture_index: number; // VSPro mask texture index, >= 0
+    channel: number; // RGBA channel 0..3 of that texture (unique per course+texture)
+    sort_order: number;
+    items_json: string; // JSON [{ item, minDensity, maxDensity }] — VSPro item bindings (D-VZ9)
     created_at: Generated<string>;
     updated_at: Generated<string>;
 }

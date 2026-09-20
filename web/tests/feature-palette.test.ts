@@ -7,6 +7,9 @@ import {
     NICE_FILL_OPACITY,
     SURROUND_PAIRINGS,
     TYPE_Z_ORDER,
+    FEATURE_STYLES,
+    featureFillColorExpression,
+    typeColorExpression,
     typeSortKeyExpression,
 } from '../src/draw/feature-palette';
 
@@ -41,6 +44,7 @@ describe('SURROUND_PAIRINGS (ported prototype table)', () => {
             'oob',
             'path',
             'outside',
+            'vegetation_zone',
         ] as const) {
             expect(SURROUND_PAIRINGS[type]).toBeNull();
         }
@@ -87,8 +91,8 @@ describe('DIGIT_FEATURE_TYPES (keyboard type switching)', () => {
         keys.forEach((k, i) => expect(DIGIT_FEATURE_TYPES[k]).toBe(FEATURE_TYPES[i]));
     });
 
-    test('the five rules/misc types stay panel-only (no digit)', () => {
-        for (const type of ['penalty_yellow', 'penalty_red', 'oob', 'path', 'outside'] as const) {
+    test('the rules/misc and overlay types stay panel-only (no digit)', () => {
+        for (const type of ['penalty_yellow', 'penalty_red', 'oob', 'path', 'outside', 'vegetation_zone'] as const) {
             expect(digitForFeatureType(type)).toBeUndefined();
             expect(Object.values(DIGIT_FEATURE_TYPES)).not.toContain(type);
         }
@@ -113,7 +117,7 @@ describe('TYPE_Z_ORDER', () => {
         expect([...TYPE_Z_ORDER].sort()).toEqual([...FEATURE_TYPES].sort());
         expect(TYPE_Z_ORDER).toEqual([
             'outside', 'deep_rough', 'rough', 'semi_rough', 'fairway',
-            'tee', 'green', 'trees', 'bunker', 'water', 'water_creek',
+            'tee', 'green', 'vegetation_zone', 'trees', 'bunker', 'water', 'water_creek',
             'penalty_yellow', 'penalty_red', 'oob', 'path',
         ]);
     });
@@ -125,5 +129,29 @@ describe('TYPE_Z_ORDER', () => {
         expect(idx('bunker')).toBeGreaterThan(idx('fairway'));
         expect(idx('green')).toBeGreaterThan(idx('semi_rough'));
         expect(expr[expr.length - 1]).toBe(-1); // unknown types below everything
+    });
+});
+
+describe('vegetation_zone (docs/feature-vegetation-zones.md)', () => {
+    test('is a drawable type with a muted olive style and no digit', () => {
+        expect(FEATURE_TYPES).toContain('vegetation_zone');
+        expect(FEATURE_STYLES.vegetation_zone).toEqual({
+            label: 'Vegetation zone', fill: '#7c8f3a', draw: '#7c8f3a', outline: '#4c5a20',
+        });
+        expect(digitForFeatureType('vegetation_zone')).toBeUndefined();
+    });
+
+    test('draws above the surfaces and below the trees', () => {
+        expect(TYPE_Z_ORDER.indexOf('vegetation_zone')).toBeGreaterThan(TYPE_Z_ORDER.indexOf('green'));
+        expect(TYPE_Z_ORDER.indexOf('vegetation_zone')).toBeLessThan(TYPE_Z_ORDER.indexOf('trees'));
+    });
+
+    test('the fill expression prefers the zone type colour, and only for zones', () => {
+        const expr = featureFillColorExpression('draw');
+        expect(expr[0]).toBe('case');
+        expect(expr[1]).toEqual(['all', ['==', ['get', 'type'], 'vegetation_zone'], ['has', 'zoneColor']]);
+        expect(expr[2]).toEqual(['get', 'zoneColor']);
+        // The fallback branch is the ordinary per-type palette.
+        expect(expr[3]).toEqual(typeColorExpression('draw'));
     });
 });

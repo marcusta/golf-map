@@ -1003,6 +1003,15 @@ export function terrainEditsGeojson(edits: TerrainEdit[]): {
                 featherM: edit.params.featherM,
                 ...(edit.params.radiusM !== undefined ? { radiusM: edit.params.radiusM } : {}),
                 ...(edit.params.flat ? { flat: true } : {}),
+                // corridor: the centerline goes out in WGS84 like the rings.
+                ...(edit.params.centerline ? {
+                    centerline: edit.params.centerline.map(p => {
+                        const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
+                        return [lon, lat];
+                    }),
+                } : {}),
+                ...(edit.params.smoothM !== undefined ? { smoothM: edit.params.smoothM } : {}),
+                ...(edit.params.widthM !== undefined ? { widthM: edit.params.widthM } : {}),
                 createdAt: edit.createdAt,
             },
         })),

@@ -11,6 +11,7 @@ import { createGreensApi } from './api/greens.api';
 import { createPinsApi } from './api/pins.api';
 import { createAimPointsApi } from './api/aim-points.api';
 import { createCourseFeaturesApi } from './api/course-features.api';
+import { createZoneTypesApi } from './api/zone-types.api';
 import { createClubsApi } from './api/clubs.api';
 import { createGamePlansApi } from './api/game-plans.api';
 import { createRoundsApi } from './api/rounds.api';
@@ -23,6 +24,7 @@ import { createOrthoPatchesApi } from './api/ortho-patches.api';
 import { createHydroApi } from './api/hydro.api';
 import { createOsmApi } from './api/osm.api';
 import { createTerrainEditsApi } from './api/terrain-edits.api';
+import { createTerrainGeneratorsApi } from './api/terrain-generators.api';
 import { createGsproExportApi } from './api/gspro-export.api';
 import { createPublishApi } from './api/publish.api';
 import { createTapscoreBridgeApi } from './api/tapscore-bridge.api';
@@ -51,6 +53,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         pinsService,
         aimPointsService,
         courseFeaturesService,
+        zoneTypesService,
         clubsService,
         gamePlansService,
         roundsService,
@@ -64,6 +67,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         hydroService,
         osmService,
         terrainEditsService,
+        terrainGeneratorsService,
         publishService,
         tapscoreBridgeService,
         ingestService,
@@ -83,6 +87,10 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
     // it needs the `?source=` query on a PUT and 400s for bad bodies, which
     // `mount()` does not offer). Same cookie-session auth as feature create.
     app.route('/api', createGeneratedFeaturesRoutes(courseFeaturesService));
+    // The course's vegetation zone-type legend: mounted in both modes, like
+    // the features it belongs to — a `vegetation_zone` feature is meaningless
+    // without the table its `zoneType` attribute names.
+    mount(app, '/api', createZoneTypesApi(zoneTypesService));
     mount(app, '/api', createClubsApi(clubsService));
     mount(app, '/api', createGamePlansApi(gamePlansService));
     mount(app, '/api', createRoundsApi(roundsService));
@@ -101,6 +109,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         mount(app, '/api', createHydroApi(hydroService));
         mount(app, '/api', createOsmApi(osmService));
         mount(app, '/api', createTerrainEditsApi(terrainEditsService));
+        mount(app, '/api', createTerrainGeneratorsApi(terrainGeneratorsService));
         mount(app, '/api', createGsproExportApi(gsproExportService));
         mount(app, '/api', createPublishApi(publishService));
     } else {

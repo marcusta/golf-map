@@ -4,7 +4,8 @@ import type { Feature, FeatureCollection, Position } from 'geojson';
 import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent, OverlayLayerSpec } from '../map/map.service';
 import { ConfirmService } from '../app/confirm-dialog.component';
-import { geometryToWgs84Rings, type FeaturesService } from './features.service';
+import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
+import { geometryToWgs84Rings, attributesPatchOf, type FeatureAttributesPatch, type FeaturesService } from './features.service';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../geo/transform';
 import {
@@ -13,11 +14,13 @@ import {
     nearestOnRing,
     pointInGeometry,
     type AnchorPoint,
+    type CurveType,
     type FeatureGeometry,
     type Point,
 } from '../geo/bezier';
 import { bsplineRingToBezierWithMap } from '../geo/bspline';
 import { fitClosedBspline } from '../geo/spline-fit';
+import { bufferPolyline } from '../geo/polyline-buffer';
 import {
     DrawState,
     MIN_RING_POINTS,
@@ -106,6 +109,14 @@ const MARQUEE_MIN_PX = 5;
 // New-shape type policy persistence (survives reloads; per browser).
 const TYPE_FOLLOWS_LAST_KEY = 'golfmap.draw.typeFollowsLast';
 const DEFAULT_TYPE_KEY = 'golfmap.draw.defaultType';
+const PATH_WIDTH_KEY = 'golfmap.draw.pathWidthM';
+/** A cart path: two carts can't pass, one plus a walker can. */
+const DEFAULT_PATH_WIDTH_M = 2.5;
+
+function readPathWidth(): number {
+    const stored = Number(storedPref(PATH_WIDTH_KEY));
+    return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_PATH_WIDTH_M;
+}
 
 /** Safe localStorage read (privacy mode / embedded contexts can throw). */
 function storedPref(key: string): string | null {
@@ -132,6 +143,12 @@ export const OFFSET_PRESETS = [0.5, 1, 2, 5] as const;
  * within this of the traced stroke (control count adapts 8 → 20).
  */
 export const TRACE_TOLERANCE_M = 0.75;
+/**
+ * Path (centerline + width): a bend turning at least this much becomes a
+ * `corner` control on both kerbs (an exact miter); gentler bends stay
+ * smooth spline controls.
+ */
+export const PATH_CORNER_TURN_DEG = 45;
 
 interface DragTarget {
     kind: 'anchor' | 'handle' | 'newHandles';
@@ -182,6 +199,8 @@ interface StampSource {
     type: string;
     holeId: string | null;
     geometry: FeatureGeometry;
+    /** Carried so a stamped vegetation zone keeps its zone type (null otherwise). */
+    attributes?: FeatureAttributesPatch | null;
 }
 
 /**
@@ -380,6 +399,8 @@ export function planSurrounds(
 
 export class DrawToolService {
     private confirm = di.get(ConfirmService);
+    /** The course's zone-type legend — defaults for a zone this tool creates or retypes into. */
+    private zoneTypes = di.get(ZoneTypesService);
     readonly state = new DrawState();
     /** Snapshot-based undo/redo of committed edits (see history.ts). */
     readonly history = new EditHistory();
@@ -418,9 +439,36 @@ export class DrawToolService {
      * (staying armed after a close) applies the same policy in `closeDraft`.
      */
     armDraw(): void {
+        this.pathMode.set(false);
         if (!this.typeFollowsLast.peek()) this.drawType.set(this.defaultDrawType.peek());
         this.state.arm();
     }
+    /**
+     * Path drawing (cart paths, T-roads): while armed, the draft is a
+     * CENTERLINE — the clicks run down the middle of the path — and Enter
+     * commits it as the corridor `pathWidthM` wide (a closed spline feature
+     * of type `path`, like any other shape), instead of closing a ring.
+     * Chain-draw keeps the mode for the next path; 'N' / the + button arm a
+     * plain polygon again.
+     */
+    readonly pathMode = new Signal(false);
+    /** Total path width in metres for the next committed path. Persisted. */
+    readonly pathWidthM = new Signal<number>(readPathWidth());
+
+    /** Arm centerline (path) drawing: the next Enter buffers the draft to a `path` feature. */
+    armPath(): void {
+        this.drawType.set('path');
+        this.pathMode.set(true);
+        this.state.arm();
+    }
+
+    /** Set + persist the path width (metres, > 0). */
+    setPathWidthM(widthM: number): void {
+        if (!Number.isFinite(widthM) || widthM <= 0) return;
+        this.pathWidthM.set(widthM);
+        storePref(PATH_WIDTH_KEY, String(widthM));
+    }
+
     /** Hole assignment for the next created polygon (null = course level). */
     readonly drawHoleId = new Signal<string | null>(null);
     /**
@@ -736,7 +784,9 @@ export class DrawToolService {
 
         if (this.state.isDrawing.peek()) {
             const draft = this.state.draft.peek();
-            if (draft.length >= 3 && this.screenDist(draft[0], e.point) < CLOSE_RING_PX) {
+            // A path's first point is just its start — clicking near it again is
+            // a point, not the close gesture (Enter commits a path).
+            if (!this.pathMode.peek() && draft.length >= 3 && this.screenDist(draft[0], e.point) < CLOSE_RING_PX) {
                 this.closeDraft();
                 return;
             }
@@ -997,7 +1047,7 @@ export class DrawToolService {
                     refEpsg: p,
                     startScreen: { x: e.point.x, y: e.point.y },
                     sources: selectedFeatures.map(f => ({
-                        id: f.id, type: f.type, holeId: f.holeId, geometry: f.geometry,
+                        id: f.id, type: f.type, holeId: f.holeId, geometry: f.geometry, attributes: attributesPatchOf(f.attributes),
                     })),
                     moved: false,
                     dx: 0,
@@ -1144,7 +1194,7 @@ export class DrawToolService {
                     this.stampMode = {
                         anchor: p,
                         templates: created.map(c => ({
-                            id: c.id, type: c.type, holeId: c.holeId, geometry: c.geometry,
+                            id: c.id, type: c.type, holeId: c.holeId, geometry: c.geometry, attributes: attributesPatchOf(c.attributes),
                         })),
                     };
                 }
@@ -1297,7 +1347,13 @@ export class DrawToolService {
             e.preventDefault();
             this.duplicateSelection();
         } else if (e.key === 'Enter') {
-            if (this.state.isDrawing.peek() && this.state.canClose.peek()) {
+            if (this.state.isDrawing.peek() && this.pathMode.peek()) {
+                const draft = this.state.draft.peek();
+                if (draft.length >= 2) {
+                    e.preventDefault();
+                    this.commitCenterline(draft, this.pathWidthM.peek());
+                }
+            } else if (this.state.isDrawing.peek() && this.state.canClose.peek()) {
                 e.preventDefault();
                 this.closeDraft();
             }
@@ -1318,6 +1374,11 @@ export class DrawToolService {
             if (!this.state.isDrawing.peek() && !meta) {
                 e.preventDefault();
                 this.armDraw();
+            }
+        } else if (e.key === 'p' || e.key === 'P') {
+            if (!this.state.isDrawing.peek() && !meta) {
+                e.preventDefault();
+                this.armPath();
             }
         } else if (e.key === 'b' || e.key === 'B') {
             if (!this.state.isDrawing.peek() && !meta) {
@@ -1384,7 +1445,7 @@ export class DrawToolService {
      * are B-SPLINES: the placed points are control points and the curve
      * smooths itself (corner points excepted).
      */
-    closeDraft(): void {
+    closeDraft(curveType: CurveType = 'bspline'): void {
         const ring = this.state.closeDraft();
         if (!ring || !this.features) return;
         this.cursor.set(null);
@@ -1392,12 +1453,13 @@ export class DrawToolService {
         const type = this.drawType.peek();
         // Chain-draw stays armed without re-arming, so the new-shape type
         // policy must apply HERE too: the next chained shape starts as the
-        // default type, not as whatever this one was.
-        if (!this.typeFollowsLast.peek()) this.drawType.set(this.defaultDrawType.peek());
+        // default type, not as whatever this one was. A chained path stays
+        // a path.
+        if (!this.typeFollowsLast.peek() && !this.pathMode.peek()) this.drawType.set(this.defaultDrawType.peek());
         void features.create({
             type,
             holeId: this.drawHoleId.peek(),
-            geometry: { crs: 'EPSG:3006', curveType: 'bspline', rings: [ring] },
+            geometry: { crs: 'EPSG:3006', curveType, rings: [ring] },
         }).then(created => {
             if (created) {
                 this.history.push([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
@@ -1420,6 +1482,64 @@ export class DrawToolService {
         if (controls.length < MIN_RING_POINTS) return false;
         this.state.draft.set(controls.map(p => ({ x: p.x, y: p.y })));
         this.closeDraft();
+        return true;
+    }
+
+    /**
+     * Commit a centerline (EPSG:3006) as the path `widthM` wide and go
+     * through the normal closeDraft funnel — an ordinary editable b-spline
+     * feature of the armed type, one history entry, chain-draw kept.
+     *
+     * The ring is a BEZIER, not the b-spline every other new shape is: a
+     * 3 m ribbon is too narrow for controls that only pull the curve — a
+     * smooth b-spline through kerb controls sits inside them by most of a
+     * metre on a bend, and a fit under the trace's control cap misses the
+     * kerbs by more. Bezier anchors lie ON the curve, so the buffered
+     * outline's vertices (geo/polyline-buffer, the creek-ribbon buffer: one
+     * kerb point opposite every click, mitered bends, butt caps) are the
+     * anchors exactly as previewed. Segments touching a cap corner or a
+     * bend sharper than PATH_CORNER_TURN_DEG are straight (no handles —
+     * a straight path is an exact rectangle); between gentle bends the
+     * kerb gets Catmull-Rom handles, so a clicked curve is a smooth curve.
+     * False (nothing committed) for fewer than two distinct points or a
+     * non-positive width. Public: the path gesture's testable seam.
+     */
+    commitCenterline(points: Point[], widthM: number): boolean {
+        if (this.state.mode.peek() !== 'draw') return false;
+        const line: Point[] = [];
+        for (const p of points) {
+            const last = line[line.length - 1];
+            if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 1e-6) line.push(p);
+        }
+        const ring = bufferPolyline(line.map(p => [p.x, p.y]), widthM);
+        if (!ring) return false;
+        const outline = ring.slice(0, -1);
+        if (outline.length < MIN_RING_POINTS) return false;
+        // Turn angle at each centerline vertex (ends count as corners).
+        const n = line.length;
+        const sharp = line.map((p, i) => {
+            if (i === 0 || i === n - 1) return true;
+            const a = Math.atan2(p.y - line[i - 1].y, p.x - line[i - 1].x);
+            const b = Math.atan2(line[i + 1].y - p.y, line[i + 1].x - p.x);
+            let turn = Math.abs(b - a) * (180 / Math.PI);
+            if (turn > 180) turn = 360 - turn;
+            return turn >= PATH_CORNER_TURN_DEG;
+        });
+        // bufferPolyline's ring is the left side forward then the right side
+        // backward, so outline[i] and outline[2n - 1 - i] face centerline vertex i.
+        const m = outline.length;
+        const corner = outline.map((_, i) => sharp[i < n ? i : 2 * n - 1 - i]);
+        const anchors: AnchorPoint[] = outline.map(([x, y]) => ({ x, y }));
+        for (let i = 0; i < m; i++) {
+            const next = (i + 1) % m;
+            if (corner[i] || corner[next]) continue; // straight segment
+            const prev = outline[(i - 1 + m) % m], after = outline[(next + 1) % m];
+            const [ax, ay] = outline[i], [bx, by] = outline[next];
+            anchors[i].hOut = { x: ax + (bx - prev[0]) / 6, y: ay + (by - prev[1]) / 6 };
+            anchors[next].hIn = { x: bx - (after[0] - ax) / 6, y: by - (after[1] - ay) / 6 };
+        }
+        this.state.draft.set(anchors);
+        this.closeDraft('bezier');
         return true;
     }
 
@@ -1508,6 +1628,9 @@ export class DrawToolService {
                     type: f.type,
                     holeId: f.holeId,
                     geometry: translateGeometry(f.geometry, DUPLICATE_OFFSET_M, DUPLICATE_OFFSET_M),
+                    // A vegetation zone's copy keeps its zone type and edge
+                    // settings; every other type has nothing to carry.
+                    attributes: attributesPatchOf(f.attributes),
                 });
                 if (!created) return; // save failed — history dropped via saveError watcher
                 entry.push({ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null });
@@ -1702,7 +1825,15 @@ export class DrawToolService {
             after: { ...snapshotOf(f), type },
             beforeVersion: f.version,
         })));
-        for (const f of items) void features.update(f.id, { type });
+        // Retyping INTO a vegetation zone has to give it a zone type: the
+        // rasterizer has nothing to draw without one, and the server rejects
+        // zone attributes that lack it.
+        for (const f of items) {
+            const needsZone = type === 'vegetation_zone' && !zoneTypeKeyOf(f.attributes);
+            void features.update(f.id, needsZone
+                ? { type, attributes: { ...(attributesPatchOf(f.attributes) ?? {}), ...this.zoneTypes.defaultAttributes() } }
+                : { type });
+        }
     }
 
     /** Re-assign the selection's hole (panel select). ONE history entry. */
@@ -1807,6 +1938,7 @@ export class DrawToolService {
                 type: s.type,
                 holeId: s.holeId,
                 geometry: translateGeometry(s.geometry, dx, dy),
+                attributes: s.attributes ?? null,
             });
             if (!c) return null; // save failed
             entry.push({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null });
@@ -2019,6 +2151,17 @@ export class DrawToolService {
                     properties: { role: 'draft-line' },
                     geometry: { type: 'LineString', coordinates: line },
                 });
+            }
+            // Path mode: the corridor Enter will commit, around the centerline.
+            if (this.pathMode.get() && controls.length >= 2) {
+                const ring = bufferPolyline(controls.map(q => [q.x, q.y]), this.pathWidthM.get());
+                if (ring) {
+                    features.push({
+                        type: 'Feature',
+                        properties: { role: 'draft-line' },
+                        geometry: { type: 'LineString', coordinates: ring.map(([x, y]) => toLngLat({ x, y })) },
+                    });
+                }
             }
             draft.forEach((p, i) => {
                 features.push({

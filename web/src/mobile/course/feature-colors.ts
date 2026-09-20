@@ -22,6 +22,7 @@ const FEATURE_FILL: Record<string, string> = {
     oob: '#efeae0',
     path: '#c2a879',
     outside: '#8a8e90',
+    vegetation_zone: '#7c8f3a',
 };
 
 const FEATURE_OUTLINE: Record<string, string> = {
@@ -40,13 +41,14 @@ const FEATURE_OUTLINE: Record<string, string> = {
     oob: '#3a4148',
     path: '#866b47',
     outside: '#565c61',
+    vegetation_zone: '#4c5a20',
 };
 
 /** Bottom → top draw order (copied from draw TYPE_Z_ORDER). */
 const TYPE_Z_ORDER: readonly string[] = [
     'outside', 'deep_rough', 'rough', 'semi_rough', 'fairway', 'tee', 'green',
-    'trees', 'bunker', 'water', 'water_creek', 'penalty_yellow', 'penalty_red',
-    'oob', 'path',
+    'vegetation_zone', 'trees', 'bunker', 'water', 'water_creek',
+    'penalty_yellow', 'penalty_red', 'oob', 'path',
 ];
 
 /** MapLibre `match` on the feature `type` property → fill color. */

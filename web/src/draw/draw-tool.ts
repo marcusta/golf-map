@@ -17,6 +17,7 @@ const HELP: HelpSection[] = [
         shortcuts: [
             { keys: 'N', desc: 'Start a new polygon' },
             { keys: 'Enter / click first point', desc: 'Close the polygon' },
+            { keys: 'P', desc: 'Start a new path: click down its middle, Enter commits it at the set width' },
             { keys: 'Esc', desc: 'Cancel drawing' },
             { keys: 'Click', desc: 'Place a smooth point' },
             { keys: 'Shift-click', desc: 'Place a corner point' },

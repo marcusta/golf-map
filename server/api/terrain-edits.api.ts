@@ -1,20 +1,24 @@
 import { Type, type Static } from '@sinclair/typebox';
 import { requireAuth } from '@basics/core/server/auth';
-import type { TerrainEditsService } from '../services/terrain-edits.service';
+import { parseEditsGeojson, type TerrainEditsService } from '../services/terrain-edits.service';
 
 // --- Input schemas ---
 
-const OpSchema = Type.Union([Type.Literal('plane'), Type.Literal('smooth')]);
+const OpSchema = Type.Union([Type.Literal('plane'), Type.Literal('smooth'), Type.Literal('corridor')]);
+
+// A straight-segment ring in the DEM CRS (EPSG:3006).
+const RingSchema = Type.Array(Type.Object({ x: Type.Number(), y: Type.Number() }));
+const RingsSchema = Type.Array(RingSchema);
 
 const ParamsSchema = Type.Object({
     featherM: Type.Number(),
     radiusM: Type.Optional(Type.Number()),
     flat: Type.Optional(Type.Boolean()),
+    // corridor (pipeline-generated road grading): the road's axis, along-road window, pavement width.
+    centerline: Type.Optional(RingSchema),
+    smoothM: Type.Optional(Type.Number()),
+    widthM: Type.Optional(Type.Number()),
 });
-
-// A straight-segment ring in the DEM CRS (EPSG:3006).
-const RingSchema = Type.Array(Type.Object({ x: Type.Number(), y: Type.Number() }));
-const RingsSchema = Type.Array(RingSchema);
 
 const ListTerrainEditsInput = Type.Object({
     siteId: Type.String(),
@@ -42,6 +46,14 @@ const RemoveTerrainEditInput = Type.Object({
     version: Type.Number(),
 });
 
+// A generated edits file (the pipeline's D-TE5 handoff, WGS84 polygons) to
+// import under one origin, replacing that origin's previous generation.
+const ImportTerrainEditsInput = Type.Object({
+    siteId: Type.String(),
+    origin: Type.String(),
+    geojson: Type.Unknown(),
+});
+
 // --- API descriptor ---
 
 export function createTerrainEditsApi(svc: TerrainEditsService) {
@@ -51,5 +63,11 @@ export function createTerrainEditsApi(svc: TerrainEditsService) {
         create: { method: 'POST' as const, path: '/terrain-edits/create', fn: (input: Static<typeof CreateTerrainEditInput>)  => svc.create(input),                                                                    schema: CreateTerrainEditInput,  middleware: mw },
         update: { method: 'POST' as const, path: '/terrain-edits/update', fn: (input: Static<typeof UpdateTerrainEditInput>)  => svc.update(input.id, input.version, { op: input.op, params: input.params, rings: input.rings, enabled: input.enabled }), schema: UpdateTerrainEditInput, middleware: mw },
         remove: { method: 'POST' as const, path: '/terrain-edits/remove', fn: (input: Static<typeof RemoveTerrainEditInput>)  => svc.remove(input.id, input.version),                                                   schema: RemoveTerrainEditInput,  middleware: mw },
+        // Generated edits (building pads): replace one origin's previous generation from a D-TE5 file.
+        import: { method: 'POST' as const, path: '/terrain-edits/import', fn: async (input: Static<typeof ImportTerrainEditsInput>) => {
+            const { edits, skipped } = parseEditsGeojson(input.geojson);
+            const imported = await svc.replaceByOrigin(input.siteId, input.origin, edits);
+            return { imported, skipped };
+        }, schema: ImportTerrainEditsInput, middleware: mw },
     };
 }

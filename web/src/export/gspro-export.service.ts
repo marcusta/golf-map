@@ -63,6 +63,14 @@ export class GsproExportService {
      * in linear light, 1 = the photo as-is. Blank means the server default.
      */
     readonly terrainDarken = new Signal<string>('');
+    /**
+     * Also write the `-meshes` variant for the course meshes: the darkened texture with the
+     * course's grass surfaces tinted from its own drawn features — the
+     * Photoshop overlay step OPCD builders do by hand from the SVG.
+     */
+    readonly tintTerrain = new Signal<boolean>(true);
+    /** Opacity of that tint layer as typed, 0..1. Blank means the server default (0.3). */
+    readonly tintOpacity = new Signal<string>('');
     /** The course's inner + outer terrain squares (null while loading or unavailable). */
     readonly terrain = new Signal<CourseTerrain | null>(null);
     /** Why the terrains are unavailable (no map area yet) — '' when they loaded. */
@@ -196,7 +204,9 @@ export class GsproExportService {
         if (!courseId || !source) return false;
         const darken = this.darkenValue();
         if (darken === false) return false;
-        return this.runExport({ kind: 'ortho', source, darken });
+        const tint = this.tintValue();
+        if (tint === false) return false;
+        return this.runExport({ kind: 'ortho', source, darken, ...tint });
     }
 
     /** The typed brightness as a number, undefined when blank, false (with the error set) when not a usable number. */
@@ -222,7 +232,22 @@ export class GsproExportService {
         if (!courseId || !collection) return false;
         const darken = this.darkenValue();
         if (darken === false) return false;
-        return this.runExport({ kind: 'outer-ortho', collection, darken });
+        const tint = this.tintValue();
+        if (tint === false) return false;
+        return this.runExport({ kind: 'outer-ortho', collection, darken, ...tint });
+    }
+
+    /** The tint request fields: nothing with the box off, false (with the error set) when the opacity is not a usable number. */
+    private tintValue(): { tint?: boolean; tintOpacity?: number } | false {
+        if (!this.tintTerrain.peek()) return {};
+        const text = this.tintOpacity.peek().trim().replace(',', '.');
+        if (!text) return { tint: true };
+        const n = Number(text);
+        if (!Number.isFinite(n) || n < 0 || n > 1) {
+            this.error.set('Surface tint opacity must be a number between 0 and 1 (0.3 = the usual Photoshop layer)');
+            return false;
+        }
+        return { tint: true, tintOpacity: n };
     }
 
     /**
@@ -252,6 +277,17 @@ export class GsproExportService {
     async runTrees(terrain: TerrainKind): Promise<boolean> {
         if (!this.courseId.peek()) return false;
         return this.runExport({ kind: 'trees', terrain });
+    }
+
+    /**
+     * Save the folder, then write one terrain's buildings as the
+     * unity-buildings file the Unity building planter reads — from the
+     * survey "Generate building pads" made; the heightmap (with the pads)
+     * must be exported first.
+     */
+    async runBuildings(terrain: TerrainKind): Promise<boolean> {
+        if (!this.courseId.peek()) return false;
+        return this.runExport({ kind: 'buildings', terrain });
     }
 
     /**

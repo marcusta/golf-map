@@ -100,8 +100,8 @@ function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => 
         async start(input) {
             const { courseId, kind } = input;
             const result = kind === 'svg' ? await h.run({ courseId })
-                : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken })
-                : kind === 'outer-ortho' ? await h.runOuterOrtho({ courseId, collection: input.collection, darken: input.darken })
+                : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity })
+                : kind === 'outer-ortho' ? await h.runOuterOrtho({ courseId, collection: input.collection, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity })
                 : kind === 'dem' ? await h.runDem({ courseId, terrain: input.terrain })
                 : kind === 'hillshade' ? await h.runHillshade({ courseId, terrain: input.terrain })
                 : await h.runTrees({ courseId, terrain: input.terrain });

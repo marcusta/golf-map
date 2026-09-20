@@ -4,6 +4,7 @@ import type { ToolContext } from '../src/editor/tool';
 import type { MapService } from '../src/map/map.service';
 import type { TerrainEdit, TerrainEditsApi } from '../../shared/api/terrain-edits.gen';
 import type { MapBuildApi, MapBuildJob } from '../../shared/api/map-build.gen';
+import type { TerrainGeneratorsApi, TerrainGenerateResult } from '../../shared/api/terrain-generators.gen';
 import { lngLatToSweref99tm } from '../src/geo/transform';
 import {
     TerrainEditToolService,
@@ -62,6 +63,7 @@ function fakeApi(listResult: TerrainEdit[] = []): FakeApi {
         listResult,
         failUpdate: false,
         failRemove: false,
+        import: () => Promise.reject(new Error('not under test')),
         async list(input) {
             api.calls.list.push(input);
             return api.listResult;
@@ -157,10 +159,30 @@ function fakeRenderer(): FakeRenderer {
     return r;
 }
 
+interface FakeGenerators extends TerrainGeneratorsApi {
+    calls: Array<{ courseId: string; kind: 'building-pads' | 'road-grades' }>;
+    result: TerrainGenerateResult | Error;
+}
+
+function fakeGenerators(): FakeGenerators {
+    const g: FakeGenerators = {
+        calls: [],
+        result: { kind: 'building-pads', imported: 3, skipped: [], report: [] },
+        fetchRoads: () => Promise.reject(new Error('not under test')),
+        async generate(input) {
+            g.calls.push(input);
+            if (g.result instanceof Error) throw g.result;
+            return { ...g.result, kind: input.kind };
+        },
+    };
+    return g;
+}
+
 interface Harness {
     svc: TerrainEditToolService;
     api: FakeApi;
     mapBuild: FakeMapBuild;
+    generators: FakeGenerators;
     renderer: FakeRenderer;
     ready: Signal<boolean>;
     interactionMode: Signal<string>;
@@ -180,7 +202,8 @@ async function harness(opts: {
     const api = fakeApi(opts.listResult ?? []);
     const mapBuild = fakeMapBuild();
     const renderer = fakeRenderer();
-    const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */);
+    const generators = fakeGenerators();
+    const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */, generators);
 
     const ready = new Signal(true);
     const interactionMode = new Signal<string>(TERRAIN_EDIT_TOOL_ID);
@@ -221,6 +244,7 @@ async function harness(opts: {
         svc,
         api,
         mapBuild,
+        generators,
         renderer,
         ready,
         interactionMode,
@@ -557,5 +581,40 @@ describe('applyToTerrain', () => {
         await h.svc.applyToTerrain();
         expect(seen).toEqual(['Apply terrain edits']); // STEP_LABELS mapping
         expect(h.svc.applyStep.get()).toBeNull(); // cleared once terminal
+    });
+});
+
+describe('generators (building pads / road grades)', () => {
+    test('generate calls the server for the course, reloads the list and reports the count', async () => {
+        const h = await harness();
+        h.api.listResult = [makeEdit({ id: 'g1', origin: 'building-pads', originRef: 'osm:way/1' })];
+        const listsBefore = h.api.calls.list.length;
+
+        const ok = await h.svc.generate('building-pads');
+        expect(ok).toBe(true);
+        expect(h.generators.calls).toEqual([{ courseId: 'course-1', kind: 'building-pads' }]);
+        expect(h.api.calls.list.length).toBe(listsBefore + 1);
+        expect(h.svc.edits.get().map(e => e.id)).toEqual(['g1']);
+        expect(h.svc.notice.get()).toBe('Building pads: 3 edit(s) generated. Apply to terrain to bake them.');
+        expect(h.svc.generating.get()).toBeNull();
+        expect(paramsSummary(h.svc.edits.get()[0])).toContain('building-pads');
+    });
+
+    test('a failed generation surfaces in the notice and one runs at a time', async () => {
+        const h = await harness();
+        h.generators.result = new Error('No lidar is persisted for this course');
+        expect(await h.svc.generate('road-grades')).toBe(false);
+        expect(h.svc.notice.get()).toBe('Road grades failed: No lidar is persisted for this course');
+
+        let release!: () => void;
+        h.generators.generate = () => new Promise(resolve => {
+            release = () => resolve({ kind: 'road-grades', imported: 1, skipped: ['feature 3: bad'], report: [] });
+        });
+        const first = h.svc.generate('road-grades');
+        expect(h.svc.generating.get()).toBe('road-grades');
+        expect(await h.svc.generate('building-pads')).toBe(false); // busy
+        release();
+        expect(await first).toBe(true);
+        expect(h.svc.notice.get()).toBe('Road grades: 1 edit(s) generated (1 feature(s) skipped). Apply to terrain to bake them.');
     });
 });

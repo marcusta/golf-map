@@ -59,11 +59,13 @@
 import type { Kysely } from 'kysely';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { stat, mkdir, mkdtemp, readdir, rm, link, copyFile } from 'node:fs/promises';
+import { stat, mkdir, mkdtemp, readdir, rm, link, copyFile, writeFile } from 'node:fs/promises';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import type { Database } from '../db/schema';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
+import { TerrainEditsService } from './terrain-edits.service';
+import { terrainEditsGeojson } from './map-build.service';
 import { resolveCourseMapBbox } from './course-bbox';
 import {
     courseTerrainFor, innerSquareFrom3006, terrainArg, bboxArg,
@@ -91,7 +93,7 @@ export interface GsproExportResult {
 }
 
 /** What an export job produces. */
-export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'hillshade' | 'trees';
+export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'hillshade' | 'trees' | 'buildings';
 
 /** A request to start one export; which fields matter depends on `kind`. */
 export interface GsproExportRequest {
@@ -100,10 +102,19 @@ export interface GsproExportRequest {
     source?: string;
     /** `outer-ortho`: the Lantmäteriet collection to fetch, e.g. `orto-l2-2025`. */
     collection?: string;
-    /** `dem`, `hillshade`, `trees`: which terrain. */
+    /** `dem`, `hillshade`, `trees`, `buildings`: which terrain. */
     terrain?: TerrainKind;
     /** `ortho`, `outer-ortho`: light multiplier for the terrain texture twin. */
     darken?: number;
+    /** `ortho`, `outer-ortho`: also write the `-meshes` variant for the course meshes (the course's grass surfaces tinted). */
+    tint?: boolean;
+    /** With `tint`: the tint layer's opacity 0..1; omitted = the server default. */
+    tintOpacity?: number;
+}
+
+/** How the `-meshes` variant is made; `opacity` omitted = `TERRAIN_TINT_OPACITY`. */
+export interface TerrainTintOptions {
+    opacity?: number;
 }
 
 export type GsproExportJobStatus = 'running' | 'succeeded' | 'failed';
@@ -163,6 +174,18 @@ export const ORTHO_EXPORT_QUALITY = 92;
 export const TERRAIN_TEXTURE_DARKEN = 0.4;
 /** Bounds for a caller-supplied factor: 1 = untouched, 0.05 = nearly black. */
 export const TERRAIN_TEXTURE_DARKEN_RANGE: readonly [number, number] = [0.05, 1];
+/**
+ * Opacity of the surface tint on the `-meshes` variant — the texture the
+ * course meshes (Blender-cut fairways, greens, …) get: the Photoshop
+ * step OPCD builders do by hand (a dark-green layer at ~30 % over the turf,
+ * masked by the SVG's shapes), done by the pipeline from the course's own
+ * drawn features — fairway/green/tee/rough get the tint, bunkers, water and
+ * paths cut it out, undrawn ground is untouched. The colour is the
+ * pipeline's default (`--tint-color`); the panel only sets the opacity.
+ */
+export const TERRAIN_TINT_OPACITY = 0.3;
+/** Bounds for a caller-supplied tint opacity: 0 = no visible tint, 1 = flat colour. */
+export const TERRAIN_TINT_OPACITY_RANGE: readonly [number, number] = [0, 1];
 /**
  * DEM export cell size per terrain (metres). The inner keeps the build's
  * 0.5 m lidar grid; the outer is background scenery gridded at 1 m.
@@ -246,9 +269,29 @@ export function treesExportFileName(courseName: string, kind: TerrainKind): stri
     return `${courseSlug(courseName)}-${kind}-trees.json`;
 }
 
+/** `Vreta`, outer -> `vreta-outer-buildings.json` (unity-buildings-v1). */
+export function buildingsExportFileName(courseName: string, kind: TerrainKind): string {
+    return `${courseSlug(courseName)}-${kind}-buildings.json`;
+}
+
+/** The building survey the terrain tool's "Generate building pads" writes under `sources/<siteId>/`. */
+export const BUILDINGS_SURVEY_SOURCE = 'buildings.geojson';
+/** The outer DEM with the site's terrain edits replayed onto it (derived, rebuilt per export). */
+export const OUTER_DEM_EDITED_SOURCE = 'outer-dem-edited.tif';
+
 /** `vreta-orto-l2-2025-8192.jpg` -> `vreta-orto-l2-2025-8192-terrain.jpg`: the darkened terrain-texture twin. */
 export function terrainTextureFileName(orthoFileName: string): string {
     return orthoFileName.replace(/\.jpg$/i, '-terrain.jpg');
+}
+
+/** The request's tint fields as `renderOrtho` options; undefined when no tint was asked for. */
+function tintOptions(r: GsproExportRequest): TerrainTintOptions | undefined {
+    return r.tint ? { opacity: r.tintOpacity } : undefined;
+}
+
+/** `vreta-orto-l2-2025-8192.jpg` -> `vreta-orto-l2-2025-8192-meshes.jpg`: the darkened twin with the surface tint, for the course meshes. */
+export function meshTextureFileName(orthoFileName: string): string {
+    return orthoFileName.replace(/\.jpg$/i, '-meshes.jpg');
 }
 
 /** `orto-l2-2025` -> `outer-ortho-orto-l2-2025.tif` (under `sources/<siteId>/`). */
@@ -277,12 +320,15 @@ export interface GsproExportDeps {
     /** Python interpreter; defaults to the pipeline venv (MAP_PIPELINE_PYTHON overrides). */
     python?: string;
     runner?: ExportRunner;
+    /** The site's terrain edits, replayed onto the outer DEM at export; defaults to a db-backed instance. */
+    terrainEdits?: TerrainEditsService;
 }
 
 export class GsproExportService {
     private readonly db: Kysely<Database>;
     private readonly courses: CoursesService;
     private readonly assets: AssetsService;
+    private readonly terrainEdits: TerrainEditsService;
     private readonly dataDir: string;
     private readonly pipelineDir: string;
     private readonly runner: ExportRunner;
@@ -295,6 +341,7 @@ export class GsproExportService {
         this.db = deps.db;
         this.courses = deps.courses;
         this.assets = deps.assets;
+        this.terrainEdits = deps.terrainEdits ?? new TerrainEditsService(deps.db);
         this.dataDir = deps.dataDir;
         this.pipelineDir = deps.pipelineDir
             ?? process.env.MAP_PIPELINE_DIR
@@ -401,7 +448,7 @@ export class GsproExportService {
      * from `orthoSources` — anything else is refused, so the request can
      * never name a path outside the site's sources folder.
      */
-    async exportOrtho(courseId: string, source: string, darken?: number): Promise<GsproExportResult> {
+    async exportOrtho(courseId: string, source: string, darken?: number, tint?: TerrainTintOptions): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const chosen = (await this.orthoSources(courseId)).find(s => s.source === source);
         if (!chosen) {
@@ -410,7 +457,8 @@ export class GsproExportService {
         const { inner } = await this.resolveTerrain(courseId, 'export a GSPro orthophoto for');
 
         const out = path.join(await this.exportDir(courseId), orthoExportFileName(course.name, chosen));
-        return this.renderOrtho('GSPro orthophoto', inner, path.join(this.sourcesDir(course.siteId!), chosen.source), out, darken);
+        return this.renderOrtho('GSPro orthophoto', inner, path.join(this.sourcesDir(course.siteId!), chosen.source), out,
+            courseId, darken, tint);
     }
 
     /**
@@ -420,7 +468,7 @@ export class GsproExportService {
      * square the first time and kept as `sources/<siteId>/outer-ortho-
      * <collection>.tif`; later exports render from that copy.
      */
-    async exportOuterOrtho(courseId: string, collection: string, darken?: number): Promise<GsproExportResult> {
+    async exportOuterOrtho(courseId: string, collection: string, darken?: number, tint?: TerrainTintOptions): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         if (!COLLECTION_RE.test(collection)) {
             throw new ConflictError(`'${collection}' is not an orthophoto collection id (expected e.g. orto-l2-2025)`);
@@ -437,7 +485,7 @@ export class GsproExportService {
         ]);
 
         const out = path.join(await this.exportDir(courseId), outerOrthoExportFileName(course.name, collection));
-        const rendered = await this.renderOrtho('GSPro outer orthophoto', outer, src, out, darken);
+        const rendered = await this.renderOrtho('GSPro outer orthophoto', outer, src, out, courseId, darken, tint);
         return { path: rendered.path, report: [...fetched, ...rendered.report] };
     }
 
@@ -619,11 +667,12 @@ export class GsproExportService {
     private perform(courseId: string, r: GsproExportRequest): Promise<GsproExportResult> {
         switch (r.kind) {
             case 'svg': return this.export(courseId);
-            case 'ortho': return this.exportOrtho(courseId, r.source!, r.darken);
-            case 'outer-ortho': return this.exportOuterOrtho(courseId, r.collection!, r.darken);
+            case 'ortho': return this.exportOrtho(courseId, r.source!, r.darken, tintOptions(r));
+            case 'outer-ortho': return this.exportOuterOrtho(courseId, r.collection!, r.darken, tintOptions(r));
             case 'dem': return this.exportDem(courseId, r.terrain!);
             case 'hillshade': return this.exportHillshade(courseId, r.terrain!);
             case 'trees': return this.exportTrees(courseId, r.terrain!);
+            case 'buildings': return this.exportBuildings(courseId, r.terrain!);
         }
     }
 
@@ -660,7 +709,69 @@ export class GsproExportService {
     private async demSource(siteId: string, kind: TerrainKind, square: TerrainSquare): Promise<{ src: string; fetched: string[] }> {
         if (kind === 'inner') return { src: await this.innerDem(siteId), fetched: [] };
         const src = path.join(this.sourcesDir(siteId), OUTER_DEM_SOURCE);
-        return { src, fetched: await this.ensureOuterDem(siteId, square, src) };
+        const fetched = await this.ensureOuterDem(siteId, square, src);
+        const edited = await this.outerDemWithEdits(siteId, src);
+        return edited ? { src: edited.path, fetched: [...fetched, ...edited.report] } : { src, fetched };
+    }
+
+    /**
+     * The outer DEM with the site's enabled terrain edits replayed onto it
+     * (`apply-dem-edits`, as the map build does for the inner): the
+     * generated building pads and road grades cover the outer square too,
+     * and the outer heightmap must carry them or the planted buildings
+     * stand on slopes. Null when the site has no enabled edits — the raw
+     * outer DEM is then the right source.
+     */
+    private async outerDemWithEdits(siteId: string, src: string): Promise<{ path: string; report: string[] } | null> {
+        const edits = (await this.terrainEdits.listBySite(siteId)).filter(e => e.enabled);
+        if (edits.length === 0) return null;
+        const out = path.join(this.sourcesDir(siteId), OUTER_DEM_EDITED_SOURCE);
+        const work = await mkdtemp(path.join(os.tmpdir(), 'gspro-outer-edits-'));
+        try {
+            const editsPath = path.join(work, 'terrain-edits.geojson');
+            await writeFile(editsPath, JSON.stringify(terrainEditsGeojson(edits)));
+            const r = await this.runner(['-m', 'golfpipe', 'apply-dem-edits', '--input', src, '--edits', editsPath, '--out', out], this.pipelineDir);
+            if (r.code !== 0) throw failure('GSPro outer DEM terrain edits', r.code, r.stdout, r.stderr);
+            return { path: out, report: [`replayed ${edits.length} terrain edit(s) onto the outer DEM`] };
+        } finally {
+            await rm(work, { recursive: true, force: true });
+        }
+    }
+
+    /**
+     * A terrain's buildings as `<dir>/<course>-<inner|outer>-buildings.json`
+     * (unity-buildings-v1, what the Unity building planter reads), from the
+     * survey the terrain tool's "Generate building pads" wrote for the site.
+     * The plot's height range comes from the terrain's heightmap sidecar,
+     * so the heightmap must be exported first — with the pads in it.
+     */
+    async exportBuildings(courseId: string, kind: TerrainKind): Promise<GsproExportResult> {
+        const course = await this.courses.get(courseId);
+        const siteId = this.builtSiteId(course);
+        const terrain = await this.resolveTerrain(courseId, `export the GSPro ${kind} buildings for`);
+        const square = terrain[kind];
+
+        const dir = await this.exportDir(courseId);
+        const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, kind, square.sideM)));
+        if (!await statOrNull(sidecar)) {
+            throw new ConflictError(`Export the ${kind} heightmap first — its sidecar (${path.basename(sidecar)}) carries the height range the buildings file needs`);
+        }
+        const survey = path.join(this.sourcesDir(siteId), BUILDINGS_SURVEY_SOURCE);
+        if (!await statOrNull(survey)) {
+            throw new ConflictError('No building survey for this course yet — run "Generate building pads" in the terrain tool first');
+        }
+
+        const out = path.join(dir, buildingsExportFileName(course.name, kind));
+        const args = [
+            path.join(this.pipelineDir, 'gspro.py'), 'buildings',
+            '--square-3006', terrainArg(square),
+            '--survey', survey,
+            '--sidecar', sidecar,
+            '--out', out,
+            '--terrain', kind,
+        ];
+        if (kind === 'outer') args.push('--exclude-square', terrainArg(terrain.inner));
+        return this.run(`GSPro ${kind} buildings`, args, out);
     }
 
     /** The build's DEM: edited when terrain edits are applied, else raw; 404 when neither exists. */
@@ -768,12 +879,29 @@ export class GsproExportService {
     /**
      * One render, two JPEGs: `out` as-is and its `-terrain` twin darkened
      * (in linear light, by `darken` or the default) for the Unity terrain.
+     * With `tint`, a third: the `-meshes` variant, the darkened one
+     * with the course's grass surfaces tinted by its own drawn features
+     * (the pipeline reads them from the app database by course id).
      */
-    private async renderOrtho(what: string, square: TerrainSquare, src: string, out: string, darken?: number): Promise<GsproExportResult> {
+    private async renderOrtho(what: string, square: TerrainSquare, src: string, out: string, courseId: string,
+                              darken?: number, tint?: TerrainTintOptions): Promise<GsproExportResult> {
         const factor = darken ?? TERRAIN_TEXTURE_DARKEN;
         const [lo, hi] = TERRAIN_TEXTURE_DARKEN_RANGE;
         if (!Number.isFinite(factor) || factor < lo || factor > hi) {
             throw new ConflictError(`Terrain texture brightness must be between ${lo} and ${hi} (1 = the photo as-is)`);
+        }
+        const tintArgs: string[] = [];
+        if (tint) {
+            const opacity = tint.opacity ?? TERRAIN_TINT_OPACITY;
+            const [tlo, thi] = TERRAIN_TINT_OPACITY_RANGE;
+            if (!Number.isFinite(opacity) || opacity < tlo || opacity > thi) {
+                throw new ConflictError(`Surface tint opacity must be between ${tlo} and ${thi} (0.3 = the usual Photoshop layer)`);
+            }
+            tintArgs.push(
+                '--tint-out', meshTextureFileName(out),
+                '--tint-course', courseId,
+                '--tint-opacity', String(opacity),
+            );
         }
         const args = [
             path.join(this.pipelineDir, 'gspro.py'), 'ortho',
@@ -785,6 +913,7 @@ export class GsproExportService {
             '--darken-space', 'linear',
             '--size', String(ORTHO_EXPORT_SIZE),
             '--quality', String(ORTHO_EXPORT_QUALITY),
+            ...tintArgs,
         ];
         return this.run(what, args, out);
     }
@@ -820,22 +949,23 @@ export function describeRequest(r: GsproExportRequest): string {
         case 'dem': need(r.terrain, 'a terrain'); return `${r.terrain} heightmap`;
         case 'hillshade': need(r.terrain, 'a terrain'); return `${r.terrain} hillshade`;
         case 'trees': need(r.terrain, 'a terrain'); return `${r.terrain} trees`;
+        case 'buildings': need(r.terrain, 'a terrain'); return `${r.terrain} buildings`;
         default: throw new ConflictError(`Unknown export kind '${String((r as { kind: unknown }).kind)}'`);
     }
 }
 
-function reportLines(stdout: string): string[] {
+export function reportLines(stdout: string): string[] {
     return stdout.split('\n').map(l => l.trim()).filter(Boolean);
 }
 
 /** A 409 carrying the pipeline's last words. */
-function failure(what: string, code: number, stdout: string, stderr: string): ConflictError {
+export function failure(what: string, code: number, stdout: string, stderr: string): ConflictError {
     const detail = (stderr.trim() || stdout.trim() || `exit ${code}`).split('\n').slice(-4).join(' ');
     return new ConflictError(`${what} failed: ${detail}`);
 }
 
 /** Windows puts the venv interpreter in Scripts\, POSIX in bin/. */
-function venvPython(pipelineDir: string): string {
+export function venvPython(pipelineDir: string): string {
     return process.platform === 'win32'
         ? path.join(pipelineDir, '.venv', 'Scripts', 'python.exe')
         : path.join(pipelineDir, '.venv', 'bin', 'python');
@@ -846,7 +976,7 @@ function venvPython(pipelineDir: string): string {
  * throws EEXIST from a recursive mkdir on an existing path (the same quirk
  * env-paths.ts works around), so "already exists" is success, not failure.
  */
-async function ensureDir(dir: string): Promise<void> {
+export async function ensureDir(dir: string): Promise<void> {
     try {
         await mkdir(dir, { recursive: true });
     } catch (error) {
@@ -879,7 +1009,7 @@ async function linkLidar(from: string, to: string): Promise<void> {
     }
 }
 
-async function statOrNull(p: string) {
+export async function statOrNull(p: string) {
     try {
         return await stat(p);
     } catch {

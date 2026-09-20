@@ -10,6 +10,7 @@ export interface CourseFeature {
     geojson: null | GeoJsonPolygon;
     sortOrder: number;
     source: null | string;
+    generated: boolean;
     sourceRef: null | string;
     license: null | string;
     attributes: null | FeatureAttributes;

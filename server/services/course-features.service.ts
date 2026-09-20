@@ -25,6 +25,11 @@ export const FEATURE_TYPES = [
     'oob',
     'path',
     'outside',
+    // Lower-vegetation zone (docs/feature-vegetation-zones.md): an overlay
+    // area, not a playing surface. Appended rather than slotted next to
+    // `trees` so the web panel's digit shortcuts (first ten types) are
+    // untouched; its draw order is set by TYPE_Z_ORDER below.
+    'vegetation_zone',
 ] as const;
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
@@ -53,6 +58,7 @@ const TYPE_Z_ORDER: readonly string[] = [
     'fairway',
     'tee',
     'green',
+    'vegetation_zone',
     'trees',
     'bunker',
     'water',
@@ -96,6 +102,14 @@ export interface CourseFeature {
     sortOrder: number;
     /** Import provenance (T49): producer id (e.g. 'osm'), null = hand-drawn. */
     source: string | null;
+    /**
+     * True only for features written by the pipeline bulk-replace route
+     * (`PUT /features/generated?source=`), which owns its whole set and
+     * would discard manual edits on its next run — the editor keeps those
+     * read-only. Wizard-imported features carry `source` provenance but are
+     * ordinary editable shapes, so this stays false for them.
+     */
+    generated: boolean;
     /** Source-local ref (e.g. 'way/123456'). */
     sourceRef: string | null;
     /** License short name (e.g. 'ODbL'). */
@@ -156,6 +170,7 @@ function toCourseFeature(row: FeatureRow): CourseFeature {
         geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
         sortOrder: row.sort_order,
         source: row.source,
+        generated: row.generated === 1,
         sourceRef: row.source_ref,
         license: row.license,
         attributes: parseAttributes(row.attributes_json),
@@ -241,6 +256,40 @@ function assertValidAttributes(attributes: unknown): void {
     for (const [key, value] of entries) {
         if (!isScalar(value)) {
             throw new InvalidFeatureError(`attributes.${key} must be a finite number, string or boolean`);
+        }
+    }
+}
+
+/**
+ * Defaults for the `vegetation_zone` attribute keys the rasterizer reads
+ * (docs/feature-vegetation-zones.md §5). A missing numeric key means its
+ * default, so a zone drawn before the panel existed still rasterizes; only
+ * `zoneType` (the key into the course's zone-type table) is required.
+ */
+export const VEGETATION_ZONE_DEFAULTS = { weight: 1, feather: 2, noise: 0 } as const;
+
+/**
+ * `vegetation_zone` attributes: `zoneType` a non-empty string, `weight` in
+ * [0, 1], `feather` and `noise` metres >= 0. The numeric keys may be absent
+ * (they then mean {@link VEGETATION_ZONE_DEFAULTS}); `zoneType` may not —
+ * a zone with no type is a polygon nothing can rasterize.
+ */
+function assertValidVegetationZoneAttributes(attributes: FeatureAttributes | null | undefined): void {
+    const zoneType = attributes?.zoneType;
+    if (typeof zoneType !== 'string' || zoneType.trim().length === 0) {
+        throw new InvalidFeatureError('A vegetation_zone needs a non-empty attributes.zoneType');
+    }
+    const ranges: Record<string, [number, number]> = {
+        weight: [0, 1],
+        feather: [0, Infinity],
+        noise: [0, Infinity],
+    };
+    for (const [key, [min, max]] of Object.entries(ranges)) {
+        const value = attributes![key];
+        if (value === undefined) continue; // absent = the default
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+            const bound = max === Infinity ? `>= ${min}` : `between ${min} and ${max}`;
+            throw new InvalidFeatureError(`attributes.${key} must be a number ${bound}`);
         }
     }
 }
@@ -361,6 +410,15 @@ function parseGeneratedFeature(feature: unknown, index: number, source: string):
         attributes[key] = value;
     }
     assertValidAttributes(attributes);
+    // The lidar low-vegetation proposals (D-VZ7) come in through this route
+    // with zoneType/weight/feather/noise as ordinary GeoJSON properties.
+    if (props.type === 'vegetation_zone') {
+        try {
+            assertValidVegetationZoneAttributes(attributes);
+        } catch (e) {
+            throw new InvalidFeatureError(`${label}: ${(e as Error).message}`);
+        }
+    }
     const geometry = polygonToGeometry(f.geometry.coordinates, label);
     assertValidGeometry(geometry);
     return {
@@ -403,6 +461,7 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
         geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
         sortOrder: row.sort_order,
         source: row.source,
+        generated: row.generated === 1,
         sourceRef: row.source_ref,
         license: row.license,
         attributes: parseAttributes(row.attributes_json),
@@ -457,6 +516,7 @@ export class CourseFeaturesService {
             geojson: string | null;
             sort_order: number;
             source: string | null;
+            generated?: number;
             source_ref: string | null;
             license: string | null;
             attributes_json?: string | null;
@@ -520,6 +580,7 @@ export class CourseFeaturesService {
                 'course_features.geojson',
                 'course_features.sort_order',
                 'course_features.source',
+                'course_features.generated',
                 'course_features.source_ref',
                 'course_features.license',
                 'course_features.attributes_json',
@@ -586,6 +647,7 @@ export class CourseFeaturesService {
         assertValidType(input.type);
         assertValidGeometry(input.geometry);
         assertValidAttributes(input.attributes);
+        if (input.type === 'vegetation_zone') assertValidVegetationZoneAttributes(input.attributes);
 
         const id = crypto.randomUUID();
         const holeId = input.holeId ?? null;
@@ -636,6 +698,7 @@ export class CourseFeaturesService {
             geojson,
             sortOrder,
             source,
+            generated: false,
             sourceRef,
             license,
             attributes,
@@ -665,6 +728,12 @@ export class CourseFeaturesService {
         const movingGroups = input.holeId !== undefined && input.holeId !== row.hole_id;
         const nextHoleId = input.holeId !== undefined ? input.holeId : row.hole_id;
         const nextType = input.type ?? row.type;
+        // Only when attributes are being written: retyping a shape TO a
+        // vegetation_zone without touching its attributes is left alone, the
+        // same way every other type change is.
+        if (nextType === 'vegetation_zone' && input.attributes !== undefined) {
+            assertValidVegetationZoneAttributes(input.attributes);
+        }
         if (input.holeId !== undefined) dbInput.hole_id = input.holeId;
         if (input.type !== undefined) dbInput.type = input.type;
         if (input.geometry !== undefined) {
@@ -720,8 +789,11 @@ export class CourseFeaturesService {
      * the polygons in `collection`, in one transaction. Inserted features are
      * course-level (hole_id NULL) and land in the course group's stack where
      * create() would put a feature of their type (D26 insertion heuristic),
-     * in input order. Hand-drawn features (source NULL) are never touched:
-     * an empty source is rejected before anything is read.
+     * in input order. Only rows this route itself wrote are replaced: the
+     * delete matches `source` AND `generated = 1`, so hand-drawn features
+     * (source NULL) and wizard-imported ones that happen to share a source
+     * id are never touched. An empty source is rejected before anything is
+     * read.
      *
      * Throws InvalidFeatureError for a bad body (wrong CRS, non-Polygon
      * geometry, source mismatch, bad attributes) and NotFoundError when the
@@ -753,12 +825,14 @@ export class CourseFeaturesService {
                 .select((eb) => eb.fn.countAll<number>().as('n'))
                 .where('course_id', '=', courseId)
                 .where('source', '=', source)
+                .where('generated', '=', 1)
                 .executeTakeFirstOrThrow();
             const deleted = Number(existing.n);
             await trx
                 .deleteFrom('course_features')
                 .where('course_id', '=', courseId)
                 .where('source', '=', source)
+                .where('generated', '=', 1)
                 .execute();
 
             // Group by type so each type slots into the stack at its own
@@ -793,6 +867,7 @@ export class CourseFeaturesService {
                     geojson: JSON.stringify(toGeoJson(f.geometry)),
                     sort_order: pos + i,
                     source,
+                    generated: 1,
                     source_ref: f.sourceRef,
                     license: f.license,
                     attributes_json: serializeAttributes(f.attributes),

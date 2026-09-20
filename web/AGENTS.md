@@ -26,6 +26,25 @@ This is a **deliberate, assessed** divergence from the other `@basics/core` cons
 
 `app/` shell · `auth/` login+guard · `courses/` list · `course-detail/` · `editor/` (toolbar + `tools/`) · `draw/` (SVG feature drawing, history/undo) · `import/` (SVG orthophoto trace import) · `export/` (GSPro/OPCD export panel: SVG, inner/outer orthophoto JPEGs, inner/outer DEM GeoTIFFs over the two terrain squares) · `measure/` · `analysis/` (green slope) · `planner/` (strategy: overlay, gates, plan service) · `player/` (club config) · `map/` (MapLibre style/tiles/interaction; `tree-renderer.ts` is the three.js tree drawing shared with the vegetation scene) · `geo/` (bezier, bspline, transform) · `furniture/` · `vegetation/` (dev-only tree test scene).
 
+## Vegetation zones (docs/feature-vegetation-zones.md, wave 1)
+
+`zones/` — `ZoneTypesService` (the course's zone-type legend, loaded with the
+features in `editor/toolbar.component.ts`) and `ZoneTypesPanelComponent` (the
+table editor: colour, mask texture/channel and the VSPro item bindings). The
+panel is spawned by `CourseDetailComponent` and opened from the command bar's ⋯
+menu, like the GSPro export panel.
+
+`vegetation_zone` is a normal drawable feature type in `draw/feature-palette.ts`
+(no digit shortcut; mirrored by hand into `mobile/course/feature-colors.ts`).
+Its four attributes are edited in the selection panel's "Vegetation zone"
+section and saved through `features.update(id, { attributes })`, which replaces
+the whole object — the section always sends all four keys. `FeaturesService.create`
+fills in the zone defaults (first zone type, weight 1, feather 2 m, noise 0) for
+any zone that reaches it without a `zoneType`, so freshly drawn, duplicated,
+stamped and retyped zones are all valid server-side. The overlay fill uses
+`featureFillColorExpression`, which paints a zone in its zone type's own colour
+(`properties.zoneColor`) and everything else from the palette.
+
 ## Commands (cwd `web/`)
 
 ```sh

@@ -16,6 +16,12 @@ const difference = polygonClipping.difference as (
 const resolvedCache = new WeakMap<FeatureCollection, FeatureCollection>();
 
 /**
+ * Polygon feature types that are overlays rather than playing surfaces: they
+ * pass through untouched and never occlude what is under them.
+ */
+const OVERLAY_TYPES = new Set(['vegetation_zone']);
+
+/**
  * Remove every pixel covered by a higher stack entry from each lower entry.
  * The result has disjoint polygons, so a later semi-transparent render blends
  * once with the orthophoto instead of compounding at overlaps.
@@ -28,14 +34,18 @@ const resolvedCache = new WeakMap<FeatureCollection, FeatureCollection>();
  *
  * Non-polygon features (creeks/paths drawn as lines) pass through unchanged
  * after the resolved polygons — they render on dedicated line layers, so
- * their position in the collection doesn't matter.
+ * their position in the collection doesn't matter. So do vegetation zones:
+ * they are an authoring overlay on top of the surfaces (like the generated
+ * tree canopy, which lives in its own collection), not a surface of their
+ * own, so they neither get clipped nor clip anything.
  */
 export function resolveSurfaceStack(source: FeatureCollection): FeatureCollection {
     const cached = resolvedCache.get(source);
     if (cached) return cached;
 
     const isSurface = (feature: Feature): feature is Feature<SurfaceGeometry> =>
-        feature.geometry?.type === 'Polygon' || feature.geometry?.type === 'MultiPolygon';
+        (feature.geometry?.type === 'Polygon' || feature.geometry?.type === 'MultiPolygon')
+        && !OVERLAY_TYPES.has(feature.properties?.type as string);
     const passthrough = source.features.filter(feature => !isSurface(feature));
     const topDown = source.features
         .filter(isSurface)

@@ -118,4 +118,27 @@ describe('resolveSurfaceStack', () => {
         if (fairway.geometry.type !== 'MultiPolygon') throw new Error('Expected resolved fairway MultiPolygon');
         expect(fairway.geometry.coordinates[0]![1]).toEqual([[4, 4], [4, 8], [8, 8], [8, 4], [4, 4]]);
     });
+
+    // A vegetation zone is an authoring overlay (docs/feature-vegetation-zones.md
+    // §5), so it neither gets clipped by the surfaces nor clips them.
+    test('vegetation zones pass through and never occlude the surfaces below', () => {
+        const source: FeatureCollection = {
+            type: 'FeatureCollection',
+            features: [
+                square('fairway', 'fairway', 10, 0, 0, 10, 10),
+                square('zone', 'vegetation_zone', 30, 4, 4, 8, 8),
+            ],
+        };
+
+        const resolved = resolveSurfaceStack(source);
+        const fairway = resolved.features.find(feature => feature.id === 'fairway')!;
+        const zone = resolved.features.find(feature => feature.id === 'zone')!;
+
+        // The fairway keeps its single unclipped ring …
+        expect(fairway.geometry.type).toBe('MultiPolygon');
+        if (fairway.geometry.type !== 'MultiPolygon') throw new Error('Expected resolved fairway MultiPolygon');
+        expect(fairway.geometry.coordinates[0]).toHaveLength(1);
+        // … and the zone comes back exactly as it went in.
+        expect(zone.geometry).toEqual(source.features[1]!.geometry);
+    });
 });

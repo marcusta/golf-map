@@ -8,6 +8,8 @@ import { CourseDetailService } from '../src/course-detail/course-detail.service'
 import { wgs84ToSweref99tm } from '../src/geo/transform';
 import type { FeatureGeometry } from '../src/geo/bezier';
 import type { Hole } from '../../shared/api/holes.gen';
+import { ZoneTypesService } from '../src/zones/zone-types.service';
+import type { ZoneTypesApi } from '../../shared/api/zone-types.gen';
 
 afterEach(() => { _reset(); di.reset(); });
 
@@ -65,6 +67,7 @@ function fakeApi(initial: CourseFeature[] = []) {
                 geojson: null,
                 sortOrder: 0,
                 source: input.source ?? null,
+                generated: false,
                 sourceRef: input.sourceRef ?? null,
                 license: input.license ?? null,
                 attributes: input.attributes ?? null,
@@ -80,6 +83,7 @@ function fakeApi(initial: CourseFeature[] = []) {
             if (input.type !== undefined) row.type = input.type;
             if (input.holeId !== undefined) row.holeId = input.holeId;
             if (input.geometry !== undefined) row.geometry = structuredClone(input.geometry);
+            if (input.attributes !== undefined) row.attributes = input.attributes ?? null;
             row.version = input.version + 1;
             return structuredClone(row);
         },
@@ -109,7 +113,7 @@ function feature(id: string, type = 'bunker', version = 1, opts: { holeId?: stri
     return {
         id, courseId: 'c1', holeId: opts.holeId ?? null, type,
         geometry: squareGeometry(), geojson: null, sortOrder: opts.sortOrder ?? 0,
-        source: null, sourceRef: null, license: null, attributes: null, version,
+        source: null, generated: false, sourceRef: null, license: null, attributes: null, version,
     };
 }
 
@@ -674,6 +678,44 @@ describe('raise/lower/raiseToTop/lowerToBottom (D27 reorder ops)', () => {
     });
 });
 
+describe('imported vs generated editability', () => {
+    /**
+     * Wizard-imported features (fetch-hydro waters, fetch-osm roads) carry
+     * provenance but are ordinary shapes: vertex editing, move/retype and
+     * stack reorder must all work on them. Only the pipeline's bulk-replace
+     * output (`generated: true`) is read-only.
+     */
+    test('provenance alone does not lock a feature', async () => {
+        const water: CourseFeature = { ...feature('w1', 'water', 1, { sortOrder: 0 }), source: 'lantmateriet-hydrografi', sourceRef: 'x/1' };
+        const road: CourseFeature = { ...feature('r1', 'path', 1, { sortOrder: 1 }), source: 'osm', sourceRef: 'way/9', license: 'ODbL' };
+        const { api } = fakeApi([water, road]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        svc.selectedIds.set(new Set(['w1']));
+        expect(svc.editableSelected.get()?.id).toBe('w1'); // vertex handles, edge insertion, offset/simplify
+        svc.selectedIds.set(new Set(['w1', 'r1']));
+        expect(svc.editableSelectedFeatures.get().map(f => f.id)).toEqual(['w1', 'r1']); // move / retype / rehole
+        expect(svc.generatedFeatures.get()).toEqual([]); // rendered in the editable overlay
+
+        expect(await svc.raise(['w1'])).toBe(true);
+        expect(svc.stackFor(null).map(f => f.id)).toEqual(['r1', 'w1']);
+    });
+
+    test('generated rows stay read-only', async () => {
+        const tree: CourseFeature = { ...feature('t1', 'trees', 1, { sortOrder: 0 }), source: 'lidar-canopy', generated: true };
+        const { api } = fakeApi([tree, feature('b', 'bunker', 1, { sortOrder: 1 })]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        svc.selectedIds.set(new Set(['t1']));
+        expect(svc.editableSelected.get()).toBeNull();
+        expect(svc.editableSelectedFeatures.get()).toEqual([]);
+        expect(svc.generatedFeatures.get().map(f => f.id)).toEqual(['t1']);
+        expect(await svc.raise(['t1'])).toBe(false);
+    });
+});
+
 describe('hasOdblFeatures (T49)', () => {
     test('true only while an ODbL-licensed feature is loaded', async () => {
         const odbl: CourseFeature = { ...feature('osm1', 'water'), source: 'osm', sourceRef: 'way/1', license: 'ODbL' };
@@ -695,5 +737,98 @@ describe('hasOdblFeatures (T49)', () => {
         const svc = new FeaturesService(api);
         await svc.load('c1');
         expect(svc.hasOdblFeatures.get()).toBe(false);
+    });
+});
+
+describe('vegetation zones (docs/feature-vegetation-zones.md)', () => {
+    /** A ZoneTypesService holding one course's table, with no network behind it. */
+    function withZoneTypes(types: Array<{ key: string; name: string; color: string }>): ZoneTypesService {
+        const svc = new ZoneTypesService({
+            list: async () => [],
+            addDefaults: async () => [],
+            create: () => Promise.reject(new Error('not under test')),
+            update: () => Promise.reject(new Error('not under test')),
+            remove: () => Promise.reject(new Error('not under test')),
+            reorder: () => Promise.reject(new Error('not under test')),
+        } as unknown as ZoneTypesApi);
+        svc.items.set(types.map((z, i) => ({
+            id: `z${i}`, courseId: 'c1', key: z.key, name: z.name, color: z.color,
+            textureIndex: 0, channel: i, sortOrder: i, items: [], createdAt: '', updatedAt: '',
+        })));
+        di.set(ZoneTypesService, svc);
+        return svc;
+    }
+
+    test('a new zone gets the table’s first type with the default weight/feather/noise', async () => {
+        withHoleNumbers([]);
+        withZoneTypes([{ key: 'rough_tall', name: 'Tall rough', color: '#8a9a3c' }]);
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        const created = await svc.create({ type: 'vegetation_zone', geometry: squareGeometry() });
+        expect(created!.attributes).toEqual({ zoneType: 'rough_tall', weight: 1, feather: 2, noise: 0 });
+    });
+
+    test('an empty zone-type table still names a zone type (the fallback key)', async () => {
+        withHoleNumbers([]);
+        withZoneTypes([]);
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        const created = await svc.create({ type: 'vegetation_zone', geometry: squareGeometry() });
+        expect((created!.attributes as Record<string, unknown>).zoneType).toBe('shrub');
+    });
+
+    test('explicit attributes are forwarded untouched; other types get none', async () => {
+        withHoleNumbers([]);
+        withZoneTypes([{ key: 'rough_tall', name: 'Tall rough', color: '#8a9a3c' }]);
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        const zone = await svc.create({
+            type: 'vegetation_zone',
+            geometry: squareGeometry(),
+            attributes: { zoneType: 'fern', weight: 0.4, feather: 6, noise: 1 },
+        });
+        expect(zone!.attributes).toEqual({ zoneType: 'fern', weight: 0.4, feather: 6, noise: 1 });
+
+        const bunker = await svc.create({ type: 'bunker', geometry: squareGeometry() });
+        expect(bunker!.attributes).toBeNull();
+    });
+
+    test('update round-trips the four keys', async () => {
+        withHoleNumbers([]);
+        withZoneTypes([{ key: 'shrub', name: 'Shrubs', color: '#6b8f3a' }]);
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        const zone = (await svc.create({ type: 'vegetation_zone', geometry: squareGeometry() }))!;
+
+        const updated = await svc.update(zone.id, {
+            attributes: { zoneType: 'shrub', weight: 0.25, feather: 8, noise: 2 },
+        });
+        expect(updated!.attributes).toEqual({ zoneType: 'shrub', weight: 0.25, feather: 8, noise: 2 });
+        expect(svc.store.items.get().find(f => f.id === zone.id)!.attributes)
+            .toEqual({ zoneType: 'shrub', weight: 0.25, feather: 8, noise: 2 });
+    });
+
+    test('the rendered GeoJSON carries the zone type and its colour', async () => {
+        withHoleNumbers([]);
+        withZoneTypes([{ key: 'shrub', name: 'Shrubs', color: '#6b8f3a' }]);
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        await svc.create({ type: 'vegetation_zone', geometry: squareGeometry() });
+        await svc.create({ type: 'bunker', geometry: squareGeometry() });
+
+        const [zone, bunker] = svc.geojson.get().features;
+        expect(zone.properties!.zoneType).toBe('shrub');
+        expect(zone.properties!.zoneColor).toBe('#6b8f3a');
+        // A zone type the table does not know has no colour to paint with.
+        expect(bunker.properties!.zoneType).toBeUndefined();
+        expect(bunker.properties!.zoneColor).toBeUndefined();
     });
 });

@@ -18,6 +18,11 @@ export const FEATURE_TYPES = [
     'oob',
     'path',
     'outside',
+    // Lower-vegetation zone (docs/feature-vegetation-zones.md): an authoring
+    // overlay for the VSPro masks, not a playing surface. Appended rather
+    // than slotted next to `trees` so the digit shortcuts below (the first
+    // ten types) keep their bindings; its draw order is TYPE_Z_ORDER's.
+    'vegetation_zone',
 ] as const;
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
@@ -79,6 +84,10 @@ export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
     oob: { label: 'OOB', fill: '#efeae0', draw: '#efeae0', outline: '#3a4148' },
     path: { label: 'Path', fill: '#c2a879', draw: '#cbae75', outline: '#866b47' },
     outside: { label: 'Outside', fill: '#8a8e90', draw: '#7c8286', outline: '#565c61' },
+    // Muted olive: a zone is a legend colour at heart (the course's zone-type
+    // table owns the real one, see `featureFillColorExpression`), so the
+    // palette entry is only the fallback for a zone whose type is gone.
+    vegetation_zone: { label: 'Vegetation zone', fill: '#7c8f3a', draw: '#7c8f3a', outline: '#4c5a20' },
 };
 
 /** Selected-feature highlight color (outline + handles). */
@@ -108,6 +117,7 @@ export const TYPE_Z_ORDER: readonly FeatureType[] = [
     'fairway',
     'tee',
     'green',
+    'vegetation_zone',
     'trees',
     'bunker',
     'water',
@@ -148,6 +158,7 @@ export const SURROUND_PAIRINGS: Record<FeatureType, { targetType: FeatureType; e
     deep_rough: null, // already the outermost grass type
     path: null, // no surround for paths
     outside: null, // no surround for outside
+    vegetation_zone: null, // an overlay over whatever surface is there
 };
 
 /**
@@ -161,4 +172,20 @@ export function typeColorExpression(key: 'fill' | 'draw' | 'outline'): unknown[]
     }
     expr.push('#888888'); // fallback
     return expr;
+}
+
+/**
+ * Fill colour for the feature overlay: the palette colour by type, except for
+ * a `vegetation_zone`, which paints in its own zone type's colour from the
+ * course's zone-type table (`properties.zoneColor`, written by
+ * FeaturesService.toGeojsonFeature). A zone whose type has been deleted has no
+ * zoneColor and falls back to the palette's olive.
+ */
+export function featureFillColorExpression(key: 'fill' | 'draw'): unknown[] {
+    return [
+        'case',
+        ['all', ['==', ['get', 'type'], 'vegetation_zone'], ['has', 'zoneColor']],
+        ['get', 'zoneColor'],
+        typeColorExpression(key),
+    ];
 }

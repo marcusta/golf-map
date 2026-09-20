@@ -11,6 +11,7 @@ final class FeaturePaletteTests: XCTestCase {
                 "tee", "fairway", "green", "bunker", "semi_rough", "rough",
                 "deep_rough", "trees", "water", "water_creek",
                 "penalty_yellow", "penalty_red", "oob", "path", "outside",
+                "vegetation_zone",
             ]
         )
     }
@@ -34,6 +35,7 @@ final class FeaturePaletteTests: XCTestCase {
             .oob: ("#efeae0", "#3a4148"),
             .path: ("#c2a879", "#866b47"),
             .outside: ("#8a8e90", "#565c61"),
+            .vegetationZone: ("#7c8f3a", "#4c5a20"),
         ]
         XCTAssertEqual(expected.count, CourseFeatureType.allCases.count)
         for (type, colors) in expected {
@@ -49,7 +51,7 @@ final class FeaturePaletteTests: XCTestCase {
             FeaturePalette.zOrder.map(\.rawValue),
             [
                 "outside", "deep_rough", "rough", "semi_rough", "fairway",
-                "tee", "green", "trees", "bunker", "water", "water_creek",
+                "tee", "green", "vegetation_zone", "trees", "bunker", "water", "water_creek",
                 "penalty_yellow", "penalty_red", "oob", "path",
             ]
         )
@@ -81,11 +83,11 @@ final class FeaturePaletteTests: XCTestCase {
         XCTAssertEqual(expr.count, 2 + FeaturePalette.zOrder.count * 2 + 1)
         // Unknown types sort below everything.
         XCTAssertEqual(expr.last as? Int, -1)
-        // outside = 0 (bottom), path = 14 (top).
+        // outside = 0 (bottom), path = 15 (top).
         XCTAssertEqual(expr[2] as? String, "outside")
         XCTAssertEqual(expr[3] as? Int, 0)
         XCTAssertEqual(expr[expr.count - 3] as? String, "path")
-        XCTAssertEqual(expr[expr.count - 2] as? Int, 14)
+        XCTAssertEqual(expr[expr.count - 2] as? Int, 15)
     }
 
     /// D23/D24: rendering reads the server-assigned `stackKey`, falling back

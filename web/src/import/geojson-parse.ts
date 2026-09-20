@@ -26,7 +26,9 @@
 //      expressed as all-corner b-spline controls (corner triplication
 //      renders exactly the source polygon) — a feature is never dropped
 //      for fit reasons. Lines arrive pre-buffered from the pipeline, so
-//      no buffering here.
+//      no buffering here. A feature whose `exact` property is true skips
+//      the fit and lands verbatim (all-corner controls): pipeline output
+//      that already is the final shape, like fetch-roads' corridors.
 
 import type { AnchorPoint, FeatureGeometry } from '../geo/bezier';
 import { fitClosedBspline } from '../geo/spline-fit';
@@ -289,6 +291,7 @@ function fitImportRing(points: AnchorPoint[]): AnchorPoint[] {
 export function polygonToGeometry(
     rings: number[][][],
     label: string,
+    opts: { exact?: boolean } = {},
 ): { geometry: FeatureGeometry | null; warnings: string[] } {
     const warnings: string[] = [];
     const outRings: Array<{ points: AnchorPoint[] }> = [];
@@ -305,7 +308,12 @@ export function polygonToGeometry(
             return;
         }
         if (ringIdx > 0 && outRings.length === 0) return; // outer already dropped
-        outRings.push({ points: fitImportRing(points) });
+        // `exact` (a pipeline feature property): the source IS the shape —
+        // a buffered road corridor, already simplified — so the smoothing
+        // fit would only damage it (a road network's kilometres-long ring
+        // collapses into wedges under the control cap). All-corner
+        // controls render the polygon verbatim.
+        outRings.push({ points: opts.exact ? points.map(p => ({ x: p.x, y: p.y, corner: true })) : fitImportRing(points) });
     });
 
     if (outRings.length === 0) return { geometry: null, warnings };

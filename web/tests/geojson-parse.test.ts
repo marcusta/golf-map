@@ -201,6 +201,23 @@ describe('polygonToGeometry (T52: fitted b-splines)', () => {
         expect(maxVertexDeviation(source, geometry!.rings[0])).toBeLessThanOrEqual(IMPORT_FIT_TOLERANCE_M);
     });
 
+    test('an `exact` feature (a fetch-roads corridor) lands verbatim as all-corner controls, holes included', () => {
+        // A long thin corridor ring with an enclosed block — the shape the
+        // spline fit turns into wedges.
+        const outer = [[0, 0], [2000, 0], [2000, 6], [1006, 6], [1006, 500], [1000, 500], [1000, 6], [0, 6], [0, 0]];
+        const hole = [[300, 2], [400, 2], [400, 4], [300, 4], [300, 2]];
+        const { geometry, warnings } = polygonToGeometry([outer, hole], 'path feature 1', { exact: true });
+        expect(warnings).toEqual([]);
+        expect(geometry!.curveType).toBe('bspline');
+        expect(geometry!.rings.length).toBe(2);
+        expect(geometry!.rings[0].points.map(p => [p.x, p.y])).toEqual(outer.slice(0, -1));
+        expect(geometry!.rings[1].points.map(p => [p.x, p.y])).toEqual(hole.slice(0, -1));
+        for (const ring of geometry!.rings) for (const p of ring.points) expect(p.corner).toBe(true);
+        // Without the flag the same ring is fitted (and no longer the source).
+        const fitted = polygonToGeometry([outer, hole], 'path feature 1').geometry!;
+        expect(fitted.rings[0].points.some(p => p.corner)).toBe(false);
+    });
+
     test('holes are fitted too and preserved (closing vertex dropped)', () => {
         const outer = square(0, 0, 100);
         const hole = polarRing(() => 20, 10, 0, 0);

@@ -22,6 +22,14 @@ import { Signal, Computed, effect, untrack } from '@basics/core/client/core';
 import { api } from '../api';
 import type { TerrainEdit, TerrainEditsApi } from '../../../shared/api/terrain-edits.gen';
 import type { MapBuildApi, MapBuildJob } from '../../../shared/api/map-build.gen';
+import type { TerrainGeneratorsApi } from '../../../shared/api/terrain-generators.gen';
+
+/** The terrain generators the panel offers (server origins of the edits they write). */
+export type TerrainGeneratorKind = 'building-pads' | 'road-grades';
+export const GENERATOR_LABELS: Record<TerrainGeneratorKind, string> = {
+    'building-pads': 'Building pads',
+    'road-grades': 'Road grades',
+};
 import { STEP_LABELS } from '../map-build/map-build.service';
 import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent, MapService } from '../map/map.service';
@@ -46,14 +54,22 @@ export const DEFAULT_RADIUS_M = 2;
 export type TerrainEditOp = TerrainEdit['op'];
 
 /** Marker glyph per op (DOM markers — the editor style has no glyphs endpoint). */
-export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿' };
+export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿', corridor: '⫽' };
 
 /** One-line params summary for the panel rows and the map glyph tooltips. */
 export function paramsSummary(edit: TerrainEdit): string {
     const parts: string[] = [];
     if (edit.op === 'plane' && edit.params.flat) parts.push('flat');
     if (edit.op === 'smooth') parts.push(`r ${edit.params.radiusM ?? DEFAULT_RADIUS_M} m`);
+    if (edit.op === 'corridor') {
+        // Pipeline-generated road grading: smooth along the road, level across it.
+        if (edit.params.widthM !== undefined) parts.push(`w ${edit.params.widthM} m`);
+        if (edit.params.smoothM !== undefined) parts.push(`along ${edit.params.smoothM} m`);
+    }
     parts.push(`feather ${edit.params.featherM} m`);
+    // Generated edits (building pads) say so: a regeneration replaces them, a
+    // hand-drawn edit it never touches.
+    if (edit.origin) parts.push(edit.origin);
     return parts.join(' · ');
 }
 
@@ -124,7 +140,38 @@ export class TerrainEditToolService {
         private mapBuildApi: MapBuildApi = api.mapBuild,
         /** Poll interval override for tests (real timers). */
         private pollMs: number = POLL_MS,
+        private generatorsApi: TerrainGeneratorsApi = api.terrainGenerators,
     ) {}
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Generators (T-roads): the server runs the pipeline's building survey +
+    // pads, or road fetch + grades, and imports the edits under their origin
+    // (replacing that origin's previous generation only). The list reloads;
+    // "Apply to terrain" bakes them like any other edit.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** The generator running now, for the panel's button labels. */
+    readonly generating = new Signal<TerrainGeneratorKind | null>(null);
+
+    async generate(kind: TerrainGeneratorKind): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx || this.generating.peek() || this.applying.peek()) return false;
+        const label = GENERATOR_LABELS[kind];
+        this.generating.set(kind);
+        this.notice.set(null);
+        try {
+            const result = await this.generatorsApi.generate({ courseId: ctx.courseId, kind });
+            await this.reload();
+            const skipped = result.skipped.length > 0 ? ` (${result.skipped.length} feature(s) skipped)` : '';
+            this.notice.set(`${label}: ${result.imported} edit(s) generated${skipped}. Apply to terrain to bake them.`);
+            return true;
+        } catch (e) {
+            this.notice.set(`${label} failed: ${message(e)}`);
+            return false;
+        } finally {
+            this.generating.set(null);
+        }
+    }
 
     // ── EditorTool lifecycle (called via terrain-edit-tool.ts) ─────────────
 

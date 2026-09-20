@@ -3,24 +3,37 @@ import { sql } from 'kysely';
 import type { Database, TerrainEditsTable } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { NotFoundError } from '@basics/core/server/auth';
+import { wgs84ToSweref99tm } from './geo';
 
 // --- Constants ---
 
-/** The two v1 operations (D-TE3). */
-export const TERRAIN_EDIT_OPS = ['plane', 'smooth'] as const;
+/**
+ * The operations (D-TE3): the two hand-drawn v1 ops, and `corridor` — a
+ * road graded smooth along its centerline and level across it — which only
+ * the pipeline generates (`golfpipe road-grades`); the tool has no line
+ * drawing, so the panel lists and toggles corridors but never arms one.
+ */
+export const TERRAIN_EDIT_OPS = ['plane', 'smooth', 'corridor'] as const;
 export type TerrainEditOp = (typeof TERRAIN_EDIT_OPS)[number];
 
 // --- Output types ---
 
-/** Op parameters. `radiusM`/`flat` only meaningful for `smooth`/`plane` resp. */
+/** A straight-segment ring: EPSG:3006 (DEM CRS) coordinates in metres. */
+export type TerrainEditRing = { x: number; y: number }[];
+
+/**
+ * Op parameters. `radiusM`/`flat` only meaningful for `smooth`/`plane`;
+ * `centerline` (EPSG:3006, the road's axis), `smoothM` (along-road window)
+ * and `widthM` (pavement width the profile is sampled over) for `corridor`.
+ */
 export interface TerrainEditParams {
     featherM: number;
     radiusM?: number;
     flat?: boolean;
+    centerline?: TerrainEditRing;
+    smoothM?: number;
+    widthM?: number;
 }
-
-/** A straight-segment ring: EPSG:3006 (DEM CRS) coordinates in metres. */
-export type TerrainEditRing = { x: number; y: number }[];
 
 export interface TerrainEdit {
     id: string;
@@ -29,9 +42,32 @@ export interface TerrainEdit {
     params: TerrainEditParams;
     rings: TerrainEditRing[];
     enabled: boolean;
+    /** Generator that wrote the edit (`building-pads`); null = hand-drawn. */
+    origin: string | null;
+    /** What a generated edit is for (a building id); the key a regeneration matches on. */
+    originRef: string | null;
     version: number;
     createdAt: string;
     updatedAt: string;
+}
+
+/** One edit in the pipeline's D-TE5 handoff / the generated-edits import. */
+export interface TerrainEditInput {
+    op: TerrainEditOp;
+    params: TerrainEditParams;
+    rings: TerrainEditRing[];
+    originRef?: string | null;
+    enabled?: boolean;
+}
+
+/**
+ * `created_at` for generated edits: the epoch plus the edit's index in its
+ * generation, in SQLite's own `datetime('now')` spelling so it sorts as a
+ * plain string against real timestamps — before every one of them.
+ */
+export const GENERATED_EPOCH = '2000-01-01 00:00:00';
+export function generatedCreatedAt(index: number): string {
+    return `${GENERATED_EPOCH}.${String(index).padStart(6, '0')}`;
 }
 
 // --- Row mapping ---
@@ -46,10 +82,73 @@ function toTerrainEdit(row: TerrainEditRow): TerrainEdit {
         params: JSON.parse(row.params_json) as TerrainEditParams,
         rings: JSON.parse(row.rings_json) as TerrainEditRing[],
         enabled: row.enabled !== 0,
+        origin: row.origin ?? null,
+        originRef: row.origin_ref ?? null,
         version: row.version,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
     };
+}
+
+// --- D-TE5 GeoJSON (the pipeline's edits handoff) → edit inputs ---
+
+/**
+ * Parses a D-TE5 edits FeatureCollection (WGS84 polygons, per-feature
+ * `op`/`featherM`/`radiusM`/`flat`, optional `originRef`) — what
+ * `golfpipe building-pads` writes — into inputs in the DEM CRS. Malformed
+ * features are skipped and reported, never fatal, mirroring the pipeline's
+ * own loader.
+ */
+export function parseEditsGeojson(doc: unknown): { edits: TerrainEditInput[]; skipped: string[] } {
+    const edits: TerrainEditInput[] = [];
+    const skipped: string[] = [];
+    const collection = doc as { type?: unknown; features?: unknown };
+    if (!collection || collection.type !== 'FeatureCollection' || !Array.isArray(collection.features)) {
+        throw new InvalidTerrainEditError('Edits must be a GeoJSON FeatureCollection (D-TE5)');
+    }
+    collection.features.forEach((feature: any, i: number) => {
+        const props = feature?.properties ?? {};
+        const geometry = feature?.geometry;
+        if (!geometry || geometry.type !== 'Polygon' || !Array.isArray(geometry.coordinates)) {
+            skipped.push(`feature ${i}: geometry is not a Polygon`);
+            return;
+        }
+        if (!(TERRAIN_EDIT_OPS as readonly string[]).includes(props.op)) {
+            skipped.push(`feature ${i}: unknown op ${JSON.stringify(props.op)}`);
+            return;
+        }
+        const params: TerrainEditParams = { featherM: Number(props.featherM ?? 2) };
+        if (props.radiusM !== undefined) params.radiusM = Number(props.radiusM);
+        if (props.flat) params.flat = true;
+        if (props.smoothM !== undefined) params.smoothM = Number(props.smoothM);
+        if (props.widthM !== undefined && props.widthM !== null) params.widthM = Number(props.widthM);
+        if (Array.isArray(props.centerline)) {
+            params.centerline = props.centerline.map((p: unknown) =>
+                Array.isArray(p) && p.length >= 2 ? wgs84ToSweref99tm(Number(p[1]), Number(p[0])) : { x: NaN, y: NaN });
+        }
+        const rings: TerrainEditRing[] = geometry.coordinates.map((ring: [number, number][]) => {
+            const pts = ring.map(([lon, lat]) => wgs84ToSweref99tm(lat, lon));
+            const first = pts[0], last = pts[pts.length - 1];
+            // GeoJSON rings repeat the first point; stored rings don't.
+            if (pts.length > 1 && first && last && first.x === last.x && first.y === last.y) pts.pop();
+            return pts;
+        });
+        try {
+            assertValidParams(params);
+            assertOpParams(props.op, params);
+            assertValidRings(rings);
+        } catch (e) {
+            skipped.push(`feature ${i}: ${(e as Error).message}`);
+            return;
+        }
+        edits.push({
+            op: props.op,
+            params,
+            rings,
+            originRef: typeof props.originRef === 'string' ? props.originRef : null,
+        });
+    });
+    return { edits, skipped };
 }
 
 // --- Validation ---
@@ -77,6 +176,24 @@ function assertValidParams(params: TerrainEditParams): void {
     if (params.radiusM !== undefined && (!Number.isFinite(params.radiusM) || params.radiusM <= 0)) {
         throw new InvalidTerrainEditError('radiusM must be a finite number > 0');
     }
+    if (params.smoothM !== undefined && (!Number.isFinite(params.smoothM) || params.smoothM <= 0)) {
+        throw new InvalidTerrainEditError('smoothM must be a finite number > 0');
+    }
+    if (params.widthM !== undefined && (!Number.isFinite(params.widthM) || params.widthM <= 0)) {
+        throw new InvalidTerrainEditError('widthM must be a finite number > 0');
+    }
+    if (params.centerline !== undefined) {
+        if (!Array.isArray(params.centerline) || params.centerline.length < 2
+            || params.centerline.some(p => !p || !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+            throw new InvalidTerrainEditError('centerline must have at least 2 points with finite x/y');
+        }
+    }
+}
+
+function assertOpParams(op: TerrainEditOp, params: TerrainEditParams): void {
+    if (op === 'corridor' && !params.centerline) {
+        throw new InvalidTerrainEditError('A corridor edit needs a centerline');
+    }
 }
 
 function assertValidRings(rings: TerrainEditRing[]): void {
@@ -99,7 +216,9 @@ function assertValidRings(rings: TerrainEditRing[]): void {
  * Site-scoped DEM edits (smooth/flatten). Stored as vector features — straight-
  * segment rings in the DEM CRS (EPSG:3006) plus an op + params — and replayed
  * onto the raw DEM at build time (T54/T56), never baked into `sources/dem.tif`.
- * Edits apply in `created_at` order (D-TE4), so `listBySite` returns them so.
+ * Edits apply in `created_at` order (D-TE4) — generated ones (`origin` set,
+ * e.g. the building pads) first, so a hand-drawn edit wins where they
+ * overlap — and `listBySite` returns them so.
  */
 export class TerrainEditsService {
     constructor(private db: Kysely<Database>) {}
@@ -122,6 +241,62 @@ export class TerrainEditsService {
         return rows.map(toTerrainEdit);
     }
 
+    /**
+     * Replaces the site's edits of one `origin` with a fresh generation
+     * (`golfpipe building-pads` output), in one transaction: the previous
+     * generation's rows go, the new ones come in, and a building the user
+     * had disabled stays disabled (matched by `originRef`). Hand-drawn edits
+     * and other origins are untouched.
+     */
+    async replaceByOrigin(siteId: string, origin: string, inputs: TerrainEditInput[]): Promise<TerrainEdit[]> {
+        if (!origin) throw new InvalidTerrainEditError('origin is required');
+        for (const input of inputs) {
+            assertValidOp(input.op);
+            assertValidParams(input.params);
+            assertOpParams(input.op, input.params);
+            assertValidRings(input.rings);
+        }
+        return this.db.transaction().execute(async (trx) => {
+            const previous = await trx.selectFrom('terrain_edits')
+                .select(['origin_ref', 'enabled'])
+                .where('site_id', '=', siteId)
+                .where('origin', '=', origin)
+                .execute();
+            const disabled = new Set(previous.filter(r => r.enabled === 0 && r.origin_ref).map(r => r.origin_ref));
+            await trx.deleteFrom('terrain_edits')
+                .where('site_id', '=', siteId)
+                .where('origin', '=', origin)
+                .execute();
+            const ids: string[] = [];
+            for (const [index, input] of inputs.entries()) {
+                const id = crypto.randomUUID();
+                ids.push(id);
+                const keepDisabled = input.originRef != null && disabled.has(input.originRef);
+                await trx.insertInto('terrain_edits').values({
+                    id,
+                    site_id: siteId,
+                    op: input.op,
+                    params_json: JSON.stringify(input.params),
+                    rings_json: JSON.stringify(input.rings),
+                    enabled: input.enabled === false || keepDisabled ? 0 : 1,
+                    origin,
+                    origin_ref: input.originRef ?? null,
+                    version: 1,
+                    // Dated at the epoch (+ file order) so the one apply rule —
+                    // createdAt order, D-TE4 — puts every generated edit before
+                    // any hand-drawn one, here and in the pipeline's replay.
+                    created_at: generatedCreatedAt(index),
+                }).execute();
+            }
+            if (ids.length === 0) return [];
+            const rows = await trx.selectFrom('terrain_edits').selectAll()
+                .where('id', 'in', ids)
+                .orderBy('created_at').orderBy('id')
+                .execute();
+            return rows.map(toTerrainEdit);
+        });
+    }
+
     async get(id: string): Promise<TerrainEdit> {
         const row = await this.byId(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Terrain edit ${id} not found`);
@@ -135,9 +310,12 @@ export class TerrainEditsService {
         params: TerrainEditParams;
         rings: TerrainEditRing[];
         enabled?: boolean;
+        origin?: string | null;
+        originRef?: string | null;
     }): Promise<TerrainEdit> {
         assertValidOp(input.op);
         assertValidParams(input.params);
+        assertOpParams(input.op, input.params);
         assertValidRings(input.rings);
 
         const id = input.id ?? crypto.randomUUID();
@@ -148,6 +326,8 @@ export class TerrainEditsService {
             params_json: JSON.stringify(input.params),
             rings_json: JSON.stringify(input.rings),
             enabled: input.enabled === false ? 0 : 1,
+            origin: input.origin ?? null,
+            origin_ref: input.originRef ?? null,
             version: 1,
         }).execute();
         return this.get(id);

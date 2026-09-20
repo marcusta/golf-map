@@ -36,7 +36,7 @@ const TERRAIN: CourseTerrain = {
 /** Fake server: holds one folder per course, same null-means-default rule. */
 function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproOrthoSource[]; noTerrain?: boolean } = {}) {
     const dirs = new Map<string, string | null>();
-    const calls = { settings: 0, setDir: 0, run: 0, runOrtho: [] as string[], runOuterOrtho: [] as string[], runDem: [] as string[], runHillshade: [] as string[], runTrees: [] as string[], terrain: 0, darken: [] as (number | undefined)[] };
+    const calls = { settings: 0, setDir: 0, run: 0, runOrtho: [] as string[], runOuterOrtho: [] as string[], runDem: [] as string[], runHillshade: [] as string[], runTrees: [] as string[], terrain: 0, darken: [] as (number | undefined)[], tint: [] as [boolean | undefined, number | undefined][] };
 
     const settingsFor = (courseId: string): GsproExportSettings => {
         const dir = dirs.get(courseId) ?? null;
@@ -63,9 +63,10 @@ function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproO
         async orthoSources() {
             return opts.sources ?? SOURCES;
         },
-        async runOrtho({ courseId, source, darken }) {
+        async runOrtho({ courseId, source, darken, tint, tintOpacity }) {
             calls.runOrtho.push(source);
             calls.darken.push(darken);
+            calls.tint.push([tint, tintOpacity]);
             if (opts.failRun) throw new Error(opts.failRun);
             const { dir } = settingsFor(courseId);
             return { path: `${dir}/vreta-orto-l2-2025-8192.jpg`, report: ['rendering ortho-orto-l2-2025.tif', 'wrote x.jpg'] };
@@ -75,9 +76,10 @@ function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproO
             if (opts.noTerrain) throw new Error('Course has no map area to lay out the GSPro terrains for: build the course map first.');
             return TERRAIN;
         },
-        async runOuterOrtho({ courseId, collection, darken }) {
+        async runOuterOrtho({ courseId, collection, darken, tint, tintOpacity }) {
             calls.runOuterOrtho.push(collection);
             calls.darken.push(darken);
+            calls.tint.push([tint, tintOpacity]);
             if (opts.failRun) throw new Error(opts.failRun);
             const { dir } = settingsFor(courseId);
             return { path: `${dir}/vreta-outer-${collection}-8192.jpg`, report: [`fetched outer-ortho-${collection}.tif`, 'wrote x.jpg'] };
@@ -119,8 +121,8 @@ function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => 
         async start(input) {
             const { courseId, kind } = input;
             const result = kind === 'svg' ? await h.run({ courseId })
-                : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken })
-                : kind === 'outer-ortho' ? await h.runOuterOrtho({ courseId, collection: input.collection, darken: input.darken })
+                : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity })
+                : kind === 'outer-ortho' ? await h.runOuterOrtho({ courseId, collection: input.collection, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity })
                 : kind === 'dem' ? await h.runDem({ courseId, terrain: input.terrain })
                 : kind === 'hillshade' ? await h.runHillshade({ courseId, terrain: input.terrain })
                 : await h.runTrees({ courseId, terrain: input.terrain });
@@ -404,6 +406,22 @@ test('the terrain texture brightness travels with both orthophoto exports, blank
     svc.terrainDarken.set('2');
     expect(await svc.runOuterOrtho()).toBe(false);
     expect(calls.darken).toHaveLength(3);
+});
+
+test('the surface tint travels with both orthophoto exports: on by default, a blank opacity meaning the default', async () => {
+    const { svc, calls } = await openService();
+    expect(await svc.runOrtho()).toBe(true);
+    svc.tintOpacity.set(' 0,25 ');
+    expect(await svc.runOuterOrtho()).toBe(true);
+    svc.tintTerrain.set(false);  // off: no tint fields at all, so the server writes no tinted twin
+    expect(await svc.runOrtho()).toBe(true);
+    expect(calls.tint).toEqual([[true, undefined], [true, 0.25], [undefined, undefined]]);
+    // Nonsense never reaches the server.
+    svc.tintTerrain.set(true);
+    svc.tintOpacity.set('1.5');
+    expect(await svc.runOrtho()).toBe(false);
+    expect(svc.error.peek()).toMatch(/between 0 and 1/);
+    expect(calls.tint).toHaveLength(3);
 });
 
 test('a failed DEM or outer run surfaces the server message like the other runs', async () => {

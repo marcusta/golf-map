@@ -17,6 +17,7 @@ import { api } from '../api';
 import type { CourseFeaturesApi } from '../../../shared/api/course-features.gen';
 import type { HydroApi, HydroFetchResult } from '../../../shared/api/hydro.gen';
 import type { OsmApi, OsmFetchResult } from '../../../shared/api/osm.gen';
+import type { TerrainGeneratorsApi } from '../../../shared/api/terrain-generators.gen';
 import type { BucketAssignment, BuiltFeature, BuildResult, ImportSummary } from './svg-import.service';
 import { bufferPolyline } from '../geo/polyline-buffer';
 import {
@@ -115,6 +116,8 @@ export function hydroToFeatureCollection(result: HydroFetchResult): {
 
 /** Wizard-facing filename for the one-click OSM fetch (T53). */
 export const OSM_FETCH_FILENAME = 'openstreetmap.geojson';
+/** The wizard's file name for a road fetch (T-roads) — ODbL like the OSM fetch. */
+export const ROADS_FETCH_FILENAME = 'osm-roads.geojson';
 
 /**
  * Format a fetch-osm response as the pipeline-shaped GeoJSON document the
@@ -167,7 +170,7 @@ export class GeojsonImportService {
     /** One-click fetch (T50 Lantmäteriet / T53 OSM) in flight / failed. */
     readonly fetching = new Signal(false);
     /** Which fetch variant is in flight (labels the right button). */
-    readonly fetchSource = new Signal<'lantmateriet' | 'osm' | null>(null);
+    readonly fetchSource = new Signal<'lantmateriet' | 'osm' | 'roads' | null>(null);
     readonly fetchError = new Signal<string | null>(null);
 
     private courseId: string | null = null;
@@ -215,6 +218,7 @@ export class GeojsonImportService {
         private featuresApi: CourseFeaturesApi = api.courseFeatures,
         private hydroApi: HydroApi = api.hydro,
         private osmApi: OsmApi = api.osm,
+        private generatorsApi: TerrainGeneratorsApi = api.terrainGenerators,
     ) {}
 
     /** Open the wizard for a course (coordinates are already EPSG:3006 —
@@ -279,9 +283,28 @@ export class GeojsonImportService {
         });
     }
 
+    /**
+     * One-click roads (T-roads): the server runs the pipeline's `fetch-roads`
+     * over the course's area and hands back the corridor polygons as the
+     * typed EPSG:3006 collection the wizard already reads (`path` features;
+     * bucket on `road_class` to keep roads and drop footpaths). The
+     * centerlines stay on the server for the terrain tool's road grading.
+     */
+    async fetchFromRoads(): Promise<void> {
+        await this.runFetch('roads', async courseId => {
+            const result = await this.generatorsApi.fetchRoads({ courseId });
+            const collection = result.geojson as { features?: unknown[] };
+            if (!collection.features || collection.features.length === 0) {
+                this.fetchError.set('No OSM roads found within the course map area.');
+                return;
+            }
+            this.loadGeojsonText(JSON.stringify(result.geojson), ROADS_FETCH_FILENAME);
+        });
+    }
+
     /** Shared fetch-variant plumbing: single-flight, error capture. */
     private async runFetch(
-        source: 'lantmateriet' | 'osm',
+        source: 'lantmateriet' | 'osm' | 'roads',
         action: (courseId: string) => Promise<void>,
     ): Promise<void> {
         const courseId = this.courseId;
@@ -368,7 +391,9 @@ export class GeojsonImportService {
                 const provenance = provenanceFromProperties(feature.properties);
                 feature.polygons.forEach((rings, polyIdx) => {
                     const label = `${bucket.value} feature ${feature.index + 1}${feature.polygons.length > 1 ? `.${polyIdx + 1}` : ''}`;
-                    const { geometry, warnings: ringWarnings } = polygonToGeometry(rings, label);
+                    const { geometry, warnings: ringWarnings } = polygonToGeometry(rings, label, {
+                        exact: feature.properties['exact'] === true,
+                    });
                     warnings.push(...ringWarnings);
                     if (geometry) features.push({ type, geometry, ...provenance });
                 });

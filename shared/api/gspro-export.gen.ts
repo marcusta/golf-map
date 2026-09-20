@@ -22,7 +22,7 @@ export interface GsproOrthoSource {
 export interface GsproExportJob {
     id: string;
     courseId: string;
-    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'hillshade' | 'trees';
+    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'hillshade' | 'trees' | 'buildings';
     label: string;
     status: 'running' | 'succeeded' | 'failed';
     startedAt: string;
@@ -62,7 +62,7 @@ export interface GsproExportApi {
     setDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
     terrain(input: { courseId: string }): Promise<CourseTerrain>;
     orthoSources(input: { courseId: string }): Promise<GsproOrthoSource[]>;
-    start(input: { source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'hillshade' | 'trees' }): Promise<GsproExportJob>;
+    start(input: { source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'hillshade' | 'trees' | 'buildings' }): Promise<GsproExportJob>;
     job(input: { jobId: string }): Promise<GsproExportJob>;
     current(input: { courseId: string }): Promise<null | GsproExportJob>;
 }

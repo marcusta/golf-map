@@ -5,7 +5,8 @@ import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from './features.service';
 import { DrawToolService, OFFSET_PRESETS } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
-import { generatedBadgeLabel, generatedHeightLabel, isGeneratedFeature } from './generated-features';
+import { ZoneTypesService, type ZoneAttributes } from '../zones/zone-types.service';
+import { generatedHeightLabel, isGeneratedFeature, provenanceBadgeLabel } from './generated-features';
 
 const tpl = template(`
     <div class="sel-panel" bind="root" data-testid="selection-panel">
@@ -40,6 +41,22 @@ const tpl = template(`
                     <button bind="simplifyCancelBtn" type="button" class="cancel-btn">Cancel</button>
                 </div>
             </div>
+        </div>
+        <div bind="zoneSection" class="zone-section">
+            <h4 class="section-title">Vegetation zone</h4>
+            <label class="zone-field">Zone type
+                <select bind="zoneType" data-testid="zone-type-select"></select>
+            </label>
+            <label class="zone-field">Weight
+                <input bind="zoneWeight" type="number" min="0" max="1" step="0.05" data-testid="zone-weight" />
+            </label>
+            <label class="zone-field">Feather (m)
+                <input bind="zoneFeather" type="number" min="0" step="0.5" data-testid="zone-feather" />
+            </label>
+            <label class="zone-field">Edge noise (m)
+                <input bind="zoneNoise" type="number" min="0" step="0.25" data-testid="zone-noise" />
+            </label>
+            <button bind="zoneTypesBtn" type="button" class="op-btn show">Edit zone types…</button>
         </div>
         <button bind="surroundBtn" type="button" class="op-btn surround-btn"></button>
         <button bind="duplicateBtn" type="button" class="op-btn">Duplicate (⌘D)</button>
@@ -195,6 +212,16 @@ export class SelectionPanelComponent extends Component {
                 color: ${t('color-text-secondary')};
             }
 
+            & .zone-section {
+                display: none;
+                flex-direction: column;
+                gap: ${s('xs')};
+                &.show { display: flex; }
+            }
+            & .zone-field {
+                ${field()}
+            }
+
             & .delete-btn {
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.75rem;
@@ -208,6 +235,7 @@ export class SelectionPanelComponent extends Component {
     private tool = this.inject(DrawToolService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
+    private zoneTypes = this.inject(ZoneTypesService);
     private moveSelect!: HTMLSelectElement;
 
     render(): DocumentFragment {
@@ -226,13 +254,8 @@ export class SelectionPanelComponent extends Component {
             // Generated (read-only) rows: badge on, every edit control off.
             // Delete stays — false positives (roofs) are removed this way.
             generatedBadge: {
-                className: () => this.generatedSelection() ? 'generated-badge show' : 'generated-badge',
-                textContent: () => {
-                    const f = this.generatedSelection();
-                    if (!f) return '';
-                    const height = generatedHeightLabel(f);
-                    return height ? `${generatedBadgeLabel(f)} · ${height}` : generatedBadgeLabel(f) ?? '';
-                },
+                className: () => this.provenanceBadgeText() ? 'generated-badge show' : 'generated-badge',
+                textContent: () => this.provenanceBadgeText(),
             },
             moveField: {
                 className: () => this.editingAllowed() ? 'move-field' : 'move-field hidden',
@@ -300,6 +323,30 @@ export class SelectionPanelComponent extends Component {
             },
             simplifyApplyBtn: { onclick: () => this.tool.applySimplify() },
             simplifyCancelBtn: { onclick: () => this.tool.setSimplifyActive(false) },
+            // Vegetation zone (docs/feature-vegetation-zones.md §5): the
+            // per-feature rasterizer inputs. Hidden for every other type and
+            // for read-only (generated) rows.
+            zoneSection: {
+                className: () => this.zoneSelection() ? 'zone-section show' : 'zone-section',
+            },
+            zoneWeight: {
+                value: () => String(this.zoneAttributes().weight),
+                onchange: (e: Event) => this.saveZone({ weight: numberOf(e, 1) }),
+            },
+            zoneFeather: {
+                value: () => String(this.zoneAttributes().feather),
+                onchange: (e: Event) => this.saveZone({ feather: numberOf(e, 2) }),
+            },
+            zoneNoise: {
+                value: () => String(this.zoneAttributes().noise),
+                onchange: (e: Event) => this.saveZone({ noise: numberOf(e, 0) }),
+            },
+            zoneTypesBtn: {
+                onclick: () => {
+                    const courseId = this.features.selected.peek()?.courseId;
+                    if (courseId) void this.zoneTypes.openFor(courseId);
+                },
+            },
             surroundBtn: {
                 // Shift-click chains the surround pairings to exhaustion (T41).
                 onclick: (e: Event) => void this.tool.autoSurroundSelection((e as MouseEvent).shiftKey),
@@ -357,6 +404,32 @@ export class SelectionPanelComponent extends Component {
             }
         }
 
+        // Zone-type picker: options from the course's table, value from the
+        // selected zone. A zone naming a type the table no longer has keeps
+        // an explicit option of its own, so saving weight never silently
+        // retypes it.
+        const zoneSelect = this.ref(frag, 'zoneType') as HTMLSelectElement;
+        zoneSelect.addEventListener('change', () => this.saveZone({ zoneType: zoneSelect.value }));
+        this.track(effect(() => {
+            const types = this.zoneTypes.items.get();
+            const current = this.zoneAttributes().zoneType;
+            zoneSelect.textContent = '';
+            const keys = types.map(z => z.key);
+            for (const zoneType of types) {
+                const option = document.createElement('option');
+                option.value = zoneType.key;
+                option.textContent = zoneType.name;
+                zoneSelect.appendChild(option);
+            }
+            if (current && !keys.includes(current)) {
+                const orphan = document.createElement('option');
+                orphan.value = current;
+                orphan.textContent = `${current} (no such zone type)`;
+                zoneSelect.appendChild(orphan);
+            }
+            zoneSelect.value = current;
+        }));
+
         this.moveSelect = this.ref(frag, 'moveSelect') as HTMLSelectElement;
         this.moveSelect.addEventListener('change', () => {
             if (this.moveSelect.value === '__mixed') return;
@@ -399,9 +472,51 @@ export class SelectionPanelComponent extends Component {
         return f && isGeneratedFeature(f) ? f : null;
     }
 
+    /**
+     * Provenance badge for the single selection: generator output also shows
+     * its canopy height; an import shows only where it came from (it edits
+     * like any hand-drawn shape). Empty for hand-drawn features.
+     */
+    private provenanceBadgeText(): string {
+        const f = this.features.selected.get();
+        if (!f) return '';
+        const label = provenanceBadgeLabel(f);
+        if (!label) return '';
+        const height = generatedHeightLabel(f);
+        return height ? `${label} · ${height}` : label;
+    }
+
+    /** The single selected feature when it is an editable vegetation zone, else null. */
+    private zoneSelection() {
+        const f = this.features.editableSelected.get();
+        return f && f.type === 'vegetation_zone' ? f : null;
+    }
+
+    /** The selected zone's four attributes, with the defaults filled in. */
+    private zoneAttributes(): ZoneAttributes {
+        return this.zoneTypes.attributesOf(this.zoneSelection()?.attributes);
+    }
+
+    /**
+     * Persist one changed zone field. `attributes` replaces the whole object
+     * server-side, so all four keys go every time — the other three come from
+     * `zoneAttributes()`, which is the values on screen.
+     */
+    private saveZone(patch: Partial<ZoneAttributes>): void {
+        const zone = this.zoneSelection();
+        if (!zone) return;
+        void this.features.update(zone.id, { attributes: { ...this.zoneAttributes(), ...patch } });
+    }
+
     /** False while any selected row is generated: hides move/duplicate. */
     private editingAllowed(): boolean {
         const items = this.features.selectedFeatures.get();
         return items.length > 0 && items.every(f => !isGeneratedFeature(f));
     }
+}
+
+/** A number input's value, falling back when it was cleared or unparsable. */
+function numberOf(e: Event, fallback: number): number {
+    const value = Number((e.target as HTMLInputElement).value);
+    return Number.isFinite(value) ? value : fallback;
 }

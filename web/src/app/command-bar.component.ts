@@ -18,6 +18,7 @@ import { ServerModeService, visibleEditorTools } from './server-mode.service';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
 import { GeojsonImportService } from '../import/geojson-import.service';
 import { GsproExportService } from '../export/gspro-export.service';
+import { ZoneTypesService } from '../zones/zone-types.service';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
 import { TilesetService } from '../map/tileset.service';
 import { MapService } from '../map/map.service';
@@ -71,6 +72,8 @@ const zone3Tpl = template(`
         <span bind="featHost" class="cmdbar__slot"></span>
         <span bind="drawTarget" class="cmdbar__target" data-testid="draw-target"></span>
         <button bind="newPoly" type="button" class="cmdbar__new"></button>
+        <button bind="newPath" type="button" class="cmdbar__path"></button>
+        <input bind="pathWidth" type="number" class="cmdbar__path-width" min="0.5" step="0.5" aria-label="Path width (m)" data-testid="path-width-input">
         <button bind="boxSelect" type="button" class="cmdbar__box"></button>
         <span class="cmdbar__divider cmdbar__divider--sm"></span>
         <button bind="undoBtn" type="button" class="cmdbar__hist" aria-label="Undo">${icon('undo', 16)}</button>
@@ -270,6 +273,29 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 & .cmdbar__new-icon { transform: rotate(45deg); }
             }
             & .cmdbar__box { ${iconBtn()} }
+
+            /* New-path toggles like new-polygon; its width field only shows
+               while a path is being drawn. */
+            & .cmdbar__path { ${iconBtn()} }
+            & .cmdbar__path[aria-pressed="true"] {
+                border-color: transparent;
+                background: ${t('color-accent-primary')};
+                color: ${t('color-on-accent')};
+                &:hover { background: ${t('color-accent-hover')}; color: ${t('color-on-accent')}; }
+            }
+            & .cmdbar__path-width {
+                display: none;
+                width: 3.75rem;
+                height: 28px;
+                padding: 0 ${s('sm')};
+                border: 1px solid ${t('color-border-strong')};
+                border-radius: 6px;
+                background: ${t('color-surface-card')};
+                color: ${t('color-text-primary')};
+                font: inherit;
+                font-size: 12px;
+                &.show { display: inline-block; }
+            }
 
             /* (i) round info button. */
             & .cmdbar__info-btn {
@@ -506,6 +532,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private importSvc = this.inject(SvgImportService);
     private geojsonImportSvc = this.inject(GeojsonImportService);
     private gsproExportSvc = this.inject(GsproExportService);
+    private zoneTypesSvc = this.inject(ZoneTypesService);
     private mapBuild = this.inject(MapBuildClientService);
     private tileset = this.inject(TilesetService);
     private mapSvc = this.inject(MapService);
@@ -703,7 +730,27 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 'data-testid': 'box-select-btn',
                 onclick: () => this.tool.state.toggleBoxSelect(),
             },
+            newPath: {
+                innerHTML: icon('route', 16),
+                title: () => (this.pathArmed()
+                    ? 'Drawing a path — click to stop (Esc). Click along its centre, Enter commits it at the width'
+                    : 'New path (P): click along its centre, Enter commits it at the set width'),
+                'aria-label': () => (this.pathArmed() ? 'Stop drawing the path' : 'New path'),
+                'aria-pressed': () => this.pathArmed(),
+                'data-testid': 'new-path-btn',
+                onclick: () => {
+                    if (this.pathArmed()) this.tool.state.disarm();
+                    else this.tool.armPath();
+                },
+            },
+            pathWidth: {
+                className: () => (this.pathArmed() ? 'cmdbar__path-width show' : 'cmdbar__path-width'),
+                title: 'Path width in metres',
+            },
         });
+        const pathWidthInput = this.ref(frag, 'pathWidth') as HTMLInputElement;
+        pathWidthInput.addEventListener('change', () => this.tool.setPathWidthM(Number(pathWidthInput.value)));
+        this.track(effect(() => { pathWidthInput.value = String(this.tool.pathWidthM.get()); }));
 
         // Sub-mode dropdown.
         this.spawn(PopoverComponent, this.ref(frag, 'subHost'), {
@@ -747,6 +794,11 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     }
 
     /** Human label for the draw target hole (null = course level). */
+    /** True while a path (centerline) is being drawn — the new-path toggle's on state. */
+    private pathArmed(): boolean {
+        return this.tool.state.isDrawing.get() && this.tool.pathMode.get();
+    }
+
     private holeLabel(holeId: string | null): string {
         if (holeId === null) return 'Course level';
         const hole = this.svc.holes.get().find(h => h.id === holeId);
@@ -992,6 +1044,21 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 if (course) void this.gsproExportSvc.openFor(course.id, course.name);
             };
             host.appendChild(gsproBtn);
+
+            // Vegetation zone types — the course's zone legend (colours, mask
+            // channels, VSPro item bindings) that every vegetation_zone
+            // feature points into.
+            const zoneTypesBtn = document.createElement('button');
+            zoneTypesBtn.type = 'button';
+            zoneTypesBtn.className = 'menu-item';
+            zoneTypesBtn.dataset.testid = 'course-zone-types-btn';
+            zoneTypesBtn.innerHTML = `<span class="menu-item__icon">${icon('layers', 16)}</span><span class="menu-item__label">Vegetation zone types</span>`;
+            zoneTypesBtn.onclick = () => {
+                const course = this.svc.course.peek();
+                close();
+                if (course) void this.zoneTypesSvc.openFor(course.id);
+            };
+            host.appendChild(zoneTypesBtn);
 
             const divider = document.createElement('div');
             divider.className = 'menu-divider';

@@ -4,10 +4,12 @@ import { apiFetch } from '@basics/core/client/fetch';
 export interface TerrainEdit {
     id: string;
     siteId: string;
-    op: 'plane' | 'smooth';
+    op: 'corridor' | 'plane' | 'smooth';
     params: TerrainEditParams;
     rings: { x: number; y: number }[][];
     enabled: boolean;
+    origin: null | string;
+    originRef: null | string;
     version: number;
     createdAt: string;
     updatedAt: string;
@@ -17,13 +19,17 @@ export interface TerrainEditParams {
     featherM: number;
     radiusM?: number;
     flat?: boolean;
+    centerline?: { x: number; y: number }[];
+    smoothM?: number;
+    widthM?: number;
 }
 
 export interface TerrainEditsApi {
     list(input: { siteId: string }): Promise<TerrainEdit[]>;
-    create(input: { enabled?: boolean; params: { flat?: boolean; radiusM?: number; featherM: number }; rings: { x: number; y: number }[][]; siteId: string; op: 'plane' | 'smooth' }): Promise<TerrainEdit>;
-    update(input: { params?: { flat?: boolean; radiusM?: number; featherM: number }; rings?: { x: number; y: number }[][]; op?: 'plane' | 'smooth'; enabled?: boolean; id: string; version: number }): Promise<TerrainEdit>;
+    create(input: { enabled?: boolean; params: { flat?: boolean; radiusM?: number; centerline?: { x: number; y: number }[]; smoothM?: number; widthM?: number; featherM: number }; rings: { x: number; y: number }[][]; siteId: string; op: 'corridor' | 'plane' | 'smooth' }): Promise<TerrainEdit>;
+    update(input: { params?: { flat?: boolean; radiusM?: number; centerline?: { x: number; y: number }[]; smoothM?: number; widthM?: number; featherM: number }; rings?: { x: number; y: number }[][]; op?: 'corridor' | 'plane' | 'smooth'; enabled?: boolean; id: string; version: number }): Promise<TerrainEdit>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
+    import(input: { siteId: string; origin: string; geojson: unknown }): Promise<{ imported: TerrainEdit[]; skipped: string[] }>;
 }
 
 export function createTerrainEditsClient(baseUrl: string): TerrainEditsApi {
@@ -43,6 +49,9 @@ export function createTerrainEditsClient(baseUrl: string): TerrainEditsApi {
         },
         async remove(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/terrain-edits/remove`, body: input });
+        },
+        async import(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/terrain-edits/import`, body: input });
         },
     };
 }

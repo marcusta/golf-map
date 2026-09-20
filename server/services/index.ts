@@ -25,6 +25,8 @@ import { OrthoPatchesService } from './ortho-patches.service';
 import { HydroService } from './hydro.service';
 import { OsmService } from './osm.service';
 import { TerrainEditsService } from './terrain-edits.service';
+import { ZoneTypesService } from './zone-types.service';
+import { TerrainGeneratorsService } from './terrain-generators.service';
 import { PublishService } from './publish.service';
 import { TapscoreBridgeService } from './tapscore-bridge.service';
 import { HttpTapscoreClient } from './tapscore-client';
@@ -74,7 +76,11 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const hydroService = new HydroService({ courses: coursesService, assets: assetsService });
     const osmService = new OsmService({ courses: coursesService, assets: assetsService });
     const terrainEditsService = new TerrainEditsService(db);
-    const gsproExportService = new GsproExportService({ db, courses: coursesService, assets: assetsService, dataDir });
+    const zoneTypesService = new ZoneTypesService(db);
+    const gsproExportService = new GsproExportService({ db, courses: coursesService, assets: assetsService, dataDir, terrainEdits: terrainEditsService });
+    const terrainGeneratorsService = new TerrainGeneratorsService({
+        courses: coursesService, assets: assetsService, terrainEdits: terrainEditsService, dataDir,
+    });
     const publishService = new PublishService({ db, dataDir });
     // Serve-mode ingest endpoint (§8); the service is cheap to construct in
     // either mode — only its API is mounted (serve only) by main.ts.
@@ -93,6 +99,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         pinsService,
         aimPointsService,
         courseFeaturesService,
+        zoneTypesService,
         clubsService,
         gamePlansService,
         roundsService,
@@ -105,6 +112,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         hydroService,
         osmService,
         terrainEditsService,
+        terrainGeneratorsService,
         gsproExportService,
         publishService,
         tapscoreBridgeService,

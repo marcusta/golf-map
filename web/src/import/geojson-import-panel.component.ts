@@ -13,7 +13,7 @@ import { s, btn, primaryBtn, glassPanel, panelTitle, metric, OVERLAY_W, OVERLAY_
 import { MapService } from '../map/map.service';
 import { FeaturesService, geometryToWgs84Rings } from '../draw/features.service';
 import { FEATURE_TYPES, FEATURE_STYLES, typeColorExpression } from '../draw/feature-palette';
-import { GeojsonImportService, OSM_FETCH_FILENAME } from './geojson-import.service';
+import { GeojsonImportService, OSM_FETCH_FILENAME, ROADS_FETCH_FILENAME } from './geojson-import.service';
 import type { BuildResult } from './svg-import.service';
 import type { GeojsonBucket } from './geojson-parse';
 import { icon } from '../ui/icons';
@@ -36,6 +36,7 @@ const tpl = template(`
             <input bind="file" type="file" accept=".geojson,.json,application/geo+json" />
             <button bind="fetchHydro" type="button" class="fetch-btn" data-testid="geojson-fetch-hydro-btn"></button>
             <button bind="fetchOsm" type="button" class="fetch-btn" data-testid="geojson-fetch-osm-btn"></button>
+            <button bind="fetchRoads" type="button" class="fetch-btn" data-testid="geojson-fetch-roads-btn"></button>
             <div bind="odblNote" class="license-note"></div>
             <div bind="fetchError" class="error"></div>
             <div bind="fileInfo" class="hint"></div>
@@ -234,9 +235,17 @@ export class GeojsonImportPanelComponent extends Component {
                 disabled: () => this.svc.fetching.get(),
                 onclick: () => void this.svc.fetchFromOsm(),
             },
-            // ODbL notice (T49 posture) — shown while the OSM fetch is the
-            // wizard's loaded source.
-            odblNote: () => this.svc.fileName.get() === OSM_FETCH_FILENAME
+            fetchRoads: {
+                textContent: () => this.svc.fetching.get() && this.svc.fetchSource.get() === 'roads'
+                    ? 'Fetching roads from OpenStreetMap…'
+                    : 'Fetch roads from OpenStreetMap',
+                title: 'Every OSM road in the map area as a corridor polygon (path) — bucket on road_class to keep roads and drop footpaths',
+                disabled: () => this.svc.fetching.get(),
+                onclick: () => void this.svc.fetchFromRoads(),
+            },
+            // ODbL notice (T49 posture) — shown while an OSM fetch (features
+            // or roads) is the wizard's loaded source.
+            odblNote: () => [OSM_FETCH_FILENAME, ROADS_FETCH_FILENAME].includes(this.svc.fileName.get() ?? '')
                 ? 'OSM data is ODbL — imported features mark this course\'s map data ODbL until removed.'
                 : '',
             fetchError: () => this.svc.fetchError.get() ?? '',
