@@ -30,6 +30,9 @@ Ground-up rebuild of a golf course map system. Server is source of truth; web bu
 
 `docs/` holds feature proposals (planner strategy engine, yardages, smart caddy) and `docs/reference/`, `docs/prompts/`. Read before touching the planner/strategy layer.
 
+For Unity/VSP/GSPro tree rendering, read [docs/tree-rendering-fixes.md](docs/tree-rendering-fixes.md)
+before changing foliage materials or shaders. It records confirmed fixes, refresh steps and failed approaches.
+
 ## Testing
 
 See [TESTING.md](TESTING.md) for the strategy. In short: integration-first, **no
