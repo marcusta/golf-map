@@ -66,7 +66,7 @@ report says visual verification is pending for each new run.
 
 1. Copy only the staged `Assets/GolfMap/Vreta/FoliageTrialV2/Oak Leaves.mat` to
    the same relative path in the Unity project. Leave its `.meta` unchanged.
-2. In Unity, run **GolfMap > Vreta > Refresh vegetation from materials**.
+2. In Unity, run **GolfMap > Refresh vegetation from materials**.
    VSP caches material state and colour overrides; editing the file alone is
    insufficient. No replant is needed for the mesh material change.
 3. Compare the same oak from the previously white and green angles. Marcus
@@ -85,7 +85,7 @@ targets the metallic shader and writes older smoothness/back-face settings.
 
 ### One-click comparisons in Unity
 
-Open **GolfMap > Vreta > Tree rendering tests**. The panel is implemented in
+Open **GolfMap > Tree rendering tests**. The panel is implemented in
 [GolfMapTreeRenderingTests.cs](../unity/Editor/GolfMap/GolfMapTreeRenderingTests.cs).
 Use a saved scene with its GolfMap VSP systems active, frame an oak and birch, and
 enable Scene Lighting. The first test captures the current baseline automatically.

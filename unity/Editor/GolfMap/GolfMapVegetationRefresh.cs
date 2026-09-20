@@ -18,7 +18,7 @@ namespace GolfMap.Editor
     {
         // No keyboard shortcut: Unity's "&" modifier is Alt, and Windows hands Alt+key to the
         // editor's own menu bar first, so an Alt shortcut here silently never fires.
-        [MenuItem("GolfMap/Vreta/Refresh vegetation from materials")]
+        [MenuItem("GolfMap/Refresh vegetation from materials")]
         public static void Refresh()
         {
             // Import material files edited outside Unity first; otherwise the sync below reads the

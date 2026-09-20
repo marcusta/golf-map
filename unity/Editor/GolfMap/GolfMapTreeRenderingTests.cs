@@ -15,7 +15,7 @@ namespace GolfMap.Editor
     // restoration also works after a restart, without rolling back whole scene/assets.
     public class GolfMapTreeRenderingTests : EditorWindow
     {
-        const string Folder = "Assets/GolfMap/Vreta/FoliageTrialV2/";
+        static string Folder { get { return GolfMapCourses.Folder(GolfMapCourses.Require()) + "FoliageTrialV2/"; } }
         const string Recovery = "Library/GolfMapTreeRenderingBaseline.json";
         [Serializable] public class Leaf
         {
@@ -41,7 +41,7 @@ namespace GolfMap.Editor
         string current = "Baseline", message = "";
         Vector2 scroll;
 
-        [MenuItem("GolfMap/Vreta/Tree rendering tests")]
+        [MenuItem("GolfMap/Tree rendering tests")]
         public static void Open() { GetWindow<GolfMapTreeRenderingTests>("Tree rendering tests"); }
         void OnEnable()
         {

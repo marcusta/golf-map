@@ -25,7 +25,7 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
 | Script copy | `D:\gspro_courses\vreta_v4_2025_12_02\Assets\Editor\GolfMap\` mirrors `unity/Editor/GolfMap/`; `Assets\GolfMap\Runtime\` mirrors `unity/Runtime/GolfMap/` (the `GolfMapTrees` component must live outside an Editor folder to be saved in the scene) |
 | Unity version | 2018.2.8f1 — C# 6 only, `TerrainLayer` absent (SplatPrototype), Vegetation Studio Pro installed |
 | Export folder (planter input) | `D:\gspro_courses\vreta-opcd\` — `vreta-{inner,outer}-trees.json`, `vreta-{inner,outer}-zones.json` + `-zones-<n>.png`, DEM `.raw`/`.tif.json`, orthos |
-| Course assets in Unity | `Assets/GolfMap/Vreta/` — `palette.json`, `Vreta_trees.json`, `ImportedTreeStorage*.asset`, `TreeCatalog*.asset`, `Zones/` (imported zone masks) |
+| Course assets in Unity | `Assets/GolfMap/Vreta/` — `Course.asset` (`GolfMapCourse`: scene, export folder/prefix, terrain names; its folder *is* the course folder), `palette.json`, `Vreta_trees.json`, `ImportedTreeStorage*.asset`, `TreeCatalog*.asset`, `Zones/` (imported zone masks) |
 | Terrains in scene | `Terrain (Inner)` (2050 m, origin) and `Plot (Outer)` (5000 m, offset); outer trees plant as VSP billboards, excluding the inner square |
 
 ## Workflow (every session)
@@ -47,6 +47,10 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
    trace's line numbers against the repo file (the copies are identical).
 
 ## Gotchas learned the hard way
+
+- **No course names in code.** Paths, scene and terrain names come from the active `GolfMapCourse`
+  (`GolfMapCourses.Require()` / `.For(component)`, `Folder`, `PalettePath`, `ExportFile`, `ReportPath`).
+  Vreta is the test bed, not a constant; a new tool that needs a course file asks the course for it.
 
 - **VSP cell edges.** VSP resolves a world position to a vegetation cell with a zero-size
   `Rect` and a strict overlap test, both in its own `AddVegetationItemInstance` and in the planter's
@@ -93,12 +97,12 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
 - Persistent storage is never reinitialised over an existing package; inner and outer use
   separate VSP systems and storage assets, matched to their terrain by bounds.
 - Imported trees carry VSP source id 42; clear/replace only touch that source.
-- The planter writes a report to `<UnityProject>/GolfMapSpelunk/Vreta_tree_import.txt` after each plant.
+- The planter writes a report to `<UnityProject>/GolfMapSpelunk/<Course>_tree_import.txt` after each plant.
 - **Planted materials must keep a stock shader name.** VSP picks a shader controller by name and GSPro's
   build has no fallback: a custom name (e.g. the retired `GolfMap/Tree Leaves No Spec`) stops the whole
   package loading, silently. The Plant check rejects it; don't work around it.
 - **Leaf colour edits need a VSP refresh.** For items on the NM "Nature Manufacture tree" controller, VSP
-  draws with the colours stored in the catalogue, not the `.mat`. Use `GolfMap > Vreta > Refresh
+  draws with the colours stored in the catalogue, not the `.mat`. Use `GolfMap > Refresh
   vegetation from materials` (or the planter's refresh button) after editing `_HealthyColor`/`_DryColor`;
   a replant is only needed for palette changes.
 - **Leave `_BackFaceMirrorNormal` at 0 on leaf materials** (birch is the one exception). The leaf meshes

@@ -118,7 +118,7 @@ namespace GolfMap.Editor
         }
 
         // For scenes planted before the planter built the rig itself. Safe to re-run.
-        [MenuItem("GolfMap/Vreta/Fix vegetation systems for GSPro")]
+        [MenuItem("GolfMap/Fix vegetation systems for GSPro")]
         public static void FixScene()
         {
             var scene = SceneManager.GetActiveScene();

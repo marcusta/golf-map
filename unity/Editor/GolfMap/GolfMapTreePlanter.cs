@@ -87,6 +87,8 @@ namespace GolfMap.Editor
         Mode mode { get { return T.mode; } set { T.mode = value; } }
         bool useBiome { get { return T.useBiome; } set { T.useBiome = value; } }
         string biomePath { get { return T.biomePath; } set { T.biomePath = value; } }
+        // An empty path means the course's own palette.
+        internal string BiomeFile { get { return string.IsNullOrEmpty(biomePath) ? GolfMapCourses.PalettePath(GolfMapCourses.For(component)) : biomePath; } }
         Terrain innerExclusion { get { return T.innerExclusion; } set { T.innerExclusion = value; } }
         bool includeReviewMatches { get { return T.includeReviewMatches; } set { T.includeReviewMatches = value; } }
         GolfMapBiome biome;
@@ -184,6 +186,7 @@ namespace GolfMap.Editor
         void DrawSetup()
         {
             EditorGUILayout.LabelField("Input", EditorStyles.boldLabel);
+            T.course = (GolfMapCourse)EditorGUILayout.ObjectField(new GUIContent("Course", "Empty: the course that claims this scene."), T.course, typeof(GolfMapCourse), false);
             using (new EditorGUILayout.HorizontalScope())
             {
                 filePath = EditorGUILayout.TextField("Trees file", filePath);
@@ -199,7 +202,7 @@ namespace GolfMap.Editor
             EditorGUILayout.Space();
             useBiome = EditorGUILayout.Toggle("Use biome palette", useBiome);
             if(useBiome){
-                biomePath=EditorGUILayout.TextField("Biome JSON",biomePath);
+                biomePath=EditorGUILayout.TextField(new GUIContent("Biome JSON","Empty: the course's palette."),biomePath);
                 if(GUILayout.Button("Choose biome JSON")) { var p=EditorUtility.OpenFilePanel("Biome palette", "", "json");if(p.Length>0)biomePath=p; }
                 includeReviewMatches=EditorGUILayout.Toggle("Include imperfect/unknown fits",includeReviewMatches);
                 EditorGUILayout.HelpBox("Reads the selected prefab list, species weights and uniform size limits. Colours come from the biome's prepared prefab materials across all LODs. Load and check previews matches without planting.",MessageType.Info);
@@ -369,7 +372,7 @@ namespace GolfMap.Editor
         {
             biomeMatches.Clear();biomePrefabs.Clear();woodlandTrees.Clear();biome=null;
             if(!useBiome)return "";
-            biome=JsonUtility.FromJson<GolfMapBiome>(File.ReadAllText(biomePath).TrimStart('\uFEFF'));
+            biome=JsonUtility.FromJson<GolfMapBiome>(File.ReadAllText(BiomeFile).TrimStart('\uFEFF'));
             if(biome==null||biome.format!="golfmap-tree-palette-v1"||biome.rules==null||biome.assets==null||biome.assets.Count==0)throw new Exception("Invalid biome palette.");
             var rules=biome.rules;
             if(!(rules.minScale>0&&rules.maxScale>=rules.minScale&&rules.variationBand>=0&&rules.speciesFitSlack>=0&&rules.maxHeightError>=0&&rules.maxWidthError>=0))throw new Exception("Invalid biome rules.");

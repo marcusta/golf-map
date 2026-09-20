@@ -38,8 +38,9 @@ namespace GolfMap.Editor
         // A pad flatter than this across the rectangle is a pad; more is a slope the pipeline never flattened.
         const float kPadSpreadWarnM = 0.3f;
 
-        [SerializeField] string surveyPath = "D:/gspro_courses/vreta-opcd/vreta-outer-buildings.json";
-        [SerializeField] string reportPath = "D:/golf-map/tree-export/vreta-outer-building-assignments.json";
+        const string kReportPref = "GolfMap.Buildings.ReportPath";
+        [SerializeField] string surveyPath = "";
+        [SerializeField] string reportPath = "";
         [SerializeField] Terrain terrain;
         [SerializeField] bool clearExisting = true;
         [SerializeField] bool plantReview = false;
@@ -48,12 +49,22 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Buildings/Plant from assignments")]
         public static void Open() { GetWindow<GolfMapBuildingPlanter>("Building planter"); }
 
+        // The survey comes from the course's export folder; the matcher writes its report outside
+        // the Unity project, so the last one picked is remembered per machine.
+        void OnEnable()
+        {
+            var course = GolfMapCourses.Active();
+            if (string.IsNullOrEmpty(surveyPath) && course) surveyPath = GolfMapCourses.ExportFile(course, "outer", "buildings") ?? "";
+            if (string.IsNullOrEmpty(reportPath)) reportPath = EditorPrefs.GetString(kReportPref, "");
+        }
+
         void OnGUI()
         {
             surveyPath = EditorGUILayout.TextField("Buildings JSON", surveyPath);
             if (GUILayout.Button("Choose survey")) { var p = EditorUtility.OpenFilePanel("unity-buildings-v1", "", "json"); if (p.Length > 0) surveyPath = p; }
             reportPath = EditorGUILayout.TextField("Assignment JSON", reportPath);
             if (GUILayout.Button("Choose report")) { var p = EditorUtility.OpenFilePanel("Assignments", "", "json"); if (p.Length > 0) reportPath = p; }
+            if (GUI.changed) EditorPrefs.SetString(kReportPref, reportPath);
             terrain = (Terrain)EditorGUILayout.ObjectField("Terrain", terrain, typeof(Terrain), true);
             if (terrain == null && Terrain.activeTerrain != null && GUILayout.Button("Use active terrain")) terrain = Terrain.activeTerrain;
             clearExisting = EditorGUILayout.Toggle("Clear existing buildings", clearExisting);

@@ -89,10 +89,23 @@ separate inner/outer VSP setup. Install `GolfMapTreePlanter.cs`, `GolfMapBiome.c
 `GolfMapTreePlanterVsp.cs`, `GolfMapVspRig.cs`, `GolfMapTreesInspector.cs`, the runtime
 component and `GolfMapBiomeAtlas.shader` together for VSP.
 
-`GolfMap > Vreta > Configure manual biome planter` configures the current Vreta
+### Courses
+
+Nothing in the tools names a course. Each course is a `GolfMapCourse` asset
+(`Runtime/GolfMap/GolfMapCourse.cs`) saved as `Assets/GolfMap/<Course>/Course.asset`; the
+folder it sits in is the course folder, holding `palette.json`, the fallback trees file, VSP
+storage, catalogues and `Zones/`. The asset records the scene name, the pipeline export folder
+and file prefix (`<prefix>-inner-trees.json` ...), and the inner terrain's names.
+`GolfMapCourses.cs` resolves the active course: the one whose scene name matches the open
+scene, else the only course in the project; a `GolfMap Trees` component can pin one
+explicitly. A project with a single `Assets/GolfMap/<Course>/palette.json` and no course
+asset is adopted on first use (Vreta was). **GolfMap > Course > New course for this scene**
+creates one by hand. Reports go to `GolfMapSpelunk/<Course>_*.txt`.
+
+`GolfMap > Configure course planter` configures the active course's
 inner import without planting. Use **Load and check**, then **Plant** manually.
-The selected palette is `Assets/GolfMap/Vreta/palette.json` (copied from
-`docs/gspro/vreta/palette.json`). Biome mode uses uniform scale and deterministic
+An empty **Biome JSON** means the course's palette, `Assets/GolfMap/<Course>/palette.json`
+(the Unity copy is the source of truth; `docs/gspro/vreta/palette.json` is a snapshot of it). Biome mode uses uniform scale and deterministic
 species/size matching. Legacy lists remain available with biome mode switched off.
 
 Outer files require a separate VSP system and inner-terrain exclusion. Both mesh
@@ -109,7 +122,7 @@ Pro to scene* wizard produces, because that is what GSPro is written against:
   remap resolves the system by that name and null-refs on a renamed one, and the course
   then renders no vegetation at all (diagnosed by OPCD's John Meyer from the GreenKeeper
   logs). Duplicate sibling names are legal; nothing of ours identifies a system by name,
-  the planter goes by its storage asset under `Assets/GolfMap/Vreta/` plus a terrain
+  the planter goes by its storage asset under `Assets/GolfMap/` plus a terrain
   bounds match (`IsGolfMapStorage`).
 - it is a **child of the `VegetationStudioPro` manager object**, with `TerrainSystemPro`
   and `ColliderSystemPro` beside the storage.
@@ -117,7 +130,7 @@ Pro to scene* wizard produces, because that is what GSPro is written against:
   the component is added; GSPro destroys the course camera on load and only falls back to
   its own when the list is empty, so a serialised camera leaves the system bound to a dead one.
 
-`GolfMap > Vreta > Fix vegetation systems for GSPro` brings scenes planted before this
+`GolfMap > Fix vegetation systems for GSPro` brings scenes planted before this
 into the same shape and prunes retired catalogue items; it is safe to re-run and reports
 what it changed. Re-parenting never moves trees — stored instances are relative to
 `VegetationSystemBounds`, not the transform.
@@ -211,7 +224,7 @@ undo for editor changes: use Reset to survey or the planting backups.
 
 ### Refreshing after a material edit
 
-`GolfMap > Vreta > Refresh vegetation from materials` (`GolfMapVegetationRefresh.cs`)
+`GolfMap > Refresh vegetation from materials` (`GolfMapVegetationRefresh.cs`)
 picks up edits to leaf/bark materials **without replanting**. VSP stores the NM shader-controller
 colours (bark `_Color`, leaf `_HealthyColor`/`_DryColor`) in the vegetation package and overrides
 the prefab's material with them when it draws, so editing the `.mat` alone changes nothing on

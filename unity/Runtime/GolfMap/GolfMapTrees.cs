@@ -22,10 +22,11 @@ namespace GolfMap
         public enum Mode { TerrainInstances, GameObjects, PersistentStorage }
 
         [Header("Input")]
+        public GolfMapCourse course;                 // empty: the scene's active course
         public string filePath = "";                 // unity-trees-v1 JSON (absolute or project-relative)
         public Terrain terrain;
         public bool useBiome = true;
-        public string biomePath = "Assets/GolfMap/Vreta/palette.json";
+        public string biomePath = "";                // empty: the course's palette
         public bool includeReviewMatches = true;
 
         [Header("Prefabs by crown kind (biome off)")]

@@ -10,17 +10,16 @@ namespace GolfMap.Editor
 {
     public partial class GolfMapTreePlanter
     {
-        [MenuItem("GolfMap/Vreta/Verify imported trees and clear safety %&v")]
-        public static void VerifyVreta()
+        [MenuItem("GolfMap/Verify imported trees and clear safety %&v")]
+        public static void VerifyCourse()
         {
             var window = Select();
-            window.ConfigureVreta();
+            window.ConfigureFromCourse();
             window.LoadFile();
-            if (!window.storage || window.loaded == null) throw new InvalidOperationException("Import Vreta first.");
+            if (!window.storage || window.loaded == null) throw new InvalidOperationException("Plant the course trees first.");
             var package = window.storage.PersistentVegetationStoragePackage;
             var system = window.storage.VegetationSystemPro;
-            Directory.CreateDirectory("GolfMapSpelunk");
-            File.WriteAllText("GolfMapSpelunk/Vreta_render_diagnostics.txt", JsonUtility.ToJson(system.EnvironmentSettings, true) + "\n" + string.Join("\n", system.VegetationPackageProModelsList.SelectMany(p => p.VegetationItemModelList).Select(m => m.BillboardMaterial ? m.BillboardMaterial.name + " texture=" + AssetDatabase.GetAssetPath(m.BillboardMaterial.mainTexture) + " color=" + m.BillboardMaterial.GetColor("_Color") + " brightness=" + m.BillboardMaterial.GetFloat("_Brightness") + " snow=" + m.BillboardMaterial.GetFloat("_SnowAmount") : "no billboard").ToArray()));
+            File.WriteAllText(GolfMapCourses.ReportPath(window.Course, "render_diagnostics.txt"), JsonUtility.ToJson(system.EnvironmentSettings, true) + "\n" + string.Join("\n", system.VegetationPackageProModelsList.SelectMany(p => p.VegetationItemModelList).Select(m => m.BillboardMaterial ? m.BillboardMaterial.name + " texture=" + AssetDatabase.GetAssetPath(m.BillboardMaterial.mainTexture) + " color=" + m.BillboardMaterial.GetColor("_Color") + " brightness=" + m.BillboardMaterial.GetFloat("_Brightness") + " snow=" + m.BillboardMaterial.GetFloat("_SnowAmount") : "no billboard").ToArray()));
             var entries = package.PersistentVegetationCellList.SelectMany(c => c.PersistentVegetationInfoList).SelectMany(i => i.VegetationItemList).Where(t => t.VegetationSourceID == ImportSource).ToList();
             if (entries.Count != window.loaded.trees.Count) throw new InvalidOperationException("Tree count mismatch.");
             var byPosition = entries.ToDictionary(t => PositionKey(t.Position + system.VegetationSystemPosition));
@@ -51,7 +50,7 @@ namespace GolfMap.Editor
             }
             finally { DestroyImmediate(copy); }
             string report = "PASS: " + entries.Count + " imported trees; unique positions; max XZ error " + maxPositionError + " m; falloff 1; positive scales. Clear removes source 42, preserves other sources, and is idempotent (isolated storage copy). Unity " + Application.unityVersion;
-            File.WriteAllText("GolfMapSpelunk/Vreta_tree_verification.txt", report);
+            File.WriteAllText(GolfMapCourses.ReportPath(window.Course, "tree_verification.txt"), report);
             Debug.Log("[GolfMap] " + report);
             EditorSceneManager.SaveScene(window.terrain.gameObject.scene);
         }

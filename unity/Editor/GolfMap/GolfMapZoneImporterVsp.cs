@@ -135,8 +135,10 @@ namespace GolfMap.Editor
             if (GolfMapTreePlanter.IsImportedCatalogue(package)) throw new Exception("Refusing to write zone masks into the planter's tree catalogue. Pick the lower-vegetation package.");
             if (!EditorUtility.IsPersistent(package)) throw new Exception("The vegetation package is not a saved asset.");
 
-            var course = GolfMapZones.CourseName(loadedPath, loaded.plot);
-            var folder = "Assets/GolfMap/" + course + "/Zones/";
+            // The active course's folder; a project without a course asset falls back to the export's name.
+            var active = GolfMapCourses.Active();
+            var course = active ? GolfMapCourses.Name(active) : GolfMapZones.CourseName(loadedPath, loaded.plot);
+            var folder = (active ? GolfMapCourses.Folder(active) : GolfMapCourses.Root + course + "/") + "Zones/";
             var report = new ImportReport();
 
             // 1. Textures: copy next to the trees file and import readable RGBA32.

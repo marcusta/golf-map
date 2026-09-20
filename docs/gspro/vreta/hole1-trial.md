@@ -26,7 +26,7 @@ bun unity/prepare-hole-review.ts tree-export/vreta-assignments-reviewed.json
 
 Choose a new full-report filename each time. The preparation step replaces the generated hole sample and review page. Authored choices and exclusions in that report are retained when downloading the next set of overrides.
 
-In Unity open **GolfMap > Vreta > Review and import assignments**, select `D:/golf-map/tree-export/vreta-hole1-assignments.json`, Validate, then Apply. Validation runs again on Apply. Review flags are informational and are included in the trial.
+(Historical: `GolfMapAssignmentImporter` was removed once the biome planter replaced per-stem assignment files.) In Unity open **GolfMap > Vreta > Review and import assignments**, select `D:/golf-map/tree-export/vreta-hole1-assignments.json`, Validate, then Apply. Validation runs again on Apply. Review flags are informational and are included in the trial.
 
 ## Recovery and current limits
 

@@ -15,7 +15,7 @@ namespace GolfMap.Editor
     public partial class GolfMapTreePlanter
     {
         const byte ImportSource = 42;
-        const string VretaFolder = "Assets/GolfMap/Vreta/";
+        internal GolfMapCourse Course { get { return GolfMapCourses.For(component); } }
         PersistentVegetationStorage storage { get { return T.storage; } set { T.storage = value; } }
         List<GameObject> groundMeshes { get { return T.groundMeshes; } set { T.groundMeshes = value; } }
         float outerBillboardDistance { get { return T.outerBillboardDistance; } set { T.outerBillboardDistance = value; } }
@@ -24,47 +24,46 @@ namespace GolfMap.Editor
         partial void StorageAvailable(ref bool available) {available=true;}
         static bool Finite(float v) { return !float.IsNaN(v) && !float.IsInfinity(v); }
 
-        [MenuItem("GolfMap/Vreta/Configure manual biome planter %&g")]
-        public static void ImportVreta()
+        [MenuItem("GolfMap/Configure course planter %&g")]
+        public static void ConfigureCourse()
         {
             var planter = Select();
-            try { planter.ConfigureVreta(); }
+            try { planter.ConfigureFromCourse(); }
             catch(Exception e) {
-                planter.status = "Vreta setup stopped: " + e.Message;
+                planter.status = "Course setup stopped: " + e.Message;
                 Debug.LogWarning("[GolfMap] " + planter.status);
             }
             planter.Repaint(); // Configuring must never replant the whole course.
         }
 
-        void ConfigureVreta()
+        void ConfigureFromCourse()
         {
+            var course = Course;
             var scene = SceneManager.GetActiveScene();
-            if (scene.name != "Vreta_lidar_scene") throw new InvalidOperationException("Open Vreta_lidar_scene first.");
+            if (!string.IsNullOrEmpty(course.sceneName) && scene.name != course.sceneName) throw new InvalidOperationException("Open " + course.sceneName + " first.");
             var innerTerrains = FindObjectsOfType<Terrain>().Where(t => t.gameObject.scene == scene && t.terrainData &&
-                (t.name == "Terrain (Inner)" || t.terrainData.name == "Vreta_lidar_inner")).ToArray();
+                (t.name == course.innerTerrainName || t.terrainData.name == course.innerTerrainData)).ToArray();
             if(innerTerrains.Length != 1)throw new InvalidOperationException(
-                "Expected one inner terrain named Terrain (Inner) or using Vreta_lidar_inner data; found " + innerTerrains.Length +
+                "Expected one inner terrain named " + course.innerTerrainName + " or using " + course.innerTerrainData + " data; found " + innerTerrains.Length +
                 ". Select the target terrain and trees file manually in this window.");
             var chosenTerrain = innerTerrains[0];
             var systems = FindObjectsOfType<PersistentVegetationStorage>().Where(v => v.gameObject.scene == scene &&
-                (v.name == "GolfMap Vreta Trees" || v.name.StartsWith("GolfMap Vreta Trees (")) &&
-                StorageMatchesTerrain(v,chosenTerrain)).ToArray();
+                IsGolfMapStorage(v) && StorageMatchesTerrain(v,chosenTerrain)).ToArray();
             if(systems.Length > 1)throw new InvalidOperationException("Several inner storage systems match. Select the intended storage manually.");
             terrain = chosenTerrain;
             innerExclusion = null;
-            var currentExport = Path.GetFullPath(Path.Combine(Application.dataPath, "../../vreta-opcd/vreta-inner-trees.json"));
-            filePath = File.Exists(currentExport) ? currentExport : VretaFolder + "Vreta_trees.json";
+            filePath = GolfMapCourses.TreesFile(course, "inner");
             mode = Mode.PersistentStorage;
             broadleafPrefabs = new List<GameObject> { AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Trees/Broadleaf/Broadleaf_Desktop.prefab") };
             coniferPrefabs = new List<GameObject> { AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Trees/Conifer/Conifer_Desktop.prefab") };
             unknownPrefabs.Clear(); bushPrefabs.Clear();
-            useBiome=true;biomePath=VretaFolder+"palette.json";
+            useBiome=true;biomePath="";
             forceBillboards=false;minScale = 0.75f; maxScale = 1.4f; scaleWidth = false;
             clearExisting = false;
             groundMeshes = FindObjectsOfType<MeshFilter>().Where(m => m.gameObject.scene == scene && m.name.StartsWith("Spline_") && !m.name.Contains("Blend") && m.sharedMesh != null).Select(m => m.gameObject).ToList();
             storage = systems.Length == 1 ? systems[0] : null;
             loaded = null;
-            status = "Vreta preset ready: " + groundMeshes.Count + " course meshes, terrain fallback. Plant creates dedicated VSP storage if needed.";
+            status = GolfMapCourses.Name(course) + " preset ready: " + groundMeshes.Count + " course meshes, terrain fallback. Plant creates dedicated VSP storage if needed.";
             Dirty();
         }
 
@@ -235,7 +234,7 @@ namespace GolfMap.Editor
 
         partial void ClearImported()
         {
-            if (!storage || !storage.PersistentVegetationStoragePackage) { status = "Assign persistent storage (or use the Vreta preset)."; return; }
+            if (!storage || !storage.PersistentVegetationStoragePackage) { status = "Assign persistent storage (or use GolfMap > Configure course planter)."; return; }
             var package = storage.PersistentVegetationStoragePackage;
             int count = SourceCount(package);
             BackupStorage(package);
@@ -252,8 +251,7 @@ namespace GolfMap.Editor
         static bool IsGolfMapStorage(PersistentVegetationStorage candidate)
         {
             if(!candidate||!candidate.PersistentVegetationStoragePackage)return false;
-            return AssetDatabase.GetAssetPath(candidate.PersistentVegetationStoragePackage)
-                .StartsWith(VretaFolder,StringComparison.OrdinalIgnoreCase);
+            return GolfMapCourses.Owns(AssetDatabase.GetAssetPath(candidate.PersistentVegetationStoragePackage));
         }
 
         static bool StorageMatchesTerrain(PersistentVegetationStorage candidate,Terrain target)
@@ -303,7 +301,7 @@ namespace GolfMap.Editor
             if (!terrain.GetComponent<UnityTerrain>()) Undo.AddComponent<UnityTerrain>(terrain.gameObject);
             system.AddTerrain(terrain.gameObject);
             var package = CreateInstance<PersistentVegetationStoragePackage>();
-            AssetDatabase.CreateAsset(package, AssetDatabase.GenerateUniqueAssetPath(VretaFolder + "ImportedTreeStorage.asset"));
+            AssetDatabase.CreateAsset(package, AssetDatabase.GenerateUniqueAssetPath(GolfMapCourses.Folder(Course) + "ImportedTreeStorage.asset"));
             storage.SetPersistentVegetationStoragePackage(package);
             system.RefreshVegetationSystem();
             storage.InitializePersistentStorage(); // New, empty package only. Never reinitialize existing storage.
@@ -419,7 +417,7 @@ namespace GolfMap.Editor
             {
                 catalog = CreateInstance<VegetationPackagePro>();
                 catalog.PackageName = CatalogName;
-                AssetDatabase.CreateAsset(catalog, AssetDatabase.GenerateUniqueAssetPath(VretaFolder + "TreeCatalog.asset"));
+                AssetDatabase.CreateAsset(catalog, AssetDatabase.GenerateUniqueAssetPath(GolfMapCourses.Folder(Course) + "TreeCatalog.asset"));
                 system.AddVegetationPackage(catalog);
             }
             bool changed = false;
@@ -561,8 +559,7 @@ namespace GolfMap.Editor
                 RefreshStorage();
                 AssetDatabase.SaveAssets();
                 status = "Imported " + prepared.Count + " trees: " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup.";
-                Directory.CreateDirectory("GolfMapSpelunk");
-                File.WriteAllText("GolfMapSpelunk/Vreta_tree_import.txt", DateTime.UtcNow.ToString("o") + "\n" + status + "\n" + AlignmentReport() + "\nStorage: " + AssetDatabase.GetAssetPath(package));
+                File.WriteAllText(GolfMapCourses.ReportPath(Course, "tree_import.txt"), DateTime.UtcNow.ToString("o") + "\n" + status + "\n" + AlignmentReport() + "\nStorage: " + AssetDatabase.GetAssetPath(package));
                 Debug.Log("[GolfMap] " + status);
             }
             catch (Exception e) { status = "Import stopped: " + e.Message; Debug.LogException(e); }

@@ -20,7 +20,7 @@ to for the same reason - so the oaks follow the birches.
 Both materials keep their path and .meta, so their guids are unchanged and the four
 `PF_Oak_* Terrain` prefabs, the palette and the planted catalogues all still resolve: no
 replant is needed for geometry. The catalogue items cache `ShaderName` and
-`ShaderControllerSettings` though, so run `GolfMap > Vreta > Refresh vegetation from materials`
+`ShaderControllerSettings` though, so run `GolfMap > Refresh vegetation from materials`
 afterwards to re-derive them.
 
 The oak textures are packed CTI-style and have to be rebuilt, exactly as the birch leaves did
@@ -252,5 +252,5 @@ print("wind: %s + leaves %s" % (WIND, LEAF_WIND))
 print("leaf tint carried to _HealthyColor/_DryColor: %s" % leaf_tint)
 print("bark tint carried to _Color: %s" % bark_tint)
 print("staged textures: %s, %s, %s" % (LEAF_NORMAL, BARK_NORMAL, BARK_MASK))
-print("After copying the stage in, run GolfMap > Vreta > Refresh vegetation from materials")
+print("After copying the stage in, run GolfMap > Refresh vegetation from materials")
 print("so the catalogue items re-derive ShaderName and ShaderControllerSettings.")

@@ -10,13 +10,14 @@ copy with the same class/methods in the Unity project.
 
 ## Inner terrain
 
-1. Open `Vreta_lidar_scene` and choose **GolfMap > Vreta > Configure manual biome planter**.
+1. Open the course scene (`Vreta_lidar_scene`) and choose **GolfMap > Configure course planter**.
    This only configures the selected GolfMap Trees object; it does not import.
-2. Set the inner trees JSON and its matching inner Terrain. The preset uses
-   `Assets/GolfMap/Vreta/Vreta_trees.json` and `Vreta_lidar_inner`.
-3. Leave **Use biome palette** on, with `Assets/GolfMap/Vreta/palette.json`.
-   The source of this copied palette is `docs/gspro/vreta/palette.json`.
-4. Use **PersistentStorage**. Existing Vreta storage is `GolfMap Vreta Trees`.
+2. Set the inner trees JSON and its matching inner Terrain. The preset takes
+   both from the course asset (`Assets/GolfMap/<Course>/Course.asset`): the export folder's
+   `<prefix>-inner-trees.json`, else the fallback trees file, and the inner terrain names.
+3. Leave **Use biome palette** on. An empty **Biome JSON** means the course's own
+   `palette.json`, which is the source of truth.
+4. Use **PersistentStorage**. The preset selects the existing system covering the terrain, if any.
    Course mesh roots are used for ground placement, with terrain fallback.
 5. **Load and check** reports alignment, match/review/unmatched counts and species mix.
    **Include imperfect/unknown fits** permits imperfect geometry fits and uncertain
@@ -78,7 +79,7 @@ GSPro before committing to a full outer course build.
 
 ## Before building the course for GSPro
 
-Run **GolfMap > Vreta > Fix vegetation systems for GSPro** once on any scene planted
+Run **GolfMap > Fix vegetation systems for GSPro** once on any scene planted
 before `GolfMapVspRig.cs` existed. It renames each system object to `VegetationSystemPro`
 (GSPro's shader-controller remap looks it up by that name and null-refs otherwise, and
 then nothing renders), parents it under the `VegetationStudioPro` manager, adds the
