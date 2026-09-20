@@ -295,6 +295,118 @@ def test_load_edits_skips_unknown_op_and_rejects_bad_files(tmp_path: Path, capsy
         load_edits(not_fc)
 
 
+# ---------------------------------------------------------------- corridor
+
+
+def bumpy_road_dem(grade: float = 0.02, bump: float = 0.3, period: float = 8.0) -> np.ndarray:
+    """A 2 % east-west grade with `bump`-amplitude undulations every `period`
+    metres along it and a one-cell spike on the road — the terrain a cart
+    path bounces over."""
+    x, y = cell_coords()
+    dx = x - ORIGIN_X
+    z = 60.0 + grade * dx + bump * np.sin(2 * np.pi * dx / period)
+    z[40, 30] += 1.5
+    return z.astype(np.float32)
+
+
+def road_centerline(col0: int, col1: int, row: int) -> list[list[float]]:
+    """East-west centerline through the centres of row `row`, cols col0..col1."""
+    y = ORIGIN_Y - (row + 0.5) * RES
+    return [[ORIGIN_X + col0 * RES, y], [ORIGIN_X + col1 * RES, y]]
+
+
+def test_corridor_smooths_along_the_road_flattens_across_and_keeps_the_grade(capsys):
+    dem = bumpy_road_dem()
+    # Road: rows 37..43 (7 m wide), cols 5..75; hard edge so the numbers are exact.
+    edit = edit_3006("corridor", rect_3006(5, 75, 37, 44), feather_m=0.0,
+                     centerline=road_centerline(5, 75, 40), smooth_m=25.0, width_m=7.0)
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit])
+    assert "warning" not in capsys.readouterr().out
+
+    road = out[37:44, 5:75]
+    before = dem[37:44, 5:75]
+    cols = np.arange(5, 75) + 0.5
+    # Along the road: the undulations (±0.3 m) and the spike are gone; what is
+    # left follows the 2 % grade to within a few centimetres.
+    residual_after = road[3] - (60.0 + 0.02 * cols)
+    residual_before = before[3] - (60.0 + 0.02 * cols)
+    assert np.abs(residual_before).max() > 0.29
+    assert np.abs(residual_after[10:-10]).max() < 0.06
+    assert abs((road[3, -5] - road[3, 5]) - 0.02 * 60) < 0.1
+    # Across the road every cell of a station shares one height.
+    assert np.ptp(road, axis=0).max() < 1e-6
+    # Outside the polygon nothing moved.
+    untouched = np.ones(dem.shape, dtype=bool)
+    untouched[37:44, 5:75] = False
+    assert np.array_equal(out[untouched], dem[untouched])
+
+
+def test_corridor_profile_ignores_the_verge_when_width_is_given():
+    dem = bumpy_road_dem(bump=0.0)
+    # A verge 2 m higher on both sides of a 3 m road, inside the edit polygon.
+    dem[36:39, :] += 2.0
+    dem[42:45, :] += 2.0
+    ring = rect_3006(5, 75, 36, 45)
+    line = road_centerline(5, 75, 40)
+    with_width = apply_edits(dem, TRANSFORM, NODATA, [edit_3006("corridor", ring, feather_m=0.0, centerline=line, width_m=3.0)])
+    without = apply_edits(dem, TRANSFORM, NODATA, [edit_3006("corridor", ring, feather_m=0.0, centerline=line)])
+    # With the width the road keeps its own level; without it the verge drags the profile up.
+    assert abs(with_width[40, 40] - dem[40, 40]) < 0.05
+    assert without[40, 40] - dem[40, 40] > 1.0
+
+
+def test_corridor_follows_a_bent_centerline():
+    dem = bumpy_road_dem()
+    # An L: east along row 40 to col 40, then north (up the rows) along col 40.
+    y40 = ORIGIN_Y - 40.5 * RES
+    line = [[ORIGIN_X + 5.0, y40], [ORIGIN_X + 40.5, y40], [ORIGIN_X + 40.5, ORIGIN_Y - 5.0]]
+    ring = [[ORIGIN_X + 5, y40 - 3], [ORIGIN_X + 43.5, y40 - 3], [ORIGIN_X + 43.5, ORIGIN_Y - 5],
+            [ORIGIN_X + 37.5, ORIGIN_Y - 5], [ORIGIN_X + 37.5, y40 + 3], [ORIGIN_X + 5, y40 + 3], [ORIGIN_X + 5, y40 - 3]]
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit_3006("corridor", ring, feather_m=0.0, centerline=line)])
+    # The north leg is flat across (same x grade for every station), and smooth along.
+    leg = out[6:36, 38:43]
+    assert np.ptp(leg, axis=1).max() < 1e-6
+    assert np.abs(np.diff(leg[:, 2])).max() < 0.03
+    # The east leg lost its bumps.
+    east = out[40, 8:34] - (60.0 + 0.02 * (np.arange(8, 34) + 0.5))
+    assert np.abs(east).max() < 0.06
+
+
+def test_corridor_skips_without_a_usable_centerline(capsys):
+    dem = bumpy_road_dem()
+    ring = rect_3006(5, 75, 37, 44)
+    out = apply_edits(dem, TRANSFORM, NODATA, [
+        edit_3006("corridor", ring, centerline=None),
+        edit_3006("corridor", ring, centerline=[[ORIGIN_X + 10, ORIGIN_Y - 40.5], [ORIGIN_X + 10, ORIGIN_Y - 40.5]]),
+    ])
+    assert np.array_equal(out, dem)
+    printed = capsys.readouterr().out
+    assert "has no centerline" in printed and "zero length" in printed
+
+
+def test_load_edits_reads_corridor_centerline_and_rejects_malformed_ones(tmp_path: Path, capsys):
+    line = ring_to_wgs84(road_centerline(5, 75, 40))
+    features = [
+        wgs84_feature("corridor", rect_3006(5, 75, 37, 44), centerline=line, smoothM=30, widthM=5, featherM=2),
+        wgs84_feature("corridor", rect_3006(5, 75, 37, 44), centerline=line[:1]),
+        wgs84_feature("corridor", rect_3006(5, 75, 37, 44), centerline=line, smoothM=0),
+        wgs84_feature("corridor", rect_3006(5, 75, 37, 44)),
+    ]
+    edits = load_edits(write_edits(tmp_path, features))
+    assert len(edits) == 1
+    edit = edits[0]
+    assert edit.op == "corridor" and edit.smooth_m == 30.0 and edit.width_m == 5.0 and edit.feather_m == 2.0
+    assert edit.centerline == line
+    printed = capsys.readouterr().out
+    assert printed.count("needs a centerline") == 2 and "must be > 0" in printed
+
+    # Reprojection carries the centerline into the DEM CRS alongside the polygon.
+    [projected] = dem_edit.reproject_edits(edits, CRS.from_epsg(3006))
+    assert np.allclose(np.asarray(projected.centerline), np.asarray(road_centerline(5, 75, 40)), atol=0.01)
+    out = apply_edits(bumpy_road_dem(), TRANSFORM, NODATA, [projected])
+    assert np.ptp(out[38:43, 40]) < 1e-6
+
+
 # ---------------------------------------------------------------- command / CLI
 
 

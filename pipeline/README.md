@@ -204,6 +204,125 @@ See "STAC findings" below for why this searches across all collections
 rather than pinning one. Source assets are 4-band RGBI; only the first 3
 bands (RGB) are kept in the output.
 
+### `fetch-roads` — OSM highway centerlines → road corridor polygons
+
+```sh
+python -m golfpipe fetch-roads --bbox 15.47,58.50,15.56,58.55 --out roads.geojson
+# per-course width overrides, repeatable:
+python -m golfpipe fetch-roads --aoi course-area.geojson --out roads.geojson --class-width service=4 --class-width track=3.5
+```
+
+OSM maps a road as a centerline; this turns every `highway=*` way (and
+`golf=cartpath`) in the area into a road-surface polygon. Width comes from
+the way's `width` tag when it parses, else `lanes` × 3.25 m, else a
+per-class table (`roads.CLASS_WIDTH_M`: tertiary 6, residential 5,
+service 3.5, track 3, footway 1.5 …). Each centerline is buffered by half
+its width (round joins) into its own polygon — an OSM offset is nearly
+always one whole way traced off other imagery, and a way that is its own
+feature is fixed with a single drag in the app; junction overlaps are the
+same surface twice, harmless. `--merge` unions each class group into
+road-network polygons instead (no overlaps, but one feature of thousands of
+vertices). Either way the corridors are clipped to the area (Overpass
+returns whole ways that cross it), simplified and de-slivered.
+
+Output is the usual EPSG:3006 typed GeoJSON draft for the web import wizard:
+every feature is `type: path` (gspro's OPCD `concrete`) with
+`road_class` = `road` / `track` / `path` so the wizard can bucket on that
+and import the roads while dropping the footpaths. Provenance: `osm_ids` of
+the ways merged into each polygon, plus the ODbL `attribution` on the
+collection. Tunnels and steps are skipped; bridges are painted like any
+road. `--no-clip` keeps whole ways.
+
+Cart paths inside a course are almost never in OSM — those are drawn in the
+app (the draw tool's path mode: `P`, click down the middle, Enter).
+
+In the app: **Import GeoJSON → Fetch roads from OpenStreetMap** runs this over
+the inner terrain square (roads are playing-area surfaces; the outer terrain is
+scenery and gets none) and loads the result straight into the wizard; the
+centerlines land in `sources/<siteId>/roads-centerlines.geojson` for the road
+grading.
+
+`--centerlines-out roads-centerlines.geojson` also writes the clipped
+centerlines with their resolved widths (EPSG:3006 LineStrings) — the input
+for `road-grades`.
+
+### `road-grades` — grade the roads into the DEM
+
+```sh
+python -m golfpipe road-grades --centerlines roads-centerlines.geojson --out road-grades.geojson [--classes road,track]
+python -m golfpipe apply-dem-edits --input dem.tif --edits site-edits.geojson --edits road-grades.geojson --out dem-edited.tif
+cd ../server && bun run import-terrain-edits <site> ../pipeline/road-grades.geojson
+```
+
+One `corridor` terrain edit per centerline (see `dem_edit.py`): the DEM is
+smoothed *along* the road over `--smooth` 25 m and made level *across* the
+pavement, feathered `--feather` 2 m beyond it. The isotropic `smooth` op
+can't do this — wide enough to take out 10–20 m undulations it smears the
+surrounding grade into the road; narrow, it leaves them. Same D-TE5 handoff
+and origin-scoped server import as `building-pads` (origin `road-grades`).
+
+In the app: the terrain tool's **Grade roads** button does fetch-roads (if
+the centerlines aren't there yet) → road-grades → import, then **Apply to
+terrain** bakes them.
+
+### `fetch-buildings` — building footprints + roof heights → building survey
+
+```sh
+python -m golfpipe fetch-buildings --bbox 15.47,58.50,15.56,58.55 \
+    --lidar sources/<id>/lidar/*.laz --out buildings.geojson
+```
+
+A building is not an app feature type: on the GSPro side it is a flat pad
+on the terrain plus a prefab the Unity building planter places, and both
+need one record. This writes that record for every OSM `building=*` way
+and multipolygon in the area (whole footprints, even across the edge), as
+an EPSG:3006 FeatureCollection (`type: building`) with per feature:
+
+- `id` — `osm:way/123` (a real source id, so authored choices survive a
+  refresh), `kind` (the `building` value: detached, garage, apartments …),
+  `name`, `levels`, `heightTagM`, `fallbackHeightM` (height tag, else
+  levels × 3 m).
+- `rect` — the minimum rotated rectangle: `cx`/`cy`, `lengthM`, `widthM`,
+  `angleDeg` (long-axis bearing, CCW from east in [0, 180)) — what the
+  planter matches a prefab on and rotates it by.
+- `eaveM` / `ridgeM` / `roofCells` — from the lidar when `--lidar` is given:
+  the same nDSM detect-trees builds (max return − ground, 1 m cells,
+  `--resolution`), read inside the footprint inset by 0.75 m; eave = p20,
+  ridge = p95 of the cells ≥ 1.5 m. Under 4 such cells → no measurement
+  (a shed at 1 m cells). Vreta: 1,004 of 1,038 measured, median eave
+  4.2 m, ridge 6.4 m.
+
+Not for the web import wizard (it would show an unmapped bucket); the
+consumers are `building-pads` and `gspro.py buildings`.
+
+### `building-pads` — the flat ground under each building, as terrain edits
+
+```sh
+python -m golfpipe building-pads --survey buildings.geojson --out building-pads.geojson
+python -m golfpipe apply-dem-edits --input dem.tif --edits site-edits.geojson --edits building-pads.geojson --out dem-edited.tif
+cd ../server && bun run import-terrain-edits <site> ../pipeline/building-pads.geojson
+```
+
+One `plane` edit per footprint, dead flat (`--sloped` fits a tilt instead),
+over the footprint plus `--buffer` 1.5 m of apron, blending out over
+`--feather` 4 m beyond that (dem_edit feathers *inside* the polygon, so the
+edit polygon is grown by buffer + feather). Written as the D-TE5 edits
+handoff (WGS84 FeatureCollection, `origin: building-pads`, `originRef`
+= building id), which both `apply-dem-edits --edits` (repeatable now) and
+the server's `import-terrain-edits` read. The import replaces the previous
+`building-pads` generation only — hand-drawn edits are untouched, a pad the
+user disabled stays disabled — and dates generated rows at the epoch so
+they replay before every hand-drawn edit (manual wins on overlap). Flatten
+here, in the DEM: the Unity heightmap, the Blender mesh and the web map all
+derive from it, and a vector edit survives a lidar refetch.
+
+In the app: the terrain tool's **Generate building pads** button runs
+fetch-buildings (over the outer square, on every persisted lidar tile) →
+building-pads → import; the survey it writes to `sources/<siteId>/buildings.geojson`
+is what the GSPro export panel's **Export inner/outer buildings** reads. The
+outer heightmap export replays the site's enabled edits onto the outer DEM
+too, so the pads are under the outer buildings as well.
+
 ### `clean-ortho` — inpaint canopy + shadows out of the playable corridor
 
 ```sh
@@ -446,6 +565,87 @@ exactly these properties:
 The server imports this body as is:
 `PUT /api/courses/:courseId/features/generated?source=lidar-canopy`
 (endpoint built separately from this pipeline).
+
+### `lowveg-features` — shrub-zone proposals from the cleaned canopy grid
+
+```sh
+python -m golfpipe lowveg-features --canopy-tif work/canopy/canopy.tif \
+    --course-id <courseId> --out lowveg.geojson \
+    [--trees trees.geojson] [--tree-buffer 1.0] \
+    [--min-height 0.5] [--max-height 3.0] [--min-area 20] [--min-hole-area 20] \
+    [--close 1.0] [--round 1.5] [--simplify 0.5] [--bbox e_min,n_min,e_max,n_max]
+# or grid the canopy in-process, exactly as `canopy` / `trees-features` do:
+python -m golfpipe lowveg-features --lidar a.copc.laz --dem data/dem/<courseId>.tif \
+    --course-id <courseId> --out lowveg.geojson
+```
+
+Lidar does not place bushes — VSPro does, from rules — but it can say where
+bushes and tall scrub already stand (`docs/feature-vegetation-zones.md`,
+D-VZ7). Cells of the same cleaned canopy grid `trees-features` reads whose
+height is between `--min-height` and `--max-height` and which are not trees
+are cleaned and polygonised the way `trees-features` does it
+(`golfpipe/lowveg_features.py` reuses its closing, hole filling and outline
+rounding) and written as `vegetation_zone` features of zone type `shrub`.
+Once imported they are ordinary zones: editable, deletable, re-importable by
+source. Trees are cut out two ways: every cell above `--max-height` plus
+everything within `--tree-buffer` of it (the crown edge of a 12 m birch
+reads as 2 m of "low vegetation" in a max-z grid), and, with `--trees`, the
+polygons of a trees GeoJSON (`trees-features` output, or the app's exported
+`trees` features; EPSG:3006 metres) buffered by the same distance. The
+default `--min-area` is 20 m²: a zone is a VSPro rule area, and a single
+4 m² bush is better left to the biome's own scatter.
+
+Output: an EPSG:3006 FeatureCollection like `trees-features`'s, per feature:
+
+| property      | value                                                     |
+|---------------|-----------------------------------------------------------|
+| `type`        | `"vegetation_zone"`                                       |
+| `source`      | `"lidar-lowveg"`                                          |
+| `source_ref`  | `--source-ref`, default the canopy tif / lidar basenames   |
+| `license`     | `"CC0-1.0"`                                               |
+| `zoneType`    | `"shrub"`                                                 |
+| `weight`      | `1`                                                       |
+| `feather`     | `2` (metres)                                              |
+| `noise`       | `0` (metres)                                              |
+| `heightP90M`  | 90th percentile of the low-vegetation cells inside, 1 decimal |
+| `heightMaxM`  | their maximum, 1 decimal                                  |
+| `areaM2`      | polygon area in m², integer                               |
+
+Import: `PUT /api/courses/:courseId/features/generated?source=lidar-lowveg`;
+the server turns the non-reserved scalar properties (`zoneType`, `weight`,
+`feather`, `noise`, the stats) into the feature's attributes.
+
+### `gspro.py zones` — vegetation zones → VSPro texture masks (per terrain)
+
+```sh
+python gspro.py zones --square-3006 x0,y0,x1,y1 --course Vreta \
+    --sidecar out/vreta-inner.tif.json --terrain inner --out out/vreta-inner-zones.json \
+    [--resolution 4096] [--simplify 1.0] [--seed 0] [--db ../data/app.sqlite]
+# the outer terrain, leaving the inner square to the inner file:
+python gspro.py zones --square-3006 ... --terrain outer --exclude-square <inner x0,y0,x1,y1> ...
+```
+
+The `vegetation_zone` features of a course, rasterized into the weights
+VSPro's texture-mask rules sample (`docs/feature-vegetation-zones.md`,
+sections 6 and 7): one RGBA PNG per four zone types (`<out stem>-<texture>.png`,
+`--resolution`², 8 bits per channel, the same north-up frame as the terrain
+texture) plus the `unity-zones-v1` JSON at `--out`. Which channel a zone type
+paints comes from the course's zone-type table (`course_zone_types`:
+`texture_index`, `channel`, item bindings), which the JSON carries as
+`zoneTypes[]`; a zone whose `zoneType` is not in the table is skipped with a
+warning. Per zone, in the app's paint order: rings filled even-odd, a
+signed distance in metres from two Euclidean distance transforms (negative
+inside, zero on the drawn edge), optional value noise on that distance
+(`noise` metres, deterministic from `--seed`), then
+`clamp(0.5 - d / feather, 0, 1) × weight` (feather 0 = hard edge). Overlaps
+run from the last zone to the first with a per-pixel budget of 1: a later
+zone claims its weight first, an earlier zone of another type keeps only
+what is left, same-type zones combine as a maximum, nothing is ever scaled
+up. `zones[]` in the JSON are the same polygons as plot-local metres
+(x east, z north from the square's south-west corner, like
+`unity-trees-v1`), flattened, clipped to the square minus `--exclude-square`,
+simplified to `--simplify`, for the Unity Scene-view overlay only. `plot` is
+copied from `--sidecar` field for field as `trees` does.
 
 ### `manifest` — write manifest.json
 

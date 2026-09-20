@@ -21,6 +21,18 @@ Operations (D-TE3, two only in v1):
   1 cell), computed over the heights as they were before this edit — reads
   may reach outside the mask so the smoothed edge agrees with the
   surroundings. Kills spikes without smearing grade.
+- ``corridor`` — a road or cart path: anisotropic, smooth ALONG the
+  ``centerline`` (a LineString in the feature's ``properties``, WGS84 like
+  the rings) and flat ACROSS it. The centerline is resampled at half a
+  cell; every in-mask cell takes the station nearest to it; each station's
+  height is the mean of the pre-edit heights of its cells (the cross
+  section — only cells within ``widthM``/2 of the line when ``widthM`` is
+  given, so the verge inside the feather band doesn't pull the profile);
+  that 1-D profile gets a running median then a running mean over
+  ``smoothM`` (default 25 m) of stations, and each cell's target is its
+  station's smoothed height. The isotropic ``smooth`` can't do this: a
+  median wide enough to take out 10-20 m undulations smears the surrounding
+  grade into the road, and a narrow one leaves them.
 
 Both ops feather over an edge band inside the polygon (D-TE3): weight
 w = clamp(dist_to_polygon_edge / featherM, 0, 1) via a cell-size-aware
@@ -53,7 +65,7 @@ from scipy.ndimage import distance_transform_edt, generic_filter, median_filter
 
 __all__ = [
     "DemEditError", "DemEdit", "PlaneFit",
-    "OPS", "DEFAULT_FEATHER_M", "DEFAULT_SMOOTH_RADIUS_M",
+    "OPS", "DEFAULT_FEATHER_M", "DEFAULT_SMOOTH_RADIUS_M", "DEFAULT_CORRIDOR_SMOOTH_M",
     "MIN_PLANE_CELLS", "OUTLIER_SIGMA", "OUTLIER_ROUNDS",
     "load_edits", "reproject_edits", "fit_plane", "apply_edits",
 ]
@@ -63,9 +75,13 @@ class DemEditError(RuntimeError):
     """User-actionable apply-dem-edits input/setup error."""
 
 
-OPS = ("plane", "smooth")
+OPS = ("plane", "smooth", "corridor")
 DEFAULT_FEATHER_M = 2.0
 DEFAULT_SMOOTH_RADIUS_M = 2.0
+# Longitudinal smoothing window for corridors: long enough to take out the
+# 10-20 m undulations a cart path bounces over, short enough to keep a
+# designed crest or dip.
+DEFAULT_CORRIDOR_SMOOTH_M = 25.0
 # A plane fit over fewer valid cells than this is meaningless noise — skip.
 MIN_PLANE_CELLS = 16
 OUTLIER_SIGMA = 2.0
@@ -85,6 +101,12 @@ class DemEdit:
     radius_m: float = DEFAULT_SMOOTH_RADIUS_M
     flat: bool = False
     created_at: str | None = None
+    # corridor only: the road's centerline as [[x, y], …] (WGS84 as loaded,
+    # the DEM CRS after reproject_edits), the along-line smoothing window,
+    # and the paved width the profile is sampled over (None = all mask cells).
+    centerline: list[list[float]] | None = None
+    smooth_m: float = DEFAULT_CORRIDOR_SMOOTH_M
+    width_m: float | None = None
 
 
 def load_edits(path: Path, log=print) -> list[DemEdit]:
@@ -132,6 +154,25 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
         if not np.isfinite(feather_m) or feather_m < 0 or not np.isfinite(radius_m) or radius_m <= 0:
             log(f"warning: {label}: featherM must be >= 0 and radiusM > 0 — skipped")
             continue
+        centerline = None
+        smooth_m = DEFAULT_CORRIDOR_SMOOTH_M
+        width_m = None
+        if op == "corridor":
+            centerline = props.get("centerline")
+            if (not isinstance(centerline, list) or len(centerline) < 2
+                    or not all(isinstance(p, (list, tuple)) and len(p) >= 2 for p in centerline)):
+                log(f"warning: {label}: corridor needs a centerline of at least 2 [x, y] points — skipped")
+                continue
+            centerline = [[float(p[0]), float(p[1])] for p in centerline]
+            try:
+                smooth_m = float(props.get("smoothM", DEFAULT_CORRIDOR_SMOOTH_M))
+                width_m = float(props["widthM"]) if props.get("widthM") is not None else None
+            except (TypeError, ValueError):
+                log(f"warning: {label}: smoothM/widthM is not a number — skipped")
+                continue
+            if not np.isfinite(smooth_m) or smooth_m <= 0 or (width_m is not None and not width_m > 0):
+                log(f"warning: {label}: smoothM and widthM must be > 0 — skipped")
+                continue
         created_at = props.get("createdAt")
         edits.append(DemEdit(
             op=op,
@@ -140,6 +181,9 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             radius_m=radius_m,
             flat=bool(props.get("flat", False)),
             created_at=str(created_at) if created_at is not None else None,
+            centerline=centerline,
+            smooth_m=smooth_m,
+            width_m=width_m,
         ))
 
     edits.sort(key=lambda e: (e.created_at is None, e.created_at or ""))
@@ -149,12 +193,17 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
 def reproject_edits(edits: list[DemEdit], dem_crs) -> list[DemEdit]:
     """Reprojects each edit's rings from WGS84 (the D-TE5 handoff CRS) to the
     DEM's CRS via rasterio.warp.transform_geom."""
+    from rasterio.warp import transform as warp_transform
     from rasterio.warp import transform_geom
 
-    return [
-        replace(edit, geometry=transform_geom("EPSG:4326", dem_crs, edit.geometry))
-        for edit in edits
-    ]
+    out = []
+    for edit in edits:
+        centerline = edit.centerline
+        if centerline:
+            xs, ys = warp_transform("EPSG:4326", dem_crs, [p[0] for p in centerline], [p[1] for p in centerline])
+            centerline = [[float(x), float(y)] for x, y in zip(xs, ys)]
+        out.append(replace(edit, geometry=transform_geom("EPSG:4326", dem_crs, edit.geometry), centerline=centerline))
+    return out
 
 
 @dataclass(frozen=True)
@@ -290,6 +339,8 @@ def _apply_one(
 
     if edit.op == "plane":
         target = _plane_target(cur_win, mask_win, valid_win, transform, r0, c0, edit, label, log)
+    elif edit.op == "corridor":
+        target = _corridor_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log)
     else:
         target = _smooth_target(cur_win, mask_win, valid_win, cell_x, cell_y, edit)
     if target is None:
@@ -340,6 +391,98 @@ def _plane_target(
     txs, tys = rasterio.transform.xy(transform, mask_rows + r0, mask_cols + c0)
     target[mask_win] = fit.evaluate(txs, tys)
     return target
+
+
+def _corridor_target(
+    cur_win: np.ndarray,
+    mask_win: np.ndarray,
+    valid_win: np.ndarray,
+    transform: "rasterio.Affine",
+    r0: int,
+    c0: int,
+    cell_x: float,
+    cell_y: float,
+    edit: DemEdit,
+    label: str,
+    log,
+) -> np.ndarray | None:
+    from scipy.ndimage import uniform_filter1d
+    from scipy.spatial import cKDTree
+
+    pts = np.asarray(edit.centerline or [], dtype=np.float64)
+    if pts.ndim != 2 or len(pts) < 2:
+        log(f"warning: {label}: corridor has no centerline — skipped")
+        return None
+    seg = np.hypot(*np.diff(pts, axis=0).T)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    total = float(cum[-1])
+    if total <= 0:
+        log(f"warning: {label}: corridor centerline has zero length — skipped")
+        return None
+
+    # Stations every half cell along the line.
+    step = min(cell_x, cell_y) / 2.0
+    n = int(np.ceil(total / step)) + 1
+    s = np.linspace(0.0, total, n)
+    sx = np.interp(s, cum, pts[:, 0])
+    sy = np.interp(s, cum, pts[:, 1])
+
+    cells = mask_win & valid_win
+    rows, cols = np.nonzero(cells)
+    if len(rows) == 0:
+        log(f"warning: {label}: no valid cells in the corridor — skipped")
+        return None
+    xs, ys = rasterio.transform.xy(transform, rows + r0, cols + c0)
+    dist, station = cKDTree(np.column_stack([sx, sy])).query(np.column_stack([xs, ys]))
+    z = cur_win[rows, cols]
+
+    # Cross-section mean per station, over the paved width when known.
+    on_road = dist <= edit.width_m / 2.0 if edit.width_m is not None else np.ones(len(rows), dtype=bool)
+    if not on_road.any():
+        on_road = np.ones(len(rows), dtype=bool)
+    sums = np.bincount(station[on_road], weights=z[on_road], minlength=n)
+    counts = np.bincount(station[on_road], minlength=n)
+    sampled = counts > 0
+    if int(sampled.sum()) < 2:
+        log(f"warning: {label}: corridor covers fewer than 2 stations — skipped")
+        return None
+    profile = np.interp(s, s[sampled], sums[sampled] / counts[sampled])
+
+    # Running median (spikes) then running mean (the median's steps) over
+    # smoothM of stations. The ends are padded by extrapolating the line
+    # fitted to the outermost window: "nearest" (or reflect) padding would
+    # bend a graded road's ends towards level by grade × half the window,
+    # 12 cm at 2 % — visible at every road entry.
+    k = max(int(round(edit.smooth_m / step)), 1)
+    k += 1 - k % 2
+    profile = _extrapolate_ends(profile, s, k)
+    smoothed = uniform_filter1d(median_filter(profile, size=k, mode="nearest"), size=k, mode="nearest")[k:-k]
+
+    target = cur_win.copy()
+    target[rows, cols] = smoothed[station]
+    return target
+
+
+def _extrapolate_ends(profile: np.ndarray, s: np.ndarray, k: int) -> np.ndarray:
+    """`profile` with `k` samples added at each end, continuing the straight
+    line fitted to the outermost `2k` samples (all of them when the profile
+    is shorter — twice the window so the bumps being smoothed away average
+    out of the fit too), so a filter of width k sees the road's grade past
+    its ends instead of a padded constant."""
+    step = s[1] - s[0] if len(s) > 1 else 1.0
+    m = min(2 * k, len(profile))
+
+    def fit(seg_s, seg_z):
+        if len(seg_s) < 2 or np.ptp(seg_s) == 0:
+            return 0.0, float(seg_z.mean())
+        a, b = np.polyfit(seg_s, seg_z, 1)
+        return float(a), float(b)
+
+    a0, b0 = fit(s[:m], profile[:m])
+    a1, b1 = fit(s[-m:], profile[-m:])
+    before = a0 * (s[0] - step * np.arange(k, 0, -1)) + b0
+    after = a1 * (s[-1] + step * np.arange(1, k + 1)) + b1
+    return np.concatenate([before, profile, after])
 
 
 def _smooth_target(

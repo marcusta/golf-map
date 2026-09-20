@@ -24,6 +24,7 @@ OSM-derived course data is a flagged wave-level decision.
 from __future__ import annotations
 
 import json
+import re
 from typing import Callable, Iterable
 
 from golfpipe.water import GEOJSON_CRS_3006, SWEREF99_TM_SRID, write_geojson  # noqa: F401  (re-exported for callers)
@@ -43,6 +44,23 @@ Reproject = Callable[[list[float], list[float]], tuple[Iterable[float], Iterable
 
 class OsmError(RuntimeError):
     pass
+
+
+_METRES_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(?:m|meter|metres|meters)?\s*$", re.IGNORECASE)
+
+
+def parse_metres(raw, lo: float, hi: float) -> float | None:
+    """An OSM length tag (`width`, `height`, …) as metres: "3", "3.5", "3,5",
+    "4 m" parse; "narrow", feet, "3 lanes" and values outside [lo, hi]
+    (mis-tags: a "30" km/h, a "0.3" kerb) give None.
+    """
+    if raw is None:
+        return None
+    m = _METRES_RE.match(str(raw))
+    if not m:
+        return None
+    value = float(m.group(1).replace(",", "."))
+    return value if lo <= value <= hi else None
 
 
 def classify_osm_tags(tags: dict) -> str | None:

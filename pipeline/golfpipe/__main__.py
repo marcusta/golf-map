@@ -7,8 +7,12 @@ Commands:
   fetch-water       Marktäcke vector water -> typed GeoJSON (water / water_creek)
   fetch-hydro       Hydrografi Direkt water + creeks -> typed GeoJSON (water / water_creek)
   fetch-osm         Overpass OSM golf/terrain polygons -> typed GeoJSON (ODbL)
-  grid-dem          Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
-  apply-dem-edits   Replay vector terrain edits (plane/smooth + feather) onto a DEM
+  fetch-roads       Overpass OSM highway centerlines -> buffered road corridors as typed GeoJSON (path, ODbL)
+  road-grades       fetch-roads centerlines -> 'corridor' terrain edit per road (D-TE5 edits GeoJSON)
+  fetch-buildings  Overpass OSM building footprints (+ lidar eave/ridge heights) -> building survey GeoJSON (ODbL)
+  building-pads     Building survey -> flat 'plane' terrain edit per footprint (D-TE5 edits GeoJSON)
+  grid-dem       Bin lidar points (ground/water/bridge classes) -> DEM GeoTIFF
+  apply-dem-edits   Replay vector terrain edits (plane/smooth/corridor + feather) onto a DEM (--edits repeatable)
   dem-analysis      Publishable analysis DEM: 0.5 m greens + 1 m background mosaic
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
@@ -19,6 +23,7 @@ Commands:
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   canopy            Lidar -> canopy / canopy-color / surface tile pyramids + manifest update (--trees-out: tree polygons too)
   trees-features    Cleaned canopy grid (canopy.tif or lidar) -> tree polygons GeoJSON with height stats
+  lowveg-features   Cleaned canopy grid -> shrub-zone proposals (vegetation_zone GeoJSON, 0.5..3 m, trees cut out)
   manifest          Write manifest.json for a tiled course
   install           Copy tiles+manifest into data/tiles/{courseId}/...
   bbox-from-course  Compute a WGS84 bbox from a course's DB coordinates
@@ -33,6 +38,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from golfpipe import buildings
 from golfpipe import clean_ortho
 from golfpipe import commands
 from golfpipe import dem_analysis
@@ -45,7 +51,9 @@ from golfpipe import sources
 from golfpipe import trees_stems
 from golfpipe import osm
 from golfpipe import patches
+from golfpipe import roads
 from golfpipe import trees_features
+from golfpipe import lowveg_features
 from golfpipe import water
 from golfpipe.aoi import AoiError, resolve_bbox
 from golfpipe.bbox_course import bbox_from_course
@@ -120,6 +128,42 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
     p.add_argument("--overpass-url", dest="overpass_url", default=osm.OVERPASS_URL, help=f"Overpass API endpoint (default {osm.OVERPASS_URL})")
 
+    p = sub.add_parser("fetch-roads", help="Query Overpass for OSM highway centerlines -> buffered road corridor polygons as typed GeoJSON (path, EPSG:3006, ODbL)")
+    _add_area_args(p)
+    p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard; bucket on road_class)")
+    p.add_argument("--overpass-url", dest="overpass_url", default=osm.OVERPASS_URL, help=f"Overpass API endpoint (default {osm.OVERPASS_URL})")
+    p.add_argument(
+        "--class-width", dest="class_width", action="append", default=[], metavar="CLASS=METRES",
+        help="override the default total width for a highway class, repeatable (e.g. service=4); "
+             "defaults: " + ", ".join(f"{k}={v:g}" for k, v in roads.CLASS_WIDTH_M.items()),
+    )
+    p.add_argument("--no-clip", dest="clip", action="store_false", help="keep whole ways instead of clipping the corridors to the area")
+    p.add_argument("--merge", action="store_true", help="union the corridors per class into road-network polygons (one big feature, no junction overlaps) instead of one polygon per OSM way")
+    p.add_argument("--simplify", type=float, default=roads.DEFAULT_SIMPLIFY_M, help=f"simplify tolerance in metres (default {roads.DEFAULT_SIMPLIFY_M})")
+    p.add_argument("--min-area", dest="min_area", type=float, default=roads.DEFAULT_MIN_AREA_M2, help=f"drop road polygons under this many m² (default {roads.DEFAULT_MIN_AREA_M2:g})")
+    p.add_argument("--centerlines-out", dest="centerlines_out", help="also write the clipped centerlines with widths (EPSG:3006 LineStrings) — the input for road-grades")
+
+    p = sub.add_parser("road-grades", help="fetch-roads centerlines -> one 'corridor' terrain edit per road (D-TE5 edits GeoJSON: smooth along, flat across)")
+    p.add_argument("--centerlines", required=True, help="fetch-roads --centerlines-out file")
+    p.add_argument("--out", required=True, help="output edits GeoJSON (WGS84 FeatureCollection, origin road-grades)")
+    p.add_argument("--feather", type=float, default=roads.DEFAULT_GRADE_FEATHER_M, help=f"blend band beyond the pavement in metres (default {roads.DEFAULT_GRADE_FEATHER_M:g})")
+    p.add_argument("--smooth", type=float, default=roads.DEFAULT_GRADE_SMOOTH_M, help=f"along-road smoothing window in metres (default {roads.DEFAULT_GRADE_SMOOTH_M:g})")
+    p.add_argument("--classes", help="comma-separated road_class groups to grade (road,track,path; default all)")
+
+    p = sub.add_parser("fetch-buildings", help="Query Overpass for OSM building footprints, fit rectangles, measure roof heights from lidar -> building survey GeoJSON (EPSG:3006, ODbL)")
+    _add_area_args(p)
+    p.add_argument("--out", required=True, help="output building survey GeoJSON (input for gspro.py buildings / building-pads)")
+    p.add_argument("--lidar", nargs="*", default=[], help="LAS/LAZ/COPC files (fetch-lidar output) to measure eave/ridge heights from; omit for OSM tags only")
+    p.add_argument("--resolution", type=float, default=detect_trees.DEFAULT_RESOLUTION, help=f"nDSM cell size in metres for the roof measurement (default {detect_trees.DEFAULT_RESOLUTION})")
+    p.add_argument("--overpass-url", dest="overpass_url", default=osm.OVERPASS_URL, help=f"Overpass API endpoint (default {osm.OVERPASS_URL})")
+
+    p = sub.add_parser("building-pads", help="fetch-buildings survey -> one flat 'plane' terrain edit per footprint (D-TE5 edits GeoJSON, for apply-dem-edits --edits or the server import)")
+    p.add_argument("--survey", required=True, help="fetch-buildings output GeoJSON")
+    p.add_argument("--out", required=True, help="output edits GeoJSON (WGS84 FeatureCollection, origin building-pads)")
+    p.add_argument("--buffer", type=float, default=buildings.DEFAULT_PAD_BUFFER_M, help=f"flat apron around the footprint in metres (default {buildings.DEFAULT_PAD_BUFFER_M:g})")
+    p.add_argument("--feather", type=float, default=buildings.DEFAULT_PAD_FEATHER_M, help=f"blend band outside the apron in metres (default {buildings.DEFAULT_PAD_FEATHER_M:g})")
+    p.add_argument("--sloped", action="store_true", help="fit a tilted plane instead of a dead-flat pad")
+
     p = sub.add_parser("grid-dem", help="Bin classified lidar points into a regular-grid DEM GeoTIFF")
     p.add_argument("--lidar", required=True, nargs="+", help="one or more .laz/.copc.laz point cloud files")
     p.add_argument("--bbox-3006", required=True, help="e_min,n_min,e_max,n_max in EPSG:3006 metres")
@@ -136,8 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--input", required=True, help="input DEM GeoTIFF (grid-dem output) — never modified")
     p.add_argument(
-        "--edits", required=True,
-        help="edits GeoJSON FeatureCollection (WGS84; per-feature properties op/featherM/radiusM/flat, createdAt order)",
+        "--edits", required=True, action="append",
+        help="edits GeoJSON FeatureCollection (WGS84; per-feature properties op/featherM/radiusM/flat, createdAt order); "
+             "repeatable — e.g. the site's edits plus a building-pads file",
     )
     p.add_argument("--out", required=True, help="output edited DEM GeoTIFF path (must differ from --input)")
 
@@ -397,6 +442,62 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"grid cell size in metres when gridding from --lidar (default {detect_trees.DEFAULT_RESOLUTION})",
     )
 
+    p = sub.add_parser(
+        "lowveg-features",
+        help="Shrub-zone proposals (vegetation_zone GeoJSON, EPSG:3006) from the cleaned canopy grid: "
+             "cells between --min-height and --max-height that are not trees",
+    )
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--canopy-tif", dest="canopy_tif", help="canopy.tif from a canopy --workdir (cleaned canopy heights, m AGL)")
+    src.add_argument("--lidar", action="append", help="a .laz/.copc.laz point cloud (repeatable); grids the canopy as `canopy` does")
+    p.add_argument("--dem", help="ground DEM GeoTIFF; with --lidar its extent is the area when no --bbox is given")
+    p.add_argument("--course-id", dest="course_id", help="course id written as a top-level courseId member")
+    p.add_argument("--out", required=True, help="output GeoJSON path")
+    p.add_argument(
+        "--trees", help="trees GeoJSON (trees-features output, EPSG:3006) to cut out of the proposals, buffered by --tree-buffer",
+    )
+    p.add_argument(
+        "--tree-buffer", dest="tree_buffer", type=float, default=lowveg_features.DEFAULT_TREE_BUFFER_M,
+        help=f"metres around a tree polygon or an above-max-height cell that never count as low vegetation (default {lowveg_features.DEFAULT_TREE_BUFFER_M})",
+    )
+    p.add_argument(
+        "--min-height", dest="min_height", type=float, default=lowveg_features.DEFAULT_MIN_HEIGHT_M,
+        help=f"lowest canopy height in metres that counts as low vegetation (default {lowveg_features.DEFAULT_MIN_HEIGHT_M})",
+    )
+    p.add_argument(
+        "--max-height", dest="max_height", type=float, default=lowveg_features.DEFAULT_MAX_HEIGHT_M,
+        help=f"highest; anything above is a tree (default {lowveg_features.DEFAULT_MAX_HEIGHT_M})",
+    )
+    p.add_argument(
+        "--min-area", dest="min_area", type=float, default=lowveg_features.DEFAULT_MIN_AREA_M2,
+        help=f"minimum polygon area in m² (default {lowveg_features.DEFAULT_MIN_AREA_M2})",
+    )
+    p.add_argument(
+        "--min-hole-area", dest="min_hole_area", type=float, default=lowveg_features.DEFAULT_MIN_HOLE_AREA_M2,
+        help=f"fill interior rings under this area in m² (default {lowveg_features.DEFAULT_MIN_HOLE_AREA_M2}; 0 = keep all)",
+    )
+    p.add_argument(
+        "--close", type=float, default=lowveg_features.DEFAULT_CLOSE_M,
+        help=f"binary closing radius in metres on the mask (default {lowveg_features.DEFAULT_CLOSE_M}; 0 = off)",
+    )
+    p.add_argument(
+        "--round", type=float, default=lowveg_features.DEFAULT_ROUND_M,
+        help=f"outline rounding radius in metres, as trees-features (default {lowveg_features.DEFAULT_ROUND_M}; 0 = keep cell outlines)",
+    )
+    p.add_argument(
+        "--simplify", type=float, default=lowveg_features.DEFAULT_SIMPLIFY_M,
+        help=f"polygon simplification tolerance in metres (default {lowveg_features.DEFAULT_SIMPLIFY_M})",
+    )
+    p.add_argument(
+        "--source-ref", dest="source_ref",
+        help="properties.source_ref (default: canopy tif basename, or comma-joined lidar basenames)",
+    )
+    p.add_argument("--bbox", help="e_min,n_min,e_max,n_max in EPSG:3006 metres to clip to (default: raster / DEM extent)")
+    p.add_argument(
+        "--resolution", type=float, default=detect_trees.DEFAULT_RESOLUTION,
+        help=f"grid cell size in metres when gridding from --lidar (default {detect_trees.DEFAULT_RESOLUTION})",
+    )
+
     p = sub.add_parser("trees-stems", help="Individual crown maxima from lidar, GeoJSON and compact tree-stems asset")
     p.add_argument("--lidar", action="append", required=True)
     p.add_argument("--out", required=True, help="output EPSG:3006 GeoJSON")
@@ -522,6 +623,38 @@ def main(argv: list[str] | None = None) -> int:
             bbox = _resolve_area(args)
             commands.cmd_fetch_osm(bbox, Path(args.out), overpass_url=args.overpass_url)
 
+        elif args.command == "fetch-roads":
+            bbox = _resolve_area(args)
+            class_widths: dict[str, float] = {}
+            for spec in args.class_width:
+                name, sep, value = spec.partition("=")
+                try:
+                    metres = float(value)
+                except ValueError:
+                    metres = float("nan")
+                if not sep or not name or not metres > 0:
+                    parser.error(f"--class-width expects CLASS=METRES, got {spec!r}")
+                class_widths[name.strip()] = metres
+            commands.cmd_fetch_roads(
+                bbox, Path(args.out), overpass_url=args.overpass_url, class_widths=class_widths or None,
+                clip=args.clip, simplify_m=args.simplify, min_area_m2=args.min_area,
+                centerlines_out=Path(args.centerlines_out) if args.centerlines_out else None,
+                merge=args.merge,
+            )
+
+        elif args.command == "road-grades":
+            commands.cmd_road_grades(
+                Path(args.centerlines), Path(args.out), feather_m=args.feather, smooth_m=args.smooth,
+                classes={c.strip() for c in args.classes.split(",") if c.strip()} if args.classes else None,
+            )
+
+        elif args.command == "fetch-buildings":
+            bbox = _resolve_area(args)
+            commands.cmd_fetch_buildings(
+                bbox, Path(args.out), lidar_paths=[Path(p) for p in args.lidar] or None,
+                overpass_url=args.overpass_url, resolution=args.resolution,
+            )
+
         elif args.command == "grid-dem":
             bbox_3006 = tuple(float(v) for v in args.bbox_3006.split(","))
             if len(bbox_3006) != 4:
@@ -533,7 +666,12 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         elif args.command == "apply-dem-edits":
-            commands.cmd_apply_dem_edits(Path(args.input), Path(args.edits), Path(args.out))
+            commands.cmd_apply_dem_edits(Path(args.input), [Path(p) for p in args.edits], Path(args.out))
+
+        elif args.command == "building-pads":
+            commands.cmd_building_pads(
+                Path(args.survey), Path(args.out), buffer_m=args.buffer, feather_m=args.feather, flat=not args.sloped,
+            )
 
         elif args.command == "dem-analysis":
             commands.cmd_dem_analysis(
@@ -670,6 +808,29 @@ def main(argv: list[str] | None = None) -> int:
                 close_m=args.close, round_m=args.round, simplify_m=args.simplify, min_hole_area_m2=args.min_hole_area,
                 source_ref=args.source_ref, resolution=args.resolution,
                 roof_tif=Path(args.roof_tif) if args.roof_tif else None,
+            )
+
+        elif args.command == "lowveg-features":
+            bbox_3006 = None
+            if args.bbox:
+                bbox_3006 = tuple(float(v) for v in args.bbox.split(","))
+                if len(bbox_3006) != 4:
+                    parser.error("--bbox must have 4 comma-separated values (e_min,n_min,e_max,n_max in EPSG:3006)")
+            if args.lidar and not (args.dem or bbox_3006):
+                parser.error("lowveg-features with --lidar needs --dem or --bbox to define the area")
+            if args.max_height <= args.min_height:
+                parser.error("--max-height must be greater than --min-height")
+            commands.cmd_lowveg_features(
+                Path(args.out),
+                canopy_tif=Path(args.canopy_tif) if args.canopy_tif else None,
+                lidar_paths=[Path(p) for p in args.lidar] if args.lidar else None,
+                dem_path=Path(args.dem) if args.dem else None,
+                course_id=args.course_id,
+                bbox_3006=bbox_3006,
+                trees_path=Path(args.trees) if args.trees else None,
+                min_height_m=args.min_height, max_height_m=args.max_height, tree_buffer_m=args.tree_buffer,
+                min_area_m2=args.min_area, close_m=args.close, round_m=args.round, simplify_m=args.simplify,
+                min_hole_area_m2=args.min_hole_area, source_ref=args.source_ref, resolution=args.resolution,
             )
 
         elif args.command == "trees-stems":

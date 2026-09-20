@@ -382,6 +382,102 @@ def test_trees_writes_unity_trees_over_the_square_with_the_sidecars_height_range
     ]
 
 
+# --- buildings --------------------------------------------------------------
+
+def _survey(path, features):
+    """A fetch-buildings survey: rectangles given as (id, kind, x0, y0, x1, y1, extra props)."""
+    out = []
+    for bid, kind, x0, y0, x1, y1, extra in features:
+        ring = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+        props = {
+            "type": "building", "id": bid, "kind": kind, "name": None, "levels": None, "heightTagM": None,
+            "rect": {"cx": (x0 + x1) / 2, "cy": (y0 + y1) / 2, "lengthM": max(x1 - x0, y1 - y0),
+                     "widthM": min(x1 - x0, y1 - y0), "angleDeg": 0.0 if x1 - x0 >= y1 - y0 else 90.0},
+            "eaveM": None, "ridgeM": None, "roofCells": 0, "source": "osm", "osm_type": "way", "osm_id": 1,
+            **extra,
+        }
+        out.append({"type": "Feature", "properties": props, "geometry": {"type": "Polygon", "coordinates": [ring]}})
+    path.write_text(json.dumps({
+        "type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::3006"}},
+        "features": out,
+    }))
+
+
+def test_buildings_writes_unity_buildings_over_the_square(tmp_path):
+    extent = (1000.0, 2000.0, 1200.0, 2200.0)
+    survey = tmp_path / "buildings.geojson"
+    _survey(survey, [
+        ("osm:way/1", "detached", 1010.0, 2020.0, 1022.0, 2028.0, {"eaveM": 4.2, "ridgeM": 6.8, "roofCells": 60, "name": "Villa"}),
+        ("osm:way/2", "garage", 1100.0, 2100.0, 1104.0, 2106.0, {"heightTagM": 3.0}),
+        ("osm:way/3", "yes", 1150.0, 2150.0, 1160.0, 2156.0, {"levels": 2}),
+        ("osm:way/4", "shed", 1180.0, 2180.0, 1184.0, 2183.0, {}),
+        ("osm:way/5", "barn", 1300.0, 2100.0, 1320.0, 2110.0, {}),  # east of the square
+    ])
+    sidecar = tmp_path / "x-inner-dem-200m.tif.json"
+    _sidecar(sidecar, extent, 48.25, 70.5, "inner")
+    out = tmp_path / "x-inner-buildings.json"
+
+    gspro.cmd_buildings(None, survey, sidecar, out, extent=extent)
+
+    doc = json.loads(out.read_text())
+    assert doc["format"] == "unity-buildings-v1"
+    assert doc["plot"] == {"crs": "EPSG:3006", "terrain": "inner", "originX": 1000.0, "originY": 2000.0,
+                           "sizeM": 200.0, "minM": 48.25, "maxM": 70.5}
+    rows = {r["id"]: r for r in doc["buildings"]}
+    assert list(rows) == ["osm:way/1", "osm:way/2", "osm:way/3", "osm:way/4"]
+    villa = rows["osm:way/1"]
+    assert villa == {
+        "id": "osm:way/1", "kind": "detached", "name": "Villa", "x": 16.0, "z": 24.0,
+        "lengthM": 12.0, "widthM": 8.0, "yawDeg": 0.0, "eaveM": 4.2, "ridgeM": 6.8,
+        "heightM": 6.8, "heightSource": "lidar", "areaM2": 96.0,
+        "footprint": [10.0, 20.0, 22.0, 20.0, 22.0, 28.0, 10.0, 28.0],
+    }
+    # A north-south long axis (90° CCW from east) is yaw 270 (clockwise from above).
+    assert rows["osm:way/2"]["yawDeg"] == 270.0
+    assert (rows["osm:way/2"]["heightM"], rows["osm:way/2"]["heightSource"]) == (3.0, "tag")
+    assert (rows["osm:way/3"]["heightM"], rows["osm:way/3"]["heightSource"]) == (6.0, "levels")
+    # JsonUtility-safe: never null, a name is at least "".
+    assert (rows["osm:way/4"]["heightM"], rows["osm:way/4"]["heightSource"]) == (0.0, "none")
+    assert rows["osm:way/4"]["name"] == "" and rows["osm:way/4"]["eaveM"] == 0.0
+
+
+def test_outer_buildings_leave_the_inner_square_to_the_inner_terrain(tmp_path):
+    outer = (0.0, 0.0, 400.0, 400.0)
+    inner = (100.0, 100.0, 300.0, 300.0)
+    survey = tmp_path / "buildings.geojson"
+    _survey(survey, [
+        ("osm:way/1", "yes", 40.0, 40.0, 50.0, 46.0, {}),
+        ("osm:way/2", "yes", 200.0, 200.0, 210.0, 206.0, {}),
+    ])
+    sidecar = tmp_path / "x-outer-dem-400m.tif.json"
+    _sidecar(sidecar, outer, 20.0, 60.0, "outer")
+    out = tmp_path / "x-outer-buildings.json"
+
+    gspro.cmd_buildings(None, survey, sidecar, out, terrain="outer", exclude=inner, extent=outer)
+
+    doc = json.loads(out.read_text())
+    assert doc["plot"]["terrain"] == "outer" and doc["plot"]["sizeM"] == 400.0
+    assert [b["id"] for b in doc["buildings"]] == ["osm:way/1"]
+
+
+def test_buildings_refuses_bad_inputs(tmp_path):
+    import pytest
+    extent = (1000.0, 2000.0, 1200.0, 2200.0)
+    survey = tmp_path / "buildings.geojson"
+    _survey(survey, [])
+    sidecar = tmp_path / "x.tif.json"
+    _sidecar(sidecar, (0.0, 0.0, 200.0, 200.0), 1.0, 2.0, "inner")
+    with pytest.raises(SystemExit, match="is for square"):
+        gspro.cmd_buildings(None, survey, sidecar, tmp_path / "o.json", extent=extent)
+    with pytest.raises(SystemExit, match="no such heightmap sidecar"):
+        gspro.cmd_buildings(None, survey, tmp_path / "missing.json", tmp_path / "o.json", extent=extent)
+    with pytest.raises(SystemExit, match="no such building survey"):
+        gspro.cmd_buildings(None, tmp_path / "missing.json", sidecar, tmp_path / "o.json", extent=extent)
+    (tmp_path / "wgs.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": []}))
+    with pytest.raises(SystemExit, match="not an EPSG:3006 building survey"):
+        gspro.cmd_buildings(None, tmp_path / "wgs.geojson", sidecar, tmp_path / "o.json", extent=(0.0, 0.0, 200.0, 200.0))
+
+
 def test_outer_trees_leave_the_inner_square_to_the_inner_terrain(tmp_path):
     outer = (0.0, 0.0, 400.0, 400.0)
     inner = (100.0, 100.0, 300.0, 300.0)

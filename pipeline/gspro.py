@@ -11,7 +11,10 @@ Commands:
   ortho      Download the two most recent orthophoto vintages for an area and
              render each to a square JPEG (default 8192×8192). Different
              vintages are often flown in different seasons, so you can pick the
-             nicer-looking one.
+             nicer-looking one. --terrain-out adds the darkened Unity terrain
+             twin; --tint-out adds that twin with the course's grass surfaces
+             tinted dark green (the Photoshop-overlay step, masked by the
+             app's own drawn features instead of by the SVG).
   hillshade  Render a square hillshade JPEG (default 8192×8192, QGIS-style) from
              a DEM — either an existing --dem GeoTIFF or freshly gridded from
              Laserdata Skog lidar for --bbox.
@@ -19,6 +22,10 @@ Commands:
              unity-trees-v1 file the Unity Tree Planter reads, over one
              terrain square: plot origin/size from the square, the height
              range from that terrain's heightmap sidecar.
+  zones      Rasterize a course's vegetation zones (app database) into the
+             VSPro texture masks for one terrain square — one RGBA PNG per
+             four zone types, weights crossfaded at the edges — plus the
+             unity-zones-v1 JSON the Unity importer reads.
   svg        Export a course's drawn features from the app database as a
              layered, fill-only SVG in the GSPro/OPCD trace palette: one
              Inkscape layer per hole, shapes named <type>_<n>, fills from
@@ -49,6 +56,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -57,7 +65,7 @@ from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.transform import from_bounds
 from rasterio.warp import reproject, transform_bounds
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 from golfpipe import stac
 from golfpipe import commands
@@ -214,10 +222,13 @@ def _darken(hwc: np.ndarray, factor: float, space: str) -> np.ndarray:
 
 def _render_ortho(src: Path, extent, size: int, out: Path, quality: int = DEFAULT_JPEG_QUALITY,
                   terrain_out: Path | None = None, darken: float = DEFAULT_TERRAIN_DARKEN,
-                  darken_space: str = DEFAULT_DARKEN_SPACE) -> None:
+                  darken_space: str = DEFAULT_DARKEN_SPACE, tint: "TintJob | None" = None) -> None:
     """Render the square to `out` as-is and, with `terrain_out`, a second
     copy of the same render darkened by `darken` (see `_darken`) for use as
-    the Unity terrain texture — one reprojection, two files."""
+    the Unity terrain texture — one reprojection, two files. With `tint`, a
+    third: the darkened twin with the course's grass surfaces tinted (see
+    `_tint_terrain`), the hand-made Photoshop overlay done from the app's
+    own feature shapes."""
     # Cubic, not bilinear: the source is ~0.16 m/px, so an 8192 px texture
     # of a 2 km square is a 1.5× downsample and bilinear aliases. OPCD's own
     # overlay step is a 16000 → 8192 cubic resample (gdal_translate -r cubic).
@@ -233,12 +244,20 @@ def _render_ortho(src: Path, extent, size: int, out: Path, quality: int = DEFAUL
         tq = max(quality, TERRAIN_JPEG_QUALITY)
         Image.fromarray(dark).save(terrain_out, format="JPEG", quality=tq, subsampling=0)
         print(f"  wrote {terrain_out}  (terrain texture, ×{darken:g} in {darken_space} light, JPEG q{tq} 4:4:4)")
+        if tint is not None:
+            tinted, summary = _tint_terrain(dark, extent, tint.rows, tint.tints, tint.water_feather_m)
+            tint.out.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(tinted).save(tint.out, format="JPEG", quality=tq, subsampling=0)
+            print(f"  wrote {tint.out}  (terrain texture + surface tint from {tint.course_name}: {summary})")
 
 
 def cmd_ortho(bbox, out_dir: Path | None, size: int, count: int, ortho_tifs: list[Path] | None,
               quality: int = DEFAULT_JPEG_QUALITY, out: Path | None = None,
               extent: Extent | None = None, terrain_out: Path | None = None,
-              darken: float = DEFAULT_TERRAIN_DARKEN, darken_space: str = DEFAULT_DARKEN_SPACE) -> None:
+              darken: float = DEFAULT_TERRAIN_DARKEN, darken_space: str = DEFAULT_DARKEN_SPACE,
+              tint_out: Path | None = None, tint_course: str | None = None,
+              db_path: Path = DEFAULT_DB, tints: "dict[str, Tint] | None" = None,
+              water_feather_m: float | None = None) -> None:
     if not 1 <= quality <= 100:
         raise SystemExit("error: --quality must be 1..100")
     if not 0 < darken <= 1:
@@ -251,6 +270,19 @@ def cmd_ortho(bbox, out_dir: Path | None, size: int, count: int, ortho_tifs: lis
         raise SystemExit("error: --terrain-out goes with --out")
     if out is None and out_dir is None:
         raise SystemExit("error: --out-dir is required (or --out with a single --ortho)")
+    tint: TintJob | None = None
+    if tint_out is not None:
+        if terrain_out is None or not tint_course:
+            raise SystemExit("error: --tint-out needs --terrain-out (it tints that twin) and --tint-course")
+        course, rows = _load_course_features(db_path, tint_course, "opcd")
+        if water_feather_m is None:
+            water_feather_m = DEFAULT_WATER_FEATHER_M
+        if water_feather_m < 0:
+            raise SystemExit("error: --water-feather must be >= 0")
+        tint = TintJob(tint_out, course["name"], rows, tints if tints is not None else _parse_tints(None),
+                       water_feather_m)
+    elif tint_course:
+        raise SystemExit("error: --tint-course goes with --tint-out")
     extent = extent or _square_3006_extent(bbox)
 
     # Reuse already-downloaded/cropped ortho GeoTIFFs (e.g. the build's
@@ -264,7 +296,7 @@ def cmd_ortho(bbox, out_dir: Path | None, size: int, count: int, ortho_tifs: lis
             dest = out if out is not None else out_dir / f"ortho_{_safe(src.stem)}_{size}px.jpg"
             print(f"rendering {src.name}")
             _render_ortho(src, extent, size, dest, quality, terrain_out=terrain_out, darken=darken,
-                          darken_space=darken_space)
+                          darken_space=darken_space, tint=tint)
         print("\nDone (from local sources).")
         return
 
@@ -594,6 +626,118 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
     print(f"  plot origin {e0:.0f},{n0:.0f} (EPSG:3006), height range {doc['plot']['minM']:.2f}..{doc['plot']['maxM']:.2f} m from {sidecar_path.name}")
 
 
+# --- Command: buildings -----------------------------------------------------
+
+UNITY_BUILDINGS_FORMAT = "unity-buildings-v1"
+
+
+def _read_plot_sidecar(sidecar_path: Path, extent: Extent) -> dict:
+    if not sidecar_path.is_file():
+        raise SystemExit(f"error: no such heightmap sidecar: {sidecar_path} (export the heightmap first)")
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sq = sidecar.get("square3006")
+    if sq and any(abs(a - b) > 0.01 for a, b in zip(sq, extent)):
+        raise SystemExit(f"error: the sidecar {sidecar_path.name} is for square {sq}, not {list(extent)}")
+    return sidecar
+
+
+def cmd_buildings(bbox, survey_path: Path, sidecar_path: Path, out: Path, terrain: str | None = None,
+                  exclude: Extent | None = None, extent: Extent | None = None) -> None:
+    """Write a unity-buildings-v1 file for one terrain from a fetch-buildings
+    survey: every building whose rectangle centre is inside the square (and
+    outside `exclude`, the inner square when this is the outer), positioned
+    like the trees file — `x`/`z` metres from the square's south-west
+    corner — with the footprint ring in the same local metres, the
+    rectangle's sides and its `yawDeg`: the Unity rotation about Y
+    (clockwise seen from above) that turns a prefab's local +x onto the
+    footprint's long axis. Which end is the front, and whether the prefab's
+    long axis is its +x or +z, is the planter's business (add 90/180 there).
+    `heightM` is the lidar ridge when measured, else the OSM height tag,
+    else levels × 3 m, else 0; `heightSource` says which (`none` for 0).
+    The plot block copies the terrain's heightmap sidecar exactly as the
+    trees file does. Shaped for Unity's JsonUtility: numbers never null,
+    the footprint a flat x0, z0, x1, z1, … list."""
+    from golfpipe import buildings as buildings_mod
+
+    if not survey_path.is_file():
+        raise SystemExit(f"error: no such building survey: {survey_path}")
+    extent = extent or _square_3006_extent(bbox)
+    e0, n0, e1, n1 = extent
+    side = e1 - e0
+    sidecar = _read_plot_sidecar(sidecar_path, extent)
+    try:
+        survey = buildings_mod.read_survey(survey_path)
+    except (ValueError, KeyError) as exc:
+        raise SystemExit(f"error: {exc}")
+
+    rows = []
+    outside = excluded = 0
+    for b in survey:
+        cx, cy = b.rect.cx, b.rect.cy
+        if not (e0 <= cx <= e1 and n0 <= cy <= n1):
+            outside += 1
+            continue
+        if exclude is not None and exclude[0] <= cx <= exclude[2] and exclude[1] <= cy <= exclude[3]:
+            excluded += 1
+            continue
+        if b.roof is not None:
+            height, source = b.roof.ridge_m, "lidar"
+        elif b.height_tag_m is not None:
+            height, source = b.height_tag_m, "tag"
+        elif b.levels is not None:
+            height, source = b.levels * buildings_mod.LEVEL_HEIGHT_M, "levels"
+        else:
+            height, source = 0.0, "none"
+        ring = list(b.polygon.exterior.coords)
+        if len(ring) > 1 and ring[0] == ring[-1]:
+            ring = ring[:-1]
+        # Unity's JsonUtility reads this (C# 6, no Newtonsoft): no nulls in
+        # number fields (0 = unmeasured, `heightSource` says so) and no
+        # nested arrays — the footprint is a flat x0, z0, x1, z1, … list.
+        footprint: list[float] = []
+        for x, y in ring:
+            footprint += [round(x - e0, 2), round(y - n0, 2)]
+        rows.append({
+            "id": b.id,
+            "kind": b.kind,
+            "name": b.name or "",
+            "x": round(cx - e0, 3),
+            "z": round(cy - n0, 3),
+            "lengthM": round(b.rect.length_m, 2),
+            "widthM": round(b.rect.width_m, 2),
+            "yawDeg": round((-b.rect.angle_deg) % 360.0, 1),
+            "eaveM": round(b.roof.eave_m, 2) if b.roof else 0.0,
+            "ridgeM": round(b.roof.ridge_m, 2) if b.roof else 0.0,
+            "heightM": round(height, 2),
+            "heightSource": source,
+            "areaM2": round(b.polygon.area, 1),
+            "footprint": footprint,
+        })
+
+    doc = {
+        "format": UNITY_BUILDINGS_FORMAT,
+        "plot": {
+            "crs": "EPSG:3006",
+            "terrain": terrain or sidecar.get("terrain") or "",
+            "originX": e0,
+            "originY": n0,
+            "sizeM": side,
+            "minM": float(sidecar["minM"]),
+            "maxM": float(sidecar["maxM"]),
+        },
+        "buildings": rows,
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(doc, separators=(",", ":")) + "\n", encoding="utf-8")
+    sources = {s: sum(1 for r in rows if r["heightSource"] == s) for s in ("lidar", "tag", "levels", "none")}
+    print(f"Wrote {out}")
+    print(f"  {len(rows)} buildings on the {side:g} m {doc['plot']['terrain'] or 'terrain'} square "
+          f"(heights: lidar {sources['lidar']}, tag {sources['tag']}, levels {sources['levels']}, "
+          f"none {sources['none']}); {outside} outside the square"
+          + (f", {excluded} left to the inner terrain" if exclude is not None else ""))
+    print(f"  plot origin {e0:.0f},{n0:.0f} (EPSG:3006), height range {doc['plot']['minM']:.2f}..{doc['plot']['maxM']:.2f} m from {sidecar_path.name}")
+
+
 # --- Command: svg -----------------------------------------------------------
 
 # The OPCD v4 Inkscape palette, verbatim from `OPCD Palette.gpl` as installed
@@ -810,6 +954,276 @@ def _parse_map(pairs: list[str] | None) -> dict[str, str]:
     return extra
 
 
+def _load_course_features(db_path: Path, course_ident: str, stack: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
+    """A course and its features (id, type, geometry_json, sort_order,
+    hole_number) in paint order: the app's own, or with `stack` "opcd" the
+    green/tee/bunker lift inside each hole (see TOP_TYPES)."""
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    rows = conn.execute(
+        """SELECT f.id, f.type, f.geometry_json, f.sort_order, h.number AS hole_number
+           FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
+           WHERE f.course_id = ?
+           ORDER BY (h.number IS NULL), h.number, f.sort_order, f.id""",
+        (course["id"],),
+    ).fetchall()
+    conn.close()
+    if not rows:
+        raise SystemExit(f"error: course {course['name']} ({course['id']}) has no features")
+    if stack == "opcd":
+        # Stable sort, so inside each layer the app's order survives: non-top
+        # types first as they are, then green/tee/bunker as they are. The hole
+        # keys keep the lift from reaching across layers.
+        rows = sorted(rows, key=lambda r: (r["hole_number"] is None, r["hole_number"] or 0,
+                                           r["type"] in TOP_TYPES))
+    return course, rows
+
+
+# --- Terrain tint -----------------------------------------------------------
+# The Photoshop step OPCD builders do by hand on the terrain texture: the
+# Inkscape SVG's shapes become selections, and a dark-green layer at about
+# 30 % opacity goes over the turf so it reads as turf under Unity's lighting
+# instead of as a bleached photo. The app's drawn features are those same
+# shapes, so this is that layer computed: the grass types get the tint,
+# bunkers and paths are painted with opacity 0 in the same stacking order
+# the SVG uses, so a bunker cut into a fairway keeps the photo's own sand,
+# and water bodies get their own darker, browner layer on top with a wide
+# feather so the shoreline fades into the green instead of cutting it.
+# Anything not drawn stays untouched.
+DEFAULT_TINT_COLOR = "#1e5a2c"
+DEFAULT_TINT_OPACITY = 0.3
+TINT_TYPES = ("fairway", "green", "tee", "semi_rough", "rough", "deep_rough")
+TINT_MASK_TYPES = ("bunker", "path")
+# Water: a separate layer composited over the grass result. Its mask is
+# feathered by DEFAULT_WATER_FEATHER_M metres (converted to pixels at render
+# time) so the tint runs from the water colour to whatever is beneath —
+# the green tint on a fairway, the plain photo elsewhere — over that
+# distance, symmetric about the drawn edge.
+TINT_WATER_TYPES = ("water", "water_creek")
+DEFAULT_WATER_COLOR = "#4a3d22"
+DEFAULT_WATER_OPACITY = 0.4
+DEFAULT_WATER_FEATHER_M = 4.0
+# Curve flattening tolerance and mask feather, both in texture pixels
+# (0.25 m at 8192 px over 2 km): a hard 1 px stair-step would show as a
+# seam on the terrain up close.
+TINT_FLATTEN_PX = 0.25
+TINT_FEATHER_PX = 1.0
+# Rows per numpy blend chunk: the 8192² texture is 200 MB as bytes and
+# would be 800 MB as float32 in one go.
+TINT_CHUNK_ROWS = 512
+
+Rgb = tuple[int, int, int]
+# (colour, opacity 0..1) — opacity 0 means "mask the tint off here".
+Tint = tuple[Rgb, float]
+
+
+class TintJob:
+    """Everything `_render_ortho` needs to tint the terrain twin: where the
+    file goes and the course's features + per-type tints, loaded once."""
+
+    def __init__(self, out: Path, course_name: str, rows: list, tints: dict[str, Tint],
+                 water_feather_m: float = DEFAULT_WATER_FEATHER_M):
+        self.out, self.course_name, self.rows, self.tints = out, course_name, rows, tints
+        self.water_feather_m = water_feather_m
+
+
+def _parse_hex(text: str, what: str) -> Rgb:
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+        raise SystemExit(f"error: {what}: {text!r} is not a #rrggbb colour")
+    return (int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16))
+
+
+def _parse_tints(pairs: list[str] | None, color: str = DEFAULT_TINT_COLOR,
+                 opacity: float = DEFAULT_TINT_OPACITY, water_color: str = DEFAULT_WATER_COLOR,
+                 water_opacity: float = DEFAULT_WATER_OPACITY) -> dict[str, Tint]:
+    """The per-type tint table: TINT_TYPES at (`color`, `opacity`),
+    TINT_MASK_TYPES at opacity 0, TINT_WATER_TYPES at (`water_color`,
+    `water_opacity`), then each `--tint TYPE=SPEC` on top where SPEC is
+    `#rrggbb`, `@OPACITY`, `#rrggbb@OPACITY` or `none` (mask it off). A
+    type not in the table (trees, oob …) is ignored entirely."""
+    if not 0 <= opacity <= 1:
+        raise SystemExit("error: --tint-opacity must be in [0, 1]")
+    if not 0 <= water_opacity <= 1:
+        raise SystemExit("error: --water-opacity must be in [0, 1]")
+    base = _parse_hex(color, "--tint-color")
+    water = _parse_hex(water_color, "--water-color")
+    tints: dict[str, Tint] = {t: (base, opacity) for t in TINT_TYPES}
+    tints.update({t: (base, 0.0) for t in TINT_MASK_TYPES})
+    tints.update({t: (water, water_opacity) for t in TINT_WATER_TYPES})
+    for pair in pairs or []:
+        kind, _, spec = pair.partition("=")
+        kind, spec = kind.strip(), spec.strip()
+        if not kind or not spec:
+            raise SystemExit(f"error: --tint wants TYPE=#rrggbb[@OPACITY], TYPE=@OPACITY or TYPE=none, got {pair!r}")
+        rgb, a = tints.get(kind, (base, opacity))
+        if spec.lower() == "none":
+            a = 0.0
+        else:
+            hexpart, _, apart = spec.partition("@")
+            if hexpart:
+                rgb = _parse_hex(hexpart, f"--tint {pair!r}")
+            if apart:
+                try:
+                    a = float(apart)
+                except ValueError:
+                    raise SystemExit(f"error: --tint {pair!r}: {apart!r} is not an opacity") from None
+                if not 0 <= a <= 1:
+                    raise SystemExit(f"error: --tint {pair!r}: opacity must be in [0, 1]")
+        tints[kind] = (rgb, a)
+    return tints
+
+
+def _ring_px(ring: dict, curve_type: str, to_px, tol_px: float) -> list[Pt]:
+    """One ring as a closed polyline in texture pixels: the same bezier
+    expansion the SVG gets, flattened within `tol_px` (the map from metres
+    to pixels is affine, so the curve is flattened after mapping)."""
+    anchors = _ring_anchors(ring, curve_type)
+    if len(anchors) < 3:
+        return []
+    px = [{"p": to_px(a["p"]), "hin": to_px(a["hin"]), "hout": to_px(a["hout"])} for a in anchors]
+    poly: list[Pt] = [px[0]["p"]]
+    n = len(px)
+    for i in range(n):
+        a, b = px[i], px[(i + 1) % n]
+        _flatten_cubic(a["p"], a["hout"], b["hin"], b["p"], tol_px, poly)
+    poly.pop()  # back at the start
+    return poly
+
+
+def _paint_layer(rows: list, tints: dict[str, Tint], extent: Extent, size: int,
+                 stats: dict[str, dict[str, int]]) -> tuple[Image.Image, Image.Image, Image.Image]:
+    """Paint `rows` in order over the square into a coverage mask (L, 255
+    where a feature is), an opacity plate (L, that feature's opacity) and a
+    colour plate (RGB): later features overwrite earlier ones, exactly as
+    the SVG stacks them. Multi-ring features are even-odd, like the SVG's.
+    The plates start out in the layer's first colour/opacity so a feather
+    on the coverage never bleeds black or nothing. Counts go into `stats`
+    (`tinted`, `masked`, `water`)."""
+    e0, n0, e1, n1 = extent
+    scale = size / (e1 - e0)
+
+    def to_px(xy: Pt) -> Pt:
+        return ((xy[0] - e0) * scale, (n1 - xy[1]) * scale)
+
+    specs = [tints[r["type"]] for r in rows if tints.get(r["type"]) is not None]
+    default_rgb, default_a = next(((rgb, a) for rgb, a in specs if a > 0), ((0, 0, 0), 0.0))
+    coverage = Image.new("L", (size, size), 0)
+    opacity = Image.new("L", (size, size), int(round(default_a * 255)))
+    plate = Image.new("RGB", (size, size), default_rgb)
+    draw_cov, draw_op, draw_c = ImageDraw.Draw(coverage), ImageDraw.Draw(opacity), ImageDraw.Draw(plate)
+    for row in rows:
+        kind = row["type"]
+        rgb, a = tints[kind]
+        geom = json.loads(row["geometry_json"])
+        curve_type = geom.get("curveType") or "bezier"
+        polys = [p for p in (_ring_px(r, curve_type, to_px, TINT_FLATTEN_PX) for r in geom.get("rings") or [])
+                 if len(p) >= 3]
+        if not polys:
+            continue
+        value = int(round(a * 255))
+        if len(polys) == 1:
+            draw_cov.polygon(polys[0], fill=255)
+            draw_op.polygon(polys[0], fill=value)
+            draw_c.polygon(polys[0], fill=rgb)
+        else:
+            xs = [x for p in polys for x, _ in p]
+            ys = [y for p in polys for _, y in p]
+            x0, y0 = max(0, math.floor(min(xs)) - 1), max(0, math.floor(min(ys)) - 1)
+            x1, y1 = min(size, math.ceil(max(xs)) + 2), min(size, math.ceil(max(ys)) + 2)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            acc = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+            for poly in polys:
+                m = Image.new("L", (x1 - x0, y1 - y0), 0)
+                ImageDraw.Draw(m).polygon([(x - x0, y - y0) for x, y in poly], fill=255)
+                acc ^= np.asarray(m, dtype=bool)
+            mask = Image.fromarray(acc.astype(np.uint8) * 255)
+            coverage.paste(255, (x0, y0, x1, y1), mask)
+            opacity.paste(value, (x0, y0, x1, y1), mask)
+            plate.paste(rgb, (x0, y0, x1, y1), mask)
+        bucket = "water" if kind in TINT_WATER_TYPES else "tinted" if a > 0 else "masked"
+        stats[bucket][kind] = stats[bucket].get(kind, 0) + 1
+    return coverage, opacity, plate
+
+
+def _render_tint_masks(rows: list, tints: dict[str, Tint], extent: Extent, size: int,
+                       feather_px: float = TINT_FEATHER_PX) -> tuple[Image.Image, Image.Image, dict]:
+    """The grass layer: every non-water feature painted in order into an
+    opacity mask (L) and a colour plate (RGB), the mask feathered by
+    `feather_px` afterwards. Types not in `tints` are counted as ignored."""
+    stats: dict[str, dict[str, int]] = {"tinted": {}, "masked": {}, "water": {}, "ignored": {}}
+    ground = []
+    for row in rows:
+        kind = row["type"]
+        if kind not in tints:
+            stats["ignored"][kind] = stats["ignored"].get(kind, 0) + 1
+        elif kind not in TINT_WATER_TYPES:
+            ground.append(row)
+    coverage, opacity, plate = _paint_layer(ground, tints, extent, size, stats)
+    alpha = ImageChops.multiply(coverage, opacity)
+    if feather_px > 0:
+        alpha = alpha.filter(ImageFilter.BoxBlur(feather_px))
+    return alpha, plate, stats
+
+
+def _render_water_masks(rows: list, tints: dict[str, Tint], extent: Extent, size: int,
+                        feather_m: float, stats: dict) -> tuple[Image.Image, Image.Image, Image.Image] | None:
+    """The water layer: coverage feathered by `feather_m` metres (so the
+    fade is a distance on the ground, not a pixel count), plus the opacity
+    and colour plates. None when the course has no water."""
+    water = [r for r in rows if r["type"] in TINT_WATER_TYPES and r["type"] in tints]
+    if not water:
+        return None
+    coverage, opacity, plate = _paint_layer(water, tints, extent, size, stats)
+    feather_px = feather_m * size / (extent[2] - extent[0])
+    if feather_px > 0:
+        coverage = coverage.filter(ImageFilter.BoxBlur(feather_px))
+    return coverage, opacity, plate
+
+
+def _tint_terrain(hwc: np.ndarray, extent: Extent, rows: list, tints: dict[str, Tint],
+                  water_feather_m: float = DEFAULT_WATER_FEATHER_M) -> tuple[np.ndarray, str]:
+    """The darkened terrain render with the grass tint composited on top
+    (normal blend in sRGB, what the Photoshop layer does) and the water
+    layer over that: inside a water body the photo takes the water tint
+    instead of the green; across the feathered shoreline the result runs
+    from one to the other. Chunked by rows."""
+    size = hwc.shape[0]
+    alpha, plate, stats = _render_tint_masks(rows, tints, extent, size)
+    a_all = np.asarray(alpha)
+    c_all = np.asarray(plate)
+    water = _render_water_masks(rows, tints, extent, size, water_feather_m, stats)
+    if water is not None:
+        wcov_all, wop_all, wc_all = (np.asarray(im) for im in water)
+    out = np.empty_like(hwc)
+    for y in range(0, size, TINT_CHUNK_ROWS):
+        sl = slice(y, y + TINT_CHUNK_ROWS)
+        base = hwc[sl].astype(np.float32)
+        a = a_all[sl].astype(np.float32)[..., None] / 255.0
+        mixed = base * (1.0 - a) + c_all[sl] * a
+        if water is not None:
+            wcov = wcov_all[sl].astype(np.float32)[..., None] / 255.0
+            wop = wop_all[sl].astype(np.float32)[..., None] / 255.0
+            wet = base * (1.0 - wop) + wc_all[sl] * wop
+            mixed = mixed * (1.0 - wcov) + wet * wcov
+        out[sl] = np.round(mixed).clip(0, 255).astype(np.uint8)
+
+    def counts(d: dict) -> str:
+        return ", ".join(f"{k} {v}" for k, v in sorted(d.items(), key=lambda kv: -kv[1])) or "none"
+
+    def layer_list(bucket: str) -> str:
+        used = sorted(((kind, rgb, a) for kind, (rgb, a) in tints.items() if a > 0 and kind in stats[bucket]),
+                      key=lambda t: t[0])
+        return "; ".join(f"{kind} #{r:02x}{g:02x}{b:02x} {a * 100:g}%" for kind, (r, g, b), a in used) or "nothing"
+
+    summary = (f"tinted {counts(stats['tinted'])}; masked off {counts(stats['masked'])}"
+               + (f"; ignored {counts(stats['ignored'])}" if stats["ignored"] else "")
+               + f"; layers {layer_list('tinted')}; feather {TINT_FEATHER_PX:g} px"
+               + (f"; water {counts(stats['water'])} as {layer_list('water')}, shoreline fade {water_feather_m:g} m"
+                  if water is not None else "; no water"))
+    return out, summary
+
+
 def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
             flatten: float | None, precision: int, mapped: dict[str, str],
             stack: str = "opcd", extent: Extent | None = None) -> None:
@@ -824,27 +1238,10 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     def to_svg(xy: Pt) -> Pt:
         return (xy[0] - e0, n1 - xy[1])
 
-    conn = _open_course_db(db_path)
-    course = _resolve_course(conn, course_ident)
-    rows = conn.execute(
-        """SELECT f.id, f.type, f.geometry_json, f.sort_order, h.number AS hole_number
-           FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
-           WHERE f.course_id = ?
-           ORDER BY (h.number IS NULL), h.number, f.sort_order, f.id""",
-        (course["id"],),
-    ).fetchall()
-    conn.close()
-    if not rows:
-        raise SystemExit(f"error: course {course['name']} ({course['id']}) has no features")
+    course, rows = _load_course_features(db_path, course_ident, stack)
 
     # One Inkscape layer per hole (Hole1…, the unpadded spelling every OPCD
     # course file here uses) plus 'Others' for features not tied to a hole.
-    if stack == "opcd":
-        # Stable sort, so inside each layer the app's order survives: non-top
-        # types first as they are, then green/tee/bunker as they are. The hole
-        # keys keep the lift from reaching across layers.
-        rows = sorted(rows, key=lambda r: (r["hole_number"] is None, r["hole_number"] or 0,
-                                           r["type"] in TOP_TYPES))
 
     # Shapes are named hole_<hole>_<index on hole> (others_<index> off-hole).
     # The mesh keeps the material from the fill, so the name only has to say
@@ -929,6 +1326,423 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         print(f"  warning: {outside} feature(s) reach outside the square; widen the area to include them")
 
 
+# --- Command: zones ---------------------------------------------------------
+# Lower-vegetation zones (docs/feature-vegetation-zones.md, section 6): the
+# course's `vegetation_zone` features rasterized into the weights VSPro's
+# texture-mask rules sample — one RGBA PNG per four zone types, 8 bits per
+# channel — plus the unity-zones-v1 JSON the Unity importer reads. The
+# polygons are the source of truth; the rasters are regenerated on every
+# export and never edited (D-VZ4). Runs once per terrain square with the
+# same sidecar check as `trees`, the outer excluding the inner (D-VZ8).
+UNITY_ZONES_FORMAT = "unity-zones-v1"
+ZONE_FEATURE_TYPE = "vegetation_zone"
+ZONE_TYPES_TABLE = "course_zone_types"
+DEFAULT_ZONE_RESOLUTION = 4096
+DEFAULT_ZONE_SIMPLIFY_M = 1.0
+DEFAULT_ZONE_WEIGHT = 1.0
+DEFAULT_ZONE_FEATHER_M = 2.0
+DEFAULT_ZONE_NOISE_M = 0.0
+DEFAULT_ZONE_SEED = 0
+# Curve flattening for the raster, in mask pixels (0.5 m at 4096 over 2 km),
+# and for the exported polygons, in metres (they are simplified afterwards).
+ZONE_FLATTEN_PX = 0.25
+ZONE_FLATTEN_M = 0.25
+# Edge noise is value noise: one random value every this many metres,
+# bilinear in between, scaled by the zone's `noise` metres. Bigger than a
+# feather so the edge wanders instead of fizzing.
+ZONE_NOISE_CELL_M = 6.0
+ZONE_CHANNELS = 4
+
+
+@dataclass
+class ZoneType:
+    key: str
+    name: str
+    color: str
+    texture: int
+    channel: int
+    items: list[dict]
+
+
+@dataclass
+class ZoneSpec:
+    id: str
+    zone_type: str
+    weight: float
+    feather: float
+    noise: float
+    geometry: dict  # the feature's geometry_json: rings + curveType
+
+
+def _zone_number(attrs: dict, key: str, default: float, zone_id: str) -> float:
+    value = attrs.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise SystemExit(f"error: zone {zone_id}: {key} is not a number ({value!r})") from None
+
+
+def _load_zone_types(conn: sqlite3.Connection, course_id: str) -> list[ZoneType]:
+    """The course's zone-type table in its sort order. The table alone binds
+    a zone type to a mask texture and channel."""
+    present = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                           (ZONE_TYPES_TABLE,)).fetchone()
+    if not present:
+        raise SystemExit(f"error: the database has no {ZONE_TYPES_TABLE} table "
+                         "(run the server once so its migrations create it)")
+    rows = conn.execute(
+        f"""SELECT key, name, color, texture_index, channel, sort_order, items_json
+            FROM {ZONE_TYPES_TABLE} WHERE course_id = ? ORDER BY sort_order, key""",
+        (course_id,),
+    ).fetchall()
+    types: list[ZoneType] = []
+    for r in rows:
+        channel, texture = int(r["channel"]), int(r["texture_index"])
+        if not 0 <= channel < ZONE_CHANNELS or texture < 0:
+            raise SystemExit(f"error: zone type {r['key']!r} has texture {texture} channel {channel}; "
+                             f"channels are 0..{ZONE_CHANNELS - 1} and textures >= 0")
+        try:
+            raw_items = json.loads(r["items_json"] or "[]")
+        except ValueError:
+            raise SystemExit(f"error: zone type {r['key']!r}: items_json is not JSON") from None
+        items = [{"item": str(i.get("item") or ""),
+                  "minDensity": float(i.get("minDensity", 0.0)),
+                  "maxDensity": float(i.get("maxDensity", 1.0))}
+                 for i in raw_items if isinstance(i, dict)]
+        types.append(ZoneType(str(r["key"]), str(r["name"] or r["key"]), str(r["color"] or "#000000"),
+                              texture, channel, items))
+    return types
+
+
+def _load_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[ZoneType], list[ZoneSpec]]:
+    """A course, its zone-type table and its vegetation_zone features in the
+    web editor's stack order (server D24: course-level features at the
+    bottom, then hole 1, 2, ..., each group by sort_order), with `zoneType`,
+    `weight`, `feather`, `noise` read from attributes_json (defaults 1, 2 m,
+    0 m when absent; weight clamped to 0..1). Note the SVG/tint loader puts
+    course-level features last; zones follow what the editor shows."""
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    types = _load_zone_types(conn, course["id"])
+    try:
+        rows = conn.execute(
+            """SELECT f.id, f.geometry_json, f.attributes_json, f.sort_order, h.number AS hole_number
+               FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
+               WHERE f.course_id = ? AND f.type = ?
+               ORDER BY COALESCE(h.number, 0), f.sort_order, f.id""",
+            (course["id"], ZONE_FEATURE_TYPE),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        raise SystemExit(f"error: {db_path}: {exc} (run the server once so its migrations bring the schema up)") from None
+    conn.close()
+    zones: list[ZoneSpec] = []
+    for r in rows:
+        attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+        if not isinstance(attrs, dict):
+            attrs = {}
+        zones.append(ZoneSpec(
+            id=str(r["id"]),
+            zone_type=str(attrs.get("zoneType") or ""),
+            weight=min(1.0, max(0.0, _zone_number(attrs, "weight", DEFAULT_ZONE_WEIGHT, r["id"]))),
+            feather=max(0.0, _zone_number(attrs, "feather", DEFAULT_ZONE_FEATHER_M, r["id"])),
+            noise=max(0.0, _zone_number(attrs, "noise", DEFAULT_ZONE_NOISE_M, r["id"])),
+            geometry=json.loads(r["geometry_json"]),
+        ))
+    return course, types, zones
+
+
+class _ValueNoise:
+    """A random grid over the square, one value in [-1, 1] every `cell_m`
+    metres, bilinear between (scipy map_coordinates), deterministic from
+    `seed`. Sampled per crop, so no full-frame field is ever allocated."""
+
+    def __init__(self, seed: int, side_m: float, cell_m: float = ZONE_NOISE_CELL_M):
+        n = int(math.ceil(side_m / cell_m)) + 2
+        self.grid = np.random.default_rng(seed).uniform(-1.0, 1.0, size=(n, n)).astype(np.float32)
+        self.cell_m = cell_m
+
+    def sample(self, y0: int, y1: int, x0: int, x1: int, px_m: float) -> np.ndarray:
+        from scipy.ndimage import map_coordinates
+        rows = (np.arange(y0, y1, dtype=np.float64) + 0.5) * px_m / self.cell_m
+        cols = (np.arange(x0, x1, dtype=np.float64) + 0.5) * px_m / self.cell_m
+        rr, cc = np.meshgrid(rows, cols, indexing="ij")
+        return map_coordinates(self.grid, [rr, cc], order=1, mode="nearest").astype(np.float32)
+
+
+def _fill_even_odd(polys: list[list[Pt]], x0: int, y0: int, w: int, h: int) -> np.ndarray:
+    """Rings filled even-odd (rings with holes, like the SVG and the tint)
+    into a bool crop whose top-left pixel is (x0, y0) of the frame."""
+    acc = np.zeros((h, w), dtype=bool)
+    for poly in polys:
+        m = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(m).polygon([(x - x0, y - y0) for x, y in poly], fill=255)
+        acc ^= np.asarray(m, dtype=bool)
+    return acc
+
+
+def _zone_weight_crop(polys_px: list[list[Pt]], size: int, px_m: float, weight: float, feather_m: float,
+                      noise_m: float, noise: "_ValueNoise | None") -> tuple[tuple[int, int, int, int], np.ndarray] | None:
+    """One zone's weight over its bounding-box crop (padded for the feather
+    and the noise), as ((y0, y1, x0, x1), float32 crop): the rings filled
+    even-odd, the signed distance in metres (negative inside, zero on the
+    drawn edge) from two Euclidean distance transforms, the noise added to
+    that distance, then `clamp(0.5 - d / feather, 0, 1) × weight` — or a
+    hard edge when the feather is 0. None when nothing lands in the frame."""
+    xs = [x for p in polys_px for x, _ in p]
+    ys = [y for p in polys_px for _, y in p]
+    margin = int(math.ceil((feather_m / 2.0 + noise_m) / px_m)) + 2
+    x0, y0 = max(0, math.floor(min(xs)) - margin), max(0, math.floor(min(ys)) - margin)
+    x1, y1 = min(size, math.ceil(max(xs)) + margin + 1), min(size, math.ceil(max(ys)) + margin + 1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    mask = _fill_even_odd(polys_px, x0, y0, x1 - x0, y1 - y0)
+    if not mask.any():
+        return None
+    if feather_m <= 0.0 and noise_m <= 0.0:
+        return (y0, y1, x0, x1), mask.astype(np.float32) * np.float32(weight)
+    from scipy.ndimage import distance_transform_edt
+    # EDT gives each pixel its distance to the nearest pixel of the other
+    # set; boundary pixels sit half a pixel from the edge, hence the 0.5.
+    # A crop the polygon fills entirely (clipped by the square) has no
+    # outside to measure to: everything is deep inside.
+    if mask.all():
+        d = np.full(mask.shape, -np.inf, dtype=np.float32)
+    else:
+        inside = distance_transform_edt(mask) - 0.5
+        outside = distance_transform_edt(~mask) - 0.5
+        d = np.where(mask, -inside, outside).astype(np.float32) * np.float32(px_m)
+    if noise_m > 0.0 and noise is not None:
+        d = d + noise.sample(y0, y1, x0, x1, px_m) * np.float32(noise_m)
+    if feather_m > 0.0:
+        w = np.clip(0.5 - d / np.float32(feather_m), 0.0, 1.0)
+    else:
+        w = (d < 0.0).astype(np.float32)
+    return (y0, y1, x0, x1), (w * np.float32(weight)).astype(np.float32)
+
+
+def _px_rect(rect: Extent, extent: Extent, size: int) -> tuple[int, int, int, int]:
+    """An EPSG:3006 rectangle as (y0, y1, x0, x1) pixel rows/cols of the
+    north-up frame, clipped to it."""
+    e0, n0, e1, n1 = extent
+    scale = size / (e1 - e0)
+    x0 = max(0, int(round((rect[0] - e0) * scale)))
+    x1 = min(size, int(round((rect[2] - e0) * scale)))
+    y0 = max(0, int(round((n1 - rect[3]) * scale)))
+    y1 = min(size, int(round((n1 - rect[1]) * scale)))
+    return y0, y1, x0, x1
+
+
+def render_zone_masks(zones: list[ZoneSpec], extent: Extent, size: int, seed: int = DEFAULT_ZONE_SEED,
+                      exclude: Extent | None = None) -> tuple[dict[str, np.ndarray], int]:
+    """Per zone-type key, a float32 size×size weight raster in the north-up
+    frame of the terrain texture (only types that have a zone get one), and
+    the count of zones that did not land in the frame.
+
+    Overlaps: zones are processed from the LAST to the first with a running
+    per-pixel budget that starts at 1. A zone of type T can raise T's
+    channel up to `min(its weight, what T already holds + the budget left)`
+    and takes the difference out of the budget — so a later zone claims its
+    weight first, an earlier zone of another type keeps only what is left,
+    and zones of the same type combine as a maximum where the budget allows.
+    The channels never sum above 1 and nothing is scaled up: a lone zone at
+    weight 0.3 stays 0.3 and a feather ramp stays a ramp. `exclude` (the
+    inner square when this is the outer terrain) is zeroed at the end."""
+    e0, n0, e1, n1 = extent
+    px_m = (e1 - e0) / size
+    scale = 1.0 / px_m
+
+    def to_px(xy: Pt) -> Pt:
+        return ((xy[0] - e0) * scale, (n1 - xy[1]) * scale)
+
+    noise = _ValueNoise(seed, e1 - e0) if any(z.noise > 0 for z in zones) else None
+    remaining = np.ones((size, size), dtype=np.float32)
+    channels: dict[str, np.ndarray] = {}
+    outside = 0
+    for z in reversed(zones):
+        curve = z.geometry.get("curveType") or "bezier"
+        polys = [p for p in (_ring_px(r, curve, to_px, ZONE_FLATTEN_PX) for r in z.geometry.get("rings") or [])
+                 if len(p) >= 3]
+        crop = _zone_weight_crop(polys, size, px_m, z.weight, z.feather, z.noise, noise) if polys else None
+        if crop is None:
+            outside += 1
+            continue
+        (y0, y1, x0, x1), w = crop
+        held = channels.setdefault(z.zone_type, np.zeros((size, size), dtype=np.float32))
+        sub_held = held[y0:y1, x0:x1]
+        sub_left = remaining[y0:y1, x0:x1]
+        new = np.maximum(sub_held, np.minimum(w, sub_left + sub_held))
+        sub_left -= new - sub_held
+        np.maximum(sub_left, 0.0, out=sub_left)
+        sub_held[...] = new
+    if exclude is not None:
+        y0, y1, x0, x1 = _px_rect(exclude, extent, size)
+        if y1 > y0 and x1 > x0:
+            for arr in channels.values():
+                arr[y0:y1, x0:x1] = 0.0
+    return channels, outside
+
+
+def _write_zone_masks(channels: dict[str, np.ndarray], types: list[ZoneType], size: int, out: Path) -> list[dict]:
+    """One RGBA PNG per texture index that has zone types, named
+    `<out stem>-<texture>.png` next to `out`; each type's weights in its
+    channel, 8-bit; unused channels stay 0 and are named "" in the manifest."""
+    by_texture: dict[int, list[ZoneType]] = {}
+    for t in types:
+        by_texture.setdefault(t.texture, []).append(t)
+    masks: list[dict] = []
+    for texture in sorted(by_texture):
+        rgba = np.zeros((size, size, ZONE_CHANNELS), dtype=np.uint8)
+        names = [""] * ZONE_CHANNELS
+        for t in by_texture[texture]:
+            names[t.channel] = t.key
+            arr = channels.get(t.key)
+            if arr is not None:
+                rgba[..., t.channel] = np.round(arr * 255.0).clip(0, 255).astype(np.uint8)
+        path = out.with_name(f"{out.stem}-{texture}.png")
+        Image.fromarray(rgba).save(path, format="PNG")
+        masks.append({"file": path.name, "resolution": size, "channels": names})
+    return masks
+
+
+def _zone_geometry_m(geometry: dict) -> "BaseGeometry | None":
+    """A zone's rings as one shapely geometry in EPSG:3006 metres: the same
+    bezier/B-spline expansion the SVG gets, flattened within ZONE_FLATTEN_M,
+    rings combined even-odd (symmetric difference) like the raster fill."""
+    from shapely import make_valid
+    from shapely.geometry import Polygon
+
+    curve = geometry.get("curveType") or "bezier"
+    geom = None
+    for ring in geometry.get("rings") or []:
+        pts = _ring_px(ring, curve, lambda xy: xy, ZONE_FLATTEN_M)
+        if len(pts) < 3:
+            continue
+        poly = make_valid(Polygon(pts))
+        geom = poly if geom is None else geom.symmetric_difference(poly)
+    return geom
+
+
+def _zone_rings_local(geom, e0: float, n0: float) -> list[dict]:
+    """Every ring of every polygon part as `{"nodes": [{"x", "z"}]}` in
+    plot-local metres (x east, z north from the square's south-west corner),
+    the closing point dropped — the unity-trees-v1 convention."""
+    from golfpipe.detect_common import _each_polygon
+
+    rings: list[dict] = []
+    for poly in _each_polygon(geom):
+        for ring in (poly.exterior, *poly.interiors):
+            coords = list(ring.coords)[:-1]
+            if len(coords) < 3:
+                continue
+            rings.append({"nodes": [{"x": round(x - e0, 2), "z": round(y - n0, 2)} for x, y, *_ in coords]})
+    return rings
+
+
+def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Path,
+              terrain: str | None = None, exclude: Extent | None = None, extent: Extent | None = None,
+              resolution: int = DEFAULT_ZONE_RESOLUTION, simplify_m: float = DEFAULT_ZONE_SIMPLIFY_M,
+              seed: int = DEFAULT_ZONE_SEED) -> None:
+    """Rasterize a course's vegetation zones for one terrain into the VSPro
+    texture masks (`<out stem>-<texture>.png`, RGBA, `resolution`²) and
+    write the unity-zones-v1 JSON at `out`: the plot block copied from the
+    terrain's heightmap sidecar exactly as `trees` does, the mask manifest,
+    the zone-type table with its item bindings, and every zone that touches
+    the square as plot-local polygons (flattened, clipped to the square,
+    minus `exclude`, simplified to `simplify_m`) for the Scene-view overlay.
+    Zones whose type is not in the course's table are skipped with a warning."""
+    from shapely.geometry import box
+
+    if resolution <= 0:
+        raise SystemExit("error: --resolution must be > 0")
+    if simplify_m < 0:
+        raise SystemExit("error: --simplify must be >= 0")
+    extent = extent or _square_3006_extent(bbox)
+    e0, n0, e1, n1 = extent
+    side = e1 - e0
+    sidecar = _read_plot_sidecar(sidecar_path, extent)
+    course, types, zones = _load_zones(db_path, course_ident)
+    if not types:
+        raise SystemExit(f"error: course {course['name']} ({course['id']}) has no zone types "
+                         "(add them in the web zone-type panel first)")
+    by_key = {t.key: t for t in types}
+
+    known: list[ZoneSpec] = []
+    unknown: dict[str, int] = {}
+    for z in zones:
+        if z.zone_type in by_key:
+            known.append(z)
+        else:
+            unknown[z.zone_type] = unknown.get(z.zone_type, 0) + 1
+    for key, count in sorted(unknown.items()):
+        print(f"  warning: {count} zone(s) with zone type {key or '(none)'!r} not in the course's table; skipped")
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    channels, outside_raster = render_zone_masks(known, extent, resolution, seed=seed, exclude=exclude)
+    masks = _write_zone_masks(channels, types, resolution, out)
+
+    square = box(e0, n0, e1, n1)
+    excl = box(*exclude) if exclude is not None else None
+    rows: list[dict] = []
+    outside = excluded = 0
+    for z in known:
+        geom = _zone_geometry_m(z.geometry)
+        clipped = geom.intersection(square) if geom is not None and not geom.is_empty else None
+        if clipped is None or clipped.is_empty:
+            outside += 1
+            continue
+        if excl is not None:
+            clipped = clipped.difference(excl)
+            if clipped.is_empty:
+                excluded += 1
+                continue
+        if simplify_m > 0:
+            clipped = clipped.simplify(simplify_m, preserve_topology=True)
+        rings = _zone_rings_local(clipped, e0, n0)
+        if not rings:
+            outside += 1
+            continue
+        rows.append({
+            "id": z.id,
+            "zoneType": z.zone_type,
+            "weight": z.weight,
+            "feather": z.feather,
+            "noise": z.noise,
+            "rings": rings,
+        })
+
+    doc = {
+        "format": UNITY_ZONES_FORMAT,
+        "plot": {
+            "crs": "EPSG:3006",
+            "terrain": terrain or sidecar.get("terrain") or "",
+            "originX": e0,
+            "originY": n0,
+            "sizeM": side,
+            "minM": float(sidecar["minM"]),
+            "maxM": float(sidecar["maxM"]),
+        },
+        "masks": masks,
+        "zoneTypes": [{"key": t.key, "name": t.name, "color": t.color, "texture": t.texture,
+                       "channel": t.channel, "items": t.items} for t in types],
+        "zones": rows,
+    }
+    out.write_text(json.dumps(doc, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    per_type = {t.key: sum(1 for r in rows if r["zoneType"] == t.key) for t in types}
+    counts = ", ".join(f"{k} {v}" for k, v in per_type.items() if v) or "none"
+    print(f"Wrote {out}")
+    print(f"  {len(rows)} zones on the {side:g} m {doc['plot']['terrain'] or 'terrain'} square ({counts}); "
+          f"{outside} outside the square"
+          + (f", {excluded} left to the inner terrain" if exclude is not None else "")
+          + (f", {sum(unknown.values())} skipped (unknown zone type)" if unknown else ""))
+    mask_list = "; ".join(f"{m['file']} ({'/'.join(c or '-' for c in m['channels'])})" for m in masks) or "none"
+    print(f"  masks {resolution}² at {side / resolution:.3f} m/px, noise seed {seed}, "
+          f"polygons simplified to {simplify_m:g} m: {mask_list}")
+    print(f"  plot origin {e0:.0f},{n0:.0f} (EPSG:3006), height range {doc['plot']['minM']:.2f}..{doc['plot']['maxM']:.2f} m from {sidecar_path.name}")
+
+
 # --- CLI --------------------------------------------------------------------
 
 def _add_bbox(p: argparse.ArgumentParser) -> None:
@@ -957,6 +1771,25 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"light multiplier for --terrain-out (default {DEFAULT_TERRAIN_DARKEN:g})")
     p.add_argument("--darken-space", dest="darken_space", choices=["linear", "srgb"], default=DEFAULT_DARKEN_SPACE,
                    help=f"multiply in linear light (default) or on the sRGB values")
+    p.add_argument("--tint-out", dest="tint_out",
+                   help="also write the --terrain-out twin with the course's grass surfaces tinted "
+                        "(the Photoshop overlay step, from the app's drawn features; needs --tint-course)")
+    p.add_argument("--tint-course", dest="tint_course", help="course id, or a name substring, whose features mask the tint")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database for --tint-course (default {DEFAULT_DB})")
+    p.add_argument("--tint-color", dest="tint_color", default=DEFAULT_TINT_COLOR,
+                   help=f"tint colour for the grass types (default {DEFAULT_TINT_COLOR})")
+    p.add_argument("--tint-opacity", dest="tint_opacity", type=float, default=DEFAULT_TINT_OPACITY,
+                   help=f"tint layer opacity 0..1 (default {DEFAULT_TINT_OPACITY:g})")
+    p.add_argument("--tint", action="append", metavar="TYPE=SPEC",
+                   help="per-type override: TYPE=#rrggbb, TYPE=@0.2, TYPE=#rrggbb@0.2 or TYPE=none to mask it off "
+                        f"(repeatable; tinted by default: {', '.join(TINT_TYPES)}; masked: {', '.join(TINT_MASK_TYPES)}; "
+                        f"water layer: {', '.join(TINT_WATER_TYPES)})")
+    p.add_argument("--water-color", dest="water_color", default=DEFAULT_WATER_COLOR,
+                   help=f"tint colour for water bodies and creeks (default {DEFAULT_WATER_COLOR}, a dark brown)")
+    p.add_argument("--water-opacity", dest="water_opacity", type=float, default=DEFAULT_WATER_OPACITY,
+                   help=f"water layer opacity 0..1 (default {DEFAULT_WATER_OPACITY:g})")
+    p.add_argument("--water-feather", dest="water_feather", type=float, default=DEFAULT_WATER_FEATHER_M,
+                   help=f"shoreline fade width in metres, symmetric about the drawn edge (default {DEFAULT_WATER_FEATHER_M:g})")
 
     p = sub.add_parser("hillshade", help="render a square hillshade JPEG from a DEM or lidar")
     _add_bbox(p)
@@ -990,6 +1823,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--terrain", choices=["inner", "outer"], help="which GSPro terrain (default: the sidecar's)")
     p.add_argument("--exclude-square", dest="exclude_square",
                    help="x0,y0,x1,y1 in EPSG:3006 to leave out — the inner square when writing the outer's trees")
+
+    p = sub.add_parser("buildings", help="write the unity-buildings-v1 file for one terrain from a fetch-buildings survey")
+    _add_area(p)
+    p.add_argument("--survey", required=True, help="buildings.geojson (golfpipe fetch-buildings output)")
+    p.add_argument("--sidecar", required=True, help="the terrain's heightmap sidecar (<dem>.tif.json) for the height range")
+    p.add_argument("--out", required=True, help="output unity-buildings-v1 JSON path")
+    p.add_argument("--terrain", choices=["inner", "outer"], help="which GSPro terrain (default: the sidecar's)")
+    p.add_argument("--exclude-square", dest="exclude_square",
+                   help="x0,y0,x1,y1 in EPSG:3006 to leave out — the inner square when writing the outer's buildings")
+
+    p = sub.add_parser("zones", help="rasterize a course's vegetation zones into VSPro texture masks + unity-zones-v1 JSON for one terrain")
+    _add_area(p)
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+    p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
+    p.add_argument("--sidecar", required=True, help="the terrain's heightmap sidecar (<dem>.tif.json) for the height range")
+    p.add_argument("--out", required=True, help="output unity-zones-v1 JSON path; the masks go next to it as <stem>-<texture>.png")
+    p.add_argument("--terrain", choices=["inner", "outer"], help="which GSPro terrain (default: the sidecar's)")
+    p.add_argument("--exclude-square", dest="exclude_square",
+                   help="x0,y0,x1,y1 in EPSG:3006 to leave out — the inner square when writing the outer's zones")
+    p.add_argument("--resolution", type=int, default=DEFAULT_ZONE_RESOLUTION,
+                   help=f"mask edge in px (default {DEFAULT_ZONE_RESOLUTION}; 0.5 m/px on a 2050 m square)")
+    p.add_argument("--simplify", type=float, default=DEFAULT_ZONE_SIMPLIFY_M,
+                   help=f"tolerance in metres for the exported overlay polygons (default {DEFAULT_ZONE_SIMPLIFY_M:g}; the masks are unaffected)")
+    p.add_argument("--seed", type=int, default=DEFAULT_ZONE_SEED,
+                   help=f"random seed for the edge noise of zones with noise > 0 (default {DEFAULT_ZONE_SEED})")
 
     p = sub.add_parser("svg", help="export a course's drawn features as a layered GSPro/OPCD SVG")
     _add_area(p)
@@ -1029,7 +1887,11 @@ def main(argv: list[str] | None = None) -> int:
                   [Path(p) for p in args.ortho] if args.ortho else None,
                   args.quality, Path(args.out) if args.out else None, extent=extent,
                   terrain_out=Path(args.terrain_out) if args.terrain_out else None, darken=args.darken,
-                  darken_space=args.darken_space)
+                  darken_space=args.darken_space,
+                  tint_out=Path(args.tint_out) if args.tint_out else None, tint_course=args.tint_course,
+                  db_path=Path(args.db),
+                  tints=_parse_tints(args.tint, args.tint_color, args.tint_opacity, args.water_color, args.water_opacity),
+                  water_feather_m=args.water_feather)
     elif args.command == "hillshade":
         cmd_hillshade(
             bbox, Path(args.out), args.size,
@@ -1043,6 +1905,13 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "trees":
         cmd_trees(bbox, Path(args.stems), Path(args.sidecar), Path(args.out), args.terrain,
                   _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent)
+    elif args.command == "buildings":
+        cmd_buildings(bbox, Path(args.survey), Path(args.sidecar), Path(args.out), args.terrain,
+                      _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent)
+    elif args.command == "zones":
+        cmd_zones(bbox, Path(args.db), args.course, Path(args.sidecar), Path(args.out), args.terrain,
+                  _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent,
+                  resolution=args.resolution, simplify_m=args.simplify, seed=args.seed)
     elif args.command == "svg":
         cmd_svg(bbox, Path(args.out), Path(args.db), args.course,
                 args.flatten, args.precision, _parse_map(args.map), args.stack, extent=extent)

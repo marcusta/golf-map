@@ -18,6 +18,7 @@ from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 
+from golfpipe import buildings as buildings_mod
 from golfpipe import canopy as canopy_mod
 from golfpipe import clean_ortho as clean_ortho_mod
 from golfpipe import dem_analysis as dem_analysis_mod
@@ -29,8 +30,10 @@ from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro as hydro_mod
 from golfpipe import osm as osm_mod
 from golfpipe import patches as patches_mod
+from golfpipe import roads as roads_mod
 from golfpipe import stac
 from golfpipe import trees_features as trees_features_mod
+from golfpipe import lowveg_features as lowveg_features_mod
 from golfpipe import sources as sources_mod
 from golfpipe import water as water_mod
 from golfpipe.hillshade import write_hillshade_geotiff
@@ -355,6 +358,256 @@ def cmd_fetch_osm(
     return out
 
 
+def cmd_fetch_roads(
+    bbox: tuple[float, float, float, float],
+    out: Path,
+    overpass_fetch=None,
+    overpass_url: str = osm_mod.OVERPASS_URL,
+    class_widths: dict[str, float] | None = None,
+    clip: bool = True,
+    simplify_m: float = roads_mod.DEFAULT_SIMPLIFY_M,
+    min_area_m2: float = roads_mod.DEFAULT_MIN_AREA_M2,
+    centerlines_out: Path | None = None,
+    merge: bool = False,
+) -> Path:
+    """Queries Overpass for OSM highway centerlines in bbox (WGS84), buffers
+    each to its road width (width tag > lanes > class table, see
+    golfpipe/roads.py), unions the corridors per class group into road
+    network polygons, clips them to the bbox and writes one EPSG:3006
+    GeoJSON FeatureCollection of `path` features to `out`, importable by the
+    web GeoJSON draft-import wizard (bucket on `road_class` to pick roads /
+    tracks / footpaths apart). `class_widths` overrides the per-class
+    default widths (`{"service": 4.0}`). `centerlines_out` also writes the
+    clipped centerlines with their widths — the input for `road-grades`.
+    One polygon per OSM way unless `merge` (see roads.merge_corridors).
+
+    LICENSING: OSM is ODbL — each polygon carries the ids of the ways merged
+    into it and the collection a top-level `attribution` (see cmd_fetch_osm).
+    """
+    from datetime import date
+
+    from rasterio.crs import CRS
+    from rasterio.warp import transform as warp_transform
+
+    fetch = overpass_fetch or osm_mod.fetch_overpass
+    query = roads_mod.build_roads_query(bbox)
+    print(f"Querying Overpass for highway ways in bbox {bbox} ...")
+    overpass_json = fetch(query, url=overpass_url)
+
+    src = CRS.from_epsg(4326)
+    dst = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
+
+    def reproject(lons, lats):
+        return warp_transform(src, dst, list(lons), list(lats))
+
+    ways, skipped = roads_mod.assemble_roads(overpass_json, reproject, class_widths)
+    sources: dict[str, int] = {}
+    for way in ways:
+        sources[way.width_source] = sources.get(way.width_source, 0) + 1
+    print(f"Road ways: {len(ways)} (" + (", ".join(f"{k}: {n}" for k, n in sorted(sources.items())) or "none") + ")")
+
+    clip_geom = roads_mod.bbox_polygon_3006(bbox, reproject) if clip else None
+    polygons = roads_mod.merge_corridors(ways, clip=clip_geom, simplify_m=simplify_m, min_area_m2=min_area_m2, merge=merge)
+    collection = roads_mod.build_roads_geojson(polygons, fetch_date=date.today().isoformat())
+    water_mod.write_geojson(collection, out)
+    if centerlines_out is not None:
+        lines = roads_mod.build_centerlines_geojson(ways, fetch_date=date.today().isoformat(), clip=clip_geom)
+        water_mod.write_geojson(lines, centerlines_out)
+        print(f"Centerlines: {len(lines['features'])}, "
+              f"{sum(f['properties']['lengthM'] for f in lines['features']) / 1000:.1f} km — wrote {centerlines_out}")
+
+    groups: dict[str, int] = {}
+    for rp in polygons:
+        groups[rp.group] = groups.get(rp.group, 0) + 1
+    total_area = sum(rp.polygon.area for rp in polygons)
+    print(f"Road polygons: {len(polygons)} (" + (", ".join(f"{g}={n}" for g, n in sorted(groups.items())) or "none")
+          + f"), {total_area:,.0f} m² of surface" + ("" if clip else " (unclipped)"))
+    if skipped:
+        print(f"Skipped {len(skipped)} way(s):")
+        for note in skipped[:10]:
+            print(f"  - {note}")
+        if len(skipped) > 10:
+            print(f"  … and {len(skipped) - 10} more")
+    if not polygons:
+        print("(no highway ways found in bbox)")
+    print(f"Wrote {out}")
+    return out
+
+
+def cmd_road_grades(
+    centerlines_path: Path,
+    out: Path,
+    feather_m: float = roads_mod.DEFAULT_GRADE_FEATHER_M,
+    smooth_m: float = roads_mod.DEFAULT_GRADE_SMOOTH_M,
+    classes: set[str] | None = None,
+) -> Path:
+    """Turns fetch-roads centerlines into the road grading: one `corridor`
+    terrain edit per centerline — smooth along the road over `smooth_m`,
+    flat across its width, feathered `feather_m` beyond the pavement (see
+    golfpipe/dem_edit.py). `classes` keeps only those road_class groups
+    (road / track / path). Written as the D-TE5 edits handoff like
+    `building-pads`, for `apply-dem-edits --edits` or the server's
+    `import-terrain-edits` (origin `road-grades`).
+    """
+    from datetime import datetime, timezone
+
+    from rasterio.crs import CRS
+    from rasterio.warp import transform as warp_transform
+
+    lines = roads_mod.read_centerlines(centerlines_path)
+    if classes:
+        lines = [c for c in lines if c.group in classes]
+    src = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
+    dst = CRS.from_epsg(4326)
+
+    def to_wgs84(xs, ys):
+        return warp_transform(src, dst, list(xs), list(ys))
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    features = roads_mod.grade_edit_features(lines, to_wgs84, feather_m=feather_m, smooth_m=smooth_m, created_at=stamp)
+    water_mod.write_geojson({"type": "FeatureCollection", "attribution": roads_mod.ATTRIBUTION, "features": features}, out)
+    groups: dict[str, int] = {}
+    for c in lines:
+        groups[c.group] = groups.get(c.group, 0) + 1
+    print(f"Road grades: {len(features)} corridor edits (" + (", ".join(f"{g}={n}" for g, n in sorted(groups.items())) or "none")
+          + f"), {sum(c.line.length for c in lines) / 1000:.1f} km, smooth {smooth_m:g} m along, feather {feather_m:g} m")
+    print(f"Wrote {out}")
+    return out
+
+
+def cmd_fetch_buildings(
+    bbox: tuple[float, float, float, float],
+    out: Path,
+    lidar_paths: list[Path] | None = None,
+    overpass_fetch=None,
+    overpass_url: str = osm_mod.OVERPASS_URL,
+    resolution: float = detect_trees_mod.DEFAULT_RESOLUTION,
+) -> Path:
+    """Queries Overpass for OSM building footprints in bbox (WGS84),
+    reprojects them to EPSG:3006, fits each its minimum rotated rectangle
+    (length / width / bearing — what the Unity building planter matches a
+    prefab on) and, when `lidar_paths` are given, measures eave and ridge
+    heights from the same nDSM detect-trees builds (max-return surface minus
+    ground, gridded at `resolution` m). Writes the building survey as one
+    EPSG:3006 GeoJSON FeatureCollection (`properties.type` "building"; see
+    golfpipe/buildings.py) — the input for `gspro.py buildings` and
+    `building-pads`, not for the web import wizard.
+
+    LICENSING: OSM is ODbL — per-feature provenance + collection
+    `attribution`, as for cmd_fetch_osm.
+    """
+    from datetime import date
+
+    from rasterio.crs import CRS
+    from rasterio.warp import transform as warp_transform
+
+    fetch = overpass_fetch or osm_mod.fetch_overpass
+    query = buildings_mod.build_buildings_query(bbox)
+    print(f"Querying Overpass for buildings in bbox {bbox} ...")
+    overpass_json = fetch(query, url=overpass_url)
+
+    src = CRS.from_epsg(4326)
+    dst = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
+
+    def reproject(lons, lats):
+        return warp_transform(src, dst, list(lons), list(lats))
+
+    buildings, skipped = buildings_mod.assemble_buildings(overpass_json, reproject)
+    kinds: dict[str, int] = {}
+    for b in buildings:
+        kinds[b.kind] = kinds.get(b.kind, 0) + 1
+    top = ", ".join(f"{k}={n}" for k, n in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))[:6])
+    print(f"Buildings: {len(buildings)}" + (f" ({top}{', …' if len(kinds) > 6 else ''})" if kinds else ""))
+
+    measured = 0
+    if lidar_paths and buildings:
+        # Grid the union of the footprints, not the bbox: whole footprints
+        # crossing the area edge must be measurable too.
+        e0, n0, e1, n1 = roads_mod.bbox_polygon_3006(bbox, reproject).bounds
+        for b in buildings:
+            be0, bn0, be1, bn1 = b.polygon.bounds
+            e0, n0, e1, n1 = min(e0, be0), min(n0, bn0), max(e1, be1), max(n1, bn1)
+        pad = 2 * resolution
+        bbox_3006 = (e0 - pad, n0 - pad, e1 + pad, n1 + pad)
+        print("Gridding ground returns (mean z) ...")
+        ground_sum, ground_count, transform, _ = grid_dem_mod.grid_lidar_points(
+            lidar_paths, bbox_3006, resolution=resolution, classes=grid_dem_mod.DEFAULT_CLASSES,
+        )
+        ground_dem = grid_dem_mod.build_dem_grid(ground_sum, ground_count)
+        print(f"Gridding surface returns (max z, all classes except noise {detect_trees_mod.NOISE_CLASSES}) ...")
+        surface_max, surface_count, _, _ = grid_dem_mod.grid_lidar_points(
+            lidar_paths, bbox_3006, resolution=resolution,
+            classes=None, aggregate="max", exclude_classes=detect_trees_mod.NOISE_CLASSES,
+        )
+        ndsm = detect_trees_mod.build_ndsm(ground_dem, surface_max, surface_count)
+        measured = buildings_mod.measure_roofs(buildings, ndsm, transform)
+        eaves = sorted(b.roof.eave_m for b in buildings if b.roof)
+        ridges = sorted(b.roof.ridge_m for b in buildings if b.roof)
+        if eaves:
+            print(f"Roofs measured: {measured} of {len(buildings)} (median eave {eaves[len(eaves) // 2]:.1f} m, "
+                  f"median ridge {ridges[len(ridges) // 2]:.1f} m); "
+                  f"{len(buildings) - measured} too small for {resolution:g} m cells or no roof return")
+        else:
+            print(f"Roofs measured: 0 of {len(buildings)}")
+    elif buildings:
+        print("No --lidar: heights from OSM tags only "
+              f"({sum(1 for b in buildings if buildings_mod.fallback_height_m(b) is not None)} have height or levels)")
+
+    collection = buildings_mod.build_buildings_geojson(buildings, fetch_date=date.today().isoformat())
+    water_mod.write_geojson(collection, out)
+    if skipped:
+        print(f"Skipped {len(skipped)} element(s):")
+        for note in skipped[:10]:
+            print(f"  - {note}")
+        if len(skipped) > 10:
+            print(f"  … and {len(skipped) - 10} more")
+    if not buildings:
+        print("(no buildings found in bbox)")
+    print(f"Wrote {out}")
+    return out
+
+
+def cmd_building_pads(
+    survey_path: Path,
+    out: Path,
+    buffer_m: float = buildings_mod.DEFAULT_PAD_BUFFER_M,
+    feather_m: float = buildings_mod.DEFAULT_PAD_FEATHER_M,
+    flat: bool = True,
+) -> Path:
+    """Turns a fetch-buildings survey into the flat pads under its buildings:
+    one `plane` terrain edit per footprint (dead-flat unless `flat` is off,
+    then a fitted slope), over the footprint plus `buffer_m` of apron, with
+    a `feather_m` blend band outside that (see buildings.pad_polygon for why
+    the polygon is grown by both). Written as the D-TE5 edits handoff
+    (WGS84 FeatureCollection) so it can go straight to `apply-dem-edits
+    --edits` next to the site's own edits, or into the server's terrain_edits
+    via `bun run import-terrain-edits` (origin `building-pads`, replacing
+    the previous generation and nothing else).
+    """
+    from datetime import datetime, timezone
+
+    from rasterio.crs import CRS
+    from rasterio.warp import transform as warp_transform
+
+    survey = buildings_mod.read_survey(survey_path)
+    src = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
+    dst = CRS.from_epsg(4326)
+
+    def to_wgs84(xs, ys):
+        return warp_transform(src, dst, list(xs), list(ys))
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    features = buildings_mod.pad_edit_features(
+        survey, to_wgs84, buffer_m=buffer_m, feather_m=feather_m, flat=flat, created_at=stamp,
+    )
+    water_mod.write_geojson(buildings_mod.build_pads_geojson(features), out)
+    total = sum(b.polygon.area for b in survey)
+    print(f"Building pads: {len(features)} plane edits ({'flat' if flat else 'fitted slope'}, "
+          f"apron {buffer_m:g} m, feather {feather_m:g} m) over {total:,.0f} m² of footprint")
+    print(f"Wrote {out}")
+    return out
+
+
 def cmd_fetch_hydro(
     bbox: tuple[float, float, float, float],
     out: Path,
@@ -530,18 +783,20 @@ def cmd_dem_analysis(
     return out_path
 
 
-def cmd_apply_dem_edits(input_path: Path, edits_path: Path, out_path: Path) -> Path:
+def cmd_apply_dem_edits(input_path: Path, edits_paths: Path | list[Path], out_path: Path) -> Path:
     """Replays vector terrain edits (plane-fit flatten / circular-median
     smooth, both feathered — see golfpipe/dem_edit.py) onto a DEM GeoTIFF.
 
     Input is the grid-dem output (float32, EPSG:3006, nodata already mostly
-    filled — but nodata cells may remain and pass through untouched); the
+    filled — but nodata cells may remain and pass through untouched); each
     edits file is the D-TE5 handoff (GeoJSON FeatureCollection, WGS84,
-    per-feature properties op/featherM/radiusM/flat, applied in createdAt
-    order). The input DEM is never modified (D-TE2 — the raw DEM stays the
-    single source of truth); the edited DEM is a derived artifact written to
-    out_path with the input's profile/transform/nodata. An empty edits file
-    writes a byte-identical copy of the input.
+    per-feature properties op/featherM/radiusM/flat). Several files (the
+    site's own edits plus a generated `building-pads` file) are applied as
+    one list in createdAt order. The input DEM is never modified (D-TE2 —
+    the raw DEM stays the single source of truth); the edited DEM is a
+    derived artifact written to out_path with the input's
+    profile/transform/nodata. No edits at all writes a byte-identical copy
+    of the input.
     """
     if out_path.resolve() == input_path.resolve():
         raise dem_edit_mod.DemEditError(
@@ -549,12 +804,17 @@ def cmd_apply_dem_edits(input_path: Path, edits_path: Path, out_path: Path) -> P
             "pristine (D-TE2); pass a different --out"
         )
 
-    edits = dem_edit_mod.load_edits(edits_path)
+    paths = [edits_paths] if isinstance(edits_paths, Path) else list(edits_paths)
+    edits: list[dem_edit_mod.DemEdit] = []
+    for edits_path in paths:
+        edits.extend(dem_edit_mod.load_edits(edits_path))
+    if len(paths) > 1:
+        edits.sort(key=lambda e: (e.created_at is None, e.created_at or ""))
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not edits:
         shutil.copyfile(input_path, out_path)
-        print(f"No edits in {edits_path} — wrote a byte-identical copy of the input")
+        print(f"No edits in {', '.join(str(p) for p in paths)} — wrote a byte-identical copy of the input")
         print(f"Wrote {out_path}")
         return out_path
 
@@ -1460,6 +1720,74 @@ def cmd_trees_features(
         min_height_m=min_height_m, min_area_m2=min_area_m2, close_m=close_m, round_m=round_m, simplify_m=simplify_m,
         min_hole_area_m2=min_hole_area_m2, roof_mask=roof_mask,
     )
+    return out
+
+
+def cmd_lowveg_features(
+    out: Path,
+    canopy_tif: Path | None = None,
+    lidar_paths: list[Path] | None = None,
+    dem_path: Path | None = None,
+    course_id: str | None = None,
+    bbox_3006: tuple[float, float, float, float] | None = None,
+    trees_path: Path | None = None,
+    min_height_m: float = lowveg_features_mod.DEFAULT_MIN_HEIGHT_M,
+    max_height_m: float = lowveg_features_mod.DEFAULT_MAX_HEIGHT_M,
+    tree_buffer_m: float = lowveg_features_mod.DEFAULT_TREE_BUFFER_M,
+    min_area_m2: float = lowveg_features_mod.DEFAULT_MIN_AREA_M2,
+    close_m: float = lowveg_features_mod.DEFAULT_CLOSE_M,
+    round_m: float = lowveg_features_mod.DEFAULT_ROUND_M,
+    simplify_m: float = lowveg_features_mod.DEFAULT_SIMPLIFY_M,
+    min_hole_area_m2: float = lowveg_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
+    source_ref: str | None = None,
+    resolution: float = detect_trees_mod.DEFAULT_RESOLUTION,
+) -> Path:
+    """Shrub-zone proposals (GeoJSON, EPSG:3006, `vegetation_zone` features
+    of zone type `shrub`, source `lidar-lowveg`) from the cleaned canopy
+    grid: cells between min_height_m and max_height_m that are not trees.
+    Input is either canopy_tif (the canopy.tif in a canopy workdir,
+    optionally clipped to bbox_3006) or lidar_paths (+ dem_path for the
+    area when bbox_3006 is not given), gridded exactly as cmd_canopy grids
+    it. trees_path is a trees GeoJSON (trees-features output) whose
+    polygons, buffered by tree_buffer_m, are cut out on top of the grid's
+    own above-max_height cells. See golfpipe/lowveg_features.py for the
+    steps and the property contract."""
+    if canopy_tif is not None:
+        print(f"Reading cleaned canopy from {canopy_tif}")
+        canopy, transform = lowveg_features_mod.read_canopy_tif(canopy_tif, bbox_3006)
+        if source_ref is None:
+            source_ref = canopy_tif.name
+    elif lidar_paths:
+        if bbox_3006 is None:
+            if dem_path is None:
+                raise ValueError("lowveg-features from lidar needs --bbox or --dem to define the area")
+            bbox_3006 = _dem_bbox_3006(dem_path)
+        print(f"Area (EPSG:3006): {', '.join(f'{v:.1f}' for v in bbox_3006)}")
+        grid = _build_canopy_grid(lidar_paths, bbox_3006, resolution=resolution)
+        canopy, transform = grid.canopy, grid.transform
+        if source_ref is None:
+            source_ref = ",".join(p.name for p in lidar_paths)
+    else:
+        raise ValueError("lowveg-features needs --canopy-tif or --lidar")
+
+    trees = None
+    if trees_path is not None:
+        trees = lowveg_features_mod.read_tree_polygons(trees_path)
+        print(f"Trees to cut out: {len(trees)} polygon(s) from {trees_path.name}, buffered {tree_buffer_m:g} m")
+    zones = lowveg_features_mod.lowveg_from_canopy(
+        canopy, transform, min_height_m=min_height_m, max_height_m=max_height_m,
+        trees=trees, tree_buffer_m=tree_buffer_m, min_area_m2=min_area_m2,
+        close_m=close_m, round_m=round_m, simplify_m=simplify_m, min_hole_area_m2=min_hole_area_m2,
+    )
+    collection = lowveg_features_mod.build_lowveg_feature_collection(zones, source_ref, course_id=course_id)
+    water_mod.write_geojson(collection, out)
+    total_area = sum(z.area_m2 for z in zones)
+    print(f"Shrub zone proposals: {len(zones)} ({min_height_m:g}..{max_height_m:g} m, >= {min_area_m2:g} m², "
+          f"holes >= {min_hole_area_m2:g} m², tree buffer {tree_buffer_m:g} m, close {close_m:g} m, "
+          f"round {round_m:g} m, simplify {simplify_m:g} m); total area {total_area:,} m²")
+    if not zones:
+        print("(no low vegetation in that height band; try a wider --min-height/--max-height)")
+    print(f"Wrote {out}")
     return out
 
 
