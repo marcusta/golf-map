@@ -54,7 +54,7 @@ namespace GolfMap.Editor
         public static GolfMapTreeEditFile Load(string path)
         {
             if (!File.Exists(path)) return new GolfMapTreeEditFile();
-            var file = JsonUtility.FromJson<GolfMapTreeEditFile>(File.ReadAllText(path).TrimStart('﻿'));
+            var file = JsonUtility.FromJson<GolfMapTreeEditFile>(File.ReadAllText(path).TrimStart('\uFEFF'));
             if (file == null || file.format != Format) throw new Exception("Edits file format must be " + Format + ": " + path);
             if (file.edits == null) file.edits = new List<GolfMapTreeEdit>();
             var seen = new HashSet<string>();

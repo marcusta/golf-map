@@ -57,7 +57,7 @@ namespace GolfMap.Editor
         public static GolfMapJsonObject ParseObject(string text)
         {
             int i = 0;
-            text = text.TrimStart('﻿');
+            text = text.TrimStart('\uFEFF');
             var value = Read(text, ref i) as GolfMapJsonObject;
             Skip(text, ref i);
             if (value == null || i != text.Length) throw new FormatException("Expected one JSON object.");
@@ -78,6 +78,16 @@ namespace GolfMap.Editor
             }
             if (text.IndexOf('E') >= 0) text = ((decimal)value).ToString(CultureInfo.InvariantCulture);
             return text;
+        }
+
+        // Deep copy of a value tree (duplicating a look copies its recorded materials too).
+        public static object Clone(object value)
+        {
+            var obj = value as GolfMapJsonObject;
+            if (obj != null) { var copy = new GolfMapJsonObject(); foreach (var key in obj.keys) copy[key] = Clone(obj[key]); return copy; }
+            var list = value as List<object>;
+            if (list != null) { var copy = new List<object>(); foreach (var item in list) copy.Add(Clone(item)); return copy; }
+            return value;   // strings, numbers and bools are immutable
         }
 
         public static string Write(GolfMapJsonObject root)

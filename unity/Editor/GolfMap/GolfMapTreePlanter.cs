@@ -516,6 +516,26 @@ namespace GolfMap.Editor
             }
             return result;
         }
+        // Materials VSP can draw: present, supported, and on a shader name GSPro's build resolves.
+        int CheckRenderers(string name,GameObject prefab,List<string> shaderIssues)
+        {
+            int meshRenderers=0;
+            foreach(var renderer in prefab.GetComponentsInChildren<Renderer>(true)){
+                // VSP renders mesh LODs and generates its own billboard atlas.
+                // These packages contain unused BillboardRenderers with null slots.
+                if(mode==Mode.PersistentStorage && renderer is BillboardRenderer)continue;
+                meshRenderers++;
+                var slots=renderer.sharedMaterials;
+                for(int slot=0;slot<slots.Length;slot++){
+                    var material=slots[slot];
+                    string location=name+" / "+renderer.name+" / material slot "+slot;
+                    if(!material)throw new Exception("Missing material: "+location);
+                    if(!material.shader||!material.shader.isSupported)throw new Exception("Unsupported shader: "+location+" ("+material.name+")");
+                    if(mode==Mode.PersistentStorage&&!VspKnowsShader(material.shader.name))shaderIssues.Add(location+" ("+material.name+") uses '"+material.shader.name+"'");
+                }
+            }
+            return meshRenderers;
+        }
         string PrepareBiome()
         {
             biomeMatches.Clear();biomePrefabs.Clear();woodlandTrees.Clear();biome=null;
@@ -532,24 +552,21 @@ namespace GolfMap.Editor
                 if(actual!=a.path)throw new Exception("Biome asset missing or moved: "+a.name+". Expected "+a.path);
                 var prefab=AssetDatabase.LoadAssetAtPath<GameObject>(actual);
                 if(!prefab)throw new Exception("Cannot load biome prefab "+a.name);
-                int meshRenderers=0;
-                foreach(var renderer in prefab.GetComponentsInChildren<Renderer>(true)){
-                    // VSP renders mesh LODs and generates its own billboard atlas.
-                    // These packages contain unused BillboardRenderers with null slots.
-                    if(mode==Mode.PersistentStorage && renderer is BillboardRenderer)continue;
-                    meshRenderers++;
-                    var slots=renderer.sharedMaterials;
-                    for(int slot=0;slot<slots.Length;slot++){
-                        var material=slots[slot];
-                        string location=a.name+" / "+renderer.name+" / material slot "+slot;
-                        if(!material)throw new Exception("Missing material: "+location);
-                        if(!material.shader||!material.shader.isSupported)throw new Exception("Unsupported shader: "+location+" ("+material.name+")");
-                        if(mode==Mode.PersistentStorage&&!VspKnowsShader(material.shader.name))shaderIssues.Add(location+" ("+material.name+") uses '"+material.shader.name+"'");
-                    }
-                }
+                int meshRenderers=CheckRenderers(a.name,prefab,shaderIssues);
                 if(meshRenderers==0)throw new Exception("No usable mesh renderers: "+a.name);
                 if(mode==Mode.PersistentStorage){var issue=VspRenderIssue(a,prefab);if(issue!=null)renderIssues.Add(issue);}
                 biomePrefabs.Add(a.guid,prefab);
+            }
+            // A look with its own materials plants its generated copy of each shape.
+            foreach(var group in biome.species)foreach(var look in group.looks){
+                if(look.original||!(look.weight>0))continue;
+                foreach(var shape in GolfMapLooks.Shapes(biome,group.name,look)){
+                    if(!shape.enabled)continue;
+                    var copy=GolfMapLooks.Prefab(GolfMapCourses.For(component),group.name,look,shape);
+                    if(!copy)throw new Exception("Look '"+look.id+"' of "+group.name+" has no prefab for "+shape.name+". Open the look in the Palette panel and press Regenerate.");
+                    CheckRenderers(shape.name+" ["+look.id+"]",copy,shaderIssues);
+                    biomePrefabs.Add(GolfMapBiome.LookKey(shape.guid,look.id),copy);
+                }
             }
             if(renderIssues.Count>0)throw new Exception("Palette assets VSP cannot draw faithfully (use VS_/baked variants):\n"+string.Join("\n",renderIssues.ToArray()));
             if(shaderIssues.Count>0)throw new Exception("Shader names GSPro's Vegetation Studio build cannot resolve a controller for. It has no DefaultShaderController fallback: one of these null-refs in VegetationItemModelInfo.SetShaderControllers and stops every tree in the package from loading, silently. Use a stock shader name (NatureManufacture Shaders/Trees/Tree {Bark,Leaves} {Metalic,Specular}, CTI/LOD {Bark,Leaves,Bark Array}, Nature/SpeedTree) and drive colour through the item's shader-controller settings instead:\n"+string.Join("\n",shaderIssues.ToArray()));
@@ -692,7 +709,7 @@ namespace GolfMap.Editor
 
         GameObject Pick(GolfMapTree t, System.Random rng)
         {
-            if(useBiome){GolfMapBiomeMatch match;return biomeMatches.TryGetValue(t,out match)?biomePrefabs[match.asset.guid]:null;}
+            if(useBiome){GolfMapBiomeMatch match;return biomeMatches.TryGetValue(t,out match)?biomePrefabs[biome.PrefabKey(match)]:null;}
             var list = t.bush ? Nonnull(bushPrefabs) : null;
             if (list == null || list.Count == 0) list = Fallback(t.k);
             if (list.Count == 0) return null;

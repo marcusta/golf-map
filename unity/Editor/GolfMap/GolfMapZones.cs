@@ -97,7 +97,7 @@ namespace GolfMap.Editor
         public static GolfMapZoneFile Load(string path)
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) throw new Exception("Zones file not found: " + path);
-            var file = JsonUtility.FromJson<GolfMapZoneFile>(File.ReadAllText(path).TrimStart('﻿'));
+            var file = JsonUtility.FromJson<GolfMapZoneFile>(File.ReadAllText(path).TrimStart('\uFEFF'));
             if (file == null || file.format != Format) throw new Exception("format must be " + Format);
             if (file.plot == null || !(file.plot.sizeM > 0) || !Finite(file.plot.sizeM)) throw new Exception("plot.sizeM missing");
             if (file.plot.terrain != "inner" && file.plot.terrain != "outer") throw new Exception("plot.terrain must be inner or outer");

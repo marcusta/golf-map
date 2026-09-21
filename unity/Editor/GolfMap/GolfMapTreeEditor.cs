@@ -320,7 +320,7 @@ namespace GolfMap.Editor
             var m = MatchTree(et.tree, woodlandTrees.Contains(et.tree));
             if (m == null) throw new InvalidOperationException("No biome asset fits tree " + et.tree.id + " (height " + et.tree.h + " m, radius " + et.tree.r + " m). Choose another species or size.");
             biomeMatches[et.tree] = m;
-            et.prefab = biomePrefabs[m.asset.guid];
+            et.prefab = biomePrefabs[biome.PrefabKey(m)];
             var mapping = EnsureCatalog(editSystem, new[] { et.prefab }, false);
             et.itemId = mapping[et.prefab];
             var proto = Measure(et.prefab, editProtoCache);

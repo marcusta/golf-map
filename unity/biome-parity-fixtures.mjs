@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import {matchTree} from './tree-matching.mjs';
 // bun unity/biome-parity-fixtures.mjs <trees.json> <out.tsv> [palette.json]
 const [treesFile,output,paletteFile='docs/gspro/vreta/palette.json']=process.argv.slice(2);
-const config=JSON.parse(fs.readFileSync(paletteFile,'utf8').replace(/^﻿/,''));
+const config=JSON.parse(fs.readFileSync(paletteFile,'utf8').replace(/^\uFEFF/,''));
 const trees=JSON.parse(fs.readFileSync(treesFile,'utf8').replace(/^\uFEFF/,'')).trees;
 const lines=trees.map(t=>{
  const stem={...t,h:Math.fround(t.h),r:Math.fround(t.r)};

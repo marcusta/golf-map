@@ -73,6 +73,9 @@ namespace GolfMap.Editor
             showRules = EditorGUILayout.Foldout(showRules, "Matching rules", true);
             if (showRules) DrawRules();
             EditorGUILayout.Space();
+            showLooks = EditorGUILayout.Foldout(showLooks, "Looks (material settings per species)", true);
+            if (showLooks) DrawLooks();
+            EditorGUILayout.Space();
             showAssets = EditorGUILayout.Foldout(showAssets, "Assets (" + draft.assets.Count(a => a.enabled) + " of " + draft.assets.Count + " enabled)", true);
             if (showAssets) DrawAssets();
             // Buttons and foldouts raise GUI.changed too, so dirtiness is what the file would become.
@@ -119,6 +122,9 @@ namespace GolfMap.Editor
         {
             var problem = DraftProblem();
             if (problem != null) { paletteNote = "Not saved: " + problem; return; }
+            // The look materials are assets and may have been tuned outside this panel: record them as they are now.
+            var course = GolfMapCourses.For(component);
+            foreach (var group in draft.species) foreach (var look in group.looks) GolfMapLooks.Capture(course, draft, group.name, look);
             GolfMapPalette.Save(draftPath, draft, draftDoc);
             diskText = draftText = GolfMapPalette.Text(draft, draftDoc);
             draftStamp = File.GetLastWriteTimeUtc(draftPath);
@@ -319,7 +325,7 @@ namespace GolfMap.Editor
         void UpdatePreview()
         {
             previewStale = false; previewError = null;
-            previewSpecies.Clear(); previewAssets.Clear(); plantedSpecies.Clear(); plantedAssets.Clear();
+            previewSpecies.Clear(); previewAssets.Clear(); plantedSpecies.Clear(); plantedAssets.Clear(); previewLooks.Clear();
             previewTotal = previewChanged = previewUnmatched = 0;
             try
             {
@@ -346,7 +352,8 @@ namespace GolfMap.Editor
                     if (m == null || (m.review && !includeReviewMatches)) { if (m == null) panel.previewUnmatched++; if (before != null) panel.previewChanged++; continue; }
                     panel.previewTotal++;
                     Bump(panel.previewSpecies, SpeciesLabel(m.asset)); Bump(panel.previewAssets, m.asset.guid);
-                    if (before == null || before.asset.guid != m.asset.guid) panel.previewChanged++;
+                    if (m.look != null) Bump(panel.previewLooks, m.asset.Label + ":" + m.look);
+                    if (before == null || before.asset.guid != m.asset.guid || before.look != m.look) panel.previewChanged++;
                 }
             }
             finally { biome = saved; }

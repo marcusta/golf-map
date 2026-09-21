@@ -116,6 +116,27 @@ keys the tools do not model (`catalogue`, `zones`, `originalPath`) survive, unto
 keep their text, and the output matches the node scripts' `JSON.stringify(p,null,2)` - a
 one-weight edit is a one-line diff.
 
+**Looks** (`GolfMapTreeLooks.cs`). A species' shapes - its prefabs, i.e. sizes and LOD sets -
+draw with the same few materials, so material settings belong to the species, not to a
+prefab. A look is a named set of copies of those materials plus a generated copy of each
+shape pointing at them (VSP draws a prefab with that prefab's materials, so each copy is its
+own VSP item; meshes and textures stay shared), under `<course>/Looks/<species>/<look>/`.
+The `original` look is the source prefabs untouched. In the panel: start looks for a species,
+open one to tune its materials with Unity's own material editor embedded (so every shader
+property, and switching between the NM shaders, is available), **Duplicate as** to branch a
+new look from it, and weight the looks against each other. Save records each look's material
+values in `palette.json` (`species.<label>.looks[].materials.<source material guid>`: shader,
+floats, colours, vectors, textures by guid, keywords); **Apply JSON** writes them back onto the
+copies and **Regenerate** recreates missing copies, which is how a palette rebuilds its looks
+in another project. Never edit the generated prefabs; stay on GSPro-safe shader names (the
+Plant check covers look copies too).
+
+**Lab.** *Show in Lab* stands one plain instance per look and shape at the Scene view pivot
+(rows = looks, columns = shapes by height) under a `GolfMap Lab (not saved)` object that is
+never saved or built. They draw with the very material assets being tuned, so edits show as
+the slider moves. Planted trees read NM colours from VSP's cache: *Apply to course* re-syncs
+it once you are happy; billboards still need a rebake at the next Plant.
+
 Matching (`GolfMapBiomeMatcher`, mirrored by `tree-matching.mjs`; `biome-parity-fixtures.mjs
 <trees> <out.tsv> [palette]` + `BiomeParityCheck.cs` prove the two agree): an asset without a
 `species` races under its kind, so `speciesWeights` can carry `conifer`/`pine` as well as the

@@ -13,6 +13,15 @@ namespace GolfMap.Editor
         public List<GolfMapBiomeAsset> assets;
         public List<GolfMapBiomeSpecies> species=new List<GolfMapBiomeSpecies>();
         public GolfMapBiomeSpecies Species(string label) { foreach(var s in species)if(s.name==label)return s;return null; }
+        // What a match plants: the asset itself, or its generated copy for a look with its own materials.
+        public string PrefabKey(GolfMapBiomeMatch m)
+        {
+            if(m.look==null)return m.asset.guid;
+            var group=Species(m.asset.Label);
+            var look=group==null?null:group.looks.FirstOrDefault(l=>l.id==m.look);
+            return look==null||look.original?m.asset.guid:LookKey(m.asset.guid,m.look);
+        }
+        public static string LookKey(string guid,string look) { return guid+":"+look; }
     }
     // A species groups shapes (assets: sizes and LOD sets) under looks (material settings).
     public class GolfMapBiomeSpecies
@@ -25,6 +34,10 @@ namespace GolfMap.Editor
         public string id;
         public double weight;
         public List<string> shapes;   // asset guids; null = every shape of the species
+        // The source prefabs and materials as they are. Every other look plants generated copies
+        // (GolfMapLooks) whose material settings the look's "materials" node records.
+        public bool original;
+        public GolfMapJsonObject node; // the look as the file holds it, with whatever this class does not model
     }
     [Serializable] public class GolfMapBiomeRules
     {
@@ -87,7 +100,7 @@ namespace GolfMap.Editor
                 if(looks!=null)foreach(var entry in looks){
                     var o=entry as GolfMapJsonObject;if(o==null||string.IsNullOrEmpty(o.String("id")))throw new Exception("Invalid look under species "+name+".");
                     var shapes=o.Array("shapes");
-                    group.looks.Add(new GolfMapBiomeLook {id=o.String("id"),weight=o.Number("weight"),shapes=shapes==null?null:shapes.Select(g=>g as string).ToList()});
+                    group.looks.Add(new GolfMapBiomeLook {id=o.String("id"),weight=o.Number("weight"),original=o.Bool("original",false),node=o,shapes=shapes==null?null:shapes.Select(g=>g as string).ToList()});
                 }
                 biome.species.Add(group);
             }
@@ -132,6 +145,24 @@ namespace GolfMap.Editor
                 list.Add(o);
             }
             doc["assets"]=list;
+            if(biome.species.Any(g=>g.looks.Count>0)||doc.Has("species")){
+                var speciesDoc=doc.Object("species");
+                if(speciesDoc==null){speciesDoc=new GolfMapJsonObject();doc["species"]=speciesDoc;}
+                foreach(var key in speciesDoc.keys.ToArray())if(biome.Species(key)==null)speciesDoc.Remove(key);
+                foreach(var group in biome.species){
+                    var g=speciesDoc.Object(group.name);
+                    if(g==null){g=new GolfMapJsonObject();speciesDoc[group.name]=g;}
+                    var looks=new List<object>();
+                    foreach(var look in group.looks){
+                        var o=look.node??(look.node=new GolfMapJsonObject());
+                        o.SetString("id",look.id);o.SetNumber("weight",look.weight);
+                        if(look.original||o.Has("original"))o.SetBool("original",look.original);
+                        if(look.shapes==null)o.Remove("shapes");else o["shapes"]=look.shapes.Cast<object>().ToList();
+                        looks.Add(o);
+                    }
+                    g["looks"]=looks;
+                }
+            }
             return GolfMapJsonDoc.Write(doc);
         }
     }

@@ -13,7 +13,7 @@ import {matchBuilding} from './building-matching.mjs';
 const [input,palette,output,overrides]=process.argv.slice(2);
 if(!output)throw Error('Provide buildings, palette and output paths');
 if(fs.existsSync(output))throw Error('Output exists: choose a new report path');
-const read=p=>fs.readFileSync(p,'utf8').replace(/^﻿/,'');
+const read=p=>fs.readFileSync(p,'utf8').replace(/^\uFEFF/,'');
 const source=read(input),configuration=read(palette),overrideText=overrides?read(overrides):'{}';
 const buildings=JSON.parse(source),config=JSON.parse(configuration),choices=JSON.parse(overrideText);
 if(buildings.format!=='unity-buildings-v1'||config.format!=='golfmap-building-palette-v1')throw Error('Unsupported input format');
