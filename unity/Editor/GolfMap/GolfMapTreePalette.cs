@@ -1,4 +1,8 @@
-// Palette tab of the GolfMap Trees Inspector: edits the course's palette.json.
+// Palette panel of the GolfMap Trees Inspector: edits the course's palette.json.
+//
+// The palette belongs to the course, not to an area: inner and outer plant from the same
+// file. The panel sits beside the Inner | Outer panels, its draft lives on the inner
+// planter, and the preview counts every area that has a survey loaded.
 //
 // The file stays the source of truth and is edited from both sides. The tab works
 // on a draft (GolfMapPalette keeps every key it does not model), writes it back
@@ -37,16 +41,25 @@ namespace GolfMap.Editor
         readonly Dictionary<string, int> plantedSpecies = new Dictionary<string, int>();
         readonly Dictionary<string, int> plantedAssets = new Dictionary<string, int>();
         string previewError;
+        GolfMapTreePlanter[] areas = new GolfMapTreePlanter[0];   // the planters whose surveys the preview counts
+        bool AnyLoaded { get { return areas.Any(a => a.loaded != null); } }
+        int CheckedCount { get { return areas.Sum(a => a.biomeMatches.Count); } }
 
         // Counting key: shrub-form stems race apart from trees, so they are tallied apart too.
         static string SpeciesLabel(GolfMapBiomeAsset a) { return a.form == "shrub" ? a.Label + " shrub" : a.Label; }
 
-        void DrawPalette()
+        internal void OnPaletteGUI(GolfMapTreePlanter[] plantingAreas)
         {
+            areas = plantingAreas;
             string path;
             try { path = BiomeFile; }
             catch (Exception e) { EditorGUILayout.HelpBox(e.Message, MessageType.Warning); return; }
             if (!File.Exists(path)) { EditorGUILayout.HelpBox("No palette at " + path + ".", MessageType.Warning); return; }
+            foreach (var area in areas)
+            {
+                string other = null; try { other = area.BiomeFile; } catch (Exception) { }
+                if (other != null && other != path) EditorGUILayout.HelpBox("The " + area.RoleKey + " area plants from its own palette (" + other + "), not this one. Clear Biome JSON in its Setup to share the course palette.", MessageType.Warning);
+            }
             SyncDraft(path);
             if (draft == null) { EditorGUILayout.HelpBox(paletteNote, MessageType.Error); return; }
 
@@ -72,7 +85,7 @@ namespace GolfMap.Editor
             GUI.changed = false;
 
             // Recount once the mouse is released, so a slider drag stays smooth.
-            if (previewStale && loaded != null && Event.current.type == EventType.Repaint && GUIUtility.hotControl == 0)
+            if (previewStale && AnyLoaded && Event.current.type == EventType.Repaint && GUIUtility.hotControl == 0)
             {
                 UpdatePreview();
                 Repaint();
@@ -144,20 +157,19 @@ namespace GolfMap.Editor
                     if (GUILayout.Button("Save")) SaveDraft();
                     if (GUILayout.Button("Revert")) { LoadDraft(path); GUIUtility.ExitGUI(); }
                 }
-                using (new EditorGUI.DisabledScope(draftDirty || loaded == null))
-                    if (GUILayout.Button(new GUIContent("Re-check planting", "Load and check with the saved palette; Plant on the Planting tab applies it.")))
+                using (new EditorGUI.DisabledScope(draftDirty || !AnyLoaded))
+                    if (GUILayout.Button(new GUIContent("Re-check planting", "Load and check every loaded area with the saved palette. Plant on the Inner / Outer panel applies it.")))
                     {
-                        try { LoadFile(); if (loaded != null) { ValidateTarget(); status = AlignmentReport() + PrepareBiome() + EditsReport(); } }
-                        catch (Exception e) { status = e.Message; }
+                        foreach (var area in areas) if (area.loaded != null) area.Check();
                         previewStale = true;
                     }
             }
             if (!string.IsNullOrEmpty(paletteNote)) EditorGUILayout.HelpBox(paletteNote, MessageType.Info);
-            if (loaded == null) EditorGUILayout.HelpBox("Run Load and check on the Planting tab to preview the mix this palette produces.", MessageType.Info);
+            if (!AnyLoaded) EditorGUILayout.HelpBox("Run Load and check on the Inner or Outer panel to preview the mix this palette produces.", MessageType.Info);
             else if (previewError != null) EditorGUILayout.HelpBox("Preview stopped: " + previewError, MessageType.Warning);
             else if (!previewStale)
-                EditorGUILayout.LabelField("Preview: " + previewTotal + " stems matched, " + previewUnmatched + " unmatched; " +
-                    (biomeMatches.Count == 0 ? "nothing checked yet to compare with." : previewChanged + " would change asset against the last check."), EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField("Preview (" + string.Join(" + ", areas.Where(a => a.loaded != null).Select(a => a.RoleKey).ToArray()) + "): " + previewTotal + " stems matched, " + previewUnmatched + " unmatched; " +
+                    (CheckedCount == 0 ? "nothing checked yet to compare with." : previewChanged + " would change asset against the last check."), EditorStyles.wordWrappedMiniLabel);
 
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -219,7 +231,7 @@ namespace GolfMap.Editor
                         if (w != weights.Weight(species)) weights.Set(species, w);
                         GUILayout.Label(sum > 0 ? Percent(weights.Weight(species) / sum) : "-", GUILayout.Width(44));
                         int count; previewSpecies.TryGetValue(species, out count);
-                        GUILayout.Label(previewStale || loaded == null ? "..." : Percent(previewPool > 0 ? (double)count / previewPool : 0) + "  " + count, GUILayout.Width(92));
+                        GUILayout.Label(previewStale || !AnyLoaded ? "..." : Percent(previewPool > 0 ? (double)count / previewPool : 0) + "  " + count, GUILayout.Width(92));
                         int planted; plantedSpecies.TryGetValue(species, out planted);
                         GUILayout.Label(plantedPool > 0 ? Percent((double)planted / plantedPool) : "-", GUILayout.Width(44));
                         if (GUILayout.Button(new GUIContent("x", "Stop weighting this species. Its assets stay in the palette; with no weight it never wins a stem another weighted species fits."), EditorStyles.miniButton, GUILayout.Width(22)))
@@ -284,7 +296,7 @@ namespace GolfMap.Editor
             foreach (var group in draft.assets.GroupBy(a => SpeciesLabel(a)).OrderBy(g => g.Key, StringComparer.Ordinal))
             {
                 int groupCount; previewSpecies.TryGetValue(group.Key, out groupCount);
-                EditorGUILayout.LabelField(group.Key + (previewStale || loaded == null ? "" : "  -  " + groupCount), EditorStyles.miniBoldLabel);
+                EditorGUILayout.LabelField(group.Key + (previewStale || !AnyLoaded ? "" : "  -  " + groupCount), EditorStyles.miniBoldLabel);
                 foreach (var a in group)
                 {
                     using (new EditorGUILayout.HorizontalScope())
@@ -296,38 +308,47 @@ namespace GolfMap.Editor
                         a.selectionWeight = Math.Round(Math.Max(0, EditorGUILayout.DoubleField(new GUIContent("", "Share of this species' stems among its variants that fit (0 = unset, counts as 1)."), a.selectionWeight, GUILayout.Width(40))), 3);
                         int count; previewAssets.TryGetValue(a.guid, out count);
                         int planted; plantedAssets.TryGetValue(a.guid, out planted);
-                        GUILayout.Label(new GUIContent(previewStale || loaded == null ? "" : count + (planted != count && biomeMatches.Count > 0 ? " (" + planted + ")" : ""), "Stems in the preview (at the last check)"), EditorStyles.miniLabel, GUILayout.Width(84));
+                        GUILayout.Label(new GUIContent(previewStale || !AnyLoaded ? "" : count + (planted != count && CheckedCount > 0 ? " (" + planted + ")" : ""), "Stems in the preview (at the last check)"), EditorStyles.miniLabel, GUILayout.Width(84));
                     }
                 }
             }
             EditorGUILayout.EndScrollView();
         }
 
-        // Re-run the matcher over the survey with the draft in place of the saved palette.
+        // Re-run the matcher over every loaded survey with the draft in place of the saved palette.
         void UpdatePreview()
         {
             previewStale = false; previewError = null;
             previewSpecies.Clear(); previewAssets.Clear(); plantedSpecies.Clear(); plantedAssets.Clear();
             previewTotal = previewChanged = previewUnmatched = 0;
-            foreach (var m in biomeMatches.Values) { Bump(plantedSpecies, SpeciesLabel(m.asset)); Bump(plantedAssets, m.asset.guid); }
-            var saved = biome;
             try
             {
                 if (DraftProblem() != null) throw new Exception(DraftProblem());
-                biome = draft;
-                var woodland = WoodlandStems(draft.rules);
+                foreach (var area in areas) if (area.loaded != null) area.CountInto(this);
+            }
+            catch (Exception e) { previewError = e.Message; }
+        }
+
+        // This area's share of the palette panel's preview: its survey matched with the panel's draft.
+        void CountInto(GolfMapTreePlanter panel)
+        {
+            foreach (var m in biomeMatches.Values) { Bump(panel.plantedSpecies, SpeciesLabel(m.asset)); Bump(panel.plantedAssets, m.asset.guid); }
+            var saved = biome;
+            try
+            {
+                biome = panel.draft;
+                var woodland = WoodlandStems(biome.rules);
                 foreach (var t in loaded.trees)
                 {
                     if (!InsidePlot(t) || t.h < minHeightM) continue;
                     var m = MatchTree(t, woodland.Contains(t));
                     GolfMapBiomeMatch before; biomeMatches.TryGetValue(t, out before);
-                    if (m == null || (m.review && !includeReviewMatches)) { if (m == null) previewUnmatched++; if (before != null) previewChanged++; continue; }
-                    previewTotal++;
-                    Bump(previewSpecies, SpeciesLabel(m.asset)); Bump(previewAssets, m.asset.guid);
-                    if (before == null || before.asset.guid != m.asset.guid) previewChanged++;
+                    if (m == null || (m.review && !includeReviewMatches)) { if (m == null) panel.previewUnmatched++; if (before != null) panel.previewChanged++; continue; }
+                    panel.previewTotal++;
+                    Bump(panel.previewSpecies, SpeciesLabel(m.asset)); Bump(panel.previewAssets, m.asset.guid);
+                    if (before == null || before.asset.guid != m.asset.guid) panel.previewChanged++;
                 }
             }
-            catch (Exception e) { previewError = e.Message; }
             finally { biome = saved; }
         }
 

@@ -70,7 +70,6 @@ namespace GolfMap.Editor
         internal GolfMapTrees Component { get { return component; } }
         internal UnityEditor.Editor inspector;     // the component's open Inspector, if any
         [SerializeField] bool showSetup = true;
-        [SerializeField] int tab;
         // Extension hooks (C# partial methods: no-ops unless a project-local
         // partial class implements them).
         partial void DrawStorageOptions();
@@ -79,6 +78,7 @@ namespace GolfMap.Editor
         partial void StorageAvailable(ref bool available);
         partial void DrawTreeEditor();
         partial void OnFileReloaded();
+        partial void DuplicateReport(ref string report);
 
         const string kFormat = "unity-trees-v1";
         const string kParentName = "GolfMapTrees";
@@ -109,14 +109,14 @@ namespace GolfMap.Editor
         float maxScale { get { return T.maxScale; } set { T.maxScale = value; } }
         float minHeightM { get { return T.minHeightM; } set { T.minHeightM = value; } }
         bool scaleWidth { get { return T.scaleWidth; } set { T.scaleWidth = value; } }
-        bool clearExisting { get { return T.clearExisting; } set { T.clearExisting = value; } }
         int seed { get { return T.seed; } set { T.seed = value; } }
         float alignmentToleranceM { get { return T.alignmentToleranceM; } set { T.alignmentToleranceM = value; } }
         bool ignoreAlignment { get { return T.ignoreAlignment; } set { T.ignoreAlignment = value; } }
         // Outer-plot trees are always far from the player, so they go in as
         // billboards only: TerrainInstances mode sets the terrain's billboard
         // start distance to its minimum; the VSP partial reads this too.
-        bool forceBillboards { get { return T.forceBillboards; } set { T.forceBillboards = value; } }
+        // Fixed by the component's role, never toggled by hand or by the loaded file.
+        bool forceBillboards { get { return T.role == GolfMapTrees.Role.Outer; } }
         GolfMapTreeFile loaded;
         string loadedPath;
         string status = "";
@@ -141,17 +141,115 @@ namespace GolfMap.Editor
         public static void Open() { Select(); }
         public static GolfMapTreePlanter Select()
         {
-            var target = Selection.activeGameObject ? Selection.activeGameObject.GetComponent<GolfMapTrees>() : null;
-            if (!target) target = FindObjectsOfType<GolfMapTrees>().OrderBy(c => c.name).FirstOrDefault();
-            if (!target)
+            var host = Host();
+            Selection.activeGameObject = host.gameObject;
+            EditorGUIUtility.PingObject(host.gameObject);
+            return For(Active(host));
+        }
+
+        // One "GolfMap Trees" object per scene carries both areas: the inner component, whose
+        // Inspector shows the Inner and Outer panels, and the outer component beside it, hidden
+        // from the Inspector. Two components rather than one with two settings blocks, because a
+        // planter (loaded survey, matches, editing session) belongs to exactly one component.
+        const string kHostName = "GolfMap Trees";
+        internal static GolfMapTrees Host()
+        {
+            var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            var all = FindObjectsOfType<GolfMapTrees>().Where(c => c.gameObject.scene == scene).OrderBy(c => c.name).ToArray();
+            foreach (var c in all) AdoptRole(c);
+            var host = all.FirstOrDefault(c => c.role == GolfMapTrees.Role.Inner);
+            if (!host)
             {
-                var go = new GameObject("GolfMap Trees");
+                var go = new GameObject(kHostName);
                 Undo.RegisterCreatedObjectUndo(go, "Create GolfMap Trees");
-                target = go.AddComponent<GolfMapTrees>();
+                host = go.AddComponent<GolfMapTrees>();
+                host.role = GolfMapTrees.Role.Inner; host.roleAssigned = true;
             }
-            Selection.activeGameObject = target.gameObject;
-            EditorGUIUtility.PingObject(target.gameObject);
-            return For(target);
+            if (host.name == RoleObjectName(GolfMapTrees.Role.Inner)) { Undo.RecordObject(host.gameObject, "Rename GolfMap Trees"); host.name = kHostName; }
+            Outer(host);
+            return host;
+        }
+
+        // The panel the host's Inspector has open.
+        internal static GolfMapTrees Active(GolfMapTrees host) { return host.showOuter ? Outer(host) : host; }
+
+        // The outer component on the host's object, created when missing. An outer component
+        // left on an object of its own by an earlier version is moved here with its settings.
+        internal static GolfMapTrees Outer(GolfMapTrees host)
+        {
+            var outer = host.GetComponents<GolfMapTrees>().FirstOrDefault(c => c != host && c.role == GolfMapTrees.Role.Outer);
+            if (!outer)
+            {
+                outer = Undo.AddComponent<GolfMapTrees>(host.gameObject);
+                outer.role = GolfMapTrees.Role.Outer; outer.roleAssigned = true;
+                var stray = FindObjectsOfType<GolfMapTrees>().FirstOrDefault(c => c.gameObject != host.gameObject && c.gameObject.scene == host.gameObject.scene && c.roleAssigned && c.role == GolfMapTrees.Role.Outer);
+                if (stray)
+                {
+                    EditorUtility.CopySerialized(stray, outer);
+                    if (stray.GetComponents<Component>().Length == 2 && stray.transform.childCount == 0) Undo.DestroyObjectImmediate(stray.gameObject);
+                    else Undo.DestroyObjectImmediate(stray);
+                }
+                EditorUtility.SetDirty(outer);
+            }
+            if ((outer.hideFlags & HideFlags.HideInInspector) == 0) { outer.hideFlags |= HideFlags.HideInInspector; EditorUtility.SetDirty(outer); }
+            return outer;
+        }
+
+        static string RoleObjectName(GolfMapTrees.Role role) { return "GolfMap Trees (" + role + ")"; }
+        string RoleKey { get { return T.role == GolfMapTrees.Role.Outer ? "outer" : "inner"; } }
+
+        static void AdoptRole(GolfMapTrees c)
+        {
+            if (c.roleAssigned) return;
+            Undo.RecordObject(c, "Assign GolfMap Trees role");
+            c.role = c.forceBillboards ? GolfMapTrees.Role.Outer : GolfMapTrees.Role.Inner;
+            c.roleAssigned = true;
+            EditorUtility.SetDirty(c);
+        }
+
+        // ---- role ----------------------------------------------------------
+
+        // Everything the role decides is resolved here rather than picked by hand: the terrain,
+        // the inner square an outer planting excludes, the course's trees export and the one
+        // storage that belongs to that terrain. Returns what stops planting, or null.
+        string roleProblem;
+        string SyncRole()
+        {
+            AdoptRole(component);
+            try
+            {
+                var course = Course;
+                var scene = component.gameObject.scene;
+                bool outer = T.role == GolfMapTrees.Role.Outer;
+                var inner = RoleTerrain(scene, course.innerTerrainName, course.innerTerrainData, "inner");
+                var target = outer ? RoleTerrain(scene, course.outerTerrainName, course.outerTerrainData, "outer") : inner;
+                var exclusion = outer ? inner : null;
+                if (outer && target == inner) throw new Exception("The course names the same terrain as inner and outer.");
+                bool changed = false;
+                if (terrain != target) { terrain = target; loaded = null; changed = true; }
+                if (innerExclusion != exclusion) { innerExclusion = exclusion; changed = true; }
+                if (!T.customFile)
+                {
+                    var file = GolfMapCourses.TreesFile(course, RoleKey);
+                    if (string.IsNullOrEmpty(file)) throw new Exception("The course has no " + RoleKey + " trees export (" + GolfMapCourses.ExportFile(course, RoleKey, "trees") + "). Tick Custom trees file to pick one.");
+                    if (filePath != file) { filePath = file; loaded = null; changed = true; }
+                }
+                if (outer && mode != Mode.PersistentStorage) { mode = Mode.PersistentStorage; changed = true; }
+                string storageProblem = null;
+                SyncStorage(ref changed, ref storageProblem);
+                if (changed) Dirty();
+                return storageProblem;
+            }
+            catch (Exception e) { return e.Message; }
+        }
+        partial void SyncStorage(ref bool changed, ref string problem);
+
+        static Terrain RoleTerrain(UnityEngine.SceneManagement.Scene scene, string objectName, string dataName, string label)
+        {
+            var found = FindObjectsOfType<Terrain>().Where(t => t.gameObject.scene == scene && t.terrainData &&
+                ((!string.IsNullOrEmpty(objectName) && t.name == objectName) || (!string.IsNullOrEmpty(dataName) && t.terrainData.name == dataName))).ToArray();
+            if (found.Length != 1) throw new Exception("Expected one " + label + " terrain named '" + objectName + "'" + (string.IsNullOrEmpty(dataName) ? "" : " or using " + dataName + " data") + "; found " + found.Length + ". Set the terrain names on the course asset.");
+            return found[0];
         }
 
         void Repaint() { if (inspector) inspector.Repaint(); }
@@ -173,38 +271,51 @@ namespace GolfMap.Editor
             Undo.RecordObject(component, "GolfMap Trees settings");
             EditorGUI.BeginChangeCheck();
 
-            tab = GUILayout.Toolbar(tab, new[] { "Planting", "Palette" });
-            EditorGUILayout.Space();
-            if (tab == 1) DrawPalette();
-            else
-            {
-                showSetup = EditorGUILayout.Foldout(showSetup, "Setup", true);
-                if (showSetup) DrawSetup();
-                DrawActions();
-                if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
+            if (Event.current.type == EventType.Layout) roleProblem = SyncRole();
+            DrawRoleHeader();
+            if (!string.IsNullOrEmpty(roleProblem)) EditorGUILayout.HelpBox(roleProblem, MessageType.Error);
+            showSetup = EditorGUILayout.Foldout(showSetup, "Setup", true);
+            if (showSetup) DrawSetup();
+            DrawActions();
+            if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
 
-                DrawTreeEditor();
-            }
+            DrawTreeEditor();
 
             if (EditorGUI.EndChangeCheck()) Dirty();
             so.ApplyModifiedProperties();
         }
 
+        // Which area's panel this is, in a colour that cannot be mistaken. The Inspector draws the
+        // Inner | Outer tabs above it.
+        void DrawRoleHeader()
+        {
+            bool outer = T.role == GolfMapTrees.Role.Outer;
+            var style = new GUIStyle(EditorStyles.boldLabel) { alignment = TextAnchor.MiddleCenter, fontSize = 13 };
+            style.normal.textColor = Color.white;
+            var rect = GUILayoutUtility.GetRect(0, 26, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(rect, outer ? new Color(0.20f, 0.35f, 0.60f) : new Color(0.16f, 0.48f, 0.22f));
+            GUI.Label(rect, outer ? "OUTER  -  surrounding plot, billboards only" : "INNER  -  course area, mesh trees", style);
+        }
+
         void DrawSetup()
         {
-            EditorGUILayout.LabelField("Input", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Resolved from the course for this area", EditorStyles.boldLabel);
             T.course = (GolfMapCourse)EditorGUILayout.ObjectField(new GUIContent("Course", "Empty: the course that claims this scene."), T.course, typeof(GolfMapCourse), false);
+            using (new EditorGUI.DisabledScope(true))
+            {
+                EditorGUILayout.ObjectField("Terrain", terrain, typeof(Terrain), true);
+                if (forceBillboards) EditorGUILayout.ObjectField("Inner square excluded", innerExclusion, typeof(Terrain), true);
+            }
             using (new EditorGUILayout.HorizontalScope())
             {
-                filePath = EditorGUILayout.TextField("Trees file", filePath);
-                if (GUILayout.Button("...", GUILayout.Width(30)))
+                using (new EditorGUI.DisabledScope(!T.customFile)) filePath = EditorGUILayout.TextField("Trees file", filePath);
+                if (T.customFile && GUILayout.Button("...", GUILayout.Width(30)))
                 {
                     var picked = EditorUtility.OpenFilePanel("unity-trees-v1 JSON", string.IsNullOrEmpty(filePath) ? "" : Path.GetDirectoryName(filePath), "json");
                     if (!string.IsNullOrEmpty(picked)) { filePath = picked; loaded = null; }
                 }
             }
-            terrain = (Terrain)EditorGUILayout.ObjectField("Terrain", terrain, typeof(Terrain), true);
-            if (terrain == null && Terrain.activeTerrain != null && GUILayout.Button("Use active terrain")) terrain = Terrain.activeTerrain;
+            T.customFile = EditorGUILayout.Toggle(new GUIContent("Custom trees file", "Off: the course's " + RoleKey + " export. A custom file must still be a " + RoleKey + " plot."), T.customFile);
 
             EditorGUILayout.Space();
             useBiome = EditorGUILayout.Toggle("Use biome palette", useBiome);
@@ -226,7 +337,7 @@ namespace GolfMap.Editor
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Placement", EditorStyles.boldLabel);
-            mode = (Mode)EditorGUILayout.EnumPopup("Mode", mode);
+            using (new EditorGUI.DisabledScope(forceBillboards)) mode = (Mode)EditorGUILayout.EnumPopup("Mode", mode);
             if(!useBiome){
             minScale = EditorGUILayout.FloatField("Min scale", minScale);
             maxScale = EditorGUILayout.FloatField("Max scale", maxScale);
@@ -234,11 +345,8 @@ namespace GolfMap.Editor
             seed = EditorGUILayout.IntField("Seed", seed);
             } else EditorGUILayout.HelpBox("Prefab selection, species weights, scale limits and random seed come from the biome JSON.",MessageType.None);
             minHeightM = EditorGUILayout.FloatField("Skip trees under (m)", minHeightM);
-            clearExisting = EditorGUILayout.Toggle("Clear existing trees first", clearExisting);
             alignmentToleranceM = EditorGUILayout.FloatField("Alignment tolerance (m)", alignmentToleranceM);
             ignoreAlignment = EditorGUILayout.Toggle("Plant even if misaligned", ignoreAlignment);
-            forceBillboards = EditorGUILayout.Toggle("Billboards only (outer plot)", forceBillboards);
-            if(forceBillboards)innerExclusion=(Terrain)EditorGUILayout.ObjectField("Inner terrain to exclude",innerExclusion,typeof(Terrain),true);
             DrawStorageOptions();
         }
 
@@ -247,11 +355,21 @@ namespace GolfMap.Editor
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("Load and check")) { try { LoadFile(); if (loaded != null) { ValidateTarget(); status = AlignmentReport()+PrepareBiome()+EditsReport(); } } catch(Exception e) {status=e.Message;Debug.LogError("[GolfMap] "+status);} }
                 using (new EditorGUI.DisabledScope(terrain == null || string.IsNullOrEmpty(filePath)))
-                    if (GUILayout.Button("Plant")) Plant();
-                if (mode == Mode.PersistentStorage && GUILayout.Button("Clear imported")) ClearImported();
+                {
+                    if (GUILayout.Button("Load and check")) Check();
+                    using (new EditorGUI.DisabledScope(!string.IsNullOrEmpty(roleProblem)))
+                        if (GUILayout.Button(new GUIContent("Plant " + RoleKey, "Replaces this area's imported trees with the file's. Never appends."))) Plant();
+                }
+                if (mode == Mode.PersistentStorage && GUILayout.Button("Clear " + RoleKey + " trees")) ClearImported();
             }
+        }
+
+        // Load the survey and match it against the saved palette, without planting.
+        internal void Check()
+        {
+            try { LoadFile(); if (loaded != null) { ValidateTarget(); string doubles = ""; DuplicateReport(ref doubles); status = AlignmentReport()+PrepareBiome()+EditsReport()+doubles; } }
+            catch(Exception e) {status=e.Message;Debug.LogError("[GolfMap] "+status);}
         }
 
         // ---- loading -------------------------------------------------------
@@ -267,6 +385,9 @@ namespace GolfMap.Editor
                 if (file == null || file.format != kFormat) throw new Exception($"format must be {kFormat}");
                 if (file.plot == null || file.plot.sizeM <= 0) throw new Exception("plot.sizeM missing");
                 if (file.trees == null) throw new Exception("trees missing");
+                // The other area's survey planted here is how a course ends up with every tree twice.
+                if (!string.IsNullOrEmpty(file.plot.terrain) && file.plot.terrain != RoleKey)
+                    throw new Exception("this is the " + file.plot.terrain + " plot's file and this is the " + RoleKey + " panel. Plant it from the other panel");
                 foreach (var t in file.trees)
                 {
                     if (t==null || !ValidNumber(t.x)||!ValidNumber(t.z)||!ValidNumber(t.g)||!ValidNumber(t.h)||!ValidNumber(t.r)||t.h <= 0 || t.r <= 0||t.k<0||t.k>2) throw new Exception("Invalid tree coordinates, height, radius or kind");
@@ -280,8 +401,6 @@ namespace GolfMap.Editor
                 foreach (var w in editWarnings) Debug.LogWarning("[GolfMap] " + w);
                 loaded = file;
                 loadedPath = filePath;
-                // An outer-plot file switches billboards on; the toggle stays editable.
-                if (file.plot.terrain == "outer" || file.plot.terrain == "inner") { forceBillboards = file.plot.terrain == "outer"; Dirty(); }
             }
             catch (Exception e)
             {
@@ -370,7 +489,6 @@ namespace GolfMap.Editor
             if(!terrain||!terrain.terrainData)throw new Exception("Choose the target terrain.");
             if(terrain.transform.rotation!=Quaternion.identity||terrain.transform.lossyScale!=Vector3.one)throw new Exception("Terrain must use identity rotation and unit scale.");
             if(Mathf.Abs(terrain.terrainData.size.x-loaded.plot.sizeM)>.5f||Mathf.Abs(terrain.terrainData.size.z-loaded.plot.sizeM)>.5f)throw new Exception("Tree plot size does not match target terrain.");
-            if(loaded.plot.terrain=="outer")forceBillboards=true;
             if(forceBillboards && (!innerExclusion||innerExclusion==terrain||innerExclusion.gameObject.scene!=terrain.gameObject.scene))throw new Exception("Outer planting requires a different inner terrain in the same scene to exclude.");
             if(forceBillboards && mode!=Mode.PersistentStorage)throw new Exception("Use PersistentStorage for guaranteed billboard-only outer planting with this biome.");
             if(!ValidNumber(minScale)||!ValidNumber(maxScale)||minScale<=0||maxScale<minScale)throw new Exception("Invalid scale limits.");
@@ -635,8 +753,9 @@ namespace GolfMap.Editor
             var data = terrain.terrainData;
             Undo.RegisterCompleteObjectUndo(data, "GolfMap plant trees");
 
-            var prototypes = new List<TreePrototype>(clearExisting ? new TreePrototype[0] : data.treePrototypes);
-            var instances = new List<TreeInstance>(clearExisting ? new TreeInstance[0] : data.treeInstances);
+            // Planting always replaces: appending the same survey twice doubles every tree.
+            var prototypes = new List<TreePrototype>();
+            var instances = new List<TreeInstance>();
             var size = data.size;
             skipped = 0;
             int planted = 0;
@@ -693,7 +812,7 @@ namespace GolfMap.Editor
         {
             var existingParent=terrain.transform.Find(kParentName);
             var parent=existingParent?existingParent.gameObject:null;
-            if (parent != null && clearExisting)
+            if (parent != null)
             {
                 Undo.DestroyObjectImmediate(parent);
                 parent = null;

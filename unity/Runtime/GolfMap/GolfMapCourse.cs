@@ -35,5 +35,8 @@ namespace GolfMap
         public string innerTerrainName = "Terrain (Inner)";
         [Tooltip("TerrainData asset name of the inner terrain, matched when the object was renamed.")]
         public string innerTerrainData = "";
+        public string outerTerrainName = "Plot (Outer)";
+        [Tooltip("TerrainData asset name of the outer terrain, matched when the object was renamed.")]
+        public string outerTerrainData = "";
     }
 }

@@ -60,7 +60,15 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
   pre-check. Survey stems use whole-metre coordinates and cells are 100 m, so thousands of trees sit
   exactly on an edge and would match no cell. The planter nudges those 1 cm into the nearest cell
   (`GolfMapTreePlanterVsp.cs`, `PlantStorage`). Keep that when touching cell lookup.
-- **The planter is a scene component.** `GolfMapTrees` (runtime, data only) holds the settings per terrain;
+- **One object, two panels, role-fixed.** The scene's single `GolfMap Trees` object carries an inner
+  `GolfMapTrees` component and an outer one hidden with `HideInInspector`; the inner's Inspector shows them as
+  the Inner | Outer tabs (`Host`/`Outer`/`Active`). The user wants one editor, not two scene objects. The
+  component's `role` decides terrain, trees file, billboards-only, the excluded inner square and the storage
+  (`SyncRole`/`SyncStorage`, resolved each repaint, never hand-picked), and Plant always replaces source 42.
+  Both rules exist because a hand-pointed single component planted every inner tree twice (appended copy at a
+  slightly different scale = "double rendered with a tiny offset"). Do not reintroduce an append mode or an
+  editable terrain/storage field; `Doubles()` finds and `RemoveDoubles()` cleans up what older versions left.
+- **The planter is a scene component.** `GolfMapTrees` (runtime, data only) holds the settings per area;
   `GolfMapTreePlanter` (editor, `ScriptableObject`, `HideAndDontSave`, one per component via `For()`) holds
   the loaded survey, biome matches and the editing session so they survive Inspector churn; its settings
   members are properties forwarding to the component. `GolfMapTreesInspector` only forwards
@@ -96,7 +104,7 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
   package at load, planted or not, so a retired prefab keeps logging faults and can break GSPro's
   shader-controller remap. `VspRenderIssue` only sees the current palette, so every plant calls
   `GolfMapVspRig.PruneCatalogues` to drop items no instance still references. Items that are still
-  planted are kept - retiring one means replanting that terrain with **Clear existing trees first**.
+  planted are kept - retiring one means replanting that area (Plant always replaces).
 - Persistent storage is never reinitialised over an existing package; inner and outer use
   separate VSP systems and storage assets, matched to their terrain by bounds.
 - Imported trees carry VSP source id 42; clear/replace only touch that source.

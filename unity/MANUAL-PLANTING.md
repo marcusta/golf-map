@@ -1,53 +1,68 @@
 # Manual biome planting in Vreta
 
-The planter is the Inspector of a **GolfMap Trees** scene object (one per terrain;
-`GolfMap > Tree Planter` selects or creates it). Logic: `GolfMapTreePlanter.cs`. Install
+The planter is the Inspector of the scene's one **GolfMap Trees** object
+(`GolfMap > Tree Planter` selects or creates it). It has two panels, picked with the tabs at
+the top, and a coloured bar says which one is open:
+
+- **Inner** (green) - the course area on the inner terrain, mesh trees.
+- **Outer** (blue) - the surrounding plot, billboards only, inner square excluded.
+
+Each panel keeps its own settings, so a change is always "for inner" or "for outer".
+(Internally the object carries one `GolfMapTrees` component per area; the outer one is hidden
+from the Inspector.)
+The role fixes everything that used to be picked by hand, which is what made double
+planting possible: the terrain (course asset's inner/outer terrain names), the trees file
+(`<prefix>-<inner|outer>-trees.json` from the export folder), billboards-only, the excluded
+inner square and the VSP storage (the one GolfMap system laid out for that terrain). A file
+whose `plot.terrain` names the other area is refused.
+
+Logic: `GolfMapTreePlanter.cs`. Install
 it together with `GolfMapBiome.cs`, `GolfMapTreePlanterVsp.cs`, `GolfMapVspRig.cs`,
 `GolfMapTreesInspector.cs` and `GolfMapBiomeAtlas.shader` under `Assets/Editor/GolfMap`,
 and the component `GolfMapTrees.cs` under `Assets/GolfMap/Runtime`.
 The VSP partial is now kept in this repository; do not maintain a separate older
 copy with the same class/methods in the Unity project.
 
-## Inner terrain
+## Inner area
 
-1. Open the course scene (`Vreta_lidar_scene`) and choose **GolfMap > Configure course planter**.
-   This only configures the selected GolfMap Trees object; it does not import.
-2. Set the inner trees JSON and its matching inner Terrain. The preset takes
-   both from the course asset (`Assets/GolfMap/<Course>/Course.asset`): the export folder's
-   `<prefix>-inner-trees.json`, else the fallback trees file, and the inner terrain names.
+1. Open the course scene and choose **GolfMap > Tree Planter**. **GolfMap > Configure course
+   planter** resets the selected area's settings to the course defaults; it does not import.
+2. Terrain, trees file and storage are shown read-only. Tick **Custom trees file** only to
+   plant a different inner survey; the fallback trees file is used when the export is missing.
 3. Leave **Use biome palette** on. An empty **Biome JSON** means the course's own
    `palette.json`, which is the source of truth.
-4. Use **PersistentStorage**. The preset selects the existing system covering the terrain, if any.
-   Course mesh roots are used for ground placement, with terrain fallback.
-5. **Load and check** reports alignment, match/review/unmatched counts and species mix.
+4. Course mesh roots are used for ground placement, with terrain fallback.
+5. **Load and check** reports alignment, match/review/unmatched counts, species mix and
+   doubled trees.
    **Include imperfect/unknown fits** permits imperfect geometry fits and uncertain
    detector types. Turn it off to skip these. Unmatched stems are always skipped.
-6. **Plant** runs manually. **Clear existing trees first** replaces source-42 trees
-   in the selected storage; otherwise Plant appends and can create duplicates.
-   The preset enables replacement. Other source IDs are retained.
+6. **Plant inner** always replaces the area's source-42 trees (it asks first and writes a
+   backup). It never appends. Other source IDs are retained.
 
-This is a whole-file biome import. Planting the full inner file replaces the old
-generic planting and the 118-tree trial when replacement is on. It does not read
-the separate assignment review's authored overrides. Use the assignment importer
-when you want to apply a reviewed subset or authored exceptions instead.
+This is a whole-file biome import. Manual edits from the Scene-view tree editor are overlaid
+on the survey, so a replant keeps them.
 
-## Outer terrain (billboards only)
+## Outer area (billboards only)
 
-1. Select the outer trees JSON and its matching outer Terrain.
-2. Assign the detailed terrain to **Inner terrain to exclude (outer)**. Its world
-   X/Z footprint is excluded, even if the outer export still contains inner stems.
-3. An export with `plot.terrain: "outer"` enforces **Billboards only**. Use
-   **PersistentStorage**. Native TerrainInstances/GameObjects are rejected for this
+1. Open the **Outer** panel. The outer terrain and the inner square to exclude come from the
+   course asset; the inner footprint is excluded even if the outer export contains inner stems.
+2. PersistentStorage is enforced. Native TerrainInstances/GameObjects are rejected for this
    mode because these mixed assets are not guaranteed native billboard support.
-4. Click **Create / select storage for this terrain**. It creates `GolfMap Outer
-   Trees` and a separate storage asset, or selects the existing outer system.
-   It does not plant trees and does not require clearing the inner storage selector.
-   Save the scene after creating it. The billboard catalogue is created on Plant.
-   To start fresh even when matching storage exists, click **Create new empty storage**.
-   This always creates and selects a separate, uniquely named system and storage asset.
-   Existing systems and their planted trees remain unchanged.
-5. Set **Outer billboard distance (m)** (default 10,000) and leave **Rebake billboard
+3. The storage is created on the first **Plant outer**, together with the billboard
+   catalogue. Save the scene afterwards.
+4. Set **Outer billboard distance (m)** (default 10,000) and leave **Rebake billboard
    colours** enabled when materials have changed. Load/check, then Plant.
+
+## Doubled trees
+
+Trees that look double-rendered with a tiny offset are two stored instances of the same stem:
+an appended second planting (older planter versions), or the other area's survey planted into
+this area's terrain. **Check for doubled trees** counts both kinds per storage; **Remove
+doubled trees...** keeps the newest copy of each stem in the area's own storage and removes
+every source-42 instance other GolfMap storages hold inside the area, after backing each
+storage up. Plant refuses while another storage still holds trees in the area. Several
+systems laid out for the same terrain are reported as an error: keep one, **Delete storage...**
+the rest.
 
 Outer VSP uses PlantDistance=0 and AdditionalTreeMeshDistance=0, with billboards
 enabled per item. The previous setting of only AdditionalTreeMeshDistance=0 still
@@ -91,8 +106,8 @@ this shape.
 **Retiring a prefab needs a replant.** Dropping an asset from the palette does not remove
 it from the `TreeCatalog` asset, and VSP validates every item in the package at load — so
 a bad prefab keeps erroring even with nothing planted from it. The prune only removes
-items with no instances left, so replant that terrain with **Clear existing trees first**
-enabled and the retired items go with it.
+items with no instances left, so replant that area (Plant always replaces)
+and the retired items go with it.
 
 ## Backups and checks
 

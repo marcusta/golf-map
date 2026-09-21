@@ -36,65 +36,78 @@ namespace GolfMap.Editor
             planter.Repaint(); // Configuring must never replant the whole course.
         }
 
+        // Resets the selected area's settings to the course defaults. Terrain, trees file and
+        // storage are not set here: SyncRole resolves them from the role on every repaint.
         void ConfigureFromCourse()
         {
             var course = Course;
             var scene = SceneManager.GetActiveScene();
             if (!string.IsNullOrEmpty(course.sceneName) && scene.name != course.sceneName) throw new InvalidOperationException("Open " + course.sceneName + " first.");
-            var innerTerrains = FindObjectsOfType<Terrain>().Where(t => t.gameObject.scene == scene && t.terrainData &&
-                (t.name == course.innerTerrainName || t.terrainData.name == course.innerTerrainData)).ToArray();
-            if(innerTerrains.Length != 1)throw new InvalidOperationException(
-                "Expected one inner terrain named " + course.innerTerrainName + " or using " + course.innerTerrainData + " data; found " + innerTerrains.Length +
-                ". Select the target terrain and trees file manually in this window.");
-            var chosenTerrain = innerTerrains[0];
-            var systems = FindObjectsOfType<PersistentVegetationStorage>().Where(v => v.gameObject.scene == scene &&
-                IsGolfMapStorage(v) && StorageMatchesTerrain(v,chosenTerrain)).ToArray();
-            if(systems.Length > 1)throw new InvalidOperationException("Several inner storage systems match. Select the intended storage manually.");
-            terrain = chosenTerrain;
-            innerExclusion = null;
-            filePath = GolfMapCourses.TreesFile(course, "inner");
+            T.customFile = false;
             mode = Mode.PersistentStorage;
             broadleafPrefabs = new List<GameObject> { AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Trees/Broadleaf/Broadleaf_Desktop.prefab") };
             coniferPrefabs = new List<GameObject> { AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Trees/Conifer/Conifer_Desktop.prefab") };
             unknownPrefabs.Clear(); bushPrefabs.Clear();
             useBiome=true;biomePath="";
-            forceBillboards=false;minScale = 0.75f; maxScale = 1.4f; scaleWidth = false;
-            clearExisting = false;
-            groundMeshes = FindObjectsOfType<MeshFilter>().Where(m => m.gameObject.scene == scene && m.name.StartsWith("Spline_") && !m.name.Contains("Blend") && m.sharedMesh != null).Select(m => m.gameObject).ToList();
-            storage = systems.Length == 1 ? systems[0] : null;
+            minScale = 0.75f; maxScale = 1.4f; scaleWidth = false;
+            groundMeshes = forceBillboards ? new List<GameObject>() : FindObjectsOfType<MeshFilter>().Where(m => m.gameObject.scene == scene && m.name.StartsWith("Spline_") && !m.name.Contains("Blend") && m.sharedMesh != null).Select(m => m.gameObject).ToList();
             loaded = null;
-            status = GolfMapCourses.Name(course) + " preset ready: " + groundMeshes.Count + " course meshes, terrain fallback. Plant creates dedicated VSP storage if needed.";
+            var problem = SyncRole();
+            status = GolfMapCourses.Name(course) + " " + RoleKey + " preset ready: " + groundMeshes.Count + " course meshes, terrain fallback. Plant creates dedicated VSP storage if needed." + (string.IsNullOrEmpty(problem) ? "" : "\n" + problem);
             Dirty();
+        }
+
+        // The area's storage is the one GolfMap system laid out for its terrain. Picking it by
+        // hand is what let inner trees land in the outer system, so it is only ever resolved.
+        partial void SyncStorage(ref bool changed, ref string problem)
+        {
+            if (mode != Mode.PersistentStorage || !terrain) return;
+            var matches = FindObjectsOfType<PersistentVegetationStorage>().Where(v => IsGolfMapStorage(v) && StorageMatchesTerrain(v, terrain)).ToArray();
+            if (matches.Length > 1)
+            {
+                problem = matches.Length + " GolfMap storage systems are laid out for " + terrain.name + " (" +
+                    string.Join(", ", matches.Select(m => Path.GetFileNameWithoutExtension(AssetDatabase.GetAssetPath(m.PersistentVegetationStoragePackage))).ToArray()) +
+                    "). Every one of them renders. Keep one and remove the rest with Delete storage.";
+                if (!matches.Contains(storage)) { storage = null; changed = true; }
+                return;
+            }
+            var resolved = matches.Length == 1 ? matches[0] : null;
+            if (storage != resolved) { storage = resolved; changed = true; }
         }
 
         partial void DrawStorageOptions()
         {
             if (mode != Mode.PersistentStorage) return;
-            storage = (PersistentVegetationStorage)EditorGUILayout.ObjectField("Persistent storage", storage, typeof(PersistentVegetationStorage), true);
-            if(GUILayout.Button("Delete storage...")){
-                var dialog=CreateInstance<DeleteStorageWindow>();dialog.planter=this;
-                dialog.titleContent=new GUIContent("Delete storage");dialog.minSize=new Vector2(660,390);dialog.ShowUtility();
-            }
-            using(new EditorGUI.DisabledScope(!terrain||string.IsNullOrEmpty(filePath))){
-                if(GUILayout.Button("Create / select storage for this terrain"))CreateOrSelectStorage();
-                if(GUILayout.Button("Create new empty storage"))CreateOrSelectStorage(true);
-            }
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Storage for this area", EditorStyles.boldLabel);
+            using (new EditorGUI.DisabledScope(true)) EditorGUILayout.ObjectField("Persistent storage", storage, typeof(PersistentVegetationStorage), true);
             if(storage&&storage.PersistentVegetationStoragePackage)EditorGUILayout.LabelField("Storage asset",AssetDatabase.GetAssetPath(storage.PersistentVegetationStoragePackage));
+            else EditorGUILayout.LabelField("Storage asset","None yet: Plant creates it");
+            if(forceBillboards){outerBillboardDistance=EditorGUILayout.FloatField("Outer billboard distance (m)",outerBillboardDistance);regenerateBillboards=EditorGUILayout.Toggle("Rebake billboard colours",regenerateBillboards);}
+            if(!forceBillboards)EditorGUILayout.PropertyField(so.FindProperty("groundMeshes"), new GUIContent("Ground mesh objects / roots"), true);
             using(new EditorGUI.DisabledScope(!storage||!storage.VegetationSystemPro)){
                 if(GUILayout.Button("Refresh planted colours from prefab materials"))RefreshPlantedColours();
             }
-            if(forceBillboards){outerBillboardDistance=EditorGUILayout.FloatField("Outer billboard distance (m)",outerBillboardDistance);regenerateBillboards=EditorGUILayout.Toggle("Rebake billboard colours",regenerateBillboards);}
-            if(GUILayout.Button("Restore storage from planting backup")){
-                if(!storage||!storage.PersistentVegetationStoragePackage){status="Assign the storage to restore first.";return;}
-                var chosen=EditorUtility.OpenFilePanel("Planting backup for this storage", "GolfMapSpelunk/PlantingBackups", "json");
-                if(chosen.Length>0){
-                    var package=storage.PersistentVegetationStoragePackage;
-                    if(!File.Exists(chosen+".target")||File.ReadAllText(chosen+".target")!=AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(package))){status="Backup belongs to a different storage asset.";return;}
-                    Undo.RegisterCompleteObjectUndo(package,"Restore GolfMap planting");EditorJsonUtility.FromJsonOverwrite(File.ReadAllText(chosen),package);EditorUtility.SetDirty(package);RefreshStorage();AssetDatabase.SaveAssets();status="Restored storage. Prefab/material settings are unchanged.";
+            using(new EditorGUILayout.HorizontalScope()){
+                if(GUILayout.Button("Check for doubled trees")){string report="";DuplicateReport(ref report);status=string.IsNullOrEmpty(report)?"No storage to check.":report.TrimStart();}
+                if(GUILayout.Button("Remove doubled trees..."))RemoveDoubles();
+            }
+            using(new EditorGUILayout.HorizontalScope()){
+                if(GUILayout.Button("Restore from planting backup")){
+                    if(!storage||!storage.PersistentVegetationStoragePackage){status="Nothing planted in this area to restore.";return;}
+                    var chosen=EditorUtility.OpenFilePanel("Planting backup for this storage", "GolfMapSpelunk/PlantingBackups", "json");
+                    if(chosen.Length>0){
+                        var package=storage.PersistentVegetationStoragePackage;
+                        if(!File.Exists(chosen+".target")||File.ReadAllText(chosen+".target")!=AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(package))){status="Backup belongs to a different storage asset.";return;}
+                        Undo.RegisterCompleteObjectUndo(package,"Restore GolfMap planting");EditorJsonUtility.FromJsonOverwrite(File.ReadAllText(chosen),package);EditorUtility.SetDirty(package);RefreshStorage();AssetDatabase.SaveAssets();status="Restored storage. Prefab/material settings are unchanged.";
+                    }
+                }
+                if(GUILayout.Button("Delete storage...")){
+                    var dialog=CreateInstance<DeleteStorageWindow>();dialog.planter=this;
+                    dialog.titleContent=new GUIContent("Delete storage");dialog.minSize=new Vector2(660,390);dialog.ShowUtility();
                 }
             }
-            if(!forceBillboards)EditorGUILayout.PropertyField(so.FindProperty("groundMeshes"), new GUIContent("Ground mesh objects / roots"), true);
-            EditorGUILayout.HelpBox("Create / select reuses matching storage. Create new empty storage always creates and selects a separate system and asset for the target terrain, preserving existing systems. Creating storage does not plant trees. Replace/Clear affect source 42 in the selected storage. Backups are written before replacement.", MessageType.None);
+            EditorGUILayout.HelpBox("The storage is found from the area's terrain; Plant creates it when there is none. Plant and Clear replace this area's imported trees (source 42) only, after writing a backup.", MessageType.None);
         }
 
         public class DeleteStorageWindow : EditorWindow
@@ -145,27 +158,6 @@ namespace GolfMap.Editor
                 }
                 if(GUILayout.Button("Cancel"))Close();
             }
-        }
-
-        void CreateOrSelectStorage(bool createNew=false)
-        {
-            var previous=storage;
-            try {
-                LoadFile();if(loaded==null)return;
-                ValidateTarget();
-                string targetName=forceBillboards?"outer":"inner";
-                var matches=createNew?new PersistentVegetationStorage[0]:FindObjectsOfType<PersistentVegetationStorage>().Where(s=>
-                    IsGolfMapStorage(s)&&StorageMatchesTerrain(s,terrain)).ToArray();
-                if(matches.Length>1)throw new InvalidOperationException("Several GolfMap "+targetName+" systems match this terrain. Resolve duplicates before selecting storage.");
-                if(matches.Length==1){
-                    var candidate=matches[0];
-                    storage=candidate;Dirty();status="Selected the existing "+targetName+" system ("+AssetDatabase.GetAssetPath(candidate.PersistentVegetationStoragePackage)+"). No trees changed.";
-                } else {
-                    storage=null;EnsureStorage(createNew);
-                    AssetDatabase.SaveAssets();EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
-                    status="Created and selected a new "+targetName+" system ("+AssetDatabase.GetAssetPath(storage.PersistentVegetationStoragePackage)+"). Existing systems preserved. Save the scene, then Load and check.";
-                }
-            } catch(Exception e){storage=previous;status="Storage setup stopped: "+e.Message;Debug.LogException(e);}
         }
 
         void RefreshStorage()
@@ -234,7 +226,7 @@ namespace GolfMap.Editor
 
         partial void ClearImported()
         {
-            if (!storage || !storage.PersistentVegetationStoragePackage) { status = "Assign persistent storage (or use GolfMap > Configure course planter)."; return; }
+            if (!storage || !storage.PersistentVegetationStoragePackage) { status = "Nothing planted in the " + RoleKey + " area: it has no storage yet."; return; }
             var package = storage.PersistentVegetationStoragePackage;
             int count = SourceCount(package);
             BackupStorage(package);
@@ -541,15 +533,19 @@ namespace GolfMap.Editor
                     var t = prepared[i];
                     if (ResolveCell(system, ref t.position)) { prepared[i] = t; nudged++; }
                 }
+                int strays = Doubles(false).Where(d => d.storage != storage).Sum(d => d.items.Count);
+                if (strays > 0) throw new InvalidOperationException(strays + " imported trees from another storage already stand in the " + RoleKey + " area and would render on top of these. Use Remove doubled trees first. Nothing changed.");
+                int prior = SourceCount(package);
+                if (prior > 0 && !EditorUtility.DisplayDialog("Replace " + RoleKey + " trees?", "Replace the " + prior + " imported trees in " + Path.GetFileName(AssetDatabase.GetAssetPath(package)) + " with " + prepared.Count + " from " + Path.GetFileName(filePath) + "?\n\nA backup is written first.", "Replace", "Cancel")) { status = "Plant cancelled. Nothing changed."; return; }
                 var mapping = EnsureCatalog(system, prepared.Select(t => t.prefab), regenerateBillboards);
                 var backup=BackupStorage(package);
                 Undo.RegisterCompleteObjectUndo(package, "Import GolfMap trees");
-                int prior = SourceCount(package);
                 try {
-                if (clearExisting) foreach (var id in StoredIDs(package)) package.RemoveVegetationItemInstances(id, ImportSource);
+                // Always replace. Appending the survey to an earlier import of it puts every tree in
+                // twice, a hair apart wherever the palette's scale limits changed in between.
+                foreach (var id in StoredIDs(package)) package.RemoveVegetationItemInstances(id, ImportSource);
                 foreach (var t in prepared) storage.AddVegetationItemInstance(mapping[t.prefab], t.position, t.scale, t.rotation, false, ImportSource, 1f, false);
-                int expected = prepared.Count + (clearExisting ? 0 : prior);
-                if (SourceCount(package) != expected) throw new InvalidOperationException("Stored count differs from expected count.");
+                if (SourceCount(package) != prepared.Count) throw new InvalidOperationException("Stored count differs from expected count.");
                 } catch {EditorJsonUtility.FromJsonOverwrite(backup,package);EditorUtility.SetDirty(package);RefreshStorage();throw;}
                 // Retired palette prefabs would otherwise stay in the catalogue for good and keep
                 // failing VSP's per-item validation at load. Only safe once the instances are in.
@@ -558,12 +554,107 @@ namespace GolfMap.Editor
                 EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
                 RefreshStorage();
                 AssetDatabase.SaveAssets();
-                status = "Imported " + prepared.Count + " trees: " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup.";
+                status = "Replaced " + prior + " " + RoleKey + " trees with " + prepared.Count + ": " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup.";
                 File.WriteAllText(GolfMapCourses.ReportPath(Course, "tree_import.txt"), DateTime.UtcNow.ToString("o") + "\n" + status + "\n" + AlignmentReport() + "\nStorage: " + AssetDatabase.GetAssetPath(package));
                 Debug.Log("[GolfMap] " + status);
             }
             catch (Exception e) { status = "Import stopped: " + e.Message; Debug.LogException(e); }
             finally { if (probe != null) probe.Dispose(); }
+        }
+
+        // ---- doubled trees ---------------------------------------------------
+
+        // Imported instances that render on top of another one: a second copy of a stem in this
+        // area's own storage (Plant used to append), or any instance another GolfMap storage
+        // holds inside this area (the other area's setup pointed here).
+        class DoubleSet
+        {
+            public PersistentVegetationStorage storage;
+            public bool own;
+            public List<KeyValuePair<PersistentVegetationInfo,int>> items = new List<KeyValuePair<PersistentVegetationInfo,int>>();
+        }
+
+        // The ground this role plants: its terrain, minus the inner square for the outer role.
+        bool InsideArea(Vector3 world)
+        {
+            var p = world - terrain.transform.position; var size = terrain.terrainData.size;
+            if (!(p.x >= 0 && p.z >= 0 && p.x < size.x && p.z < size.z)) return false;
+            if (forceBillboards && innerExclusion) { var q = world - innerExclusion.transform.position; var s = innerExclusion.terrainData.size; if (q.x >= 0 && q.z >= 0 && q.x <= s.x && q.z <= s.z) return false; }
+            return true;
+        }
+
+        List<DoubleSet> Doubles(bool includeOwn)
+        {
+            var result = new List<DoubleSet>();
+            if (!terrain || !terrain.terrainData) return result;
+            foreach (var candidate in FindObjectsOfType<PersistentVegetationStorage>())
+            {
+                if (!IsGolfMapStorage(candidate) || !candidate.VegetationSystemPro || candidate.gameObject.scene != terrain.gameObject.scene) continue;
+                bool own = candidate == storage;
+                if (own && !includeOwn) continue;
+                var set = new DoubleSet { storage = candidate, own = own };
+                var origin = candidate.VegetationSystemPro.VegetationSystemPosition;
+                var seen = new HashSet<long>();
+                foreach (var cell in candidate.PersistentVegetationStoragePackage.PersistentVegetationCellList)
+                    foreach (var info in cell.PersistentVegetationInfoList)
+                        for (int i = info.VegetationItemList.Count - 1; i >= 0; i--)   // newest first: the latest planting is the copy kept
+                        {
+                            var item = info.VegetationItemList[i];
+                            if (item.VegetationSourceID != ImportSource) continue;
+                            var world = item.Position + origin;
+                            bool doubled;
+                            // Own storage: another instance within 25 cm of one already seen. Survey stems are metres apart.
+                            if (own) doubled = !seen.Add(((long)Mathf.RoundToInt(world.x * 4) << 32) ^ (uint)Mathf.RoundToInt(world.z * 4));
+                            else doubled = InsideArea(world);
+                            if (doubled) set.items.Add(new KeyValuePair<PersistentVegetationInfo,int>(info, i));
+                        }
+                if (set.items.Count > 0) result.Add(set);
+            }
+            return result;
+        }
+
+        static string DoubleLabel(DoubleSet d)
+        {
+            return Path.GetFileNameWithoutExtension(AssetDatabase.GetAssetPath(d.storage.PersistentVegetationStoragePackage)) + " (" +
+                string.Join(", ", d.storage.VegetationSystemPro.VegetationStudioTerrainObjectList.Where(g => g).Select(g => g.name).ToArray()) + ")";
+        }
+
+        partial void DuplicateReport(ref string report)
+        {
+            if (mode != Mode.PersistentStorage) return;
+            var doubles = Doubles(true);
+            if (doubles.Count == 0) { report = "\nNo doubled trees in the " + RoleKey + " area."; return; }
+            foreach (var d in doubles)
+                report += "\nWARNING " + d.items.Count + (d.own ? " trees are stored twice in this area's own storage " : " trees from another storage stand inside the " + RoleKey + " area: ") + DoubleLabel(d) + ".";
+            report += "\nThey render on top of the real trees. Remove doubled trees clears them.";
+        }
+
+        void RemoveDoubles()
+        {
+            try
+            {
+                var doubles = Doubles(true);
+                if (doubles.Count == 0) { status = "No doubled trees in the " + RoleKey + " area."; return; }
+                string summary = string.Join("\n", doubles.Select(d => d.items.Count + (d.own ? " second copies in " : " strays in ") + DoubleLabel(d)).ToArray());
+                if (!EditorUtility.DisplayDialog("Remove doubled trees?", "In the " + RoleKey + " area:\n\n" + summary + "\n\nOne copy of each tree stays. Every storage touched is backed up first.", "Remove", "Cancel")) return;
+                int removed = 0;
+                foreach (var d in doubles)
+                {
+                    var package = d.storage.PersistentVegetationStoragePackage;
+                    BackupStorage(package);
+                    Undo.RegisterCompleteObjectUndo(package, "Remove doubled GolfMap trees");
+                    // Highest index first, so the indices collected for the same list stay valid.
+                    foreach (var pair in d.items.OrderByDescending(x => x.Value)) { pair.Key.RemovePersistentVegetationInstanceAtIndex(pair.Value); removed++; }
+                    package.SetInstanceInfoDirty();
+                    EditorUtility.SetDirty(package);
+                    d.storage.VegetationSystemPro.ClearCache();
+                }
+                AssetDatabase.SaveAssets();
+                EditorApplication.QueuePlayerLoopUpdate(); SceneView.RepaintAll();
+                status = "Removed " + removed + " doubled trees from the " + RoleKey + " area. Backups are in GolfMapSpelunk/PlantingBackups. Undo is available.";
+                Debug.Log("[GolfMap] " + status);
+            }
+            catch (Exception e) { status = "Removal stopped: " + e.Message; Debug.LogException(e); }
         }
     }
 }

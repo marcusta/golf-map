@@ -1,7 +1,9 @@
-// Planting setup for one terrain, saved with the scene.
+// Planting setup for one area of the course, saved with the scene.
 //
-// Add one "GolfMap Trees" object per terrain (GolfMap > Tree Planter creates
-// the first). Its Inspector (GolfMapTreesInspector.cs, Editor folder) loads
+// The scene's one "GolfMap Trees" object (GolfMap > Tree Planter creates it) carries two
+// of these: the inner component, and the outer one hidden from the Inspector. The inner
+// component's Inspector shows both as the Inner and Outer panels, each with its own
+// settings. That Inspector (GolfMapTreesInspector.cs, Editor folder) loads
 // the survey, checks alignment, plants and hosts the Scene-view tree editor;
 // the logic lives in GolfMapTreePlanter*.cs. This component only carries the
 // settings, so a built course ships an empty component and nothing else.
@@ -14,17 +16,25 @@ using AwesomeTechnologies.Vegetation.PersistentStorage;
 
 namespace GolfMap
 {
-    [AddComponentMenu("GolfMap/Trees")]
-    [DisallowMultipleComponent]
+    [AddComponentMenu("")]   // created in pairs by GolfMap > Tree Planter, never by hand
     public class GolfMapTrees : MonoBehaviour
     {
         // PersistentStorage (Vegetation Studio Pro) is the mode the tree editor works with.
         public enum Mode { TerrainInstances, GameObjects, PersistentStorage }
 
+        // Which of the course's two areas this component plants. The role fixes the terrain,
+        // the trees file, the storage and billboards-only, so one area's setup can never be
+        // pointed at the other's terrain or storage by hand.
+        public enum Role { Inner, Outer }
+
         [Header("Input")]
+        public Role role = Role.Inner;
+        public bool roleAssigned;                    // false: a component saved before roles existed
+        public bool showOuter;                       // inner component only: the panel its Inspector has open
         public GolfMapCourse course;                 // empty: the scene's active course
+        public bool customFile;                      // false: the course's export for this role
         public string filePath = "";                 // unity-trees-v1 JSON (absolute or project-relative)
-        public Terrain terrain;
+        public Terrain terrain;                      // resolved from the course and the role
         public bool useBiome = true;
         public string biomePath = "";                // empty: the course's palette
         public bool includeReviewMatches = true;
@@ -41,14 +51,13 @@ namespace GolfMap
         public float maxScale = 2.0f;
         public float minHeightM = 0f;
         public bool scaleWidth = true;
-        public bool clearExisting = false;
         public int seed = 1;
         public float alignmentToleranceM = 1.0f;
         public bool ignoreAlignment = false;
         // Outer-plot trees are always far from the player, so they go in as
         // billboards only; the inner terrain's footprint is excluded.
-        public bool forceBillboards = false;
-        public Terrain innerExclusion;
+        [HideInInspector] public bool forceBillboards = false;   // legacy: read once to assign the role
+        public Terrain innerExclusion;               // outer role: resolved from the course
 
         [Header("Persistent storage")]
         public PersistentVegetationStorage storage;

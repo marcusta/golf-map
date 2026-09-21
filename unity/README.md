@@ -102,10 +102,12 @@ explicitly. A project with a single `Assets/GolfMap/<Course>/palette.json` and n
 asset is adopted on first use (Vreta was). **GolfMap > Course > New course for this scene**
 creates one by hand. Reports go to `GolfMapSpelunk/<Course>_*.txt`.
 
-### Palette tab
+### Palette panel
 
-The `GolfMap Trees` Inspector has two tabs. **Palette** (`GolfMapTreePalette.cs`) edits the
-course's `palette.json` in place: the broadleaf species weights (any species name; add and
+The `GolfMap Trees` Inspector has three panels: **Inner**, **Outer** and **Palette**. The
+palette belongs to the course - both areas plant from it - so it sits beside the area panels,
+not inside them, and its preview counts every area that has a survey loaded. **Palette**
+(`GolfMapTreePalette.cs`) edits the course's `palette.json` in place: the broadleaf species weights (any species name; add and
 remove), every matching rule, the seed, and each asset's enabled flag and pine weight.
 The file stays the source of truth and both sides may edit it: the tab reloads when the file
 changes on disk, and asks first when it holds unsaved edits. `GolfMapPalette`
@@ -220,7 +222,7 @@ bad geometry at plant time (VSP draws only the first renderer per LOD, so the pr
 poplars with 2–3 renderers per LOD came out as blobs), but it only sees the *current*
 palette. So each plant now prunes catalogue items no instance in that storage still
 references. An item that is still planted is never removed: to retire it, replant that
-terrain with the new palette and **Clear existing trees first** on.
+area with the new palette (Plant always replaces).
 
 ### Tree editor (manual fixes in the Scene view)
 
