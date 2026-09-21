@@ -88,3 +88,38 @@ test('species weights are independent of prefab count and keep a fit guard',()=>
  const guarded={...cfg,assets:assets.map(a=>a.species==='birch'?a:{...a,heightM:100,crownWidthM:100})};
  assert.equal(matchTree({...stem,h:10,r:3},guarded).guid,'birch');
 });
+
+test('looks split a species by weight without moving any stem to another shape',()=>{
+ const assets=['a','b','c'].map(guid=>({...birch,guid,species:'oak',heightM:10,crownWidthM:6}));
+ const plain={...config,assets,species:undefined};
+ const looks={...plain,species:{oak:{looks:[{id:'default',weight:.8},{id:'dry',weight:.2},{id:'off',weight:0},{id:'only-a',weight:.5,shapes:['a']}]}}};
+ const counts={};
+ for(let i=0;i<6000;i++){
+  const s={...stem,id:'look-'+i,h:10,r:3};const before=matchTree(s,plain),after=matchTree(s,looks);
+  assert.equal(before.look,undefined);assert.equal(after.guid,before.guid);
+  if(after.look==='only-a')assert.equal(after.guid,'a');
+  if(after.guid!=='a')counts[after.look]=(counts[after.look]||0)+1;
+ }
+ assert.equal(counts.off,undefined);
+ const share=counts.dry/(counts.dry+counts.default);assert.ok(share>.17&&share<.23,share);
+});
+
+test('conifers and unlabelled assets join the species race under their kind only when weighted',()=>{
+ const assets=[{...birch,guid:'fir',kind:'conifer',species:undefined,heightM:10,crownWidthM:6},{...birch,guid:'spruce',kind:'conifer',species:'spruce',heightM:10,crownWidthM:6}];
+ const weighted={...config,assets,rules:{...config.rules,speciesWeights:{...config.rules.speciesWeights,conifer:.75,spruce:.25}}};
+ let fir=0;
+ for(let i=0;i<4000;i++)if(matchTree({...stem,id:'conifer-'+i,h:10,r:3,k:1},weighted).guid==='fir')fir++;
+ assert.ok(fir>2850&&fir<3150,fir);
+});
+
+test('asset weights share stems within the drawn species and leave unweighted species alone',()=>{
+ const make=(guid,species,selectionWeight)=>({...birch,guid,species,heightM:10,crownWidthM:6,selectionWeight});
+ const cfg=w=>({...config,assets:[make('o1','oak',w),make('o2','oak'),make('e1','elm'),make('e2','elm')],rules:{...config.rules,speciesWeights:{oak:1,elm:1}}});
+ let o1=0,oak=0;
+ for(let i=0;i<6000;i++){
+  const s={...stem,id:'share-'+i,h:10,r:3};const plain=matchTree(s,cfg(undefined)),shared=matchTree(s,cfg(3));
+  if(plain.guid[0]==='e')assert.equal(shared.guid,plain.guid);
+  else{oak++;if(shared.guid==='o1')o1++;}
+ }
+ assert.ok(o1/oak>.71&&o1/oak<.79,o1/oak);
+});

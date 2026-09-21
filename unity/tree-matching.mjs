@@ -1,4 +1,6 @@
 // Pure matching rules. k: 0 broadleaf, 1 conifer, 2 unknown.
+// An asset without a species races, and is looked up, under its kind.
+export const speciesLabel=a=>a.species||a.kind;
 export function hash(text) {
  let value=2166136261;for(const c of text)value=Math.imul(value^c.charCodeAt(0),16777619);
  return (value>>>0)/4294967296;
@@ -28,7 +30,7 @@ export function matchTree(stem,config,override) {
    const heightError=Math.abs(Math.log(a.heightM*scale/stem.h));
    const widthError=Math.abs(Math.log(a.crownWidthM*scale/targetWidth));
    const score=2*heightError+widthWeight*widthError+rules.scalePenalty*Math.abs(Math.log(scale));
-   return {guid:a.guid,name:a.name,species:a.species,scale,heightError,widthError,score};
+   return {guid:a.guid,name:a.name,species:a.species,label:speciesLabel(a),weight:a.selectionWeight,scale,heightError,widthError,score};
  }).sort((a,b)=>a.score-b.score||a.guid.localeCompare(b.guid));
  let chosen;
  if(override?.guid){
@@ -40,14 +42,14 @@ export function matchTree(stem,config,override) {
    let pool=ranked;
    // Pick species once, independently of its number of prefab variants. Poor fits
    // cannot win merely to meet a species target; proportions are preferences.
-   if(kind==='broadleaf'&&rules.speciesWeights){
+   if(kind!=='unknown'&&rules.speciesWeights){
      const slack=canopy&&rules.woodlandSpeciesFitSlack>0?rules.woodlandSpeciesFitSlack:(rules.speciesFitSlack??0);
      const eligible=ranked.filter(a=>a.score<=ranked[0].score+slack);
-     const species=[...new Set(eligible.map(a=>a.species))].filter(s=>(rules.speciesWeights[s]||0)>0).sort();
+     const species=[...new Set(eligible.map(a=>a.label))].filter(s=>(rules.speciesWeights[s]||0)>0).sort();
      if(species.length){
        const race=s=>-Math.log(Math.max(Number.EPSILON,speciesHash(config.seed+':'+stem.id+':species:'+s)))/rules.speciesWeights[s];
        const selected=species.reduce((best,s)=>race(s)<race(best)?s:best);
-       pool=eligible.filter(a=>a.species===selected);
+       pool=eligible.filter(a=>a.label===selected);
      }
    }
    const close=pool.filter(a=>a.score<=pool[0].score+rules.variationBand);
@@ -56,6 +58,12 @@ export function matchTree(stem,config,override) {
      const pinePool=pool.filter(a=>a.species==='pine'&&a.score<=pool[0].score+Math.max(rules.variationBand,.5));
     const race=a=>{const weight=config.assets.find(x=>x.guid===a.guid).selectionWeight;return -Math.log(Math.max(Number.EPSILON,speciesHash(config.seed+':'+stem.id+':pine:'+a.guid)))/(weight>0?weight:1);};
      chosen=pinePool.reduce((best,a)=>race(a)<race(best)?a:best);
+   }else if(close.some(a=>a.label===chosen.label&&a.weight>0)){
+     // Opt-in shares within the drawn species, between its variants that fit: no weights,
+     // no change to the plain hash pick.
+     const same=close.filter(a=>a.label===chosen.label);
+     const race=a=>-Math.log(Math.max(Number.EPSILON,speciesHash(config.seed+':'+stem.id+':asset:'+a.guid)))/(a.weight>0?a.weight:1);
+     chosen=same.reduce((best,a)=>race(a)<race(best)?a:best);
    }
  }
  if(!chosen)return {stemId:stem.id,status:'unmatched',position:{x:stem.x,z:stem.z},reason:'No compatible '+kind+' '+form+' in palette',alternatives:[]};
@@ -64,6 +72,16 @@ export function matchTree(stem,config,override) {
    const asset=config.assets.find(a=>a.guid===chosen.guid);
    chosen.heightError=Math.abs(Math.log(asset.heightM*chosen.scale/stem.h));
    chosen.widthError=Math.abs(Math.log(asset.crownWidthM*chosen.scale/targetWidth));
+ }
+ // The look (material settings) is drawn on its own hash, so adding one never moves a stem to another shape.
+ let look;
+ if(!override?.guid){
+   const asset=config.assets.find(a=>a.guid===chosen.guid);
+   const looks=(config.species?.[speciesLabel(asset)]?.looks||[]).filter(l=>l.weight>0&&(!l.shapes||l.shapes.includes(asset.guid)));
+   if(looks.length){
+     const race=l=>-Math.log(Math.max(Number.EPSILON,speciesHash(config.seed+':'+stem.id+':look:'+l.id)))/l.weight;
+     look=looks.reduce((best,l)=>race(l)<race(best)||race(l)===race(best)&&l.id<best.id?l:best).id;
+   }
  }
  const reasons=[];
  if(!override?.guid){
@@ -78,6 +96,6 @@ export function matchTree(stem,config,override) {
  const rotation=override?.rotationY??hash(config.seed+':'+stem.id+':rotation')*360;
  if(!Number.isFinite(rotation))throw Error('Invalid rotation');
  return {stemId:stem.id,status:override?.guid?'authored':reasons.length?'review':'proposed',source:override?.guid?'override':'rules',
-   guid:chosen.guid,name:chosen.name,scale:chosen.scale,rotationY:rotation,position,reasons,
+   guid:chosen.guid,name:chosen.name,look,scale:chosen.scale,rotationY:rotation,position,reasons,
    measured:{heightM:stem.h,crownRadiusM:stem.r,kind:stem.k},alternatives:ranked.slice(0,3)};
 }

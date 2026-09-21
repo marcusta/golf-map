@@ -38,10 +38,8 @@ namespace GolfMap.Editor
         readonly Dictionary<string, int> plantedAssets = new Dictionary<string, int>();
         string previewError;
 
-        static string SpeciesLabel(GolfMapBiomeAsset a)
-        {
-            return !string.IsNullOrEmpty(a.species) ? a.species : a.form == "shrub" ? a.kind + " shrub" : a.kind;
-        }
+        // Counting key: shrub-form stems race apart from trees, so they are tallied apart too.
+        static string SpeciesLabel(GolfMapBiomeAsset a) { return a.form == "shrub" ? a.Label + " shrub" : a.Label; }
 
         void DrawPalette()
         {
@@ -173,63 +171,81 @@ namespace GolfMap.Editor
             }
         }
 
+        // Weights race within a stem's kind, so shares are shown per kind.
+        string KindOf(string species)
+        {
+            var asset = draft.assets.FirstOrDefault(x => x.Label == species);
+            return asset == null ? "unused" : asset.kind;
+        }
+
         void DrawSpeciesMix()
         {
-            EditorGUILayout.LabelField("Broadleaf species mix", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Species mix", EditorStyles.boldLabel);
             var weights = draft.rules.speciesWeights;
             if (weights == null)
             {
-                EditorGUILayout.HelpBox("This palette has no species weights: every broadleaf stem takes its best-fitting asset.", MessageType.None);
+                EditorGUILayout.HelpBox("This palette has no species weights: every stem takes its best-fitting asset.", MessageType.None);
                 if (GUILayout.Button("Add species weights"))
                 {
                     weights = draft.rules.speciesWeights = new GolfMapSpeciesWeights();
-                    foreach (var s in draft.assets.Where(a => a.kind == "broadleaf" && !string.IsNullOrEmpty(a.species)).Select(a => a.species).Distinct()) weights.Set(s, 1);
+                    foreach (var s in draft.assets.Where(x => x.kind == "broadleaf").Select(x => x.Label).Distinct()) weights.Set(s, 1);
                     GUI.changed = true;
                 }
                 return;
             }
-            double sum = weights.species.Sum(s => weights.Weight(s));
-            var weighted = new HashSet<string>(weights.species.Where(s => weights.Weight(s) > 0));
-            int previewPool = previewSpecies.Where(p => weighted.Contains(p.Key)).Sum(p => p.Value);
-            int plantedPool = plantedSpecies.Where(p => weighted.Contains(p.Key)).Sum(p => p.Value);
-
             using (new EditorGUILayout.HorizontalScope())
             {
                 GUILayout.Label("", GUILayout.Width(70));
                 GUILayout.Label("weight", EditorStyles.miniLabel);
-                GUILayout.Label(new GUIContent("target", "This weight's share of the total."), EditorStyles.miniLabel, GUILayout.Width(44));
+                GUILayout.Label(new GUIContent("target", "This weight's share within its kind."), EditorStyles.miniLabel, GUILayout.Width(44));
                 GUILayout.Label(new GUIContent("preview", "Share and count the draft produces on the loaded survey. Below target means the species' assets fit too few stems."), EditorStyles.miniLabel, GUILayout.Width(92));
                 GUILayout.Label(new GUIContent("checked", "Share at the last Load and check / Plant."), EditorStyles.miniLabel, GUILayout.Width(44));
                 GUILayout.Label("", GUILayout.Width(22));
             }
-            foreach (var species in weights.species.ToArray())
+            foreach (var kind in weights.species.GroupBy(s => KindOf(s)).OrderBy(g => g.Key, StringComparer.Ordinal))
             {
-                int enabledAssets = draft.assets.Count(a => a.enabled && a.species == species && a.kind == "broadleaf");
+                var weighted = new HashSet<string>(kind.Where(s => weights.Weight(s) > 0));
+                double sum = kind.Sum(s => weights.Weight(s));
+                int previewPool = previewSpecies.Where(p => weighted.Contains(p.Key)).Sum(p => p.Value);
+                int plantedPool = plantedSpecies.Where(p => weighted.Contains(p.Key)).Sum(p => p.Value);
+                EditorGUILayout.LabelField(kind.Key, EditorStyles.miniBoldLabel);
+                foreach (var species in kind.ToArray())
+                {
+                    int enabledAssets = draft.assets.Count(x => x.enabled && x.Label == species);
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        GUILayout.Label(new GUIContent(species, enabledAssets + " enabled asset(s)"), GUILayout.Width(70));
+                        double w = Math.Round(EditorGUILayout.Slider((float)weights.Weight(species), 0, 1), 3);
+                        if (w != weights.Weight(species)) weights.Set(species, w);
+                        GUILayout.Label(sum > 0 ? Percent(weights.Weight(species) / sum) : "-", GUILayout.Width(44));
+                        int count; previewSpecies.TryGetValue(species, out count);
+                        GUILayout.Label(previewStale || loaded == null ? "..." : Percent(previewPool > 0 ? (double)count / previewPool : 0) + "  " + count, GUILayout.Width(92));
+                        int planted; plantedSpecies.TryGetValue(species, out planted);
+                        GUILayout.Label(plantedPool > 0 ? Percent((double)planted / plantedPool) : "-", GUILayout.Width(44));
+                        if (GUILayout.Button(new GUIContent("x", "Stop weighting this species. Its assets stay in the palette; with no weight it never wins a stem another weighted species fits."), EditorStyles.miniButton, GUILayout.Width(22)))
+                        { weights.Remove(species); GUI.changed = true; }
+                    }
+                    if (enabledAssets == 0 && weights.Weight(species) > 0)
+                        EditorGUILayout.LabelField("   no enabled asset carries '" + species + "', so it never plants.", EditorStyles.miniLabel);
+                }
+            }
+            // Species in the palette that take no part in a race yet.
+            var unweighted = draft.assets.Where(x => x.enabled).Select(x => x.Label).Distinct().Where(l => !weights.species.Contains(l)).OrderBy(l => l, StringComparer.Ordinal).ToList();
+            if (unweighted.Count > 0)
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    GUILayout.Label(new GUIContent(species, enabledAssets + " enabled broadleaf asset(s)"), GUILayout.Width(70));
-                    double w = Math.Round(EditorGUILayout.Slider((float)weights.Weight(species), 0, 1), 3);
-                    if (w != weights.Weight(species)) weights.Set(species, w);
-                    GUILayout.Label(sum > 0 ? Percent(weights.Weight(species) / sum) : "-", GUILayout.Width(44));
-                    int count; previewSpecies.TryGetValue(species, out count);
-                    GUILayout.Label(previewStale || loaded == null ? "..." : Percent(previewPool > 0 ? (double)count / previewPool : 0) + "  " + count, GUILayout.Width(92));
-                    int planted; plantedSpecies.TryGetValue(species, out planted);
-                    GUILayout.Label(plantedPool > 0 ? Percent((double)planted / plantedPool) : "-", GUILayout.Width(44));
-                    bool used = draft.assets.Any(a => a.species == species);
-                    using (new EditorGUI.DisabledScope(used))
-                        if (GUILayout.Button(new GUIContent("x", used ? "Assets still use this species; set its weight to 0 to stop planting it." : "Remove from the palette"), EditorStyles.miniButton, GUILayout.Width(22)))
-                        { weights.Remove(species); GUI.changed = true; }
+                    GUILayout.Label(new GUIContent("Unweighted", "These take their best fit only. Weight one to give it a share of its kind; once any species of a kind is weighted, weight them all."), GUILayout.Width(70));
+                    foreach (var label in unweighted)
+                        if (GUILayout.Button("+ " + label, EditorStyles.miniButton)) { weights.Set(label, 0.1); GUI.changed = true; }
+                    GUILayout.FlexibleSpace();
                 }
-                if (enabledAssets == 0 && weights.Weight(species) > 0)
-                    EditorGUILayout.LabelField("   no enabled broadleaf asset carries '" + species + "', so it never plants.", EditorStyles.miniLabel);
-            }
             using (new EditorGUILayout.HorizontalScope())
             {
                 newSpecies = EditorGUILayout.TextField("New species", newSpecies).Trim().ToLowerInvariant();
                 using (new EditorGUI.DisabledScope(newSpecies.Length == 0 || weights.species.Contains(newSpecies)))
                     if (GUILayout.Button("Add", GUILayout.Width(60))) { weights.Set(newSpecies, 0.1); newSpecies = ""; GUI.changed = true; GUI.FocusControl(null); }
             }
-            EditorGUILayout.LabelField("Weights are relative. A species is only offered stems one of its assets fits within the species fit slack, so a tight fit can hold a share below its target. Conifers take their best fit; pines split by the asset weights below.", EditorStyles.wordWrappedMiniLabel);
+            EditorGUILayout.LabelField("Weights are relative within a kind. A species is only offered stems one of its assets fits within the species fit slack, so a tight fit can hold a share below its target. Assets without a species race under their kind. The number beside an asset shares its species' stems between the variants that fit (blank = 1).", EditorStyles.wordWrappedMiniLabel);
         }
 
         static string Percent(double share) { return (share * 100).ToString("0.#") + "%"; }
@@ -277,9 +293,7 @@ namespace GolfMap.Editor
                         if (GUILayout.Button(new GUIContent(a.name, a.path), EditorStyles.label, GUILayout.MinWidth(80)))
                             EditorGUIUtility.PingObject(AssetDatabase.LoadMainAssetAtPath(AssetDatabase.GUIDToAssetPath(a.guid)));
                         GUILayout.Label(new GUIContent(a.heightM.ToString("0.#") + " x " + a.crownWidthM.ToString("0.#"), "Natural height x crown width (m)"), EditorStyles.miniLabel, GUILayout.Width(62));
-                        if (a.species == "pine")
-                            a.selectionWeight = Math.Round(Math.Max(0, EditorGUILayout.DoubleField(new GUIContent("", "Relative share among the pines that fit a stem (0 counts as 1)."), a.selectionWeight, GUILayout.Width(40))), 3);
-                        else GUILayout.Label("", GUILayout.Width(40));
+                        a.selectionWeight = Math.Round(Math.Max(0, EditorGUILayout.DoubleField(new GUIContent("", "Share of this species' stems among its variants that fit (0 = unset, counts as 1)."), a.selectionWeight, GUILayout.Width(40))), 3);
                         int count; previewAssets.TryGetValue(a.guid, out count);
                         int planted; plantedAssets.TryGetValue(a.guid, out planted);
                         GUILayout.Label(new GUIContent(previewStale || loaded == null ? "" : count + (planted != count && biomeMatches.Count > 0 ? " (" + planted + ")" : ""), "Stems in the preview (at the last check)"), EditorStyles.miniLabel, GUILayout.Width(84));

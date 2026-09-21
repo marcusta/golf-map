@@ -11,6 +11,20 @@ namespace GolfMap.Editor
         public string format, seed;
         public GolfMapBiomeRules rules;
         public List<GolfMapBiomeAsset> assets;
+        public List<GolfMapBiomeSpecies> species=new List<GolfMapBiomeSpecies>();
+        public GolfMapBiomeSpecies Species(string label) { foreach(var s in species)if(s.name==label)return s;return null; }
+    }
+    // A species groups shapes (assets: sizes and LOD sets) under looks (material settings).
+    public class GolfMapBiomeSpecies
+    {
+        public string name;
+        public List<GolfMapBiomeLook> looks=new List<GolfMapBiomeLook>();
+    }
+    public class GolfMapBiomeLook
+    {
+        public string id;
+        public double weight;
+        public List<string> shapes;   // asset guids; null = every shape of the species
     }
     [Serializable] public class GolfMapBiomeRules
     {
@@ -35,6 +49,8 @@ namespace GolfMap.Editor
         public string guid, catalogueGuid, name, path, kind, form, species, assetType;
         public double heightM, crownWidthM, selectionWeight;
         public bool enabled=true;
+        // An asset without a species races, and is looked up, under its kind.
+        public string Label { get { return string.IsNullOrEmpty(species)?kind:species; } }
     }
     public class GolfMapBiomeMatch
     {
@@ -42,6 +58,7 @@ namespace GolfMap.Editor
         public double scale, heightError, widthError, score, rotation;
         public double widthScale;   // 0 = uniform (scale); set for hand-edited stems on mesh terrains
         public bool review;
+        public string look;         // id of the drawn look; null when the species defines none
     }
     // palette.json <-> GolfMapBiome. The document keeps everything the classes do not model
     // (catalogue, zones, originalPath ...), so Save only rewrites what was edited.
@@ -62,6 +79,17 @@ namespace GolfMap.Editor
             if(weights!=null){
                 biome.rules.speciesWeights=new GolfMapSpeciesWeights();
                 foreach(var key in weights.keys)biome.rules.speciesWeights.Set(key,weights.Number(key));
+            }
+            var speciesDoc=doc.Object("species");
+            if(speciesDoc!=null)foreach(var name in speciesDoc.keys){
+                var group=new GolfMapBiomeSpecies {name=name};
+                var looks=speciesDoc.Object(name)!=null?speciesDoc.Object(name).Array("looks"):null;
+                if(looks!=null)foreach(var entry in looks){
+                    var o=entry as GolfMapJsonObject;if(o==null||string.IsNullOrEmpty(o.String("id")))throw new Exception("Invalid look under species "+name+".");
+                    var shapes=o.Array("shapes");
+                    group.looks.Add(new GolfMapBiomeLook {id=o.String("id"),weight=o.Number("weight"),shapes=shapes==null?null:shapes.Select(g=>g as string).ToList()});
+                }
+                biome.species.Add(group);
             }
             foreach(var entry in assets){
                 var o=entry as GolfMapJsonObject;if(o==null)throw new Exception("Invalid biome asset entry.");
@@ -135,19 +163,32 @@ namespace GolfMap.Editor
             }).OrderBy(m=>m.score).ThenBy(m=>m.asset.guid,StringComparer.Ordinal).ToList();
             if(ranked.Count==0)return null;
             var pool=ranked;
-            if(kind==0&&r.speciesWeights!=null){
+            if(kind!=2&&r.speciesWeights!=null){
                 double slack=canopy&&r.woodlandSpeciesFitSlack>0?r.woodlandSpeciesFitSlack:r.speciesFitSlack;
                 var eligible=ranked.Where(m=>m.score<=ranked[0].score+slack).ToList();
-                var species=eligible.Select(m=>m.asset.species).Distinct().Where(s=>r.speciesWeights.Weight(s)>0).OrderBy(s=>s,StringComparer.Ordinal).ToList();
+                var species=eligible.Select(m=>m.asset.Label).Distinct().Where(s=>r.speciesWeights.Weight(s)>0).OrderBy(s=>s,StringComparer.Ordinal).ToList();
                 if(species.Count>0){
                     string chosen=species.OrderBy(s=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":species:"+s)))/r.speciesWeights.Weight(s)).First();
-                    pool=eligible.Where(m=>m.asset.species==chosen).ToList();
+                    pool=eligible.Where(m=>m.asset.Label==chosen).ToList();
                 }
             }
-            var result=pool.Where(m=>m.score<=pool[0].score+r.variationBand).OrderBy(m=>Hash(biome.seed+":"+id+":"+m.asset.guid)).First();
+            var close=pool.Where(m=>m.score<=pool[0].score+r.variationBand).ToList();
+            var result=close.OrderBy(m=>Hash(biome.seed+":"+id+":"+m.asset.guid)).First();
             if(result.asset.species=="pine"){
                 var pinePool=pool.Where(m=>m.asset.species=="pine"&&m.score<=pool[0].score+Math.Max(r.variationBand,0.5));
                 result=pinePool.OrderBy(m=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":pine:"+m.asset.guid)))/(m.asset.selectionWeight>0?m.asset.selectionWeight:1)).First();
+            }
+            else if(close.Any(m=>m.asset.Label==result.asset.Label&&m.asset.selectionWeight>0)){
+                // Opt-in shares within the drawn species, between its variants that fit: no weights,
+                // no change to the plain hash pick.
+                string label=result.asset.Label;
+                result=close.Where(m=>m.asset.Label==label).OrderBy(m=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":asset:"+m.asset.guid)))/(m.asset.selectionWeight>0?m.asset.selectionWeight:1)).First();
+            }
+            // The look is drawn on its own hash, so adding one never moves a stem to another shape.
+            var group=biome.Species(result.asset.Label);
+            if(group!=null){
+                var looks=group.looks.Where(l=>l.weight>0&&(l.shapes==null||l.shapes.Contains(result.asset.guid))).ToList();
+                if(looks.Count>0)result.look=looks.OrderBy(l=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":look:"+l.id)))/l.weight).ThenBy(l=>l.id,StringComparer.Ordinal).First().id;
             }
             if(canopy&&r.woodlandScaleBoost>1){
                 result.scale=Math.Min(r.maxScale,result.scale*r.woodlandScaleBoost);

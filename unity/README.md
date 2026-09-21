@@ -114,6 +114,16 @@ keys the tools do not model (`catalogue`, `zones`, `originalPath`) survive, unto
 keep their text, and the output matches the node scripts' `JSON.stringify(p,null,2)` - a
 one-weight edit is a one-line diff.
 
+Matching (`GolfMapBiomeMatcher`, mirrored by `tree-matching.mjs`; `biome-parity-fixtures.mjs
+<trees> <out.tsv> [palette]` + `BiomeParityCheck.cs` prove the two agree): an asset without a
+`species` races under its kind, so `speciesWeights` can carry `conifer`/`pine` as well as the
+broadleaf species - a kind with no weighted species is matched as before. `selectionWeight`
+on any asset shares its species' stems between the variants that fit (pine keeps its wider
+0.5 band). `species.<label>.looks[] = {id, weight, shapes?}` splits a species between looks
+(material settings, shared by all its shapes); the look is drawn on its own hash, so adding
+one never moves a stem to another shape. All three are opt-in: a palette without them
+matches exactly as it did.
+
 After **Load and check**, the tab previews the draft against the survey: target share, the
 share and count the matcher actually produces, the share at the last check, per-asset
 counts, and how many stems would change asset. Weights are preferences - a species only
