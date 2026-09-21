@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Reflection;
 
 namespace GolfMap.Editor
 {
@@ -18,10 +20,15 @@ namespace GolfMap.Editor
         public int woodlandMinNeighbours;
         public double woodlandSpeciesFitSlack;
     }
-    [Serializable] public class GolfMapSpeciesWeights
+    // Species -> share of the broadleaf species race. A map, not fields, so a palette can
+    // name any species; order is the file's.
+    public class GolfMapSpeciesWeights
     {
-        public double oak, elm, birch, poplar, broadleaf, maple;
-        public double Weight(string species) { return species=="oak"?oak:species=="elm"?elm:species=="birch"?birch:species=="poplar"?poplar:species=="broadleaf"?broadleaf:species=="maple"?maple:0; }
+        public readonly List<string> species=new List<string>();
+        readonly Dictionary<string,double> weights=new Dictionary<string,double>();
+        public double Weight(string name) { double w;return name!=null&&weights.TryGetValue(name,out w)?w:0; }
+        public void Set(string name,double weight) { if(!weights.ContainsKey(name))species.Add(name);weights[name]=weight; }
+        public void Remove(string name) { if(weights.Remove(name))species.Remove(name); }
     }
     [Serializable] public class GolfMapBiomeAsset
     {
@@ -35,6 +42,70 @@ namespace GolfMap.Editor
         public double scale, heightError, widthError, score, rotation;
         public double widthScale;   // 0 = uniform (scale); set for hand-edited stems on mesh terrains
         public bool review;
+    }
+    // palette.json <-> GolfMapBiome. The document keeps everything the classes do not model
+    // (catalogue, zones, originalPath ...), so Save only rewrites what was edited.
+    public static class GolfMapPalette
+    {
+        public const string Format="golfmap-tree-palette-v1";
+        static readonly FieldInfo[] RuleNumbers=typeof(GolfMapBiomeRules).GetFields().Where(f=>f.FieldType==typeof(double)).ToArray();
+
+        public static GolfMapBiome Load(string path,out GolfMapJsonObject doc)
+        {
+            doc=GolfMapJsonDoc.ParseObject(File.ReadAllText(path));
+            var rules=doc.Object("rules");var assets=doc.Array("assets");
+            if(doc.String("format")!=Format||rules==null||assets==null)throw new Exception("Invalid biome palette: "+path);
+            var biome=new GolfMapBiome {format=Format,seed=doc.String("seed"),rules=new GolfMapBiomeRules(),assets=new List<GolfMapBiomeAsset>()};
+            foreach(var f in RuleNumbers)f.SetValue(biome.rules,rules.Number(f.Name));
+            biome.rules.woodlandMinNeighbours=(int)rules.Number("woodlandMinNeighbours");
+            var weights=rules.Object("speciesWeights");
+            if(weights!=null){
+                biome.rules.speciesWeights=new GolfMapSpeciesWeights();
+                foreach(var key in weights.keys)biome.rules.speciesWeights.Set(key,weights.Number(key));
+            }
+            foreach(var entry in assets){
+                var o=entry as GolfMapJsonObject;if(o==null)throw new Exception("Invalid biome asset entry.");
+                biome.assets.Add(new GolfMapBiomeAsset {guid=o.String("guid"),catalogueGuid=o.String("catalogueGuid"),name=o.String("name"),path=o.String("path"),
+                    kind=o.String("kind"),form=o.String("form"),species=o.String("species"),assetType=o.String("assetType"),
+                    heightM=o.Number("heightM"),crownWidthM=o.Number("crownWidthM"),selectionWeight=o.Number("selectionWeight"),enabled=o.Bool("enabled",true)});
+            }
+            return biome;
+        }
+
+        public static GolfMapBiome Load(string path) { GolfMapJsonObject doc;return Load(path,out doc); }
+
+        public static void Save(string path,GolfMapBiome biome,GolfMapJsonObject doc) { File.WriteAllText(path,Text(biome,doc)); }
+
+        // The file Save would write: the document brought up to date with the biome.
+        public static string Text(GolfMapBiome biome,GolfMapJsonObject doc)
+        {
+            doc.SetString("seed",biome.seed);
+            var rules=doc.Object("rules");
+            foreach(var f in RuleNumbers){double v=(double)f.GetValue(biome.rules);if(rules.Has(f.Name)||v!=0)rules.SetNumber(f.Name,v);}
+            if(rules.Has("woodlandMinNeighbours")||biome.rules.woodlandMinNeighbours!=0)rules.SetNumber("woodlandMinNeighbours",biome.rules.woodlandMinNeighbours);
+            if(biome.rules.speciesWeights!=null){
+                var weights=rules.Object("speciesWeights");
+                if(weights==null){weights=new GolfMapJsonObject();rules["speciesWeights"]=weights;}
+                foreach(var key in weights.keys.ToArray())if(!biome.rules.speciesWeights.species.Contains(key))weights.Remove(key);
+                foreach(var name in biome.rules.speciesWeights.species)weights.SetNumber(name,biome.rules.speciesWeights.Weight(name));
+            }
+            var existing=doc.Array("assets").Cast<GolfMapJsonObject>().ToDictionary(o=>o.String("guid"));
+            var list=new List<object>();
+            foreach(var a in biome.assets){
+                GolfMapJsonObject o;
+                if(!existing.TryGetValue(a.guid,out o))o=new GolfMapJsonObject();
+                // Key order of a new entry follows the entries the node scripts write.
+                o.SetString("guid",a.guid);o.SetString("name",a.name);o.SetString("path",a.path);
+                o.SetNumber("heightM",a.heightM);o.SetNumber("crownWidthM",a.crownWidthM);
+                o.SetString("kind",a.kind);o.SetString("form",a.form);o.SetString("assetType",a.assetType);o.SetBool("enabled",a.enabled);
+                if(o.Has("species")||!string.IsNullOrEmpty(a.species))o.SetString("species",a.species);
+                if(o.Has("catalogueGuid")||!string.IsNullOrEmpty(a.catalogueGuid))o.SetString("catalogueGuid",a.catalogueGuid);
+                if(o.Has("selectionWeight")||a.selectionWeight>0)o.SetNumber("selectionWeight",a.selectionWeight);
+                list.Add(o);
+            }
+            doc["assets"]=list;
+            return GolfMapJsonDoc.Write(doc);
+        }
     }
     // Same uniform fit and species race as tree-matching.mjs. No Unity dependency.
     public static class GolfMapBiomeMatcher

@@ -48,6 +48,9 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
 
 ## Gotchas learned the hard way
 
+- **Never read or write `palette.json` with `JsonUtility`.** It drops keys it has no field for (`zones`,
+  `catalogue`, `originalPath`) and cannot hold the species map. Go through `GolfMapPalette.Load/Save`;
+  the node scripts and the Palette tab edit the same file, and saves must stay minimal diffs.
 - **No course names in code.** Paths, scene and terrain names come from the active `GolfMapCourse`
   (`GolfMapCourses.Require()` / `.For(component)`, `Folder`, `PalettePath`, `ExportFile`, `ReportPath`).
   Vreta is the test bed, not a constant; a new tool that needs a course file asks the course for it.

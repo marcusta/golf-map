@@ -70,6 +70,7 @@ namespace GolfMap.Editor
         internal GolfMapTrees Component { get { return component; } }
         internal UnityEditor.Editor inspector;     // the component's open Inspector, if any
         [SerializeField] bool showSetup = true;
+        [SerializeField] int tab;
         // Extension hooks (C# partial methods: no-ops unless a project-local
         // partial class implements them).
         partial void DrawStorageOptions();
@@ -172,12 +173,18 @@ namespace GolfMap.Editor
             Undo.RecordObject(component, "GolfMap Trees settings");
             EditorGUI.BeginChangeCheck();
 
-            showSetup = EditorGUILayout.Foldout(showSetup, "Setup", true);
-            if (showSetup) DrawSetup();
-            DrawActions();
-            if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
+            tab = GUILayout.Toolbar(tab, new[] { "Planting", "Palette" });
+            EditorGUILayout.Space();
+            if (tab == 1) DrawPalette();
+            else
+            {
+                showSetup = EditorGUILayout.Foldout(showSetup, "Setup", true);
+                if (showSetup) DrawSetup();
+                DrawActions();
+                if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
 
-            DrawTreeEditor();
+                DrawTreeEditor();
+            }
 
             if (EditorGUI.EndChangeCheck()) Dirty();
             so.ApplyModifiedProperties();
@@ -368,12 +375,35 @@ namespace GolfMap.Editor
             if(forceBillboards && mode!=Mode.PersistentStorage)throw new Exception("Use PersistentStorage for guaranteed billboard-only outer planting with this biome.");
             if(!ValidNumber(minScale)||!ValidNumber(maxScale)||minScale<=0||maxScale<minScale)throw new Exception("Invalid scale limits.");
         }
+        // Plantable tree-form stems with at least woodlandMinNeighbours others within woodlandRadiusM.
+        HashSet<GolfMapTree> WoodlandStems(GolfMapBiomeRules rules)
+        {
+            var result=new HashSet<GolfMapTree>();
+            double cell=rules.woodlandRadiusM;
+            if(!(cell>0&&rules.woodlandMinNeighbours>0))return result;
+            var grid=new Dictionary<string,List<GolfMapTree>>();
+            foreach(var stem in loaded.trees){
+                if(stem.h<=rules.shrubMaxHeightM||!InsidePlot(stem)||stem.h<minHeightM)continue;
+                string key=Math.Floor(stem.x/cell)+":"+Math.Floor(stem.z/cell);
+                if(!grid.ContainsKey(key))grid[key]=new List<GolfMapTree>();grid[key].Add(stem);
+            }
+            foreach(var bucketed in grid.Values)foreach(var t in bucketed){
+                int neighbours=0;
+                double gx=Math.Floor(t.x/cell),gz=Math.Floor(t.z/cell);
+                for(int dx=-1;dx<=1;dx++)for(int dz=-1;dz<=1;dz++){
+                    List<GolfMapTree> bucket;if(!grid.TryGetValue((gx+dx)+":"+(gz+dz),out bucket))continue;
+                    foreach(var other in bucket){double x=(double)other.x-t.x,z=(double)other.z-t.z;if(other!=t&&x*x+z*z<=cell*cell)neighbours++;}
+                }
+                if(neighbours>=rules.woodlandMinNeighbours)result.Add(t);
+            }
+            return result;
+        }
         string PrepareBiome()
         {
             biomeMatches.Clear();biomePrefabs.Clear();woodlandTrees.Clear();biome=null;
             if(!useBiome)return "";
-            biome=JsonUtility.FromJson<GolfMapBiome>(File.ReadAllText(BiomeFile).TrimStart('\uFEFF'));
-            if(biome==null||biome.format!="golfmap-tree-palette-v1"||biome.rules==null||biome.assets==null||biome.assets.Count==0)throw new Exception("Invalid biome palette.");
+            biome=GolfMapPalette.Load(BiomeFile);
+            if(biome.assets.Count==0)throw new Exception("Invalid biome palette.");
             var rules=biome.rules;
             if(!(rules.minScale>0&&rules.maxScale>=rules.minScale&&rules.variationBand>=0&&rules.speciesFitSlack>=0&&rules.maxHeightError>=0&&rules.maxWidthError>=0))throw new Exception("Invalid biome rules.");
             var renderIssues=new List<string>();var shaderIssues=new List<string>();
@@ -407,26 +437,12 @@ namespace GolfMap.Editor
             if(shaderIssues.Count>0)throw new Exception("Shader names GSPro's Vegetation Studio build cannot resolve a controller for. It has no DefaultShaderController fallback: one of these null-refs in VegetationItemModelInfo.SetShaderControllers and stops every tree in the package from loading, silently. Use a stock shader name (NatureManufacture Shaders/Trees/Tree {Bark,Leaves} {Metalic,Specular}, CTI/LOD {Bark,Leaves,Bark Array}, Nature/SpeedTree) and drive colour through the item's shader-controller settings instead:\n"+string.Join("\n",shaderIssues.ToArray()));
             minScale=(float)rules.minScale;maxScale=(float)rules.maxScale;scaleWidth=false;
             int matched=0,review=0,unmatched=0,woodlandCount=0;var ids=new HashSet<string>();
-            var grid=new Dictionary<string,List<GolfMapTree>>();
-            double cell=rules.woodlandRadiusM;
-            if(cell>0&&rules.woodlandMinNeighbours>0)foreach(var stem in loaded.trees){
-                if(stem.h<=rules.shrubMaxHeightM||!InsidePlot(stem)||stem.h<minHeightM)continue;
-                string key=Math.Floor(stem.x/cell)+":"+Math.Floor(stem.z/cell);
-                if(!grid.ContainsKey(key))grid[key]=new List<GolfMapTree>();grid[key].Add(stem);
-            }
+            foreach(var stem in WoodlandStems(rules))woodlandTrees.Add(stem);
             foreach(var t in loaded.trees){
                 if(!InsidePlot(t)||t.h<minHeightM)continue;
                 if(!ids.Add(t.id))throw new Exception("Duplicate stem ID/coordinate: "+t.id);
-                int neighbours=0;
-                if(grid.Count>0&&t.h>rules.shrubMaxHeightM){
-                    double gx=Math.Floor(t.x/cell),gz=Math.Floor(t.z/cell);
-                    for(int dx=-1;dx<=1;dx++)for(int dz=-1;dz<=1;dz++){
-                        List<GolfMapTree> bucket;if(!grid.TryGetValue((gx+dx)+":"+(gz+dz),out bucket))continue;
-                        foreach(var other in bucket){double x=(double)other.x-t.x,z=(double)other.z-t.z;if(other!=t&&x*x+z*z<=cell*cell)neighbours++;}
-                    }
-                }
-                bool woodland=grid.Count>0&&neighbours>=rules.woodlandMinNeighbours;
-                if(woodland){woodlandCount++;woodlandTrees.Add(t);}
+                bool woodland=woodlandTrees.Contains(t);
+                if(woodland)woodlandCount++;
                 var m=MatchTree(t,woodland);
                 if(m==null){unmatched++;continue;}if(m.review)review++;
                 if(!m.review||includeReviewMatches){biomeMatches.Add(t,m);matched++;}

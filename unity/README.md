@@ -102,6 +102,24 @@ explicitly. A project with a single `Assets/GolfMap/<Course>/palette.json` and n
 asset is adopted on first use (Vreta was). **GolfMap > Course > New course for this scene**
 creates one by hand. Reports go to `GolfMapSpelunk/<Course>_*.txt`.
 
+### Palette tab
+
+The `GolfMap Trees` Inspector has two tabs. **Palette** (`GolfMapTreePalette.cs`) edits the
+course's `palette.json` in place: the broadleaf species weights (any species name; add and
+remove), every matching rule, the seed, and each asset's enabled flag and pine weight.
+The file stays the source of truth and both sides may edit it: the tab reloads when the file
+changes on disk, and asks first when it holds unsaved edits. `GolfMapPalette`
+(`GolfMapBiome.cs`) reads and writes through a lossless document (`GolfMapJsonDoc.cs`), so
+keys the tools do not model (`catalogue`, `zones`, `originalPath`) survive, untouched numbers
+keep their text, and the output matches the node scripts' `JSON.stringify(p,null,2)` - a
+one-weight edit is a one-line diff.
+
+After **Load and check**, the tab previews the draft against the survey: target share, the
+share and count the matcher actually produces, the share at the last check, per-asset
+counts, and how many stems would change asset. Weights are preferences - a species only
+wins stems one of its assets fits within `speciesFitSlack` - so the preview, not the
+weight, says what gets planted. Saving changes no planted tree; **Plant** applies it.
+
 `GolfMap > Configure course planter` configures the active course's
 inner import without planting. Use **Load and check**, then **Plant** manually.
 An empty **Biome JSON** means the course's palette, `Assets/GolfMap/<Course>/palette.json`
