@@ -10,13 +10,33 @@ export interface Site {
     updatedAt: string;
 }
 
+export interface SiteOverview {
+    courses: SiteCourse[];
+    mapBounds: null | SiteMapBounds;
+    mapBuiltAt: null | string;
+    id: string;
+    name: string;
+    notes: null | string;
+    version: number;
+    createdAt: string;
+    updatedAt: string;
+}
+
 export interface SiteCourse {
     id: string;
     name: string;
 }
 
+export interface SiteMapBounds {
+    west: number;
+    south: number;
+    east: number;
+    north: number;
+}
+
 export interface SitesApi {
     list(): Promise<Site[]>;
+    overview(): Promise<SiteOverview[]>;
     get(input: { id: string }): Promise<Site>;
     courses(input: { siteId: string }): Promise<SiteCourse[]>;
     create(input: { notes?: string; name: string }): Promise<Site>;
@@ -28,6 +48,9 @@ export function createSitesClient(baseUrl: string): SitesApi {
     return {
         async list() {
             return apiFetch({ method: 'GET', url: `${baseUrl}/sites` });
+        },
+        async overview() {
+            return apiFetch({ method: 'GET', url: `${baseUrl}/sites/overview` });
         },
         async get(input) {
             const params = new URLSearchParams();

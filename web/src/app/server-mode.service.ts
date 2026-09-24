@@ -24,10 +24,12 @@ import { EDITOR_TOOLS } from '../editor/tools/index';
 export type ServerMode = 'builder' | 'serve';
 
 /**
- * Routes that only exist on a builder box. Both belong to the map-build
- * wizard, which drives the pipeline end to end (lidar fetch → DEM → tiles).
+ * Routes that only exist on a builder box. /new and /set-area belong to the
+ * map-build wizard, which drives the pipeline end to end (lidar fetch → DEM →
+ * tiles). /sites is course authoring: a VPS receives its sites and courses
+ * through publish, so editing them there would diverge from the builder.
  */
-export const BUILDER_ROUTES = ['/new', '/set-area'] as const;
+export const BUILDER_ROUTES = ['/new', '/set-area', '/sites'] as const;
 
 export function isBuilderRoute(route: string): boolean {
     return BUILDER_ROUTES.some((r) => route === r || route.startsWith(`${r}/`));

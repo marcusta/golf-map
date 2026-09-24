@@ -43,6 +43,8 @@ export class CoursesService {
     readonly page = new Signal(0);
     readonly pageSize = 50;
     private loaded = false;
+    /** SitesService.revision at the last load; a newer value means names or sites changed. */
+    private sitesRevision = 0;
 
     // ── list controls (client-side; persisted) ──────────────────────────
     readonly query = new Signal('');
@@ -107,6 +109,13 @@ export class CoursesService {
             this.store.set(data.items, data.total);
             this.loaded = true;
         }
+    }
+
+    /** Load, or reload when site setup has written since the last load. */
+    async loadAt(sitesRevision: number): Promise<void> {
+        if (sitesRevision !== this.sitesRevision) this.loaded = false;
+        this.sitesRevision = sitesRevision;
+        await this.load();
     }
 
     async nextPage(): Promise<void> {

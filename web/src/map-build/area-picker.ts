@@ -96,6 +96,8 @@ export class AreaPicker {
     private readonly map: maplibregl.Map;
     private anchor: maplibregl.LngLat | null = null; // fixed corner during a drag
     private dragging = false;
+    private reference: Bbox | null = null;
+    private readonly resizeObserver: ResizeObserver;
     private modeButtons: Record<PickerMode, HTMLButtonElement> | null = null;
     private searchSeq = 0; // guards against out-of-order geocoder responses
 
@@ -111,6 +113,10 @@ export class AreaPicker {
             zoom: 4,
             attributionControl: { compact: true },
         });
+        // The container can get its size after construction (direct load of the
+        // route, before the component styles apply). MapLibre only tracks window resizes.
+        this.resizeObserver = new ResizeObserver(() => this.map.resize());
+        this.resizeObserver.observe(container);
         this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
         // Mode toggle first so it sits ABOVE the search box — the search results
         // dropdown then opens over the map, never over the toggle.
@@ -128,6 +134,11 @@ export class AreaPicker {
                 paint: { 'circle-radius': 6, 'circle-color': OVERLAY_TEXT, 'circle-stroke-color': CAT.wheat, 'circle-stroke-width': 2 },
             });
 
+            // Outline of an existing map, shown for reference only (never the selection).
+            this.map.addSource('reference', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+            this.map.addLayer({ id: 'reference-line', type: 'line', source: 'reference', paint: { 'line-color': OVERLAY_TEXT, 'line-width': 2, 'line-dasharray': [3, 2] } });
+            this.renderReference();
+
             if (initial) {
                 this.render(initial);
                 this.map.fitBounds([initial.west, initial.south, initial.east, initial.north], { padding: 48, duration: 0 });
@@ -139,6 +150,24 @@ export class AreaPicker {
         this.map.on('mouseup', () => this.onUp());
 
         this.applyMode('navigate');
+    }
+
+    /**
+     * Outline an existing map's area and frame it, or clear the outline with
+     * null. The selection (`bbox`) is untouched.
+     */
+    showReference(bounds: Bbox | null): void {
+        this.reference = bounds;
+        this.renderReference();
+        if (bounds) this.map.fitBounds([bounds.west, bounds.south, bounds.east, bounds.north], { padding: 48, duration: 600 });
+    }
+
+    /** No-op until the style has loaded; the load handler calls it again. */
+    private renderReference(): void {
+        (this.map.getSource('reference') as GeoJSONSource | undefined)?.setData({
+            type: 'FeatureCollection',
+            features: this.reference ? [boxFeature(this.reference)] : [],
+        });
     }
 
     // --- Modes ---
@@ -353,6 +382,7 @@ export class AreaPicker {
     }
 
     destroy(): void {
+        this.resizeObserver.disconnect();
         this.map.remove();
     }
 }

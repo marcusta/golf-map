@@ -4,7 +4,7 @@ import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { SitesService } from './sites.service';
 import { AssetsService } from './assets.service';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
-import { NotFoundError } from '@basics/core/server/auth';
+import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 
 async function setup() {
     const ctx = await createTestDb(seedCourse);
@@ -53,17 +53,57 @@ test('listCoursesForSite returns the site’s courses', async () => {
     expect(courses.map((c) => c.id)).toEqual([TEST_COURSE_ID]);
 });
 
-test('remove detaches referencing courses + assets, then deletes', async () => {
+test('remove refuses while courses are attached', async () => {
     const { ctx, svc, db } = await setup();
-    const assets = new AssetsService(db, '/tmp/x');
     const site = await svc.create({ name: 'Landeryd' });
     await db.updateTable('courses').where('id', '=', TEST_COURSE_ID).set({ site_id: site.id }).execute();
+
+    await expect(svc.remove(site.id, 1)).rejects.toBeInstanceOf(ConflictError);
+
+    expect((await ctx.coursesService.get(TEST_COURSE_ID)).siteId).toBe(site.id);
+    expect((await svc.get(site.id)).name).toBe('Landeryd');
+});
+
+test('remove detaches referencing assets, then deletes', async () => {
+    const { svc, db } = await setup();
+    const assets = new AssetsService(db, '/tmp/x');
+    const site = await svc.create({ name: 'Landeryd' });
     await assets.register({ siteId: site.id, courseId: TEST_COURSE_ID, kind: 'dem_cog', filename: 'd.tif' });
 
     await svc.remove(site.id, 1);
 
-    expect((await ctx.coursesService.get(TEST_COURSE_ID)).siteId).toBeNull();
     const orphaned = await db.selectFrom('course_assets').select(['site_id']).execute();
     expect(orphaned.every((a) => a.site_id === null)).toBe(true);
     await expect(svc.get(site.id)).rejects.toBeInstanceOf(NotFoundError);
+});
+
+test('overview lists each site with its courses and last successful build area', async () => {
+    const { svc, db } = await setup();
+    const shared = await svc.create({ name: 'Ekerum Resort' });
+    const empty = await svc.create({ name: 'Vesterby' });
+    await db.updateTable('courses').where('id', '=', TEST_COURSE_ID).set({ site_id: shared.id }).execute();
+
+    const job = (id: string, status: string, kind: string, west: number, at: string) => ({
+        id, course_id: TEST_COURSE_ID, site_id: shared.id, status, kind, step: null, log: '', error: null,
+        bbox_json: JSON.stringify({ west, south: 56.77, east: 16.58, north: 56.79 }), updated_at: at,
+    });
+    await db.insertInto('map_build_jobs').values([
+        job('old', 'succeeded', 'build', 16.50, '2026-09-01 10:00:00'),
+        job('new', 'succeeded', 'build', 16.55, '2026-09-18 15:47:39'),
+        job('failed', 'failed', 'build', 16.60, '2026-09-19 08:00:00'),
+        job('trees', 'succeeded', 'trees', 16.70, '2026-09-19 09:00:00'),
+    ]).execute();
+
+    const overview = await svc.overview();
+    expect(overview.map((s) => s.name)).toEqual(['Ekerum Resort', 'Vesterby']);
+
+    const [ekerum, vesterby] = overview;
+    expect(ekerum.courses.map((c) => c.id)).toEqual([TEST_COURSE_ID]);
+    expect(ekerum.mapBounds).toEqual({ west: 16.55, south: 56.77, east: 16.58, north: 56.79 });
+    expect(ekerum.mapBuiltAt).toBe('2026-09-18 15:47:39');
+
+    expect(vesterby.id).toBe(empty.id);
+    expect(vesterby.courses).toEqual([]);
+    expect(vesterby.mapBounds).toBeNull();
+    expect(vesterby.mapBuiltAt).toBeNull();
 });

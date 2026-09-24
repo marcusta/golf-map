@@ -30,6 +30,10 @@ bun run import          # import v1 export into app.sqlite
 - Tile/asset paths: `assets.service.ts` `resolveTilePath` → `data/tiles/{courseId}/{layer}/{z}/{x}/{y}.<ext>` (`ortho`→jpg, `terrain`→png). Tile routes unauthenticated.
 - DBs (WAL): `app.sqlite`, `sessions.sqlite`, `obs.sqlite` (observability bulkhead) — all in `../data/`.
 
+## Sites
+
+A site owns the map; courses link to it through `courses.site_id` and several courses can share one site. `GET /api/sites/overview` returns every site with its courses and the bbox and time of its last succeeded `build` job (`SitesService.overview`, used by the web `/sites` page and the new-course wizard). `SitesService.remove` throws `ConflictError` (409) while any course is attached: detach or move the courses first. The build API is still addressed by course. `MapBuildService.resolveSiteId` creates a site named after the course only when the course has none, so the wizard creates the site first and passes `siteId` to `courses.create`.
+
 ## Generated features (pipeline bulk replace)
 
 Generators (today: the lidar canopy detector, source `lidar-canopy`) replace all of their features for a course in one call. Hand-drawn features have `source = NULL` and are never touched: an empty or blank source is rejected before anything is read.

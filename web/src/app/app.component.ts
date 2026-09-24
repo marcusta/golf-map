@@ -13,6 +13,7 @@ import { PlannerComponent } from '../planner/planner.component';
 import { PlayerSettingsComponent } from '../player/player-settings.component';
 import { NewCourseWizardComponent } from '../map-build/new-course-wizard.component';
 import { SetMapAreaComponent } from '../map-build/set-map-area.component';
+import { SitesComponent } from '../sites/sites.component';
 import { ConfirmDialogComponent } from './confirm-dialog.component';
 import { ServerModeService, type ServerMode } from './server-mode.service';
 import { icon } from '../ui/icons';
@@ -34,8 +35,8 @@ const tpl = template(`
 /**
  * Route → component map for the shell, by server mode.
  *
- * The map-build wizard routes (/new, /set-area) drive the pipeline and only
- * exist on a builder box; in serve mode they are not mounted at all, so a
+ * The map-build wizard routes (/new, /set-area) drive the pipeline, and /sites
+ * is course authoring. They only exist on a builder box; in serve mode they are not mounted at all, so a
  * direct hit falls through to $swap's default (the course list) exactly like
  * any other unknown route. guardRoute rewrites the URL alongside it — this
  * keeps the wizard components from ever being constructed.
@@ -51,6 +52,7 @@ export function routeComponents(mode: ServerMode): Record<string, new () => Comp
     if (mode === 'builder') {
         routes['/new'] = NewCourseWizardComponent;
         routes['/set-area'] = SetMapAreaComponent;
+        routes['/sites'] = SitesComponent;
     }
     return routes;
 }

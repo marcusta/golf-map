@@ -37,6 +37,7 @@ export function createSitesApi(svc: SitesService) {
     const mw = [requireAuth()];
     return {
         list:    { method: 'GET'  as const, path: '/sites',         fn: () => svc.list(),                                                                 schema: ListSitesInput,   middleware: mw },
+        overview: { method: 'GET' as const, path: '/sites/overview', fn: () => svc.overview(),                                                            schema: ListSitesInput,   middleware: mw },
         get:     { method: 'GET'  as const, path: '/sites/get',     fn: (input: Static<typeof GetSiteInput>)     => svc.get(input.id),                    schema: GetSiteInput,     middleware: mw },
         courses: { method: 'GET'  as const, path: '/sites/courses', fn: (input: Static<typeof SiteCoursesInput>) => svc.listCoursesForSite(input.siteId), schema: SiteCoursesInput, middleware: mw },
         create:  { method: 'POST' as const, path: '/sites/create',  fn: (input: Static<typeof CreateSiteInput>)  => svc.create(input),                     schema: CreateSiteInput,  middleware: mw },
