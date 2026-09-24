@@ -11,8 +11,9 @@ pull endpoints, builder pull CLI, pose refinement, `unity-photos-v1` export), `w
 
 The GSPro course is built in Unity on the Windows machine. Claude on that machine drives
 Unity through a Unity MCP server the user built, which exposes the Unity editor to
-Claude. To make the Unity scene look like the real course, Claude needs photos of the real course taken from known positions, and a Unity camera
-placed at each of those positions.
+Claude. To make the Unity scene look like the real course, Claude needs photos of the
+real course taken from known positions, and a Unity camera placed at each of those
+positions.
 
 The flow:
 
@@ -124,6 +125,17 @@ test). It records:
 | `deviceModel`, `lens` | device identifier, `wide` |
 | `tags`, `note` | user input |
 
+Angle conventions:
+
+- `yawDeg` is the azimuth of the camera's optical axis, clockwise from true north, in
+  [0, 360).
+- `pitchDeg` is the optical axis's angle above the horizontal, positive up.
+- `rollDeg` is the angle from world up, projected into the image plane, to the image's up
+  axis. It is positive clockwise as seen looking along the optical axis.
+- Image axes are those of the stored pixels after EXIF orientation is applied. `width`,
+  `height`, `hfovDeg` and `vfovDeg` refer to that same frame, so a portrait photo has
+  `width < height` and `hfovDeg < vfovDeg`.
+
 The photo is HEIC from `AVCapturePhotoOutput`, 12 MP, about 3 MB.
 
 ### 4.3 Local storage and upload
@@ -135,9 +147,11 @@ The server-side table is `site_photos` (section 5.1).
 
 Upload uses a background `URLSession`, so it continues when the app is suspended:
 
-1. `photos.create` (descriptor API) with the metadata.
-2. `PUT /api/photos/<id>/file` with the HEIC as the raw body and its SHA-256 in a header.
-3. On success the row becomes `synced`. The app deletes the local HEIC 7 days later and
+1. `POST /api/photos/create` (descriptor API) with the metadata.
+2. `PUT /api/photos/file/<id>?kind=original` with the HEIC as the raw body.
+3. `PUT /api/photos/file/<id>?kind=preview` with a 2048 px JPEG (long edge, quality
+   0.85) that the app encodes from the HEIC.
+4. On success the row becomes `synced`. The app deletes the local HEIC 7 days later and
    keeps a 512 px thumbnail for the in-app list.
 
 A repeated `create` or `PUT` with the same id and hash returns success, so retries are
@@ -156,22 +170,34 @@ Migration `016_site_photos` adds `site_photos`, present in both modes:
 - `refinedYawDeg`, `refinedPitchDeg`, `refinedRollDeg`, `refineMethod`
   (`skyline` or `manual`), `refineResidualDeg`, `refinedAt` (builder side)
 
-Files live at `data/photos/<siteId>/<id>.heic`. The server writes a 2048 px JPEG next to
-each original for the web builder and the Unity export, since browsers and Unity do not
-read HEIC.
+Files live at `data/photos/<siteId>/<id>.heic` and `<id>.jpg`. The phone makes the JPEG
+preview, because browsers and Unity do not read HEIC and the prebuilt image libraries for
+Bun on Linux do not decode HEVC. The row records `originalSha256`, `originalBytes`,
+`previewSha256`, `previewBytes`, and when each file arrived.
 
 ### 5.2 Routes
 
 Phone routes, cookie session, both modes:
 
-- `photos.create`, `photos.list`, `photos.update` (tags, note, hole), `photos.delete`
-- `PUT /api/photos/:id/file`
+- `POST /api/photos/create` with the section 4.2 fields. Returns the row. A repeat with
+  the same `id` returns the stored row unchanged.
+- `GET /api/photos/list?siteId=` returns rows for a site, newest first.
+- `POST /api/photos/update` with `id`, `version` and any of `tags`, `note`, `hole`.
+- `POST /api/photos/remove` with `id`, `version`. Deletes the row and both files.
+- `PUT /api/photos/file/:id?kind=original|preview`, raw body, header
+  `X-Content-SHA256: <hex>`. The server hashes the body and returns 400 on a mismatch.
+  A repeat with the same hash returns 200. A different hash for a kind that already has
+  a file returns 409.
+
+`site_photos` has no foreign key with a cascade to `sites`. Publish ingest must never
+delete photos, and its guard against deleting content referenced by user data
+(`ingest.service.ts`) includes `site_photos`.
 
 Builder pull routes, `PUBLISH_TOKEN` bearer, serve mode only, next to `ingest.routes.ts`:
 
 - `GET /api/ingest/photos?since=<cursor>` returns metadata for photos uploaded after the
   cursor
-- `GET /api/ingest/photos/:id/file` streams the original
+- `GET /api/ingest/photos/file/:id?kind=original|preview` streams a file
 - `POST /api/ingest/photos/ack` with ids sets `pulledAt`
 
 `start:vps` sets `BODY_LIMIT` to 256 MB, so a 3 MB photo fits. The file route still
@@ -182,8 +208,8 @@ streams the body to disk, like the ingest route, and caps it at 20 MB.
 `bun run photos-pull` on the builder:
 
 1. Calls the list route with the last cursor, stored in `data/photos/pull-state.json`.
-2. Downloads each original, checks the hash, inserts or updates the row, writes the
-   JPEG.
+2. Downloads the original and the preview, checks both hashes, inserts or updates the
+   row.
 3. Sends the ack, then saves the cursor.
 
 The builder server runs the same pull every `PHOTOS_PULL_INTERVAL_MIN` minutes when that
