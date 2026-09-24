@@ -1,6 +1,6 @@
 # Plan: reference photos from the course for Unity look matching
 
-**Status:** RP2 server side and RP3 built 2026-09-24. The pull cursor is the decimal `upload_seq` (see §5.2).
+**Status:** RP1, RP2 and RP3 built 2026-09-24, not yet verified on a device. The pull cursor is the decimal `upload_seq` (see §5.2).
 **Date:** 2026-09-24
 **Scope:** `ios` (capture mode, offline queue, upload), `server` (photo store on the VPS,
 pull endpoints, builder pull CLI, pose refinement, `unity-photos-v1` export), `web`
@@ -145,7 +145,11 @@ Photos use the local-first pattern of rounds (`Store/RoundStore.swift`). Capture
 HEIC under `Application Support/photos/<id>.heic`. Capture never waits for the network.
 The server-side table is `site_photos` (section 5.1).
 
-Upload uses a background `URLSession`, so it continues when the app is suspended:
+Upload runs through `GolfAPIClient` in the foreground, inside a UIKit background task that
+gives a running upload about 30 s after the app leaves the foreground. A background
+`URLSession` was not used: the client owns the cookie-session relogin, and URLProtocol
+stubs do not run in background sessions. The queue flushes on capture, when the app
+becomes active and from the photo list:
 
 1. `POST /api/photos/create` (descriptor API) with the metadata.
 2. `PUT /api/photos/file/<id>?kind=original` with the HEIC as the raw body.
@@ -156,6 +160,9 @@ Upload uses a background `URLSession`, so it continues when the app is suspended
 
 A repeated `create` or `PUT` with the same id and hash returns success, so retries are
 safe.
+
+A 400 on create, 404 on create (unknown site), 409 and 413 are hard failures shown in the
+photo list with a retry button. Other errors back off from 30 s, doubling to a 1 h cap.
 
 ## 5. Server
 

@@ -29,6 +29,9 @@ struct GolfMapApp: App {
                     Task { await roundSync.flush() }
                     Task { await planSync.flush() }
                     Task { await clubSync.flush() }
+                    if appEnvironment.gates.referencePhotos {
+                        PhotoUploadTrigger.flush(appEnvironment.photoSync)
+                    }
                 }
         }
     }

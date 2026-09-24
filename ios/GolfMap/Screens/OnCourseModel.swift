@@ -26,6 +26,8 @@ final class OnCourseModel {
     }
 
     let courseId: String
+    /// The site whose map this course uses (`CourseRecord.mapKey`).
+    let siteId: String
     let courseName: String
     /// Tile-manifest coverage bounds — the plausibility fence for the live GPS
     /// fix (`isFarFromCourse`).
@@ -500,6 +502,7 @@ final class OnCourseModel {
         now: @escaping () -> Date = { Date() }
     ) {
         self.courseId = furniture.course.id
+        self.siteId = furniture.course.mapKey
         self.courseName = furniture.course.name
         self.courseBounds = MapCoordinateBounds(
             west: furniture.manifest.west,

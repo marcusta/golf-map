@@ -4,5 +4,6 @@
     "planEditing": { "enabled": false, "tier": "T2" },
     "planOptionsTree": { "enabled": false, "tier": "T3" },
     "decideMode": { "enabled": false, "tier": "T3" },
-    "puttRead": { "enabled": false, "tier": "T3" }
+    "puttRead": { "enabled": false, "tier": "T3" },
+    "referencePhotos": { "enabled": true, "tier": "T1" }
 }

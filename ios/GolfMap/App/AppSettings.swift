@@ -28,6 +28,12 @@ final class AppSettings {
     /// Same key `AppEnvironment.resolvedServerOrigin()` reads at launch —
     /// deliberately shared so this is the one place the override is written.
     private static let serverOriginKey = "serverOrigin"
+    private static let photoEyeHeightKey = "settings.photoEyeHeightM"
+
+    /// Camera height above the ground recorded with each reference photo
+    /// (docs/feature-reference-photos.md §4.2, `eyeHeightM`).
+    static let defaultPhotoEyeHeightM = 1.5
+    static let photoEyeHeightRangeM = 0.5...2.5
 
     /// When true, the app hides slope-adjusted advice (plays-like + live green
     /// reads) — distances only. Persisted; default OFF.
@@ -75,6 +81,15 @@ final class AppSettings {
         }
     }
 
+    /// Eye height (m) stored with reference photos, clamped to
+    /// `photoEyeHeightRangeM`. Persisted; default 1.5.
+    var photoEyeHeightM: Double {
+        didSet {
+            guard photoEyeHeightM != oldValue else { return }
+            defaults.set(photoEyeHeightM, forKey: Self.photoEyeHeightKey)
+        }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         // Absent key → false (default OFF).
@@ -86,6 +101,10 @@ final class AppSettings {
             .map { min(PuttReadModel.stimpMaxFt, max(PuttReadModel.stimpMinFt, $0)) }
             ?? PuttReadModel.defaultStimpFt
         self.serverOrigin = defaults.string(forKey: Self.serverOriginKey)
+        let range = Self.photoEyeHeightRangeM
+        self.photoEyeHeightM = (defaults.object(forKey: Self.photoEyeHeightKey) as? Double)
+            .map { min(range.upperBound, max(range.lowerBound, $0)) }
+            ?? Self.defaultPhotoEyeHeightM
     }
 
     /// Validates + normalizes a user-entered server origin and persists it

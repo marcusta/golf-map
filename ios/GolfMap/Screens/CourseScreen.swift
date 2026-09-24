@@ -640,6 +640,8 @@ private struct OnCourseContentView: View {
     @State private var showPinEntry = false
     /// One contextual laser entry (R7): pin / trilateration / residual refresh.
     @State private var showLaserEntry = false
+    /// Reference-photo capture (docs/feature-reference-photos.md §4.1).
+    @State private var showPhotos = false
     /// Trilateration shots survive closing the one-shot laser sheet so the
     /// player can browse-pick the next feature between observations.
     @State private var laserSession = CalibrationSession()
@@ -1240,6 +1242,14 @@ private struct OnCourseContentView: View {
                 model: profile,
                 title: profileTitle,
                 onClose: { showProfile = false }
+            )
+        }
+        .fullScreenCover(isPresented: $showPhotos) {
+            PhotoCaptureScreen(
+                siteId: model.siteId,
+                courseId: model.courseId,
+                holeLines: model.holes.map(NearestHole.line(for:)),
+                onClose: { showPhotos = false }
             )
         }
         .sheet(isPresented: $showScorecard) {
@@ -2033,6 +2043,9 @@ private struct OnCourseContentView: View {
                     showCalibration = true
                 }
                 calibrateButton
+                if env.gates.referencePhotos {
+                    photoButton
+                }
                 captureButton
                 scorecardButton
                 greenViewButton
@@ -2065,6 +2078,22 @@ private struct OnCourseContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Calibrate GPS")
+    }
+
+    /// Opens reference-photo capture for this course's site.
+    private var photoButton: some View {
+        Button {
+            showPhotos = true
+        } label: {
+            Image(systemName: "camera")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.primary)
+                .frame(width: 44, height: 44)
+                .mapControl()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Reference photo")
+        .accessibilityIdentifier("referencePhotoButton")
     }
 
     /// Toggles shot capture (records a stroke at the crosshair — available

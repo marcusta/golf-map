@@ -787,6 +787,42 @@ public actor GolfAPIClient {
         }
     }
 
+    // MARK: - Reference photos (docs/feature-reference-photos.md §5.2)
+
+    /// `POST /api/photos/create`. Any 2xx counts as stored; a repeat with the
+    /// same id returns the stored row, so a retry after a lost response is
+    /// safe. The response body is not decoded: the phone keeps its own row.
+    func createPhoto(_ body: CreatePhotoBody) async throws {
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(body)
+        } catch {
+            throw APIError.decoding("Failed to encode photos/create body: \(error)")
+        }
+        _ = try await requestData(path: "photos/create", method: "POST", body: data)
+    }
+
+    /// `PUT /api/photos/file/<id>?kind=original|preview` with the file as the
+    /// raw body and its SHA-256 (lowercase hex) in `X-Content-SHA256`.
+    /// Throws `APIError.http(status: 409, …)` when the server already holds a
+    /// different file for that kind.
+    func uploadPhotoFile(
+        id: String,
+        kind: String,
+        data: Data,
+        contentType: String,
+        sha256Hex: String
+    ) async throws {
+        _ = try await requestData(
+            path: "photos/file/\(id)",
+            method: "PUT",
+            query: ["kind": kind],
+            body: data,
+            contentType: contentType,
+            headers: ["X-Content-SHA256": sha256Hex]
+        )
+    }
+
     // MARK: - Request core
 
     private func makeURL(path: String, query: [String: String]) -> URL {
@@ -807,6 +843,8 @@ public actor GolfAPIClient {
         method: String = "GET",
         query: [String: String] = [:],
         body: Data? = nil,
+        contentType: String = "application/json",
+        headers: [String: String] = [:],
         allowRelogin: Bool = true
     ) async throws -> (Data, Int) {
         var attemptedRelogin = false
@@ -816,9 +854,12 @@ public actor GolfAPIClient {
             req.httpMethod = method
             if let body {
                 req.httpBody = body
-                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.setValue(contentType, forHTTPHeaderField: "Content-Type")
             }
             req.setValue("application/json", forHTTPHeaderField: "Accept")
+            for (name, value) in headers {
+                req.setValue(value, forHTTPHeaderField: name)
+            }
 
             let data: Data
             let response: URLResponse

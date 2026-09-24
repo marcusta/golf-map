@@ -18,7 +18,7 @@ function storage(values: Record<string, string>): FeatureGateStorage {
     };
 }
 
-test('generated gate defaults are complete and disabled', () => {
+test('generated gate defaults are complete; only referencePhotos is on', () => {
     expect(FEATURE_GATE_KEYS).toEqual([
         'pinEntry',
         'laserCalibration',
@@ -26,6 +26,7 @@ test('generated gate defaults are complete and disabled', () => {
         'planOptionsTree',
         'decideMode',
         'puttRead',
+        'referencePhotos',
     ]);
     expect(DEFAULT_FEATURE_GATES).toEqual({
         pinEntry: false,
@@ -34,6 +35,7 @@ test('generated gate defaults are complete and disabled', () => {
         planOptionsTree: false,
         decideMode: false,
         puttRead: false,
+        referencePhotos: true,
     });
 });
 

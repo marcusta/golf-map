@@ -8,6 +8,7 @@ enum FeatureGateKey: String, CaseIterable, Sendable {
     case planOptionsTree
     case decideMode
     case puttRead
+    case referencePhotos
 }
 
 struct FeatureGates: Equatable, Sendable {
@@ -17,6 +18,7 @@ struct FeatureGates: Equatable, Sendable {
     let planOptionsTree: Bool
     let decideMode: Bool
     let puttRead: Bool
+    let referencePhotos: Bool
 
     static let generatedDefaults = FeatureGates(
         pinEntry: false,
@@ -25,6 +27,7 @@ struct FeatureGates: Equatable, Sendable {
         planOptionsTree: false,
         decideMode: false,
         puttRead: false,
+        referencePhotos: true,
     )
 
     subscript(_ key: FeatureGateKey) -> Bool {
@@ -35,6 +38,7 @@ struct FeatureGates: Equatable, Sendable {
         case .planOptionsTree: return planOptionsTree
         case .decideMode: return decideMode
         case .puttRead: return puttRead
+        case .referencePhotos: return referencePhotos
         }
     }
 
@@ -46,6 +50,7 @@ struct FeatureGates: Equatable, Sendable {
             planOptionsTree: overrides[.planOptionsTree] ?? planOptionsTree,
             decideMode: overrides[.decideMode] ?? decideMode,
             puttRead: overrides[.puttRead] ?? puttRead,
+            referencePhotos: overrides[.referencePhotos] ?? referencePhotos,
         )
     }
 }

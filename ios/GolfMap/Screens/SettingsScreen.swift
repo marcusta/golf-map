@@ -70,6 +70,31 @@ struct SettingsScreen: View {
                     Text("Seeds the green-read stimp the first time you use a putt read. Once you adjust the stimp on a green, that last-used value takes over — this only sets the starting point.")
                 }
 
+                if env.gates.referencePhotos {
+                    Section {
+                        @Bindable var settings = env.settings
+                        HStack {
+                            Text("Eye height")
+                            Spacer()
+                            Text(String(format: "%.2f m", settings.photoEyeHeightM))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { settings.photoEyeHeightM },
+                                set: { settings.photoEyeHeightM = ($0 * 20).rounded() / 20 }
+                            ),
+                            in: AppSettings.photoEyeHeightRangeM,
+                            step: 0.05
+                        )
+                    } header: {
+                        Text("Reference photos")
+                    } footer: {
+                        Text("Camera height above the ground, stored with each reference photo.")
+                    }
+                }
+
                 Section {
                     TextField(AppEnvironment.defaultServerOrigin.absoluteString, text: $originText)
                         .textInputAutocapitalization(.never)

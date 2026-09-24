@@ -8,6 +8,25 @@ struct RootView: View {
 
     var body: some View {
         Group {
+            #if DEBUG
+            // Headless live-verify hook: `-photoCaptureSite <siteId>` opens the
+            // reference-photo capture screen without a login or a downloaded
+            // course. DEBUG-only and inert without the flag.
+            if let siteId = UserDefaults.standard.string(forKey: "photoCaptureSite") {
+                PhotoCaptureScreen(siteId: siteId, courseId: nil, holeLines: [], onClose: {})
+            } else {
+                authRoot
+            }
+            #else
+            authRoot
+            #endif
+        }
+        .task { await env.bootstrap() }
+    }
+
+    @ViewBuilder
+    private var authRoot: some View {
+        Group {
             if env.isBootstrapping {
                 bootstrapping
             } else {
@@ -23,7 +42,6 @@ struct RootView: View {
                 }
             }
         }
-        .task { await env.bootstrap() }
     }
 
     private var bootstrapping: some View {
