@@ -9,6 +9,7 @@ export const WATER_LAYER_ID = 'course-water-3d';
 
 /** Water follows the loaded DEM and shares the map depth buffer with terrain and trees. */
 export class WaterLayer implements CustomLayerInterface {
+    enabled = true;
     readonly id = WATER_LAYER_ID;
     readonly type = 'custom' as const;
     readonly renderingMode = '3d' as const;
@@ -84,7 +85,7 @@ export class WaterLayer implements CustomLayerInterface {
 
     render(_gl: WebGLRenderingContext | WebGL2RenderingContext, args: CustomRenderMethodInput): void {
         const pitch = this.map.getPitch();
-        if (pitch <= 5 || !this.meshes.length || !this.map.getTerrain() || document.hidden) return;
+        if (!this.enabled || pitch <= 5 || !this.meshes.length || !this.map.getTerrain() || document.hidden) return;
         const now = performance.now();
         const terrain = this.map.terrain;
         const exaggeration = this.map.getTerrain()?.exaggeration ?? 1;

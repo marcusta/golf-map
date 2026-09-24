@@ -38,6 +38,12 @@ Prefer the `preview_*` tools to verify UI changes over asking the user to check.
 
 Testing: integration-first, no mocks, units only for hard algorithms. See root [TESTING.md](../TESTING.md).
 
+## Map performance measurement
+
+The map's top-right `FPS` control has a water shader toggle, live map renders per second, and a 10-second benchmark. Benchmarking requests continuous renders in both water modes and retains the last on/off results. Keep the same camera and loaded course data between runs. Moving the camera, hiding the tab, changing water mode, or closing the panel cancels a run. Average FPS and p95 frame intervals measure map render cadence, not GPU execution time. The live rate includes idle time; a still map can report zero. The water toggle lasts for the map service session and defaults to on after a reload.
+
+The same control is available in `/dev/water.html`, a synthetic pond and creek preview. Its results do not represent full-course performance.
+
 ## Vegetation test scene (dev only)
 
 URL: `http://localhost:5173/dev/vegetation` (vite dev; `dev/vegetation.html`, entry `src/vegetation/main.ts`). Plain three.js, no MapLibre, no login. Not in the production build unless `WEB_DEV_PAGES=1`.

@@ -4,6 +4,7 @@ import { TERRAIN_SMOOTHING_PROTOCOL } from './terrain-smoothing';
 import type { LayerSpecification, MapMouseEvent } from 'maplibre-gl';
 import type { GeoJSON, FeatureCollection } from 'geojson';
 import { WaterLayer, WATER_LAYER_ID } from './water-layer';
+import { MapPerformanceControl } from './map-performance-control';
 import { Signal, batch, effect, di } from '@basics/core/client/core';
 import type { TileManifest } from './tileset.service';
 import {
@@ -154,6 +155,8 @@ export class MapService {
     /** overlay id → layer ids added for it */
     private overlays = new Map<string, string[]>();
     private waterSourceId: string | null = null;
+    private waterEnabled = true;
+    private waterLayer: WaterLayer | null = null;
     /** Overlays that must stay above later-added overlays (tool previews). */
     private onTopOverlays = new Set<string>();
     /** Latest queued (not yet sent) overlay data per source (see updateOverlayData). */
@@ -241,6 +244,11 @@ export class MapService {
             // which starts expanded and overlapped the cursor readout.
             attributionControl: false,
         });
+
+        map.addControl(new MapPerformanceControl(() => this.waterEnabled, enabled => {
+            this.waterEnabled = enabled;
+            if (this.waterLayer) this.waterLayer.enabled = enabled;
+        }, () => this.waterLayer), 'top-right');
 
         map.on('error', e => {
             // MapLibre swallows tile/style errors into 'error' events —
@@ -393,6 +401,7 @@ export class MapService {
         this.disposers = [];
         this.overlays.clear();
         this.waterSourceId = null;
+        this.waterLayer = null;
         this.onTopOverlays.clear();
         this.pendingOverlayData.clear();
         if (this.drapeRepairTimer !== null) {
@@ -618,11 +627,13 @@ export class MapService {
     /** Persistent feature surfaces supply both the editor fills and the 3D water. */
     private setWaterFeatures(data: FeatureCollection): void {
         const map = this.requireMap();
-        let layer = map.getLayer(WATER_LAYER_ID) as WaterLayer | undefined;
+        let layer = map.getLayer(WATER_LAYER_ID) ? this.waterLayer : null;
         if (!layer) {
             if (!data.features.some(f => f.properties?.type === 'water' || f.properties?.type === 'water_creek')) return;
             layer = new WaterLayer();
+            layer.enabled = this.waterEnabled;
             map.addLayer(layer, map.getLayer(TREES_LAYER_ID) ? TREES_LAYER_ID : undefined);
+            this.waterLayer = layer;
         }
         layer.setData(data);
     }
@@ -630,6 +641,7 @@ export class MapService {
     private clearWaterFeatures(): void {
         const map = this.map.peek();
         if (map?.getLayer(WATER_LAYER_ID)) map.removeLayer(WATER_LAYER_ID);
+        this.waterLayer = null;
     }
 
     // ── GeoJSON overlays for tools ────────────────────────────────────────
