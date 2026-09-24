@@ -1,6 +1,6 @@
 # Plan: reference photos from the course for Unity look matching
 
-**Status:** proposed 2026-09-24, nothing built
+**Status:** RP2 server side and RP3 built 2026-09-24. The pull cursor is the decimal `upload_seq` (see §5.2).
 **Date:** 2026-09-24
 **Scope:** `ios` (capture mode, offline queue, upload), `server` (photo store on the VPS,
 pull endpoints, builder pull CLI, pose refinement, `unity-photos-v1` export), `web`
@@ -195,8 +195,12 @@ delete photos, and its guard against deleting content referenced by user data
 
 Builder pull routes, `PUBLISH_TOKEN` bearer, serve mode only, next to `ingest.routes.ts`:
 
-- `GET /api/ingest/photos?since=<cursor>` returns metadata for photos uploaded after the
-  cursor
+- `GET /api/ingest/photos?since=<cursor>&limit=<n>` returns `{photos, nextCursor, hasMore}`
+  for photos whose original has arrived, after the cursor. The cursor is `upload_seq` as a
+  decimal string; "0" or empty starts from the beginning. The server sets `upload_seq` to
+  `MAX(upload_seq)+1` when the original arrives, when a later preview arrives and on a
+  metadata edit, so a photo is listed again after each change. Each photo carries its
+  own `cursor`.
 - `GET /api/ingest/photos/file/:id?kind=original|preview` streams a file
 - `POST /api/ingest/photos/ack` with ids sets `pulledAt`
 

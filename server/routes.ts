@@ -27,6 +27,8 @@ import { createPublishApi } from './api/publish.api';
 import { createTapscoreBridgeApi } from './api/tapscore-bridge.api';
 import { createIngestRoutes } from './api/ingest.routes';
 import { createGeneratedFeaturesRoutes } from './api/generated-features.routes';
+import { createPhotosApi } from './api/photos.api';
+import { createPhotoFileRoutes, createPhotoPullRoutes } from './api/photos.routes';
 
 type Services = ReturnType<typeof createServices>;
 
@@ -65,6 +67,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         publishService,
         tapscoreBridgeService,
         ingestService,
+        photosService,
     } = services;
 
     // --- Runtime APIs (both modes) ---
@@ -91,6 +94,10 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
     // Runtime in both modes: rounds are linked/scored against the VPS (T60),
     // and the builder box needs it for local testing.
     mount(app, '/api', createTapscoreBridgeApi(tapscoreBridgeService));
+    // Reference photos: the phone uploads in both modes (hand-mounted file
+    // routes stream a raw body with a hash header, which `mount()` cannot).
+    mount(app, '/api', createPhotosApi(photosService));
+    app.route('/api', createPhotoFileRoutes(photosService));
 
     if (opts.mode === 'builder') {
         // --- Builder-only APIs (absent on the VPS — unmounted routes 404) ---
@@ -103,5 +110,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
     } else {
         // --- Serve-only API: publish ingest (bearer-token, not cookie session) ---
         app.route('/api', createIngestRoutes(ingestService, opts.dataDir));
+        // Builder photo pull (same bearer token as ingest).
+        app.route('/api', createPhotoPullRoutes(photosService));
     }
 }

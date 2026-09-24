@@ -25,6 +25,7 @@ export interface Database {
     map_build_jobs: MapBuildJobsTable;
     terrain_edits: TerrainEditsTable;
     tapscore_published_scores: TapscorePublishedScoresTable;
+    site_photos: SitePhotosTable;
 }
 
 // --- Auth ---
@@ -366,6 +367,56 @@ export interface TerrainEditsTable {
     params_json: string; // JSON { featherM, radiusM?, flat? }
     rings_json: string; // JSON straight-segment rings in the DEM CRS (EPSG:3006)
     enabled: number; // bool as 0/1
+    version: number;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+}
+
+// --- Reference photos (docs/feature-reference-photos.md §5.1) ---
+
+export interface SitePhotosTable {
+    id: string; // made on the phone
+    site_id: string; // no FK: photos are user data and outlive content changes
+    course_id: string | null;
+    hole: number | null;
+    captured_at: string;
+    lat: number;
+    lon: number;
+    h_acc_m: number;
+    gps_alt_m: number | null;
+    v_acc_m: number | null;
+    x3006: number;
+    y3006: number;
+    attitude_quat_json: string | null; // {"w","x","y","z"}
+    yaw_deg: number;
+    pitch_deg: number;
+    roll_deg: number;
+    heading_acc_deg: number | null;
+    mag_calibration: number | null;
+    hfov_deg: number;
+    vfov_deg: number;
+    width: number;
+    height: number;
+    eye_height_m: number;
+    device_model: string | null;
+    lens: string;
+    tags_json: string; // JSON string[]
+    note: string | null;
+    original_sha256: string | null;
+    original_bytes: number | null;
+    original_uploaded_at: string | null;
+    original_deleted_at: string | null;
+    preview_sha256: string | null;
+    preview_bytes: number | null;
+    preview_uploaded_at: string | null;
+    upload_seq: number | null; // builder pull cursor, VPS side
+    pulled_at: string | null;
+    refined_yaw_deg: number | null;
+    refined_pitch_deg: number | null;
+    refined_roll_deg: number | null;
+    refine_method: string | null; // 'skyline' | 'manual'
+    refine_residual_deg: number | null;
+    refined_at: string | null;
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

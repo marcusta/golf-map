@@ -27,6 +27,7 @@ import { TerrainEditsService } from './terrain-edits.service';
 import { PublishService } from './publish.service';
 import { TapscoreBridgeService } from './tapscore-bridge.service';
 import { HttpTapscoreClient } from './tapscore-client';
+import { PhotosService } from './photos.service';
 
 export interface ServicesConfig {
     /** Root directory for course assets/tiles on disk. Defaults to DATA_DIR env var, then './data'. */
@@ -39,6 +40,8 @@ export interface ServicesConfig {
     tapscoreBaseUrl?: string;
     /** Server run mode. Defaults to the SERVER_MODE env (via `serverMode()`). */
     mode?: ServerMode;
+    /** Clock for the photos service (file arrival, ack, retention). Tests inject a fixed one. */
+    now?: () => Date;
 }
 
 export function createServices(db: Kysely<Database>, config: ServicesConfig = {}) {
@@ -77,6 +80,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     // Serve-mode ingest endpoint (§8); the service is cheap to construct in
     // either mode — only its API is mounted (serve only) by main.ts.
     const ingestService = new IngestService({ db, dataDir });
+    // Reference photos: phone routes in both modes, pull routes serve only.
+    const photosService = new PhotosService({ db, dataDir, now: config.now });
 
     return {
         db,
@@ -106,5 +111,6 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         publishService,
         tapscoreBridgeService,
         ingestService,
+        photosService,
     };
 }

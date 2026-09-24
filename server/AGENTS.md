@@ -34,6 +34,17 @@ bun run import          # import v1 export into app.sqlite
 
 A site owns the map; courses link to it through `courses.site_id` and several courses can share one site. `GET /api/sites/overview` returns every site with its courses and the bbox and time of its last succeeded `build` job (`SitesService.overview`, used by the web `/sites` page and the new-course wizard). `SitesService.remove` throws `ConflictError` (409) while any course is attached: detach or move the courses first. The build API is still addressed by course. `MapBuildService.resolveSiteId` creates a site named after the course only when the course has none, so the wizard creates the site first and passes `siteId` to `courses.create`.
 
+## Reference photos
+
+On-course photos with pose metadata ([docs/feature-reference-photos.md](../docs/feature-reference-photos.md) §5). Table `site_photos` (migration 016), `PhotosService`, descriptor API `photos.api.ts`, raw routes `photos.routes.ts`.
+
+- `POST /api/photos/create` is idempotent by `id` and returns the stored row on a repeat. `list`, `get`, `update` (tags, note, hole; version-locked) and `remove` (row plus both files) complete the descriptor API. Both modes, session auth.
+- `PUT /api/photos/file/:id?kind=original|preview` takes a raw body and `X-Content-SHA256`. It streams to `data/photos/.incoming/`, then renames to `data/photos/<siteId>/<id>.heic|.jpg`. Responses: 200 `{status: 'stored'|'unchanged', photo}`, 400 hash mismatch or missing header, 404 unknown id, 409 different hash already stored, 413 over 20 MB. File arrivals do not bump `version`.
+- Builder pull, serve mode only, `PUBLISH_TOKEN` bearer: `GET /api/ingest/photos?since&limit`, `GET /api/ingest/photos/file/:id?kind`, `POST /api/ingest/photos/ack {ids}`. The cursor is `upload_seq` as a decimal string ("0" = start). `upload_seq` is set to `MAX+1` when the original arrives, when a later preview arrives, and on a metadata edit, so a photo re-lists after each change.
+- `bun run photos-pull [--reset]` (`services/photos-pull.ts`) needs `PUBLISH_URL` and `PUBLISH_TOKEN`. The cursor lives in `data/photos/pull-state.json`. The pull never overwrites the local `refined*` fields. A photo whose site is missing locally is reported and not acked; create the site, then rerun with `--reset`. The builder server runs the same pull every `PHOTOS_PULL_INTERVAL_MIN` minutes when that and `PUBLISH_URL` are set.
+- Serve mode runs retention at boot and daily: originals are deleted 14 days after the first ack (`pulledAt`), `originalDeletedAt` is set, the row and preview stay.
+- No FK to `sites`. `CONTENT_BLOCKER_REFERENCES` in `services/bundle.ts` blocks an ingest that would delete a site with photos. `SitesService.remove` does not check photos yet.
+
 ## Generated features (pipeline bulk replace)
 
 Generators (today: the lidar canopy detector, source `lidar-canopy`) replace all of their features for a course in one call. Hand-drawn features have `source = NULL` and are never touched: an empty or blank source is rejected before anything is read.

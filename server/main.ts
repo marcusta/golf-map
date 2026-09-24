@@ -9,6 +9,8 @@ import { mountApiRoutes } from './routes';
 import { createTileRoutes, cachingTileKeyLookup } from './services/tiles';
 import { createStaticRoutes } from './services/static';
 import { serverMode } from './mode';
+import { startPhotoRetention, startPhotosPullInterval } from './services/photos-jobs';
+import { pullConfigFromEnv } from './services/photos-pull';
 
 // A fresh box has no `data/` — the SQLite files can't be created inside a
 // directory that doesn't exist, and nothing in the deploy tooling makes it.
@@ -59,6 +61,20 @@ app.route('/', createTileRoutes(assetsService, cachingTileKeyLookup(async (id) =
 const webDistDir = process.env.WEB_DIST_DIR ?? path.resolve(import.meta.dir, '../web/dist');
 if (mode === 'serve') {
     app.route('/', createStaticRoutes(webDistDir));
+}
+
+// Reference photos (docs/feature-reference-photos.md §5.3, §5.4). The VPS
+// deletes originals 14 days after the builder pulled them; the builder pulls
+// on an interval when PHOTOS_PULL_INTERVAL_MIN and PUBLISH_URL are set.
+if (mode === 'serve') {
+    startPhotoRetention(services.photosService);
+} else {
+    const pullMinutes = Number(process.env.PHOTOS_PULL_INTERVAL_MIN ?? '');
+    const pullEnv = pullConfigFromEnv();
+    if (pullMinutes > 0 && pullEnv) {
+        startPhotosPullInterval({ photos: services.photosService, minutes: pullMinutes, ...pullEnv });
+        log.info({ msg: 'photos pull interval', minutes: pullMinutes, url: pullEnv.baseUrl });
+    }
 }
 
 Bun.serve({ port: config.port, fetch: app.fetch });
