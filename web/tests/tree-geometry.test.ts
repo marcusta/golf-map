@@ -2,8 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Box3 } from 'three';
 import {
     adjustStand, BROADLEAF_CARDS_MAX, BROADLEAF_CARDS_MIN, BROADLEAF_LOW_FOLIAGE_VARIANTS, BROADLEAF_STUB_VARIANTS, cardFractionAtLod,
-    CONIFER_CARD_SIZE, CONIFER_CARDS_MAX, CONIFER_CARDS_MIN, CONIFER_DROOP_DEG, CONIFER_INTERIOR_FRACTION, CONIFER_INTERIOR_MAX, CONIFER_JITTER_DEG,
-    CONIFER_LOD_MID_FRACTION, CONIFER_SIZE_RADIUS_FLOOR, CONIFER_SURFACE_MIN, coniferProfile,
+    CONIFER_TOP_TAPER, CONIFER_LOD_MID_FRACTION,
     crownBaseFraction, impostorCell, impostorGeometry, isShrubHeight, leanFor, LOD_FULL_M, LOD_HALF_M, LOD_MID_FRACTION, lodFor, midFractionFor,
     renderCrownRadius,
     SHRUB_MAX_HEIGHT_M, shadowGeometry, shrubGeometry, SPECIES, speciesFor,
@@ -30,6 +29,18 @@ describe('stem form classification and shrub model', () => {
             geometry.dispose();
         }
     });
+    test('distant shrub geometry submits less than a quarter of the close mesh triangles', () => {
+        const near = shrubGeometry(true), far = shrubGeometry(false);
+        expect(far.index!.count).toBeLessThan(near.index!.count * 0.25);
+        for (const geometry of [near, far]) {
+            const position = geometry.getAttribute('position');
+            expect(Array.from(position.array).every(Number.isFinite)).toBe(true);
+            expect(Array.from(geometry.getAttribute('normal').array).every(Number.isFinite)).toBe(true);
+            expect(Array.from(geometry.index!.array).every(i => i >= 0 && i < position.count)).toBe(true);
+            geometry.dispose();
+        }
+    });
+
 });
 
 describe('species, variants and hashing', () => {
@@ -39,6 +50,10 @@ describe('species, variants and hashing', () => {
         expect(speciesFor(undefined, 0.5)).toBe('broadleaf');
         expect(speciesFor(1, 0.2)).toBe('spruce');
         expect(speciesFor(1, 0.8)).toBe('pine');
+        expect(speciesFor(1, 0.29999)).toBe('spruce');
+        expect(speciesFor(1, 0.3)).toBe('pine');
+        const mixture = Array.from({ length: 100 }, (_, i) => speciesFor(1, i / 100));
+        expect(mixture.filter(species => species === 'pine')).toHaveLength(70);
     });
     test('stem hash is deterministic, in [0,1), and differs per salt and position', () => {
         const a = stemHash(541450.25, 6469150.5), b = stemHash(541450.25, 6469150.5);
@@ -56,8 +71,8 @@ describe('species, variants and hashing', () => {
         for (let v = 0; v < VARIANTS; v++) {
             const b = crownBaseFraction('broadleaf', v), s = crownBaseFraction('spruce', v), p = crownBaseFraction('pine', v);
             expect(b).toBeGreaterThanOrEqual(0.35); expect(b).toBeLessThanOrEqual(0.45);
-            expect(s).toBeCloseTo(0.15, 5);
-            expect(p).toBeGreaterThanOrEqual(0.40); expect(p).toBeLessThanOrEqual(0.50);
+            expect(s).toBeGreaterThanOrEqual(0.12); expect(s).toBeLessThanOrEqual(0.30);
+            expect(p).toBeGreaterThanOrEqual(0.46); expect(p).toBeLessThanOrEqual(0.68);
         }
     });
     test('render crown radius follows height with the data radius as a floor and a cap', () => {
@@ -193,7 +208,7 @@ describe('tree card geometry', () => {
         }
         geometry.dispose();
     });
-    test('trunk rings flare at the ground and taper to 30 percent at the top', () => {
+    test('trunks flare at ground level and conifer leaders taper to a fine tip', () => {
         for (const species of SPECIES) {
             const { geometry } = treeGeometry(species);
             const centre = geometry.getAttribute('aCenter'), corner = geometry.getAttribute('aCorner'), info = geometry.getAttribute('aInfo');
@@ -207,7 +222,7 @@ describe('tree card geometry', () => {
             }
             expect(groundR).toBeGreaterThan(1);
             expect(groundR).toBeLessThan(1.2);
-            expect(topR).toBeCloseTo(TRUNK_TOP_TAPER, 5);
+            expect(topR).toBeCloseTo(species === 'broadleaf' ? TRUNK_TOP_TAPER : CONIFER_TOP_TAPER, 5);
             expect(topZ).toBeGreaterThan(species === 'broadleaf' ? 0.6 : 0.95);
             geometry.dispose();
         }
@@ -220,7 +235,7 @@ describe('tree card geometry', () => {
             for (let i = 0; i < centre.count; i++) {
                 if (info.getZ(i) < 0.5) continue;
                 const r = Math.hypot(centre.getX(i), centre.getY(i));
-                expect(r).toBeLessThanOrEqual(1.05);
+                expect(r).toBeLessThanOrEqual(1.25);
                 expect(Math.hypot(corner.getX(i), corner.getY(i), corner.getZ(i))).toBeLessThanOrEqual(1.2);
                 maxZ = Math.max(maxZ, centre.getZ(i));
                 if (centre.getZ(i) > 0.9) topRadius = Math.min(topRadius, r);
@@ -232,121 +247,82 @@ describe('tree card geometry', () => {
             geometry.dispose();
         }
     });
-    // Conifer cards: per variant, a trunk, then one run of cluster cards (part 1, four vertices
-    // each in the order bottom-left, bottom-right, top-right, top-left of the card plane).
-    type Card = { v: number; centre: number[]; corners: number[][]; depth: number; rank: number; part: number; cardNormal: number[] };
-    function coniferCards(species: 'spruce' | 'pine'): { cards: Card[]; total: number } {
-        const { geometry, cards: total } = treeGeometry(species);
-        const centre = geometry.getAttribute('aCenter'), corner = geometry.getAttribute('aCorner'), info = geometry.getAttribute('aInfo');
-        const depth = geometry.getAttribute('aDepth'), cardNormal = geometry.getAttribute('aCardNormal');
-        const cards: Card[] = [];
-        // Trunk rings are not a multiple of four vertices; foliage cards are, and they follow the trunk in one run.
-        for (let i = 0; i < centre.count; i += info.getZ(i) < 0.5 ? 1 : 4) {
-            if (info.getZ(i) < 0.5) continue;
-            const idx = [i, i + 1, i + 2, i + 3];
-            cards.push({
-                v: info.getX(i), rank: info.getY(i), part: info.getZ(i),
-                centre: [centre.getX(i), centre.getY(i), centre.getZ(i)],
-                corners: idx.map(k => [corner.getX(k), corner.getY(k), corner.getZ(k)]),
-                depth: depth.getX(i),
-                cardNormal: [cardNormal.getX(i), cardNormal.getY(i), cardNormal.getZ(i)],
-            });
+    test('conifer geometry has finite vertices, valid indices and a bounded triangle cost per form', () => {
+        for (const species of ['spruce', 'pine'] as const) for (let variant = 0; variant < VARIANTS; variant++) {
+            const { geometry } = treeGeometry(species, variant);
+            const info = geometry.getAttribute('aInfo');
+            for (const attribute of Object.values(geometry.attributes)) {
+                expect(attribute.count).toBe(info.count);
+                expect(Array.from(attribute.array).every(Number.isFinite)).toBe(true);
+            }
+            expect(Array.from(geometry.index!.array).every(i => i >= 0 && i < info.count)).toBe(true);
+            expect(geometry.index!.count / 3).toBeLessThan(12000);
+            expect(new Set(Array.from({ length: info.count }, (_, i) => info.getX(i)))).toEqual(new Set([variant]));
+            expect(new Set(Array.from({ length: info.count }, (_, i) => info.getZ(i)))).toEqual(new Set([0, 1, 2]));
+            geometry.dispose();
         }
-        geometry.dispose();
-        return { cards, total };
-    }
-    const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-    const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    /** Crown radius of the cone at the card's height, in crown-radius units. */
-    function localRadius(species: 'spruce' | 'pine', card: Card): number {
-        const base = crownBaseFraction(species, card.v);
-        return coniferProfile(species, (card.centre[2] - base) / (1 - base));
-    }
+    });
 
-    test('conifer variants carry 60 to 84 cluster cards and nothing else', () => {
-        for (const species of ['spruce', 'pine'] as const) {
-            const { cards, total } = coniferCards(species);
-            let counted = 0;
-            for (let v = 0; v < VARIANTS; v++) {
-                const own = cards.filter(c => c.v === v);
-                expect(own.every(c => c.part === 1)).toBe(true);
-                expect(own.length).toBeGreaterThanOrEqual(CONIFER_CARDS_MIN);
-                expect(own.length).toBeLessThanOrEqual(CONIFER_CARDS_MAX);
-                counted += own.length;
+    test('conifer branches connect to wood and sprays follow those branches', () => {
+        type Point = [number, number, number];
+        const distanceToSegment = (p: Point, a: Point, b: Point): number => {
+            const d = b.map((x, i) => x - a[i]), q = p.map((x, i) => x - a[i]);
+            const t = Math.max(0, Math.min(1, d.reduce((n, x, i) => n + x * q[i], 0) / d.reduce((n, x) => n + x * x, 0)));
+            return Math.hypot(...p.map((x, i) => x - a[i] - t * d[i]));
+        };
+        for (const species of ['spruce', 'pine'] as const) for (let variant = 0; variant < VARIANTS; variant++) {
+            const { geometry } = treeGeometry(species, variant);
+            const centre = geometry.getAttribute('aCenter'), info = geometry.getAttribute('aInfo');
+            const point = (i: number): Point => [centre.getX(i), centre.getY(i), centre.getZ(i)];
+            const segments: [Point, Point][] = [];
+            for (let i = 0; i < info.count;) {
+                if (info.getZ(i) !== 2) { i++; continue; }
+                const root = point(i);
+                const main = Math.hypot(root[0], root[1]) < 1e-6;
+                // Main tubes have three rings; lateral shoots have two. Each ring closes after five sides.
+                if (!main) expect(Math.min(...segments.map(([a, b]) => distanceToSegment(root, a, b)))).toBeLessThan(1e-6);
+                const rings = main ? 3 : 2;
+                for (let r = 1; r < rings; r++) segments.push([point(i + (r - 1) * 6), point(i + r * 6)]);
+                i += rings * 6;
             }
-            expect(counted).toBe(total);
+            expect(segments.length).toBeGreaterThan(100);
+            for (let i = 0; i < info.count; i++) {
+                if (info.getZ(i) !== 1) continue;
+                const p = point(i);
+                if (Math.hypot(p[0], p[1]) < 1e-6) continue; // needled leader on the trunk
+                expect(Math.min(...segments.map(([a, b]) => distanceToSegment(p, a, b)))).toBeLessThan(1e-6);
+            }
+            geometry.dispose();
         }
     });
-    test('cluster cards are squares sized 26 to 40 percent of the local crown diameter', () => {
-        for (const species of ['spruce', 'pine'] as const) {
-            for (const card of coniferCards(species).cards) {
-                const [a, b, c, d] = card.corners;
-                const w = dist(a, b), h = dist(b, c);
-                expect(w).toBeCloseTo(h, 5);
-                expect(dist(c, d)).toBeCloseTo(w, 5);
-                const diameter = 2 * Math.max(localRadius(species, card), CONIFER_SIZE_RADIUS_FLOOR);
-                expect(w / diameter).toBeGreaterThanOrEqual(CONIFER_CARD_SIZE[0] - 1e-6);
-                expect(w / diameter).toBeLessThanOrEqual(CONIFER_CARD_SIZE[1] + 1e-6);
+
+    test('medium conifers keep every foliage attachment and retain depth from every horizontal viewing angle', () => {
+        for (const species of ['spruce', 'pine'] as const) for (let variant = 0; variant < VARIANTS; variant++) {
+            const { geometry } = treeGeometry(species, variant);
+            const centre = geometry.getAttribute('aCenter'), corner = geometry.getAttribute('aCorner'), info = geometry.getAttribute('aInfo');
+            const attachments = new Map<string, { full: number[][]; mid: number[][] }>();
+            for (let i = 0; i < info.count; i++) {
+                if (info.getZ(i) !== 1) continue;
+                const key = [centre.getX(i), centre.getY(i), centre.getZ(i)].join(',');
+                const entry = attachments.get(key) ?? { full: [], mid: [] };
+                const p = [corner.getX(i), corner.getY(i), corner.getZ(i)];
+                entry.full.push(p);
+                if (info.getY(i) <= CONIFER_LOD_MID_FRACTION) entry.mid.push(p);
+                attachments.set(key, entry);
             }
-        }
-    });
-    test('about 30 percent of the cards sit inside the cone hiding the trunk, the rest near the surface', () => {
-        for (const species of ['spruce', 'pine'] as const) {
-            const { cards } = coniferCards(species);
-            for (let v = 0; v < VARIANTS; v++) {
-                const own = cards.filter(c => c.v === v);
-                let interior = 0, surface = 0;
-                for (const card of own) {
-                    const rho = Math.hypot(card.centre[0], card.centre[1]) / localRadius(species, card);
-                    expect(rho).toBeLessThanOrEqual(1 + 1e-6);
-                    if (rho <= CONIFER_INTERIOR_MAX) interior++;
-                    else if (rho >= CONIFER_SURFACE_MIN) surface++;
-                    expect(card.depth).toBeCloseTo(Math.min(1, rho), 5);
+            for (const { full, mid } of attachments.values()) {
+                expect(mid.length).toBeGreaterThan(0);
+                for (let angle = 0; angle < Math.PI; angle += Math.PI / 8) {
+                    const span = (points: number[][]) => {
+                        const x = points.map(p => p[0] * Math.cos(angle) + p[1] * Math.sin(angle));
+                        return Math.max(...x) - Math.min(...x);
+                    };
+                    expect(span(mid) / span(full)).toBeGreaterThan(0.55);
                 }
-                expect(interior + surface).toBe(own.length);
-                expect(interior).toBe(Math.round(own.length * CONIFER_INTERIOR_FRACTION));
+                const z = mid.map(p => p[2]);
+                expect(Math.max(...z) - Math.min(...z)).toBeGreaterThan(0.01);
             }
-        }
-    });
-    test('cluster card planes face outward and down within the droop band, and no two share a plane', () => {
-        for (const species of ['spruce', 'pine'] as const) {
-            const { cards } = coniferCards(species);
-            const [droopMin, droopMax] = CONIFER_DROOP_DEG[species];
-            for (const card of cards) {
-                const n = card.cardNormal;
-                expect(Math.hypot(n[0], n[1], n[2])).toBeCloseTo(1, 5);
-                const elevation = Math.asin(n[2]) * 180 / Math.PI;
-                expect(elevation).toBeGreaterThanOrEqual(droopMin - 1e-6);
-                expect(elevation).toBeLessThanOrEqual(droopMax + 1e-6);
-                // Yaw within the jitter band of the card's azimuth around the trunk.
-                const azimuth = Math.atan2(card.centre[1], card.centre[0]);
-                const yaw = Math.atan2(n[1], n[0]);
-                let diff = Math.abs(yaw - azimuth) * 180 / Math.PI;
-                if (diff > 180) diff = 360 - diff;
-                expect(diff).toBeLessThanOrEqual(CONIFER_JITTER_DEG + 1e-6);
-                // The plane normal is perpendicular to both card edges.
-                expect(Math.abs(dot(n, card.corners[1].map((x, i) => x - card.corners[0][i])))).toBeLessThan(1e-6);
-                expect(Math.abs(dot(n, card.corners[2].map((x, i) => x - card.corners[1][i])))).toBeLessThan(1e-6);
-            }
-            for (let v = 0; v < VARIANTS; v++) {
-                const own = cards.filter(c => c.v === v);
-                for (let i = 0; i < own.length; i++) for (let j = i + 1; j < own.length; j++) {
-                    // Same plane means parallel normals at the same place; parallel cards elsewhere are fine.
-                    const parallel = Math.abs(dot(own[i].cardNormal, own[j].cardNormal)) > 0.9999;
-                    expect(parallel && dist(own[i].centre, own[j].centre) < 0.01).toBe(false);
-                }
-            }
-        }
-    });
-    test('the half level keeps about half of each conifer variant by rank', () => {
-        for (const species of ['spruce', 'pine'] as const) {
-            const { cards } = coniferCards(species);
-            for (let v = 0; v < VARIANTS; v++) {
-                const own = cards.filter(c => c.v === v);
-                const kept = own.filter(c => c.rank <= CONIFER_LOD_MID_FRACTION).length;
-                expect(Math.abs(kept - own.length * CONIFER_LOD_MID_FRACTION)).toBeLessThanOrEqual(1);
-                expect(new Set(own.map(c => c.rank)).size).toBe(own.length);
-            }
+            geometry.dispose();
         }
     });
     test('the near fade removes cards under 1.5 m from the eye and is complete by the full distance', () => {

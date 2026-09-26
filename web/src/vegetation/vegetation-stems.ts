@@ -1,4 +1,4 @@
-import { adjustStand, renderCrownRadius, SPECIES, VARIANTS, type Species } from '../map/tree-geometry';
+import { adjustStand, CONIFER_FORM_NAMES, renderCrownRadius, SPECIES, VARIANTS, type Species } from '../map/tree-geometry';
 import { describeStem, type RenderStem } from '../map/tree-renderer';
 
 /**
@@ -30,7 +30,7 @@ export interface LineupEntry { label: string; species: Species; variant: number;
 export function lineupEntries(): LineupEntry[] {
     const entries: LineupEntry[] = [];
     for (const species of SPECIES) for (let variant = 0; variant < VARIANTS; variant++) {
-        entries.push({ label: `${species} ${variant}`, species, variant, heightM: LINEUP_HEIGHT_M, crownRadiusM: 3 });
+        entries.push({ label: species === 'broadleaf' ? `${species} ${variant}` : `${species} ${variant} · ${CONIFER_FORM_NAMES[species][variant]}`, species, variant, heightM: LINEUP_HEIGHT_M, crownRadiusM: 3 });
     }
     entries.push({ label: 'shrub', species: 'broadleaf', variant: 0, heightM: 2.5, crownRadiusM: 2 });
     return entries;

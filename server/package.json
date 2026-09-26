@@ -13,6 +13,7 @@
         "import-terrain-edits": "DB_PATH=../data/app.sqlite bun db/import-terrain-edits.ts",
         "import": "DB_PATH=../data/app.sqlite bun db/import.ts",
         "publish": "DATA_DIR=../data DB_PATH=../data/app.sqlite bun scripts/publish.ts",
+        "photos-pull": "DATA_DIR=../data DB_PATH=../data/app.sqlite bun scripts/photos-pull.ts",
         "import-generated-features": "bun scripts/import-generated-features.ts",
         "obs:rotate": "OBS_DB_PATH=${OBS_DB_PATH:-../data/obs.sqlite} bun scripts/obs-rotate.ts"
     },

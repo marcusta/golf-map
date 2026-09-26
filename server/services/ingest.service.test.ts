@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { createTestDb as createRawDb } from '@basics/core/server/testing';
 import type { Kysely } from 'kysely';
 import { createServices } from '../services/index';
@@ -9,6 +9,9 @@ import type { Database } from '../db/schema';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { buildBundle, packBundle } from '../scripts/publish';
 import { IngestService, IngestBlockedError } from './ingest.service';
+import { CONTENT_HASH_FILES, contentFilePath, contentHash } from './bundle';
+import { PhotosService } from './photos.service';
+import { photoInput } from '../testing/photos';
 
 const migrationFolder = path.join(import.meta.dir, '../db/migrations');
 const SITE_ID = 'site-1';
@@ -272,5 +275,43 @@ describe('ingest (serve-mode publish apply)', () => {
         expect((await vpsDb.selectFrom('rounds').select('id').execute()).length).toBe(1);
         expect((await vpsDb.selectFrom('courses').select('id').where('id', '=', 'course-old').execute()).length).toBe(1);
         expect(existsSync(path.join(vpsData, 'tiles', SITE_ID))).toBe(false);
+    });
+
+    test('a bundle that drops a site with reference photos is blocked', async () => {
+        const builderDb = await freshDb();
+        const builderData = tmp('builder');
+        await seedBuilder(builderDb, builderData);
+        const outDir = tmp('stage');
+        const { stagingDir } = await buildBundle({ db: builderDb, dataDir: builderData }, { siteId: SITE_ID, outDir });
+
+        // Tamper the bundle so it no longer contains the site row, and
+        // re-seal the content hash so only the blocker check can stop it.
+        writeFileSync(path.join(stagingDir, contentFilePath('sites')), '');
+        const metaPath = path.join(stagingDir, 'meta.json');
+        const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+        const parts = CONTENT_HASH_FILES.map((rel) => {
+            const p = path.join(stagingDir, rel);
+            return existsSync(p) ? readFileSync(p) : Buffer.alloc(0);
+        });
+        meta.contentHash = contentHash(parts);
+        writeFileSync(metaPath, JSON.stringify(meta));
+
+        // The VPS hosts site-1 with a reference photo on it.
+        const vpsDb = await freshDb();
+        const vpsData = tmp('vps');
+        await vpsDb.insertInto('sites').values({ id: SITE_ID, name: 'Linkan', version: 1 }).execute();
+        await new PhotosService({ db: vpsDb, dataDir: vpsData }).create(photoInput('photo-1', SITE_ID));
+
+        let err: unknown;
+        try {
+            await new IngestService({ db: vpsDb, dataDir: vpsData }).ingest(stagingDir);
+        } catch (e) {
+            err = e;
+        }
+        expect(err).toBeInstanceOf(IngestBlockedError);
+        const blockers = (err as IngestBlockedError).detail.blockers;
+        expect(blockers).toContainEqual({ table: 'sites', id: SITE_ID, referencedBy: 'site_photos.site_id', count: 1 });
+        expect((await vpsDb.selectFrom('sites').select('id').execute()).map((r) => r.id)).toEqual([SITE_ID]);
+        expect((await vpsDb.selectFrom('site_photos').select('id').execute()).length).toBe(1);
     });
 });

@@ -21,6 +21,11 @@ import {
     SAM_TOOL_ID,
     SAM_SIMPLIFY_EPS_M,
     SAM_FIT_TOLERANCE_M,
+    SAM_MAX_CONTROLS,
+    SAM_CURVATURE_SHARE,
+    SAM_METERS_PER_CONTROL,
+    samMinControls,
+    ringPerimeter,
     SAM_SCOPE_COURSE,
     type SamCropSource,
 } from '../src/sam/sam-tool.service';
@@ -204,6 +209,17 @@ test('fillTileUrl substitutes the XYZ placeholders', () => {
         .toBe('/tiles/site-1/ortho/19/285000/156000.jpg?v=V');
 });
 
+describe('samMinControls', () => {
+    test('one control per SAM_METERS_PER_CONTROL of perimeter, clamped to the cap', () => {
+        expect(samMinControls(10 * SAM_METERS_PER_CONTROL)).toBe(10);
+        expect(samMinControls(1e6)).toBe(SAM_MAX_CONTROLS);
+        expect(samMinControls(0)).toBe(0); // the fitter's own 8 floor applies
+    });
+    test('ringPerimeter closes the ring', () => {
+        expect(ringPerimeter([{ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 3, y: 4 }])).toBeCloseTo(12, 9);
+    });
+});
+
 // ─── contour → simplify → fit round trip (synthetic ellipse mask) ───────────
 
 describe('mask contour → simplify → fit', () => {
@@ -216,10 +232,14 @@ describe('mask contour → simplify → fit', () => {
         expect(simplified.length).toBeGreaterThanOrEqual(3);
         expect(simplified.length).toBeLessThan(mask.length);
 
-        const fit = fitClosedBspline(simplified, SAM_FIT_TOLERANCE_M);
-        expect(fit.controls.length).toBeGreaterThanOrEqual(8);
-        expect(fit.controls.length).toBeLessThanOrEqual(20);
-        // Pixel quantization (±0.5 px ≈ ±8 cm here) + RDP at 0.4 m + fit
+        const minControls = samMinControls(ringPerimeter(simplified));
+        const fit = fitClosedBspline(simplified, SAM_FIT_TOLERANCE_M, SAM_MAX_CONTROLS, {
+            minControls,
+            curvatureShare: SAM_CURVATURE_SHARE,
+        });
+        expect(fit.controls.length).toBeGreaterThanOrEqual(minControls);
+        expect(fit.controls.length).toBeLessThanOrEqual(SAM_MAX_CONTROLS);
+        // Pixel quantization (±0.5 px ≈ ±8 cm here) + RDP at 0.2 m + fit
         // tolerance: the fitted curve stays within tolerance of ITS input…
         expect(fit.maxDeviation).toBeLessThanOrEqual(SAM_FIT_TOLERANCE_M);
 
@@ -291,7 +311,7 @@ describe('segmentAt', () => {
         expect(created!.geometry.curveType).toBe('bspline');
         expect(created!.geometry.rings).toHaveLength(1);
         expect(created!.geometry.rings[0].points.length).toBeGreaterThanOrEqual(8);
-        expect(created!.geometry.rings[0].points.length).toBeLessThanOrEqual(20);
+        expect(created!.geometry.rings[0].points.length).toBeLessThanOrEqual(SAM_MAX_CONTROLS);
 
         // The crop was composed from direct ortho-tile URLs at maxzoom —
         // never the MapLibre canvas.

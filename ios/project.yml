@@ -47,11 +47,12 @@ targets:
           - UIInterfaceOrientationPortrait
         NSLocationWhenInUseUsageDescription: Shows live distances from your position on the course.
         # ARKit LiDAR corridor scanning (task E1) uses the camera + LiDAR to
-        # measure the green surface along the putt line.
-        NSCameraUsageDescription: Scans the green surface along your putt line with the camera and LiDAR to read the break.
+        # measure the green surface along the putt line. Reference photos
+        # (docs/feature-reference-photos.md) take course photos with the pose.
+        NSCameraUsageDescription: Scans the green surface along your putt line with the camera and LiDAR, and takes reference photos of the course.
         # Spot-level green capture lays the phone flat and reads gravity-anchored
         # tilt from the motion sensors.
-        NSMotionUsageDescription: Reads the phone's tilt when you lay it flat on the green to measure slope.
+        NSMotionUsageDescription: Reads the phone's tilt when you lay it flat on the green to measure slope, and the camera direction for reference photos.
         # Voice pin entry captures a short phrase from the mic and transcribes it
         # with on-device speech recognition (audio never leaves the phone).
         NSMicrophoneUsageDescription: Captures a short voice phrase to place today's pin (e.g. "4 from front, 5 from left").

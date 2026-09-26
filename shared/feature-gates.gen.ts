@@ -5,7 +5,7 @@
 
 export type FeatureTier = 'T1' | 'T2' | 'T3';
 
-export const FEATURE_GATE_KEYS = ['pinEntry', 'laserCalibration', 'planEditing', 'planOptionsTree', 'decideMode', 'puttRead'] as const;
+export const FEATURE_GATE_KEYS = ['pinEntry', 'laserCalibration', 'planEditing', 'planOptionsTree', 'decideMode', 'puttRead', 'referencePhotos'] as const;
 export type FeatureGateKey = (typeof FEATURE_GATE_KEYS)[number];
 
 export type FeatureGates = Readonly<Record<FeatureGateKey, boolean>>;
@@ -21,6 +21,7 @@ export const FEATURE_GATE_DEFINITIONS = {
     planOptionsTree: { enabled: false, tier: 'T3' },
     decideMode: { enabled: false, tier: 'T3' },
     puttRead: { enabled: false, tier: 'T3' },
+    referencePhotos: { enabled: true, tier: 'T1' },
 } as const satisfies Record<FeatureGateKey, FeatureGateDefinition>;
 
 export const DEFAULT_FEATURE_GATES: FeatureGates = Object.freeze({
@@ -30,4 +31,5 @@ export const DEFAULT_FEATURE_GATES: FeatureGates = Object.freeze({
     planOptionsTree: false,
     decideMode: false,
     puttRead: false,
+    referencePhotos: true,
 });

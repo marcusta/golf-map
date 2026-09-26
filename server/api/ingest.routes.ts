@@ -1,37 +1,10 @@
 import { Hono } from 'hono';
-import type { MiddlewareHandler } from 'hono';
-import { timingSafeEqual } from 'node:crypto';
 import * as path from 'node:path';
 import { mkdirSync, rmSync } from 'node:fs';
 import { log } from '@basics/core/server/logger';
 import type { IngestService } from '../services/ingest.service';
 import { IngestBlockedError } from '../services/ingest.service';
-
-/**
- * Bearer-token guard for the ingest endpoint. Unlike the rest of the API this
- * is machine-to-machine (the builder's publish CLI), so it uses a shared
- * `PUBLISH_TOKEN` bearer rather than a cookie session. A missing/blank env var
- * means the endpoint is closed (every request 401s).
- */
-function requirePublishToken(): MiddlewareHandler {
-    return async (c, next) => {
-        const expected = process.env.PUBLISH_TOKEN ?? '';
-        const header = c.req.header('authorization') ?? '';
-        const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
-        if (!expected || !tokensMatch(presented, expected)) {
-            return c.json({ error: 'Unauthorized' }, 401);
-        }
-        await next();
-    };
-}
-
-/** Constant-time token comparison (length-safe). */
-function tokensMatch(a: string, b: string): boolean {
-    const ab = Buffer.from(a);
-    const bb = Buffer.from(b);
-    if (ab.length !== bb.length) return false;
-    return timingSafeEqual(ab, bb);
-}
+import { requirePublishToken } from './publish-token';
 
 /**
  * Serve-mode ingest routes (§8). Mounted ONLY in serve mode by `main.ts`; in

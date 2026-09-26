@@ -378,6 +378,66 @@ public struct AppDatabase: Sendable {
             }
         }
 
+        // Reference photos (docs/feature-reference-photos.md §4.2/§4.3). User
+        // data captured on the device, keyed by site; no foreign key so a
+        // course or site refresh never drops a photo.
+        migrator.registerMigration("v12") { db in
+            try db.create(table: ReferencePhotoRecord.databaseTableName) { t in
+                t.primaryKey("id", .text)
+                t.column("siteId", .text).notNull().indexed()
+                t.column("courseId", .text)
+                t.column("hole", .integer)
+                t.column("capturedAt", .text).notNull()
+                t.column("lat", .double).notNull()
+                t.column("lon", .double).notNull()
+                t.column("hAccM", .double).notNull()
+                t.column("gpsAltM", .double)
+                t.column("vAccM", .double)
+                t.column("quatW", .double).notNull()
+                t.column("quatX", .double).notNull()
+                t.column("quatY", .double).notNull()
+                t.column("quatZ", .double).notNull()
+                t.column("yawDeg", .double).notNull()
+                t.column("pitchDeg", .double).notNull()
+                t.column("rollDeg", .double).notNull()
+                t.column("headingAccDeg", .double)
+                t.column("magCalibration", .integer)
+                t.column("hfovDeg", .double).notNull()
+                t.column("vfovDeg", .double).notNull()
+                t.column("width", .integer).notNull()
+                t.column("height", .integer).notNull()
+                t.column("eyeHeightM", .double).notNull()
+                t.column("deviceModel", .text)
+                t.column("lens", .text).notNull()
+                t.column("tags", .text).notNull()
+                t.column("note", .text)
+                // Local capture facts that the upload contract has no field for.
+                t.column("northReference", .text).notNull()
+                t.column("declinationDeg", .double)
+                t.column("imageUp", .text).notNull()
+                t.column("isStationary", .boolean).notNull()
+                t.column("maxRotationRateRadS", .double).notNull()
+                // Files, relative to the photos directory.
+                t.column("originalFile", .text).notNull()
+                t.column("previewFile", .text).notNull()
+                t.column("thumbnailFile", .text).notNull()
+                t.column("originalSha256", .text).notNull()
+                t.column("originalBytes", .integer).notNull()
+                t.column("previewSha256", .text).notNull()
+                t.column("previewBytes", .integer).notNull()
+                // Sync.
+                t.column("syncState", .text).notNull().indexed()
+                t.column("createdOnServerAt", .text)
+                t.column("originalUploadedAt", .text)
+                t.column("previewUploadedAt", .text)
+                t.column("syncedAt", .text)
+                t.column("originalDeletedAt", .text)
+                t.column("attemptCount", .integer).notNull().defaults(to: 0)
+                t.column("nextAttemptAt", .double)
+                t.column("lastError", .text)
+            }
+        }
+
         return migrator
     }
 

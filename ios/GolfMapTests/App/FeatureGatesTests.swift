@@ -17,16 +17,17 @@ final class FeatureGatesTests: XCTestCase {
         super.tearDown()
     }
 
-    func testGeneratedDefaultsExposeEveryGateAsFalse() {
+    func testGeneratedDefaultsExposeEveryGate() {
         let gates = FeatureGates.generatedDefaults
 
-        XCTAssertEqual(FeatureGateKey.allCases.count, 6)
+        XCTAssertEqual(FeatureGateKey.allCases.count, 7)
         XCTAssertFalse(gates.pinEntry)
         XCTAssertFalse(gates.laserCalibration)
         XCTAssertFalse(gates.planEditing)
         XCTAssertFalse(gates.planOptionsTree)
         XCTAssertFalse(gates.decideMode)
         XCTAssertFalse(gates.puttRead)
+        XCTAssertTrue(gates.referencePhotos)
     }
 
     func testDebugUserDefaultsOverridesApplyByTypedKey() {
