@@ -4,6 +4,7 @@ import { s, btn, primaryBtn, input, statusTag } from '../css';
 import { icon } from '../ui/icons';
 import { PopoverComponent } from '../ui/popover.component';
 import { CoursesService, type SortBy, type GroupBy } from './courses.service';
+import { SitesService } from '../sites/sites.service';
 import { ServerModeService, canAuthorCourses } from '../app/server-mode.service';
 import type { CourseSummary } from '../../../shared/api/courses.gen';
 import { renderCourseThumb, type RoutingHole } from './course-thumb';
@@ -17,7 +18,7 @@ const SELECTED_KEY = 'courses.selectedId';
 // Flat render model: one $each over headers + rows keeps keyed reconciliation
 // simple across filter/sort/group changes (frameless groups = whitespace only).
 type RenderRow =
-    | { kind: 'header'; key: string; label: string; count: number; first: boolean }
+    | { kind: 'header'; key: string; label: string; count: number; first: boolean; siteId: string | null }
     | { kind: 'row'; key: string; course: CourseSummary };
 
 const tpl = template(`
@@ -27,6 +28,7 @@ const tpl = template(`
                 <h2>Courses</h2>
                 <span bind="total" class="courses__total"></span>
                 <span class="courses__spacer"></span>
+                <button bind="sites" type="button" class="courses__sites" data-testid="courses-sites">Sites</button>
                 <button bind="newCourse" type="button" class="courses__new">
                     <span class="courses__new-plus">+</span>New course
                 </button>
@@ -51,7 +53,7 @@ const tpl = template(`
 
 const headerTpl = template(`
     <div class="course-group" data-testid="course-group">
-        <span bind="label" class="course-group__label"></span>
+        <button bind="label" type="button" class="course-group__label"></button>
         <span bind="count" class="course-group__count"></span>
         <span class="course-group__rule"></span>
     </div>
@@ -134,6 +136,12 @@ export class CourseListComponent extends Component {
             }
 
             & .courses__spacer { flex: 1; }
+
+            & .courses__sites {
+                padding: var(--space-3) var(--space-4);
+                font-size: 0.84rem;
+                ${btn()}
+            }
 
             & .courses__new {
                 display: inline-flex;
@@ -219,10 +227,16 @@ export class CourseListComponent extends Component {
                 &:not(:first-child) { margin-top: var(--space-8); }
 
                 & .course-group__label {
+                    padding: 0;
+                    border: none;
+                    background: none;
+                    cursor: default;
                     font: var(--text-overline);
                     letter-spacing: var(--tracking-overline);
                     text-transform: uppercase;
                     color: ${t('color-text-secondary')};
+                    &.is-link { cursor: pointer; }
+                    &.is-link:hover { color: ${t('color-text-primary')}; text-decoration: underline; }
                 }
                 & .course-group__count {
                     font-family: var(--font-mono);
@@ -378,6 +392,7 @@ export class CourseListComponent extends Component {
     private svc = this.inject(CoursesService);
     private router = this.inject(Router);
     private serverMode = this.inject(ServerModeService);
+    private sites = this.inject(SitesService);
     private selectedId = new Signal<string | null>(this.readSelected());
 
     render(): DocumentFragment {
@@ -392,6 +407,10 @@ export class CourseListComponent extends Component {
             retry: { onclick: () => this.svc.load() },
             // Creating a course means running the map-build wizard, which only
             // exists on a builder box — the button is absent in serve mode.
+            sites: {
+                onclick: () => this.router.navigate('/sites'),
+                style: () => (canAuthorCourses(this.serverMode.mode.get()) ? '' : 'display:none'),
+            },
             newCourse: {
                 onclick: () => this.router.navigate('/new'),
                 style: () => (canAuthorCourses(this.serverMode.mode.get()) ? '' : 'display:none'),
@@ -424,7 +443,8 @@ export class CourseListComponent extends Component {
     }
 
     onMount(): void {
-        void this.svc.load();
+        // Site setup renames courses and moves them between sites.
+        void this.svc.loadAt(this.sites.revision.get());
     }
 
     // ── flat render model ────────────────────────────────────────────────
@@ -432,7 +452,10 @@ export class CourseListComponent extends Component {
         const out: RenderRow[] = [];
         this.svc.groups.get().forEach((g, gi) => {
             if (g.label !== null) {
-                out.push({ kind: 'header', key: `h:${g.label}`, label: g.label, count: g.courses.length, first: gi === 0 });
+                // Grouped by site, a header opens that site's setup (builder only).
+                const siteId = this.svc.groupBy.get() === 'site' && canAuthorCourses(this.serverMode.mode.get())
+                    ? g.courses[0]?.siteId ?? null : null;
+                out.push({ kind: 'header', key: `h:${g.label}:${siteId ?? ''}`, label: g.label, count: g.courses.length, first: gi === 0, siteId });
             }
             for (const c of g.courses) out.push({ kind: 'row', key: c.id, course: c });
         });
@@ -441,7 +464,12 @@ export class CourseListComponent extends Component {
 
     private renderHeader(item: Extract<RenderRow, { kind: 'header' }>, track: (d: () => void) => void) {
         return this.wireEl(headerTpl, {
-            label: () => item.label,
+            label: {
+                textContent: () => item.label,
+                className: () => `course-group__label${item.siteId ? ' is-link' : ''}`,
+                disabled: () => !item.siteId,
+                onclick: () => { if (item.siteId) this.router.navigate(`/sites/${item.siteId}`); },
+            },
             count: () => String(item.count),
         }, track);
     }

@@ -116,6 +116,7 @@ attribute vec4 iExtra;   // scaleX, scaleY, phase, crown base raise (fraction of
 attribute vec4 iTint;    // foliage tint rgb, trunk lean tan(angle)
 uniform vec3 uCamera;
 uniform float uLodFull;
+uniform float uNeedle;
 uniform float uMidFraction;  // card fraction kept beyond uLodFull
 uniform float uCardFraction; // 0 normally; the impostor bake forces every card on
 uniform float uEdgeCutoff;   // |cos| below which a card is edge-on
@@ -154,7 +155,7 @@ void main() {
     // Whole-tree lean along the instance's local x axis (random per stem through the yaw).
     local.x += local.z * iTint.w;
     vec3 rotated = vec3(c * local.x - s * local.y, s * local.x + c * local.y, local.z);
-    rotated.xy += swayOffset(aInfo.w, iExtra.z, height);
+    rotated.xy += swayOffset(uNeedle > 0.5 ? 0.3 * pow(local.z / height, 2.0) : aInfo.w, iExtra.z, height);
     vec3 world = iPos + rotated;
     // Cards seen nearly edge-on show as thin slivers with straight edges; drop them. The test uses
     // the card's own centre (shared by its four vertices, so the quad is kept or dropped whole),
@@ -163,7 +164,7 @@ void main() {
     vec3 cardCentre = vec3(aCenter.xy * radius * iExtra.xy, (aCenter.z + iExtra.w * (1.0 - aCenter.z)) * height);
     cardCentre.x += cardCentre.z * iTint.w;
     vec3 toEye = normalize(uCamera - (iPos + vec3(c * cardCentre.x - s * cardCentre.y, s * cardCentre.x + c * cardCentre.y, cardCentre.z)));
-    if (aInfo.z > 0.5 && dot(cardN, cardN) > 0.5 && abs(dot(cardN, toEye)) < uEdgeCutoff) {
+    if (aInfo.z > 0.5 && aInfo.z < 1.5 && dot(cardN, cardN) > 0.5 && abs(dot(cardN, toEye)) < uEdgeCutoff) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         vUv = vec2(0.0); vNormal = vec3(0.0, 0.0, 1.0); vTint = vec3(1.0); vPart = 1.0; vFog = 0.0; vLodBias = 0.0; vDepth = 1.0; vView = vec3(0.0, 0.0, 1.0);
         return;
@@ -174,8 +175,8 @@ void main() {
     // Bark tint jitter per stem: brightness and a warm/grey shift from the phase hash.
     float j1 = fract(iExtra.z * 13.37), j2 = fract(iExtra.z * 7.13);
     vec3 barkTint = vec3(0.78 + 0.44 * j1, (0.78 + 0.44 * j1) * (0.92 + 0.12 * j2), (0.78 + 0.44 * j1) * (0.84 + 0.22 * j2));
-    vTint = aInfo.z < 0.5 ? barkTint : iTint.rgb;
-    vPart = aInfo.z;
+    vPart = aInfo.z > 1.5 ? 0.0 : aInfo.z;
+    vTint = vPart < 0.5 ? barkTint : iTint.rgb;
     vFog = fogAmount(dist);
     vLodBias = keep < 0.999 ? 1.0 : 0.0;
     vDepth = aDepth;
@@ -335,7 +336,9 @@ varying vec2 vUv;
 varying float vFade;
 ${LIGHTING_GLSL}
 void main() {
-    float radius = iParams.x, height = iParams.y, stand = iParams.w;
+    float radius = iParams.x, height = iParams.y;
+    float shrub = step(1.5, iParams.w);
+    float stand = shrub > 0.5 ? 0.0 : iParams.w;
     vec2 dir = normalize(uShadowOffset + vec2(1e-5, 0.0));
     vec2 side = vec2(-dir.y, dir.x);
     // Ellipse: crown width across the sun, stretched along it by the height.
@@ -343,10 +346,10 @@ void main() {
     float grow = 1.0 + 0.3 * stand;
     float across = radius * 1.15 * grow;
     float along = (radius * 1.15 + height * length(uShadowOffset) * 0.6) * grow;
-    vec2 centre = iPos.xy + uShadowOffset * height;
+    vec2 centre = iPos.xy + uShadowOffset * height * mix(1.0, 0.25, shrub);
     vec2 xy = centre + side * aCorner.x * across + dir * aCorner.y * along;
     // Sit just above the terrain so the decal does not z-fight with it.
-    vec3 world = vec3(xy, iPos.z + 0.35);
+    vec3 world = vec3(xy, iPos.z + mix(0.35, 0.03, shrub));
     gl_Position = projectionMatrix * vec4(world, 1.0);
     vUv = uv;
     vFade = (1.0 - fogAmount(distance(iPos, uCamera)) * 1.4) * (1.0 + 0.5 * stand);

@@ -3,12 +3,12 @@
  * (scripts/gen-tree-textures.ts) and the card geometry (tree-geometry.ts).
  *
  * Sixteen 512 x 512 cells in a 4 x 4 grid, one needle-spray cluster each:
- *   rows 0 and 1   eight spruce clusters (drooping branchlets)
+ *   rows 0 and 1   eight spruce boughs (needled lateral shoots)
  *   rows 2 and 3   eight pine clusters (tufted brushes of long needles)
  *
- * A cluster is a radial view of one branch end: twigs radiate from a point near
- * the cell centre and the alpha falls off toward the cell border, so a card can
- * face any direction without showing a straight edge. Rects are PNG pixels with
+ * Spruce boughs run left to right along the spray axis. Pine cells contain
+ * tufted branch ends. Alpha falls off toward cell borders, hiding straight
+ * edges on the folded spray geometry. Rects are PNG pixels with
  * y measured from the top; three.js flips the texture on upload, so `rectUv`
  * converts to uv with v growing upward.
  */

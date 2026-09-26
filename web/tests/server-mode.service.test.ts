@@ -90,8 +90,9 @@ test('every builder-only tool is flagged as such (registry stays in sync)', () =
     expect(flagged).toEqual(['clean', 'draw', 'furniture', 'sam', 'terrain-edit']);
 });
 
-test('builder routes are the map-build wizard, prefix-matched', () => {
-    expect(BUILDER_ROUTES).toEqual(['/new', '/set-area']);
+test('builder routes are the map-build wizard and site setup, prefix-matched', () => {
+    expect(BUILDER_ROUTES).toEqual(['/new', '/set-area', '/sites']);
+    expect(isBuilderRoute('/sites/abc-123')).toBe(true);
     expect(isBuilderRoute('/new')).toBe(true);
     expect(isBuilderRoute('/set-area/abc-123')).toBe(true);
     expect(isBuilderRoute('/course/abc-123')).toBe(false);

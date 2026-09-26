@@ -200,6 +200,84 @@ describe('fitClosedBspline maxControls cap (T52)', () => {
     });
 });
 
+// FitOptions — SAM's density controls: a ladder floor and curvature-weighted
+// parameterisation (controls follow bends, not just arc length).
+describe('fitClosedBspline options', () => {
+    /** Rounded rectangle w×h with corner radius r, ~0.1 m sample spacing. */
+    function roundedRectStroke(w: number, h: number, r: number): Point[] {
+        const pts: Point[] = [];
+        const corners = [[w / 2 - r, h / 2 - r], [-w / 2 + r, h / 2 - r], [-w / 2 + r, -h / 2 + r], [w / 2 - r, -h / 2 + r]];
+        const straights = [h - 2 * r, w - 2 * r, h - 2 * r, w - 2 * r];
+        const starts = [[w / 2, -h / 2 + r], [w / 2 - r, h / 2], [-w / 2, h / 2 - r], [-w / 2 + r, -h / 2]];
+        const dirs = [[0, 1], [-1, 0], [0, -1], [1, 0]];
+        for (let k = 0; k < 4; k++) {
+            const n = Math.ceil(straights[k] / 0.1);
+            for (let i = 0; i < n; i++) {
+                const s = (i / n) * straights[k];
+                pts.push({ x: CX + starts[k][0] + dirs[k][0] * s, y: CY + starts[k][1] + dirs[k][1] * s });
+            }
+            const arcN = Math.ceil(((Math.PI / 2) * r) / 0.1);
+            for (let i = 0; i < arcN; i++) {
+                const a = k * (Math.PI / 2) + (i / arcN) * (Math.PI / 2);
+                pts.push({ x: CX + corners[k][0] + r * Math.cos(a), y: CY + corners[k][1] + r * Math.sin(a) });
+            }
+        }
+        return pts;
+    }
+
+    /** Share of on-curve knots (segment starts) that lie in the corner arcs. */
+    function cornerShare(controls: Point[], w: number, h: number, r: number): number {
+        const m = controls.length;
+        let inCorner = 0;
+        for (let i = 0; i < m; i++) {
+            const a = controls[i];
+            const b = controls[(i + 1) % m];
+            const c = controls[(i + 2) % m];
+            const kx = (a.x + 4 * b.x + c.x) / 6 - CX;
+            const ky = (a.y + 4 * b.y + c.y) / 6 - CY;
+            if (Math.abs(kx) > w / 2 - r && Math.abs(ky) > h / 2 - r) inCorner++;
+        }
+        return inCorner / m;
+    }
+
+    test('minControls raises the ladder floor without breaking the fit', () => {
+        const stroke = circleStroke(15, 240);
+        expect(fitClosedBspline(stroke, TOL).controls.length).toBe(8);
+        const fit = fitClosedBspline(stroke, TOL, 48, { minControls: 24 });
+        expect(fit.controls.length).toBe(24);
+        expect(fit.maxDeviation).toBeLessThanOrEqual(TOL);
+        expect(recomputeMaxDeviation(stroke, fit.controls)).toBeLessThanOrEqual(TOL);
+    });
+
+    test('minControls is clamped to the cap', () => {
+        expect(fitClosedBspline(circleStroke(15, 240), TOL, 12, { minControls: 40 }).controls.length).toBe(12);
+    });
+
+    test('curvatureShare moves controls from straights into bends', () => {
+        const [w, h, r] = [40, 28, 4];
+        const stroke = roundedRectStroke(w, h, r);
+        const m = 40;
+        const uniform = fitClosedBspline(stroke, 0.3, m, { minControls: m });
+        const weighted = fitClosedBspline(stroke, 0.3, m, { minControls: m, curvatureShare: 0.5 });
+        expect(uniform.controls.length).toBe(m);
+        expect(weighted.controls.length).toBe(m);
+        // Corner arcs are 19% of this perimeter; the weighted fit puts about
+        // half its controls there, the uniform one stays near the arc share.
+        const arcShare = (2 * Math.PI * r) / (2 * (w + h) - 8 * r + 2 * Math.PI * r);
+        expect(cornerShare(uniform.controls, w, h, r)).toBeLessThan(arcShare + 0.12);
+        expect(cornerShare(weighted.controls, w, h, r)).toBeGreaterThan(cornerShare(uniform.controls, w, h, r) + 0.15);
+        // Still a valid fit either way.
+        expect(recomputeMaxDeviation(stroke, weighted.controls)).toBeLessThanOrEqual(0.3);
+    });
+
+    test('curvatureShare 0 is the default parameterisation', () => {
+        const stroke = kidneyStroke(300);
+        const a = fitClosedBspline(stroke, TOL);
+        const b = fitClosedBspline(stroke, TOL, 20, { curvatureShare: 0 });
+        expect(b.controls).toEqual(a.controls);
+    });
+});
+
 describe('fitClosedBspline degenerate strokes', () => {
     test('under 3 distinct points returns them as-is (caller discards)', () => {
         const fit = fitClosedBspline([{ x: CX, y: CY }, { x: CX + 1, y: CY }], TOL);

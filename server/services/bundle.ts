@@ -113,10 +113,13 @@ export interface BundleMeta {
  * blocker list rather than silently cascade-deleting user data (§5, §8.3).
  *
  * Only cascade-on-delete FKs are blockers — `set null` references (e.g.
- * `game_plan_holes.tee_id`) degrade gracefully and are not listed.
+ * `game_plan_holes.tee_id`) degrade gracefully and are not listed. The one
+ * exception is `site_photos.site_id`: it has no FK at all, but photos are user
+ * data that only make sense on their site (docs/feature-reference-photos.md
+ * §5.2), so dropping a site that has photos blocks the ingest too.
  */
 export const CONTENT_BLOCKER_REFERENCES: Record<ContentTable, ReadonlyArray<{ table: string; column: string }>> = {
-    sites: [],
+    sites: [{ table: 'site_photos', column: 'site_id' }],
     courses: [
         { table: 'game_plans', column: 'course_id' },
         { table: 'rounds', column: 'course_id' },

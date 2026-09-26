@@ -43,6 +43,11 @@ final class AppEnvironment {
     /// Pushes locally edited club-bag rows (dirty-flag queue + order-dirty
     /// flag). Flushed on app-start/foreground and after every bag edit.
     let clubSync: ClubSyncService
+    /// Reference photo files (Application Support/photos) and their upload
+    /// queue. Flushed on app foreground, after each capture and from the
+    /// photo list.
+    let photoFiles: PhotoFiles
+    let photoSync: PhotoSyncService
     let keychain: Keychain
     /// App-wide user preferences (competition mode, …).
     let settings: AppSettings
@@ -69,7 +74,8 @@ final class AppEnvironment {
         bundlePaths: BundlePaths,
         keychain: Keychain = Keychain(),
         settings: AppSettings = AppSettings(),
-        gates: FeatureGates = .current
+        gates: FeatureGates = .current,
+        photoFiles: PhotoFiles? = nil
     ) {
         self.serverOrigin = serverOrigin
         self.database = database
@@ -86,6 +92,11 @@ final class AppEnvironment {
         self.roundSync = RoundSyncService(client: client, database: database)
         self.planSync = PlanSyncService(client: client, database: database)
         self.clubSync = ClubSyncService(client: client, database: database)
+        let files = photoFiles
+            ?? (try? PhotoFiles.default())
+            ?? PhotoFiles(rootDirectory: FileManager.default.temporaryDirectory.appending(path: "photos", directoryHint: .isDirectory))
+        self.photoFiles = files
+        self.photoSync = PhotoSyncService(client: client, database: database, files: files)
 
         // Wire the Keychain into the client's silent re-login hook.
         let kc = keychain

@@ -1,5 +1,5 @@
-import { BufferGeometry, Color, Float32BufferAttribute, SphereGeometry, Uint16BufferAttribute } from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { BufferGeometry, Float32BufferAttribute } from 'three';
+export { shrubGeometry } from './shrub-geometry';
 import { clusterCell, CONIFER_CELLS, rectUv, type ConiferSpecies } from './conifer-atlas';
 
 /** Stems below this height render as shrubs (no trunk, crown on the ground); taller ones as trees. */
@@ -16,12 +16,12 @@ export function isShrubHeight(heightM: number): boolean {
 
 export type Species = 'broadleaf' | 'spruce' | 'pine';
 export const SPECIES: readonly Species[] = ['broadleaf', 'spruce', 'pine'];
-/** Distinct card layouts per species; the layout is picked per stem from a position hash. */
+/** Distinct crown forms per species, picked per stem from a position hash. */
 export const VARIANTS = 4;
 
 /** Asset `kind`: 0 broadleaf, 1 conifer, 2 unknown (absent in schema v1). Unknown renders as broadleaf. */
 export function speciesFor(kind: number | undefined, hash: number): Species {
-    if (kind === 1) return hash < 0.6 ? 'spruce' : 'pine';
+    if (kind === 1) return hash < 0.3 ? 'spruce' : 'pine';
     return 'broadleaf';
 }
 
@@ -42,8 +42,8 @@ export const LOD_FULL_M = 150;
 export const LOD_HALF_M = 600;
 /** Broadleaf card fraction kept between LOD_FULL_M and LOD_HALF_M. Half left mid-distance crowns with holes. */
 export const LOD_MID_FRACTION = 0.75;
-/** Conifer fraction at the same distances: half the cluster cards go. */
-export const CONIFER_LOD_MID_FRACTION = 0.5;
+/** Keep the two crossed main surfaces of every conifer spray; omit its third surface. */
+export const CONIFER_LOD_MID_FRACTION = 2 / 3;
 
 export function midFractionFor(species: Species): number {
     return species === 'broadleaf' ? LOD_MID_FRACTION : CONIFER_LOD_MID_FRACTION;
@@ -56,13 +56,13 @@ export function lodFor(distanceM: number, fullM = LOD_FULL_M, halfM = LOD_HALF_M
 /**
  * Fraction of the total height where the crown starts. Visual choice, not measured:
  * broadleaf 35 to 45 percent (stand trees carry a crown ratio near one half),
- * spruce from 15 percent, pine bare to 40 to 50 percent.
+ * spruce from 12 to 30 percent, pine bare to 46 to 68 percent.
  */
 export function crownBaseFraction(species: Species, variant: number): number {
     const t = variant / Math.max(1, VARIANTS - 1);
     if (species === 'broadleaf') return 0.35 + 0.10 * t;
-    if (species === 'spruce') return 0.15;
-    return 0.40 + 0.10 * t;
+    if (species === 'spruce') return [0.12, 0.30, 0.20, 0.16][variant];
+    return [0.46, 0.68, 0.61, 0.58][variant];
 }
 
 /**
@@ -161,7 +161,7 @@ export function adjustStand(stems: StandStem[]): void {
 //   aCorner  vec3  isotropic offset from the centre in crown-radius units (cards keep their aspect)
 //   uv       vec2  atlas coordinates
 //   normal   vec3  shading normal (ellipsoid/cone normals for cards, radial for trunks)
-//   aInfo    vec4  variant, lodRank, part (0 trunk, 1 foliage), sway weight
+//   aInfo    vec4  variant, lodRank, part (0 trunk, 1 foliage, 2 crown-scaled branch), sway weight
 //   aCardNormal vec3 geometric plane normal of a card (zero for trunks); edge-on cards are dropped
 //   aDepth   float 0 at the trunk axis, 1 at the crown edge; conifer needle shading darkens the interior (broadleaf: 1)
 // The vertex shader collapses cards whose variant differs from the instance
@@ -217,7 +217,7 @@ class TreeBuilder {
         geometry.setAttribute('aInfo', new Float32BufferAttribute(this.infos, 4));
         geometry.setAttribute('aCardNormal', new Float32BufferAttribute(this.cardNormals, 3));
         geometry.setAttribute('aDepth', new Float32BufferAttribute(this.depths, 1));
-        geometry.setIndex(new Uint16BufferAttribute(this.indices, 1));
+        geometry.setIndex(this.indices);
         // The shader positions vertices itself; keep a placeholder position so three.js is happy.
         geometry.setAttribute('position', new Float32BufferAttribute(new Float32Array(this.vertexCount * 3), 3));
         return geometry;
@@ -242,9 +242,9 @@ const BARK_REPEAT_V = 3;
  * or dark (1) bark column. xy is in trunk-base-radius units: a small root flare at the ground,
  * then a taper to TRUNK_TOP_TAPER at the top.
  */
-function addTrunk(builder: TreeBuilder, variant: number, top: number, barkHalf: number, swayTop: number): void {
+function addTrunk(builder: TreeBuilder, variant: number, top: number, barkHalf: number, swayTop: number, topTaper = TRUNK_TOP_TAPER): void {
     const rings = [0, 0.25, 0.5, 0.75, 1].map(f => f * top);
-    const tapers = [1.12, 0.9, 0.7, 0.5, TRUNK_TOP_TAPER];
+    const tapers = topTaper === TRUNK_TOP_TAPER ? [1.12, 0.9, 0.7, 0.5, topTaper] : [1.12, 0.82, 0.56, 0.28, topTaper];
     const ringStart: number[] = [];
     for (let r = 0; r < rings.length; r++) {
         ringStart.push(builder.centers.length / 3);
@@ -365,111 +365,128 @@ function addBroadleafVariant(builder: TreeBuilder, variant: number): void {
 }
 
 // ---------------------------------------------------------------------------
-// Conifer: a volume fill of small needle-cluster cards, the same principle as
-// the broadleaf crown. No card spans a tier or the crown height; every card is a
-// roughly square quad, 18 to 28 percent of the local crown diameter, at a random
-// azimuth and height inside the cone (spruce: spire from 15 percent of the
-// height; pine: bare trunk, then a deep irregular umbrella). Seventy percent of
-// the cards sit at the cone surface and thirty percent inside it to hide the
-// trunk. Each card faces outward with a species droop plus yaw and roll jitter,
-// so no two cards share a plane and the crown reads as a mass of clusters.
+// Conifers grow from connected woody branches. Needle sprays follow the branches,
+// with three folded surfaces per spray. Medium detail retains two crossed surfaces
+// at EVERY attachment, preserving the crown instead of removing random clusters.
 // ---------------------------------------------------------------------------
-export const CONIFER_CARDS_MIN = 60;
-export const CONIFER_CARDS_MAX = 84;
-/** Card side as a fraction of the local crown diameter (radius floored at CONIFER_SIZE_RADIUS_FLOOR). */
-export const CONIFER_CARD_SIZE: readonly [number, number] = [0.26, 0.4];
-/** Local crown radius floor used to size cards near the spire, crown-radius units. */
-export const CONIFER_SIZE_RADIUS_FLOOR = 0.5;
-/** Share of the cards placed inside the cone rather than at its surface. */
-export const CONIFER_INTERIOR_FRACTION = 0.3;
-/** Interior cards sit inside this fraction of the local radius; surface cards outside CONIFER_SURFACE_MIN. */
-export const CONIFER_INTERIOR_MAX = 0.6;
-export const CONIFER_SURFACE_MIN = 0.78;
-/** Card normal elevation above horizontal, degrees: the plane droops outward and down (spruce more than pine). */
-export const CONIFER_DROOP_DEG: Record<ConiferSpecies, readonly [number, number]> = { spruce: [25, 50], pine: [5, 25] };
-/** Random yaw (about the vertical) and roll (about the normal) either way, degrees. */
-export const CONIFER_JITTER_DEG = 35;
+export const CONIFER_FORM_NAMES: Record<ConiferSpecies, readonly string[]> = {
+    spruce: ['full crown', 'forest spire', 'old irregular', 'slender crown'],
+    pine: ['young crown', 'high spreading', 'asymmetric', 'broad crown'],
+};
+export const CONIFER_TOP_TAPER = 0.025;
+type Point = readonly [number, number, number];
+const mixPoint = (a: Point, b: Point, t: number): Point => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 
-/** Crown radius profile at crown fraction f (0 base, 1 top), crown-radius units. */
+/** Branch envelope, not a surface to scatter foliage over. */
 export function coniferProfile(species: ConiferSpecies, f: number): number {
-    if (species === 'spruce') return Math.max(0.12, (1 - f) ** 0.85);
-    // Pine umbrella: widest at 40 percent of the crown, still broad at the top, narrower under the dome.
-    return Math.max(0.3, Math.sqrt(Math.max(0, 1 - ((f - 0.4) / 0.65) ** 2)));
+    if (species === 'spruce') return Math.max(0.035, (1 - f) ** 0.8);
+    return Math.max(0.12, Math.sin(Math.PI * (0.10 + 0.86 * f)) ** 0.65);
 }
 
-function cross(a: readonly number[], b: readonly number[]): number[] {
-    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-}
-
-/** Rotates vector p about unit axis k by angle a (Rodrigues). */
-function rotateAbout(p: readonly number[], k: readonly number[], a: number): number[] {
-    const c = Math.cos(a), s = Math.sin(a), d = k[0] * p[0] + k[1] * p[1] + k[2] * p[2];
-    return [
-        p[0] * c + (k[1] * p[2] - k[2] * p[1]) * s + k[0] * d * (1 - c),
-        p[1] * c + (k[2] * p[0] - k[0] * p[2]) * s + k[1] * d * (1 - c),
-        p[2] * c + (k[0] * p[1] - k[1] * p[0]) * s + k[2] * d * (1 - c),
-    ];
-}
-
-function addClusterCard(builder: TreeBuilder, species: ConiferSpecies, variant: number, random: () => number,
-    azimuth: number, rho: number, localRadius: number, centerZ: number, half: number, rank: number, sway: number): void {
-    const [droopMin, droopMax] = CONIFER_DROOP_DEG[species];
-    const droop = (droopMin + random() * (droopMax - droopMin)) * Math.PI / 180;
-    const yawJitter = (random() * 2 - 1) * CONIFER_JITTER_DEG * Math.PI / 180;
-    const roll = (random() * 2 - 1) * CONIFER_JITTER_DEG * Math.PI / 180;
-    const a = azimuth + yawJitter;
-    // Normal: outward and up by the droop; the plane hangs outward and down like a branch end.
-    const n0 = [Math.cos(a) * Math.cos(droop), Math.sin(a) * Math.cos(droop), Math.sin(droop)];
-    const side0 = [-Math.sin(a), Math.cos(a), 0];
-    const u = rotateAbout(side0, n0, roll);
-    const v = cross(n0, u); // in-plane up, outward-leaning
-    const uv = rectUv(clusterCell(species, Math.floor(random() * CONIFER_CELLS)));
-    const flip = random() < 0.5;
-    const nx = Math.cos(azimuth) * rho, ny = Math.sin(azimuth) * rho;
-    const depth = Math.min(1, rho / Math.max(1e-6, localRadius));
-    const corners: number[] = [];
-    for (const [cu, cv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
-        const offset = [(u[0] * cu + v[0] * cv) * half, (u[1] * cu + v[1] * cv) * half, (u[2] * cu + v[2] * cv) * half];
-        // Cone normal at the card, blended with the corner offset so the card shades across its face.
-        const lift = species === 'spruce' ? 0.45 : 0.6;
-        const normal = [Math.cos(azimuth) + offset[0] * 0.8, Math.sin(azimuth) + offset[1] * 0.8, lift + offset[2] * 0.5];
-        const tu = flip ? uv.u1 - (cu * 0.5 + 0.5) * (uv.u1 - uv.u0) : uv.u0 + (cu * 0.5 + 0.5) * (uv.u1 - uv.u0);
-        const tv = uv.vBottom + (cv * 0.5 + 0.5) * (uv.vTop - uv.vBottom);
-        corners.push(builder.vertex([nx, ny, centerZ], offset, [tu, tv], normal, [variant, rank, 1, sway], n0, depth));
+/** Five-sided tapered tube. Centres use crown XY / height Z, offsets use crown units. */
+function addBranch(builder: TreeBuilder, variant: number, species: ConiferSpecies, points: readonly Point[], thickness: number): void {
+    const aspect = impostorBakeHeight(species);
+    const first = builder.centers.length / 3;
+    const sides = 5;
+    for (let r = 0; r < points.length; r++) {
+        const p = points[r], before = points[Math.max(0, r - 1)], after = points[Math.min(points.length - 1, r + 1)];
+        const dx = after[0] - before[0], dy = after[1] - before[1], dz = (after[2] - before[2]) * aspect;
+        const length = Math.hypot(dx, dy, dz) || 1, horizontal = Math.hypot(dx, dy) || 1;
+        const u = [-dy / horizontal, dx / horizontal, 0];
+        const v = [-dz * u[1] / length, dz * u[0] / length, (dx * u[1] - dy * u[0]) / length];
+        const radius = thickness * (1 - 0.92 * r / (points.length - 1));
+        for (let k = 0; k <= sides; k++) {
+            const angle = k / sides * Math.PI * 2, c = Math.cos(angle), s = Math.sin(angle);
+            const n = [u[0] * c + v[0] * s, u[1] * c + v[1] * s, v[2] * s];
+            builder.vertex(p, n.map(x => x * radius), [(species === 'spruce' ? 0.5 : 0) + k / sides * 0.5, r * 0.7], n, [variant, 0, 2, 0]);
+        }
     }
-    builder.quad(corners[0], corners[1], corners[2], corners[3]);
-    builder.cards++;
+    for (let r = 0; r < points.length - 1; r++) for (let k = 0; k < sides; k++) {
+        const a = first + r * (sides + 1) + k, b = a + sides + 1;
+        builder.quad(a, a + 1, b + 1, b);
+    }
+}
+
+/** A needle spray centred on wood, with a bent midrib and three non-coplanar surfaces. */
+function addNeedleSpray(builder: TreeBuilder, species: ConiferSpecies, variant: number, random: () => number,
+    centre: Point, azimuth: number, length: number, width: number): void {
+    const uv = rectUv(clusterCell(species, Math.floor(random() * CONIFER_CELLS)));
+    const pitch = species === 'spruce' ? -0.55 - random() * 0.30 : 0.15 + random() * 0.45;
+    const axis = [Math.cos(azimuth) * Math.cos(pitch), Math.sin(azimuth) * Math.cos(pitch), Math.sin(pitch)];
+    const side = [-Math.sin(azimuth), Math.cos(azimuth), 0];
+    const up = [-axis[2] * side[1], axis[2] * side[0], Math.cos(pitch)];
+    const twist = random() * 0.6;
+    for (let face = 0; face < 3; face++) {
+        const angle = twist + face * Math.PI / 3;
+        const across = side.map((x, i) => x * Math.cos(angle) + up[i] * Math.sin(angle));
+        const normal = side.map((x, i) => -x * Math.sin(angle) + up[i] * Math.cos(angle));
+        const start = builder.centers.length / 3;
+        // Two panels share a raised midrib: the spray has depth even at medium detail.
+        for (let row = 0; row < 3; row++) for (let col = 0; col < 2; col++) {
+            const x = (col * 2 - 1) * length * 0.5, y = (row - 1) * width * 0.5;
+            const fold = row === 1 ? width * 0.18 : 0;
+            const offset = axis.map((v, i) => v * x + across[i] * y + normal[i] * fold);
+            // Rounded spray normals, independent of the plane orientation.
+            const n = [Math.cos(azimuth) * 0.55 + normal[0] * 0.25, Math.sin(azimuth) * 0.55 + normal[1] * 0.25, 0.65 + (row - 1) * 0.15];
+            builder.vertex(centre, offset, [uv.u0 + col * (uv.u1 - uv.u0), uv.vBottom + row / 2 * (uv.vTop - uv.vBottom)],
+                n, [variant, (face + 0.5) / 3, 1, 0], [0, 0, 0], 0.65 + 0.35 * Math.min(1, Math.hypot(centre[0], centre[1])));
+        }
+        builder.quad(start, start + 1, start + 3, start + 2);
+        builder.quad(start + 2, start + 3, start + 5, start + 4);
+        builder.cards++;
+    }
 }
 
 function addConiferVariant(builder: TreeBuilder, species: ConiferSpecies, variant: number): void {
     const random = seeded((species === 'spruce' ? 2000 : 3000) + variant);
-    const base = crownBaseFraction(species, variant);
-    const span = 1 - base;
-    const spruce = species === 'spruce';
-    addTrunk(builder, variant, 0.97, spruce ? 1 : 0, 0.15);
-    const cardCount = CONIFER_CARDS_MIN + Math.floor(random() * (CONIFER_CARDS_MAX - CONIFER_CARDS_MIN + 1));
-    const ranks = lodRanks(cardCount, random);
-    const interior = Math.round(cardCount * CONIFER_INTERIOR_FRACTION);
-    const [sizeMin, sizeMax] = CONIFER_CARD_SIZE;
-    for (let i = 0; i < cardCount; i++) {
-        // Height: denser in the lower tiers (spruce) or through the dome (pine).
-        const f = spruce ? Math.pow(random(), 1.3) : 0.05 + 0.95 * Math.pow(random(), 0.9);
-        const localRadius = coniferProfile(species, f);
-        const rho = i < interior
-            ? localRadius * (0.1 + random() * (CONIFER_INTERIOR_MAX - 0.1))
-            : localRadius * (CONIFER_SURFACE_MIN + random() * (1 - CONIFER_SURFACE_MIN));
-        const azimuth = random() * Math.PI * 2;
-        const side = (sizeMin + random() * (sizeMax - sizeMin)) * 2 * Math.max(localRadius, CONIFER_SIZE_RADIUS_FLOOR);
-        addClusterCard(builder, species, variant, random, azimuth, rho, localRadius, base + span * f, side / 2, ranks[i], 0.25 + 0.75 * f);
+    const spruce = species === 'spruce', base = crownBaseFraction(species, variant);
+    const tiers = spruce ? [13, 12, 11, 14][variant] : [8, 7, 8, 9][variant];
+    const width = spruce ? [1, 0.80, 1, 0.73][variant] : [0.78, 1, 0.94, 1][variant];
+    addTrunk(builder, variant, 0.985, spruce ? 1 : 0, 0.15, CONIFER_TOP_TAPER);
+    for (let tier = 0; tier < tiers; tier++) {
+        const progress = tier / (tiers - 1);
+        const f = spruce ? 1 - (1 - progress) ** 1.25 : progress;
+        const z = base + (0.98 - base) * f;
+        const count = spruce ? 6 + (tier % 2) : 4 + (tier % 3);
+        const rotation = tier * 2.39996 + random() * 0.5;
+        for (let b = 0; b < count; b++) {
+            const angle = rotation + b / count * Math.PI * 2 + (random() - 0.5) * 0.35;
+            const asymmetry = variant === 2 ? 0.76 + 0.24 * Math.cos(angle - 0.7) : 1;
+            const reach = coniferProfile(species, f) * width * asymmetry * (0.82 + random() * 0.18);
+            const dz = spruce ? -0.015 - (1 - f) * 0.022 : 0.045 + random() * 0.065;
+            const root: Point = [0, 0, z + (random() - 0.5) * 0.03];
+            const elbow: Point = [Math.cos(angle) * reach * 0.48, Math.sin(angle) * reach * 0.48, root[2] + dz * 0.7];
+            const tip: Point = [Math.cos(angle + 0.12) * reach, Math.sin(angle + 0.12) * reach, Math.min(0.985, root[2] + dz)];
+            addBranch(builder, variant, species, [root, elbow, tip], (spruce ? 0.022 : 0.035) * (1 - f * 0.75));
+            // Short lateral shoots overlap from the inner branch out to its tip.
+            const shoots = spruce ? 5 : 4;
+            for (let shoot = 0; shoot < shoots; shoot++) {
+                const t = (spruce ? 0.24 : 0.44) + shoot / (shoots - 1) * (spruce ? 0.70 : 0.50);
+                const joint = t < 0.48 ? mixPoint(root, elbow, t / 0.48) : mixPoint(elbow, tip, (t - 0.48) / 0.52);
+                const sign = shoot % 2 ? 1 : -1;
+                const shootAngle = angle + sign * (0.55 + random() * 0.35);
+                const shootLength = (spruce ? 0.18 : 0.22) * (0.5 + reach) * (1 - t * 0.3);
+                const end: Point = [joint[0] + Math.cos(shootAngle) * shootLength, joint[1] + Math.sin(shootAngle) * shootLength,
+                    Math.min(0.99, joint[2] + (spruce ? -0.022 : 0.025))];
+                addBranch(builder, variant, species, [joint, end], 0.007 * (1 - f * 0.65));
+                const size = (spruce ? 0.40 : 0.34) * (0.40 + reach * 0.7) * (0.9 + random() * 0.2);
+                addNeedleSpray(builder, species, variant, random, mixPoint(joint, end, 0.55), shootAngle, size * (spruce ? 1.7 : 1.15), size);
+                if (!spruce) addNeedleSpray(builder, species, variant, random, end, shootAngle + 0.7, size, size * 0.85);
+            }
+        }
     }
+    // A continuous needled leader hides the tapered trunk tip.
+    for (let k = 0; k < 4; k++) addNeedleSpray(builder, species, variant, random, [0, 0, 0.94 + k * 0.015], k * 2.4,
+        (spruce ? 0.20 : 0.30) * (1 - k * 0.17), (spruce ? 0.13 : 0.22) * (1 - k * 0.17));
 }
 
 export interface TreeGeometryInfo { geometry: BufferGeometry; cards: number; vertices: number }
 
-/** All variants of one species in a single indexed geometry (instanced by the layer). */
-export function treeGeometry(species: Species): TreeGeometryInfo {
+/** One form for instanced drawing, or all forms for the impostor bake. */
+export function treeGeometry(species: Species, onlyVariant?: number): TreeGeometryInfo {
     const builder = new TreeBuilder();
     for (let variant = 0; variant < VARIANTS; variant++) {
+        if (onlyVariant !== undefined && variant !== onlyVariant) continue;
         if (species === 'broadleaf') addBroadleafVariant(builder, variant);
         else addConiferVariant(builder, species, variant);
     }
@@ -527,41 +544,4 @@ export function shadowGeometry(): BufferGeometry {
     geometry.setAttribute('position', new Float32BufferAttribute(new Float32Array(12), 3));
     geometry.setIndex([0, 1, 2, 0, 2, 3]);
     return geometry;
-}
-
-// ---------------------------------------------------------------------------
-// Shrub: a flattened, lumpy ellipsoid resting on the ground. Unit XY radius
-// is the measured crown radius; Z spans 0..1 and scales to measured height.
-// Kept from the first renderer; stems under 4 m still use it.
-// ---------------------------------------------------------------------------
-export function shrubGeometry(detailed: boolean): BufferGeometry {
-    const pieces: BufferGeometry[] = [];
-    const count = detailed ? 9 : 5;
-    const color = new Color();
-    for (let n = 0; n < count; n++) {
-        const angle = n * 2.399963;
-        const offset = n === 0 ? 0 : 0.42;
-        const radius = n === 0 ? 0.72 : 0.56;
-        const geometry = new SphereGeometry(1, detailed ? 9 : 7, detailed ? 6 : 5);
-        const positions = geometry.getAttribute('position');
-        const colors: number[] = [];
-        for (let i = 0; i < positions.count; i++) {
-            const x = positions.getX(i), y = positions.getY(i), z = positions.getZ(i);
-            const ripple = 0.92 + 0.08 * Math.sin(x * 9 + n) * Math.sin(y * 8 + z * 7);
-            // The sphere's polar axis (y) becomes up, so the pole vertices land exactly
-            // at 0 (ground) and 1 (measured height); side lumps stay lower.
-            const zUnit = (0.5 + y * 0.5) * (n === 0 ? 1 : 0.85);
-            positions.setXYZ(i, Math.cos(angle) * offset + x * radius * ripple,
-                Math.sin(angle) * offset + z * radius * ripple, zUnit);
-            const light = 0.56 + 0.16 * (y + 1) / 2 + 0.08 * Math.sin(x * 15 + z * 19 + n) ** 2;
-            color.setRGB(light * 0.88, light, light * 0.78);
-            colors.push(color.r, color.g, color.b);
-        }
-        geometry.setAttribute('color', new Float32BufferAttribute(colors, 3));
-        geometry.computeVertexNormals();
-        pieces.push(geometry);
-    }
-    const merged = mergeGeometries(pieces)!;
-    pieces.forEach(piece => piece.dispose());
-    return merged;
 }

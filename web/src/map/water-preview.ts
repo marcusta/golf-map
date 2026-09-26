@@ -1,6 +1,7 @@
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { WaterLayer } from './water-layer';
+import { MapPerformanceControl } from './map-performance-control';
 import type { FeatureCollection } from 'geojson';
 
 // Constant 100 m DEM exercises the real custom-layer projection and terrain queries.
@@ -36,9 +37,15 @@ const map = new maplibregl.Map({ container: 'map', center, zoom: 17.5, pitch: 0,
         { id: 'water-fill', type: 'fill', source: 'water', paint: { 'fill-color': '#4c8fbe' } },
     ] },
 });
+let waterEnabled = true;
+map.addControl(new MapPerformanceControl(() => waterEnabled, enabled => {
+    waterEnabled = enabled;
+    if (water) water.enabled = enabled;
+}, () => water), 'top-right');
 map.on('load', () => {
     map.setTerrain({ source: 'course-terrain', exaggeration: 1 });
     water = new WaterLayer();
+    water.enabled = waterEnabled;
     map.addLayer(water);
     water.setData(data);
 });

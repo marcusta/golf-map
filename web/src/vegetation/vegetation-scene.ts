@@ -1,7 +1,7 @@
 import {
     Camera, Mesh, MeshBasicMaterial, OrthographicCamera, PerspectiveCamera, PlaneGeometry, Scene, ShaderMaterial, Texture, Vector3, WebGLRenderer,
 } from 'three';
-import { LIGHTING_GLSL, SUN_AZIMUTH_DEG, SUN_ELEVATION_DEG } from '../map/tree-material';
+import { LIGHTING_GLSL, SUN_AZIMUTH_DEG, SUN_ELEVATION_DEG, sunDirection } from '../map/tree-material';
 import { TreeRenderer, treeStats, type TreeStats } from '../map/tree-renderer';
 import type { TreeLod } from '../map/tree-geometry';
 import { GRASS_TILE_M, grassTexture } from './grass-texture';
@@ -151,8 +151,11 @@ export class VegetationScene {
     /** Pushes every control into the renderer; call after mutating `state`. */
     applyState(): void {
         const s = this.state;
-        this.core.setSun(s.sunAzimuthDeg, s.sunElevationDeg);
-        this.core.invalidateImpostors();
+        // Camera, detail and inspector controls reuse the baked atlas. Only lighting changes it.
+        if (!this.core.lighting.sunDir.equals(sunDirection(s.sunAzimuthDeg, s.sunElevationDeg))) {
+            this.core.setSun(s.sunAzimuthDeg, s.sunElevationDeg);
+            this.core.invalidateImpostors();
+        }
         this.core.forcedLod = FORCED_LOD[s.lod];
         this.core.applyLod();
         this.core.sway = s.sway;

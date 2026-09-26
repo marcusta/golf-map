@@ -5,9 +5,9 @@ import { routeComponents } from '../src/app/app.component';
 // the guard — is what keeps the map-build wizard components from ever being
 // constructed on a box whose pipeline APIs are unmounted.
 
-test('builder mounts the map-build wizard routes', () => {
+test('builder mounts the map-build wizard and site setup routes', () => {
     const routes = Object.keys(routeComponents('builder')).sort();
-    expect(routes).toEqual(['/', '/course', '/login', '/new', '/planner', '/player', '/set-area']);
+    expect(routes).toEqual(['/', '/course', '/login', '/new', '/planner', '/player', '/set-area', '/sites']);
 });
 
 test('serve drops them and keeps everything runtime', () => {
