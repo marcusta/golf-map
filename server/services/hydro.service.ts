@@ -36,6 +36,7 @@ import * as path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { resolveCourseInnerSquare, type Bbox3006, type BboxWgs84 } from './course-bbox';
 import { squareTuple } from './terrain-square';
+import { parseDotenv } from './dotenv';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
 
@@ -133,23 +134,6 @@ export function swapAxes(coords: Coords[]): Coords[] {
         return [coords[1], coords[0]];
     }
     return (coords as Coords[][]).map(swapAxes);
-}
-
-/**
- * Parse KEY=VALUE lines the way pipeline/golfpipe/__main__.py _load_dotenv
- * does: blank/comment/`=`-less lines skipped, values stripped of quotes.
- */
-export function parseDotenv(text: string): Record<string, string> {
-    const out: Record<string, string> = {};
-    for (const rawLine of text.split('\n')) {
-        const line = rawLine.trim();
-        if (!line || line.startsWith('#') || !line.includes('=')) continue;
-        const idx = line.indexOf('=');
-        const key = line.slice(0, idx).trim();
-        const value = line.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '');
-        if (key && value) out[key] = value;
-    }
-    return out;
 }
 
 /**

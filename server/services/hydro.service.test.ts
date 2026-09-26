@@ -11,7 +11,6 @@ import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import {
     HydroService,
     swapAxes,
-    parseDotenv,
     clipPolygonToBbox,
     clipPolylineToBbox,
     HYDRO_SOURCE,
@@ -146,13 +145,6 @@ describe('swapAxes', () => {
         expect(swapAxes([[1, 2], [3, 4]])).toEqual([[2, 1], [4, 3]]);
         expect(swapAxes([[[6472900, 531400], [6473100, 531600]]]))
             .toEqual([[[531400, 6472900], [531600, 6473100]]]);
-    });
-});
-
-describe('parseDotenv', () => {
-    test('parses KEY=VALUE lines, strips quotes, skips comments/blank lines', () => {
-        const parsed = parseDotenv('# comment\n\nLANTMATERIET_USER=alice\nLANTMATERIET_PASS="s3cret=x"\nBROKEN\n');
-        expect(parsed).toEqual({ LANTMATERIET_USER: 'alice', LANTMATERIET_PASS: 's3cret=x' });
     });
 });
 

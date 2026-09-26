@@ -11,10 +11,12 @@
  *   PUBLISH_TOKEN  bearer token, set identically on both boxes
  *   DB_PATH / DATA_DIR  as for the server (defaults ../data/…)
  *   MAP_PIPELINE_DIR / MAP_PIPELINE_PYTHON  golfpipe location (as for map builds)
+ * The PUBLISH_* pair may also sit in server/.env or the repo root's .env.
  *
  * The bundle-building logic is exported (`buildBundle`, `packBundle`) so it is
  * exercised by integration tests against a real migrated DB + synthetic tiles.
  */
+import '../env-paths';
 import * as path from 'node:path';
 import {
     existsSync,
@@ -49,6 +51,7 @@ import { createTarZst } from '../services/bundle-archive';
 import { toGeoJson, type FeatureGeometry } from '../services/geo';
 import { defaultRunner, type PipelineRunner, type PipelineRunResult } from '../services/map-build.service';
 import { DEFAULT_PIPELINE_DIR } from '../services/pipeline-dir';
+import { envWithDotenvFallback } from '../services/dotenv';
 
 export interface PublishDeps {
     db: Kysely<Database>;
@@ -569,8 +572,7 @@ async function main(): Promise<void> {
             return;
         }
 
-        const url = process.env.PUBLISH_URL;
-        const token = process.env.PUBLISH_TOKEN;
+        const { PUBLISH_URL: url, PUBLISH_TOKEN: token } = envWithDotenvFallback(['PUBLISH_URL', 'PUBLISH_TOKEN']);
         if (!url || !token) {
             throw new Error('Set PUBLISH_URL and PUBLISH_TOKEN to upload (or pass --no-upload).');
         }

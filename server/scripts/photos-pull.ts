@@ -13,7 +13,9 @@
  *   PUBLISH_URL    base URL of the serve-mode VPS
  *   PUBLISH_TOKEN  bearer token, set identically on both boxes
  *   DB_PATH / DATA_DIR  as for the server (defaults ../data/…)
+ * The PUBLISH_* pair may also sit in server/.env or the repo root's .env.
  */
+import '../env-paths';
 import * as path from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { config } from '@basics/core/server/config';

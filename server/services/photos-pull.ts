@@ -20,6 +20,7 @@ import {
     type PullPage,
     type PullPhoto,
 } from './photos.service';
+import { envWithDotenvFallback } from './dotenv';
 
 export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -177,10 +178,12 @@ async function download(
     await photos.installPulledFile(remote, kind, { tmpPath, sha256: sha, bytes: bytes.byteLength });
 }
 
-/** Env-based pull settings; null when `PUBLISH_URL` or `PUBLISH_TOKEN` is missing. */
+/**
+ * Env-based pull settings (process env, then server/.env, then the root .env);
+ * null when `PUBLISH_URL` or `PUBLISH_TOKEN` is missing.
+ */
 export function pullConfigFromEnv(): { baseUrl: string; token: string } | null {
-    const baseUrl = process.env.PUBLISH_URL;
-    const token = process.env.PUBLISH_TOKEN;
+    const { PUBLISH_URL: baseUrl, PUBLISH_TOKEN: token } = envWithDotenvFallback(['PUBLISH_URL', 'PUBLISH_TOKEN']);
     if (!baseUrl || !token) return null;
     return { baseUrl, token };
 }

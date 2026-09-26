@@ -2,7 +2,8 @@
 // when `p` is a relative path through `..` that already exists, e.g. the
 // `DATA_DIR=../data` the dev script passes. Absolute paths are fine. Resolve the
 // data-path env vars before `@basics/core/server/config` reads them, so every
-// mkdir/open downstream sees an absolute path. Imported first from main.ts; ES
+// mkdir/open downstream sees an absolute path. Imported first from main.ts and
+// the CLI scripts that open the DB (photos-pull, publish); ES
 // module evaluation order guarantees it runs before the config module.
 import * as path from 'node:path';
 
