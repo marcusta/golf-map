@@ -1,12 +1,19 @@
 // The course's vegetation zone-type table, edited in place: one row per zone
-// type with its display name, editor colour, VSPro mask slot (texture +
-// channel) and the item bindings the Unity importer wires into the vegetation
-// package (D-VZ9 — vegetation item name, min/max density).
+// type with its display name, editor colour and the item bindings the Unity
+// importer wires into the vegetation package (D-VZ9 — vegetation item name,
+// min/max density). The type's own items are its "Default" mix; below them
+// each named variant (e.g. Tall rough -> "Dry straw") carries its own mix,
+// and a drawn zone picks one in the selection panel. Mask channels are not
+// edited here: the pipeline gives every bound item a channel of its own.
+//
+// Variant keys are chosen once, on "Add variant" (the slug of the
+// placeholder name, unique in the type), and never re-derived: renaming a
+// variant must not unbind the zones that already name it.
 //
 // Deliberately plain: this is a short per-course legend a builder touches once
 // per course, not a daily surface. Every field commits on `change` (blur or
 // Enter) straight through ZoneTypesService, which re-reads the table after
-// each write — the server owns key/channel uniqueness and sort order.
+// each write — the server owns key uniqueness and sort order.
 //
 // Spawned once by CourseDetailComponent and hidden until the command bar's ⋯
 // menu calls ZoneTypesService.openFor(), exactly like the export panel.
@@ -15,7 +22,13 @@ import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, primaryBtn, glassPanel, panelTitle, OVERLAY_W, OVERLAY_INSET } from '../css';
 import { icon } from '../ui/icons';
-import { ZoneTypesService, type CourseZoneType, type ZoneTypeItem } from './zone-types.service';
+import {
+    ZoneTypesService, itemNamesOf, slugify,
+    type CourseZoneType, type ZoneTypeItem, type ZoneTypeVariant,
+} from './zone-types.service';
+
+/** One `<datalist>` for every item input: the names bound anywhere in the table. */
+const ITEM_NAMES_LIST_ID = 'zone-type-item-names';
 
 const tpl = template(`
     <div bind="root" class="zone-types" data-testid="zone-types-panel">
@@ -24,11 +37,12 @@ const tpl = template(`
             <button bind="close" type="button" aria-label="Close" title="Close">${icon('x')}</button>
         </div>
         <div class="zone-types__hint">
-            The legend every vegetation zone points at. Each type owns one channel of one mask
-            texture (four types per texture), and its items are the VSPro vegetation items the
-            Unity importer binds to that channel.
+            The legend every vegetation zone points at. A type's Default items are the VSPro
+            vegetation items its zones grow; a variant is a named alternative mix a zone can pick
+            instead. The export gives every bound item its own mask channel.
         </div>
         <div bind="list" class="zone-types__list"></div>
+        <datalist bind="itemNames" id="${ITEM_NAMES_LIST_ID}"></datalist>
         <div bind="errorRow" class="zone-types__error"></div>
         <div class="zone-types__footer">
             <input bind="newName" type="text" placeholder="New zone type" spellcheck="false" autocomplete="off" />
@@ -39,14 +53,29 @@ const tpl = template(`
 `);
 
 const rowTpl = template(`
-    <div bind="row" class="zt-row">
+    <div bind="row" class="zt-row" data-testid="zone-type-row">
         <div class="zt-row__main">
             <input bind="color" type="color" aria-label="Colour" />
             <input bind="name" type="text" aria-label="Name" spellcheck="false" autocomplete="off" />
             <code bind="key" class="zt-row__key"></code>
-            <label class="zt-row__slot">tex <input bind="texture" type="number" min="0" step="1" aria-label="Texture index" /></label>
-            <label class="zt-row__slot">ch <input bind="channel" type="number" min="0" max="3" step="1" aria-label="Channel" /></label>
             <button bind="remove" type="button" class="zt-row__remove" aria-label="Delete zone type" title="Delete zone type">${icon('trash-2')}</button>
+        </div>
+        <div class="zt-mix" data-testid="zone-type-default">
+            <div class="zt-mix__head"><span class="zt-mix__label">Default</span></div>
+            <div bind="items" class="zt-row__items"></div>
+            <button bind="addItem" type="button" class="zt-row__add-item">Add item binding</button>
+        </div>
+        <div bind="variants" class="zt-row__variants"></div>
+        <button bind="addVariant" type="button" class="zt-row__add-variant" data-testid="zone-type-add-variant">Add variant</button>
+    </div>
+`);
+
+const variantTpl = template(`
+    <div class="zt-mix zt-variant" data-testid="zone-type-variant">
+        <div class="zt-mix__head">
+            <input bind="name" type="text" aria-label="Variant name" spellcheck="false" autocomplete="off" />
+            <code bind="key" class="zt-row__key"></code>
+            <button bind="remove" type="button" class="zt-row__remove" aria-label="Delete variant" title="Delete variant">${icon('trash-2')}</button>
         </div>
         <div bind="items" class="zt-row__items"></div>
         <button bind="addItem" type="button" class="zt-row__add-item">Add item binding</button>
@@ -58,7 +87,7 @@ const NEW_ITEM_NAME = 'New item';
 
 const itemTpl = template(`
     <div class="zt-item">
-        <input bind="name" type="text" aria-label="Vegetation item" placeholder="Item name in the package" spellcheck="false" autocomplete="off" />
+        <input bind="name" type="text" list="${ITEM_NAMES_LIST_ID}" aria-label="Vegetation item" placeholder="Item name in the package" spellcheck="false" autocomplete="off" />
         <label>min <input bind="min" type="number" min="0" max="1" step="0.05" aria-label="Minimum density" /></label>
         <label>max <input bind="max" type="number" min="0" max="1" step="0.05" aria-label="Maximum density" /></label>
         <button bind="remove" type="button" aria-label="Remove item binding" title="Remove item binding">${icon('x')}</button>
@@ -149,19 +178,36 @@ export class ZoneTypesPanelComponent extends Component {
                 font-size: 0.7rem;
                 color: ${t('color-text-secondary')};
             }
-            & .zt-row__slot {
-                display: inline-flex;
-                align-items: center;
-                gap: 2px;
-                font-size: 0.7rem;
-                color: ${t('color-text-secondary')};
-            }
-            & .zt-row__remove, & .zt-row__add-item {
+            & .zt-row__remove, & .zt-row__add-item, & .zt-row__add-variant {
                 padding: 2px ${s('xs')};
                 font-size: 0.7rem;
                 ${btn(t('radius-sm'))}
             }
-            & .zt-row__add-item { align-self: flex-start; }
+            & .zt-row__add-item, & .zt-row__add-variant { align-self: flex-start; }
+            & .zt-row__variants {
+                display: flex;
+                flex-direction: column;
+                gap: ${s('xs')};
+                &:empty { display: none; }
+            }
+            & .zt-mix {
+                display: flex;
+                flex-direction: column;
+                gap: ${s('xs')};
+                padding-left: ${s('sm')};
+                border-left: 2px solid ${t('color-border-default')};
+            }
+            & .zt-mix__head {
+                display: flex;
+                align-items: center;
+                gap: ${s('xs')};
+                & input[type="text"] { flex: 1; min-width: 60px; }
+            }
+            & .zt-mix__label {
+                font-size: 0.7rem;
+                font-weight: 600;
+                color: ${t('color-text-secondary')};
+            }
             & .zt-row__items {
                 display: flex;
                 flex-direction: column;
@@ -202,10 +248,17 @@ export class ZoneTypesPanelComponent extends Component {
 
         this.newName = this.ref(frag, 'newName') as HTMLInputElement;
         const list = this.ref(frag, 'list');
+        const itemNames = this.ref(frag, 'itemNames');
         this.track(effect(() => {
             const types = this.svc.items.get();
             list.textContent = '';
             for (const zoneType of types) list.appendChild(this.buildRow(zoneType));
+            itemNames.textContent = '';
+            for (const name of itemNamesOf(types)) {
+                const option = document.createElement('option');
+                option.value = name;
+                itemNames.appendChild(option);
+            }
         }));
 
         return frag;
@@ -224,6 +277,7 @@ export class ZoneTypesPanelComponent extends Component {
 
     private buildRow(zoneType: CourseZoneType): HTMLElement {
         const items = zoneType.items;
+        const variants = zoneType.variants ?? [];
         const row = this.wireEl(rowTpl, {
             color: {
                 value: zoneType.color,
@@ -234,18 +288,6 @@ export class ZoneTypesPanelComponent extends Component {
                 onchange: (e: Event) => void this.svc.update(zoneType.id, { name: (e.target as HTMLInputElement).value }),
             },
             key: { textContent: zoneType.key },
-            texture: {
-                value: String(zoneType.textureIndex),
-                onchange: (e: Event) => void this.svc.update(zoneType.id, {
-                    textureIndex: Number((e.target as HTMLInputElement).value),
-                }),
-            },
-            channel: {
-                value: String(zoneType.channel),
-                onchange: (e: Event) => void this.svc.update(zoneType.id, {
-                    channel: Number((e.target as HTMLInputElement).value),
-                }),
-            },
             remove: { onclick: () => void this.svc.remove(zoneType.id) },
             addItem: {
                 // Named, not blank: an item binding IS its name in the VSPro
@@ -254,34 +296,55 @@ export class ZoneTypesPanelComponent extends Component {
                     items: [...items, { item: NEW_ITEM_NAME, minDensity: 0, maxDensity: 1 }],
                 }),
             },
+            addVariant: { onclick: () => void this.svc.addVariant(zoneType) },
         });
 
-        const itemsHost = row.querySelector('.zt-row__items')!;
-        items.forEach((item, index) => {
-            const patch = (next: Partial<ZoneTypeItem>) => void this.svc.update(zoneType.id, {
-                items: items.map((it, i) => (i === index ? { ...it, ...next } : it)),
-            });
-            itemsHost.appendChild(this.wireEl(itemTpl, {
-                name: { value: item.item, onchange: (e: Event) => patch({ item: (e.target as HTMLInputElement).value }) },
-                min: { value: String(item.minDensity), onchange: (e: Event) => patch({ minDensity: Number((e.target as HTMLInputElement).value) }) },
-                max: { value: String(item.maxDensity), onchange: (e: Event) => patch({ maxDensity: Number((e.target as HTMLInputElement).value) }) },
-                remove: {
-                    onclick: () => void this.svc.update(zoneType.id, {
-                        items: items.filter((_, i) => i !== index),
+        this.buildItems(this.ref(row, 'items'), items, (next) => void this.svc.update(zoneType.id, { items: next }));
+
+        // Each variant writes the whole list back with only its own entry changed.
+        const variantsHost = this.ref(row, 'variants');
+        const saveVariant = (index: number, next: Partial<ZoneTypeVariant> | null) => void this.svc.update(zoneType.id, {
+            variants: next === null
+                ? variants.filter((_, i) => i !== index)
+                : variants.map((v, i) => (i === index ? { ...v, ...next } : v)),
+        });
+        variants.forEach((variant, index) => {
+            const el = this.wireEl(variantTpl, {
+                name: {
+                    value: variant.name,
+                    // The key stays: zones bind by key, the name is a label.
+                    onchange: (e: Event) => {
+                        const name = (e.target as HTMLInputElement).value.trim();
+                        if (name) saveVariant(index, { name });
+                        else (e.target as HTMLInputElement).value = variant.name;
+                    },
+                },
+                key: { textContent: variant.key },
+                remove: { onclick: () => saveVariant(index, null) },
+                addItem: {
+                    onclick: () => saveVariant(index, {
+                        items: [...variant.items, { item: NEW_ITEM_NAME, minDensity: 0, maxDensity: 1 }],
                     }),
                 },
-            }));
+            });
+            this.buildItems(this.ref(el, 'items'), variant.items, (next) => saveVariant(index, { items: next }));
+            variantsHost.appendChild(el);
         });
         return row;
     }
+
+    /** The binding rows of one mix (Default or a variant); `commit` gets the whole new list. */
+    private buildItems(host: HTMLElement, items: ZoneTypeItem[], commit: (next: ZoneTypeItem[]) => void): void {
+        items.forEach((item, index) => {
+            const patch = (next: Partial<ZoneTypeItem>) =>
+                commit(items.map((it, i) => (i === index ? { ...it, ...next } : it)));
+            host.appendChild(this.wireEl(itemTpl, {
+                name: { value: item.item, onchange: (e: Event) => patch({ item: (e.target as HTMLInputElement).value }) },
+                min: { value: String(item.minDensity), onchange: (e: Event) => patch({ minDensity: Number((e.target as HTMLInputElement).value) }) },
+                max: { value: String(item.maxDensity), onchange: (e: Event) => patch({ maxDensity: Number((e.target as HTMLInputElement).value) }) },
+                remove: { onclick: () => commit(items.filter((_, i) => i !== index)) },
+            }));
+        });
+    }
 }
 
-/** Display name → zone-type key: the server accepts `[a-z0-9_]+` only. */
-export function slugify(name: string): string {
-    return name
-        .toLowerCase()
-        .replace(/[åä]/g, 'a')
-        .replace(/ö/g, 'o')
-        .replace(/[^a-z0-9]+/g, '_')
-        .replace(/^_+|_+$/g, '');
-}

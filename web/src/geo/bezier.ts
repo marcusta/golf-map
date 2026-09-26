@@ -19,6 +19,7 @@
 // selection and analysis work identically on spline features.
 
 import { bsplineRingToBezier } from './bspline';
+import type { FeatureCenterline } from '../../../shared/features/centerline';
 
 export interface Point {
     x: number;
@@ -54,6 +55,12 @@ export interface FeatureGeometry {
      */
     curveType?: CurveType;
     rings: PathRing[];
+    /**
+     * Roads and paths: the line down the middle plus a width IS the shape;
+     * `rings` is the corridor derived from it (shared/features/centerline.ts)
+     * and the vertex tools edit the line (draw-state `editViewOf`).
+     */
+    centerline?: FeatureCenterline;
 }
 
 function dist(a: Point, b: Point): number {

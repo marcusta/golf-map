@@ -8,18 +8,29 @@ const difference = polygonClipping.difference as (
     ...occluders: ClippingMultiPolygon[]
 ) => ClippingMultiPolygon;
 
-// Resolution costs O(features × overlapping occluders × vertices) of synchronous
-// main-thread clipping — ~50 s for a full course if every toggle recomputes it.
-// The input collection is a cached Computed replaced wholesale on geometry/
-// visibility changes, so identity keying is exact and repeated nice-mode
-// entries (every switch away from the draw sub-mode) are free.
+// Resolution costs O(features × overlapping occluders × vertices) of clipping —
+// ~10 s for a course whose roughs carry thousands of vertices each. Two caches
+// keep repeats cheap: the whole result by collection identity (the web's input
+// is a Computed replaced wholesale on geometry/visibility changes, so identity
+// keying is exact), and each feature's clip by the CONTENT of it and of its
+// overlapping occluders (`createSurfaceStackResolver`), so after one edit only
+// the features under or over the edited one are clipped again.
 const resolvedCache = new WeakMap<FeatureCollection, FeatureCollection>();
 
 /**
  * Polygon feature types that are overlays rather than playing surfaces: they
  * pass through untouched and never occlude what is under them.
+ *
+ * `oob` is here because it is painted as a boundary line, not a fill
+ * (OUTLINE_ONLY_TYPES in web/src/draw/feature-palette.ts): the ring is drawn
+ * around the whole property and sits high in the stack, so treating it as a
+ * surface would clip every fairway and green on the course out of existence.
+ * The penalty areas are rules lines too (staked round water and ground that
+ * are surfaces of their own): trimmed as a surface, a higher feature — or a
+ * course-level shape stacked over every hole — hides the line the Furniture
+ * tool edits, and the area would cut the water it marks out from under it.
  */
-const OVERLAY_TYPES = new Set(['vegetation_zone']);
+const OVERLAY_TYPES = new Set(['vegetation_zone', 'oob', 'penalty_yellow', 'penalty_red']);
 
 /**
  * Remove every pixel covered by a higher stack entry from each lower entry.
@@ -42,7 +53,46 @@ const OVERLAY_TYPES = new Set(['vegetation_zone']);
 export function resolveSurfaceStack(source: FeatureCollection): FeatureCollection {
     const cached = resolvedCache.get(source);
     if (cached) return cached;
+    const result = defaultResolver(source);
+    resolvedCache.set(source, result);
+    return result;
+}
 
+/**
+ * `resolveSurfaceStack` without the identity cache and with its own
+ * per-feature memo: a feature's visible part is reused when its geometry and
+ * the geometries of the higher surfaces overlapping it are unchanged — by
+ * content, so it survives structured cloning into a worker. The memo keeps
+ * only the entries the last call used.
+ */
+export function createSurfaceStackResolver(): (source: FeatureCollection) => FeatureCollection {
+    let memo = new Map<string, ClippingMultiPolygon>();
+    return source => {
+        const used = new Map<string, ClippingMultiPolygon>();
+        const result = resolve(source, (subject, overlapping, run) => {
+            const key = [subject.key, ...overlapping.map(o => o.key)].join('|');
+            const visible = memo.get(key) ?? used.get(key) ?? run();
+            used.set(key, visible);
+            return visible;
+        });
+        memo = used;
+        return result;
+    };
+}
+
+const defaultResolver = createSurfaceStackResolver();
+
+interface Shape {
+    shape: ClippingMultiPolygon;
+    bbox: BBox;
+    /** Content fingerprint of `shape` (the memo key's parts). */
+    key: string;
+}
+
+function resolve(
+    source: FeatureCollection,
+    clipMemo: (subject: Shape, overlapping: Shape[], run: () => ClippingMultiPolygon) => ClippingMultiPolygon,
+): FeatureCollection {
     const isSurface = (feature: Feature): feature is Feature<SurfaceGeometry> =>
         (feature.geometry?.type === 'Polygon' || feature.geometry?.type === 'MultiPolygon')
         && !OVERLAY_TYPES.has(feature.properties?.type as string);
@@ -50,16 +100,14 @@ export function resolveSurfaceStack(source: FeatureCollection): FeatureCollectio
     const topDown = source.features
         .filter(isSurface)
         .sort((a, b) => stackKey(b) - stackKey(a));
-    const occluders: Array<{ shape: ClippingMultiPolygon; bbox: BBox }> = [];
+    const occluders: Shape[] = [];
     const resolved: Feature<Geometry>[] = [];
 
     for (const feature of topDown) {
-        const subject = toClippingMultiPolygon(feature.geometry);
-        const bbox = bboxOf(subject);
-        const overlapping = occluders
-            .filter(occluder => bboxesIntersect(occluder.bbox, bbox))
-            .map(occluder => occluder.shape);
-        const visible = clip(subject, overlapping);
+        const shape = toClippingMultiPolygon(feature.geometry);
+        const subject: Shape = { shape, bbox: bboxOf(shape), key: fingerprint(shape) };
+        const overlapping = occluders.filter(occluder => bboxesIntersect(occluder.bbox, subject.bbox));
+        const visible = clipMemo(subject, overlapping, () => clip(shape, overlapping.map(o => o.shape)));
         if (visible.length > 0) {
             resolved.push({
                 ...feature,
@@ -69,15 +117,13 @@ export function resolveSurfaceStack(source: FeatureCollection): FeatureCollectio
                 },
             });
         }
-        occluders.push({ shape: subject, bbox });
+        occluders.push(subject);
     }
 
-    const result: FeatureCollection = {
+    return {
         type: 'FeatureCollection',
         features: [...resolved, ...passthrough],
     };
-    resolvedCache.set(source, result);
-    return result;
 }
 
 /**
@@ -122,6 +168,34 @@ function bboxOf(shape: ClippingMultiPolygon): BBox {
         }
     }
     return [west, south, east, north];
+}
+
+/** Hash of every coordinate's bits in two 32-bit lanes, plus the vertex count. */
+function fingerprint(shape: ClippingMultiPolygon): string {
+    const bits = new Float64Array(1);
+    const words = new Uint32Array(bits.buffer);
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57, vertices = 0;
+    const mix = (value: number): void => {
+        bits[0] = value;
+        for (let i = 0; i < 2; i++) {
+            h1 = Math.imul(h1 ^ words[i]!, 2654435761);
+            h2 = Math.imul(h2 ^ words[i]!, 1597334677);
+        }
+    };
+    for (const polygon of shape) {
+        mix(polygon.length);
+        for (const ring of polygon) {
+            mix(ring.length);
+            for (const point of ring) {
+                mix(point[0]);
+                mix(point[1]);
+                vertices++;
+            }
+        }
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return `${(h1 >>> 0).toString(36)}.${(h2 >>> 0).toString(36)}.${vertices}`;
 }
 
 function bboxesIntersect(a: BBox, b: BBox): boolean {

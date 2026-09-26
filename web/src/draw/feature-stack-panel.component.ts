@@ -2,11 +2,12 @@ import { Component, Computed, Signal, effect, template, untrack } from '@basics/
 import { t } from '../theme';
 import { s, btn, field, selectedRow, metric } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
-import { FeaturesService } from './features.service';
+import { FeaturesService, fillScopeOptions, scopeFromKey, scopeKey, scopeOf } from './features.service';
 import { DrawToolService } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
 import { icon } from '../ui/icons';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
+import { ROUGHS_LAYER } from '../../../shared/render/stack-key';
 import {
     generatedBadgeLabel,
     generatedGroupLabel,
@@ -22,6 +23,7 @@ const tpl = template(`
             <label class="scope-field">Scope
                 <select bind="scopeSelect" data-testid="stack-panel-scope"></select>
             </label>
+            <button bind="roughsToggle" type="button" class="layer-toggle" data-testid="stack-roughs-toggle"></button>
         </div>
         <div bind="rows" class="stack-rows" data-testid="stack-panel-rows"></div>
         <div bind="empty" class="stack-empty">No features in this scope.</div>
@@ -90,6 +92,23 @@ export class FeatureStackPanelComponent extends Component {
             }
 
             & .scope-field { ${field()} }
+
+            /* Roughs layer eye: editor-only view state (the planner and the
+               GSPro export always include the layer). */
+            & .layer-toggle {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--space-2);
+                align-self: flex-start;
+                border: none;
+                background: none;
+                padding: 2px 0;
+                cursor: pointer;
+                font: inherit;
+                color: ${t('color-text-secondary')};
+                &:hover { color: ${t('color-text-primary')}; }
+                &[aria-pressed="true"] { color: ${t('color-text-primary')}; }
+            }
 
             /* The long list scrolls INSIDE the panel (law 01); rows carry
                structure with spacing + hover tint, not hairlines (law 03). */
@@ -218,11 +237,11 @@ export class FeatureStackPanelComponent extends Component {
     private courseDetail = this.inject(CourseDetailService);
 
     /**
-     * Scope filter (course-level = null). Follows the draw target until the
-     * user explicitly changes this filter; selecting a shape on the map still
+     * Scope filter, as a `scopeKey`. Follows the draw target until the user
+     * explicitly changes this filter; selecting a shape on the map still
      * follows the selection into its group (see the effects below).
      */
-    private scopeHoleId = new Signal<string | null>(this.tool.drawHoleId.peek());
+    private scopeKey = new Signal<string>(scopeKey({ holeId: this.tool.drawHoleId.peek(), layer: null }));
     private scopeUserPinned = false;
     private scopeSelect!: HTMLSelectElement;
     private rowsHost!: HTMLElement;
@@ -234,6 +253,14 @@ export class FeatureStackPanelComponent extends Component {
         const frag = this.wire(tpl, {
             empty: {
                 className: () => this.stack().length === 0 ? 'stack-empty show' : 'stack-empty',
+            },
+            roughsToggle: {
+                onclick: () => this.features.toggleRoughsLayerVisibility(),
+                innerHTML: () => `${icon(this.features.roughsLayerHidden.get() ? 'eye-off' : 'eye', 16)}<span>Roughs layer</span>`,
+                title: () => this.features.roughsLayerHidden.get()
+                    ? 'Show the Roughs layer (editor only)'
+                    : 'Hide the Roughs layer while editing (planner and export still include it)',
+                'aria-pressed': () => String(this.features.roughsLayerHidden.get()),
             },
             // Contextual controls (law 04): reorder ops appear only while a
             // row is selected — selection is the context they act on.
@@ -265,27 +292,18 @@ export class FeatureStackPanelComponent extends Component {
         this.scopeSelect = this.ref(frag, 'scopeSelect') as HTMLSelectElement;
         this.scopeSelect.addEventListener('change', () => {
             this.scopeUserPinned = true;
-            this.scopeHoleId.set(this.scopeSelect.value || null);
+            this.scopeKey.set(this.scopeSelect.value);
         });
 
-        // Scope options: "Course level" + one per hole. Rebuilt on holes
+        // Scope options: course level, one per hole, Roughs. Rebuilt on holes
         // load / scope changes. Unlike the draw panel's hole select
         // (draw-panel.component.ts:546), this one FILTERS the row list
         // rather than assigning a feature's hole.
         this.track(effect(() => {
             const holes = this.courseDetail.holes.get();
-            const value = this.scopeHoleId.get() ?? '';
+            const value = this.scopeKey.get();
             this.scopeSelect.textContent = '';
-            const courseLevel = document.createElement('option');
-            courseLevel.value = '';
-            courseLevel.textContent = 'Course level';
-            this.scopeSelect.appendChild(courseLevel);
-            for (const hole of holes) {
-                const option = document.createElement('option');
-                option.value = hole.id;
-                option.textContent = `Hole ${hole.number} (par ${hole.par})`;
-                this.scopeSelect.appendChild(option);
-            }
+            fillScopeOptions(this.scopeSelect, holes);
             this.scopeSelect.value = value;
         }));
 
@@ -303,7 +321,7 @@ export class FeatureStackPanelComponent extends Component {
         this.track(effect(() => {
             const drawHoleId = this.tool.drawHoleId.get();
             if (this.scopeUserPinned) return;
-            untrack(() => this.scopeHoleId.set(drawHoleId));
+            untrack(() => this.scopeKey.set(scopeKey({ holeId: drawHoleId, layer: null })));
         }));
 
         // Follow selection: a shape selected on the map (or via alt-cycle)
@@ -314,7 +332,7 @@ export class FeatureStackPanelComponent extends Component {
             const selected = this.features.selected.get();
             if (!selected) return;
             untrack(() => {
-                this.scopeHoleId.set(selected.holeId);
+                this.scopeKey.set(scopeKey(scopeOf(selected)));
                 queueMicrotask(() => {
                     this.rowsHost
                         .querySelector(`[data-feature-id="${CSS.escape(selected.id)}"]`)
@@ -333,7 +351,12 @@ export class FeatureStackPanelComponent extends Component {
      * individually beneath it.
      */
     private stack(): StackRow[] {
-        const topDown = [...this.features.stackFor(this.scopeHoleId.get())].reverse();
+        // Types the mode keeps off the map (Draw: the rules lines, which
+        // Furniture edits) are not listed either.
+        const modeHidden = this.features.modeHiddenTypes.get();
+        const topDown = [...this.features.stackFor(scopeFromKey(this.scopeKey.get()))]
+            .filter(f => !modeHidden.has(f.type))
+            .reverse();
         return groupStackRows(topDown, this.features.selectedIds.get());
     }
 
@@ -377,7 +400,8 @@ export class FeatureStackPanelComponent extends Component {
     /** Live member count (the row is keyed by source/type and outlives deletes). */
     private liveGroupCount(group: Extract<StackRow, { kind: 'group' }>): number {
         return this.features.store.items.get()
-            .filter(f => f.source === group.source && f.type === group.type && f.holeId === this.scopeHoleId.get())
+            .filter(f => f.source === group.source && f.type === group.type
+                && scopeKey(scopeOf(f)) === this.scopeKey.get())
             .length;
     }
 
@@ -388,7 +412,10 @@ export class FeatureStackPanelComponent extends Component {
                 className: () => {
                     const classes = ['stack-row'];
                     if (this.features.selectedIds.get().has(feature.id)) classes.push('selected');
-                    if (this.features.hiddenIds.get().has(feature.id)) classes.push('hidden');
+                    if (this.features.hiddenIds.get().has(feature.id)
+                        || (this.features.roughsLayerOff.get() && this.liveFeature(feature.id)?.layer === ROUGHS_LAYER)) {
+                        classes.push('hidden');
+                    }
                     return classes.join(' ');
                 },
             },

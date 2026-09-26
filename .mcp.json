@@ -7,6 +7,13 @@
         "serve",
         "--mcp"
       ]
+    },
+    "unity": {
+      "type": "stdio",
+      "command": "bun",
+      "args": [
+        "unity/mcp/server.ts"
+      ]
     }
   }
 }

@@ -6,6 +6,7 @@ import { Signal, Computed } from '@basics/core/client/core';
 import polygonClipping from 'polygon-clipping';
 import { flattenRing, ringBbox, splitSegment, type AnchorPoint, type Bbox, type FeatureGeometry, type PathRing, type Point } from '../geo/bezier';
 import { bsplineRingToBezier } from '../geo/bspline';
+import { centerlineGeometry, MIN_CENTERLINE_WIDTH_M, type FeatureCenterline } from '../../../shared/features/centerline';
 
 /**
  * 'select' — clicks select/deselect features; a selected feature's
@@ -314,8 +315,9 @@ export function deleteAnchor(
     geometry: FeatureGeometry,
     ringIdx: number,
     idx: number,
+    minPoints = MIN_RING_POINTS,
 ): FeatureGeometry | null {
-    if (geometry.rings[ringIdx].points.length <= MIN_RING_POINTS) return null;
+    if (geometry.rings[ringIdx].points.length <= minPoints) return null;
     const next = cloneGeometry(geometry);
     next.rings[ringIdx].points.splice(idx, 1);
     return next;
@@ -412,9 +414,15 @@ export function bakeBsplineToBezier(geometry: FeatureGeometry): FeatureGeometry 
     };
 }
 
-/** Translate every anchor (and its handles) by (dx, dy) meters. */
+/** Translate every anchor (and its handles, and a centerline) by (dx, dy) meters. */
 export function translateGeometry(geometry: FeatureGeometry, dx: number, dy: number): FeatureGeometry {
     const next = cloneGeometry(geometry);
+    if (geometry.centerline) {
+        next.centerline = {
+            points: geometry.centerline.points.map(p => ({ ...p, x: p.x + dx, y: p.y + dy })),
+            widthM: geometry.centerline.widthM,
+        };
+    }
     for (const ring of next.rings) {
         for (const p of ring.points) {
             p.x += dx;
@@ -444,7 +452,7 @@ export function parseVertexKey(key: string): { ringIdx: number; idx: number } {
  * ring would fall below the 3-point minimum — the operation is
  * all-or-nothing so a bulk delete never partially applies.
  */
-export function deleteVertices(geometry: FeatureGeometry, keys: ReadonlySet<string>): FeatureGeometry | null {
+export function deleteVertices(geometry: FeatureGeometry, keys: ReadonlySet<string>, minPoints = MIN_RING_POINTS): FeatureGeometry | null {
     const byRing = new Map<number, Set<number>>();
     for (const key of keys) {
         const { ringIdx, idx } = parseVertexKey(key);
@@ -453,7 +461,7 @@ export function deleteVertices(geometry: FeatureGeometry, keys: ReadonlySet<stri
     }
     for (const [ringIdx, indices] of byRing) {
         const ring = geometry.rings[ringIdx];
-        if (!ring || ring.points.length - indices.size < MIN_RING_POINTS) return null;
+        if (!ring || ring.points.length - indices.size < minPoints) return null;
     }
     const next = cloneGeometry(geometry);
     for (const [ringIdx, indices] of byRing) {
@@ -476,6 +484,8 @@ export function insertBetweenVertices(
     ringIdx: number,
     idxA: number,
     idxB: number,
+    /** An open line (a centerline) has no wrap-around segment. */
+    open = false,
 ): { geometry: FeatureGeometry; selection: [string, string] } | null {
     const ring = geometry.rings[ringIdx];
     if (!ring || idxA === idxB) return null;
@@ -485,7 +495,7 @@ export function insertBetweenVertices(
     const p1 = ring.points[idx2];
     const next = cloneGeometry(geometry);
 
-    if (idx1 === 0 && idx2 === n - 1) {
+    if (idx1 === 0 && idx2 === n - 1 && !open) {
         // Wrap-around: insert the midpoint between last and first.
         next.rings[ringIdx].points.push({ x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 });
         return { geometry: next, selection: [vertexKey(ringIdx, idx1), vertexKey(ringIdx, idx2)] };
@@ -571,6 +581,11 @@ export function rdpSimplifyClosed<T extends Point>(pts: T[], epsilon: number): T
  * 3 extremes. Surviving points keep handles/corner flags.
  */
 export function simplifyGeometry(geometry: FeatureGeometry, epsilon: number): FeatureGeometry {
+    if (geometry.centerline) {
+        // A road simplifies its line (ends kept); the corridor follows.
+        const points = rdpSimplify(geometry.centerline.points, epsilon);
+        return withCenterline(geometry, { points, widthM: geometry.centerline.widthM }) ?? geometry;
+    }
     const next = cloneGeometry(geometry);
     next.rings = next.rings.map(ring => {
         const pts = ring.points;
@@ -656,6 +671,7 @@ export function offsetRingPoints(points: AnchorPoint[], distance: number): Ancho
  * the contraction distance (prototype guard).
  */
 export function canOffsetGeometry(geometry: FeatureGeometry, distance: number): boolean {
+    if (geometry.centerline) return geometry.centerline.widthM + 2 * distance >= MIN_CENTERLINE_WIDTH_M;
     if (geometry.rings.length === 0 || geometry.rings[0].points.length < 3) return false;
     if (distance >= 0) return true;
     const bbox: Bbox | null = ringBbox(geometry.rings[0] as PathRing, 0.25, geometry.curveType);
@@ -679,11 +695,80 @@ export function canOffsetGeometry(geometry: FeatureGeometry, distance: number): 
  */
 export function offsetGeometry(geometry: FeatureGeometry, distance: number): FeatureGeometry | null {
     if (!canOffsetGeometry(geometry, distance)) return null;
+    // A road grows or narrows on both kerbs: its width changes, the line stays.
+    if (geometry.centerline) {
+        return withCenterline(geometry, { ...geometry.centerline, widthM: geometry.centerline.widthM + 2 * distance });
+    }
     const next = cloneGeometry(geometry);
     next.rings = next.rings.map((ring, i) => ({
         points: offsetRingPoints(ring.points, i === 0 ? distance : -distance),
     }));
     return next;
+}
+
+// ─── Centerline features (roads, cart paths) ───────────────────────────────
+//
+// A centerline feature's shape is its line + width; its rings are derived.
+// The vertex tools edit the line through an EDIT VIEW: a one-ring,
+// b-spline-flavoured geometry of the control points (corner flags, no
+// handles), so every existing vertex op applies unchanged; `fromEditView`
+// turns the edited view back into the feature's geometry, re-deriving the
+// corridor.
+
+/** Fewest control points a centerline keeps. */
+export const MIN_CENTERLINE_POINTS = 2;
+
+/** The geometry with this centerline, its rings re-derived; null when the line degenerates. */
+export function withCenterline(geometry: FeatureGeometry, centerline: FeatureCenterline): FeatureGeometry | null {
+    return centerlineGeometry(geometry.crs, centerline);
+}
+
+const editViews = new WeakMap<FeatureGeometry, FeatureGeometry>();
+
+/**
+ * What the vertex tools see and edit: a centerline feature's control points
+ * as ring 0 (an OPEN line — see `minVertexCount` and the tool's open-line
+ * hit tests), else the geometry itself. Cached per geometry identity so the
+ * hover hit test's lng/lat cache keeps hitting.
+ */
+export function editViewOf(geometry: FeatureGeometry): FeatureGeometry {
+    if (!geometry.centerline) return geometry;
+    let view = editViews.get(geometry);
+    if (!view) {
+        view = { crs: geometry.crs, curveType: 'bspline', rings: [{ points: geometry.centerline.points.map(p => ({ ...p })) }] };
+        editViews.set(geometry, view);
+    }
+    return view;
+}
+
+/** The feature geometry for an edited view of `original` (identity for non-centerline features). */
+export function fromEditView(original: FeatureGeometry, edited: FeatureGeometry): FeatureGeometry | null {
+    if (!original.centerline) return edited;
+    const points = (edited.rings[0]?.points ?? []).map(p => (p.corner ? { x: p.x, y: p.y, corner: true } : { x: p.x, y: p.y }));
+    return withCenterline(original, { points, widthM: original.centerline.widthM });
+}
+
+/**
+ * Run a vertex op on the geometry the user edits (its edit view) and map the
+ * result back. Null when the op refused or the line degenerated.
+ */
+export function applyVertexEdit(
+    geometry: FeatureGeometry,
+    op: (view: FeatureGeometry) => FeatureGeometry | null,
+): FeatureGeometry | null {
+    const edited = op(editViewOf(geometry));
+    return edited ? fromEditView(geometry, edited) : null;
+}
+
+/** Fewest vertices a vertex delete may leave on this feature's edited ring. */
+export function minVertexCount(geometry: FeatureGeometry): number {
+    return geometry.centerline ? MIN_CENTERLINE_POINTS : MIN_RING_POINTS;
+}
+
+/** The geometry with a new corridor width (null below the minimum). */
+export function withCenterlineWidth(geometry: FeatureGeometry, widthM: number): FeatureGeometry | null {
+    if (!geometry.centerline || !Number.isFinite(widthM)) return null;
+    return withCenterline(geometry, { ...geometry.centerline, widthM });
 }
 
 // ─── Merged surrounds (T41) ────────────────────────────────────────────────

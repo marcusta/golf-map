@@ -32,6 +32,7 @@ const HELP: HelpSection[] = [
             { keys: 'B', desc: 'Toggle box-select: drag anywhere marquees, even over shapes' },
             { keys: 'Space-drag', desc: 'Momentary box-select over a shape (no toggle)' },
             { keys: 'Alt/Option-click', desc: 'Select topmost feature; repeat to cycle down the hit stack, wrapping' },
+            { keys: 'Arm OOB', desc: 'OOB is a boundary line — clicks pass through its ring until OOB is the armed type' },
         ],
     },
     {

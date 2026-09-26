@@ -89,6 +89,13 @@ shader must also exist. See `docs/gspro/vreta/foliage-v2.md` for material prepar
 Outer diffuse atlases use a private bake shader that respects the oak leaf tint
 and an average of NM healthy/dry tints. This is a distant approximation: it does
 not reproduce location-dependent NM noise, wind, or identical lit highlights.
+The atlas is flat albedo x tint, without the AO and self-shadowing a mesh crown gets, so
+an ungraded bake reads brighter than the inner trees: **Billboard brightness** (default 0.45, a linear-light multiplier like the terrain photo's `--darken` 0.4)
+and **Billboard saturation** (default 0.85) in the Outer panel are baked in at the next
+Plant with Rebake on. VSP's billboard shader also shifts each SpeedTree towards the
+material's `_HueVariation` colour by up to that colour's alpha, on top of the atlas: the outer
+sync grades that target like the atlas, otherwise the shifted trees read white. For the inner, a look's **Tint saturation x** scales the saturation
+of its leaf and bark tint colours (then *Apply to course*).
 Original materials are not edited while baking. Verify colour and visibility in
 GSPro before committing to a full outer course build.
 

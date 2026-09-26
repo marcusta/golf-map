@@ -34,7 +34,8 @@ import polygonClipping from 'polygon-clipping';
 import { ConflictError } from '@basics/core/server/auth';
 import * as path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { resolveCourseMapBbox, type Bbox3006, type BboxWgs84 } from './course-bbox';
+import { resolveCourseInnerSquare, type Bbox3006, type BboxWgs84 } from './course-bbox';
+import { squareTuple } from './terrain-square';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
 
@@ -68,7 +69,7 @@ export interface HydroBbox {
     north: number;
 }
 
-/** One water-surface polygon, EPSG:3006, clipped to the course bbox.
+/** One water-surface polygon, EPSG:3006, clipped to the inner terrain square.
  * rings[0] = outer, rest = holes; rings are explicitly closed. */
 export interface HydroWaterPolygon {
     /** OGC feature id as `<Collection>/<id>`, or null when the API omits it. */
@@ -76,15 +77,16 @@ export interface HydroWaterPolygon {
     rings: number[][][];
 }
 
-/** One RAW creek centerline run, EPSG:3006, clipped to the course bbox.
- * The client buffers these into `water_creek` ribbons. */
+/** One RAW creek centerline run, EPSG:3006, clipped to the inner terrain
+ * square less half a ribbon, so the `water_creek` ribbon the client buffers
+ * from it stays inside. */
 export interface HydroCreekLine {
     sourceRef: string | null;
     points: number[][];
 }
 
 export interface HydroFetchResult {
-    /** WGS84 bbox the fetch covered (derived server-side, see courseBbox). */
+    /** WGS84 envelope of the inner terrain square the fetch covered (resolveCourseInnerSquare). */
     bbox: HydroBbox;
     source: string;
     attribution: string;
@@ -312,11 +314,17 @@ export class HydroService {
 
     /**
      * Fetch water surfaces + creek centerlines intersecting the course's
-     * map area. Water arrives as EPSG:3006 polygons; creeks as raw
+     * inner terrain square, clipped to it. Water arrives as EPSG:3006 polygons; creeks as raw
      * centerlines with a suggested ribbon width — the client buffers them.
      */
     async fetchForCourse(courseId: string): Promise<HydroFetchResult> {
-        const { wgs84, sweref } = await this.courseBbox(courseId);
+        const inner = await resolveCourseInnerSquare(this.courses, this.assets, courseId, 'fetch water for');
+        const { wgs84 } = inner;
+        const sweref = squareTuple(inner.square);
+        // The client buffers each centerline SUGGESTED_CREEK_WIDTH_M wide, so
+        // a centerline clipped at the edge would put half a ribbon outside.
+        const inset = SUGGESTED_CREEK_WIDTH_M / 2;
+        const creekClip: Bbox3006 = [sweref[0] + inset, sweref[1] + inset, sweref[2] - inset, sweref[3] - inset];
         const creds = this.credentials();
 
         const water: HydroWaterPolygon[] = [];
@@ -351,7 +359,7 @@ export class HydroService {
                     ? (swapAxes(geometry.coordinates) as number[][][])
                     : [];
             for (const line of lines) {
-                for (const run of clipPolylineToBbox(line, sweref)) {
+                for (const run of clipPolylineToBbox(line, creekClip)) {
                     creeks.push({ sourceRef, points: run });
                 }
             }
@@ -365,16 +373,6 @@ export class HydroService {
             water,
             creeks,
         };
-    }
-
-    /**
-     * The course's map-area bbox, WGS84 (for the API's default CRS84 bbox
-     * filter) + EPSG:3006 (for clipping): course georeference_json when
-     * present, else the site's tile-manifest bounds (site owns the map).
-     * Shared with OsmService (T53) via course-bbox.ts.
-     */
-    private courseBbox(courseId: string): Promise<{ wgs84: BboxWgs84; sweref: Bbox3006 }> {
-        return resolveCourseMapBbox(this.courses, this.assets, courseId, 'fetch water for');
     }
 
     /**

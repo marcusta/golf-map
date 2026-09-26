@@ -5,6 +5,10 @@ import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { toGeoJson, type FeatureGeometry, type GeoJsonPolygon, type GeoJsonMultiPolygon } from './geo';
 import { resolveSurfaceStack } from '../../shared/render/resolved-surface-stack';
+import { ROUGHS_LAYER, isRoughsLayerType, stackKey, type FeatureLayer } from '../../shared/render/stack-key';
+import { PATH_SURFACE_ATTRIBUTE, PATH_SURFACES, isPathSurface } from '../../shared/features/path-surface';
+import { centerlineError, centerlineGeometry } from '../../shared/features/centerline';
+import { KERB_FILLETS_ATTRIBUTE, ROAD_JUNCTIONS_SOURCE, junctionFillets, kerbFilletsOn } from '../../shared/features/road-junctions';
 import type { FeatureCollection } from 'geojson';
 
 // --- Constants ---
@@ -96,6 +100,11 @@ export interface CourseFeature {
     id: string;
     courseId: string;
     holeId: string | null;
+    /**
+     * `'roughs'` = the Roughs group, composed under every hole (D28); its
+     * `holeId` is then null. Null = the hole's group, or course-level.
+     */
+    layer: FeatureLayer;
     type: string;
     geometry: FeatureGeometry;
     geojson: GeoJsonPolygon | null;
@@ -124,6 +133,13 @@ export interface CourseFeature {
 
 export type FeatureAttributes = Record<string, number | string | boolean>;
 
+/** One (source, type) group of a course's imported features. */
+export interface ImportedFeatureCount {
+    source: string;
+    type: string;
+    count: number;
+}
+
 /** Upper bound on `attributes` keys; keeps the column a small flat object. */
 export const MAX_ATTRIBUTE_KEYS = 32;
 
@@ -133,6 +149,7 @@ export interface CourseFeatureGeoJsonFeature {
     properties: {
         courseId: string;
         holeId: string | null;
+        layer: FeatureLayer;
         type: string;
         sortOrder: number;
         stackKey: number;
@@ -165,6 +182,7 @@ function toCourseFeature(row: FeatureRow): CourseFeature {
         id: row.id,
         courseId: row.course_id,
         holeId: row.hole_id,
+        layer: toLayer(row.layer),
         type: row.type,
         geometry: JSON.parse(row.geometry_json) as FeatureGeometry,
         geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
@@ -176,6 +194,11 @@ function toCourseFeature(row: FeatureRow): CourseFeature {
         attributes: parseAttributes(row.attributes_json),
         version: row.version,
     };
+}
+
+/** Unknown stored values read as null, so a bad row degrades to course-level. */
+function toLayer(raw: string | null): FeatureLayer {
+    return raw === ROUGHS_LAYER ? ROUGHS_LAYER : null;
 }
 
 function parseAttributes(raw: string | null): FeatureAttributes | null {
@@ -201,6 +224,33 @@ function assertValidType(type: string): void {
     if (!(FEATURE_TYPES as readonly string[]).includes(type)) {
         throw new InvalidFeatureError(`Invalid feature type: ${type}`);
     }
+}
+
+/**
+ * D28: the Roughs group holds rough-type features only, and never belongs to
+ * a hole.
+ */
+function assertValidLayer(layer: string | null, holeId: string | null, type: string): void {
+    if (layer === null) return;
+    if (layer !== ROUGHS_LAYER) throw new InvalidFeatureError(`Invalid layer: ${layer}`);
+    if (holeId !== null) throw new InvalidFeatureError('A feature in the Roughs layer cannot belong to a hole');
+    if (!isRoughsLayerType(type)) {
+        throw new InvalidFeatureError(`The Roughs layer only holds rough types, not ${type}`);
+    }
+}
+
+/**
+ * A centerline geometry's rings are the corridor derived from it, never what
+ * the caller sent: the line and the surface every ring consumer reads (the
+ * GSPro SVG, the surface stack, iOS) cannot drift apart.
+ */
+function deriveCenterlineRings(geometry: FeatureGeometry): FeatureGeometry {
+    if (!geometry || typeof geometry !== 'object' || geometry.centerline === undefined) return geometry;
+    const error = centerlineError(geometry.centerline);
+    if (error) throw new InvalidFeatureError(error);
+    const derived = centerlineGeometry(geometry.crs, geometry.centerline);
+    if (!derived) throw new InvalidFeatureError('Centerline buffers to no corridor');
+    return derived;
 }
 
 function assertValidGeometry(geometry: FeatureGeometry): void {
@@ -265,6 +315,8 @@ function assertValidAttributes(attributes: unknown): void {
  * (docs/feature-vegetation-zones.md §5). A missing numeric key means its
  * default, so a zone drawn before the panel existed still rasterizes; only
  * `zoneType` (the key into the course's zone-type table) is required.
+ * `zoneVariant` (a variant key of that type) is optional: absent or `''`
+ * means the type's Default item mix.
  */
 export const VEGETATION_ZONE_DEFAULTS = { weight: 1, feather: 2, noise: 0 } as const;
 
@@ -272,12 +324,19 @@ export const VEGETATION_ZONE_DEFAULTS = { weight: 1, feather: 2, noise: 0 } as c
  * `vegetation_zone` attributes: `zoneType` a non-empty string, `weight` in
  * [0, 1], `feather` and `noise` metres >= 0. The numeric keys may be absent
  * (they then mean {@link VEGETATION_ZONE_DEFAULTS}); `zoneType` may not —
- * a zone with no type is a polygon nothing can rasterize.
+ * a zone with no type is a polygon nothing can rasterize. `zoneVariant`, when
+ * present, is a string (`''` = Default); like `zoneType` it is not checked
+ * against the zone-type table — the pipeline falls back to Default for a key
+ * the type does not have.
  */
 function assertValidVegetationZoneAttributes(attributes: FeatureAttributes | null | undefined): void {
     const zoneType = attributes?.zoneType;
     if (typeof zoneType !== 'string' || zoneType.trim().length === 0) {
         throw new InvalidFeatureError('A vegetation_zone needs a non-empty attributes.zoneType');
+    }
+    const zoneVariant = attributes?.zoneVariant;
+    if (zoneVariant !== undefined && typeof zoneVariant !== 'string') {
+        throw new InvalidFeatureError('attributes.zoneVariant must be a string (a variant key, or empty for Default)');
     }
     const ranges: Record<string, [number, number]> = {
         weight: [0, 1],
@@ -291,6 +350,22 @@ function assertValidVegetationZoneAttributes(attributes: FeatureAttributes | nul
             const bound = max === Infinity ? `>= ${min}` : `between ${min} and ${max}`;
             throw new InvalidFeatureError(`attributes.${key} must be a number ${bound}`);
         }
+    }
+}
+
+/**
+ * `path` attributes: `surface`, when present, is one of PATH_SURFACES
+ * (shared/features/path-surface.ts) — what the road or cart path is made of.
+ * Absent means unknown; every other key is free, like any feature's.
+ */
+function assertValidPathAttributes(attributes: FeatureAttributes | null | undefined): void {
+    const surface = attributes?.[PATH_SURFACE_ATTRIBUTE];
+    if (surface !== undefined && !isPathSurface(surface)) {
+        throw new InvalidFeatureError(`attributes.${PATH_SURFACE_ATTRIBUTE} must be one of ${PATH_SURFACES.join(', ')}`);
+    }
+    const fillets = attributes?.[KERB_FILLETS_ATTRIBUTE];
+    if (fillets !== undefined && typeof fillets !== 'boolean') {
+        throw new InvalidFeatureError(`attributes.${KERB_FILLETS_ATTRIBUTE} must be true or false`);
     }
 }
 
@@ -411,7 +486,8 @@ function parseGeneratedFeature(feature: unknown, index: number, source: string):
     }
     assertValidAttributes(attributes);
     // The lidar low-vegetation proposals (D-VZ7) come in through this route
-    // with zoneType/weight/feather/noise as ordinary GeoJSON properties.
+    // with zoneType/weight/feather/noise (and optionally zoneVariant) as
+    // ordinary GeoJSON properties.
     if (props.type === 'vegetation_zone') {
         try {
             assertValidVegetationZoneAttributes(attributes);
@@ -456,6 +532,7 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
         id: row.id,
         courseId: row.course_id,
         holeId: row.hole_id,
+        layer: toLayer(row.layer),
         type: row.type,
         geometry,
         geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
@@ -490,13 +567,14 @@ export class CourseFeaturesService {
             .orderBy('sort_order');
     }
 
-    /** The stack for one group (course_id, hole_id|null), bottom -> top. */
-    private byGroup(courseId: string, holeId: string | null, trx: Kysely<Database> = this.db) {
+    /** The stack for one group (course_id, hole_id|null, layer|null), bottom -> top. */
+    private byGroup(courseId: string, holeId: string | null, layer: FeatureLayer, trx: Kysely<Database> = this.db) {
         let query = trx
             .selectFrom('course_features')
             .select(['id', 'type', 'sort_order'])
             .where('course_id', '=', courseId);
         query = holeId === null ? query.where('hole_id', 'is', null) : query.where('hole_id', '=', holeId);
+        query = layer === null ? query.where('layer', 'is', null) : query.where('layer', '=', layer);
         return query.orderBy('sort_order');
     }
 
@@ -511,6 +589,7 @@ export class CourseFeaturesService {
             id: string;
             course_id: string;
             hole_id: string | null;
+            layer?: string | null;
             type: string;
             geometry_json: string;
             geojson: string | null;
@@ -559,9 +638,10 @@ export class CourseFeaturesService {
     }
 
     /**
-     * D24 global composition order: course-level group at the bottom, then
-     * hole groups ascending by hole number, each internally by sort_order.
-     * `stackKey = groupRank * 4096 + sortOrder`, groupRank 0 = course-level.
+     * D28 global composition order: the Roughs group at the bottom, then hole
+     * groups ascending by hole number, then the course-level group on top,
+     * each internally by sort_order. The key itself is `stackKey` in
+     * shared/render/stack-key.ts.
      */
     async geojsonByCourse(
         courseId: string,
@@ -575,6 +655,7 @@ export class CourseFeaturesService {
                 'course_features.id',
                 'course_features.course_id',
                 'course_features.hole_id',
+                'course_features.layer',
                 'course_features.type',
                 'course_features.geometry_json',
                 'course_features.geojson',
@@ -595,17 +676,16 @@ export class CourseFeaturesService {
             const feature = toCourseFeatureSafe(row as unknown as FeatureRow);
             if (!feature) continue;
             const geojson = feature.geojson ?? toGeoJson(feature.geometry);
-            const groupRank = row.hole_number ?? 0;
-            const stackKey = groupRank * 4096 + feature.sortOrder;
             features.push({
                 type: 'Feature',
                 id: feature.id,
                 properties: {
                     courseId: feature.courseId,
                     holeId: feature.holeId,
+                    layer: feature.layer,
                     type: feature.type,
                     sortOrder: feature.sortOrder,
-                    stackKey,
+                    stackKey: stackKey(feature.layer, row.hole_number, feature.sortOrder, feature.type),
                     source: feature.source,
                     sourceRef: feature.sourceRef,
                     license: feature.license,
@@ -635,6 +715,8 @@ export class CourseFeaturesService {
     async create(input: {
         courseId: string;
         holeId?: string | null;
+        /** `'roughs'` puts it in the Roughs group (rough types, no hole). */
+        layer?: string | null;
         type: string;
         geometry: FeatureGeometry;
         /** Import provenance (T49) — omitted for hand-drawn features. */
@@ -645,20 +727,24 @@ export class CourseFeaturesService {
         attributes?: FeatureAttributes | null;
     }): Promise<CourseFeature> {
         assertValidType(input.type);
-        assertValidGeometry(input.geometry);
+        const geometry = deriveCenterlineRings(input.geometry);
+        assertValidGeometry(geometry);
         assertValidAttributes(input.attributes);
         if (input.type === 'vegetation_zone') assertValidVegetationZoneAttributes(input.attributes);
+        if (input.type === 'path') assertValidPathAttributes(input.attributes);
 
         const id = crypto.randomUUID();
         const holeId = input.holeId ?? null;
+        assertValidLayer(input.layer ?? null, holeId, input.type);
+        const layer = toLayer(input.layer ?? null);
         const source = input.source ?? null;
         const sourceRef = input.sourceRef ?? null;
         const license = input.license ?? null;
         const attributes = input.attributes ?? null;
-        const geojson = toGeoJson(input.geometry);
+        const geojson = toGeoJson(geometry);
 
         const sortOrder = await this.db.transaction().execute(async (trx) => {
-            const groupStack = await this.byGroup(input.courseId, holeId, trx).execute();
+            const groupStack = await this.byGroup(input.courseId, holeId, layer, trx).execute();
             const pos = insertionPosition(groupStack, input.type);
 
             for (const row of groupStack) {
@@ -674,8 +760,9 @@ export class CourseFeaturesService {
                     id,
                     course_id: input.courseId,
                     hole_id: holeId,
+                    layer,
                     type: input.type,
-                    geometry_json: JSON.stringify(input.geometry),
+                    geometry_json: JSON.stringify(geometry),
                     geojson: JSON.stringify(geojson),
                     sort_order: pos,
                     source,
@@ -688,13 +775,15 @@ export class CourseFeaturesService {
 
             return pos;
         });
+        if (input.type === 'path' && geometry.centerline) await this.refreshRoadJunctions(input.courseId);
 
         return {
             id,
             courseId: input.courseId,
             holeId,
+            layer,
             type: input.type,
-            geometry: input.geometry,
+            geometry,
             geojson,
             sortOrder,
             source,
@@ -711,6 +800,13 @@ export class CourseFeaturesService {
         version: number,
         input: {
             holeId?: string | null;
+            /**
+             * `'roughs'` moves it into the Roughs group (and off its hole);
+             * `null` moves it out, to `holeId` or course-level. Omitted: it
+             * stays, unless the same update assigns a hole or a non-rough
+             * type — both of those leave the Roughs group.
+             */
+            layer?: string | null;
             type?: string;
             geometry?: FeatureGeometry;
             /** `null` clears the attributes; omitted leaves them untouched. */
@@ -721,30 +817,46 @@ export class CourseFeaturesService {
         if (!row || row.version !== version) throw new VersionConflictError('course_features', id);
 
         if (input.type !== undefined) assertValidType(input.type);
-        if (input.geometry !== undefined) assertValidGeometry(input.geometry);
+        const geometry = input.geometry !== undefined ? deriveCenterlineRings(input.geometry) : undefined;
+        if (geometry !== undefined) assertValidGeometry(geometry);
         if (input.attributes !== undefined) assertValidAttributes(input.attributes);
 
         const dbInput: Record<string, unknown> = {};
-        const movingGroups = input.holeId !== undefined && input.holeId !== row.hole_id;
-        const nextHoleId = input.holeId !== undefined ? input.holeId : row.hole_id;
         const nextType = input.type ?? row.type;
+        const currentLayer = toLayer(row.layer);
+        let nextLayer: FeatureLayer;
+        let nextHoleId = input.holeId !== undefined ? input.holeId : row.hole_id;
+        if (input.layer !== undefined) {
+            // Entering Roughs drops the hole unless the caller named one too
+            // (which assertValidLayer then rejects).
+            if (input.layer === ROUGHS_LAYER && input.holeId === undefined) nextHoleId = null;
+            assertValidLayer(input.layer, nextHoleId, nextType);
+            nextLayer = toLayer(input.layer);
+        } else {
+            nextLayer = nextHoleId !== null || !isRoughsLayerType(nextType) ? null : currentLayer;
+        }
+        const movingGroups = nextHoleId !== row.hole_id || nextLayer !== currentLayer;
         // Only when attributes are being written: retyping a shape TO a
         // vegetation_zone without touching its attributes is left alone, the
         // same way every other type change is.
         if (nextType === 'vegetation_zone' && input.attributes !== undefined) {
             assertValidVegetationZoneAttributes(input.attributes);
         }
-        if (input.holeId !== undefined) dbInput.hole_id = input.holeId;
+        if (nextType === 'path' && input.attributes !== undefined) assertValidPathAttributes(input.attributes);
+        if (movingGroups) {
+            dbInput.hole_id = nextHoleId;
+            dbInput.layer = nextLayer;
+        }
         if (input.type !== undefined) dbInput.type = input.type;
-        if (input.geometry !== undefined) {
-            dbInput.geometry_json = JSON.stringify(input.geometry);
-            dbInput.geojson = JSON.stringify(toGeoJson(input.geometry));
+        if (geometry !== undefined) {
+            dbInput.geometry_json = JSON.stringify(geometry);
+            dbInput.geojson = JSON.stringify(toGeoJson(geometry));
         }
         if (input.attributes !== undefined) dbInput.attributes_json = serializeAttributes(input.attributes);
 
         if (movingGroups) {
             await this.db.transaction().execute(async (trx) => {
-                const groupStack = await this.byGroup(row.course_id, nextHoleId, trx).execute();
+                const groupStack = await this.byGroup(row.course_id, nextHoleId, nextLayer, trx).execute();
                 const pos = insertionPosition(groupStack, nextType);
 
                 for (const targetRow of groupStack) {
@@ -775,6 +887,10 @@ export class CourseFeaturesService {
         }
 
         const updated = await this.byId(id).executeTakeFirstOrThrow();
+        if ((row.type === 'path' || nextType === 'path')
+            && (geometry !== undefined || input.type !== undefined || input.attributes !== undefined)) {
+            await this.refreshRoadJunctions(row.course_id);
+        }
         return toCourseFeature(updated);
     }
 
@@ -782,6 +898,131 @@ export class CourseFeaturesService {
         const row = await this.byId(id).executeTakeFirst();
         if (!row || row.version !== version) throw new VersionConflictError('course_features', id);
         await this.deleteById(id).execute();
+        if (row.type === 'path') await this.refreshRoadJunctions(row.course_id);
+    }
+
+    /**
+     * Re-derive the course's kerb fillets (shared/features/road-junctions.ts)
+     * from its centerline paths, as generated `path` features of
+     * ROAD_JUNCTIONS_SOURCE — what the GSPro SVG, iOS and the resolved stack
+     * see. Runs after every write that can move, add or remove a road; a
+     * course with no fillets before or after writes nothing. Queued per
+     * course: the import wizard creates roads six at a time, and a refresh
+     * that read the roads before another's create committed must not write
+     * after the refresh that saw it.
+     */
+    refreshRoadJunctions(courseId: string): Promise<void> {
+        const next = (this.junctionRefreshes.get(courseId) ?? Promise.resolve())
+            .catch(() => {})
+            .then(() => this.rederiveRoadJunctions(courseId));
+        this.junctionRefreshes.set(courseId, next);
+        void next.finally(() => {
+            if (this.junctionRefreshes.get(courseId) === next) this.junctionRefreshes.delete(courseId);
+        }).catch(() => {});
+        return next;
+    }
+    private readonly junctionRefreshes = new Map<string, Promise<void>>();
+
+    private async rederiveRoadJunctions(courseId: string): Promise<void> {
+        const rows = await this.db
+            .selectFrom('course_features')
+            .select(['id', 'geometry_json', 'attributes_json', 'source', 'generated'])
+            .where('course_id', '=', courseId)
+            .where('type', '=', 'path')
+            .execute();
+        const roads: Array<{ id: string; centerline: NonNullable<FeatureGeometry['centerline']>; fillets: boolean }> = [];
+        const surfaces = new Map<string, unknown>();
+        let existing = 0;
+        for (const r of rows) {
+            if (r.generated === 1) {
+                if (r.source === ROAD_JUNCTIONS_SOURCE) existing++;
+                continue;
+            }
+            const geometry = parseGeometry(r.geometry_json);
+            if (!geometry?.centerline) continue;
+            const attributes = parseAttributes(r.attributes_json);
+            roads.push({ id: r.id, centerline: geometry.centerline, fillets: kerbFilletsOn(attributes) });
+            surfaces.set(r.id, attributes?.[PATH_SURFACE_ATTRIBUTE]);
+        }
+        const fillets = junctionFillets(roads);
+        if (fillets.length === 0 && existing === 0) return;
+        const features = fillets.map(f => {
+            // The junction's surface when its roads agree on one.
+            const kinds = new Set(f.roadIds.map(id => surfaces.get(id)));
+            const surface = kinds.size === 1 ? [...kinds][0] : undefined;
+            return {
+                type: 'Feature' as const,
+                properties: {
+                    type: 'path',
+                    source: ROAD_JUNCTIONS_SOURCE,
+                    source_ref: f.roadIds.join(','),
+                    ...(isPathSurface(surface) ? { [PATH_SURFACE_ATTRIBUTE]: surface } : {}),
+                },
+                geometry: {
+                    type: 'Polygon' as const,
+                    coordinates: f.rings.map(ring => {
+                        const pts = ring.points.map(q => [q.x, q.y]);
+                        return [...pts, pts[0]];
+                    }),
+                },
+            };
+        });
+        await this.replaceGenerated(courseId, ROAD_JUNCTIONS_SOURCE, { type: 'FeatureCollection', features } as GeneratedFeatureCollection);
+    }
+
+    /**
+     * What the import wizard has put on the course: counts of the features
+     * carrying an import `source` (fetch-roads `osm`/`nvdb`, the Lantmäteriet
+     * fetch, pipeline files), per source and type. Hand-drawn features
+     * (source NULL) and generated ones (their own replace-by-source route)
+     * are not imports and are left out. 404 for an unknown course.
+     */
+    async importedByCourse(courseId: string): Promise<ImportedFeatureCount[]> {
+        await this.assertCourse(courseId);
+        const rows = await this.db
+            .selectFrom('course_features')
+            .select(['source', 'type', (eb) => eb.fn.countAll<number>().as('count')])
+            .where('course_id', '=', courseId)
+            .where('source', 'is not', null)
+            .where('generated', '=', 0)
+            .groupBy(['source', 'type'])
+            .orderBy('source')
+            .orderBy('type')
+            .execute();
+        return rows.map((r) => ({ source: r.source as string, type: r.type, count: Number(r.count) }));
+    }
+
+    /**
+     * Deletes the course's imported features from `sources`, only those of
+     * `types` when given — e.g. the roads (`path`) from `osm`+`nvdb` without
+     * the OSM fairways — so a fetch can be imported again from scratch.
+     * Hand-drawn and generated features are never touched. Returns how many
+     * were removed. 404 for an unknown course; an empty `sources` is refused.
+     */
+    async removeImported(courseId: string, sources: string[], types?: string[]): Promise<{ removed: number }> {
+        if (sources.length === 0) throw new InvalidFeatureError('sources must name at least one import source');
+        await this.assertCourse(courseId);
+        return this.db.transaction().execute(async (trx) => {
+            let match = trx
+                .selectFrom('course_features')
+                .select('id')
+                .where('course_id', '=', courseId)
+                .where('source', 'in', sources)
+                .where('generated', '=', 0);
+            if (types && types.length > 0) match = match.where('type', 'in', types);
+            // Counted explicitly: the bun-sqlite dialect does not report numDeletedRows.
+            const ids = (await match.execute()).map((r) => r.id);
+            if (ids.length > 0) await trx.deleteFrom('course_features').where('id', 'in', ids).execute();
+            return { removed: ids.length };
+        }).then(async result => {
+            if (result.removed > 0) await this.refreshRoadJunctions(courseId);
+            return result;
+        });
+    }
+
+    private async assertCourse(courseId: string): Promise<void> {
+        const course = await this.db.selectFrom('courses').select('id').where('id', '=', courseId).executeTakeFirst();
+        if (!course) throw new NotFoundError(`Course ${courseId} not found`);
     }
 
     /**
@@ -848,13 +1089,14 @@ export class CourseFeaturesService {
             let inserted = 0;
             for (const type of types) {
                 const batch = byType.get(type)!;
-                const groupStack = await this.byGroup(courseId, null, trx).execute();
+                const groupStack = await this.byGroup(courseId, null, null, trx).execute();
                 const pos = insertionPosition(groupStack, type);
                 await trx
                     .updateTable('course_features')
                     .set({ sort_order: sql`sort_order + ${batch.length}`, updated_at: sql`(datetime('now'))` })
                     .where('course_id', '=', courseId)
                     .where('hole_id', 'is', null)
+                    .where('layer', 'is', null)
                     .where('sort_order', '>=', pos)
                     .execute();
 
@@ -885,14 +1127,22 @@ export class CourseFeaturesService {
     }
 
     /**
-     * Rewrites a group's (course_id, hole_id|null) stack order in one shot
+     * Rewrites a group's (course_id, hole_id|null, layer|null) stack order in one shot
      * (house pattern — see tees.service.ts reorder / game-plans.service.ts
      * reorderShots). orderedIds must be exactly the group's current
      * members, bottom -> top.
      */
-    async reorder(courseId: string, holeId: string | null, orderedIds: string[]): Promise<void> {
+    async reorder(
+        courseId: string,
+        holeId: string | null,
+        orderedIds: string[],
+        layer: string | null = null,
+    ): Promise<void> {
+        if (layer !== null && (layer !== ROUGHS_LAYER || holeId !== null)) {
+            throw new InvalidFeatureError(`Invalid layer scope: ${layer}`);
+        }
         await this.db.transaction().execute(async (trx) => {
-            const existing = await this.byGroup(courseId, holeId, trx).execute();
+            const existing = await this.byGroup(courseId, holeId, toLayer(layer), trx).execute();
 
             const existingIds = new Set(existing.map((row) => row.id));
             const incomingIds = new Set(orderedIds);
@@ -900,7 +1150,7 @@ export class CourseFeaturesService {
             const sameMembers = sameSize && orderedIds.every((id) => existingIds.has(id));
             if (!sameSize || !sameMembers) {
                 throw new ConflictError(
-                    `orderedIds must exactly match the features in scope (course ${courseId}, hole ${holeId ?? 'course-level'})`,
+                    `orderedIds must exactly match the features in scope (course ${courseId}, hole ${holeId ?? layer ?? 'course-level'})`,
                 );
             }
 

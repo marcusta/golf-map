@@ -123,3 +123,21 @@ test('asset weights share stems within the drawn species and leave unweighted sp
  }
  assert.ok(o1/oak>.71&&o1/oak<.79,o1/oak);
 });
+
+test('scale jitter and lean vary neighbours without changing the pick or authored trees',()=>{
+ const varied={...config,rules:{...config.rules,scaleJitter:.1,maxLeanDeg:3}};
+ const off=matchTree(stem,config);assert.equal(off.leanDeg,0);assert.equal(off.leanDirectionY,0);
+ const ratios=[],leans=[];
+ for(let i=0;i<4000;i++){
+  const s={...stem,id:'jitter-'+i,h:12,r:3};const plain=matchTree(s,config),v=matchTree(s,varied);
+  assert.equal(v.guid,plain.guid);assert.equal(v.status,plain.status);assert.equal(v.rotationY,plain.rotationY);assert.equal(v.look,plain.look);
+  assert.deepEqual(matchTree(s,varied),v);
+  const ratio=v.scale/plain.scale;assert.ok(ratio>=.9&&ratio<=1.1,ratio);ratios.push(ratio);
+  assert.ok(v.leanDeg>=0&&v.leanDeg<=3);assert.ok(v.leanDirectionY>=0&&v.leanDirectionY<360);leans.push(v.leanDeg);
+ }
+ // Spread across the whole band, not bunched: a quarter of stems in each quarter of it.
+ for(const [lo,hi] of [[.9,.95],[.95,1],[1,1.05],[1.05,1.1]]){const n=ratios.filter(r=>r>=lo&&r<hi).length/ratios.length;assert.ok(n>.22&&n<.28,lo+': '+n);}
+ assert.ok(Math.abs(leans.reduce((a,b)=>a+b)/leans.length-1.5)<.1);
+ const authored=matchTree(stem,varied,{guid:birch.guid,scale:.9,rotationY:10});
+ assert.equal(authored.scale,.9);assert.equal(authored.rotationY,10);assert.ok(authored.leanDeg>0);
+});

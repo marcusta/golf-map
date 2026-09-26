@@ -1,7 +1,10 @@
 // The course's vegetation zone-type table (docs/feature-vegetation-zones.md
 // §5): the legend every `vegetation_zone` feature points into with its
-// `zoneType` attribute, plus the VSPro binding (texture + channel) and the
-// item bindings the Unity importer wires up (D-VZ9).
+// `zoneType` attribute, and the VSPro item bindings the Unity importer wires
+// up (D-VZ9): the type's Default items plus any named variants (each its own
+// item mix), which a zone picks with its `zoneVariant` attribute. The mask
+// channels are the pipeline's business (one per item); the type's legacy
+// texture/channel fields are kept by the server but no longer edited here.
 //
 // One table per course, loaded once and cached. The server seeds the four
 // defaults on the first list, so `load()` never comes back empty for a course
@@ -16,9 +19,9 @@
 
 import { Signal, Computed } from '@basics/core/client/core';
 import { api } from '../api';
-import type { CourseZoneType, ZoneTypeItem, ZoneTypesApi } from '../../../shared/api/zone-types.gen';
+import type { CourseZoneType, ZoneTypeItem, ZoneTypeVariant, ZoneTypesApi } from '../../../shared/api/zone-types.gen';
 
-export type { CourseZoneType, ZoneTypeItem };
+export type { CourseZoneType, ZoneTypeItem, ZoneTypeVariant };
 
 /**
  * Defaults for a newly drawn zone's attributes (§5). `zoneType` comes from
@@ -30,9 +33,16 @@ export const ZONE_WEIGHT_DEFAULT = 1;
 export const ZONE_FEATHER_DEFAULT_M = 2;
 export const ZONE_NOISE_DEFAULT_M = 0;
 
-/** The four `vegetation_zone` attribute keys, as stored on the feature. */
+/** Name a fresh variant gets (and its key's slug), to be typed over. */
+export const NEW_VARIANT_NAME = 'New variant';
+
+/**
+ * The `vegetation_zone` attribute keys, as stored on the feature.
+ * `zoneVariant` is a variant key of the zone's type; '' is the Default mix.
+ */
 export interface ZoneAttributes {
     zoneType: string;
+    zoneVariant: string;
     weight: number;
     feather: number;
     noise: number;
@@ -42,6 +52,51 @@ export interface ZoneAttributes {
 export function zoneTypeKeyOf(attributes: unknown): string {
     const key = (attributes as Record<string, unknown> | null | undefined)?.zoneType;
     return typeof key === 'string' ? key : '';
+}
+
+/** The variant key a feature's attributes name ('' = Default, also when absent). */
+export function zoneVariantKeyOf(attributes: unknown): string {
+    const key = (attributes as Record<string, unknown> | null | undefined)?.zoneVariant;
+    return typeof key === 'string' ? key : '';
+}
+
+/** Display name → key: the server accepts `[a-z0-9_]+` only (zone types and variants alike). */
+export function slugify(name: string): string {
+    return name
+        .toLowerCase()
+        .replace(/[åä]/g, 'a')
+        .replace(/ö/g, 'o')
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+}
+
+/**
+ * A key for a new variant named `name`, unique among the type's variants:
+ * the slug, then `_2`, `_3`… Chosen once at creation and never re-derived,
+ * so renaming the variant later leaves the zones that name it bound.
+ */
+export function uniqueVariantKey(zoneType: Pick<CourseZoneType, 'variants'>, name: string): string {
+    const base = slugify(name) || 'variant';
+    const taken = new Set(zoneType.variants.map(v => v.key));
+    if (!taken.has(base)) return base;
+    for (let n = 2; ; n++) {
+        if (!taken.has(`${base}_${n}`)) return `${base}_${n}`;
+    }
+}
+
+/**
+ * Every distinct item name bound anywhere in the table (Default items and
+ * every variant's), in first-seen order: the panel's autocomplete list.
+ */
+export function itemNamesOf(types: readonly CourseZoneType[]): string[] {
+    const names = new Set<string>();
+    for (const zoneType of types) {
+        for (const binding of zoneType.items) if (binding.item.trim()) names.add(binding.item);
+        for (const variant of zoneType.variants ?? []) {
+            for (const binding of variant.items) if (binding.item.trim()) names.add(binding.item);
+        }
+    }
+    return [...names];
 }
 
 function messageOf(e: unknown): string {
@@ -107,6 +162,11 @@ export class ZoneTypesService {
         return this.byKey.get().get(key)?.name ?? key;
     }
 
+    /** The named variants of a zone type ([] when it has none or is unknown). */
+    variantsOf(key: string): ZoneTypeVariant[] {
+        return this.byKey.get().get(key)?.variants ?? [];
+    }
+
     /**
      * A zone feature's attributes with the defaults filled in. The generated
      * client types `attributes` as an opaque object (the codegen cannot carry
@@ -118,6 +178,7 @@ export class ZoneTypesService {
         const defaults = this.defaultAttributes();
         return {
             zoneType: typeof raw.zoneType === 'string' && raw.zoneType ? raw.zoneType : defaults.zoneType,
+            zoneVariant: zoneVariantKeyOf(raw),
             weight: typeof raw.weight === 'number' ? raw.weight : defaults.weight,
             feather: typeof raw.feather === 'number' ? raw.feather : defaults.feather,
             noise: typeof raw.noise === 'number' ? raw.noise : defaults.noise,
@@ -126,11 +187,13 @@ export class ZoneTypesService {
 
     /**
      * Attributes for a zone the user just drew: the table's first zone type
-     * at full weight with the default feather and no edge noise.
+     * (its Default mix) at full weight with the default feather and no edge
+     * noise.
      */
     defaultAttributes(): ZoneAttributes {
         return {
             zoneType: this.items.peek()[0]?.key ?? FALLBACK_ZONE_TYPE_KEY,
+            zoneVariant: '',
             weight: ZONE_WEIGHT_DEFAULT,
             feather: ZONE_FEATHER_DEFAULT_M,
             noise: ZONE_NOISE_DEFAULT_M,
@@ -144,8 +207,21 @@ export class ZoneTypesService {
     async update(id: string, patch: {
         key?: string; name?: string; color?: string;
         textureIndex?: number; channel?: number; items?: ZoneTypeItem[];
+        variants?: ZoneTypeVariant[];
     }): Promise<boolean> {
         return this.mutate(() => this.client.update({ id, ...patch }));
+    }
+
+    /**
+     * Append a variant named `name` to a zone type, keyed by its slug made
+     * unique within the type. Returns the new key ('' when the write failed).
+     */
+    async addVariant(zoneType: CourseZoneType, name = NEW_VARIANT_NAME): Promise<string> {
+        const key = uniqueVariantKey(zoneType, name);
+        const ok = await this.update(zoneType.id, {
+            variants: [...zoneType.variants, { key, name, items: [] }],
+        });
+        return ok ? key : '';
     }
 
     async remove(id: string): Promise<boolean> {
@@ -158,7 +234,7 @@ export class ZoneTypesService {
 
     /**
      * Every write re-reads the table rather than patching locally: the server
-     * assigns mask slots and sort order, and the table is four to eight rows,
+     * assigns sort order (and legacy mask slots), and the table is four to eight rows,
      * so the round trip is cheaper than keeping two copies honest.
      */
     private async mutate(op: () => Promise<unknown>): Promise<boolean> {

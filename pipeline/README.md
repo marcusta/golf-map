@@ -204,10 +204,12 @@ See "STAC findings" below for why this searches across all collections
 rather than pinning one. Source assets are 4-band RGBI; only the first 3
 bands (RGB) are kept in the output.
 
-### `fetch-roads` — OSM highway centerlines → road corridor polygons
+### `fetch-roads` — OSM (+ NVDB) road centerlines → road corridor polygons
 
 ```sh
 python -m golfpipe fetch-roads --bbox 15.47,58.50,15.56,58.55 --out roads.geojson
+# only roads within 200 m of the course's features (a GeoJSON of them, WGS84 or EPSG:3006):
+python -m golfpipe fetch-roads --bbox 15.47,58.50,15.56,58.55 --near course-features.geojson --near-m 200 --out roads.geojson
 # per-course width overrides, repeatable:
 python -m golfpipe fetch-roads --aoi course-area.geojson --out roads.geojson --class-width service=4 --class-width track=3.5
 ```
@@ -233,14 +235,76 @@ the ways merged into each polygon, plus the ODbL `attribution` on the
 collection. Tunnels and steps are skipped; bridges are painted like any
 road. `--no-clip` keeps whole ways.
 
-Cart paths inside a course are almost never in OSM — those are drawn in the
-app (the draw tool's path mode: `P`, click down the middle, Enter).
+**Centerline for the app.** A polygon that is one way's corridor (not
+`--merge`, not an `area=yes` surface or a parking lot) also carries
+`centerline`: that way's clipped, smoothed line, Douglas-Peucker'd at
+`roads.CENTERLINE_SIMPLIFY_M` (0.25 m — the app draws a curve *through* the
+kept points, which hugs the 1 m-sampled line much closer than the chords do),
+next to its `widthM`. The wizard imports such a road as a **centerline
+feature**: the line + width is the shape and the corridor is derived from it
+(`shared/features/centerline.ts`), so moving a road is dragging points on one
+line. The polygon stays in the file as the fallback.
 
-In the app: **Import GeoJSON → Fetch roads from OpenStreetMap** runs this over
-the inner terrain square (roads are playing-area surfaces; the outer terrain is
-scenery and gets none) and loads the result straight into the wizard; the
-centerlines land in `sources/<siteId>/roads-centerlines.geojson` for the road
-grading.
+**Parking lots.** `amenity=parking` areas (closed ways and multipolygon relations;
+not `parking=underground` / `multi-storey` / `rooftop` / garages) come along as
+`path` features with `road_class: parking`, used as mapped. `service` ways lying
+inside a lot (80 % of their length) are its aisles and are absorbed — the lot
+polygon already covers them — lending it their surface when it has none. The
+centerlines file carries each lot as a Polygon (`road_class: parking`), and
+`road-grades` fits it one tilted `plane` edit (outlier-rejected least squares, so a
+lot on a slope stays evenly sloped) grown by a 2 m feather, replayed **before**
+the road corridors. A corridor takes its profile from the heights as they are when
+it replays, so a road ending at a lot runs into the lot's plane, and a road passing
+through or along one stays one smooth line. Replayed after, a lot overwrote the
+graded road inside it, and its feather left a 1.5 m step beside Vreta's gravel yard.
+Across generators the replay order is fixed (`GENERATED_ORDER` in
+`terrain-edits.service.ts`): building pads, pond, bunker and creek digs, then road
+grades last, so nothing generated cuts a graded road. Hand-drawn edits replay after
+all of them. At Vreta the clubhouse lot went
+from 10 cm RMS of lidar noise to an even 3.8 % plane. A lot OSM lacks is drawn in
+the app as a `path` polygon; it is painted, and Grade roads fits it a plane too.
+
+Overpass is a shared public service and turns requests away at random when busy
+(HTTP 429/502/503/504, tiny and large queries alike), so every Overpass command
+retries a refused request every 2 s for up to 60 s (`osm.with_retries`) before
+giving up with "Overpass is busy, try again in a while".
+
+Cart paths inside a course are almost never in OSM — those are drawn in the
+app (the draw tool's path mode: `P`, click down the middle, Enter), as
+centerline features like the imported roads.
+
+**NVDB** (`golfpipe/nvdb.py`). With `TRAFIKVERKET_API_KEY` set (free key from
+data.trafikverket.se; `--no-nvdb` opts out) the OSM ways are fused with
+Trafikverket's national road database through its open data API: one POST
+for the network (`Vägtrafiknät`), measured width (`Vägbredd`), surface
+(`Slitlager`) and road type (`Vägslag`) in the area's box. An OSM way that
+runs along an NVDB link of a matching network (roads/tracks ↔ bilnät,
+paths ↔ cykel-/gångnät; within 6 m, within 30°, over half its length) keeps
+its OSM geometry — the two agree to a few decimetres — and takes the
+measured width (beats every OSM tag), else, when OSM only had a class guess,
+the NVDB road-type width (`nvdb.VAGSLAG_WIDTH_M`: Småväg enkel standard 3,
+Småväg 3.5 …), and `surface` (paved → `asphalt`, gravel → `gravel`). NVDB links no OSM way covers
+(≥ 25 m) are added as their own roads (`source: nvdb`, CC0). At Vreta:
+63 of 104 OSM ways matched, the gravel `unclassified` lanes went from the
+class table's 5 m to a measured 2.9–3.5 m, one missing 190 m gravel road
+was added. Without a key, or when the API fails, the run is OSM only and
+says so. Properties added: `surface` (one of `roads.PATH_SURFACES`: asphalt, concrete,
+paving, gravel, dirt, grass, wood — from NVDB, else the OSM `surface` tag; null when unknown),
+`widthM` + `widthSource` (`nvdb` / `nvdb type` / `width tag` / … / `class`),
+`nvdb_ids`; NVDB-only features carry `license: CC0-1.0` and
+`source_ref: nvdb:<element>`.
+
+In the app: **Import GeoJSON → Fetch roads** runs this over the inner terrain
+square, clipped to the exact EPSG:3006 square (`--square-3006`; the `--bbox`
+is its WGS84 envelope, 10-15 m larger per side from the grid's rotation),
+limited to 200 m around the course's mapped playing features
+(`--near`; `roads.NEAR_TYPES` — greens, tees, fairways, roughs, bunkers,
+penalty areas — never water or creeks, which run far off the course, nor deep
+rough/outside/OOB, generated features or existing roads),
+and loads the result straight into the wizard; the outer terrain is scenery
+and gets none. The fetch runs as a server job (`/course-features/fetch-roads/start`, then
+`job` / `current`, polled by the wizard) since Overpass retries can take a minute. The centerlines land in
+`sources/<siteId>/roads-centerlines.geojson` for the road grading.
 
 `--centerlines-out roads-centerlines.geojson` also writes the clipped
 centerlines with their resolved widths (EPSG:3006 LineStrings) — the input
@@ -261,9 +325,14 @@ can't do this — wide enough to take out 10–20 m undulations it smears the
 surrounding grade into the road; narrow, it leaves them. Same D-TE5 handoff
 and origin-scoped server import as `building-pads` (origin `road-grades`).
 
-In the app: the terrain tool's **Grade roads** button does fetch-roads (if
-the centerlines aren't there yet) → road-grades → import, then **Apply to
-terrain** bakes them.
+In the app: the terrain tool's **Grade roads** button grades the course's own
+`path` features — the server writes them as a centerlines file: each centerline
+path a LineString (the roads as imported, moved and drawn in the editor), each
+paved polygon (a lot, a yard at a junction) a `road_class: parking` Polygon,
+so it gets a plane; long thin path polygons (old road outlines) are skipped
+and reported — → road-grades → import, then **Apply to terrain** bakes them.
+A course with no paths of its own falls back to the fetched centerlines
+(fetch-roads first when there are none).
 
 ### `fetch-buildings` — building footprints + roof heights → building survey
 
@@ -318,10 +387,58 @@ derive from it, and a vector edit survives a lidar refetch.
 
 In the app: the terrain tool's **Generate building pads** button runs
 fetch-buildings (over the outer square, on every persisted lidar tile) →
-building-pads → import; the survey it writes to `sources/<siteId>/buildings.geojson`
-is what the GSPro export panel's **Export inner/outer buildings** reads. The
-outer heightmap export replays the site's enabled edits onto the outer DEM
-too, so the pads are under the outer buildings as well.
+building-pads `--square-3006 <inner square>` → import. Only the buildings whose
+footprint centre is on the inner terrain get a pad (89 of Vreta's 1,038). The
+outer plot is scenery, and a pad there only cuts and fills ground nobody plays on.
+The survey it writes to `sources/<siteId>/buildings.geojson` still covers the outer square:
+it is what the GSPro export panel's **Export inner/outer buildings** reads, so
+outer buildings are placed on unflattened ground. The outer heightmap export
+replays the site's enabled edits onto the outer DEM too, so the inner pads
+(and digs) are in the outer under the inner terrain, and it can't show through
+where they cut.
+
+### Pond and bunker digs (`dig` edits)
+
+Lidar sees a pond's surface and smooths a bunker's hollow away, so both come
+out of the DEM too shallow for GSPro. The `dig` op (`dem_edit.py`) digs a
+polygon below a reference, never filling: a depth profile in metres from the
+edge (optional shelf, a bank at `bankSlopeDeg` rounding into a floor at
+`depthM`), a steeper face towards `faceBearingDeg` when `faceSlopeDeg` is set,
+seeded perimeter `variation`.
+
+- **Ponds** (`reference: level`): the water level is the 25th percentile of
+  the in-polygon cells within `rimM` of the shore. Bank the outline takes in
+  above the level tapers down to it across that band; the dig proper starts
+  where it gets there. The shoreline stays at the water level, which matters
+  because OPCD's **Add Water Plane** puts the plane at a water mesh's lowest
+  rim vertex minus 5 cm.
+- **Bunkers** (`reference: plane`): a plane fitted to the ground in a `rimM`
+  band outside the outline, not the smoothed hollow inside it.
+
+- **Creeks** (`reference: stream`): the water surface along the creek's line
+  (`golfpipe/creeks.py`: the lowest height across the creek per metre, the
+  line turned to run downhill, heights forced to only fall, smoothed), each
+  cell dug below its nearest station. The line is the edit's `centerline`, or
+  the medial axis of the creek polygon when it has none (a Hydrografi ribbon).
+  `gspro.py creeks` puts the R.A.M. water on the same profile, read from the
+  raw DEM.
+
+A narrow pond or bunker never reaches full depth: the banks meet first.
+
+In the app, the terrain tool's **Dig ponds** and **Dig bunkers** buttons write
+one `dig` per `water` / `bunker` feature (origins `water-digs` /
+`bunker-digs`, no pipeline run). Ponds use the feature's `digPreset`
+(`parkland_shelf`, `natural_pond` (the default), `cove_point`, `deep_water`:
+Shoreline Studio's lake bank slopes and depths). Bunkers get 0.45 m, an 18°
+entry and a 40° face towards their hole's green, or the nearest green. A
+feature's `digDepthM`, `digBankSlopeDeg` and `digFaceSlopeDeg` override
+these, and `dig: false` skips it. **Dig creeks** does the same for `water_creek`
+features (origin `creek-digs`, `digPreset` from Shoreline's creek set:
+`maintained_drain` (default: 18°, 0.35 m), `meadow_brook`, `estate_stream`,
+`pool_riffle`, `rocky_runnel`, `eroded_gully`). It sends a drawn centerline's
+line and width; a polygon creek's line is found by the pipeline. On Vreta the digs change about 112 000 cells. The shorelines move
+at most 4 cm, every bunker ends at least 0.45 m below its surroundings, and
+11 of 21 ponds are too narrow for Natural Pond's 11° banks to reach 1 m.
 
 ### `clean-ortho` — inpaint canopy + shadows out of the playable corridor
 
@@ -347,6 +464,18 @@ is covered. Output is written **alongside** the source as
 `<stem>.clean.tif` (never overwrites; same CRS/transform/compression, so
 `tile-ortho` can be pointed straight at it). `--mask-out mask.tif` writes
 the rasterized mask for eyeballing before a long run.
+
+`--woodland woodland.geojson` (woodland-features output, or a features
+export with `woodland_floor` zones) first repaints every stand as forest
+floor, outside the corridor: `--floor-color` (default a moss and litter
+brown-green) mixed with the stand's `floorColor` at `--floor-mix` (0 =
+palette only, 1 = the photo's colour only, default 0.5), plus world-anchored
+fractal noise (`--seed`), faded in over `--floor-feather` metres from the outline
+(`golfpipe/woodland_floor.py`). No torch, and processed in row blocks, so
+any ortho size works. `--keep roads.geojson` (repeatable, e.g. `fetch-roads`
+output) protects polygons from the repaint, so a forest track stays a
+track. Houses inside a stand are painted over on purpose: Unity puts a
+prefab on the pad.
 
 Heavy deps are opt-in — the base env has no torch:
 
@@ -471,6 +600,14 @@ else the `--dem` extent.
 (default thresholds, `source_ref` = the lidar basenames) from the same
 cleaned grid, so one run yields tiles and polygons that agree.
 `--min-hole-area` (default 50 m²) is passed through to it.
+`--woodland-out woodland.geojson` does the same for `woodland-features`
+(default thresholds; the understory returns are counted in one more pass
+over the lidar), with floor colours from `--woodland-ortho <ortho.tif>` when
+given. The app's "Regenerate trees" job runs it and imports the result.
+`--roofs-out roofs.tif` keeps the roof heights (lidar nDSM on the cells
+`suppress_buildings` took for roofs, 0 elsewhere) for
+`gspro.py ortho --remove-buildings`; the app's job writes it to
+`sources/<siteId>/roofs.tif`.
 
 `--surface-shape {crown,flat}` (default `crown`) controls only the
 `surface` layer; `canopy` and `canopy-color` are identical either way.
@@ -615,6 +752,81 @@ Import: `PUT /api/courses/:courseId/features/generated?source=lidar-lowveg`;
 the server turns the non-reserved scalar properties (`zoneType`, `weight`,
 `feather`, `noise`, the stats) into the feature's attributes.
 
+### `woodland-features` — woodland-floor zones per closed stand
+
+```sh
+python -m golfpipe woodland-features --lidar a.copc.laz --dem data/dem/<courseId>.tif     --ortho data/sources/<mapKey>/ortho.tif --course-id <courseId> --out woodland.geojson
+# or from a canopy workdir (no understory counts, every weight 1):
+python -m golfpipe woodland-features --canopy-tif work/canopy/canopy.tif --roof-tif work/canopy/roof.tif     --ortho ortho.tif --course-id <courseId> --out woodland.geojson     [--min-height 3] [--close 5] [--min-area 2500] [--min-cover 0.5] [--edge 2] [--roof-buffer 5]
+```
+
+One polygon per closed stand of the cleaned canopy grid
+(`docs/feature-vegetation-zones.md` D-VZ10, `golfpipe/woodland_features.py`):
+cells of `--min-height` and up, closed by `--close` so crowns up to about twice
+that apart join one stand, nothing within `--roof-buffer` of a roof, stands
+under `--min-area` or under `--min-cover` canopy cover dropped, grown
+`--edge` metres past the outer crowns. With `--lidar` the returns 0.5..3 m
+above ground are counted as `lowveg-features` does; the share of cells with
+one is `understoryPct` and sets the weight (1 at 20 %, never under
+`--min-weight` 0.3; Vreta's leaf-off scan measures 1 to 13 %). With `--ortho`
+(EPSG:3006 RGB; use the ortho you will clean) each stand gets `floorColor`:
+the median of its ground-coloured pixels (warm, not leaf green, not blue
+shade, not grey gravel, not deep shadow) at least 3 m inside the outline,
+those in lidar gaps first. Under closed spruce the photo rarely shows the
+floor, so on Vreta the colour comes from tracks and clearings. Stands
+without enough ground pixels have no colour, and clean-ortho uses
+`--floor-color` for them.
+
+| property        | value                                              |
+|-----------------|----------------------------------------------------|
+| `type`          | `"vegetation_zone"`                                |
+| `source`        | `"lidar-woodland"`                                 |
+| `zoneType`      | `"woodland_floor"`                                 |
+| `weight`        | from the understory with `--lidar`, else `1`       |
+| `feather`       | `4` (metres)                                       |
+| `noise`         | `2` (metres)                                       |
+| `coverPct`      | canopy cover inside the polygon, %                 |
+| `heightP90M`    | 90th percentile canopy height, 1 decimal           |
+| `areaM2`        | polygon area in m², integer                        |
+| `understoryPct` | `--lidar` only: cells with a 0.5..3 m return, %    |
+| `floorColor`    | `--ortho` only: `#rrggbb`                          |
+| `floorStdev`    | `--ortho` only: per-channel spread of the floor    |
+
+Import: `PUT /api/courses/:courseId/features/generated?source=lidar-woodland`
+(or `bun scripts/import-generated-features.ts <courseId> woodland.geojson --source lidar-woodland`).
+The zone type `woodland_floor` is a default from this change on; an existing
+course gets it from the zone-type panel's add-defaults button.
+
+### `gspro.py ortho --floor-course` — forest floor on the exported textures
+
+`--floor-course <course id or name>` paints the course's `woodland_floor`
+zones from the app database (`--db`) as forest floor on the rendered square
+before any file is written, so the plain JPEG, the `--terrain-out` twin and
+the `--tint-out` variant all carry it. The drawn fairway, semi rough, rough,
+tee, green, bunker, path, water and creek features are kept as photographed.
+`--floor-color`, `--floor-mix`, `--floor-feather` and `--floor-seed` are the
+`clean-ortho --woodland` knobs (`golfpipe/woodland_floor.py`). A course with
+no woodland-floor zones exports the photo unchanged, with a note. The app's
+orthophoto exports pass it when "Forest floor under woodland stands" is on.
+
+### `gspro.py ortho --remove-buildings` — roofs and shadows out of the textures
+
+`--remove-buildings` with `--roofs roofs.tif` (canopy `--roofs-out`) and/or
+`--buildings-survey buildings.geojson` (fetch-buildings, what "Generate
+building pads" writes) fills every roof and the shadow it casts from the
+ground round it, before the forest floor and before any file is written
+(`golfpipe/building_removal.py`). The survey matters for buildings newer
+than the lidar: on Vreta the clubhouse was built after the March 2021 scan
+and has no returns at all. Survey footprints are grown 2 m (OSM offsets,
+roof lean in a non-true ortho). The shadow runs toward an azimuth for
+height × ratio metres; both are measured from the photo (the darkest band
+next to the roofs, and where it turns as bright as the sunny side) unless
+`--shadow-azimuth` / `--shadow-ratio` are given; Vreta's 2025 photo
+measures 45°. The fill is the colour of the nearest ground at least 2 m
+outside the hole, on a 1 m grid, blurred, with world-anchored grain; an
+inverse-distance fill averaged lawn and car park into grey haze. Car
+parks, roads and paths are ground and stay, cars on them too.
+
 ### `gspro.py zones` — vegetation zones → VSPro texture masks (per terrain)
 
 ```sh
@@ -625,27 +837,148 @@ python gspro.py zones --square-3006 x0,y0,x1,y1 --course Vreta \
 python gspro.py zones --square-3006 ... --terrain outer --exclude-square <inner x0,y0,x1,y1> ...
 ```
 
-The `vegetation_zone` features of a course, rasterized into the weights
+The `vegetation_zone` features of a course, rasterized into the densities
 VSPro's texture-mask rules sample (`docs/feature-vegetation-zones.md`,
-sections 6 and 7): one RGBA PNG per four zone types (`<out stem>-<texture>.png`,
-`--resolution`², 8 bits per channel, the same north-up frame as the terrain
-texture) plus the `unity-zones-v1` JSON at `--out`. Which channel a zone type
-paints comes from the course's zone-type table (`course_zone_types`:
-`texture_index`, `channel`, item bindings), which the JSON carries as
-`zoneTypes[]`; a zone whose `zoneType` is not in the table is skipped with a
-warning. Per zone, in the app's paint order: rings filled even-odd, a
-signed distance in metres from two Euclidean distance transforms (negative
-inside, zero on the drawn edge), optional value noise on that distance
-(`noise` metres, deterministic from `--seed`), then
-`clamp(0.5 - d / feather, 0, 1) × weight` (feather 0 = hard edge). Overlaps
-run from the last zone to the first with a per-pixel budget of 1: a later
-zone claims its weight first, an earlier zone of another type keeps only
-what is left, same-type zones combine as a maximum, nothing is ever scaled
-up. `zones[]` in the JSON are the same polygons as plot-local metres
-(x east, z north from the square's south-west corner, like
-`unity-trees-v1`), flattened, clipped to the square minus `--exclude-square`,
-simplified to `--simplify`, for the Unity Scene-view overlay only. `plot` is
-copied from `--sidecar` field for field as `trees` does.
+sections 6 and 7): **one mask channel per VSP item**, four items per RGBA PNG
+(`<out stem>-<texture>.png`, `--resolution`², 8 bits per channel, the same
+north-up frame as the terrain texture), plus the `unity-zones-v2` JSON at
+`--out`. One channel per item, not per zone type, because VSP multiplies an
+item's texture-mask density rules together: an item bound to two channels
+would only spawn where both are non-zero.
+
+- **Zone types and variants** come from the course's zone-type table
+  (`course_zone_types`: `items_json` is a type's Default mix, `variants_json`
+  its named variants, each its own item mix; a database without the
+  `variants_json` column reads as no variants, malformed JSON as none with a
+  warning; `texture_index`/`channel` are no longer read). A zone picks a type
+  (`zoneType`) and optionally a variant (`zoneVariant`, absent or `""` =
+  Default). A zone whose `zoneType` is not in the table is skipped with a
+  warning; a variant its type does not have falls back to the Default mix
+  with a warning.
+- **Slots.** A type's Default mix paints slot `<type>`, a variant slot
+  `<type>/<variant>`. Per zone, in the app's paint order: rings filled
+  even-odd, a signed distance in metres from two Euclidean distance
+  transforms (negative inside, zero on the drawn edge), optional value noise
+  on that distance (`noise` metres, deterministic from `--seed`), then
+  `clamp(0.5 - d / feather, 0, 1) × weight` (feather 0 = hard edge). Overlaps
+  run from the last zone to the first with a per-pixel budget of 1: a later
+  zone claims its weight first, an earlier zone of another slot keeps only
+  what is left, same-slot zones combine as a maximum, nothing is ever scaled
+  up, so the slots never sum above 1.
+- **Items.** Every non-blank `item` name the table binds, in order of first
+  appearance walking the types in sort order (Default items, then each
+  variant's), gets a channel — even with no zone on this terrain (an
+  all-zero channel: spawns nowhere), so Unity always rebinds it. Its density
+  is `clip(Σ W_slot × maxDensity, 0, 1)` over every slot binding it (an item
+  listed twice in one slot counts twice); `minDensity` is carried in the
+  JSON only. Written as `round(d × 255)`. Stale `<out stem>-<n>.png` past the
+  last texture are removed.
+
+```json
+{
+  "format": "unity-zones-v2",
+  "plot": { "crs": "EPSG:3006", "terrain": "inner", "originX": 0, "originY": 0, "sizeM": 2050, "minM": 0, "maxM": 0 },
+  "masks": [ { "file": "x-inner-zones-0.png", "resolution": 4096,
+               "channels": ["Tall rough - green base", "Tall rough - tall green", "", ""] } ],
+  "items": [ { "item": "Tall rough - green base", "texture": 0, "channel": 0,
+               "sources": ["rough_tall", "rough_tall/lush"] } ],
+  "zoneTypes": [ { "key": "rough_tall", "name": "Tall rough", "color": "#8a9a3c",
+                   "items": [ { "item": "...", "minDensity": 0, "maxDensity": 1 } ],
+                   "variants": [ { "key": "dry", "name": "Dry straw", "items": [ ... ] } ] } ],
+  "zones": [ { "id": "...", "zoneType": "rough_tall", "variant": "dry", "weight": 1,
+               "feather": 2, "noise": 0, "rings": [ { "nodes": [ { "x": 0, "z": 0 } ] } ] } ]
+}
+```
+
+`items[].sources` are the slots binding the item; `zones[].variant` is `""`
+for the Default mix (and for a fallen-back unknown variant). `zones[]` are
+the same polygons as plot-local metres (x east, z north from the square's
+south-west corner, like `unity-trees-v1`), flattened, clipped to the square
+minus `--exclude-square`, simplified to `--simplify`, for the Unity
+Scene-view overlay only. `plot` is copied from `--sidecar` field for field
+as `trees` does. The summary prints the zones per slot and each item's
+texture/channel with its sources.
+
+### `gspro.py gkd` — the GreenKeeper course file (`<scene>.GKD`)
+
+```sh
+python gspro.py gkd --square-3006 x0,y0,x1,y1 --course Vreta     --sidecar out/vreta-inner-dem-2050m.tif.json     --out "C:/GSProV1/Core/GSP/Courses/<scene>/<scene>.GKD"     [--dem out/vreta-inner-dem-2050m.tif] [--simplify 1.0]     [--water-margin 0.5] [--bank-max 3.0] [--bank-slope 8] [--node-spacing 3.0]     [--tee-map Silver=Blue] [--altitude 79.9] [--template other.GKD] [--no-merge]
+```
+
+The JSON GSPro reads for everything about a course that is not geometry, as
+GreenKeeper writes it. Holes (par, stroke index), tee boxes, pin positions,
+green centres and aim points come from the app's own tables; the penalty
+areas and the out-of-bounds ring from its drawn features. Positions are
+**Unity world metres on the INNER terrain** — x east, z north from the
+square's south-west corner like `unity-trees-v1`, y the ground above the
+terrain's own zero (`minM` from `--sidecar`, where the importer's `0,0,0`
+puts it) — read off `--dem` (by default the sidecar's own GeoTIFF), so every
+point lands on the imported heightmap.
+
+- **Tee sets.** The GKD has eight (`Black White Green Blue Yellow Red Junior
+  Par3`); the app names a tee whatever the course calls it, so each is
+  matched on its name and then its colour, with a few aliases
+  (`championship`→Black, `ladies`→Red, …). Anything else is skipped with a
+  warning naming it — give it a slot with `--tee-map NAME=TEESET`.
+- **Distances.** A tee's scorecard distance is the walk on the ground plane
+  from the tee through the hole's aim points to the green centre. An aim
+  point the tee is already past (no closer to the green than the tee itself)
+  drops out, so a forward tee does not detour to a dogleg marker meant for
+  the back tees, and the `Par3` set — the whole course played as par 3s —
+  ignores them entirely. `TeeTypeTotalDistance` sums the holes. Both rules
+  reproduce the distances in GreenKeeper's own files.
+- **Pins.** GreenKeeper keeps four per green, one per tournament day; a pin
+  the course named after a day takes that day, the rest fill what is left in
+  order, and a green with fewer than four has the green centre stand in (with
+  a warning) so GSPro always has a cup.
+- **Water hazards are staked outside the water.** Water is drawn where the
+  water is, so its line never touches it: every node and every straight
+  line GSPro draws between two nodes is at least `--water-margin` (0.5 m)
+  outside, checked against the drawn water after straightening. Where the
+  water has a bank the line goes where the bank ends: rays are cast straight
+  out from the shore every 0.5 m over the export DEM (smoothed 0.5 m so
+  single lidar returns don't count), and a run of ground steeper than
+  `--bank-slope` (8°) that starts within 2 m of the water is the bank; the
+  line goes to its first flatter ground, never further than `--bank-max`
+  (3 m). The offsets are median-filtered over neighbouring rays (single-ray
+  outliers out) and then Gaussian-smoothed over 3 m of shore: along a ditch
+  the bank reading flickers on and off, and without that the line was
+  notched in and out along a straight creek. Steeper ground further back is the
+  next slope, not the bank. The outline is a variable-width buffer (a disc
+  of the local offset on every shore sample, neighbours joined by their
+  convex hull), so a concave shore or a narrow channel cannot fold the line
+  back over the water. Water whose lines would run closer than 2 m (a creek
+  into a pond, a pond drawn in pieces) is one hazard. Lines are straightened
+  within 0.2 m, only ever outwards, and get a node at least every
+  `--node-spacing` (3 m) so the markings follow the ground. On Vreta about a
+  quarter of the shoreline has no bank and is staked at the margin; the rest
+  follows a bank, typically 2-3 m out.
+- **Penalty areas and OOB.** `penalty_yellow` and `penalty_red` features are
+  drawn where the line is and go in as drawn (never straightened inwards);
+  water entirely inside one is left to it. The largest `oob` ring is the
+  course boundary (`pOOB`), any other `oob` shape a hazard with the
+  `innerOOB` flag; they are straightened within `--simplify` (1 m), outwards
+  only, and not densified. Everything is clipped to the square, and **every hazard line lies
+  strictly inside the course boundary** (GSPro forbids one on or beyond it, and GreenKeeper misdraws
+  it): hazards are cut 0.25 m inside the drawn `oob` ring, or the `pOOB` already in the file when
+  none is drawn, and one entirely beyond it is left out, with the counts in the report; a piece
+  under 1 m wide left along the line by the cut is a sliver, not a hazard, and is dropped. Where water
+  runs up to the boundary the margin yields to it. A GKD outline
+  is one flat point list, so an island in a pond is inside its hazard, which
+  is what the Rules say anyway. Drop zones and island greens stay
+  GreenKeeper's to place.
+- **Merging.** GreenKeeper owns the course's identity and setup — name,
+  location, designer, keywords, slope/rating, the driving range, the scene
+  folder name — and those are carried over from the file at `--out` (or
+  `--template`) untouched; only `Holes`, `Hazards`, `pOOB`,
+  `TeeTypeTotalDistance`, the counts, `CoursePar` and `altitudeV2` are
+  replaced. The original is kept as `<out>.GKD.bak` on the first run and
+  never overwritten after that. `--no-merge` starts from a bare v4.1 file
+  instead. Close the course in GreenKeeper before running, or it will write
+  its own copy back over this one.
+
+Holes past 18, aim points past the second and points outside the square are
+left out, each with a warning.
 
 ### `manifest` — write manifest.json
 

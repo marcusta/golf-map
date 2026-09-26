@@ -9,7 +9,7 @@ import { test, expect, describe, afterEach } from 'bun:test';
 import { di } from '@basics/core/client/core';
 import { _reset } from '@basics/core/client/error-report';
 import { FeaturesService } from '../src/draw/features.service';
-import { containingTopDown, advanceAltCycle } from '../src/draw/draw-tool.service';
+import { containingTopDown, advanceAltCycle, unhittableTypes } from '../src/draw/draw-tool.service';
 import { buildLieMap } from '../src/planner/lie-map';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { wgs84ToSweref99tm } from '../src/geo/transform';
@@ -113,6 +113,58 @@ describe('D23 stack model — render / hit / lie agree (acceptance scenario 1)',
         // Island hidden by id → the click falls through to the fairway.
         const hit = containingTopDown(svc.stackTopDown.get(), NO_HIDDEN, islandCenter, new Set(['isle']));
         expect(hit.map(f => f.id)).toEqual(['fair']);
+    });
+});
+
+// OOB is painted as a white boundary LINE and drawn as one ring around the
+// whole property, so its interior is the entire course. Hit testing walks past
+// it unless OOB is the armed feature type — otherwise the ring answers every
+// click and swallows every marquee drag.
+describe('outline-only types are click-through unless armed', () => {
+    const NO_HIDDEN = new Set<string>();
+    const islandCenter = { x: base.x, y: base.y };
+
+    test('an OOB ring enclosing a fairway does not answer clicks on the fairway', () => {
+        withHoles([]);
+        const svc = new FeaturesService();
+        // OOB stacked ABOVE the fairway and enclosing it — the shape that
+        // used to swallow every click on the course.
+        svc.store.set([
+            feature('fair', 'fairway', square(50), 0),
+            feature('bounds', 'oob', square(200), 9),
+        ]);
+        expect(svc.stackTopDown.get().map(f => f.id)).toEqual(['bounds', 'fair']);
+
+        // Bunker armed: the click falls straight through to the fairway.
+        const passing = containingTopDown(
+            svc.stackTopDown.get(), unhittableTypes(NO_HIDDEN, 'bunker'), islandCenter,
+        );
+        expect(passing.map(f => f.id)).toEqual(['fair']);
+
+        // OOB armed: the ring is back on top of the hit stack.
+        const armed = containingTopDown(
+            svc.stackTopDown.get(), unhittableTypes(NO_HIDDEN, 'oob'), islandCenter,
+        );
+        expect(armed.map(f => f.id)).toEqual(['bounds', 'fair']);
+    });
+
+    test('unhittableTypes adds the unarmed outline-only types to the hidden set', () => {
+        expect([...unhittableTypes(NO_HIDDEN, 'bunker')]).toEqual(['oob']);
+        expect([...unhittableTypes(new Set(['trees']), 'bunker')].sort()).toEqual(['oob', 'trees']);
+        // Armed: nothing added, and the caller's own set is handed straight
+        // back rather than needlessly copied.
+        const hidden = new Set(['trees']);
+        expect(unhittableTypes(hidden, 'oob')).toBe(hidden);
+    });
+
+    test('a filled type is never made click-through by arming another type', () => {
+        withHoles([]);
+        const svc = new FeaturesService();
+        svc.store.set([feature('fair', 'fairway', square(50), 0), feature('isle', 'rough', square(10), 1)]);
+        const hit = containingTopDown(
+            svc.stackTopDown.get(), unhittableTypes(NO_HIDDEN, 'oob'), islandCenter,
+        );
+        expect(hit.map(f => f.id)).toEqual(['isle', 'fair']);
     });
 });
 

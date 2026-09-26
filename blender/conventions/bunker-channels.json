@@ -1,0 +1,64 @@
+{
+  "schema": "golfmap.bunker-channels",
+  "version": 1,
+  "notes": [
+    "One file read by both sides: the Blender bunker tools paint by these roles, the Unity Bunker Materials window builds materials from them and checks the paint.",
+    "Paint expectations: 'rings' are the colours of the bunker's rings counted in from its seam (ring 0 is the loop shared with its blend), 'interior' the colours expected further in. For blends, 'inner' is the edge shared with the bunker, 'outer' the edge shared with the surrounding surface.",
+    "Channel sources: 'from' is $bunker (the bunker mesh's original OPCD material), $blend (the blend mesh's original OPCD material), $outer (the material the blend fades to: the source of its original OPCD Black channel) or a material asset name. 'channel' is the source channel copied. 'tint' multiplies that channel's Overall Color (a shadow is ~0.8). 'blendStrength' overrides the channel's Blend Strength.",
+    "Black is the channel with no dominant colour (max(r,g,b) < 0.25)."
+  ],
+  "conventions": {
+    "opcd-default": {
+      "label": "OPCD default",
+      "description": "What OPCD conform and Adjust Bunker Vertex Painting produce: red rim, green then blue inside; blends red at the bunker, black at the rough.",
+      "bunker": {
+        "rings": ["red", "green"],
+        "interior": ["green", "blue"],
+        "channels": {
+          "red": { "from": "$bunker", "channel": "red" },
+          "green": { "from": "$bunker", "channel": "green" },
+          "blue": { "from": "$bunker", "channel": "blue" },
+          "black": { "from": "$bunker", "channel": "black" }
+        }
+      },
+      "blend": {
+        "inner": "red",
+        "outer": "black",
+        "channels": {
+          "red": { "from": "$bunker", "channel": "red" },
+          "green": { "from": "$blend", "channel": "green" },
+          "blue": { "from": "$blend", "channel": "blue" },
+          "black": { "from": "$outer", "channel": "red" }
+        }
+      }
+    },
+    "ce-simgolf": {
+      "label": "ce.simgolf",
+      "description": "From the 2025 Bunker Masterclass: bunker red dirt lip, black the same lip without 3D grass (tint below 1 fakes a rolled-lip shadow), green sand, blue wet floor. Blend red rough, green longer darker grass, blue grass browning into the lip dirt.",
+      "verified": {
+        "bunker": true,
+        "blend": false
+      },
+      "bunker": {
+        "rings": ["red", "red", "black"],
+        "interior": ["black", "green", "blue"],
+        "channels": {
+          "red": { "from": "$bunker", "channel": "red" },
+          "black": { "from": "$bunker", "channel": "red", "tint": 1.0 },
+          "green": { "from": "$bunker", "channel": "blue" },
+          "blue": { "from": "$bunker", "channel": "blue" }
+        }
+      },
+      "blend": {
+        "inner": "blue",
+        "outer": "red",
+        "channels": {
+          "red": { "from": "$outer", "channel": "red" },
+          "green": { "from": "$outer", "channel": "red", "tint": 0.85 },
+          "blue": { "from": "$bunker", "channel": "red" },
+          "black": { "from": "$outer", "channel": "red" }
+        }
+      }
+    }
+  }
+}

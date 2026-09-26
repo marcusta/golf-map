@@ -1,8 +1,9 @@
 import { test, expect, describe, afterEach } from 'bun:test';
 import { di } from '@basics/core/client/core';
 import { _reset } from '@basics/core/client/error-report';
-import { ZoneTypesService, zoneTypeKeyOf } from '../src/zones/zone-types.service';
-import { slugify } from '../src/zones/zone-types-panel.component';
+import {
+    ZoneTypesService, zoneTypeKeyOf, zoneVariantKeyOf, slugify, uniqueVariantKey, itemNamesOf,
+} from '../src/zones/zone-types.service';
 import type { CourseZoneType, ZoneTypesApi } from '../../shared/api/zone-types.gen';
 
 afterEach(() => { _reset(); di.reset(); });
@@ -10,7 +11,7 @@ afterEach(() => { _reset(); di.reset(); });
 function zoneType(key: string, name: string, color: string, channel: number): CourseZoneType {
     return {
         id: `z-${key}`, courseId: 'c1', key, name, color,
-        textureIndex: 0, channel, sortOrder: channel, items: [], createdAt: '', updatedAt: '',
+        textureIndex: 0, channel, sortOrder: channel, items: [], variants: [], createdAt: '', updatedAt: '',
     };
 }
 
@@ -97,7 +98,7 @@ describe('ZoneTypesService', () => {
         ]);
         const svc = new ZoneTypesService(api);
         await svc.load('c1');
-        expect(svc.defaultAttributes()).toEqual({ zoneType: 'rough_tall', weight: 1, feather: 2, noise: 0 });
+        expect(svc.defaultAttributes()).toEqual({ zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0 });
 
         const empty = new ZoneTypesService(fakeApi().api);
         expect(empty.defaultAttributes().zoneType).toBe('shrub');
@@ -108,9 +109,11 @@ describe('ZoneTypesService', () => {
         const svc = new ZoneTypesService(api);
         await svc.load('c1');
 
-        expect(svc.attributesOf(null)).toEqual({ zoneType: 'rough_tall', weight: 1, feather: 2, noise: 0 });
+        expect(svc.attributesOf(null)).toEqual({ zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0 });
         expect(svc.attributesOf({ zoneType: 'fern', weight: 0.25 }))
-            .toEqual({ zoneType: 'fern', weight: 0.25, feather: 2, noise: 0 });
+            .toEqual({ zoneType: 'fern', zoneVariant: '', weight: 0.25, feather: 2, noise: 0 });
+        expect(svc.attributesOf({ zoneType: 'fern', zoneVariant: 'dense' }).zoneVariant).toBe('dense');
+        expect(svc.attributesOf({ zoneType: 'fern', zoneVariant: 3 }).zoneVariant).toBe('');
         // A stored 0 is a value, not a missing key.
         expect(svc.attributesOf({ zoneType: 'fern', weight: 0 }).weight).toBe(0);
     });
@@ -153,6 +156,88 @@ describe('ZoneTypesService', () => {
         expect(svc.items.get()).toHaveLength(1);
         svc.close();
         expect(svc.panelCourseId.get()).toBeNull();
+    });
+});
+
+describe('ZoneTypesService variants', () => {
+    function roughWithVariants(): CourseZoneType {
+        const rough = zoneType('rough_tall', 'Tall rough', '#8a9a3c', 0);
+        rough.items = [{ item: 'Green base', minDensity: 0, maxDensity: 1 }];
+        rough.variants = [
+            { key: 'dry', name: 'Dry straw', items: [{ item: 'Straw', minDensity: 0, maxDensity: 0.4 }] },
+        ];
+        return rough;
+    }
+
+    test('variantsOf lists a type’s variants; unknown types and types without any give none', async () => {
+        const { api } = fakeApi([roughWithVariants(), zoneType('shrub', 'Shrubs', '#6b8f3a', 1)]);
+        const svc = new ZoneTypesService(api);
+        await svc.load('c1');
+
+        expect(svc.variantsOf('rough_tall').map(v => v.key)).toEqual(['dry']);
+        expect(svc.variantsOf('shrub')).toEqual([]);
+        expect(svc.variantsOf('gone')).toEqual([]);
+    });
+
+    test('addVariant appends "New variant" under a key unique in the type, and the key survives a rename', async () => {
+        const { api, rows } = fakeApi([roughWithVariants()]);
+        const svc = new ZoneTypesService(api);
+        await svc.load('c1');
+
+        expect(await svc.addVariant(svc.items.get()[0]!)).toBe('new_variant');
+        expect(await svc.addVariant(svc.items.get()[0]!)).toBe('new_variant_2');
+        const variants = svc.items.get()[0]!.variants;
+        expect(variants).toEqual([
+            { key: 'dry', name: 'Dry straw', items: [{ item: 'Straw', minDensity: 0, maxDensity: 0.4 }] },
+            { key: 'new_variant', name: 'New variant', items: [] },
+            { key: 'new_variant_2', name: 'New variant', items: [] },
+        ]);
+
+        await svc.update('z-rough_tall', {
+            variants: variants.map(v => (v.key === 'new_variant' ? { ...v, name: 'Lush' } : v)),
+        });
+        expect(rows.get('z-rough_tall')!.variants[1]).toEqual({ key: 'new_variant', name: 'Lush', items: [] });
+    });
+
+    test('a failed addVariant reports the error and returns no key', async () => {
+        const { api } = fakeApi([roughWithVariants()]);
+        api.update = () => Promise.reject(new Error('offline'));
+        const svc = new ZoneTypesService(api);
+        await svc.load('c1');
+
+        expect(await svc.addVariant(svc.items.get()[0]!)).toBe('');
+        expect(svc.error.get()).toBe('offline');
+    });
+});
+
+describe('uniqueVariantKey / itemNamesOf', () => {
+    test('slugs the name and numbers it past the keys the type already has', () => {
+        const type = { variants: [{ key: 'dry', name: 'Dry', items: [] }, { key: 'dry_2', name: 'Dry', items: [] }] };
+        expect(uniqueVariantKey(type, 'Lush')).toBe('lush');
+        expect(uniqueVariantKey(type, 'Dry')).toBe('dry_3');
+        expect(uniqueVariantKey({ variants: [] }, '!!!')).toBe('variant');
+    });
+
+    test('every distinct item name across Default items and variants, first seen first', () => {
+        const rough = zoneType('rough_tall', 'Tall rough', '#8a9a3c', 0);
+        rough.items = [{ item: 'Green base', minDensity: 0, maxDensity: 1 }];
+        rough.variants = [{
+            key: 'dry', name: 'Dry',
+            items: [{ item: 'Straw', minDensity: 0, maxDensity: 1 }, { item: 'Green base', minDensity: 0, maxDensity: 0.3 }],
+        }];
+        const shrub = zoneType('shrub', 'Shrubs', '#6b8f3a', 1);
+        shrub.items = [{ item: 'Hazel', minDensity: 0, maxDensity: 1 }, { item: 'Straw', minDensity: 0, maxDensity: 1 }];
+        expect(itemNamesOf([rough, shrub])).toEqual(['Green base', 'Straw', 'Hazel']);
+        expect(itemNamesOf([])).toEqual([]);
+    });
+});
+
+describe('zoneVariantKeyOf', () => {
+    test('reads the variant key, else empty (= Default)', () => {
+        expect(zoneVariantKeyOf({ zoneType: 'fern', zoneVariant: 'dense' })).toBe('dense');
+        expect(zoneVariantKeyOf({ zoneType: 'fern' })).toBe('');
+        expect(zoneVariantKeyOf({ zoneVariant: 7 })).toBe('');
+        expect(zoneVariantKeyOf(null)).toBe('');
     });
 });
 

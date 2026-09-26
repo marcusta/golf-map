@@ -66,7 +66,7 @@ pattern-following server half can run on Opus):
 - **D-TE3** Two operations only in v1: `plane` (least-squares plane fit — the "even fall"
   case, optional dead-flat) and `smooth` (circular median filter — kills spikes without
   smearing grade). Both feather over an edge band so no curb-cliffs.
-- **D-TE4** Edits apply in `created_at` order (overlaps are order-dependent; deterministic).
+- **D-TE4** Edits apply in `created_at` order (overlaps are order-dependent; deterministic). Generated edits are dated at the epoch with a fixed second per generator (`GENERATED_ORDER`: pads, pond/bunker/creek digs, road grades last) and their file order as the fraction, so they replay before hand-drawn ones and roads win among them.
 - **D-TE5** Handoff format server→pipeline: GeoJSON FeatureCollection, WGS84 coordinates,
   per-feature `properties: { op, featherM, radiusM?, flat? }`; pipeline reprojects rings to
   the DEM CRS via `rasterio.warp.transform_geom`.

@@ -1,11 +1,12 @@
 import { Signal, Computed, effect, untrack, batch, di } from '@basics/core/client/core';
-import type { Map as MaplibreMap, MapMouseEvent, FilterSpecification } from 'maplibre-gl';
+import type { Map as MaplibreMap, MapMouseEvent, FilterSpecification, LngLat } from 'maplibre-gl';
 import type { Feature, FeatureCollection, Position } from 'geojson';
 import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent, OverlayLayerSpec } from '../map/map.service';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
-import { geometryToWgs84Rings, attributesPatchOf, type FeatureAttributesPatch, type FeaturesService } from './features.service';
+import { geometryToWgs84Rings, attributesPatchOf, sameScope, scopeOf, type FeatureAttributesPatch, type FeaturesService, type StackScope } from './features.service';
+import { ROUGHS_LAYER, isRoughsLayerType, type FeatureLayer } from '../../../shared/render/stack-key';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../geo/transform';
 import {
@@ -20,7 +21,14 @@ import {
 } from '../geo/bezier';
 import { bsplineRingToBezierWithMap } from '../geo/bspline';
 import { fitClosedBspline } from '../geo/spline-fit';
-import { bufferPolyline } from '../geo/polyline-buffer';
+import {
+    DRAWN_CORNER_TURN_DEG,
+    autoCorners,
+    centerlineGeometry,
+    flattenCenterline,
+    nearestOnCenterline,
+} from '../../../shared/features/centerline';
+import { PATH_SURFACE_ATTRIBUTE, isPathSurface, type PathSurface } from '../../../shared/features/path-surface';
 import {
     DrawState,
     MIN_RING_POINTS,
@@ -42,6 +50,12 @@ import {
     simplifyGeometry,
     deleteVertices,
     insertBetweenVertices,
+    applyVertexEdit,
+    rdpSimplify,
+    editViewOf,
+    fromEditView,
+    minVertexCount,
+    withCenterlineWidth,
     featuresInRect,
     verticesInRect,
     rectFromCorners,
@@ -54,8 +68,11 @@ import {
     DIGIT_FEATURE_TYPES,
     DRAW_FILL_OPACITY,
     FEATURE_TYPES,
+    OUTLINE_ONLY_TYPES,
+    RULES_TYPES,
     SELECTION_COLOR,
     SURROUND_PAIRINGS,
+    isRulesType,
     typeColorExpression,
     type FeatureType,
 } from './feature-palette';
@@ -99,19 +116,39 @@ export const DRAW_OVERLAY_ID = 'draw';
 const VERTEX_HIT_PX = 9;
 const HANDLE_HIT_PX = 7;
 const EDGE_HIT_PX = 6;
+/** Screen-px reach of a boundary-only line (OOB) for selecting and grabbing it. */
+const RULE_LINE_HIT_PX = 8;
 const CLOSE_RING_PX = 12;
 const DRAG_MOVE_THRESHOLD_PX = 3;
 /** Feature-move drag: movement registers past this (prototype: 2 px). */
 const MOVE_THRESHOLD_PX = 2;
 /** Marquee: below this the gesture counts as a click (prototype: 5 px). */
 const MARQUEE_MIN_PX = 5;
+/**
+ * Draw mode: a press that travels this far is no longer a MapLibre click
+ * (its default clickTolerance), so the tool places the point itself.
+ */
+const PLACE_CLICK_TOLERANCE_PX = 3;
+/**
+ * Hover hit-tests on shapes up to this many vertices use terrain-precise
+ * projection (~40 us/vertex); larger shapes hover on the flat transform.
+ */
+const PRECISE_HOVER_MAX_VERTICES = 150;
 
 // New-shape type policy persistence (survives reloads; per browser).
 const TYPE_FOLLOWS_LAST_KEY = 'golfmap.draw.typeFollowsLast';
 const DEFAULT_TYPE_KEY = 'golfmap.draw.defaultType';
 const PATH_WIDTH_KEY = 'golfmap.draw.pathWidthM';
+const PATH_SURFACE_KEY = 'golfmap.draw.pathSurface';
 /** A cart path: two carts can't pass, one plus a walker can. */
 const DEFAULT_PATH_WIDTH_M = 2.5;
+
+/** The surface new paths get ('' = unknown); a cart path is asphalt more often than not. */
+function readPathSurface(): PathSurface | '' {
+    const stored = storedPref(PATH_SURFACE_KEY);
+    if (stored === null) return 'asphalt';
+    return isPathSurface(stored) ? stored : '';
+}
 
 function readPathWidth(): number {
     const stored = Number(storedPref(PATH_WIDTH_KEY));
@@ -144,11 +181,25 @@ export const OFFSET_PRESETS = [0.5, 1, 2, 5] as const;
  */
 export const TRACE_TOLERANCE_M = 0.75;
 /**
- * Path (centerline + width): a bend turning at least this much becomes a
- * `corner` control on both kerbs (an exact miter); gentler bends stay
- * smooth spline controls.
+ * Path (centerline + width): a clicked bend turning at least this much is a
+ * corner of the line (straight in, straight out); gentler bends stay smooth.
  */
-export const PATH_CORNER_TURN_DEG = 45;
+export const PATH_CORNER_TURN_DEG = DRAWN_CORNER_TURN_DEG;
+/**
+ * Freehand path trace: the stroke is thinned to the points within this of it
+ * (m); the curve through them smooths the hand's wobble away.
+ */
+export const PATH_TRACE_TOLERANCE_M = 0.5;
+
+/**
+ * The geometry a path draft commits as: the clicked centerline — Shift-clicked
+ * points and bends of PATH_CORNER_TURN_DEG or more are corners — at `widthM`,
+ * its corridor derived. Null for fewer than two distinct points or an
+ * unusable width. Pure — exported for tests.
+ */
+export function draftCenterlineGeometry(points: AnchorPoint[], widthM: number): FeatureGeometry | null {
+    return centerlineGeometry('EPSG:3006', { points: autoCorners(points, PATH_CORNER_TURN_DEG), widthM });
+}
 
 interface DragTarget {
     kind: 'anchor' | 'handle' | 'newHandles';
@@ -198,6 +249,8 @@ interface StampSource {
     id: string;
     type: string;
     holeId: string | null;
+    /** Carried so a stamped Roughs-layer shape stays in the Roughs layer. */
+    layer: FeatureLayer;
     geometry: FeatureGeometry;
     /** Carried so a stamped vegetation zone keeps its zone type (null otherwise). */
     attributes?: FeatureAttributesPatch | null;
@@ -294,7 +347,8 @@ interface Marquee {
  *   ~8-20-control closed b-spline (geo/spline-fit.ts, TRACE_TOLERANCE_M)
  *   and committed through the same closeDraft funnel — a sub-threshold
  *   drag decays to the plain click. Middle-button (and ⌘-drag) still pans;
- *   once click-placement has begun, left-drag keeps the native pan.
+ *   once click-placement has begun, every left press places a point (even
+ *   one that slips mid-click) — pan with middle-button (or ⌘-drag).
  */
 /**
  * Visible features containing `p`, preserving the given topmost-first stack
@@ -317,6 +371,26 @@ export function containingTopDown(
 }
 
 const EMPTY_ID_SET: ReadonlySet<string> = new Set();
+
+/**
+ * The feature types hit testing must walk PAST right now: the ones the user
+ * has hidden, plus every outline-only type (OOB) that is not the armed draw
+ * type.
+ *
+ * An outline-only type is painted as a boundary line, not a fill, and OOB in
+ * particular is drawn as one ring around the whole property — so its interior
+ * is the entire course. Treating that interior as clickable makes the OOB ring
+ * answer every click and swallow every marquee drag, hiding everything under
+ * it. Arming OOB in the feature-type picker is the deliberate "I mean this
+ * one" gesture that makes its ring selectable again.
+ *
+ * Pure + exported for tests.
+ */
+export function unhittableTypes(hidden: ReadonlySet<string>, armedType: string): ReadonlySet<string> {
+    const skipped = [...OUTLINE_ONLY_TYPES].filter(type => type !== armedType);
+    if (skipped.every(type => hidden.has(type))) return hidden;
+    return new Set([...hidden, ...skipped]);
+}
 
 /**
  * Next Alt/Option+click cycle state (D27). Same stack as last time → step one
@@ -397,13 +471,43 @@ export function planSurrounds(
     return creates;
 }
 
+/**
+ * What the draw engine edits. `surfaces` is Draw mode: every type but the
+ * rules lines, which are hidden there. `rules` is the same engine run by the
+ * Furniture tool for the penalty areas and OOB only (RULES_TYPES): nothing
+ * else is hit or created, the map stays in nice rendering, clicks on the
+ * furniture markers are left to the Furniture tool, and it has its own undo
+ * history.
+ */
+export type DrawScope = 'surfaces' | 'rules';
+
+/** How a host tool other than Draw runs the engine (see `DrawScope`). */
+export interface DrawActivation {
+    scope: DrawScope;
+    /** The host tool's id: the interaction mode the engine answers to. */
+    toolId: string;
+    /** True when a select-mode press/click at this screen point belongs to the host (a marker under it, a placement armed). */
+    yieldTo?: (screen: { x: number; y: number }) => boolean;
+}
+
 export class DrawToolService {
     private confirm = di.get(ConfirmService);
     /** The course's zone-type legend — defaults for a zone this tool creates or retypes into. */
     private zoneTypes = di.get(ZoneTypesService);
     readonly state = new DrawState();
-    /** Snapshot-based undo/redo of committed edits (see history.ts). */
-    readonly history = new EditHistory();
+    /** What the engine edits right now (see `DrawScope`); `surfaces` whenever it is not running for Furniture. */
+    readonly scope = new Signal<DrawScope>('surfaces');
+    private readonly surfaceHistory = new EditHistory();
+    private readonly rulesHistory = new EditHistory();
+    /** Snapshot-based undo/redo of committed edits (see history.ts), one per scope. */
+    get history(): EditHistory {
+        return this.scope.get() === 'rules' ? this.rulesHistory : this.surfaceHistory;
+    }
+    /** The interaction mode the engine answers to (Draw's own, or the host tool's). */
+    private hostToolId = DRAW_TOOL_ID;
+    private yieldTo: DrawActivation['yieldTo'] | null = null;
+    /** Draw mode's type, kept while the rules scope borrows `drawType`. */
+    private surfacesDrawType: FeatureType | null = null;
     /** Feature type used for the next created polygon. */
     readonly drawType = new Signal<FeatureType>('bunker');
     /**
@@ -415,7 +519,7 @@ export class DrawToolService {
     readonly typeFollowsLast = new Signal<boolean>(storedPref(TYPE_FOLLOWS_LAST_KEY) !== '0');
     /** The type new shapes reset to when `typeFollowsLast` is off. Persisted. */
     readonly defaultDrawType = new Signal<FeatureType>(
-        (FEATURE_TYPES as readonly string[]).includes(storedPref(DEFAULT_TYPE_KEY) ?? '')
+        (FEATURE_TYPES as readonly string[]).includes(storedPref(DEFAULT_TYPE_KEY) ?? '') && !isRulesType(storedPref(DEFAULT_TYPE_KEY) ?? '')
             ? storedPref(DEFAULT_TYPE_KEY) as FeatureType
             : 'bunker');
 
@@ -435,12 +539,19 @@ export class DrawToolService {
 
     /**
      * Arm polygon drawing, applying the new-shape type policy first. All UI
-     * arm paths ('N', the command bar's + toggle) go through here; chain-draw
-     * (staying armed after a close) applies the same policy in `closeDraft`.
+     * arm paths ('N', the command bar's + toggle) go through here.
      */
     armDraw(): void {
         this.pathMode.set(false);
-        if (!this.typeFollowsLast.peek()) this.drawType.set(this.defaultDrawType.peek());
+        if (this.scope.peek() === 'surfaces' && !this.typeFollowsLast.peek()) this.drawType.set(this.defaultDrawType.peek());
+        this.state.arm();
+    }
+
+    /** Rules scope: arm a new penalty area / OOB line of `type`. */
+    armRules(type: FeatureType): void {
+        if (this.scope.peek() !== 'rules' || !isRulesType(type)) return;
+        this.drawType.set(type);
+        this.pathMode.set(false);
         this.state.arm();
     }
     /**
@@ -448,18 +559,31 @@ export class DrawToolService {
      * CENTERLINE — the clicks run down the middle of the path — and Enter
      * commits it as the corridor `pathWidthM` wide (a closed spline feature
      * of type `path`, like any other shape), instead of closing a ring.
-     * Chain-draw keeps the mode for the next path; 'N' / the + button arm a
-     * plain polygon again.
+     * Committing leaves drawing mode like any close; 'N' / the + button arm
+     * a plain polygon again.
      */
     readonly pathMode = new Signal(false);
     /** Total path width in metres for the next committed path. Persisted. */
     readonly pathWidthM = new Signal<number>(readPathWidth());
+    /** Surface every newly drawn `path` gets (attributes.surface); '' leaves it unknown. */
+    readonly pathSurface = new Signal<PathSurface | ''>(readPathSurface());
 
-    /** Arm centerline (path) drawing: the next Enter buffers the draft to a `path` feature. */
+    /**
+     * Arm centerline drawing: the next Enter commits the draft as a
+     * centerline feature — a `path`, or a creek when Creek is the chosen draw
+     * type (its line is what the creek digs and the R.A.M. export follow).
+     */
     armPath(): void {
-        this.drawType.set('path');
+        if (this.drawType.peek() !== 'water_creek') this.drawType.set('path');
         this.pathMode.set(true);
         this.state.arm();
+    }
+
+    /** Set + persist the surface new paths get ('' = unknown). */
+    setPathSurface(surface: PathSurface | ''): void {
+        if (surface !== '' && !isPathSurface(surface)) return;
+        this.pathSurface.set(surface);
+        storePref(PATH_SURFACE_KEY, surface);
     }
 
     /** Set + persist the path width (metres, > 0). */
@@ -529,6 +653,12 @@ export class DrawToolService {
      * preview re-renders at trace-sample granularity, not every mousemove.
      */
     private trace = new Signal<Point[] | null>(null);
+    /**
+     * Claimed left-press while placing points (non-empty draft): the press
+     * always places a point, even when the mouse slips past the click
+     * tolerance mid-click (onMouseUp places it at the press location).
+     */
+    private placePress: { startScreen: { x: number; y: number }; lngLat: LngLat; shift: boolean } | null = null;
     /** Armed repeat-stamp template, or null when stamp mode is inactive. */
     private stampMode: StampTemplate | null = null;
     private suppressClick = false;
@@ -581,8 +711,10 @@ export class DrawToolService {
      */
     attach(ctx: ToolContext): void {
         this.features = ctx.features;
-        this.history.clear();
-        this.history.notice.set(null);
+        for (const history of [this.surfaceHistory, this.rulesHistory]) {
+            history.clear();
+            history.notice.set(null);
+        }
 
         // Any failed save (optimistic-version conflict, network error)
         // re-syncs the store from the server — recorded diffs may no
@@ -591,21 +723,38 @@ export class DrawToolService {
             const err = ctx.features.saveError.get();
             if (!err) return;
             untrack(() => {
-                if (this.history.canUndo.peek() || this.history.canRedo.peek()) {
-                    this.history.clear();
-                    this.history.notice.set('Edit history dropped after a failed save — re-synced from server.');
+                for (const history of [this.surfaceHistory, this.rulesHistory]) {
+                    if (history.canUndo.peek() || history.canRedo.peek()) {
+                        history.clear();
+                        history.notice.set('Edit history dropped after a failed save — re-synced from server.');
+                    }
                 }
             });
         }));
     }
 
-    activate(ctx: ToolContext): void {
+    activate(ctx: ToolContext, host?: DrawActivation): void {
         this.ctx = ctx;
         this.features = ctx.features;
-        // Draw means the whole active tool span, not only a currently armed
-        // polygon. Its high-contrast vector palette makes existing surfaces
-        // legible before the first tracing click.
-        ctx.features.niceRendering.set(false);
+        const scope = host?.scope ?? 'surfaces';
+        this.scope.set(scope);
+        this.hostToolId = host?.toolId ?? DRAW_TOOL_ID;
+        this.yieldTo = host?.yieldTo ?? null;
+        if (scope === 'rules') {
+            // Furniture keeps its photo-blended view; the penalty lines keep
+            // their stroke so there is something to click and edit.
+            ctx.features.rulesOutlines.set(true);
+            this.surfacesDrawType = this.drawType.peek();
+            if (!isRulesType(this.drawType.peek())) this.drawType.set(RULES_TYPES[0]!);
+        } else {
+            // Draw means the whole active tool span, not only a currently armed
+            // polygon. Its high-contrast vector palette makes existing surfaces
+            // legible before the first tracing click.
+            ctx.features.niceRendering.set(false);
+            // The rules lines belong to Furniture.
+            ctx.features.modeHiddenTypes.set(new Set(RULES_TYPES));
+            if (isRulesType(this.drawType.peek())) this.drawType.set(this.defaultDrawType.peek());
+        }
         // QA hook (same pattern as MapService's window.__map): expose the
         // instance for scripted/visual verification tooling. Not public API.
         (window as unknown as Record<string, unknown>).__drawTool = this;
@@ -725,6 +874,13 @@ export class DrawToolService {
         this.clearTransientOpState();
         this.features?.select(null);
         this.features?.niceRendering.set(true);
+        this.features?.modeHiddenTypes.set(new Set());
+        this.features?.rulesOutlines.set(false);
+        if (this.scope.peek() === 'rules' && this.surfacesDrawType) this.drawType.set(this.surfacesDrawType);
+        this.surfacesDrawType = null;
+        this.scope.set('surfaces');
+        this.hostToolId = DRAW_TOOL_ID;
+        this.yieldTo = null;
         this.suppressClick = false;
         this.ctx = null;
     }
@@ -773,7 +929,13 @@ export class DrawToolService {
     // ── Map event handling ────────────────────────────────────────────────
 
     private isMyClaim(): boolean {
-        return this.ctx?.map.interactionMode.peek() === DRAW_TOOL_ID;
+        return this.ctx?.map.interactionMode.peek() === this.hostToolId;
+    }
+
+    /** True while the engine is armed or mid-gesture: the host tool keeps its hands off the map then. */
+    isEngaged(): boolean {
+        return this.state.isDrawing.peek() || this.drag !== null || this.moveDrag !== null
+            || this.stampDrag !== null || this.marquee.peek() !== null;
     }
 
     private onClick(e: MapPointerEvent): void {
@@ -783,17 +945,10 @@ export class DrawToolService {
         const p = lngLatToSweref99tm(e.lngLat);
 
         if (this.state.isDrawing.peek()) {
-            const draft = this.state.draft.peek();
-            // A path's first point is just its start — clicking near it again is
-            // a point, not the close gesture (Enter commits a path).
-            if (!this.pathMode.peek() && draft.length >= 3 && this.screenDist(draft[0], e.point) < CLOSE_RING_PX) {
-                this.closeDraft();
-                return;
-            }
-            // Shift+click places a sharp corner control point.
-            this.state.addPoint(p, e.originalEvent.shiftKey);
+            this.placeDraftPoint(p, e.point, e.originalEvent.shiftKey);
             return;
         }
+        if (this.yieldTo?.(e.point)) return;
 
         // Cmd/Ctrl+click toggles multi-select membership.
         if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) {
@@ -829,11 +984,11 @@ export class DrawToolService {
         if (selected && !boxMode) {
             const insertion = this.edgeInsertionHit(selected, p, e.lngLat.lat);
             if (insertion) {
-                const geometry = insertion.kind === 'control'
-                    ? insertControlPoint(selected.geometry, insertion.ringIdx, insertion.afterIdx, insertion.point)
-                    : insertAnchor(selected.geometry, insertion.ringIdx, insertion.segIdx, insertion.t);
+                const geometry = applyVertexEdit(selected.geometry, view => insertion.kind === 'control'
+                    ? insertControlPoint(view, insertion.ringIdx, insertion.afterIdx, insertion.point)
+                    : insertAnchor(view, insertion.ringIdx, insertion.segIdx, insertion.t));
                 this.vertexSelection.set(new Set()); // indices shifted
-                this.commitGeometry(selected.id, geometry);
+                if (geometry) this.commitGeometry(selected.id, geometry);
                 return;
             }
         }
@@ -842,6 +997,19 @@ export class DrawToolService {
         const prev = this.features?.selectedIds.peek() ?? new Set();
         if (!hit || !(prev.size === 1 && prev.has(hit.id))) this.hoverVertex.set(null);
         this.features?.select(hit?.id ?? null);
+    }
+
+    /** Place a draft control point, or close the ring when on the first point. */
+    private placeDraftPoint(p: Point, screen: { x: number; y: number }, shift: boolean): void {
+        const draft = this.state.draft.peek();
+        // A path's first point is just its start — clicking near it again is
+        // a point, not the close gesture (Enter commits a path).
+        if (!this.pathMode.peek() && draft.length >= 3 && this.screenDist(draft[0], screen) < CLOSE_RING_PX) {
+            this.closeDraft();
+            return;
+        }
+        // Shift+click places a sharp corner control point.
+        this.state.addPoint(p, shift);
     }
 
     private onMouseMove(e: MapPointerEvent): void {
@@ -923,14 +1091,14 @@ export class DrawToolService {
         // positions, so this is frame-order independent and needs no store
         // reads (the store is not patched until the mouseup commit).
         const p = lngLatToSweref99tm(e.lngLat);
-        let geometry: FeatureGeometry;
-        if (drag.kind === 'anchor') {
-            geometry = moveAnchor(drag.startGeometry, drag.ringIdx, drag.idx, p);
-        } else if (drag.kind === 'handle') {
-            geometry = moveHandle(drag.startGeometry, drag.ringIdx, drag.idx, drag.which!, p);
-        } else {
-            geometry = setSymmetricHandles(drag.startGeometry, drag.ringIdx, drag.idx, p);
-        }
+        // On a road the view is its centerline: moving a control point
+        // re-derives the whole corridor round it.
+        const geometry = applyVertexEdit(drag.startGeometry, view => {
+            if (drag.kind === 'anchor') return moveAnchor(view, drag.ringIdx, drag.idx, p);
+            if (drag.kind === 'handle') return moveHandle(view, drag.ringIdx, drag.idx, drag.which!, p);
+            return setSymmetricHandles(view, drag.ringIdx, drag.idx, p);
+        });
+        if (!geometry) return; // the line collapsed (a point dropped on its only neighbour)
         drag.currentGeometry = geometry;
         this.dragGhost.set([{ id: drag.featureId, type: drag.featureType, geometry }]);
     }
@@ -959,6 +1127,7 @@ export class DrawToolService {
             this.onDrawMouseDown(e, map);
             return;
         }
+        if (this.yieldTo?.(e.point)) return;
         const features = this.features;
         if (!features) return;
 
@@ -993,10 +1162,12 @@ export class DrawToolService {
                 }
                 e.preventDefault(); // stops the map's drag-pan for this gesture
                 map.dragPan.disable();
-                const anchor = single.geometry.rings[hit.ringIdx].points[hit.idx];
-                // Bezier handles don't exist on spline features: alt-drag
-                // falls back to a plain control-point drag there.
-                const isSpline = single.geometry.curveType === 'bspline';
+                const view = editViewOf(single.geometry);
+                const anchor = view.rings[hit.ringIdx].points[hit.idx];
+                // Bezier handles don't exist on spline features (nor on a
+                // road's centerline): alt-drag falls back to a plain
+                // control-point drag there.
+                const isSpline = view.curveType === 'bspline';
                 const alt = e.originalEvent.altKey && !isSpline;
                 // Plain grab of a vertex outside the multi-vertex selection
                 // drops that selection (prototype behavior).
@@ -1039,7 +1210,7 @@ export class DrawToolService {
         //     so a stationary Alt-click still cycles the hit stack as before.
         if (e.originalEvent.altKey && !shift) {
             const selectedFeatures = features.editableSelectedFeatures.peek();
-            if (selectedFeatures.some(f => pointInGeometry(p, f.geometry))) {
+            if (selectedFeatures.some(f => this.grabs(f, p))) {
                 e.preventDefault();
                 map.dragPan.disable();
                 this.stampDrag = {
@@ -1047,7 +1218,7 @@ export class DrawToolService {
                     refEpsg: p,
                     startScreen: { x: e.point.x, y: e.point.y },
                     sources: selectedFeatures.map(f => ({
-                        id: f.id, type: f.type, holeId: f.holeId, geometry: f.geometry, attributes: attributesPatchOf(f.attributes),
+                        id: f.id, type: f.type, holeId: f.holeId, layer: f.layer ?? null, geometry: f.geometry, attributes: attributesPatchOf(f.attributes),
                     })),
                     moved: false,
                     dx: 0,
@@ -1070,7 +1241,7 @@ export class DrawToolService {
 
         // 3. Drag inside a selected feature: move the whole selection.
         const selectedFeatures = features.editableSelectedFeatures.peek();
-        if (selectedFeatures.some(f => pointInGeometry(p, f.geometry))) {
+        if (selectedFeatures.some(f => this.grabs(f, p))) {
             e.preventDefault();
             map.dragPan.disable();
             this.moveDrag = {
@@ -1093,7 +1264,10 @@ export class DrawToolService {
         // 4. Drag on empty ground (no visible feature): stamp a repeat copy
         //    (T42) when stamp mode is armed, else a feature marquee.
         //    (A drag starting inside an UNSELECTED feature stays with the
-        //    map's default pan; plain clicks still select it.)
+        //    map's default pan; plain clicks still select it.) In the rules
+        //    scope an empty-ground drag pans, as it always has in Furniture;
+        //    B / Space still rubber-band.
+        if (this.scope.peek() === 'rules' && !this.stampMode) return;
         if (!this.hitFeature(p)) {
             e.preventDefault();
             map.dragPan.disable();
@@ -1113,18 +1287,22 @@ export class DrawToolService {
      * the plain click (click-to-place / Shift-corner / close-ring hit all
      * unchanged via onClick).
      *
+     * Once click-placement has begun (non-empty draft) a left press always
+     * places a point — a press that slips while clicking quickly is still
+     * a point, never a pan (placePress; a trace always starts a FRESH shape).
+     *
      * Pan escape hatches while armed: middle-button (map.service) and
      * ⌘/Ctrl-drag — returning without preventDefault keeps MapLibre's
      * native dragPan engaged, exactly like the select-mode meta-pan below.
-     * And once click-placement has begun (non-empty draft) a left-drag
-     * keeps the native pan too: a trace always starts a FRESH shape, so
-     * mid-draft panning behaves exactly as before.
      */
     private onDrawMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
         if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
-        if (this.state.draft.peek().length > 0) return;
         e.preventDefault();
         map.dragPan.disable();
+        if (this.state.draft.peek().length > 0) {
+            this.placePress = { startScreen: { x: e.point.x, y: e.point.y }, lngLat: e.lngLat, shift: e.originalEvent.shiftKey };
+            return;
+        }
         this.traceGesture = new TraceGesture(
             { x: e.point.x, y: e.point.y },
             lngLatToSweref99tm(e.lngLat),
@@ -1159,6 +1337,21 @@ export class DrawToolService {
     }
 
     private onMouseUp(e: MapMouseEvent, map: MaplibreMap): void {
+        const place = this.placePress;
+        if (place) {
+            this.placePress = null;
+            map.dragPan.enable();
+            // Within tolerance MapLibre synthesizes the click (onClick
+            // places the point); past it there is no click, so place the
+            // point where the press landed.
+            if (this.pxDist(place.startScreen, e.point) < PLACE_CLICK_TOLERANCE_PX) return;
+            this.suppressNextClick();
+            if (this.state.isDrawing.peek()) {
+                this.placeDraftPoint(lngLatToSweref99tm(place.lngLat), place.startScreen, place.shift);
+            }
+            return;
+        }
+
         const trace = this.traceGesture;
         if (trace) {
             this.traceGesture = null;
@@ -1194,7 +1387,7 @@ export class DrawToolService {
                     this.stampMode = {
                         anchor: p,
                         templates: created.map(c => ({
-                            id: c.id, type: c.type, holeId: c.holeId, geometry: c.geometry, attributes: attributesPatchOf(c.attributes),
+                            id: c.id, type: c.type, holeId: c.holeId, layer: c.layer ?? null, geometry: c.geometry, attributes: attributesPatchOf(c.attributes),
                         })),
                     };
                 }
@@ -1214,11 +1407,13 @@ export class DrawToolService {
                 // Default 'contain' (fully inside); Alt = 'intersect'.
                 const mode = e.originalEvent.altKey ? 'intersect' : 'contain';
                 const features = this.features;
-                const visible = features.store.items.peek().filter(f => !features.isHidden(f));
+                const rules = this.scope.peek() === 'rules';
+                const visible = features.store.items.peek()
+                    .filter(f => !features.isHidden(f) && isRulesType(f.type) === rules);
                 this.features.setSelection(featuresInRect(visible, rect, mode));
             } else {
                 const single = this.features.editableSelected.peek();
-                if (single) this.vertexSelection.set(new Set(verticesInRect(single.geometry, rect)));
+                if (single) this.vertexSelection.set(new Set(verticesInRect(editViewOf(single.geometry), rect)));
             }
             return;
         }
@@ -1293,7 +1488,8 @@ export class DrawToolService {
         const hit = this.hitVertexOrHandle(map, selected, e.point);
         if (!hit || hit.kind !== 'anchor') return;
         e.preventDefault();
-        const geometry = deleteAnchor(selected.geometry, hit.ringIdx, hit.idx);
+        const geometry = applyVertexEdit(selected.geometry, view =>
+            deleteAnchor(view, hit.ringIdx, hit.idx, minVertexCount(selected.geometry)));
         if (geometry) {
             this.hoverVertex.set(null); // indices shifted — drop stale target
             this.vertexSelection.set(new Set());
@@ -1376,7 +1572,7 @@ export class DrawToolService {
                 this.armDraw();
             }
         } else if (e.key === 'p' || e.key === 'P') {
-            if (!this.state.isDrawing.peek() && !meta) {
+            if (!this.state.isDrawing.peek() && !meta && this.scope.peek() === 'surfaces') {
                 e.preventDefault();
                 this.armPath();
             }
@@ -1398,7 +1594,7 @@ export class DrawToolService {
                 e.preventDefault();
                 void this.reorderSelected(e.key as 'PageUp' | 'PageDown' | 'Home' | 'End');
             }
-        } else if (!meta && !e.altKey && DIGIT_FEATURE_TYPES[e.key]) {
+        } else if (!meta && !e.altKey && DIGIT_FEATURE_TYPES[e.key] && this.scope.peek() === 'surfaces') {
             // Bare digit = pick a feature type without opening the palette
             // dropdown (⌘/Ctrl/Alt-digit is browser tab switching etc. — never
             // preventDefault there). Same verb as the palette button.
@@ -1443,23 +1639,23 @@ export class DrawToolService {
     /**
      * Close the draft ring and autosave it as a new feature. New features
      * are B-SPLINES: the placed points are control points and the curve
-     * smooths itself (corner points excepted).
+     * smooths itself (corner points excepted). Closing leaves drawing mode:
+     * `create()` selects the new feature, so its nodes show and the type
+     * palette retypes it straight away ('N' arms the next shape).
      */
     closeDraft(curveType: CurveType = 'bspline'): void {
         const ring = this.state.closeDraft();
         if (!ring || !this.features) return;
         this.cursor.set(null);
+        this.state.disarm();
         const features = this.features;
         const type = this.drawType.peek();
-        // Chain-draw stays armed without re-arming, so the new-shape type
-        // policy must apply HERE too: the next chained shape starts as the
-        // default type, not as whatever this one was. A chained path stays
-        // a path.
-        if (!this.typeFollowsLast.peek() && !this.pathMode.peek()) this.drawType.set(this.defaultDrawType.peek());
+        const surface = type === 'path' ? this.pathSurface.peek() : '';
         void features.create({
             type,
             holeId: this.drawHoleId.peek(),
             geometry: { crs: 'EPSG:3006', curveType, rings: [ring] },
+            ...(surface ? { attributes: { [PATH_SURFACE_ATTRIBUTE]: surface } } : {}),
         }).then(created => {
             if (created) {
                 this.history.push([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
@@ -1478,6 +1674,11 @@ export class DrawToolService {
      */
     commitTrace(stroke: Point[]): boolean {
         if (this.state.mode.peek() !== 'draw') return false;
+        // Path mode: the stroke runs down the middle of the road — thin it to
+        // the points a curve through them needs and commit it as a centerline.
+        if (this.pathMode.peek()) {
+            return this.commitCenterline(rdpSimplify(stroke, PATH_TRACE_TOLERANCE_M), this.pathWidthM.peek());
+        }
         const { controls } = fitClosedBspline(stroke, TRACE_TOLERANCE_M);
         if (controls.length < MIN_RING_POINTS) return false;
         this.state.draft.set(controls.map(p => ({ x: p.x, y: p.y })));
@@ -1486,61 +1687,44 @@ export class DrawToolService {
     }
 
     /**
-     * Commit a centerline (EPSG:3006) as the path `widthM` wide and go
-     * through the normal closeDraft funnel — an ordinary editable b-spline
-     * feature of the armed type, one history entry, chain-draw kept.
-     *
-     * The ring is a BEZIER, not the b-spline every other new shape is: a
-     * 3 m ribbon is too narrow for controls that only pull the curve — a
-     * smooth b-spline through kerb controls sits inside them by most of a
-     * metre on a bend, and a fit under the trace's control cap misses the
-     * kerbs by more. Bezier anchors lie ON the curve, so the buffered
-     * outline's vertices (geo/polyline-buffer, the creek-ribbon buffer: one
-     * kerb point opposite every click, mitered bends, butt caps) are the
-     * anchors exactly as previewed. Segments touching a cap corner or a
-     * bend sharper than PATH_CORNER_TURN_DEG are straight (no handles —
-     * a straight path is an exact rectangle); between gentle bends the
-     * kerb gets Catmull-Rom handles, so a clicked curve is a smooth curve.
-     * False (nothing committed) for fewer than two distinct points or a
-     * non-positive width. Public: the path gesture's testable seam.
+     * Commit a centerline (EPSG:3006) as a `path` `widthM` wide: a
+     * CENTERLINE feature — the clicked line (with its corners, see
+     * `draftCenterlineGeometry`) is the shape, the corridor is derived from
+     * it, and editing it later moves points on the line, not on the kerbs.
+     * One create history entry; leaves drawing mode like any close. False
+     * (nothing committed) for fewer than two distinct points or an unusable
+     * width. Public: the path gesture's testable seam.
      */
-    commitCenterline(points: Point[], widthM: number): boolean {
-        if (this.state.mode.peek() !== 'draw') return false;
-        const line: Point[] = [];
-        for (const p of points) {
-            const last = line[line.length - 1];
-            if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 1e-6) line.push(p);
-        }
-        const ring = bufferPolyline(line.map(p => [p.x, p.y]), widthM);
-        if (!ring) return false;
-        const outline = ring.slice(0, -1);
-        if (outline.length < MIN_RING_POINTS) return false;
-        // Turn angle at each centerline vertex (ends count as corners).
-        const n = line.length;
-        const sharp = line.map((p, i) => {
-            if (i === 0 || i === n - 1) return true;
-            const a = Math.atan2(p.y - line[i - 1].y, p.x - line[i - 1].x);
-            const b = Math.atan2(line[i + 1].y - p.y, line[i + 1].x - p.x);
-            let turn = Math.abs(b - a) * (180 / Math.PI);
-            if (turn > 180) turn = 360 - turn;
-            return turn >= PATH_CORNER_TURN_DEG;
+    commitCenterline(points: AnchorPoint[], widthM: number): boolean {
+        if (this.state.mode.peek() !== 'draw' || !this.features) return false;
+        const geometry = draftCenterlineGeometry(points, widthM);
+        if (!geometry) return false;
+        this.cursor.set(null);
+        this.state.disarm();
+        const type = this.drawType.peek();
+        const surface = type === 'path' ? this.pathSurface.peek() : '';
+        void this.features.create({
+            type,
+            holeId: this.drawHoleId.peek(),
+            geometry,
+            ...(surface ? { attributes: { [PATH_SURFACE_ATTRIBUTE]: surface } } : {}),
+        }).then(created => {
+            if (created) {
+                this.history.push([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
+            }
         });
-        // bufferPolyline's ring is the left side forward then the right side
-        // backward, so outline[i] and outline[2n - 1 - i] face centerline vertex i.
-        const m = outline.length;
-        const corner = outline.map((_, i) => sharp[i < n ? i : 2 * n - 1 - i]);
-        const anchors: AnchorPoint[] = outline.map(([x, y]) => ({ x, y }));
-        for (let i = 0; i < m; i++) {
-            const next = (i + 1) % m;
-            if (corner[i] || corner[next]) continue; // straight segment
-            const prev = outline[(i - 1 + m) % m], after = outline[(next + 1) % m];
-            const [ax, ay] = outline[i], [bx, by] = outline[next];
-            anchors[i].hOut = { x: ax + (bx - prev[0]) / 6, y: ay + (by - prev[1]) / 6 };
-            anchors[next].hIn = { x: bx - (after[0] - ax) / 6, y: by - (after[1] - ay) / 6 };
-        }
-        this.state.draft.set(anchors);
-        this.closeDraft('bezier');
         return true;
+    }
+
+    /**
+     * Set the selected road's width (selection panel): the line stays, the
+     * corridor is re-derived round it. One history entry.
+     */
+    setSelectedCenterlineWidth(widthM: number): void {
+        const selected = this.features?.editableSelected.peek();
+        if (!selected?.geometry.centerline || widthM === selected.geometry.centerline.widthM) return;
+        const geometry = withCenterlineWidth(selected.geometry, widthM);
+        if (geometry) this.commitGeometry(selected.id, geometry);
     }
 
     /** Toggle the hovered vertex smooth↔corner ('C' key / panel button). */
@@ -1548,8 +1732,9 @@ export class DrawToolService {
         const selected = this.features?.editableSelected.peek();
         const hover = this.hoverVertex.peek();
         if (!selected || !hover) return;
-        if (!selected.geometry.rings[hover.ringIdx]?.points[hover.idx]) return;
-        this.commitGeometry(selected.id, toggleVertexCorner(selected.geometry, hover.ringIdx, hover.idx));
+        if (!editViewOf(selected.geometry).rings[hover.ringIdx]?.points[hover.idx]) return;
+        const geometry = applyVertexEdit(selected.geometry, view => toggleVertexCorner(view, hover.ringIdx, hover.idx));
+        if (geometry) this.commitGeometry(selected.id, geometry);
     }
 
     /** True when the hovered vertex is a corner (panel toggle label). */
@@ -1557,8 +1742,9 @@ export class DrawToolService {
         const selected = this.features?.editableSelected.get();
         const hover = this.hoverVertex.get();
         if (!selected || !hover) return false;
-        if (!selected.geometry.rings[hover.ringIdx]?.points[hover.idx]) return false;
-        return isCornerVertex(selected.geometry, hover.ringIdx, hover.idx);
+        const view = editViewOf(selected.geometry);
+        if (!view.rings[hover.ringIdx]?.points[hover.idx]) return false;
+        return isCornerVertex(view, hover.ringIdx, hover.idx);
     }
 
     /**
@@ -1627,6 +1813,7 @@ export class DrawToolService {
                 const created = await features.create({
                     type: f.type,
                     holeId: f.holeId,
+                    layer: f.layer ?? null,
                     geometry: translateGeometry(f.geometry, DUPLICATE_OFFSET_M, DUPLICATE_OFFSET_M),
                     // A vegetation zone's copy keeps its zone type and edge
                     // settings; every other type has nothing to carry.
@@ -1765,9 +1952,11 @@ export class DrawToolService {
         const selected = this.features?.editableSelected.peek();
         const keys = this.vertexSelection.peek();
         if (!selected || keys.size === 0) return;
-        const geometry = deleteVertices(selected.geometry, keys);
+        const geometry = applyVertexEdit(selected.geometry, view => deleteVertices(view, keys, minVertexCount(selected.geometry)));
         if (!geometry) {
-            this.actionNotice.set('Cannot delete: each ring needs at least 3 points.');
+            this.actionNotice.set(selected.geometry.centerline
+                ? 'Cannot delete: a path needs at least 2 points.'
+                : 'Cannot delete: each ring needs at least 3 points.');
             return;
         }
         this.actionNotice.set(null);
@@ -1790,11 +1979,12 @@ export class DrawToolService {
             this.actionNotice.set('Select two vertices on the same ring to insert between.');
             return;
         }
-        const result = insertBetweenVertices(selected.geometry, a.ringIdx, a.idx, b.idx);
-        if (!result) return;
+        const result = insertBetweenVertices(editViewOf(selected.geometry), a.ringIdx, a.idx, b.idx, !!selected.geometry.centerline);
+        const geometry = result ? fromEditView(selected.geometry, result.geometry) : null;
+        if (!result || !geometry) return;
         this.actionNotice.set(null);
         this.hoverVertex.set(null);
-        this.commitGeometry(selected.id, result.geometry);
+        this.commitGeometry(selected.id, geometry);
         this.vertexSelection.set(new Set(result.selection));
     }
 
@@ -1806,6 +1996,8 @@ export class DrawToolService {
      * Not armed: a selection is retyped, otherwise the draw type is set.
      */
     chooseType(type: FeatureType): void {
+        // Each scope picks only its own types (Draw never makes a rules line, Furniture only those).
+        if (isRulesType(type) !== (this.scope.peek() === 'rules')) return;
         const hasSelection = (this.features?.selectedIds.peek().size ?? 0) > 0;
         if (!this.state.isDrawing.peek() && hasSelection) this.retypeSelection(type);
         else this.drawType.set(type);
@@ -1836,18 +2028,25 @@ export class DrawToolService {
         }
     }
 
-    /** Re-assign the selection's hole (panel select). ONE history entry. */
-    assignSelectionHole(holeId: string | null): void {
+    /**
+     * Move the selection to another stack group — a hole, course-level or
+     * the Roughs layer (panel select). ONE history entry. Only rough types
+     * may enter the Roughs layer (D28); anything else in the selection stays
+     * where it is.
+     */
+    assignSelectionScope(scope: StackScope): void {
         const features = this.features;
-        const items = (features?.editableSelectedFeatures.peek() ?? []).filter(f => f.holeId !== holeId);
+        const items = (features?.editableSelectedFeatures.peek() ?? [])
+            .filter(f => !sameScope(scopeOf(f), scope))
+            .filter(f => scope.layer === null || isRoughsLayerType(f.type));
         if (!features || items.length === 0) return;
         this.history.push(items.map(f => ({
             featureId: f.id,
             before: snapshotOf(f),
-            after: { ...snapshotOf(f), holeId },
+            after: { ...snapshotOf(f), ...scope },
             beforeVersion: f.version,
         })));
-        for (const f of items) void features.update(f.id, { holeId });
+        for (const f of items) void features.update(f.id, { ...scope });
     }
 
     /**
@@ -1905,8 +2104,19 @@ export class DrawToolService {
         this.ctx?.map.map.peek()?.dragPan.enable();
     }
 
+    /** Leave drawing mode without making a shape (a host panel's arm button toggled off). */
+    cancelDrawing(): void {
+        this.cancelTrace();
+        this.state.disarm();
+        this.cursor.set(null);
+    }
+
     /** Discard an in-progress freehand trace (ESC / deactivate). */
     private cancelTrace(): void {
+        if (this.placePress) {
+            this.placePress = null;
+            this.ctx?.map.map.peek()?.dragPan.enable();
+        }
         if (!this.traceGesture) return;
         this.traceGesture = null;
         this.trace.set(null);
@@ -1937,6 +2147,7 @@ export class DrawToolService {
             const c = await features.create({
                 type: s.type,
                 holeId: s.holeId,
+                layer: s.layer,
                 geometry: translateGeometry(s.geometry, dx, dy),
                 attributes: s.attributes ?? null,
             });
@@ -1954,26 +2165,53 @@ export class DrawToolService {
     /**
      * Topmost-in-stack VISIBLE feature containing the EPSG:3006 point (D23):
      * the first element of `hitStack` — the SAME rule render, `hitGreen` and
-     * lie classification now share. Hidden types are not selectable.
+     * lie classification now share. Hidden types are not selectable, nor are
+     * unarmed outline-only types (see `unhittableTypes`).
      */
     private hitFeature(p: Point): CourseFeature | null {
         return this.hitStack(p)[0] ?? null;
     }
 
     /**
-     * ALL visible features containing `p`, topmost-first (D23 stack order).
+     * ALL hittable features containing `p`, topmost-first (D23 stack order).
      * Drives Alt/Option+click cycling (D27) — repeated alt-clicks step down
      * this list. `hitFeature` is just its first element.
+     *
+     * "Hittable" is `unhittableTypes`: visible, and either a filled type or
+     * the outline-only type the picker currently has armed.
      */
     private hitStack(p: Point): CourseFeature[] {
-        if (!this.features) return [];
+        const features = this.features;
+        if (!features) return [];
+        if (this.scope.peek() === 'rules') {
+            return features.stackTopDown.peek()
+                .filter(f => isRulesType(f.type) && !features.isHidden(f) && this.grabs(f, p));
+        }
+        const stack = features.stackTopDown.peek();
         return containingTopDown(
-            this.features.stackTopDown.peek(),
-            this.features.hiddenTypes.peek(),
+            features.roughsLayerOff.peek() ? stack.filter(f => f.layer !== ROUGHS_LAYER) : stack,
+            unhittableTypes(features.effectiveHiddenTypes.peek(), this.drawType.peek()),
             p,
-            this.features.hiddenIds.peek(),
-            this.features.hiddenSources.peek(),
+            features.hiddenIds.peek(),
+            features.hiddenSources.peek(),
         );
+    }
+
+    /**
+     * Whether a press at `p` lands on `f`: inside it, or for a boundary-only
+     * type (OOB, a ring round the whole property whose inside is the course)
+     * within RULE_LINE_HIT_PX of its line.
+     */
+    private grabs(f: CourseFeature, p: Point): boolean {
+        if (!OUTLINE_ONLY_TYPES.has(f.type as FeatureType)) return pointInGeometry(p, f.geometry);
+        const zoom = this.ctx?.map.zoom.peek() ?? 18;
+        const { lat } = sweref99tmToWgs84(p.x, p.y);
+        const tol = RULE_LINE_HIT_PX * (40075016.686 * Math.abs(Math.cos((lat * Math.PI) / 180))) / 2 ** (zoom + 8);
+        return f.geometry.rings.some(ring => {
+            const converted = f.geometry.curveType === 'bspline' ? bsplineRingToBezierWithMap(ring) : null;
+            const hit = nearestOnRing(converted ? converted.ring : ring, p);
+            return hit !== null && hit.dist <= tol;
+        });
     }
 
     /**
@@ -1985,7 +2223,10 @@ export class DrawToolService {
         const selected = this.features?.editableSelected.peek();
         const map = this.ctx?.map.map.peek();
         if (!selected || !map) return;
-        const hit = this.hitVertexOrHandle(map, selected, e.point);
+        // Per-mousemove: terrain-precise only while the shape is small
+        // enough that the DEM raycasts stay cheap (see hitVertexOrHandle).
+        const vertexCount = editViewOf(selected.geometry).rings.reduce((n, r) => n + r.points.length, 0);
+        const hit = this.hitVertexOrHandle(map, selected, e.point, vertexCount <= PRECISE_HOVER_MAX_VERTICES);
         if (!hit || hit.kind !== 'anchor') return;
         const current = this.hoverVertex.peek();
         if (current && current.ringIdx === hit.ringIdx && current.idx === hit.idx) return;
@@ -1996,18 +2237,21 @@ export class DrawToolService {
         map: MaplibreMap,
         feature: CourseFeature,
         screen: { x: number; y: number },
+        precise = true,
     ): { kind: 'anchor' | 'handle'; which?: 'hIn' | 'hOut'; ringIdx: number; idx: number } | null {
         // Vertex lng/lat are cached per geometry (invariant until the shape is
-        // edited). Project with the FLAT transform, not map.project: with
-        // terrain enabled map.project raycasts the DEM (~40 us/call), so
-        // hit-testing every vertex per mouse-move cost ~30 ms on a large shape.
-        // Terrain draping shifts a marker sub-pixel at course pitch/exaggeration
-        // (< 1 px, far under the hit thresholds), so ignoring it is safe here.
-        const rings = vertexLngLatFor(feature.geometry);
+        // edited). `precise` projects with map.project, which places the point
+        // ON the terrain exactly where the draped vertex markers render. The
+        // flat transform ignores elevation: on a pitched view that misses the
+        // marker by far more than the hit radius, so a press on a node fell
+        // through to the whole-shape move. map.project raycasts the DEM
+        // (~40 us/call) though, so a per-mouse-move hover on a large imported
+        // shape (hundreds of vertices) opts out and takes the flat transform.
+        const rings = vertexLngLatFor(editViewOf(feature.geometry));
         const tr = map.transform as unknown as {
             locationToScreenPoint?: (l: { lng: number; lat: number }) => { x: number; y: number };
         };
-        const project = tr.locationToScreenPoint
+        const project = !precise && tr.locationToScreenPoint
             ? (ll: Position) => tr.locationToScreenPoint!({ lng: ll[0], lat: ll[1] })
             : (ll: Position) => map.project(ll as [number, number]);
         const pxDistTo = (ll: Position): number => {
@@ -2029,15 +2273,21 @@ export class DrawToolService {
                 }
             }
         }
+        // Nearest anchor within reach, not the first: closely spaced control
+        // points otherwise grab whichever comes first in ring order.
+        let best: { kind: 'anchor'; ringIdx: number; idx: number } | null = null;
+        let bestDist = VERTEX_HIT_PX;
         for (let r = 0; r < rings.length; r++) {
             const { anchor } = rings[r];
             for (let i = 0; i < anchor.length; i++) {
-                if (pxDistTo(anchor[i]) < VERTEX_HIT_PX) {
-                    return { kind: 'anchor', ringIdx: r, idx: i };
+                const d = pxDistTo(anchor[i]);
+                if (d < bestDist) {
+                    bestDist = d;
+                    best = { kind: 'anchor', ringIdx: r, idx: i };
                 }
             }
         }
-        return null;
+        return best;
     }
 
     /**
@@ -2061,6 +2311,15 @@ export class DrawToolService {
         const zoom = this.ctx?.map.zoom.peek() ?? 18;
         const metersPerPx = (40075016.686 * Math.abs(Math.cos((lat * Math.PI) / 180))) / 2 ** (zoom + 8);
         const tol = EDGE_HIT_PX * metersPerPx;
+        const centerline = feature.geometry.centerline;
+        if (centerline) {
+            // A road: click ON its line (open — no closing segment) to add a
+            // control point where the line runs, between the span's ends.
+            const hit = nearestOnCenterline(centerline.points, p);
+            if (!hit || hit.dist > tol) return null;
+            if (centerline.points.some(a => Math.hypot(a.x - p.x, a.y - p.y) < tol * 2)) return null;
+            return { kind: 'control', ringIdx: 0, afterIdx: hit.span, point: hit.point };
+        }
         const isSpline = feature.geometry.curveType === 'bspline';
 
         for (let r = 0; r < feature.geometry.rings.length; r++) {
@@ -2143,8 +2402,13 @@ export class DrawToolService {
 
             // In-progress b-spline drawing shows the open control path only,
             // Inkscape-style: no closed-curve extrapolation and no fill until
-            // the user explicitly closes the ring.
-            const line = flattenOpenPath(controls, 0.25).map(([x, y]) => toLngLat({ x, y }));
+            // the user explicitly closes the ring. A path shows the curve its
+            // centerline will be.
+            const path = this.pathMode.get() && controls.length >= 2;
+            const line = (path
+                ? flattenCenterline(autoCorners(controls, PATH_CORNER_TURN_DEG)).map(q => [q.x, q.y] as [number, number])
+                : flattenOpenPath(controls, 0.25)
+            ).map(([x, y]) => toLngLat({ x, y }));
             if (line.length >= 2) {
                 features.push({
                     type: 'Feature',
@@ -2153,13 +2417,15 @@ export class DrawToolService {
                 });
             }
             // Path mode: the corridor Enter will commit, around the centerline.
-            if (this.pathMode.get() && controls.length >= 2) {
-                const ring = bufferPolyline(controls.map(q => [q.x, q.y]), this.pathWidthM.get());
-                if (ring) {
+            if (path) {
+                const corridor = draftCenterlineGeometry(controls, this.pathWidthM.get());
+                for (const ring of corridor?.rings ?? []) {
+                    const coords = ring.points.map(q => toLngLat(q));
+                    coords.push(coords[0]);
                     features.push({
                         type: 'Feature',
                         properties: { role: 'draft-line' },
-                        geometry: { type: 'LineString', coordinates: ring.map(([x, y]) => toLngLat({ x, y })) },
+                        geometry: { type: 'LineString', coordinates: coords },
                     });
                 }
             }
@@ -2237,11 +2503,21 @@ export class DrawToolService {
         if (selected) {
             // While dragging, markers/handles/cage follow the live ghost
             // geometry (the store keeps the pre-drag shape until commit).
-            const geometry = ghosts?.find(g => g.id === selected.id)?.geometry ?? selected.geometry;
+            const live = ghosts?.find(g => g.id === selected.id)?.geometry ?? selected.geometry;
+            // A road's markers are its centerline's control points (the edit
+            // view), drawn on the line itself instead of a control cage.
+            const geometry = editViewOf(live);
             const isSpline = geometry.curveType === 'bspline';
             const vertexSel = this.vertexSelection.get();
+            if (live.centerline) {
+                features.push({
+                    type: 'Feature',
+                    properties: { role: 'centerline' },
+                    geometry: { type: 'LineString', coordinates: flattenCenterline(live.centerline.points).map(q => toLngLat(q)) },
+                });
+            }
             geometry.rings.forEach((ring, ringIdx) => {
-                if (isSpline && ring.points.length >= 2) {
+                if (isSpline && ring.points.length >= 2 && !live.centerline) {
                     // Control cage: the off-curve control polygon, so
                     // the pull relationship is visible.
                     const cage = ring.points.map((p: AnchorPoint) => toLngLat(p));
@@ -2293,6 +2569,8 @@ export class DrawToolService {
 function previewLayers(): OverlayLayerSpec[] {
     const role = (value: string): FilterSpecification =>
         ['==', ['get', 'role'], value] as FilterSpecification;
+    const outlineOnly = (): FilterSpecification =>
+        ['in', ['get', 'type'], ['literal', [...OUTLINE_ONLY_TYPES]]] as unknown as FilterSpecification;
     return [
         {
             // Drag ghosts: palette-true live copies of dragged features
@@ -2301,7 +2579,10 @@ function previewLayers(): OverlayLayerSpec[] {
             // seamless.
             id: 'draw-ghost-fill',
             type: 'fill',
-            filter: role('ghost'),
+            // Outline-only types (OOB) have no fill to ghost — dragging one
+            // would flash a course-wide white blob. `draw-ghost-line` below
+            // carries them, in the same bone white the map paints them.
+            filter: ['all', role('ghost'), ['!', outlineOnly()]] as FilterSpecification,
             layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
             paint: {
                 'fill-color': typeColorExpression('draw') as never,
@@ -2348,6 +2629,13 @@ function previewLayers(): OverlayLayerSpec[] {
             type: 'line',
             filter: role('op-preview'),
             paint: { 'line-color': STATUS_RISK /* '#C68A2E' — --data-risk */, 'line-width': 2, 'line-dasharray': [2, 1.5] },
+        },
+        {
+            // A selected road's centerline: the line its points edit.
+            id: 'draw-centerline',
+            type: 'line',
+            filter: role('centerline'),
+            paint: { 'line-color': SELECTION_COLOR, 'line-width': 2, 'line-opacity': 0.9 },
         },
         {
             id: 'draw-handle-lines',

@@ -64,6 +64,10 @@ namespace GolfMap
         public List<GameObject> groundMeshes = new List<GameObject>();   // course meshes probed for ground height
         public float outerBillboardDistance = 10000;
         public bool regenerateBillboards = true;
+        // Grade baked into the outer atlas. A billboard is flat albedo x tint, without the AO and
+        // self-shadowing a mesh crown gets, so at 1 the outer reads brighter than the inner.
+        public float billboardBrightness = 0.45f;
+        public float billboardSaturation = 0.85f;
         public string lastPlantingBackup;
 
         [Header("Tree editor")]

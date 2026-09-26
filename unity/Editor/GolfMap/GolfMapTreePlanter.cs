@@ -244,7 +244,7 @@ namespace GolfMap.Editor
         }
         partial void SyncStorage(ref bool changed, ref string problem);
 
-        static Terrain RoleTerrain(UnityEngine.SceneManagement.Scene scene, string objectName, string dataName, string label)
+        internal static Terrain RoleTerrain(UnityEngine.SceneManagement.Scene scene, string objectName, string dataName, string label)
         {
             var found = FindObjectsOfType<Terrain>().Where(t => t.gameObject.scene == scene && t.terrainData &&
                 ((!string.IsNullOrEmpty(objectName) && t.name == objectName) || (!string.IsNullOrEmpty(dataName) && t.terrainData.name == dataName))).ToArray();
@@ -543,7 +543,7 @@ namespace GolfMap.Editor
             biome=GolfMapPalette.Load(BiomeFile);
             if(biome.assets.Count==0)throw new Exception("Invalid biome palette.");
             var rules=biome.rules;
-            if(!(rules.minScale>0&&rules.maxScale>=rules.minScale&&rules.variationBand>=0&&rules.speciesFitSlack>=0&&rules.maxHeightError>=0&&rules.maxWidthError>=0))throw new Exception("Invalid biome rules.");
+            if(!(rules.minScale>0&&rules.maxScale>=rules.minScale&&rules.variationBand>=0&&rules.speciesFitSlack>=0&&rules.maxHeightError>=0&&rules.maxWidthError>=0&&rules.scaleJitter>=0&&rules.scaleJitter<1&&rules.maxLeanDeg>=0&&rules.maxLeanDeg<=45))throw new Exception("Invalid biome rules.");
             var renderIssues=new List<string>();var shaderIssues=new List<string>();
             foreach(var a in biome.assets){
                 if(!a.enabled)continue;
@@ -563,6 +563,8 @@ namespace GolfMap.Editor
                 foreach(var shape in GolfMapLooks.Shapes(biome,group.name,look)){
                     if(!shape.enabled)continue;
                     var copy=GolfMapLooks.Prefab(GolfMapCourses.For(component),group.name,look,shape);
+                    // A look the palette records but this project never generated: build it from the recorded values.
+                    if(!copy){GolfMapLooks.Generate(GolfMapCourses.For(component),biome,group.name,look,null);GolfMapLooks.Apply(GolfMapCourses.For(component),biome,group.name,look);copy=GolfMapLooks.Prefab(GolfMapCourses.For(component),group.name,look,shape);}
                     if(!copy)throw new Exception("Look '"+look.id+"' of "+group.name+" has no prefab for "+shape.name+". Open the look in the Palette panel and press Regenerate.");
                     CheckRenderers(shape.name+" ["+look.id+"]",copy,shaderIssues);
                     biomePrefabs.Add(GolfMapBiome.LookKey(shape.guid,look.id),copy);
@@ -614,7 +616,7 @@ namespace GolfMap.Editor
             "SyntyStudios/Trees",
         };
         static readonly Dictionary<string,bool> KnownShaders=new Dictionary<string,bool>();
-        static bool VspKnowsShader(string shaderName)
+        internal static bool VspKnowsShader(string shaderName)
         {
             bool known;
             if(KnownShaders.TryGetValue(shaderName,out known))return known;
@@ -730,6 +732,14 @@ namespace GolfMap.Editor
                     p=new Proto{prefab=prefab,heightM=(float)asset.heightM,widthM=(float)asset.crownWidthM,prototypeIndex=-1};
                     cache[prefab]=p;return p;
                 }
+                // A look's generated copy sits at its own path: it has the dimensions of the shape it copies.
+                foreach(var entry in biomePrefabs)if(entry.Value==prefab){
+                    string guid=entry.Key.Split(':')[0];
+                    var shape=biome.assets.FirstOrDefault(a=>a.guid==guid);
+                    if(shape==null)continue;
+                    p=new Proto{prefab=prefab,heightM=(float)shape.heightM,widthM=(float)shape.crownWidthM,prototypeIndex=-1};
+                    cache[prefab]=p;return p;
+                }
                 throw new InvalidOperationException("No biome dimensions for "+prefab.name+" ("+assetPath+"). Reload the palette.");
             }
             GameObject temp=null;
@@ -764,6 +774,10 @@ namespace GolfMap.Editor
         float HeightScale(GolfMapTree t, Proto p) => useBiome ? (float)biomeMatches[t].scale : Mathf.Clamp(t.h / p.heightM, minScale, maxScale);
         float WidthScale(GolfMapTree t, Proto p, float hs) => useBiome ? (biomeMatches[t].widthScale > 0 ? (float)biomeMatches[t].widthScale : hs) : scaleWidth ? Mathf.Clamp(2f * t.r / p.widthM, minScale, maxScale) : hs;
         float TreeRotation(GolfMapTree t,System.Random rng) {return useBiome?(float)biomeMatches[t].rotation:(float)(rng.NextDouble()*360);}
+        // Yaw plus the biome match's lean. Unity terrain trees can only turn about Y and use TreeRotation.
+        Quaternion TreeOrientation(GolfMapTree t, System.Random rng) => useBiome ? Orientation(biomeMatches[t], (float)biomeMatches[t].rotation) : Quaternion.Euler(0, TreeRotation(t, rng), 0);
+        // The lean tilts the trunk towards leanDirection in the tree's own frame, so turning the tree turns its lean with it.
+        static Quaternion Orientation(GolfMapBiomeMatch m, float yaw) => Quaternion.Euler(0, yaw, 0) * Quaternion.AngleAxis((float)m.lean, Quaternion.Euler(0, (float)m.leanDirection, 0) * Vector3.right);
 
         int PlantTerrainInstances(Dictionary<GameObject, Proto> protos, System.Random rng, out int skipped)
         {
@@ -853,7 +867,7 @@ namespace GolfMap.Editor
                 var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);  // (prefab, parent) overload is 2018.3+
                 go.transform.SetParent(parent.transform, false);
                 go.transform.position = pos;
-                go.transform.rotation = Quaternion.Euler(0, TreeRotation(t,rng), 0);
+                go.transform.rotation = TreeOrientation(t, rng);
                 float hs = HeightScale(t, p);
                 float ws = WidthScale(t, p, hs);
                 go.transform.localScale = new Vector3(ws, hs, ws);

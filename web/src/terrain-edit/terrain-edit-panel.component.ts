@@ -34,6 +34,9 @@ const tpl = template(`
             <h4 class="section-title">Generate</h4>
             <button bind="genPadsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-pads"></button>
             <button bind="genRoadsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-roads"></button>
+            <button bind="genPondsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-ponds"></button>
+            <button bind="genBunkersBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-bunkers"></button>
+            <button bind="genCreeksBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-creeks"></button>
             <div class="hint">Building pads: every OSM building footprint in the map area, measured on the lidar, gets a flat pad. Road grades: every OSM road, smoothed along and levelled across. Each run replaces its own previous edits only — yours stay. Then Apply to terrain.</div>
         </div>
         <div bind="savingLine" class="busy-line">Saving…</div>
@@ -201,7 +204,7 @@ export class TerrainEditPanelComponent extends Component {
             genPadsBtn: {
                 disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
                 textContent: () => this.tool.generating.get() === 'building-pads' ? 'Surveying buildings…' : 'Generate building pads',
-                title: 'OSM building footprints + lidar roof heights → one flat pad per building (replaces the previous pads)',
+                title: 'OSM building footprints + lidar roof heights → one flat pad per building on the inner terrain (the outer is scenery; its buildings are surveyed but not padded). Replaces the previous pads',
                 onclick: () => void this.tool.generate('building-pads'),
             },
             genRoadsBtn: {
@@ -209,6 +212,24 @@ export class TerrainEditPanelComponent extends Component {
                 textContent: () => this.tool.generating.get() === 'road-grades' ? 'Grading roads…' : 'Grade roads',
                 title: 'OSM road centerlines → one corridor edit per road, smooth along, level across (replaces the previous grades)',
                 onclick: () => void this.tool.generate('road-grades'),
+            },
+            genPondsBtn: {
+                disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
+                textContent: () => this.tool.generating.get() === 'water-digs' ? 'Digging ponds…' : 'Dig ponds',
+                title: 'Each water feature dug below its water level (its dig preset, default Natural Pond); the shoreline stays at the level. Creeks are left alone. Replaces the previous pond digs',
+                onclick: () => void this.tool.generate('water-digs'),
+            },
+            genBunkersBtn: {
+                disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
+                textContent: () => this.tool.generating.get() === 'bunker-digs' ? 'Digging bunkers…' : 'Dig bunkers',
+                title: 'Each bunker dug below the ground around it, steep face towards its green, gentle entry opposite. Replaces the previous bunker digs',
+                onclick: () => void this.tool.generate('bunker-digs'),
+            },
+            genCreeksBtn: {
+                disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
+                textContent: () => this.tool.generating.get() === 'creek-digs' ? 'Digging creeks…' : 'Dig creeks',
+                title: 'Each creek\'s bed dug below its water surface, which only falls downstream — the level the R.A.M. creeks export puts the water at. Along its centerline, or the line found down its polygon. Replaces the previous creek digs',
+                onclick: () => void this.tool.generate('creek-digs'),
             },
             applyBtn: {
                 disabled: () => !this.tool.canApply.get(),

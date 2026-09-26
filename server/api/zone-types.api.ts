@@ -23,6 +23,17 @@ const ColorSchema = Type.String({ pattern: '^#[0-9a-fA-F]{6}$' });
 const TextureIndexSchema = Type.Integer({ minimum: 0 });
 const ChannelSchema = Type.Integer({ minimum: 0, maximum: 3 });
 const ItemsSchema = Type.Array(ItemSchema);
+/**
+ * Named alternative item mixes (e.g. Tall rough -> "Dry straw"); a zone picks
+ * one by `key` in its `zoneVariant` attribute. The service also rejects keys
+ * repeated within one type.
+ */
+const VariantSchema = Type.Object({
+    key: KeySchema,
+    name: NameSchema,
+    items: ItemsSchema,
+});
+const VariantsSchema = Type.Array(VariantSchema);
 
 const ListZoneTypesInput = Type.Object({
     courseId: Type.String(),
@@ -41,6 +52,7 @@ const CreateZoneTypeInput = Type.Object({
     textureIndex: Type.Optional(TextureIndexSchema),
     channel: Type.Optional(ChannelSchema),
     items: Type.Optional(ItemsSchema),
+    variants: Type.Optional(VariantsSchema),
 });
 
 const UpdateZoneTypeInput = Type.Object({
@@ -51,6 +63,7 @@ const UpdateZoneTypeInput = Type.Object({
     textureIndex: Type.Optional(TextureIndexSchema),
     channel: Type.Optional(ChannelSchema),
     items: Type.Optional(ItemsSchema),
+    variants: Type.Optional(VariantsSchema),
 });
 
 const RemoveZoneTypeInput = Type.Object({

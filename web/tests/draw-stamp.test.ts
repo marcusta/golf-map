@@ -37,6 +37,8 @@ function fakeApi() {
         update: reject,
         remove: async () => ({}) as never, // any non-undefined = success
         reorder: reject,
+        imported: async () => [],
+        removeImported: async () => ({ removed: 0 }),
     };
     return api;
 }

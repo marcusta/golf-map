@@ -1,5 +1,5 @@
-// GolfMap > Vegetation Zones: imports a golf-map "unity-zones-v1" export
-// (GolfMapZones.cs) into Vegetation Studio Pro texture masks and draws the
+// GolfMap > Vegetation Zones: imports a golf-map "unity-zones-v2" export
+// (GolfMapZones.cs) into Vegetation Studio Pro texture masks (one per item) and draws the
 // zone polygons in the Scene view.
 //
 // This file holds the window, the terrain match and the read-only overlay.
@@ -30,7 +30,7 @@ namespace GolfMap.Editor
 
         GolfMapZoneFile loaded;
         string loadedPath;
-        string status = "Choose a unity-zones-v1 file, Load and check, then Import.";
+        string status = "Choose a unity-zones-v2 file, Load and check, Preview import, then Import.";
 
         // Overlay cache: rebuilt when the file or terrain changes.
         class OverlayZone
@@ -48,6 +48,7 @@ namespace GolfMap.Editor
         partial void DrawVspOptions();
         partial void OnFileLoaded();
         partial void ImportVsp();
+        partial void PreviewVsp();
         partial void VspSummary(ref string text);
 
         [MenuItem("GolfMap/Vegetation Zones")]
@@ -74,7 +75,7 @@ namespace GolfMap.Editor
                 filePath = EditorGUILayout.TextField("Zones file", filePath);
                 if (GUILayout.Button("...", GUILayout.Width(30)))
                 {
-                    var picked = EditorUtility.OpenFilePanel("unity-zones-v1 JSON", string.IsNullOrEmpty(filePath) ? "" : Path.GetDirectoryName(filePath), "json");
+                    var picked = EditorUtility.OpenFilePanel("unity-zones-v2 JSON", string.IsNullOrEmpty(filePath) ? "" : Path.GetDirectoryName(filePath), "json");
                     if (!string.IsNullOrEmpty(picked)) { filePath = picked; loaded = null; }
                 }
             }
@@ -88,7 +89,10 @@ namespace GolfMap.Editor
             {
                 if (GUILayout.Button("Load and check")) LoadAndCheck();
                 using (new EditorGUI.DisabledScope(loaded == null || terrain == null))
-                    if (GUILayout.Button("Import masks and rules")) Import();
+                {
+                    if (GUILayout.Button("Preview import")) Import(true);
+                    if (GUILayout.Button("Import masks and rules")) Import(false);
+                }
             }
 
             EditorGUILayout.Space();
@@ -130,9 +134,21 @@ namespace GolfMap.Editor
         {
             var sb = new System.Text.StringBuilder();
             int nodes = loaded.zones.Sum(z => z.rings.Sum(r => r.nodes.Count));
-            sb.Append("Loaded " + loaded.zones.Count + " zones (" + nodes + " nodes), " + loaded.zoneTypes.Count + " zone types, " + loaded.masks.Count + " mask texture(s) at " + string.Join("/", loaded.masks.Select(m => m.resolution.ToString()).ToArray()) + " px for the " + loaded.plot.terrain + " plot (" + GolfMapZones.F(loaded.plot.sizeM) + " m).");
+            sb.Append("Loaded " + loaded.zones.Count + " zones (" + nodes + " nodes), " + loaded.zoneTypes.Count + " zone types, " + loaded.items.Count + " item mask(s) in " + loaded.masks.Count + " texture(s) at " + string.Join("/", loaded.masks.Select(m => m.resolution.ToString()).ToArray()) + " px for the " + loaded.plot.terrain + " plot (" + GolfMapZones.F(loaded.plot.sizeM) + " m).");
             foreach (var type in loaded.zoneTypes)
-                sb.Append("\n  " + type.key + " (" + (string.IsNullOrEmpty(type.name) ? type.key : type.name) + "): texture " + type.texture + " channel " + "RGBA"[type.channel] + ", " + loaded.zones.Count(z => z.zoneType == type.key) + " zone(s), " + type.items.Count + " item binding(s)");
+            {
+                var zones = loaded.zones.Where(z => z.zoneType == type.key).ToList();
+                // Zone counts per variant: Default first, then the type's variants in order.
+                var counts = new List<string> { "Default " + zones.Count(z => z.variant.Length == 0) + " (" + type.items.Count + " item(s))" };
+                foreach (var v in type.variants)
+                    counts.Add(GolfMapZones.VariantName(type, v.key) + " " + zones.Count(z => z.variant == v.key) + " (" + v.items.Count + " item(s))");
+                var unknown = zones.Count(z => z.variant.Length > 0 && !type.variants.Any(v => v.key == z.variant));
+                if (unknown > 0) counts.Add("unknown variant " + unknown);
+                sb.Append("\n  " + type.key + " (" + (string.IsNullOrEmpty(type.name) ? type.key : type.name) + "): " + zones.Count + " zone(s): " + string.Join(", ", counts.ToArray()));
+            }
+            foreach (var item in loaded.items)
+                sb.Append("\n  item '" + item.item + "': texture " + item.texture + " channel " + "RGBA"[item.channel] + " <- " + (item.sources.Count > 0 ? string.Join(", ", item.sources.ToArray()) : "(no source)"));
+            foreach (var w in loaded.warnings) sb.Append("\nWARNING " + w);
             sb.Append(terrain ? "\nTerrain: " + terrain.name + TerrainCheck() : "\nNo terrain in the scene matches the plot size. Assign one.");
             var vsp = ""; VspSummary(ref vsp); sb.Append(vsp);
             return sb.ToString();
@@ -178,17 +194,18 @@ namespace GolfMap.Editor
             if (terrain.transform.rotation != Quaternion.identity || terrain.transform.lossyScale != Vector3.one) throw new Exception("Terrain must use identity rotation and unit scale.");
         }
 
-        void Import()
+        // preview: work out and show what an import would change, writing nothing.
+        void Import(bool preview)
         {
             try
             {
                 if (loaded == null || loadedPath != filePath) { loaded = GolfMapZones.Load(filePath); loadedPath = filePath; MatchTerrain(false); OnFileLoaded(); }
                 ValidateTarget();
-                ImportVsp();
+                if (preview) PreviewVsp(); else ImportVsp();
             }
             catch (Exception e)
             {
-                status = "Import stopped: " + e.Message;
+                status = (preview ? "Preview stopped: " : "Import stopped: ") + e.Message;
                 Debug.LogException(e);
             }
             overlayFile = null;
@@ -212,6 +229,7 @@ namespace GolfMap.Editor
             overlayTerrain = terrain; overlayFile = loaded;
             if (loaded == null || !terrain) return;
             var colours = loaded.zoneTypes.ToDictionary(t => t.key, t => GolfMapZones.ParseColor(t.color, Color.magenta));
+            var types = loaded.zoneTypes.ToDictionary(t => t.key);
             foreach (var zone in loaded.zones)
             {
                 var oz = new OverlayZone { zone = zone, colour = colours[zone.zoneType] };
@@ -225,7 +243,7 @@ namespace GolfMap.Editor
                 }
                 var c = GolfMapZones.Centroid(zone);
                 oz.centroid = WorldPos(c.x, c.y) + Vector3.up * 0.5f;
-                oz.label = zone.id + "  " + zone.zoneType + (zone.weight != 1 ? "  w " + GolfMapZones.F(zone.weight) : "");
+                oz.label = zone.id + "  " + zone.zoneType + (zone.variant.Length > 0 ? " / " + GolfMapZones.VariantName(types[zone.zoneType], zone.variant) : "") + (zone.weight != 1 ? "  w " + GolfMapZones.F(zone.weight) : "");
                 overlayZones.Add(oz);
             }
         }

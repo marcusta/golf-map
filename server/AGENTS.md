@@ -6,7 +6,7 @@ Bun + Hono + Kysely + SQLite on `@basics/core`. Source of truth: course data, ga
 
 - `api/*.api.ts` — feature API descriptors: each exports `create<Feature>Api(svc)` → `{ method, path, schema, middleware, fn }`. `mount()` (from `@basics/core`) handles validation, coercion, error mapping.
 - `services/*.service.ts` (+ `.service.test.ts`) — Kysely-backed logic, one per feature. `geo.ts` = geodesy helpers.
-- `db/` — `schema.ts` (16-table Kysely schema), `migrations/NNN_*.ts` (numbered), `seeds/`, `import.ts`, `create-user.ts`, `import-terrain-edits.ts` (generated edits — `golfpipe building-pads` — into a site's `terrain_edits` under one `origin`, replacing that origin's previous generation only).
+- `db/` — `schema.ts` (16-table Kysely schema), `migrations/NNN_*.ts` (numbered), `seeds/`, `import.ts`, `create-user.ts`, `import-terrain-edits.ts` (generated edits — `golfpipe building-pads` — into a site's `terrain_edits` under one `origin`, replacing that origin's previous generation only; the `water-digs` / `bunker-digs` generators write `dig` edits straight from the course's features, `terrain-generators.service.ts`).
 - `main.ts` — app entry (`createApp()` from `@basics/core`).
 
 ## Commands (cwd `server/`)
@@ -51,6 +51,35 @@ Body: a GeoJSON FeatureCollection in EPSG:3006.
 
 Body size is the app-wide `BODY_LIMIT` (framework default 1 MB). `dev:server` sets 64 MB and `start:vps` 256 MB; a full canopy export is around 20 MB.
 
+### Import script (no HTTP, no auth)
+
+```sh
+bun scripts/import-generated-features.ts <courseId> <geojson-path> [--source lidar-canopy] [--db ../data/app.sqlite]
+# or: bun run import-generated-features -- <courseId> <geojson-path>
+```
+
+Runs migrations, then `CourseFeaturesService.replaceGenerated` against the given sqlite file, printing `deleted`/`inserted`. Same validation and same transaction as the endpoint. Exit 1 with the reason on invalid input.
+
+### Centerline geometry (roads, paths)
+
+`geometry.centerline` (`{ points: [{ x, y, corner? }], widthM }`, optional)
+makes a feature a centerline feature: `create`/`update` validate it and
+REPLACE `rings` (and `curveType`) with the corridor derived by
+`shared/features/centerline.ts`, whatever rings the caller sent. Everything
+reading rings keeps working; `TerrainGeneratorsService` grades the course's
+centerline `path` features as its road lines (and its paved `path` polygons
+as planes).
+
+Kerb fillets: every create/update/remove that touches a `path` (and
+`removeImported`) re-derives the course's junction fillets
+(`shared/features/road-junctions.ts`) into generated `path` features of source
+`road-junctions` (`refreshRoadJunctions`, queued per course). A course whose
+roads predate this gets them on its next road edit or import. A path's
+`kerbFillets` attribute (boolean, validated; `false` = off, absent = on) opts
+it out: no corner beside it is rounded; an attributes update re-derives too.
+The same features carry the width tapers where a road ends in a narrower one
+(made whatever `kerbFillets` says).
+
 ### `attributes` on features
 
 Migration 015 adds nullable `course_features.attributes_json`. The service and API expose it as `attributes: Record<string, number | string | boolean> | null` on read (list, byId, `.geojson` properties), create and update (`null` clears; omitted leaves it untouched). Flat object, at most 32 keys. Clients that never send it keep working and read `null`.
@@ -61,13 +90,16 @@ Migration 015 adds nullable `course_features.attributes_json`. The service and A
 so the web's digit shortcuts keep their bindings; `TYPE_Z_ORDER` puts it above
 `green` and below `trees`) with no gameplay meaning — `shared/strategy/lie.ts`
 maps it to `rough` explicitly and `shared/render/resolved-surface-stack.ts`
-passes it through unclipped, since it is an overlay, not a surface. Its four
+passes it through unclipped, since it is an overlay, not a surface. Its
 per-feature fields live in `attributes_json`: `zoneType` (required, the key
-into the course's zone-type table), `weight` (0..1, default 1), `feather` (m,
+into the course's zone-type table), `zoneVariant` (optional string, a variant
+key of that type; absent or `''` = the type's Default mix; like `zoneType` not
+checked against the table), `weight` (0..1, default 1), `feather` (m,
 default 2) and `noise` (m, default 0). The numeric keys may be absent and then
-mean their defaults; a zone with no `zoneType` is rejected on create, on an
-attributes update and in the generated-features import (the lidar `lidar-lowveg`
-proposals, D-VZ7, arrive through that route with the same property names).
+mean their defaults; a zone with no `zoneType` (or a non-string `zoneVariant`)
+is rejected on create, on an attributes update and in the generated-features
+import (the lidar `lidar-lowveg` proposals, D-VZ7, arrive through that route
+with the same property names).
 Overlap between zone types is resolved by document order (`stackKey`) — there
 is no priority field.
 
@@ -75,40 +107,55 @@ Migration 019 adds `course_zone_types` (the course's legend: `key` unique per
 course, `name`, `color`, `texture_index` + `channel` unique per course — four
 channels per mask texture — `sort_order` and `items_json`, the VSPro item
 bindings `[{ item, minDensity, maxDensity }]` from D-VZ9). `ZoneTypesService`
-**seeds the four defaults** (`rough_tall`, `shrub`, `fern`, `meadow` on texture
-0, channels 0..3) on a course's first `listByCourse`, so nothing has to run a
-bootstrap step; `addDefaults` is the same insert for the panel's button and
-fills in only the keys a course is missing. `create` without an explicit slot
-takes the lowest free (texture, channel). No `version` column and no optimistic
+**seeds the defaults** (`rough_tall`, `shrub`, `fern`, `meadow` on texture
+0, channels 0..3, and `woodland_floor` on texture 1 channel 0, D-VZ10) on a
+course's first `listByCourse`, so nothing has to run a bootstrap step;
+`addDefaults` is the same insert for the panel's button and fills in only the
+keys a course is missing (a preset whose slot is taken goes to the first free one). `create` without an explicit slot
+takes the lowest free (texture, channel). Migration 022 adds `variants_json`
+(`variants: [{ key, name, items }]` on create/update/read): named alternative
+item mixes a zone picks with `zoneVariant`; the type's own `items` are the
+Default mix. Variant keys match `^[a-z0-9_]+$` and are unique within the type
+(a repeat is a `ConflictError`, 409), names are non-empty, items are validated
+like `items`; malformed JSON in the column reads as `[]`. Since the zones
+export gives every bound item its own mask channel (unity-zones-v2), a type's
+`texture_index`/`channel` are legacy: still stored, unique and returned, but
+ignored by the pipeline and not shown in the web panel. `bun run zones --`
+(`scripts/vegetation-zones.ts`) lists/sets zone variants (`--variant`) and
+binds a variant's items (`bind --variant <key>`, creating it if missing).
+No `version` column and no optimistic
 locking — a short course-level legend, unlike the feature stack. The API
 (`/api/zone-types*`) mounts in **both** modes, like the features it belongs to.
 
 ## GSPro export (builder only)
 
-Migration 016 adds nullable `courses.gspro_export_dir` — the folder `GsproExportService` writes the course's OPCD SVG, orthophoto JPEGs and DEM GeoTIFFs into. NULL means the OS Downloads folder (`GSPRO_EXPORT_DIR` overrides the server-wide default), so an untouched course needs no row and the default can move without a data migration. Mounted only in `builder` mode: it writes to an operator-chosen path and needs the pipeline, neither of which exists on the VPS.
+`GsproExportService` → `pipeline/gspro.py`. Full reference: [docs/gspro/export.md](../docs/gspro/export.md).
 
-**Terrain squares** (`terrain-square.ts`). A GSPro course is two squares in EPSG:3006 metres: the **inner terrain** — the map area, its side always a whole multiple of `TERRAIN_SIDE_STEP_M` (10 m: 2010 m, never 2009.37 m) on whole-metre edges — and the **outer terrain**, `OUTER_TERRAIN_SIDE_M` (5 km) centred on the inner (or inner + 1 km margin all round when the inner is too big for 5 km). The inner square is derived ONCE, at map-build time, from the drawn WGS84 area (`innerSquareFromWgs84`: corner-reprojected envelope, longer side snapped to the nearest 10 m, centred) and is what `grid-dem --bbox-3006` cuts the DEM to — so the tile manifest's `bounds` are that square's WGS84 envelope and the build writes it verbatim as `manifest.terrain.inner.square3006` (+ `sideM`; `refreshManifestAsset` carries it through re-terrain/trees). `resolveCourseMapBbox` returns it as `terrainSquare`; the exports render over it and derive the outer with `courseTerrainFor`. A site built before that field existed (or a georeference-bbox course) gets its bounds squared and snapped the same way on the fly. The web picker snaps to the same 10 m step in its own approximate metres, but the server's square is the authority.
+- Folder: `courses.gspro_export_dir` (migration 016); NULL = Downloads (`GSPRO_EXPORT_DIR` overrides). Vreta: `D:\gspro_courses\vreta-opcd`.
+- Two squares (`terrain-square.ts`): **inner** = map area, whole-metre edges, side a multiple of 10 m, fixed at map-build time (`manifest.terrain.inner.square3006`); **outer** = 5 km centred on it. Every export passes `--square-3006`, never `--bbox`, so files overlay exactly.
+- Jobs: `start`/`job`/`current`, one running per course (409 otherwise); outer fetches run for minutes.
+- Kinds and files (`<course>-…`): `svg`; inner ortho `-<collection>-8192.jpg` + `-terrain.jpg` (linear-light darkened twin) + `-meshes.jpg` (tinted, softened), and `-clean-8192.jpg` variants when the request removes buildings / paints forest floor (the panel's separate cleaned export); outer ortho; DEM `-<inner|outer>-dem-<side>m.tif/.raw/.tif.json` (export inner first: outer sidecar needs it); hillshade; trees `-trees.json` (unity-trees-v1); zones `-zones.json` + `-zones-<n>.png`; buildings. Trees/zones/buildings need that terrain's DEM sidecar in the folder (409).
+- `dataDir` is made absolute in `createServices`: pipeline processes run with cwd `pipeline/`, so a relative `./data/...` path (`bun run dev` from the root) named nothing there.
+- Inner DEM = `dem-edited.tif` else `dem.tif`; outer DEM/lidar/trees are fetched once into `data/sources/<siteId>/outer-*` from Laserdata Skog lidar (`--skip-forbidden`; some tiles 403).
 
-**Jobs.** Every export runs through `start(courseId, request)` → `GsproExportJob` (`running`/`succeeded`/`failed`, in memory, one running per course — a second `start` is a 409 naming the running one; `job(id)`, `current(courseId)` = running else latest finished; `whenIdle` for tests), because the fetch-first exports (outer ortho: nine 700 MB tiles; outer DEM; outer trees) run for minutes and a request that timed out in the browser left the operator guessing. The API exposes only `start`/`job`/`current`; the per-kind methods below are what a job performs. The service resolves the squares through the same `resolveCourseMapBbox` chain the hydro/OSM fetches use, then shells out via an injectable runner (same seam as `MapBuildService`) to `pipeline/gspro.py svg` / `ortho` / `dem` with `--square-3006 x0,y0,x1,y1` — never `--bbox` — so every file lands on the exact same square and overlays in GSPro; the palette and curve math stay pinned by the pipeline's own tests. `terrain(courseId)` describes both squares for the panel (409 with no map area). The inner orthophoto comes from the site's persisted `sources/<siteId>/ortho-*.tif` (`orthoSources` lists them, newest first, `.patched.tif` flagged; `exportOrtho` only accepts one of those names, so no request can reach outside the folder) as `<course>-<collection>[-patched]-8192.jpg`, 8192 px square at JPEG quality 92 (`ORTHO_EXPORT_SIZE` / `ORTHO_EXPORT_QUALITY`; OPCD uses 95, Unity recompresses anyway) **plus a `-terrain.jpg` twin** (`terrainTextureFileName`) dimmed in LINEAR light by `TERRAIN_TEXTURE_DARKEN` (0.4 — a sun-lit photo down to about grass albedo; ×0.25 on the sRGB bytes was ×0.05 in linear light and rendered muddy) or the request's own `darken` (0.05–1, `TERRAIN_TEXTURE_DARKEN_RANGE`, the panel's "Terrain texture brightness" field) in the same render (`--terrain-out`/`--darken`/`--darken-space linear`); the twin is JPEG q97 4:4:4 (`TERRAIN_JPEG_QUALITY`) since its reduced tonal range makes q92 blocking visible — Unity's terrain shader lights the photo a second time, so the plain one washes out on the terrain; the Unity importer picks the twin by default. With the request's `tint` (the panel's "Tint the grass surfaces", on by default) the same render also writes a **`-meshes.jpg`** (`meshTextureFileName`), the texture for the course meshes: the darkened twin with the course's grass surfaces tinted by its own drawn features — the Photoshop overlay step OPCD builders do from the SVG — via `--tint-out`/`--tint-course <courseId>`/`--tint-opacity` (`TERRAIN_TINT_OPACITY` 0.3 or the request's `tintOpacity`, 0–1, `TERRAIN_TINT_OPACITY_RANGE`); the colours, the water layer (brown, feathered shoreline) and which types are tinted or cut out are the pipeline's defaults; the Unity importer lists it for the terrain overlay only after the `-terrain` twins, since it is meant for the meshes. The **outer orthophoto** (`exportOuterOrtho(courseId, collection)`) is fetched with golfpipe `fetch-ortho` over the outer square's WGS84 envelope the first time and kept as `sources/<siteId>/outer-ortho-<collection>.tif` (not listed by `orthoSources`), then rendered as `<course>-outer-<collection>-8192.jpg`. **DEMs / heightmaps** (`exportDem(courseId, 'inner'|'outer')`) go out as square float32 EPSG:3006 GeoTIFFs **plus the Unity `.raw` heightmap** (OPCD's TIF→RAW step, done by `gspro.py dem`: 4097² uint16) and a `.json` sidecar (height range + Unity terrain/import settings), named `<course>-<inner|outer>-dem-<side>m.tif` / `.raw` / `.tif.json`; the pipeline gets `--terrain <kind>`, and an outer export passes `--inner-sidecar` when the inner's sidecar is already in the export folder (`demSidecarName`) so the outer sidecar carries the outer terrain's Unity position — else the report says to export the inner first. **Hillshades** (`exportHillshade(courseId, kind)`, `<course>-<kind>-hillshade-8192.jpg`) render the same DEM (`demSource`, same inner/outer rules) through `gspro.py hillshade` for checking overlays against the relief. **Trees** (`exportTrees(courseId, kind)`, `<course>-<kind>-trees.json`, unity-trees-v1 via `gspro.py trees`): the inner from the trees job's installed `tree-stems.json` (409 until it has run), the outer detected once with golfpipe `trees-stems --no-kind --resolution 2` (`OUTER_TREES_RESOLUTION_M`: background trees, four times fewer cells) over the outer lidar + DEM into `sources/<siteId>/outer-trees/` (`OUTER_TREES_DIR`) and written with `--exclude-square <inner>`; both need that terrain's heightmap sidecar in the export folder (409 otherwise) for the plot's height range. The DEM rules: the inner from `sources/<siteId>/dem-edited.tif` when present else `dem.tif` (D-TE2 — the export shows what the map shows) at `DEM_EXPORT_RESOLUTION_M.inner` (0.5 m); the outer gridded once from **Laserdata Skog lidar** — the same `fetch-lidar` → `grid-dem` route the build takes for the inner, never the licensed DTM product (`fetch-dem` 403s on these credentials) — into `sources/<siteId>/outer-dem.tif` (`OUTER_DEM_SOURCE`) at 1 m. The outer square's `.laz` tiles are kept in `sources/<siteId>/outer-lidar/` (`OUTER_LIDAR_DIR`), separate from the build's `lidar/` so the trees job's input does not grow; the inner tiles are hard-linked in first so `fetch-lidar`'s size-match skip spares re-downloading them. The fetch runs with `--skip-forbidden`: Lantmäteriet withholds some tiles (HTTP 403 though STAC lists them — Vreta's 5 km square hits `649_53`) and for scenery a flat, mean-filled patch beats no outer DEM; the pipeline's `warning:` line is passed through in the report. A fetch that fails leaves no half file (the ortho workdir is a temp dir and `--out` is only written on success).
-
-### Script (no HTTP, no auth)
-
-```sh
-bun scripts/import-generated-features.ts <courseId> <geojson-path> [--source lidar-canopy] [--db ../data/app.sqlite]
-# or: bun run import-generated-features -- <courseId> <geojson-path>
-```
-
-Runs migrations, then `CourseFeaturesService.replaceGenerated` against the given sqlite file, printing `deleted`/`inserted`. Same validation and same transaction as the endpoint. Exit 1 with the reason on invalid input.
 
 ## Regenerate trees for a site
 
 `MapBuildService.reTrees` (`POST /api/mapbuild/re-trees`, the "Regenerate trees"
 item in the Create-mode actions menu) runs `canopy` (with `--trees-out
-data/sources/<siteId>/trees.geojson`) and `trees-stems` against the persisted
-lidar and DEM, then re-registers the tile manifest. Job kind `trees`, steps
-`canopy`, `trees-stems`, `register`. The same steps run from the shell with
-`bun run trees:regen -- <courseId|siteId>` (`scripts/regen-trees.sh`). Neither imports
-the polygons; use `import-generated-features` for that.
+data/sources/<siteId>/trees.geojson` and `--woodland-out` into the job's work dir,
+`--woodland-ortho` the active vintage's persisted source when it is on disk, and
+`--roofs-out data/sources/<siteId>/roofs.tif`, `ROOFS_SOURCE`, for the orthophoto
+export's building removal) and
+`trees-stems` against the persisted lidar and DEM, then the `woodland` step (TS, the
+server owns the DB) bulk-replaces the course's `lidar-woodland` generated features
+with those stands (`WOODLAND_SOURCE`, `CourseFeaturesService.replaceGenerated`:
+`vegetation_zone` of zone type `woodland_floor`, D-VZ10; a stand someone deleted
+comes back), then re-registers the tile manifest. Job kind `trees`, steps `canopy`,
+`trees-stems`, `woodland`, `register`. The same pipeline steps run from the shell with
+`bun run trees:regen -- <courseId|siteId>` (`scripts/regen-trees.sh`), which writes
+`woodland.geojson` next to `trees.geojson`. Neither imports the tree polygons, and the
+script does not import the stands either; use `import-generated-features` for that.
 
 ## Register an installed tile manifest
 

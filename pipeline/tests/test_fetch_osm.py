@@ -205,3 +205,75 @@ def test_fetch_overpass_wraps_urlerror(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", boom)
     with pytest.raises(osm.OsmError, match="Overpass request"):
         osm.fetch_overpass("data", url="http://stub/api")
+
+
+def test_fetch_overpass_marks_busy_answers_transient(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    def busy(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 504, "Gateway Timeout", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", busy)
+    with pytest.raises(osm.OsmError) as info:
+        osm.fetch_overpass("data", url="http://stub/api")
+    assert info.value.transient
+
+    def bad_query(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", bad_query)
+    with pytest.raises(osm.OsmError) as info:
+        osm.fetch_overpass("data", url="http://stub/api")
+    assert not info.value.transient
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s + 7.0  # the pause plus a refused attempt's ~7 s
+
+
+def test_with_retries_retries_a_busy_overpass_until_it_answers(capsys):
+    answers = [osm.OsmError("HTTP Error 504", transient=True)] * 2 + [{"elements": [1]}]
+    urls = []
+
+    def flaky(query, *, url):
+        urls.append(url)
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    clock = _Clock()
+    assert osm.with_retries(flaky, sleep=clock.sleep, clock=clock)("q", url="http://x") == {"elements": [1]}
+    assert urls == ["http://x"] * 3
+    assert capsys.readouterr().out.count("Overpass busy") == 2
+
+
+def test_with_retries_gives_up_after_the_budget_and_never_retries_a_real_error():
+    clock = _Clock()
+    calls = []
+
+    def always_busy(query, *, url):
+        calls.append(1)
+        raise osm.OsmError("HTTP Error 504", transient=True)
+
+    with pytest.raises(osm.OsmError, match=r"attempts over \d+ s — Overpass is busy"):
+        osm.with_retries(always_busy, budget_s=20, pause_s=2, sleep=clock.sleep, clock=clock)("q", url="u")
+    assert len(calls) == 3  # at 0, 9 and 18 s; a fourth would start past 20 s
+
+    calls.clear()
+
+    def broken(query, *, url):
+        calls.append(1)
+        raise osm.OsmError("HTTP Error 400")
+
+    with pytest.raises(osm.OsmError, match="^HTTP Error 400$"):
+        osm.with_retries(broken, sleep=clock.sleep, clock=clock)("q", url="u")
+    assert len(calls) == 1

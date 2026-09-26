@@ -83,7 +83,9 @@ namespace GolfMap.Editor
             using (new EditorGUI.DisabledScope(true)) EditorGUILayout.ObjectField("Persistent storage", storage, typeof(PersistentVegetationStorage), true);
             if(storage&&storage.PersistentVegetationStoragePackage)EditorGUILayout.LabelField("Storage asset",AssetDatabase.GetAssetPath(storage.PersistentVegetationStoragePackage));
             else EditorGUILayout.LabelField("Storage asset","None yet: Plant creates it");
-            if(forceBillboards){outerBillboardDistance=EditorGUILayout.FloatField("Outer billboard distance (m)",outerBillboardDistance);regenerateBillboards=EditorGUILayout.Toggle("Rebake billboard colours",regenerateBillboards);}
+            if(forceBillboards){outerBillboardDistance=EditorGUILayout.FloatField("Outer billboard distance (m)",outerBillboardDistance);regenerateBillboards=EditorGUILayout.Toggle("Rebake billboard colours",regenerateBillboards);
+                T.billboardBrightness=EditorGUILayout.Slider(new GUIContent("Billboard brightness","Baked into the atlas at the next Plant with Rebake on. Below 1 stands in for the AO and self-shadowing the inner mesh trees get."),T.billboardBrightness,0.1f,1.2f);
+                T.billboardSaturation=EditorGUILayout.Slider(new GUIContent("Billboard saturation","Baked into the atlas at the next Plant with Rebake on. 1 = the material colours as they are."),T.billboardSaturation,0f,1.2f);}
             if(!forceBillboards)EditorGUILayout.PropertyField(so.FindProperty("groundMeshes"), new GUIContent("Ground mesh objects / roots"), true);
             using(new EditorGUI.DisabledScope(!storage||!storage.VegetationSystemPro)){
                 if(GUILayout.Button("Refresh planted colours from prefab materials"))RefreshPlantedColours();
@@ -170,15 +172,52 @@ namespace GolfMap.Editor
             return catalog&&(catalog.PackageName=="GolfMap imported trees"||catalog.PackageName=="GolfMap imported trees (billboards)");
         }
 
+        // VSP's billboard shader shifts each tree towards FoliageHue on top of the atlas, by up to the
+        // colour's alpha. The atlas carries the outer grade, so the target must carry it too: an
+        // ungraded one is several times brighter than the baked crown and the shifted trees read white.
+        static Color BillboardGrade(Color c)
+        {
+            var outer=UnityEngine.Object.FindObjectsOfType<GolfMapTrees>().FirstOrDefault(t=>t.role==GolfMapTrees.Role.Outer);
+            if(!outer)return c;
+            // Same arithmetic as GolfMapBiomeAtlas.shader, in the colour space the shader sees.
+            bool linear=PlayerSettings.colorSpace==ColorSpace.Linear;
+            var rgb=linear?c.linear:c;
+            float luma=0.2126f*rgb.r+0.7152f*rgb.g+0.0722f*rgb.b;
+            float gain=linear?outer.billboardBrightness:Mathf.Pow(Mathf.Max(outer.billboardBrightness,0),1/2.2f);
+            var graded=new Color(Mathf.Clamp01(Mathf.Lerp(luma,rgb.r,outer.billboardSaturation)*gain),Mathf.Clamp01(Mathf.Lerp(luma,rgb.g,outer.billboardSaturation)*gain),Mathf.Clamp01(Mathf.Lerp(luma,rgb.b,outer.billboardSaturation)*gain),1);
+            if(linear)graded=graded.gamma;
+            graded.a=c.a;
+            return graded;
+        }
+
         // VSP caches NM colours separately and overrides the prefab's material.
         // Find bark by shader, not the first _Color (leaf materials also have it).
         internal static bool SyncPrefabColours(VegetationItemInfoPro item)
         {
             if(!item.VegetationPrefab||item.ShaderControllerSettings==null)return false;
             var settings=item.ShaderControllerSettings;
-            if(settings.Heading!="Nature Manufacture tree")return false;
             var materials=item.VegetationPrefab.GetComponentsInChildren<Renderer>(true)
                 .Where(r=>!(r is BillboardRenderer)).SelectMany(r=>r.sharedMaterials).Where(m=>m&&m.shader).ToArray();
+            // SpeedTree: the controller tells bark from foliage by GEOM_TYPE_BRANCH and overrides
+            // _Color and _HueVariation on each with the values cached when the item was created.
+            if(settings.Heading=="SpeedTree settings"){
+                var branch=materials.FirstOrDefault(m=>m.IsKeywordEnabled("GEOM_TYPE_BRANCH"));
+                var foliage=materials.FirstOrDefault(m=>!m.IsKeywordEnabled("GEOM_TYPE_BRANCH"));
+                bool moved=false;
+                foreach(var property in settings.ControlerPropertyList){
+                    Material source=null;string key=null;
+                    if(property.PropertyName=="FoliageTintColor"){source=foliage;key="_Color";}
+                    else if(property.PropertyName=="FoliageHue"){source=foliage;key="_HueVariation";}
+                    else if(property.PropertyName=="BarkTintColor"){source=branch;key="_Color";}
+                    else if(property.PropertyName=="BarkHue"){source=branch;key="_HueVariation";}
+                    if(!source||!source.HasProperty(key))continue;
+                    var value=source.GetColor(key);
+                    if(item.UseBillboards&&property.PropertyName=="FoliageHue")value=BillboardGrade(value);
+                    if(property.ColorValue!=value){property.ColorValue=value;moved=true;}
+                }
+                return moved;
+            }
+            if(settings.Heading!="Nature Manufacture tree")return false;
             var bark=materials.FirstOrDefault(m=>m.shader.name=="NatureManufacture Shaders/Trees/Tree Bark Metalic"||m.shader.name=="NatureManufacture Shaders/Trees/Tree Bark Specular");
             var leaf=materials.FirstOrDefault(m=>m.shader.name=="NatureManufacture Shaders/Trees/Tree Leaves Metalic"||m.shader.name=="NatureManufacture Shaders/Trees/Tree_Leaves_Specular");
             bool changed=false;
@@ -307,6 +346,7 @@ namespace GolfMap.Editor
             public GameObject prefab;
             public Vector3 position, scale;
             public Quaternion rotation;
+            public float yaw;   // rotation about Y before the lean
         }
 
         // Ground height for a stem: course meshes first (temporary colliders),
@@ -362,7 +402,9 @@ namespace GolfMap.Editor
             GolfMapTreeEdit edit; if (treeEdits.TryGetValue(tree, out edit)) pos.y += edit.dy;
             float hs = HeightScale(tree, proto), ws = WidthScale(tree, proto, hs);
             if (Mathf.Abs(hs - tree.h / proto.heightM) > 0.0001f || (scaleWidth && Mathf.Abs(ws - 2 * tree.r / proto.widthM) > 0.0001f)) clamped++;
-            return new PreparedTree { tree = tree, prefab = prefab, position = pos, scale = new Vector3(ws, hs, ws), rotation = Quaternion.Euler(0, TreeRotation(tree, rng), 0) };
+            float yaw = TreeRotation(tree, rng);
+            var rotation = useBiome ? Orientation(biomeMatches[tree], yaw) : Quaternion.Euler(0, yaw, 0);
+            return new PreparedTree { tree = tree, prefab = prefab, position = pos, scale = new Vector3(ws, hs, ws), rotation = rotation, yaw = yaw };
         }
 
         // VSP resolves a position with a zero-size rect (also inside AddVegetationItemInstance), which misses
@@ -417,9 +459,9 @@ namespace GolfMap.Editor
             {
                 var item = catalog.VegetationInfoList.FirstOrDefault(i => i.VegetationPrefab == prefab);
                 if (item == null) { catalog.AddVegetationItem(prefab, VegetationType.Tree, false); item = catalog.VegetationInfoList.Last(); changed = true; }
-                if(useBiome)SyncPrefabColours(item);
                 item.EnableRuntimeSpawn = false;
                 item.UseBillboards = forceBillboards;
+                if(useBiome)SyncPrefabColours(item);
                 if(forceBillboards&&(rebake||!item.BillboardTexture)){BakeBiomeBillboard(catalog,item);changed=true;}
                 mapping.Add(prefab, item.VegetationItemID);
             }
@@ -468,6 +510,7 @@ namespace GolfMap.Editor
                         if(source.HasProperty("_GolfMapLeafTint"))tint=source.GetColor("_GolfMapLeafTint");
                         else if(source.HasProperty("_HealthyColor")&&source.HasProperty("_DryColor"))tint=Color.Lerp(source.GetColor("_HealthyColor"),source.GetColor("_DryColor"),0.5f);
                         else if(source.HasProperty("_Color"))tint=source.GetColor("_Color");
+                        mat.SetFloat("_Brightness",T.billboardBrightness);mat.SetFloat("_Saturation",T.billboardSaturation);
                         mat.SetColor("_Color",tint);mat.SetFloat("_Cutoff",source.HasProperty("_Cutoff")?source.GetFloat("_Cutoff"):0);
                         if(source.HasProperty("_BumpMap"))mat.SetTexture("_BumpMap",source.GetTexture("_BumpMap"));
                         slots[i]=mat;

@@ -10,6 +10,8 @@ import type { Pin } from '../../../shared/api/pins.gen';
 import type { AimPoint } from '../../../shared/api/aim-points.gen';
 import { FurnitureService, FURNITURE_TOOL_ID, defaultTeeName, finiteWgs84Point, greenPointFields, type GreenPoint, type Selection } from './furniture.service';
 import { FURNITURE_OVERLAY_ID, buildFurnitureGeojson, furnitureLayers } from './furniture-overlay';
+import { DrawToolService } from '../draw/draw-tool.service';
+import { isRulesType, type FeatureType } from '../draw/feature-palette';
 
 /** Screen-px radius for click-to-select and mousedown-to-drag hit testing. */
 const MARKER_HIT_PX = 14;
@@ -60,6 +62,11 @@ export class FurnitureToolService {
     private router = di.get(Router);
     private courseDetail = di.get(CourseDetailService);
     private confirm = di.get(ConfirmService);
+    /**
+     * The draw engine in its `rules` scope: the penalty areas and OOB are
+     * drawn and edited here, with Draw's own vertex editing and undo.
+     */
+    readonly rules = di.get(DrawToolService);
     private ctx: ToolContext | null = null;
     private drag: DragTarget | null = null;
     private suppressClick = false;
@@ -204,6 +211,8 @@ export class FurnitureToolService {
     activate(ctx: ToolContext): void {
         this.ctx = ctx;
 
+        // Registered before the rules engine's, so these run first on every
+        // event and can stand aside while it is drawing or dragging.
         ctx.track(ctx.map.onClick(e => this.onClick(e)));
 
         const onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
@@ -220,6 +229,29 @@ export class FurnitureToolService {
 
         // Move handler for the in-progress drag.
         ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));
+
+        // The rules lines: a click or press on a marker, or any while a
+        // placement is armed, stays with the furniture.
+        this.rules.activate(ctx, {
+            scope: 'rules',
+            toolId: FURNITURE_TOOL_ID,
+            yieldTo: screen => this.svc.placing.peek() !== null || this.hitMarker(screen) !== null,
+        });
+        // One selection at a time — a marker or rules lines — so Delete and
+        // Esc always mean the thing highlighted.
+        ctx.track(effect(() => {
+            if (ctx.features.selectedIds.get().size > 0) untrack(() => this.svc.select(null));
+        }));
+        ctx.track(effect(() => {
+            if (this.svc.selection.get()) untrack(() => ctx.features.select(null));
+        }));
+        // Arming a placement ends a rules line in progress, and vice versa.
+        ctx.track(effect(() => {
+            if (this.svc.placing.get() !== null) untrack(() => this.rules.cancelDrawing());
+        }));
+        ctx.track(effect(() => {
+            if (this.rules.state.isDrawing.get()) untrack(() => this.svc.disarm());
+        }));
     }
 
     deactivate(): void {
@@ -227,15 +259,33 @@ export class FurnitureToolService {
         this.svc.disarm();
         this.svc.select(null);
         this.suppressClick = false;
+        this.rules.deactivate();
     }
 
-    /** ESC: cancel placement → drop selection → (unconsumed) deactivate. */
+    /** The rules type being drawn right now, or null. */
+    readonly drawingRule = new Computed<FeatureType | null>(() =>
+        this.rules.scope.get() === 'rules' && this.rules.state.isDrawing.get() ? this.rules.drawType.get() : null);
+
+    /** Panel button: start a new penalty area / OOB line, or stop if that one is already armed. */
+    armRule(type: FeatureType): void {
+        if (!isRulesType(type)) return;
+        if (this.drawingRule.peek() === type) {
+            this.rules.cancelDrawing();
+            return;
+        }
+        this.svc.disarm();
+        this.svc.select(null);
+        this.rules.armRules(type);
+    }
+
+    /** ESC: cancel placement → the rules engine's own chain (line in progress, vertices, selection) → drop selection → (unconsumed) deactivate. */
     onEscape(): boolean {
         if (this.svc.placing.peek() !== null) {
             this.svc.disarm();
             this.svc.notice.set(null);
             return true;
         }
+        if (this.rules.onEscape()) return true;
         if (this.svc.selection.peek()) {
             this.svc.select(null);
             return true;
@@ -295,7 +345,7 @@ export class FurnitureToolService {
 
     private onClick(e: MapPointerEvent): void {
         if (!this.isMyClaim()) return;
-        if (this.suppressClick) return;
+        if (this.suppressClick || this.rules.isEngaged()) return;
 
         const kind = this.svc.placing.peek();
         if (kind !== null) {
@@ -346,7 +396,7 @@ export class FurnitureToolService {
         // ⌘/Ctrl-drag pans even from a marker (draw-tool convention): return
         // without grabbing so MapLibre's native dragPan takes the gesture.
         if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
-        if (this.svc.placing.peek() !== null) return;
+        if (this.svc.placing.peek() !== null || this.rules.isEngaged()) return;
 
         const hit = this.hitMarker(e.point);
         if (!hit) return;

@@ -46,6 +46,7 @@ namespace GolfMap.Editor
         public double woodlandRadiusM, woodlandCrownMultiplier, woodlandWidthWeight, woodlandScaleBoost;
         public int woodlandMinNeighbours;
         public double woodlandSpeciesFitSlack;
+        public double scaleJitter, maxLeanDeg;   // cosmetic per-stem variety; 0 = off
     }
     // Species -> share of the broadleaf species race. A map, not fields, so a palette can
     // name any species; order is the file's.
@@ -69,6 +70,7 @@ namespace GolfMap.Editor
     {
         public GolfMapBiomeAsset asset;
         public double scale, heightError, widthError, score, rotation;
+        public double lean, leanDirection;   // degrees of tilt off vertical, and its heading relative to rotation
         public double widthScale;   // 0 = uniform (scale); set for hand-edited stems on mesh terrains
         public bool review;
         public string look;         // id of the drawn look; null when the species defines none
@@ -228,6 +230,11 @@ namespace GolfMap.Editor
             }
             result.rotation=Hash(biome.seed+":"+id+":rotation")*360;
             result.review=kind==2||result.heightError>Math.Log(1+r.maxHeightError)||result.widthError>Math.Log(1+r.maxWidthError)||result.asset.assetType=="model";
+            // Cosmetic per-stem variety, after the fit and its review: neighbours with the same measured
+            // height (or pinned at a scale limit) would otherwise be identical copies.
+            result.scale*=1+r.scaleJitter*(2*SpeciesHash(biome.seed+":"+id+":scale")-1);
+            result.lean=r.maxLeanDeg*SpeciesHash(biome.seed+":"+id+":lean");
+            result.leanDirection=result.lean>0?SpeciesHash(biome.seed+":"+id+":leanDirection")*360:0;
             return result;
         }
     }

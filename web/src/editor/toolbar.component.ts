@@ -69,7 +69,7 @@ export class EditorToolbarComponent extends Component {
         // zones with it, so it loads with the features rather than with the
         // (builder-only) editor panel.
         void this.zoneTypes.load(ctx.courseId);
-        this.track(ctx.features.attachOverlay(ctx.map));
+        this.track(ctx.features.attachOverlay(ctx.map, { editor: true }));
 
         // One-time attach hooks (persistent overlays, data loads) — their
         // disposers live until this canvas unmounts. Serve mode attaches only

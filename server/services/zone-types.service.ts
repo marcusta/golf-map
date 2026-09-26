@@ -14,9 +14,9 @@ export const CHANNELS_PER_TEXTURE = 4;
 
 /**
  * The starter legend, seeded on a course's FIRST `listByCourse` (see the
- * service doc). One texture, its four channels: tall rough, shrubs, ferns,
+ * service doc). Texture 0's four channels: tall rough, shrubs, ferns,
  * meadow — the lower vegetation the OPCD courses need before anyone has
- * authored anything. Every field is editable afterwards, and a course that
+ * authored anything — and the woodland floor on texture 1. Every field is editable afterwards, and a course that
  * deletes them all keeps them deleted (seeding is keyed on "this course has
  * never had a zone type", not "has none right now").
  */
@@ -31,6 +31,9 @@ export const DEFAULT_ZONE_TYPES: readonly {
     { key: 'shrub', name: 'Shrubs', color: '#6b8f3a', textureIndex: 0, channel: 1 },
     { key: 'fern', name: 'Ferns', color: '#4f8c5a', textureIndex: 0, channel: 2 },
     { key: 'meadow', name: 'Meadow', color: '#b8a94a', textureIndex: 0, channel: 3 },
+    // The floor of closed stands (D-VZ10): lidar proposes these zones
+    // (`woodland-features`, source `lidar-woodland`), the understory items bind here.
+    { key: 'woodland_floor', name: 'Woodland floor', color: '#6b5a34', textureIndex: 1, channel: 0 },
 ];
 
 // --- Output types ---
@@ -46,6 +49,18 @@ export interface ZoneTypeItem {
     maxDensity: number;
 }
 
+/**
+ * A named item mix of a zone type (e.g. Tall rough -> "Dry straw"). A
+ * `vegetation_zone` feature picks one by `key` in its `zoneVariant`
+ * attribute; a zone with no variant uses the type's own `items` (the
+ * Default mix). The key is the stable binding — renaming changes `name` only.
+ */
+export interface ZoneTypeVariant {
+    key: string;
+    name: string;
+    items: ZoneTypeItem[];
+}
+
 export interface CourseZoneType {
     id: string;
     courseId: string;
@@ -57,7 +72,10 @@ export interface CourseZoneType {
     /** RGBA channel 0..3 within that texture. */
     channel: number;
     sortOrder: number;
+    /** The Default item mix: what zones with no `zoneVariant` get. */
     items: ZoneTypeItem[];
+    /** Named alternative mixes, in the order the panel lists them. */
+    variants: ZoneTypeVariant[];
     createdAt: string;
     updatedAt: string;
 }
@@ -77,6 +95,7 @@ function toZoneType(row: ZoneTypeRow): CourseZoneType {
         channel: row.channel,
         sortOrder: row.sort_order,
         items: parseItems(row.items_json),
+        variants: parseVariants(row.variants_json),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
     };
@@ -87,6 +106,16 @@ function parseItems(raw: string): ZoneTypeItem[] {
     try {
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? (parsed as ZoneTypeItem[]) : [];
+    } catch {
+        return [];
+    }
+}
+
+/** Same defensive parse as items: malformed variants_json reads as no variants. */
+function parseVariants(raw: string): ZoneTypeVariant[] {
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? (parsed as ZoneTypeVariant[]) : [];
     } catch {
         return [];
     }
@@ -131,30 +160,64 @@ function assertValidChannel(channel: unknown): asserts channel is number {
     }
 }
 
-function assertValidItems(items: unknown): asserts items is ZoneTypeItem[] {
-    if (!Array.isArray(items)) throw new InvalidZoneTypeError('items must be an array');
+function assertValidItems(items: unknown, path = 'items'): asserts items is ZoneTypeItem[] {
+    if (!Array.isArray(items)) throw new InvalidZoneTypeError(`${path} must be an array`);
     items.forEach((raw, i) => {
         const item = raw as Partial<ZoneTypeItem>;
         if (!item || typeof item !== 'object' || Array.isArray(item)) {
-            throw new InvalidZoneTypeError(`items[${i}] must be an object`);
+            throw new InvalidZoneTypeError(`${path}[${i}] must be an object`);
         }
         if (typeof item.item !== 'string' || item.item.trim().length === 0) {
-            throw new InvalidZoneTypeError(`items[${i}].item must be a non-empty string`);
+            throw new InvalidZoneTypeError(`${path}[${i}].item must be a non-empty string`);
         }
         for (const field of ['minDensity', 'maxDensity'] as const) {
             const value = item[field];
             if (!Number.isFinite(value) || (value as number) < 0 || (value as number) > 1) {
-                throw new InvalidZoneTypeError(`items[${i}].${field} must be a number 0..1`);
+                throw new InvalidZoneTypeError(`${path}[${i}].${field} must be a number 0..1`);
             }
         }
         if ((item.minDensity as number) > (item.maxDensity as number)) {
-            throw new InvalidZoneTypeError(`items[${i}].minDensity must be <= maxDensity`);
+            throw new InvalidZoneTypeError(`${path}[${i}].minDensity must be <= maxDensity`);
         }
+    });
+}
+
+/**
+ * Variant keys follow the zone-type key pattern and are unique within the
+ * type; names are non-empty; items are validated exactly like the Default's.
+ */
+function assertValidVariants(variants: unknown): asserts variants is ZoneTypeVariant[] {
+    if (!Array.isArray(variants)) throw new InvalidZoneTypeError('variants must be an array');
+    const seen = new Set<string>();
+    variants.forEach((raw, i) => {
+        const variant = raw as Partial<ZoneTypeVariant>;
+        if (!variant || typeof variant !== 'object' || Array.isArray(variant)) {
+            throw new InvalidZoneTypeError(`variants[${i}] must be an object`);
+        }
+        if (typeof variant.key !== 'string' || !KEY_PATTERN.test(variant.key)) {
+            throw new InvalidZoneTypeError(
+                `variants[${i}].key must match ${KEY_PATTERN.source} (got ${JSON.stringify(variant.key)})`,
+            );
+        }
+        if (seen.has(variant.key)) {
+            // A conflict, like a duplicate type key: `mount()` maps it to 409 (the
+            // API schema already pins every other variant field to a 400).
+            throw new ConflictError(`Variant key '${variant.key}' is used twice in this zone type`);
+        }
+        seen.add(variant.key);
+        if (typeof variant.name !== 'string' || variant.name.trim().length === 0) {
+            throw new InvalidZoneTypeError(`variants[${i}].name must be a non-empty string`);
+        }
+        assertValidItems(variant.items, `variants[${i}].items`);
     });
 }
 
 function normalizeItems(items: ZoneTypeItem[]): ZoneTypeItem[] {
     return items.map((i) => ({ item: i.item, minDensity: i.minDensity, maxDensity: i.maxDensity }));
+}
+
+function normalizeVariants(variants: ZoneTypeVariant[]): ZoneTypeVariant[] {
+    return variants.map((v) => ({ key: v.key, name: v.name, items: normalizeItems(v.items) }));
 }
 
 /**
@@ -222,15 +285,22 @@ export class ZoneTypesService {
     /**
      * Inserts the defaults this course does not have yet (by key), appended
      * after its existing rows. Called by `listByCourse` on an empty table and
-     * exposed so the panel can offer "add the defaults" after a purge.
+     * exposed so the panel can offer "add the defaults" after a purge, or to
+     * pick up a default added later (`woodland_floor`). A preset whose mask
+     * slot the course already uses for another type takes the first free slot.
      */
     async addDefaults(courseId: string): Promise<CourseZoneType[]> {
         const existing = await this.rowsByCourse(courseId);
         const haveKeys = new Set(existing.map((r) => r.key));
+        const taken = new Set(existing.map((r) => `${r.texture_index}:${r.channel}`));
         const created: CourseZoneType[] = [];
         for (const preset of DEFAULT_ZONE_TYPES) {
             if (haveKeys.has(preset.key)) continue;
-            created.push(await this.create({ courseId, ...preset }));
+            const { textureIndex, channel, ...rest } = preset;
+            const slot = taken.has(`${textureIndex}:${channel}`) ? {} : { textureIndex, channel };
+            const row = await this.create({ courseId, ...rest, ...slot });
+            taken.add(`${row.textureIndex}:${row.channel}`);
+            created.push(row);
         }
         return created;
     }
@@ -245,12 +315,15 @@ export class ZoneTypesService {
         channel?: number;
         sortOrder?: number;
         items?: ZoneTypeItem[];
+        variants?: ZoneTypeVariant[];
     }): Promise<CourseZoneType> {
         assertValidKey(input.key);
         assertValidName(input.name);
         assertValidColor(input.color);
         const items = input.items ?? [];
         assertValidItems(items);
+        const variants = input.variants ?? [];
+        assertValidVariants(variants);
 
         const siblings = await this.rowsByCourse(input.courseId);
         const { textureIndex, channel } = input.textureIndex === undefined && input.channel === undefined
@@ -272,6 +345,7 @@ export class ZoneTypesService {
             channel,
             sort_order: sortOrder,
             items_json: JSON.stringify(normalizeItems(items)),
+            variants_json: JSON.stringify(normalizeVariants(variants)),
         }).execute();
         return this.get(id);
     }
@@ -285,6 +359,7 @@ export class ZoneTypesService {
             textureIndex?: number;
             channel?: number;
             items?: ZoneTypeItem[];
+            variants?: ZoneTypeVariant[];
         },
     ): Promise<CourseZoneType> {
         const row = await this.rowOrThrow(id);
@@ -295,6 +370,7 @@ export class ZoneTypesService {
         if (patch.textureIndex !== undefined) assertValidTextureIndex(patch.textureIndex);
         if (patch.channel !== undefined) assertValidChannel(patch.channel);
         if (patch.items !== undefined) assertValidItems(patch.items);
+        if (patch.variants !== undefined) assertValidVariants(patch.variants);
 
         const siblings = (await this.rowsByCourse(row.course_id)).filter((r) => r.id !== id);
         this.assertFree(siblings, {
@@ -310,6 +386,7 @@ export class ZoneTypesService {
         if (patch.textureIndex !== undefined) dbInput.texture_index = patch.textureIndex;
         if (patch.channel !== undefined) dbInput.channel = patch.channel;
         if (patch.items !== undefined) dbInput.items_json = JSON.stringify(normalizeItems(patch.items));
+        if (patch.variants !== undefined) dbInput.variants_json = JSON.stringify(normalizeVariants(patch.variants));
 
         await this.db.updateTable('course_zone_types').where('id', '=', id).set({
             ...dbInput,

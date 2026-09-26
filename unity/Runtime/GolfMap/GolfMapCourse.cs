@@ -31,6 +31,12 @@ namespace GolfMap
         [Tooltip("File name prefix of the exports: <prefix>-inner-trees.json, <prefix>-outer-zones.json ...")]
         public string exportPrefix = "";
 
+        [Header("Course meshes (OPCD FBX from Blender)")]
+        [Tooltip("Folder the Blender FBX export writes into, relative to the Unity project's Assets folder.")]
+        public string meshFolder = "fbx";
+        [Tooltip("Scene object the course meshes sit under; GolfMap > Meshes > Sync adds new FBX there.")]
+        public string meshParent = "Meshes";
+
         [Header("Scene")]
         public string innerTerrainName = "Terrain (Inner)";
         [Tooltip("TerrainData asset name of the inner terrain, matched when the object was renamed.")]

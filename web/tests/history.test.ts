@@ -55,6 +55,7 @@ function fakeApi(initial: CourseFeature[] = []) {
             if (!row || row.version !== input.version) throw new ApiError(409, 'Version conflict');
             if (input.type !== undefined) row.type = input.type;
             if (input.holeId !== undefined) row.holeId = input.holeId;
+            if (input.layer !== undefined) row.layer = input.layer;
             if (input.geometry !== undefined) row.geometry = structuredClone(input.geometry);
             row.version = input.version + 1;
             return structuredClone(row);
@@ -65,6 +66,8 @@ function fakeApi(initial: CourseFeature[] = []) {
             rows.delete(input.id);
             return { ok: true };
         },
+        imported: async () => [],
+        removeImported: async () => ({ removed: 0 }),
         async reorder(input) {
             input.orderedIds.forEach((id, i) => { const row = rows.get(id); if (row) row.sortOrder = i; });
             return { ok: true };
@@ -118,6 +121,48 @@ describe('push / canUndo / canRedo', () => {
         const history = new EditHistory();
         history.push([]);
         expect(history.canUndo.get()).toBe(false);
+    });
+});
+
+describe('Roughs layer moves (D28)', () => {
+    test('a move into Roughs undoes back onto its hole; redo re-enters', async () => {
+        const { svc, rows } = await makeService([{ ...feature('r', 'rough'), holeId: 'h3', layer: null }]);
+        const history = new EditHistory();
+        const f = svc.store.items.peek()[0];
+        const scope = { holeId: null, layer: 'roughs' as const };
+        history.push([{ featureId: 'r', before: snapshotOf(f), after: { ...snapshotOf(f), ...scope }, beforeVersion: f.version }]);
+        await svc.update('r', scope);
+        expect(rows.get('r')).toMatchObject(scope);
+
+        expect(await history.undo(svc)).toBe(true);
+        expect(rows.get('r')).toMatchObject({ holeId: 'h3', layer: null });
+        expect(await history.redo(svc)).toBe(true);
+        expect(rows.get('r')).toMatchObject(scope);
+    });
+
+    test('a geometry-only snapshot leaves the layer alone; a retype out of rough sends course-level', async () => {
+        const { svc, rows } = await makeService([{ ...feature('r', 'rough'), layer: 'roughs' }]);
+        const history = new EditHistory();
+        const f = svc.store.items.peek()[0];
+        const moved = squareGeometry(25);
+        // The draw tool's hand-built drag snapshots carry no `layer`.
+        history.push([{
+            featureId: 'r',
+            before: { geometry: f.geometry, type: f.type, holeId: f.holeId },
+            after: { geometry: moved, type: f.type, holeId: f.holeId },
+            beforeVersion: f.version,
+        }]);
+        await svc.update('r', { geometry: moved });
+        expect(await history.undo(svc)).toBe(true);
+        expect(rows.get('r')!.layer).toBe('roughs');
+
+        const g = svc.store.items.peek()[0];
+        history.push([updateDiff(g, { type: 'fairway' })]);
+        await svc.update('r', { type: 'fairway', layer: null });
+        expect(await history.undo(svc)).toBe(true);
+        expect(rows.get('r')).toMatchObject({ type: 'rough', layer: 'roughs' });
+        expect(await history.redo(svc)).toBe(true);
+        expect(rows.get('r')).toMatchObject({ type: 'fairway', layer: null });
     });
 });
 

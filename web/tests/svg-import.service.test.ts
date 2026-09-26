@@ -36,6 +36,8 @@ function fakeApi(failAfter = Infinity) {
         update: reject,
         remove: reject,
         reorder: reject,
+        imported: async () => [],
+        removeImported: async () => ({ removed: 0 }),
     };
     return { api, created };
 }

@@ -283,6 +283,36 @@ def test_build_geojson_carries_crs_attribution_and_provenance():
     assert round(x, 2) == x and round(y, 2) == y
 
 
+def test_one_way_corridor_carries_its_clipped_centerline_for_the_app_to_edit():
+    # A street running past the east edge of the clip, bending on the way.
+    street = [(15.550, 58.400), (15.553, 58.4003), (15.556, 58.4012), (15.570, 58.402)]
+    doc = {"elements": [way(1, street, highway="residential", width="5")]}
+    ways, _ = roads.assemble_roads(doc, reproject)
+    clip = roads.bbox_polygon_3006((15.549, 58.399, 15.560, 58.403), reproject)
+    [feature] = roads.build_roads_geojson(roads.merge_corridors(ways, clip=clip), fetch_date="2026-09-25")["features"]
+    props = feature["properties"]
+    assert props["widthM"] == 5.0
+    line = props["centerline"]
+    # Simplified for editing: a handful of points, not the 1 m samples.
+    assert 2 <= len(line) < 40
+    polygon = shape(feature["geometry"])
+    for x, y in line:
+        assert round(x, 2) == x and round(y, 2) == y
+        # Inside the clip, down the middle of the corridor.
+        assert clip.buffer(0.05).contains(Point(x, y))
+        assert polygon.buffer(0.05).contains(Point(x, y))
+    # Every stretch of the corridor is within a half-width of the line.
+    from shapely.geometry import LineString
+    assert polygon.hausdorff_distance(LineString(line)) < 2.5 + 3.0  # the clipped end's corners
+
+
+def test_merged_network_and_area_surfaces_carry_no_centerline():
+    doc = {"elements": [way(1, STREET, highway="residential"), way(2, DRIVEWAY, highway="service")]}
+    ways, _ = roads.assemble_roads(doc, reproject)
+    [feature] = roads.build_roads_geojson(roads.merge_corridors(ways, merge=True), fetch_date="2026-09-25")["features"]
+    assert "centerline" not in feature["properties"]
+
+
 # ─── end-to-end command ──────────────────────────────────────────────────────
 
 def test_cmd_fetch_roads_end_to_end(tmp_path: Path, capsys):
@@ -319,10 +349,30 @@ def test_cmd_fetch_roads_end_to_end(tmp_path: Path, capsys):
     assert not poly.contains(Point(mid.x + 2.2, mid.y))
 
     printed = capsys.readouterr().out
-    assert "Road ways: 3" in printed
+    assert "OSM road ways: 3" in printed
     assert "class: 3" in printed
     assert "Road polygons: 3 (road=2, track=1)" in printed
     assert f"Wrote {out}" in printed
+
+
+def test_cmd_fetch_roads_clips_to_the_exact_square_not_its_wgs84_envelope(tmp_path: Path):
+    # A road running east through the whole bbox; the square is the bbox's
+    # grid envelope shrunk 50 m on each side, and nothing may pass its edge.
+    envelope = roads.bbox_polygon_3006(BBOX_WGS84, reproject)
+    e0, n0, e1, n1 = envelope.bounds
+    square = (e0 + 50, n0 + 50, e1 - 50, n1 - 50)
+    west, south, east, north = BBOX_WGS84
+    mid = (south + north) / 2
+    doc = {"elements": [way(1, [(west - 0.01, mid), (east + 0.01, mid)], highway="residential")]}
+    out, lines_out = tmp_path / "roads.geojson", tmp_path / "lines.geojson"
+    cmd_fetch_roads(BBOX_WGS84, out, overpass_fetch=lambda q, *, url="": doc, centerlines_out=lines_out, square_3006=square)
+    [feature] = json.loads(out.read_text(encoding="utf-8"))["features"]
+    x0, y0, x1, y1 = shape(feature["geometry"]).bounds
+    assert x0 >= square[0] - 0.01 and x1 <= square[2] + 0.01
+    assert x0 < square[0] + 1 and x1 > square[2] - 1  # and it does reach the edges
+    [line] = json.loads(lines_out.read_text(encoding="utf-8"))["features"]
+    lx0, _, lx1, _ = shape(line["geometry"]).bounds
+    assert lx0 >= square[0] - 0.01 and lx1 <= square[2] + 0.01
 
 
 def test_cmd_fetch_roads_writes_empty_collection_when_nothing_mapped(tmp_path: Path, capsys):
@@ -331,3 +381,16 @@ def test_cmd_fetch_roads_writes_empty_collection_when_nothing_mapped(tmp_path: P
     collection = json.loads(out.read_text(encoding="utf-8"))
     assert collection["features"] == []
     assert "no highway ways found" in capsys.readouterr().out
+
+
+def test_osm_surface_tags_map_to_the_app_path_surfaces():
+    cases = {
+        "asphalt": "asphalt", "paved": "asphalt", "Concrete:plates": "concrete", "paving_stones": "paving",
+        "sett": "paving", "fine_gravel": "gravel", "compacted": "gravel", "unpaved": "gravel",
+        "ground": "dirt", "woodchips": "dirt", "grass": "grass", "wood": "wood",
+    }
+    for tag, surface in cases.items():
+        assert roads.osm_surface({"surface": tag}) == surface, tag
+    assert roads.osm_surface({"surface": "metal"}) is None
+    assert roads.osm_surface({}) is None
+    assert set(roads.OSM_SURFACE.values()) <= set(roads.PATH_SURFACES)

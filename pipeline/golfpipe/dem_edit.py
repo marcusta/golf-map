@@ -33,8 +33,33 @@ Operations (D-TE3, two only in v1):
   station's smoothed height. The isotropic ``smooth`` can't do this: a
   median wide enough to take out 10-20 m undulations smears the surrounding
   grade into the road, and a narrow one leaves them.
+- ``dig`` — a bunker or a pond dug below a reference height, never above
+  the ground it replaces (every cell becomes min(current, reference − drop)).
+  The drop is a profile of the distance ``d`` in from the polygon edge: an
+  optional shelf (``shelfM`` wide, falling to ``shelfDepthM``), then a bank
+  at ``bankSlopeDeg`` rounding off into a floor at ``depthM``, so the edge
+  itself is untouched and a narrow arm never reaches full depth. With
+  ``faceSlopeDeg`` + ``faceBearingDeg`` (compass bearing from the polygon's
+  centroid) the bank steepens towards that side: a bunker's face towards
+  its green, a gentle entry opposite. ``variation`` (0-1) + ``seed`` vary
+  bank width and shelf around the perimeter with smooth, seeded noise.
+  ``reference: level`` is one flat height, the 25th percentile of the
+  in-polygon cells within ``rimM`` of the edge (a pond: lidar sees its
+  surface, which then stays the water level OPCD's water plane is put at);
+  bank the outline takes in above that level tapers down to it across the
+  same ``rimM`` band rather than being cut to it at the shore;
+  ``reference: plane`` fits a plane to the ground in a ``rimM`` band outside
+  the polygon (a bunker: the lidar has already smoothed the hollow itself).
+  ``reference: stream`` is a creek's water surface, falling downstream
+  (creeks.surface_profile along the edit's ``centerline``, else the line
+  down its polygon); each cell digs below the surface at its nearest
+  station, with the same bank taper as ``level``.
+- ``delta`` — heights ADDED from a raster (``raster``: a float32 EPSG:3006
+  GeoTIFF of metres, bilinear at each cell centre, 0 outside it): a Unity
+  sculpt layer (golfpipe/sculpt.py). No feather — the layer carries its own
+  edges — and it can raise as well as lower.
 
-Both ops feather over an edge band inside the polygon (D-TE3): weight
+The ops feather over an edge band inside the polygon (D-TE3): weight
 w = clamp(dist_to_polygon_edge / featherM, 0, 1) via a cell-size-aware
 euclidean distance transform on the mask, output = w·op + (1−w)·original.
 ``featherM`` 0 = hard edge. Nodata cells are excluded from fits and get zero
@@ -66,6 +91,7 @@ from scipy.ndimage import distance_transform_edt, generic_filter, median_filter
 __all__ = [
     "DemEditError", "DemEdit", "PlaneFit",
     "OPS", "DEFAULT_FEATHER_M", "DEFAULT_SMOOTH_RADIUS_M", "DEFAULT_CORRIDOR_SMOOTH_M",
+    "DIG_REFERENCES", "dig_drop",
     "MIN_PLANE_CELLS", "OUTLIER_SIGMA", "OUTLIER_ROUNDS",
     "load_edits", "reproject_edits", "fit_plane", "apply_edits",
 ]
@@ -75,13 +101,19 @@ class DemEditError(RuntimeError):
     """User-actionable apply-dem-edits input/setup error."""
 
 
-OPS = ("plane", "smooth", "corridor")
+OPS = ("plane", "smooth", "corridor", "dig", "delta")
 DEFAULT_FEATHER_M = 2.0
 DEFAULT_SMOOTH_RADIUS_M = 2.0
 # Longitudinal smoothing window for corridors: long enough to take out the
 # 10-20 m undulations a cart path bounces over, short enough to keep a
 # designed crest or dip.
 DEFAULT_CORRIDOR_SMOOTH_M = 25.0
+DIG_REFERENCES = ("level", "plane", "stream")
+DEFAULT_DIG_BANK_SLOPE_DEG = 20.0
+DEFAULT_DIG_RIM_M = 2.0
+# Water level from the in-polygon rim: a low percentile, so bank cells a
+# generously drawn outline takes in don't lift it.
+DIG_LEVEL_PERCENTILE = 25.0
 # A plane fit over fewer valid cells than this is meaningless noise — skip.
 MIN_PLANE_CELLS = 16
 OUTLIER_SIGMA = 2.0
@@ -107,6 +139,19 @@ class DemEdit:
     centerline: list[list[float]] | None = None
     smooth_m: float = DEFAULT_CORRIDOR_SMOOTH_M
     width_m: float | None = None
+    # dig only (see the module docstring).
+    depth_m: float = 0.0
+    bank_slope_deg: float = DEFAULT_DIG_BANK_SLOPE_DEG
+    face_slope_deg: float | None = None
+    face_bearing_deg: float | None = None
+    shelf_m: float = 0.0
+    shelf_depth_m: float = 0.0
+    reference: str = "level"
+    rim_m: float = DEFAULT_DIG_RIM_M
+    variation: float = 0.0
+    seed: int = 0
+    # delta only: the GeoTIFF of metres to add.
+    raster: str | None = None
 
 
 def load_edits(path: Path, log=print) -> list[DemEdit]:
@@ -173,6 +218,32 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             if not np.isfinite(smooth_m) or smooth_m <= 0 or (width_m is not None and not width_m > 0):
                 log(f"warning: {label}: smoothM and widthM must be > 0 — skipped")
                 continue
+        elif op == "dig" and props.get("centerline") is not None:
+            # A creek dig (reference: stream) may carry its line and width.
+            centerline = props.get("centerline")
+            if (not isinstance(centerline, list) or len(centerline) < 2
+                    or not all(isinstance(p, (list, tuple)) and len(p) >= 2 for p in centerline)):
+                log(f"warning: {label}: dig centerline needs at least 2 [x, y] points — skipped")
+                continue
+            centerline = [[float(p[0]), float(p[1])] for p in centerline]
+            try:
+                width_m = float(props["widthM"]) if props.get("widthM") is not None else None
+            except (TypeError, ValueError):
+                log(f"warning: {label}: widthM is not a number — skipped")
+                continue
+        raster = None
+        if op == "delta":
+            raster = props.get("raster")
+            if not isinstance(raster, str) or not Path(raster).is_file():
+                log(f"warning: {label}: delta needs an existing raster file, got {raster!r} — skipped")
+                continue
+        dig: dict = {}
+        if op == "dig":
+            try:
+                dig = _dig_params(props)
+            except ValueError as exc:
+                log(f"warning: {label}: {exc} — skipped")
+                continue
         created_at = props.get("createdAt")
         edits.append(DemEdit(
             op=op,
@@ -184,10 +255,60 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             centerline=centerline,
             smooth_m=smooth_m,
             width_m=width_m,
+            raster=raster,
+            **dig,
         ))
 
     edits.sort(key=lambda e: (e.created_at is None, e.created_at or ""))
     return edits
+
+
+def _dig_params(props: dict) -> dict:
+    """The dig fields of a D-TE5 feature's properties, validated (ValueError
+    names the bad one)."""
+    def num(key, default=None):
+        value = props.get(key, default)
+        if value is None:
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} is not a number")
+        if not np.isfinite(value):
+            raise ValueError(f"{key} is not finite")
+        return value
+
+    depth = num("depthM")
+    if depth is None or depth <= 0:
+        raise ValueError("dig needs depthM > 0")
+    bank = num("bankSlopeDeg", DEFAULT_DIG_BANK_SLOPE_DEG)
+    face = num("faceSlopeDeg")
+    bearing = num("faceBearingDeg")
+    for key, value in (("bankSlopeDeg", bank), ("faceSlopeDeg", face)):
+        if value is not None and not 0 < value < 90:
+            raise ValueError(f"{key} must be between 0 and 90 degrees")
+    if (face is None) != (bearing is None):
+        raise ValueError("faceSlopeDeg and faceBearingDeg go together")
+    shelf = num("shelfM", 0.0)
+    shelf_depth = num("shelfDepthM", 0.0)
+    if shelf < 0 or shelf_depth < 0 or shelf_depth >= depth:
+        raise ValueError("shelfM must be >= 0 and shelfDepthM in [0, depthM)")
+    reference = props.get("reference", "level")
+    if reference not in DIG_REFERENCES:
+        raise ValueError(f"reference must be one of {DIG_REFERENCES}")
+    rim = num("rimM", DEFAULT_DIG_RIM_M)
+    variation = num("variation", 0.0)
+    if rim <= 0 or not 0 <= variation <= 1:
+        raise ValueError("rimM must be > 0 and variation in [0, 1]")
+    try:
+        seed = int(props.get("seed", 0))
+    except (TypeError, ValueError):
+        raise ValueError("seed is not an integer")
+    return dict(
+        depth_m=depth, bank_slope_deg=bank, face_slope_deg=face, face_bearing_deg=bearing,
+        shelf_m=shelf, shelf_depth_m=shelf_depth, reference=reference, rim_m=rim,
+        variation=variation, seed=seed,
+    )
 
 
 def reproject_edits(edits: list[DemEdit], dem_crs) -> list[DemEdit]:
@@ -323,7 +444,7 @@ def _apply_one(
 
     cell_x = abs(transform.a)
     cell_y = abs(transform.e)
-    pad_m = max(edit.feather_m, edit.radius_m if edit.op == "smooth" else 0.0)
+    pad_m = max(edit.feather_m, edit.radius_m if edit.op == "smooth" else 0.0, edit.rim_m if edit.op == "dig" else 0.0)
     pad = int(np.ceil(pad_m / min(cell_x, cell_y))) + 2
     mask_rows = np.flatnonzero(mask.any(axis=1))
     mask_cols = np.flatnonzero(mask.any(axis=0))
@@ -341,6 +462,10 @@ def _apply_one(
         target = _plane_target(cur_win, mask_win, valid_win, transform, r0, c0, edit, label, log)
     elif edit.op == "corridor":
         target = _corridor_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log)
+    elif edit.op == "dig":
+        target = _dig_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log)
+    elif edit.op == "delta":
+        target = _delta_target(cur_win, mask_win, transform, r0, c0, edit)
     else:
         target = _smooth_target(cur_win, mask_win, valid_win, cell_x, cell_y, edit)
     if target is None:
@@ -483,6 +608,196 @@ def _extrapolate_ends(profile: np.ndarray, s: np.ndarray, k: int) -> np.ndarray:
     before = a0 * (s[0] - step * np.arange(k, 0, -1)) + b0
     after = a1 * (s[-1] + step * np.arange(1, k + 1)) + b1
     return np.concatenate([before, profile, after])
+
+
+def dig_drop(
+    d: np.ndarray,
+    depth_m: float,
+    slope_deg: np.ndarray | float,
+    shelf_m: np.ndarray | float = 0.0,
+    shelf_depth_m: float = 0.0,
+) -> np.ndarray:
+    """How far below the reference a dig goes at distance `d` (m) in from its
+    edge: 0 at the edge, down a shelf (`shelf_m` wide to `shelf_depth_m`),
+    then a bank at `slope_deg` whose toe rounds into the floor at `depth_m`.
+    The rounding is a soft minimum over the last ~15 % of the depth, shifted
+    so the drop is exactly 0 at the edge and never exceeds `depth_m`."""
+    d = np.maximum(np.asarray(d, dtype=np.float64), 0.0)
+    shelf_m = np.asarray(shelf_m, dtype=np.float64)
+    tan = np.tan(np.radians(np.asarray(slope_deg, dtype=np.float64)))
+    on_shelf = d < shelf_m
+    shelf_drop = np.where(shelf_m > 0, shelf_depth_m * d / np.maximum(shelf_m, 1e-9), 0.0)
+    bank_depth = depth_m - shelf_depth_m
+    k = max(0.15 * bank_depth, 1e-3)
+
+    def softmin(a, b):
+        return -k * np.logaddexp(-a / k, -b / k)
+
+    past = np.maximum(d - shelf_m, 0.0)
+    bank = softmin(past * tan, bank_depth) - softmin(0.0, bank_depth)
+    bank = np.clip(bank, 0.0, bank_depth)
+    return np.where(on_shelf, shelf_drop, shelf_depth_m + bank)
+
+
+def _perimeter_noise(bearing_deg: np.ndarray, seed: int) -> np.ndarray:
+    """Smooth seeded variation in [-1, 1] around a closed outline (a bearing
+    from its centroid): 2-4 lobes plus an overtone, the shape of Shoreline
+    Studio's `smooth_variation`."""
+    rng = np.random.default_rng(seed)
+    phase = rng.random() * 2 * np.pi
+    lobes = 2 + int(rng.integers(0, 3))
+    angle = np.radians(bearing_deg) * lobes + phase
+    return np.clip(0.65 * np.sin(angle) + 0.35 * np.sin(2 * angle + 1.7), -1.0, 1.0)
+
+
+def _dig_target(
+    cur_win: np.ndarray,
+    mask_win: np.ndarray,
+    valid_win: np.ndarray,
+    transform: "rasterio.Affine",
+    r0: int,
+    c0: int,
+    cell_x: float,
+    cell_y: float,
+    edit: DemEdit,
+    label: str,
+    log,
+) -> np.ndarray | None:
+    inside = mask_win & valid_win
+    if int(np.count_nonzero(inside)) < 4:
+        log(f"warning: {label}: fewer than 4 valid cells in the polygon — skipped")
+        return None
+    cell = min(cell_x, cell_y)
+    # Distance in from the edge (cell centre to the polygon boundary ~ EDT to
+    # the nearest outside cell minus half a cell), and which outside cell that
+    # is: its bearing from the centroid orients the face.
+    edt, (near_r, near_c) = distance_transform_edt(mask_win, sampling=(cell_y, cell_x), return_indices=True)
+    d = np.maximum(edt - cell / 2.0, 0.0)
+
+    rows, cols = np.nonzero(mask_win)
+    xs, ys = rasterio.transform.xy(transform, rows + r0, cols + c0)
+    xs, ys = np.asarray(xs), np.asarray(ys)
+    cx, cy = float(xs.mean()), float(ys.mean())
+    ex, ey = rasterio.transform.xy(transform, near_r[rows, cols] + r0, near_c[rows, cols] + c0)
+    bearing = np.degrees(np.arctan2(np.asarray(ex) - cx, np.asarray(ey) - cy)) % 360.0
+
+    slope = np.full(len(rows), edit.bank_slope_deg)
+    if edit.face_slope_deg is not None and edit.face_bearing_deg is not None:
+        toward = (1.0 + np.cos(np.radians(bearing - edit.face_bearing_deg))) / 2.0
+        slope = edit.bank_slope_deg + (edit.face_slope_deg - edit.bank_slope_deg) * toward
+    shelf = np.full(len(rows), edit.shelf_m)
+    if edit.variation > 0:
+        wobble = 1.0 + 0.5 * edit.variation * _perimeter_noise(bearing, edit.seed)
+        # A wider bank is a gentler one: scale the run, not the angle.
+        slope = np.degrees(np.arctan(np.tan(np.radians(slope)) / wobble))
+        shelf = shelf * wobble
+
+    if edit.reference in ("level", "stream"):
+        if edit.reference == "level":
+            rim = inside & (d <= edit.rim_m)
+            if not rim.any():
+                rim = inside
+            level = float(np.percentile(cur_win[rim], DIG_LEVEL_PERCENTILE))
+        else:
+            level = _stream_levels(cur_win, valid_win, mask_win, transform, r0, c0, xs, ys, d, edit, label, log)
+            if level is None:
+                return None
+        # An outline drawn a little generously takes in bank above the water:
+        # those cells come down to the level over the rim band instead of being
+        # cut to it at the outline (a wall at the shore).
+        cur_cells = cur_win[rows, cols]
+        t = np.clip(d[rows, cols] / edit.rim_m, 0.0, 1.0)
+        taper = t * t * (3 - 2 * t)
+        reference = np.where(cur_cells > level, cur_cells + (level - cur_cells) * taper, level)
+        # How much of a bank a cell was (0 at the level, 1 from 20 cm above it):
+        # the dig proper starts where the taper reaches the level, `rimM` in,
+        # so bank and underwater slopes don't stack into a wall.
+        above = np.clip((cur_cells - level) / 0.2, 0.0, 1.0)
+        dist = np.maximum(d[rows, cols] - edit.rim_m * above, 0.0)
+    else:
+        dist = d[rows, cols]
+        out_edt = distance_transform_edt(~mask_win, sampling=(cell_y, cell_x))
+        band = ~mask_win & valid_win & (out_edt <= edit.rim_m + cell / 2.0)
+        band_rows, band_cols = np.nonzero(band)
+        bx, by = rasterio.transform.xy(transform, band_rows + r0, band_cols + c0)
+        fit = fit_plane(np.asarray(bx), np.asarray(by), cur_win[band])
+        if fit is None:
+            log(f"warning: {label}: no plane fits the ground around the polygon — skipped")
+            return None
+        reference = fit.evaluate(xs, ys)
+
+    drop = dig_drop(dist, edit.depth_m, slope, shelf, edit.shelf_depth_m)
+    target = cur_win.copy()
+    target[rows, cols] = np.minimum(cur_win[rows, cols], reference - drop)
+    return target
+
+
+def _stream_levels(
+    cur_win: np.ndarray,
+    valid_win: np.ndarray,
+    mask_win: np.ndarray,
+    transform: "rasterio.Affine",
+    r0: int,
+    c0: int,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    d: np.ndarray,
+    edit: DemEdit,
+    label: str,
+    log,
+) -> np.ndarray | None:
+    """Per in-mask cell (in `xs`/`ys` order): the creek's water surface at
+    its nearest station (creeks.surface_profile over the pre-edit heights),
+    along the edit's centerline, else the line down its polygon."""
+    from scipy.spatial import cKDTree
+    from shapely.geometry import shape
+
+    from golfpipe.creeks import ribbon_centerline, surface_profile
+
+    line = edit.centerline
+    width = edit.width_m
+    if not line:
+        found = ribbon_centerline(shape(edit.geometry))
+        if found is None:
+            log(f"warning: {label}: no line down this creek polygon — skipped")
+            return None
+        line = [list(p) for p in found[0].coords]
+        width = width or found[1]
+    if not width:
+        width = 2.0 * float(d[mask_win].max())
+    win_transform = transform * rasterio.Affine.translation(c0, r0)
+    profile = surface_profile(cur_win, win_transform, np.asarray(line), width, valid=valid_win)
+    if profile is None:
+        log(f"warning: {label}: the creek line crosses no valid cells — skipped")
+        return None
+    _, station = cKDTree(np.column_stack([profile.x, profile.y])).query(np.column_stack([xs, ys]))
+    return profile.z[station]
+
+
+def _delta_target(
+    cur_win: np.ndarray,
+    mask_win: np.ndarray,
+    transform: "rasterio.Affine",
+    r0: int,
+    c0: int,
+    edit: DemEdit,
+) -> np.ndarray:
+    """The heights plus the edit's raster, sampled bilinearly at the cell
+    centres (0 outside the raster)."""
+    from scipy.ndimage import map_coordinates
+
+    with rasterio.open(edit.raster) as src:
+        layer = src.read(1).astype(np.float64)
+        inv = ~src.transform
+    layer = np.nan_to_num(layer)
+    rows, cols = np.nonzero(mask_win)
+    xs, ys = rasterio.transform.xy(transform, rows + r0, cols + c0)
+    fc, fr = inv * (np.asarray(xs), np.asarray(ys))
+    # map_coordinates indexes pixel centres at integers; the affine gives corners.
+    add = map_coordinates(layer, [np.asarray(fr) - 0.5, np.asarray(fc) - 0.5], order=1, mode="constant", cval=0.0)
+    target = cur_win.copy()
+    target[rows, cols] = cur_win[rows, cols] + add
+    return target
 
 
 def _smooth_target(

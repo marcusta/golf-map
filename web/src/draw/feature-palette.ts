@@ -2,6 +2,8 @@
 // FEATURE_TYPES mirrors the server's list (server/services/course-features
 // .service.ts) — the server rejects anything else.
 
+import { PATH_SURFACES, PATH_SURFACE_COLORS } from '../../../shared/features/path-surface';
+
 export const FEATURE_TYPES = [
     'tee',
     'fairway',
@@ -48,6 +50,18 @@ export const DIGIT_FEATURE_TYPES: Readonly<Record<string, FeatureType>> = {
     '0': 'water_creek',
 };
 
+/**
+ * The rules lines — penalty areas and out of bounds. They are stakes and
+ * lines, not surfaces, and live with the furniture: drawn and edited in
+ * Furniture mode (the draw engine in its `rules` scope), kept out of Draw
+ * mode's map, type picker and stack.
+ */
+export const RULES_TYPES: readonly FeatureType[] = ['penalty_yellow', 'penalty_red', 'oob'];
+
+export function isRulesType(type: string): boolean {
+    return (RULES_TYPES as readonly string[]).includes(type);
+}
+
 /** Reverse of {@link DIGIT_FEATURE_TYPES}: feature type → its digit badge, if any. */
 export function digitForFeatureType(type: FeatureType): string | undefined {
     for (const [digit, mapped] of Object.entries(DIGIT_FEATURE_TYPES)) {
@@ -81,7 +95,10 @@ export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
     water_creek: { label: 'Creek', fill: '#77aed2', draw: '#6fb6e0', outline: '#3f7ba0' },
     penalty_yellow: { label: 'Yellow penalty', fill: '#e8cb56', draw: '#e8cb56', outline: '#c39a2e' },
     penalty_red: { label: 'Red penalty', fill: '#de6152', draw: '#de6152', outline: '#b0402e' },
-    oob: { label: 'OOB', fill: '#efeae0', draw: '#efeae0', outline: '#3a4148' },
+    // Rendered as its boundary line ONLY (see OUTLINE_ONLY_TYPES): all three
+    // colours are the same bone white so the palette swatch, the drag ghost
+    // and the map line agree on what OOB looks like.
+    oob: { label: 'OOB', fill: '#efeae0', draw: '#efeae0', outline: '#efeae0' },
     path: { label: 'Path', fill: '#c2a879', draw: '#cbae75', outline: '#866b47' },
     outside: { label: 'Outside', fill: '#8a8e90', draw: '#7c8286', outline: '#565c61' },
     // Muted olive: a zone is a legend colour at heart (the course's zone-type
@@ -89,6 +106,24 @@ export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
     // palette entry is only the fallback for a zone whose type is gone.
     vegetation_zone: { label: 'Vegetation zone', fill: '#7c8f3a', draw: '#7c8f3a', outline: '#4c5a20' },
 };
+
+/**
+ * Feature types authored as a ring but painted as their BOUNDARY ONLY — no
+ * fill at all.
+ *
+ * `oob` is the course boundary: on a real course it is a run of white stakes
+ * or a painted white line, and the ring is drawn around the whole property,
+ * so filling it would blanket the course in bone white. Its line is also the
+ * one outline that survives nice mode — a rules boundary is exactly what you
+ * still want to see while planning a shot.
+ */
+export const OUTLINE_ONLY_TYPES: ReadonlySet<FeatureType> = new Set<FeatureType>(['oob']);
+
+/** Casing/line widths (px) for the {@link OUTLINE_ONLY_TYPES} boundary. */
+export const OUTLINE_ONLY_LINE_WIDTH = 2;
+/** Dark casing under the white line so it reads over sand and concrete too. */
+export const OUTLINE_ONLY_CASING_WIDTH = 4;
+export const OUTLINE_ONLY_CASING_COLOR = '#3a4148';
 
 /** Selected-feature highlight color (outline + handles). */
 export const SELECTION_COLOR = '#ffd43b';
@@ -176,16 +211,24 @@ export function typeColorExpression(key: 'fill' | 'draw' | 'outline'): unknown[]
 
 /**
  * Fill colour for the feature overlay: the palette colour by type, except for
- * a `vegetation_zone`, which paints in its own zone type's colour from the
+ * a `path` with a known surface (PATH_SURFACE_COLORS) and a `vegetation_zone`,
+ * which paints in its own zone type's colour from the
  * course's zone-type table (`properties.zoneColor`, written by
  * FeaturesService.toGeojsonFeature). A zone whose type has been deleted has no
  * zoneColor and falls back to the palette's olive.
  */
 export function featureFillColorExpression(key: 'fill' | 'draw'): unknown[] {
+    const surfaceColors: unknown[] = ['match', ['get', 'surface']];
+    for (const surface of PATH_SURFACES) surfaceColors.push(surface, PATH_SURFACE_COLORS[surface]);
+    surfaceColors.push(FEATURE_STYLES.path[key]);
     return [
         'case',
         ['all', ['==', ['get', 'type'], 'vegetation_zone'], ['has', 'zoneColor']],
         ['get', 'zoneColor'],
+        // A path paints in its surface's colour (properties.surface, from
+        // attributes.surface) so asphalt and gravel read apart on the ortho.
+        ['all', ['==', ['get', 'type'], 'path'], ['has', 'surface']],
+        surfaceColors,
         typeColorExpression(key),
     ];
 }

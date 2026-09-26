@@ -181,3 +181,129 @@ def test_cli(tmp_path):
     assert [f["properties"]["source_ref"] for f in doc["features"]] == ["m21.laz"]
     with pytest.raises(SystemExit):
         main(["lowveg-features", "--canopy-tif", str(tif), "--out", str(out), "--min-height", "3", "--max-height", "1"])
+
+
+# ─── from points (--lidar) ───────────────────────────────────────────────────
+#
+# A 100 m square on ground sloping 20 % to the east (z = 10 + 0.2 x), one
+# ground return per 0.5 m. On top of it:
+#   shrub:   rows 60..70, cols 50..65 (north-up cells), returns 0.7 m above
+#            ground: under the canopy grid's 1 m floor, so only counting finds it.
+#   tree:    rows 10..30, cols 10..30, 12 m, two returns per pulse.
+#   roof:    rows 40..52, cols 75..87, 5 m, single returns (suppressed as a roof).
+#   clutter: rows 44..50, cols 64..71, 1 m (a car or a trampoline) 4 m from the roof.
+#   noise:   one stray 1.5 m return at row 85, col 20.
+
+import laspy  # noqa: E402
+
+SLOPE = 0.2
+
+
+def _ground_z(x):
+    return 10.0 + SLOPE * (np.asarray(x) - E0)
+
+
+def _block(row0, row1, col0, col1, height, returns=1, step=0.5):
+    """Returns over a cell block (rows north-up) at `height` above the slope."""
+    xs = np.arange(E0 + col0 + 0.25, E0 + col1, step)
+    ys = np.arange(N0 + SIZE - row1 + 0.25, N0 + SIZE - row0, step)
+    x, y = (a.ravel() for a in np.meshgrid(xs, ys))
+    return x, y, _ground_z(x) + height, np.full(x.size, 1, np.uint8), np.full(x.size, returns, np.uint8)
+
+
+def _write_cloud(path: Path, parts) -> Path:
+    x, y, z, cls, nr = (np.concatenate(v) for v in zip(*parts))
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.offsets = [float(x.min()), float(y.min()), float(z.min())]
+    header.scales = [0.001, 0.001, 0.001]
+    las = laspy.LasData(header)
+    las.x, las.y, las.z = x, y, z
+    las.classification = cls
+    las.number_of_returns = nr
+    las.return_number = np.ones(x.size, np.uint8)
+    las.write(str(path))
+    return path
+
+
+def _cloud(tmp_path: Path) -> Path:
+    gx, gy, gz, _, gnr = _block(0, SIZE, 0, SIZE, 0.0)
+    ground = (gx, gy, gz, np.full(gx.size, 2, np.uint8), gnr)
+    stray = (np.array([E0 + 20.5]), np.array([N0 + SIZE - 85.5]), _ground_z([E0 + 20.5]) + 1.5,
+             np.array([1], np.uint8), np.array([1], np.uint8))
+    return _write_cloud(tmp_path / "cloud.laz", [
+        ground,
+        _block(60, 70, 50, 65, 0.7),
+        _block(10, 30, 10, 30, 12.0, returns=2),
+        _block(40, 52, 75, 87, 5.0),
+        _block(44, 50, 64, 71, 1.0),
+        stray,
+    ])
+
+
+BBOX = (E0, N0, E0 + SIZE, N0 + SIZE)
+
+
+def test_count_band_points_measures_height_above_the_sloping_ground(tmp_path):
+    x, y, z, cls, nr = _block(0, SIZE, 0, SIZE, 0.0)
+    ground = (x, y, z, np.full(x.size, 2, np.uint8), nr)
+    low = _block(20, 22, 20, 22, 0.3)   # ground noise height: never counted
+    high = _block(40, 41, 40, 41, 0.8)  # in the band
+    cloud = _write_cloud(tmp_path / "slope.laz", [ground, low, high])
+    ground_dem = _ground_z(E0 + np.arange(SIZE) + 0.5)[None, :].repeat(SIZE, axis=0)
+    band = lowveg_features.count_band_points([cloud], BBOX, ground_dem, 1.0)
+    assert band.count.sum() == 4 and band.count[40, 40] == 4
+    assert band.max_height[40, 40] == pytest.approx(0.8, abs=0.01)
+    assert band.count[20:22, 20:22].sum() == 0
+
+
+def test_lowveg_from_points_window_trees_and_roof_buffer():
+    band = lowveg_features.BandCounts(np.zeros((SIZE, SIZE)), np.zeros((SIZE, SIZE)))
+    band.count[60:70, 50:65] = 2
+    band.max_height[60:70, 50:65] = 0.7
+    band.count[85, 20] = 1  # a stray return: under min_points
+    band.count[44:50, 64:71] = 4
+    band.max_height[44:50, 64:71] = 1.0
+    canopy = np.zeros((SIZE, SIZE), np.float32)
+    canopy[10:30, 10:30] = 12.0
+    roofs = np.zeros((SIZE, SIZE), bool)
+    roofs[40:52, 75:87] = True
+
+    zones = lowveg_features.lowveg_from_points(band, canopy, TRANSFORM, roof_mask=roofs)
+    assert len(zones) == 1
+    zone = zones[0]
+    assert zone.geometry.intersects(_cell_box(60, 70, 50, 65))
+    assert zone.height_max_m == pytest.approx(0.7) and 120 <= zone.area_m2 <= 180
+
+    kept = lowveg_features.lowveg_from_points(band, canopy, TRANSFORM, roof_mask=roofs, roof_buffer_m=0.0)
+    assert len(kept) == 2  # without the buffer the clutter beside the roof is proposed
+    with pytest.raises(ValueError, match="min_points"):
+        lowveg_features.lowveg_from_points(band, canopy, TRANSFORM, min_points=0)
+
+
+def test_command_from_lidar_finds_scrub_under_one_metre(tmp_path, capsys):
+    cloud = _cloud(tmp_path)
+    out = cmd_lowveg_features(tmp_path / "lowveg.geojson", lidar_paths=[cloud], bbox_3006=BBOX, course_id="c1")
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert len(doc["features"]) == 1
+    props = doc["features"][0]["properties"]
+    assert set(props) == EXPECTED_PROPERTY_NAMES
+    assert props["source_ref"] == "cloud.laz" and props["heightMaxM"] == pytest.approx(0.7, abs=0.05)
+    assert shape(doc["features"][0]["geometry"]).intersects(_cell_box(60, 70, 50, 65))
+    report = capsys.readouterr().out
+    assert "Counting returns 0.5..3 m above ground" in report and "roof buffer 10 m" in report
+
+
+def test_cli_from_lidar_passes_min_points_and_roof_buffer(tmp_path):
+    cloud = _cloud(tmp_path)
+    out = tmp_path / "lowveg.geojson"
+    bbox = ",".join(str(v) for v in BBOX)
+    main(["lowveg-features", "--lidar", str(cloud), "--bbox", bbox, "--out", str(out), "--roof-buffer", "0"])
+    assert len(json.loads(out.read_text(encoding="utf-8"))["features"]) == 2
+    main(["lowveg-features", "--lidar", str(cloud), "--bbox", bbox, "--out", str(out), "--min-points", "100"])
+    assert json.loads(out.read_text(encoding="utf-8"))["features"] == []
+
+
+def test_canopy_tif_run_says_it_misses_scrub_under_one_metre(tmp_path, capsys):
+    tif = _write_tif(tmp_path / "canopy.tif", _grid())
+    cmd_lowveg_features(tmp_path / "lowveg.geojson", canopy_tif=tif)
+    assert "run with --lidar to count points instead" in capsys.readouterr().out

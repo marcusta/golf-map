@@ -128,6 +128,16 @@ def load_typed_polygons(path: Path) -> list[TypedPolygon]:
     looking coordinates) pass through; WGS84 lon/lat (e.g. the server's
     features.geojson export) is detected by coordinate range and reprojected.
     """
+    out: list[TypedPolygon] = []
+    for props, geom in load_polygon_features(path):
+        feature_type = props.get("type")
+        out.append((feature_type if isinstance(feature_type, str) else None, geom))
+    return out
+
+
+def load_polygon_features(path: Path) -> list[tuple[dict, BaseGeometry]]:
+    """(properties, EPSG:3006 geometry) per Polygon/MultiPolygon feature,
+    with the reprojection rules of load_typed_polygons."""
     try:
         doc = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -145,7 +155,7 @@ def load_typed_polygons(path: Path) -> list[TypedPolygon]:
         and bool(features)
     )
 
-    out: list[TypedPolygon] = []
+    out: list[tuple[dict, BaseGeometry]] = []
     for feature in features:
         geometry = feature["geometry"]
         if needs_reproject:
@@ -158,9 +168,7 @@ def load_typed_polygons(path: Path) -> list[TypedPolygon]:
             geom = geom.buffer(0)
         if geom.is_empty:
             continue
-        props = feature.get("properties") or {}
-        feature_type = props.get("type")
-        out.append((feature_type if isinstance(feature_type, str) else None, geom))
+        out.append((feature.get("properties") or {}, geom))
     return out
 
 

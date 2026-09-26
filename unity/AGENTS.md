@@ -8,11 +8,32 @@ here is part of the golf-map build; there is no Unity project in this repo. Feat
 [README.md](README.md) (terrain importer, spelunker, tree planter, building planter), [MANUAL-PLANTING.md](MANUAL-PLANTING.md)
 (biome planting walkthrough), [CATALOGUE.md](CATALOGUE.md) (prefab catalogue).
 
+Bunkers: `GolfMap > Bunker Materials` (`GolfMapBunkerMaterials.cs` + `GolfMapBunkerChannels.cs`) checks
+vertex paint and builds copies of OPCD's `ChannelMaterials` from `bunker-channels.json` (owned by
+[blender/](../blender/AGENTS.md); copy into `Assets/GolfMap/<Course>/` after an edit), with restore.
+
+Vertex paint: `GolfMap > Vertex Paint` (`GolfMapVertexPaint.cs`, bridge `golfmap.paint.apply|restore|survey|probe`)
+generates paint from `<course>/paint.json` into mesh copies under `<course>/PaintedMeshes/` and rebuilds the Stix
+cache (the "bake"). Stix grass on rough reads only the **red** channel (blade chance); never paint the FBX meshes
+in place. See [README.md](README.md#vertex-paint).
+
+Course meshes after a Blender export: `golfmap.meshes.sync` (GolfMap > Meshes > Sync from FBX folder,
+`GolfMapCourseMeshes.cs`) adds FBX without a scene object under the course's mesh parent (collider + OPCD's
+`GameObject/Set Default Materials`, run on the selection), reports/prunes objects whose FBX is gone, and re-runs
+vertex paint where a painted copy is older than its FBX. FBX overwritten in place update their objects by
+themselves: never delete and re-drag. Blender side: `blender/tools/fbx_sync.py` exports only changed meshes.
+
+Terrains after the first import: `golfmap.terrain.update` (GolfMap > Terrain > Update heights from export) puts a new heightmap export onto the existing terrains in place (backup, VSP refresh, outer sink kept); golf-map's "Heightmap → Unity" calls it.
+
+Creeks: `GolfMap > Creeks` (`GolfMapCreeks.cs`, bridge `golfmap.creeks.import`) builds one R.A.M. `RamSpline` per creek
+from `<prefix>-inner-creeks.json` at the water surface golf-map digs the bed below. R.A.M. types are resolved by name.
+See [README.md](README.md#creeks-ram).
+
 Buildings (`GolfMapBuildingPlanter.cs`, `building-matching.mjs` + `match-building-palette.mjs`) follow the
 tree assignment pattern — offline matcher writes a report keyed by stable id, overrides persist, the Unity
 window validates then applies — but plant plain GameObjects under the terrain, never VSP (colliders). The
 flat pad under each building is a pipeline terrain edit baked into the heightmap, not a Unity step; the
-planter's corner probe warns when it is missing. Matcher tests: `bun test unity/building-matching.test.mjs`
+planter's corner probe warns when it is missing (expected for outer buildings: pads are inner terrain only). Matcher tests: `bun test unity/building-matching.test.mjs`
 (node:test files run under `bun test`; `node` is not on this machine's PATH).
 
 ## Where the scripts run
@@ -22,7 +43,7 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
 | | |
 |---|---|
 | Current Unity project | `D:\gspro_courses\vreta_v4_2025_12_02` (Vreta, GSPro base project v4 2025-12-02) |
-| Script copy | `D:\gspro_courses\vreta_v4_2025_12_02\Assets\Editor\GolfMap\` mirrors `unity/Editor/GolfMap/`; `Assets\GolfMap\Runtime\` mirrors `unity/Runtime/GolfMap/` (the `GolfMapTrees` component must live outside an Editor folder to be saved in the scene) |
+| Script copy | [`install.json`](install.json) maps repo folders to project folders (any course project): `Assets\Editor\GolfMapBridge\` mirrors `unity/Editor/GolfMapBridge/`, `Assets\Editor\GolfMap\` mirrors `unity/Editor/GolfMap/`; `Assets\GolfMap\Runtime\` mirrors `unity/Runtime/GolfMap/` (the `GolfMapTrees` component must live outside an Editor folder to be saved in the scene) |
 | Unity version | 2018.2.8f1 — C# 6 only, `TerrainLayer` absent (SplatPrototype), Vegetation Studio Pro installed |
 | Export folder (planter input) | `D:\gspro_courses\vreta-opcd\` — `vreta-{inner,outer}-trees.json`, `vreta-{inner,outer}-zones.json` + `-zones-<n>.png`, DEM `.raw`/`.tif.json`, orthos |
 | Course assets in Unity | `Assets/GolfMap/Vreta/` — `Course.asset` (`GolfMapCourse`: scene, export folder/prefix, terrain names; its folder *is* the course folder), `palette.json`, `Vreta_trees.json`, `ImportedTreeStorage*.asset`, `TreeCatalog*.asset`, `Zones/` (imported zone masks) |
@@ -30,24 +51,73 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
 
 ## Workflow (every session)
 
-1. **Before changing anything, diff both copies.** Another agent or the user may have edited
-   the Unity copy directly. Compare every file in `unity/Editor/GolfMap/` against the Unity
-   `Assets/Editor/GolfMap/` copy, and `unity/Runtime/GolfMap/` against `Assets/GolfMap/Runtime/`
-   (`cmp` per file). If the Unity side is newer, bring it into the
-   repo first. Files that exist only in Unity get copied into the repo.
+The `unity` MCP server (`unity/mcp/`, [README](mcp/README.md)) drives the open editor through the
+editor bridge (`Editor/GolfMapBridge/`, installed with the other scripts). Use it instead of copying
+files by hand and asking the user for console output. Everything below works for any course project;
+pass `project` when more than one editor is open.
+
+1. **Before changing anything, `unity_sync` mode `check`.** Another agent or the user may have edited
+   the Unity copy directly. `unity-changed` / `unity-only` files: `pull` them into the repo first.
+   A `conflict` (both sides differ from the last sync, or never synced): diff the two files, merge in
+   the repo, then `push` with `force`. Line-ending-only differences are not reported.
 2. **Edit in the repo**, never only in the Unity project.
-3. **After each edit that should be tested, copy the changed file(s) into the Unity copy**
-   (plain file copy; Unity recompiles on focus). Leave the `.meta` files in the Unity project alone
-   and do not add `.meta` files to the repo.
-4. Compile check without opening Unity: `unity/check-planter.ps1` builds the planter files (planter, VSP
-   partial, biome, edits, editor, verification, Inspector, runtime component, building planter, zone importer) against the installed
-   Unity/VSP assemblies with the C# 6 compiler.
-   Add new planter partials to its file list. It writes into `tree-export/` (gitignored, create it if missing).
-5. The user tests in the Unity editor and reports console output / screenshots. Read the stack
-   trace's line numbers against the repo file (the copies are identical).
+3. **`unity_sync` mode `push`** copies the edits in, recompiles without focusing Unity and returns
+   compile errors plus new console errors. `.meta` files stay Unity's; never add them to the repo.
+4. Run and verify yourself: `unity_menu` (returns the console lines it caused), `unity_command`
+   (`golfmap.course`, and whatever planter steps get registered), `unity_console since=<seq>`,
+   `unity_scene`, `unity_screenshot`. Ask the user only for what needs a human eye or a modal dialog.
+5. Without an open editor (or before the bridge is in a project): `unity/check-planter.ps1
+   [-UnityProject <path>]` compiles the scripts against that project's Unity/VSP assemblies with the
+   C# 6 compiler (Unity version read from `ProjectVersion.txt`). Add new files to its list. It writes
+   into `tree-export/` (gitignored, create it if missing).
+6. Stack trace line numbers match the repo file once synced.
+
+Course exports (the app's GSPro Export panel) run from the command line too, through the same
+service: `bun run gspro:export -- status <course>` shows the export folder, ortho vintages and
+exported files; `bun run gspro:export -- <course> dem zones trees:outer ...` exports (no terrain =
+both, `dem` first on a new course). Then import in Unity with bridge commands, e.g.
+`golfmap.zones.check` / `golfmap.zones.import` with `terrain: inner|outer` (the window's Load and
+check / Import without the window; `dryRun: true` on import returns the plan without writing). Check
+before import: it reports missing packages and items and the groups/rules the import would change.
+
+Lower vegetation (tall rough grass etc.) is a **grass palette**: `<course>/grass-palette.json`
+(`golfmap-grass-v1`, snapshot in `docs/gspro/<course>/`), built into VSP by `GolfMapGrass.cs`
+(`golfmap.grass.apply`): greyscale copies of the source textures (RUSTIC Grass PSDs) under
+`<course>/Grass/Textures/`, texture grass items on the stock `AwesomeTechnologies/Grass/Grass` shader in a
+`GolfMap lower vegetation` package (Default biome) on the terrain's system, coloured by the items'
+dry/healthy tints. An item with a `prefab` instead of a `source` texture is a mesh bush (VSP Plant,
+own materials, shader checked against GSPro's VSP): the `shrub` palette's willow thicket. Loop: apply -> `bun run zones -- add <course> <zoneType> --from-feature <id>` and
+`bun run zones -- bind <course> <zoneType> --palette <grass-palette.json>` -> `bun run gspro:export --
+<course> zones:inner` -> `golfmap.zones.import` (terrain, package) -> apply again (items spawn only once a
+zone mask includes them: an include rule on a group that exists in the package). Tune colours against the ground, not by eye: compare a 30 m top-down shot with
+the palette hidden (`golfmap.grass.apply spawn=false`) and shown, and scale the tints by the ground/grass
+ratio; the green items carry the match, straw/seed-head items stay sparse, muted accents. A palette's
+`distanceFalloff` thins the grass towards the draw distance instead of a pop line. **Where** tall grass
+grows is generated for the whole course by rule - see the `grass-planting` skill
+(`.claude/skills/grass-planting/SKILL.md`): `golfmap.surfaces.export` (surface map from the built
+meshes: OPCD's `Outer_Deep_Sat` fill is not a DB feature) -> `bun run grass:zones -- <course>` ->
+`golfmap.zones.import` -> `golfmap.grass.apply`.
+
+New bridge commands go in `Editor/GolfMap/GolfMapBridgeCommands.cs` (or next to the tool they wrap)
+as `[BridgeCommand]` static methods; the bridge and MCP server pick them up with no change.
+The bridge itself stays course-agnostic: no `GolfMap.Editor` references in `Editor/GolfMapBridge/`.
 
 ## Gotchas learned the hard way
 
+- **VSP draws nothing after a refresh until its Update runs.** It is `[ExecuteInEditMode]` and only
+  re-culls/spawns in Update/LateUpdate; a focused editor ticks it (a user fixes a blank VSP with a small
+  pan), an unfocused 2018 editor never does - `QueuePlayerLoopUpdate` and dirtying objects do not help.
+  The bridge's `screenshot` (`warmup`) and `editor.tick` call Update/LateUpdate on every active
+  `[ExecuteInEditMode]` behaviour themselves and nudge the view. After an apply/import the first frames
+  are slow (VSP spawning). `golfmap.vsp` shows each system's cameras (no culling group = not updated).
+- **VSP plants on the terrain, the player sees the meshes.** The inner Terrain component is disabled in
+  OPCD scenes (collider + VSP ground only); where a course mesh bridges a dip, grass is buried under it.
+  `golfmap.terrain.conform` lifts the terrain to 1 cm under the meshes (backup + `golfmap.terrain.restore`);
+  re-run after a mesh rebuild or a terrain re-import. VSP caches the heightmap in its `UnityTerrain`
+  component: after any heightmap change call `UnityTerrain.RefreshTerrainData()`, a system refresh is not
+  enough.
+- **Screenshot ground heights:** `eye=<m>` places the camera over the visible surface (collider raycast:
+  course meshes sit ~2 m above `Terrain.SampleHeight` on Vreta), not the terrain heightmap.
 - **Never read or write `palette.json` with `JsonUtility`.** It drops keys it has no field for (`zones`,
   `catalogue`, `originalPath`) and cannot hold the species map. Go through `GolfMapPalette.Load/Save`;
   the node scripts and the Palette tab edit the same file, and saves must stay minimal diffs.
@@ -124,12 +194,20 @@ The **repo is the source of truth**. The scripts are used from a copy inside the
   Tint by measured texture (`prepare-foliage-luma.py`, `prepare-foliage-highlight-rolloff.py`) rather
   than guessed values.
 - **Zone masks are sampled by VSP on the CPU.** `GolfMap > Vegetation Zones` (`GolfMapZoneImporter*.cs`,
-  `GolfMapZones.cs`) imports the `unity-zones-v1` PNGs as readable RGBA32, uncompressed, no mipmaps,
+  `GolfMapZones.cs`) imports the `unity-zones-v2` PNGs as readable RGBA32, uncompressed, no mipmaps,
   clamp, and checks the result is `TextureFormat.RGBA32` at the export resolution: a platform override
   or a compressed format makes `GetRawTextureData` return garbage, not an error. The channel selector
   follows VSP's inspector (0 R, 1 G, 2 B, 3 A); `TextureMask.cs` re-maps it for the RGBA32 byte order,
-  so never "correct" it. Mask groups are found by name (`golfmap-zone:<key>`) and item rules by
-  `TextureMaskGroupID`, which is how re-import updates in place; the density rule only has a
-  multiplier, so a binding's `minDensity` is recorded but cannot raise the floor. The zone tool never
-  creates a VSP system: it lists the systems whose bounds match the terrain and refuses otherwise.
-  Report: `GolfMapSpelunk/<Course>_zone_import.txt`.
+  so never "correct" it.
+- **One mask channel per VSP item, never per zone type.** VSP multiplies density rules, so an item with
+  two density rules only grows where both masks are non-zero; zone type variants share items. The
+  pipeline bakes each item's density into its own channel, and every exported item gets exactly one
+  density rule (multiplier 1) and one include rule against its group `golfmap-zone:item:<item>` (found
+  by name; rules by `TextureMaskGroupID`, so re-import updates in place). Every other `golfmap-zone:*`
+  group and every rule pointing at one is deleted; hand-authored rules stay. Never delete a group with
+  VSP's `DeleteTextureMaskGroup`: it turns `UseTextureMaskIncludeRules` off when the include list
+  empties, and an item without the include filter spawns everywhere. With the filter on and no live
+  include rule it spawns nowhere (`FilterIncludeMaskJob`), which is what unbound items rely on.
+  `golfmap.zones.import dryRun=true` (or the window's Preview import) shows the plan without writing.
+  The zone tool never creates a VSP system: it lists the systems whose bounds match the terrain and
+  refuses otherwise. Report: `GolfMapSpelunk/<Course>_zone_import.txt`.

@@ -2,11 +2,20 @@ import { Component, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, primaryBtn, field, panelTitle } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
-import { FeaturesService } from './features.service';
+import { FeaturesService, fillScopeOptions, scopeFromKey, scopeKey, scopeOf } from './features.service';
+import { isRoughsLayerType } from '../../../shared/render/stack-key';
 import { DrawToolService, OFFSET_PRESETS } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
 import { ZoneTypesService, type ZoneAttributes } from '../zones/zone-types.service';
 import { generatedHeightLabel, isGeneratedFeature, provenanceBadgeLabel } from './generated-features';
+import type { CourseFeature } from '../../../shared/api/course-features.gen';
+import {
+    PATH_SURFACE_ATTRIBUTE, PATH_SURFACE_LABELS, PATH_SURFACES, pathSurfaceOf, type PathSurface,
+} from '../../../shared/features/path-surface';
+import { KERB_FILLETS_ATTRIBUTE, kerbFilletsOn } from '../../../shared/features/road-junctions';
+
+/** The surface picker's value for a selection whose paths disagree. */
+const MIXED_SURFACE = '__mixed';
 
 const tpl = template(`
     <div class="sel-panel" bind="root" data-testid="selection-panel">
@@ -47,6 +56,9 @@ const tpl = template(`
             <label class="zone-field">Zone type
                 <select bind="zoneType" data-testid="zone-type-select"></select>
             </label>
+            <label bind="zoneVariantField" class="zone-field zone-variant-field">Variant
+                <select bind="zoneVariant" data-testid="zone-variant-select"></select>
+            </label>
             <label class="zone-field">Weight
                 <input bind="zoneWeight" type="number" min="0" max="1" step="0.05" data-testid="zone-weight" />
             </label>
@@ -57,6 +69,19 @@ const tpl = template(`
                 <input bind="zoneNoise" type="number" min="0" step="0.25" data-testid="zone-noise" />
             </label>
             <button bind="zoneTypesBtn" type="button" class="op-btn show">Edit zone types…</button>
+        </div>
+        <div bind="pathSection" class="zone-section" data-testid="path-surface-section">
+            <h4 bind="pathTitle" class="section-title"></h4>
+            <label class="zone-field">Surface
+                <select bind="pathSurface" data-testid="path-surface-select"></select>
+            </label>
+            <label bind="pathWidthField" class="zone-field path-width-field">Width (m)
+                <input bind="pathWidth" type="number" min="0.2" max="60" step="0.5" data-testid="path-width" />
+            </label>
+            <label bind="pathKerbsField" class="path-kerbs-field" title="Round the kerb corners where this road meets another (both roads need it on)">
+                <input bind="pathKerbs" type="checkbox" data-testid="path-kerbs" />
+                Round kerbs at junctions
+            </label>
         </div>
         <button bind="surroundBtn" type="button" class="op-btn surround-btn"></button>
         <button bind="duplicateBtn" type="button" class="op-btn">Duplicate (⌘D)</button>
@@ -221,6 +246,18 @@ export class SelectionPanelComponent extends Component {
             & .zone-field {
                 ${field()}
             }
+            & .zone-variant-field, & .path-width-field {
+                display: none;
+                &.show { display: flex; }
+            }
+            & .path-kerbs-field {
+                display: none;
+                align-items: center;
+                gap: ${s('xs')};
+                font-size: 0.75rem;
+                color: ${t('color-text-secondary')};
+                &.show { display: flex; }
+            }
 
             & .delete-btn {
                 padding: ${s('xs')} ${s('sm')};
@@ -329,6 +366,28 @@ export class SelectionPanelComponent extends Component {
             zoneSection: {
                 className: () => this.zoneSelection() ? 'zone-section show' : 'zone-section',
             },
+            // Path surface (shared/features/path-surface.ts): what the road or
+            // cart path is made of — every selected path at once, so a batch
+            // of imported gravel lanes is set in one go.
+            pathSection: {
+                className: () => this.pathSelection().length > 0 ? 'zone-section show' : 'zone-section',
+            },
+            // A road drawn or imported as a centerline: its width is one
+            // number (the line stays, the corridor is re-derived round it).
+            pathWidthField: {
+                className: () => this.centerlineWidth() !== null ? 'zone-field path-width-field show' : 'zone-field path-width-field',
+            },
+            pathWidth: {
+                value: () => String(this.centerlineWidth() ?? ''),
+                onchange: (e: Event) => {
+                    const width = Number((e.target as HTMLInputElement).value);
+                    if (Number.isFinite(width) && width > 0) this.tool.setSelectedCenterlineWidth(width);
+                },
+            },
+            pathTitle: () => {
+                const n = this.pathSelection().length;
+                return n > 1 ? `Path surface (${n} paths)` : 'Path surface';
+            },
             zoneWeight: {
                 value: () => String(this.zoneAttributes().weight),
                 onchange: (e: Event) => this.saveZone({ weight: numberOf(e, 1) }),
@@ -404,12 +463,48 @@ export class SelectionPanelComponent extends Component {
             }
         }
 
+        // Surface picker: fixed options; Mixed only while the selected paths disagree.
+        const surfaceSelect = this.ref(frag, 'pathSurface') as HTMLSelectElement;
+        surfaceSelect.addEventListener('change', () => {
+            if (surfaceSelect.value !== MIXED_SURFACE) this.savePathSurface(surfaceSelect.value as PathSurface | '');
+        });
+        this.track(effect(() => {
+            const current = this.pathSurfaceValue();
+            surfaceSelect.textContent = '';
+            const add = (value: string, label: string) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                surfaceSelect.appendChild(option);
+            };
+            if (current === MIXED_SURFACE) add(MIXED_SURFACE, 'Mixed');
+            add('', 'Unknown');
+            for (const surface of PATH_SURFACES) add(surface, PATH_SURFACE_LABELS[surface]);
+            surfaceSelect.value = current;
+        }));
+
+        // Kerb rounding: on/off for every selected centerline road; mixed
+        // selections show the box indeterminate until clicked.
+        const kerbs = this.ref(frag, 'pathKerbs') as HTMLInputElement;
+        kerbs.addEventListener('change', () => this.savePathKerbs(kerbs.checked));
+        this.track(effect(() => {
+            const roads = this.centerlineSelection();
+            const on = roads.filter(f => kerbFilletsOn(f.attributes)).length;
+            kerbs.checked = roads.length > 0 && on === roads.length;
+            kerbs.indeterminate = on > 0 && on < roads.length;
+        }));
+        const kerbsField = this.ref(frag, 'pathKerbsField');
+        this.track(effect(() => {
+            kerbsField.className = this.centerlineSelection().length > 0 ? 'path-kerbs-field show' : 'path-kerbs-field';
+        }));
+
         // Zone-type picker: options from the course's table, value from the
         // selected zone. A zone naming a type the table no longer has keeps
         // an explicit option of its own, so saving weight never silently
         // retypes it.
         const zoneSelect = this.ref(frag, 'zoneType') as HTMLSelectElement;
-        zoneSelect.addEventListener('change', () => this.saveZone({ zoneType: zoneSelect.value }));
+        // A variant key belongs to its type: a new type starts on its Default.
+        zoneSelect.addEventListener('change', () => this.saveZone({ zoneType: zoneSelect.value, zoneVariant: '' }));
         this.track(effect(() => {
             const types = this.zoneTypes.items.get();
             const current = this.zoneAttributes().zoneType;
@@ -430,10 +525,39 @@ export class SelectionPanelComponent extends Component {
             zoneSelect.value = current;
         }));
 
+        // Variant picker: "Default" plus the selected zone's type's variants;
+        // hidden while that type has none. A zone naming a variant its type no
+        // longer has keeps an explicit option (the export falls back to
+        // Default for it), mirroring the zone-type picker.
+        const variantField = this.ref(frag, 'zoneVariantField');
+        const variantSelect = this.ref(frag, 'zoneVariant') as HTMLSelectElement;
+        variantSelect.addEventListener('change', () => this.saveZone({ zoneVariant: variantSelect.value }));
+        this.track(effect(() => {
+            const { zoneType, zoneVariant } = this.zoneAttributes();
+            const variants = this.zoneTypes.variantsOf(zoneType);
+            const orphan = zoneVariant !== '' && !variants.some(v => v.key === zoneVariant);
+            variantField.className = variants.length > 0 || orphan
+                ? 'zone-field zone-variant-field show'
+                : 'zone-field zone-variant-field';
+            variantSelect.textContent = '';
+            const options: [string, string][] = [
+                ['', 'Default'],
+                ...variants.map(v => [v.key, v.name] as [string, string]),
+                ...(orphan ? [[zoneVariant, `${zoneVariant} (no such variant)`] as [string, string]] : []),
+            ];
+            for (const [value, label] of options) {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                variantSelect.appendChild(option);
+            }
+            variantSelect.value = zoneVariant;
+        }));
+
         this.moveSelect = this.ref(frag, 'moveSelect') as HTMLSelectElement;
         this.moveSelect.addEventListener('change', () => {
             if (this.moveSelect.value === '__mixed') return;
-            this.tool.assignSelectionHole(this.moveSelect.value || null);
+            this.tool.assignSelectionScope(scopeFromKey(this.moveSelect.value));
         });
 
         // Move-target options + current selection scope. This is explicit
@@ -441,25 +565,19 @@ export class SelectionPanelComponent extends Component {
         this.track(effect(() => {
             const holes = this.courseDetail.holes.get();
             const selected = this.features.selectedFeatures.get();
-            const selectedHoleIds = new Set(selected.map(f => f.holeId ?? ''));
-            const value = selectedHoleIds.size === 1 ? [...selectedHoleIds][0]! : '__mixed';
+            const selectedScopes = new Set(selected.map(f => scopeKey(scopeOf(f))));
+            const value = selectedScopes.size === 1 ? [...selectedScopes][0]! : '__mixed';
             this.moveSelect.textContent = '';
-            if (selectedHoleIds.size > 1) {
+            if (selectedScopes.size > 1) {
                 const mixed = document.createElement('option');
                 mixed.value = '__mixed';
                 mixed.textContent = 'Mixed holes';
                 this.moveSelect.appendChild(mixed);
             }
-            const courseLevel = document.createElement('option');
-            courseLevel.value = '';
-            courseLevel.textContent = 'Course level';
-            this.moveSelect.appendChild(courseLevel);
-            for (const hole of holes) {
-                const option = document.createElement('option');
-                option.value = hole.id;
-                option.textContent = `Hole ${hole.number} (par ${hole.par})`;
-                this.moveSelect.appendChild(option);
-            }
+            // The Roughs layer takes rough types only (D28).
+            fillScopeOptions(this.moveSelect, holes, {
+                roughsDisabled: !selected.every(f => isRoughsLayerType(f.type)),
+            });
             this.moveSelect.value = value;
         }));
 
@@ -492,20 +610,71 @@ export class SelectionPanelComponent extends Component {
         return f && f.type === 'vegetation_zone' ? f : null;
     }
 
-    /** The selected zone's four attributes, with the defaults filled in. */
+    /** The selected zone's attributes (type, variant, weight, feather, noise), with the defaults filled in. */
     private zoneAttributes(): ZoneAttributes {
         return this.zoneTypes.attributesOf(this.zoneSelection()?.attributes);
     }
 
     /**
      * Persist one changed zone field. `attributes` replaces the whole object
-     * server-side, so all four keys go every time — the other three come from
+     * server-side, so every zone key goes every time — the others come from
      * `zoneAttributes()`, which is the values on screen.
      */
     private saveZone(patch: Partial<ZoneAttributes>): void {
         const zone = this.zoneSelection();
         if (!zone) return;
         void this.features.update(zone.id, { attributes: { ...this.zoneAttributes(), ...patch } });
+    }
+
+    /** The editable `path` features in the selection (others in a mixed selection are left alone). */
+    private pathSelection(): CourseFeature[] {
+        return this.features.editableSelectedFeatures.get().filter(f => f.type === 'path');
+    }
+
+    /** The selected paths drawn/imported as centerlines (the ones kerb rounding applies to). */
+    private centerlineSelection(): CourseFeature[] {
+        return this.pathSelection().filter(f => f.geometry.centerline);
+    }
+
+    /**
+     * Kerb rounding on (the default: the attribute is dropped) or off
+     * (`kerbFillets: false`) for every selected centerline road.
+     */
+    private savePathKerbs(on: boolean): void {
+        for (const f of this.centerlineSelection()) {
+            if (kerbFilletsOn(f.attributes) === on) continue;
+            const attributes: Record<string, number | string | boolean> = { ...(f.attributes ?? {}) };
+            if (on) delete attributes[KERB_FILLETS_ATTRIBUTE];
+            else attributes[KERB_FILLETS_ATTRIBUTE] = false;
+            void this.features.update(f.id, { attributes: Object.keys(attributes).length > 0 ? attributes : null });
+        }
+    }
+
+    /** The single selected feature's centerline width, or null when it is not a centerline feature. */
+    private centerlineWidth(): number | null {
+        return this.features.editableSelected.get()?.geometry.centerline?.widthM ?? null;
+    }
+
+    /** The picker's value: the paths' shared surface, '' when all unknown, MIXED_SURFACE when they differ. */
+    private pathSurfaceValue(): string {
+        const surfaces = new Set(this.pathSelection().map(f => pathSurfaceOf(f.attributes) ?? ''));
+        if (surfaces.size > 1) return MIXED_SURFACE;
+        return surfaces.values().next().value ?? '';
+    }
+
+    /**
+     * Set (or clear, with '') the surface on every selected path. `attributes`
+     * replaces the whole object server-side, so each path's other keys go
+     * along unchanged; a path already on that surface is not written.
+     */
+    private savePathSurface(surface: PathSurface | ''): void {
+        for (const f of this.pathSelection()) {
+            if ((pathSurfaceOf(f.attributes) ?? '') === surface) continue;
+            const attributes: Record<string, number | string | boolean> = { ...(f.attributes ?? {}) };
+            if (surface) attributes[PATH_SURFACE_ATTRIBUTE] = surface;
+            else delete attributes[PATH_SURFACE_ATTRIBUTE];
+            void this.features.update(f.id, { attributes: Object.keys(attributes).length > 0 ? attributes : null });
+        }
     }
 
     /** False while any selected row is generated: hides move/duplicate. */

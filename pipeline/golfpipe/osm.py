@@ -43,7 +43,24 @@ Reproject = Callable[[list[float], list[float]], tuple[Iterable[float], Iterable
 
 
 class OsmError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, transient: bool = False):
+        super().__init__(message)
+        # Worth retrying: the public instance was busy (429/502/503/504) or
+        # slow (timeout), not the query being wrong.
+        self.transient = transient
+
+
+# HTTP statuses a busy Overpass instance answers with. Under load
+# overpass-api.de turns requests away at random — tiny and large queries
+# alike (measured 2026-09-24: 2 of 6 identical requests got through, each
+# answer or refusal in 5-12 s) — so a retry of the same request is what
+# helps, not splitting the area into more requests.
+TRANSIENT_HTTP = frozenset({429, 502, 503, 504})
+# Stop starting new attempts after this long. At a 1-in-3 success rate that
+# is ~6 attempts, ~90 % to get through; the app's Fetch buttons wait for it
+# (dev:server REQUEST_TIMEOUT is 300 s, the VPS 900 s).
+RETRY_BUDGET_S = 60.0
+RETRY_PAUSE_S = 2.0
 
 
 _METRES_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(?:m|meter|metres|meters)?\s*$", re.IGNORECASE)
@@ -122,8 +139,41 @@ def fetch_overpass(query: str, *, url: str = OVERPASS_URL, timeout: int = 180) -
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise OsmError(f"Overpass request to {url} failed: {exc}", transient=exc.code in TRANSIENT_HTTP) from exc
     except urllib.error.URLError as exc:
-        raise OsmError(f"Overpass request to {url} failed: {exc}") from exc
+        raise OsmError(f"Overpass request to {url} failed: {exc}", transient=isinstance(exc.reason, TimeoutError)) from exc
+    except TimeoutError as exc:
+        raise OsmError(f"Overpass request to {url} timed out after {timeout} s", transient=True) from exc
+
+
+def with_retries(fetch, *, budget_s: float = RETRY_BUDGET_S, pause_s: float = RETRY_PAUSE_S, sleep=None, clock=None):
+    """Wraps an Overpass fetch (fetch_overpass or a test stub) so a transient
+    OsmError is retried after `pause_s` until `budget_s` has passed since the
+    first attempt; the last error is raised with the attempt count. Other
+    errors pass straight through."""
+    import time
+
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+
+    def fetch_retrying(query: str, *, url: str = OVERPASS_URL) -> dict:
+        start = clock()
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return fetch(query, url=url)
+            except OsmError as exc:
+                if not exc.transient or clock() - start + pause_s >= budget_s:
+                    if attempt == 1:
+                        raise
+                    raise OsmError(f"{exc} ({attempt} attempts over {clock() - start:.0f} s — Overpass is busy, try again in a while)",
+                                   transient=exc.transient) from exc
+                print(f"Overpass busy ({exc}), retrying ...")
+                sleep(pause_s)
+
+    return fetch_retrying
 
 
 # ─── ring assembly ───────────────────────────────────────────────────────────

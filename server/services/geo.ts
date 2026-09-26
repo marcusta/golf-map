@@ -26,6 +26,15 @@ export const PathRingSchema = Type.Object({
     points: Type.Array(AnchorPointSchema),
 });
 
+export const CenterlineSchema = Type.Object({
+    points: Type.Array(Type.Object({
+        x: Type.Number(),
+        y: Type.Number(),
+        corner: Type.Optional(Type.Boolean()),
+    })),
+    widthM: Type.Number(),
+});
+
 /** Curve interpretation of a geometry's rings. Absent = 'bezier' (legacy). */
 export const CurveTypeSchema = Type.Union([Type.Literal('bezier'), Type.Literal('bspline')]);
 
@@ -39,6 +48,12 @@ export const FeatureGeometrySchema = Type.Object({
      */
     curveType: Type.Optional(CurveTypeSchema),
     rings: Type.Array(PathRingSchema),
+    /**
+     * A road or path laid out as the line down its middle plus a width
+     * (shared/features/centerline.ts). When present it IS the shape: the
+     * service re-derives `rings` (the corridor) from it on every write.
+     */
+    centerline: Type.Optional(CenterlineSchema),
 });
 
 export type Point = Static<typeof PointSchema>;

@@ -35,6 +35,12 @@
 //                    `sources/<siteId>/outer-trees/` (stems on the inner
 //                    square left out). Needs that terrain's heightmap
 //                    sidecar in the folder for the height range.
+//   - `exportGkd`    GreenKeeper's course file (`<scene>.GKD`) — tee boxes,
+//                    pins, green centres, aim points, water hazards and the
+//                    OOB ring as Unity positions on the inner terrain —
+//                    merged into the one in the course's GSPro folder
+//                    (`courses.gspro_course_dir`), not the export folder.
+//                    Needs the inner heightmap sidecar for the terrain's zero.
 //
 // The exporters live in the pipeline (`pipeline/gspro.py svg|ortho|dem|hillshade`) and
 // the fetches are golfpipe's own `fetch-ortho`/`fetch-lidar`/`grid-dem`; this service only
@@ -59,18 +65,20 @@
 import type { Kysely } from 'kysely';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { stat, mkdir, mkdtemp, readdir, rm, link, copyFile, writeFile } from 'node:fs/promises';
+import { stat, mkdir, mkdtemp, readdir, readFile, rm, link, copyFile, writeFile } from 'node:fs/promises';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import type { Database } from '../db/schema';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
-import { TerrainEditsService } from './terrain-edits.service';
-import { terrainEditsGeojson } from './map-build.service';
+import { SCULPT_DIR, SCULPT_ORIGINS, TerrainEditsService, type TerrainEditInput } from './terrain-edits.service';
+import { defaultUnityBridge, editorForExportDir, type UnityBridge } from './unity-bridge';
+import { terrainEditsGeojson, ROOFS_SOURCE } from './map-build.service';
 import { resolveCourseMapBbox } from './course-bbox';
 import {
     courseTerrainFor, innerSquareFrom3006, terrainArg, bboxArg,
     type CourseTerrain, type TerrainSquare,
 } from './terrain-square';
+import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 
 export type { CourseTerrain, TerrainSquare } from './terrain-square';
 
@@ -79,6 +87,13 @@ export type { CourseTerrain, TerrainSquare } from './terrain-square';
 export interface GsproExportSettings {
     /** Folder the next export writes into (always absolute). */
     dir: string;
+    /**
+     * The course's folder under GSPro's `Courses` (absolute), where the
+     * GreenKeeper `.GKD` export writes; null until set.
+     */
+    courseDir: string | null;
+    /** The `.GKD` the GreenKeeper export writes in `courseDir` (null without one). */
+    gkdFile: string | null;
     /** True when `dir` is the server default rather than a per-course choice. */
     isDefault: boolean;
     /** The server default, so the UI can offer "reset". */
@@ -93,7 +108,7 @@ export interface GsproExportResult {
 }
 
 /** What an export job produces. */
-export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'hillshade' | 'trees' | 'buildings';
+export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'creeks' | 'gkd';
 
 /** A request to start one export; which fields matter depends on `kind`. */
 export interface GsproExportRequest {
@@ -102,7 +117,7 @@ export interface GsproExportRequest {
     source?: string;
     /** `outer-ortho`: the Lantmäteriet collection to fetch, e.g. `orto-l2-2025`. */
     collection?: string;
-    /** `dem`, `hillshade`, `trees`, `buildings`: which terrain. */
+    /** `dem`, `hillshade`, `trees`, `buildings`, `zones`: which terrain. */
     terrain?: TerrainKind;
     /** `ortho`, `outer-ortho`: light multiplier for the terrain texture twin. */
     darken?: number;
@@ -110,10 +125,49 @@ export interface GsproExportRequest {
     tint?: boolean;
     /** With `tint`: the tint layer's opacity 0..1; omitted = the server default. */
     tintOpacity?: number;
+    /** `ortho`, `outer-ortho`: paint the course's `woodland_floor` zones as forest floor on every file (D-VZ10). */
+    forestFloor?: boolean;
+    /** With `forestFloor`: the palette floor colour `#rrggbb`; omitted = the pipeline default. */
+    floorColor?: string;
+    /** With `forestFloor`: how much of each zone's sampled `floorColor` goes in, 0..1; omitted = 0.5. */
+    floorMix?: number;
+    /** `ortho`, `outer-ortho`: fill the roofs and their shadows from the ground round them on every file. */
+    removeBuildings?: boolean;
+    /** `svg`: features to leave out (test variants for the Blender build); a road's kerb fillets go with it. */
+    excludeFeatureIds?: string[];
+    /** `svg`: variant name — the file becomes `<course>-<variant>.svg` so the full SVG is not overwritten. */
+    variant?: string;
 }
 
-/** How the `-meshes` variant is made; `opacity` omitted = `TERRAIN_TINT_OPACITY`. */
+/** What `export` (the SVG) takes besides the course. */
+export interface SvgExportOptions {
+    excludeFeatureIds?: string[];
+    variant?: string;
+}
+
+/** Where the building removal finds its roofs: either file may be missing, not both. */
+interface BuildingSources {
+    roofs: string | null;
+    survey: string | null;
+}
+
+/** The forest-floor fields of a request as `renderOrtho` takes them. */
+export interface ForestFloorOptions {
+    color?: string;
+    mix?: number;
+}
+
+/**
+ * How the `-meshes` variant is made; `opacity` omitted = `TERRAIN_TINT_OPACITY`.
+ * `darkenTint` puts the tint colour under the texture's light multiplier
+ * too, so the file is as dark as the `-terrain` twin with the colouring on
+ * top: the service sets it for the OUTER terrain. Without it the sun-lit
+ * tint lifts the file, which is what looks right on the course meshes.
+ */
 export interface TerrainTintOptions {
+    darkenTint?: boolean;
+    /** Per-channel linear-light multipliers on the finished file (`--tint-grade`); the service sets `OUTER_TERRAIN_GRADE` for the outer. */
+    grade?: readonly [number, number, number];
     opacity?: number;
 }
 
@@ -177,15 +231,44 @@ export const TERRAIN_TEXTURE_DARKEN_RANGE: readonly [number, number] = [0.05, 1]
 /**
  * Opacity of the surface tint on the `-meshes` variant — the texture the
  * course meshes (Blender-cut fairways, greens, …) get: the Photoshop
- * step OPCD builders do by hand (a dark-green layer at ~30 % over the turf,
- * masked by the SVG's shapes), done by the pipeline from the course's own
- * drawn features — fairway/green/tee/rough get the tint, bunkers, water and
- * paths cut it out, undrawn ground is untouched. The colour is the
- * pipeline's default (`--tint-color`); the panel only sets the opacity.
+ * step OPCD builders do by hand (a dark-green layer over the turf, masked
+ * by the SVG's shapes), done by the pipeline from the course's own drawn
+ * features — fairway/green/tee/rough and whatever isn't drawn get the
+ * tint, bunkers, water and paths cut it out. 0.5 is the GSPro
+ * colourists' "satellite at 50 % over green": very green as a file, a
+ * believable floor under Unity's lighting. The colour is the pipeline's
+ * default (`--tint-color`); the panel only sets the opacity.
  */
-export const TERRAIN_TINT_OPACITY = 0.3;
+export const TERRAIN_TINT_OPACITY = 0.5;
 /** Bounds for a caller-supplied tint opacity: 0 = no visible tint, 1 = flat colour. */
 export const TERRAIN_TINT_OPACITY_RANGE: readonly [number, number] = [0, 1];
+/**
+ * The `-meshes` variant loses photo detail finer than this (metres on the
+ * ground) everywhere but on bunkers and paths: sharp mower stripes and
+ * shadows are what make the floor read as a satellite photo in game, and
+ * the grass shaders supply the close-up detail there. 1 m is what a 2048 px
+ * texture of the 2 km square would hold.
+ */
+export const MESH_TEXTURE_SOFTEN_M = 1;
+/**
+ * Colour grade of the OUTER terrain's `-meshes` file (R, G, B multipliers in
+ * linear light). Unity's terrain shader renders a texture about twice as
+ * bright as the course-mesh shaders, and greyer, so the same colours on both
+ * sides of the inner/outer seam LOOK different in game; the outer file is
+ * pulled down and towards green by this so the terrain renders like the
+ * meshes next to it. Measured as rendered-mesh / rendered-terrain on the
+ * same field either side of the seam in Vreta screenshots: 0.57/0.67/0.37
+ * from above, ×1.07/1.22/0.96 for the green it still lacked (= 0.61/0.82/0.35,
+ * a match from above), then ×0.75/0.85/0.60 towards player height. The
+ * terrain shader ADDS a sky sheen at low angles that no texture can cancel
+ * — a full match there (0.34/0.59/0.13) is a dark hole from above — so the
+ * last step is half of that gap: a compromise weighted to the view you play
+ * from. When the two still differ in game: measure that ratio again and
+ * multiply (part of) it in here.
+ */
+export const OUTER_TERRAIN_GRADE: readonly [number, number, number] = [0.46, 0.70, 0.21];
+/** Edge of the `-meshes` file: once softened, nothing in it needs the full `ORTHO_EXPORT_SIZE`. */
+export const MESH_TEXTURE_SIZE = 4096;
 /**
  * DEM export cell size per terrain (metres). The inner keeps the build's
  * 0.5 m lidar grid; the outer is background scenery gridded at 1 m.
@@ -233,20 +316,24 @@ export function courseSlug(courseName: string): string {
     return slug || 'course';
 }
 
-/** `Vreta Kloster GK` -> `vreta-kloster-gk.svg`. */
-export function exportFileName(courseName: string): string {
-    return `${courseSlug(courseName)}.svg`;
+/** `Vreta Kloster GK` -> `vreta-kloster-gk.svg`; variant `No paths` -> `vreta-kloster-gk-no-paths.svg`. */
+export function exportFileName(courseName: string, variant?: string): string {
+    const suffix = variant?.trim() ? `-${courseSlug(variant)}` : '';
+    return `${courseSlug(courseName)}${suffix}.svg`;
 }
 
-/** `Vreta`, orto-l2-2025 (patched) -> `vreta-orto-l2-2025-patched-8192.jpg`. */
-export function orthoExportFileName(courseName: string, source: GsproOrthoSource): string {
+/**
+ * `Vreta`, orto-l2-2025 (patched) -> `vreta-orto-l2-2025-patched-8192.jpg`;
+ * `clean` (buildings removed / forest floor painted) adds `-clean` before the size.
+ */
+export function orthoExportFileName(courseName: string, source: GsproOrthoSource, clean = false): string {
     const patched = source.patched ? '-patched' : '';
-    return `${courseSlug(courseName)}-${source.collection}${patched}-${ORTHO_EXPORT_SIZE}.jpg`;
+    return `${courseSlug(courseName)}-${source.collection}${patched}${clean ? '-clean' : ''}-${ORTHO_EXPORT_SIZE}.jpg`;
 }
 
-/** `Vreta`, orto-l2-2025 -> `vreta-outer-orto-l2-2025-8192.jpg`. */
-export function outerOrthoExportFileName(courseName: string, collection: string): string {
-    return `${courseSlug(courseName)}-outer-${collection}-${ORTHO_EXPORT_SIZE}.jpg`;
+/** `Vreta`, orto-l2-2025 -> `vreta-outer-orto-l2-2025-8192.jpg` (`-clean-8192.jpg` when cleaned). */
+export function outerOrthoExportFileName(courseName: string, collection: string, clean = false): string {
+    return `${courseSlug(courseName)}-outer-${collection}${clean ? '-clean' : ''}-${ORTHO_EXPORT_SIZE}.jpg`;
 }
 
 /** `Vreta`, inner, 2010 -> `vreta-inner-dem-2010m.tif` (the `.raw` and `.tif.json` sit next to it). */
@@ -282,6 +369,21 @@ export const OUTER_DEM_EDITED_SOURCE = 'outer-dem-edited.tif';
 /** `vreta-orto-l2-2025-8192.jpg` -> `vreta-orto-l2-2025-8192-terrain.jpg`: the darkened terrain-texture twin. */
 export function terrainTextureFileName(orthoFileName: string): string {
     return orthoFileName.replace(/\.jpg$/i, '-terrain.jpg');
+}
+
+/** `Vreta`, outer -> `vreta-outer-zones.json` (unity-zones-v2; the masks sit next to it as `-<n>.png`). */
+export function zonesExportFileName(courseName: string, kind: TerrainKind): string {
+    return `${courseSlug(courseName)}-${kind}-zones.json`;
+}
+
+/** `Vreta` -> `vreta-inner-creeks.json` (unity-creeks-v1, R.A.M. splines; inner terrain only). */
+export function creeksExportFileName(courseName: string): string {
+    return `${courseSlug(courseName)}-inner-creeks.json`;
+}
+
+/** The request's forest-floor fields as `renderOrtho` options; undefined when not asked for. */
+function floorOptions(r: GsproExportRequest): ForestFloorOptions | undefined {
+    return r.forestFloor ? { color: r.floorColor, mix: r.floorMix } : undefined;
 }
 
 /** The request's tint fields as `renderOrtho` options; undefined when no tint was asked for. */
@@ -322,6 +424,8 @@ export interface GsproExportDeps {
     runner?: ExportRunner;
     /** The site's terrain edits, replayed onto the outer DEM at export; defaults to a db-backed instance. */
     terrainEdits?: TerrainEditsService;
+    /** The open Unity editors (`unity-terrain` puts the heightmap into the course's one); defaults to the real bridge. */
+    unityBridge?: UnityBridge;
 }
 
 export class GsproExportService {
@@ -329,6 +433,7 @@ export class GsproExportService {
     private readonly courses: CoursesService;
     private readonly assets: AssetsService;
     private readonly terrainEdits: TerrainEditsService;
+    private readonly unityBridge: UnityBridge;
     private readonly dataDir: string;
     private readonly pipelineDir: string;
     private readonly runner: ExportRunner;
@@ -342,10 +447,11 @@ export class GsproExportService {
         this.courses = deps.courses;
         this.assets = deps.assets;
         this.terrainEdits = deps.terrainEdits ?? new TerrainEditsService(deps.db);
+        this.unityBridge = deps.unityBridge ?? defaultUnityBridge();
         this.dataDir = deps.dataDir;
         this.pipelineDir = deps.pipelineDir
             ?? process.env.MAP_PIPELINE_DIR
-            ?? path.resolve(process.cwd(), '..', 'pipeline');
+            ?? DEFAULT_PIPELINE_DIR;
         const python = deps.python ?? process.env.MAP_PIPELINE_PYTHON ?? venvPython(this.pipelineDir);
         this.runner = deps.runner ?? defaultRunner(python);
     }
@@ -353,15 +459,39 @@ export class GsproExportService {
     /** Where this course exports to, and what the default is. */
     async settings(courseId: string): Promise<GsproExportSettings> {
         const row = await this.db
-            .selectFrom('courses').select(['gspro_export_dir'])
+            .selectFrom('courses').select(['gspro_export_dir', 'gspro_course_dir'])
             .where('id', '=', courseId).executeTakeFirst();
         if (!row) throw new NotFoundError(`Course ${courseId} not found`);
         const defaultDir = defaultExportDir();
         return {
             dir: row.gspro_export_dir ?? defaultDir,
+            courseDir: row.gspro_course_dir,
+            gkdFile: row.gspro_course_dir ? await gkdFileIn(row.gspro_course_dir) : null,
             isDefault: row.gspro_export_dir === null,
             defaultDir,
         };
+    }
+
+    /**
+     * Set (or clear, with null/empty) the course's GSPro course folder — the
+     * scene folder under GSPro's `Courses`, where the `.GKD` goes. It must
+     * already exist: building the course in Unity is what makes it.
+     */
+    async setCourseDir(courseId: string, dir: string | null): Promise<GsproExportSettings> {
+        const trimmed = dir?.trim() ?? '';
+        let stored: string | null = null;
+        if (trimmed) {
+            stored = path.resolve(trimmed);
+            const existing = await statOrNull(stored);
+            if (!existing?.isDirectory()) {
+                throw new ConflictError(`${stored} is not a folder — pick the course's folder under GSPro's Courses (it holds the .gspcrse)`);
+            }
+        }
+        await this.settings(courseId);  // 404s for an unknown course
+        await this.db
+            .updateTable('courses').set({ gspro_course_dir: stored })
+            .where('id', '=', courseId).execute();
+        return this.settings(courseId);
     }
 
     /**
@@ -400,12 +530,15 @@ export class GsproExportService {
     /**
      * Write the course's features to `<dir>/<course-name>.svg` over the
      * inner terrain square, so the SVG lines up with the inner rasters.
+     * `excludeFeatureIds` leaves features out and `variant` names the file
+     * `<course-name>-<variant>.svg` — test variants for the Blender build,
+     * to find the shape it chokes on without touching the course.
      */
-    async export(courseId: string): Promise<GsproExportResult> {
+    async export(courseId: string, opts: SvgExportOptions = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const { inner } = await this.resolveTerrain(courseId, 'export a GSPro SVG for');
 
-        const out = path.join(await this.exportDir(courseId), exportFileName(course.name));
+        const out = path.join(await this.exportDir(courseId), exportFileName(course.name, opts.variant));
         const args = [
             path.join(this.pipelineDir, 'gspro.py'), 'svg',
             '--square-3006', terrainArg(inner),
@@ -413,7 +546,17 @@ export class GsproExportService {
             '--out', out,
             '--map', 'trees=pinestraw',
         ];
-        return this.run('GSPro SVG', args, out);
+        const ids = [...new Set(opts.excludeFeatureIds ?? [])];
+        if (ids.length === 0) return this.run('GSPro SVG', args, out);
+        // A file, not arguments: a variant can leave out thousands of canopy trees.
+        const work = await mkdtemp(path.join(os.tmpdir(), 'gspro-svg-'));
+        try {
+            const list = path.join(work, 'exclude-ids.json');
+            await writeFile(list, JSON.stringify(ids));
+            return await this.run('GSPro SVG', [...args, '--exclude-ids', list], out);
+        } finally {
+            await rm(work, { recursive: true, force: true });
+        }
     }
 
     /**
@@ -448,7 +591,8 @@ export class GsproExportService {
      * from `orthoSources` — anything else is refused, so the request can
      * never name a path outside the site's sources folder.
      */
-    async exportOrtho(courseId: string, source: string, darken?: number, tint?: TerrainTintOptions): Promise<GsproExportResult> {
+    async exportOrtho(courseId: string, source: string, darken?: number, tint?: TerrainTintOptions,
+                      floor?: ForestFloorOptions, removeBuildings = false): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const chosen = (await this.orthoSources(courseId)).find(s => s.source === source);
         if (!chosen) {
@@ -456,9 +600,11 @@ export class GsproExportService {
         }
         const { inner } = await this.resolveTerrain(courseId, 'export a GSPro orthophoto for');
 
-        const out = path.join(await this.exportDir(courseId), orthoExportFileName(course.name, chosen));
+        const clean = removeBuildings || floor !== undefined;
+        const out = path.join(await this.exportDir(courseId), orthoExportFileName(course.name, chosen, clean));
+        const buildings = removeBuildings ? await this.buildingSources(course.siteId!) : undefined;
         return this.renderOrtho('GSPro orthophoto', inner, path.join(this.sourcesDir(course.siteId!), chosen.source), out,
-            courseId, darken, tint);
+            courseId, darken, tint, floor, buildings);
     }
 
     /**
@@ -468,7 +614,8 @@ export class GsproExportService {
      * square the first time and kept as `sources/<siteId>/outer-ortho-
      * <collection>.tif`; later exports render from that copy.
      */
-    async exportOuterOrtho(courseId: string, collection: string, darken?: number, tint?: TerrainTintOptions): Promise<GsproExportResult> {
+    async exportOuterOrtho(courseId: string, collection: string, darken?: number, tint?: TerrainTintOptions,
+                           floor?: ForestFloorOptions, removeBuildings = false): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         if (!COLLECTION_RE.test(collection)) {
             throw new ConflictError(`'${collection}' is not an orthophoto collection id (expected e.g. orto-l2-2025)`);
@@ -484,8 +631,11 @@ export class GsproExportService {
             '--out', src,
         ]);
 
-        const out = path.join(await this.exportDir(courseId), outerOrthoExportFileName(course.name, collection));
-        const rendered = await this.renderOrtho('GSPro outer orthophoto', outer, src, out, courseId, darken, tint);
+        const clean = removeBuildings || floor !== undefined;
+        const out = path.join(await this.exportDir(courseId), outerOrthoExportFileName(course.name, collection, clean));
+        const buildings = removeBuildings ? await this.buildingSources(siteId) : undefined;
+        const rendered = await this.renderOrtho('GSPro outer orthophoto', outer, src, out, courseId, darken,
+            tint && { ...tint, darkenTint: true, grade: OUTER_TERRAIN_GRADE }, floor, buildings);
         return { path: rendered.path, report: [...fetched, ...rendered.report] };
     }
 
@@ -519,6 +669,9 @@ export class GsproExportService {
             '--terrain', kind,
         ];
         const notes: string[] = [];
+        // The Unity sculpt layers this DEM contains: Unity subtracts them from
+        // what it keeps, so its next capture is the whole layer.
+        for (const raster of await this.sculptRasters(siteId)) args.push('--sculpt', raster);
         if (kind === 'outer') {
             const innerSidecar = path.join(dir, demSidecarName(demExportFileName(course.name, 'inner', terrain.inner.sideM)));
             if (await statOrNull(innerSidecar)) {
@@ -529,6 +682,135 @@ export class GsproExportService {
         }
         const rendered = await this.run(`GSPro ${kind} DEM`, args, out);
         return { path: rendered.path, report: [...fetched, ...rendered.report, ...notes] };
+    }
+
+    /**
+     * A Unity sculpt, carried back: the open editor on this course's export
+     * folder captures what was sculpted on the terrain since golf-map last
+     * put its heights there (`golfmap.terrain.capture`: the whole sculpt
+     * layer, conform left out, as a float grid on the heightmap's pixels in
+     * the export folder); the pipeline makes it a GeoTIFF in
+     * `sources/<siteId>/terrain-sculpt/`, and it becomes that terrain's one
+     * `delta` edit (origin `unity-sculpt-<terrain>`, replayed after every
+     * other edit), replacing the previous capture. A capture with nothing
+     * sculpted removes the layer. Apply to terrain then bakes it in.
+     */
+    async exportUnitySculpt(courseId: string, kind: TerrainKind): Promise<GsproExportResult> {
+        const course = await this.courses.get(courseId);
+        const siteId = this.builtSiteId(course);
+        const dir = await this.exportDir(courseId);
+        const { editor, seen } = await editorForExportDir(this.unityBridge, dir);
+        if (!editor) {
+            throw new ConflictError(`No open Unity editor imports from ${dir}: open the course's Unity project (with the GolfMap scripts) and make its course the active one`
+                + (seen.length ? ` — open: ${seen.join('; ')}` : ' — none is open'));
+        }
+        let captured: any;
+        try {
+            captured = await editor.run('golfmap.terrain.capture', { terrain: kind }, 300);
+        } catch (e) {
+            throw new ConflictError(`Unity (${editor.projectName}) could not capture the ${kind} sculpt: ${(e as Error).message.split('\n')[0]}`);
+        }
+        const origin = SCULPT_ORIGINS[kind];
+        const raster = `${kind}-sculpt.tif`;
+        const tif = path.join(this.sourcesDir(siteId), SCULPT_DIR, raster);
+        const report: string[] = [];
+        if (!captured?.cells) {
+            const removed = (await this.terrainEdits.listBySite(siteId)).some(e => e.origin === origin);
+            await this.terrainEdits.replaceByOrigin(siteId, origin, []);
+            await rm(tif, { force: true });
+            report.push(`Unity ${captured?.terrain ?? kind}: nothing sculpted since golf-map's heights went in` + (removed ? '; the previous sculpt layer is removed' : ''));
+            return { path: dir, report };
+        }
+        const meta = path.resolve(String(captured.file));
+        if (path.dirname(meta).toLowerCase() !== path.resolve(dir).toLowerCase()) {
+            throw new ConflictError(`Unity wrote the capture to ${meta}, outside the export folder ${dir}`);
+        }
+        await ensureDir(path.dirname(tif));
+        const conv = await this.runner(['-m', 'golfpipe', 'sculpt-tif', '--capture', meta, '--out', tif], this.pipelineDir);
+        if (conv.code !== 0) throw failure('Unity sculpt layer', conv.code, conv.stdout, conv.stderr);
+        const boundsLine = reportLines(conv.stdout).find(l => l.startsWith('bounds3006 '));
+        const b = boundsLine?.slice('bounds3006 '.length).split(',').map(Number);
+        if (!b || b.length !== 4 || b.some(v => !Number.isFinite(v))) throw new ConflictError('The sculpt layer came back without its bounds');
+        const edit: TerrainEditInput = {
+            op: 'delta',
+            params: { featherM: 0, raster, changedM2: captured.areaM2, maxRaiseM: captured.maxRaiseM, maxLowerM: captured.maxLowerM },
+            rings: [[{ x: b[0]!, y: b[1]! }, { x: b[2]!, y: b[1]! }, { x: b[2]!, y: b[3]! }, { x: b[0]!, y: b[3]! }]],
+            originRef: kind,
+        };
+        await this.terrainEdits.replaceByOrigin(siteId, origin, [edit]);
+        report.push(`Unity ${captured.terrain} (${editor.projectName}): ${(captured.areaM2 / 10000).toFixed(2)} ha sculpted (up to +${captured.maxRaiseM} m / ${captured.maxLowerM} m)`
+            + (captured.conformCellsLeftOut ? `; ${captured.conformCellsLeftOut} conform-raised cell(s) left out` : ''));
+        report.push(`Stored as the ${kind} Unity sculpt layer (one additive terrain edit, after all others). Next: Apply to terrain in the terrain tool, then the heightmap → Unity again.`);
+        return { path: tif, report };
+    }
+
+    /** The GeoTIFFs of the site's enabled Unity sculpt layers. */
+    private async sculptRasters(siteId: string): Promise<string[]> {
+        const out: string[] = [];
+        for (const e of await this.terrainEdits.listBySite(siteId)) {
+            if (!e.enabled || e.op !== 'delta' || !e.params.raster) continue;
+            const file = path.join(this.sourcesDir(siteId), SCULPT_DIR, e.params.raster);
+            if (await statOrNull(file)) out.push(file);
+        }
+        return out;
+    }
+
+    /**
+     * The heightmap export, then straight into Unity: the open editor whose
+     * active GolfMap course imports from this course's export folder runs
+     * `golfmap.terrain.update` (the heights, size and — outer — position put
+     * onto its existing terrain in place, the TerrainData backed up first).
+     * What stays manual is Terrain › Export To OBJ for Blender. A heightmap
+     * whose zero (the sidecar's `minM`) moved is reported: everything placed
+     * at a world height from the old one — trees, buildings, creeks, the
+     * course meshes — is that much off until it is placed again.
+     */
+    async exportUnityTerrain(courseId: string, kind: TerrainKind): Promise<GsproExportResult> {
+        const course = await this.courses.get(courseId);
+        const terrain = await this.resolveTerrain(courseId, `export the GSPro ${kind} DEM for`);
+        const dir = await this.exportDir(courseId);
+        if (kind === 'inner') {
+            // A stale inner heightmap in Unity disagrees with the outer (which replays the edits fresh).
+            const stale = await this.staleInnerDem(this.builtSiteId(course), await this.innerDem(this.builtSiteId(course)));
+            if (stale) throw new ConflictError(`Not put into Unity: ${stale}`);
+        }
+        // Find the editor first: no point exporting for a Unity that is not open.
+        const { editor, seen } = await editorForExportDir(this.unityBridge, dir);
+        if (!editor) {
+            throw new ConflictError(`No open Unity editor imports from ${dir}: open the course's Unity project (with the GolfMap scripts) and make its course the active one`
+                + (seen.length ? ` — open: ${seen.join('; ')}` : ' — none is open'));
+        }
+        const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, kind, terrain[kind].sideM)));
+        const before = await readSidecarMin(sidecar);
+        const exported = await this.exportDem(courseId, kind);
+        const after = await readSidecarMin(sidecar);
+
+        let result: any;
+        try {
+            result = await editor.run('golfmap.terrain.update', { terrain: kind }, 600);
+        } catch (e) {
+            throw new ConflictError(`The heightmap was exported, but Unity (${editor.projectName}) could not take it: ${(e as Error).message.split('\n')[0]}`);
+        }
+        const report = [...exported.report];
+        if (before !== null && after !== null && Math.abs(after - before) > 0.005) {
+            report.push(`warning: the heightmap's zero moved ${(after - before).toFixed(2)} m (minM ${before.toFixed(2)} → ${after.toFixed(2)}): `
+                + 'trees, buildings, creeks and the course meshes placed from the old one are that much off until placed again');
+        }
+        for (const t of (result?.terrains ?? []) as Array<Record<string, any>>) {
+            if (t.skipped) { report.push(`Unity ${t.terrain}: skipped (${t.skipped})`); continue; }
+            const moved = t.movedM2 != null ? `${(t.movedM2 / 10000).toFixed(1)} ha moved more than 2 cm (mean ${t.meanMoveM ?? 0} m, max ${t.maxMoveM} m)` : 'resolution changed';
+            report.push(`Unity ${t.terrain} (${editor.projectName}): heights from ${t.sidecar} (${t.source}); ${moved}`
+                + (t.sinkM != null ? `; placed ${t.sinkM} m below its sidecar position, as before` : '')
+                + (t.backup ? `; backup ${t.backup}` : ''));
+            if (t.warning) report.push(`warning: ${t.warning}`);
+        }
+        const through = result?.outerShowsThrough as { areaM2: number; worstM: number; worstAt: number[] } | null | undefined;
+        if (through && through.areaM2 > 0) {
+            report.push(`warning: the outer plot is at or above the inner ground on ${through.areaM2} m² (up to ${through.worstM} m, at x ${through.worstAt[0]}, z ${through.worstAt[1]}): `
+                + 'it will show through the rebuilt meshes there — put the other terrain\'s heightmap into Unity too, or lower the outer plot');
+        }
+        report.push('Next: Terrain › Export To OBJ in Unity for Blender; re-run the terrain conform once the course meshes are rebuilt. Save the scene to keep it.');
+        return { path: exported.path, report };
     }
 
     /**
@@ -604,6 +886,103 @@ export class GsproExportService {
         return { path: rendered.path, report: [...fetched, ...rendered.report] };
     }
 
+    /**
+     * A terrain's vegetation zones as VSPro texture masks + unity-zones-v2
+     * JSON (what the Unity Vegetation Zones window imports):
+     * `<dir>/<course>-<inner|outer>-zones.json` and `-zones-<n>.png` next to
+     * it, rasterized from the app database by `gspro.py zones`. Like the
+     * trees file it reads the height range from that terrain's heightmap
+     * sidecar, so the heightmap must be exported first; the outer leaves the
+     * inner square to the inner file.
+     */
+    async exportZones(courseId: string, kind: TerrainKind): Promise<GsproExportResult> {
+        const course = await this.courses.get(courseId);
+        const terrain = await this.resolveTerrain(courseId, `export the GSPro ${kind} vegetation zones for`);
+        const square = terrain[kind];
+
+        const dir = await this.exportDir(courseId);
+        const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, kind, square.sideM)));
+        if (!await statOrNull(sidecar)) {
+            throw new ConflictError(`Export the ${kind} heightmap first — its sidecar (${path.basename(sidecar)}) carries the height range the zones file needs`);
+        }
+        const out = path.join(dir, zonesExportFileName(course.name, kind));
+        const args = [
+            path.join(this.pipelineDir, 'gspro.py'), 'zones',
+            '--square-3006', terrainArg(square),
+            '--course', courseId,
+            '--sidecar', sidecar,
+            '--out', out,
+            '--terrain', kind,
+        ];
+        if (kind === 'outer') args.push('--exclude-square', terrainArg(terrain.inner));
+        return this.run(`GSPro ${kind} vegetation zones`, args, out);
+    }
+
+    /**
+     * The course's creeks as NatureManufacture R.A.M. splines for the inner
+     * terrain (`<dir>/<course>-inner-creeks.json`, unity-creeks-v1, what
+     * GolfMap › Creeks imports): each `water_creek` feature's line (drawn, or
+     * the line down its polygon) with control points at the water surface,
+     * falling downstream, written by `gspro.py creeks`. The surface comes
+     * from the RAW lidar DEM: the edited one has the beds dug (`creek-digs`),
+     * and the water belongs above them. Reads the inner heightmap sidecar for
+     * the terrain's zero, so the inner heightmap must be exported first.
+     */
+    async exportCreeks(courseId: string): Promise<GsproExportResult> {
+        const course = await this.courses.get(courseId);
+        if (!course.siteId) throw new ConflictError('This course has no built map on this machine — build its map first');
+        const terrain = await this.resolveTerrain(courseId, 'export the GSPro creeks for');
+        const dir = await this.exportDir(courseId);
+        const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, 'inner', terrain.inner.sideM)));
+        if (!await statOrNull(sidecar)) {
+            throw new ConflictError(`Export the inner heightmap first — its sidecar (${path.basename(sidecar)}) carries the terrain's zero the creek heights are measured from`);
+        }
+        const dem = path.join(this.sourcesDir(course.siteId), 'dem.tif');
+        if (!await statOrNull(dem)) throw new ConflictError(`No raw DEM for this course's site (${dem}) — build its map first`);
+        const out = path.join(dir, creeksExportFileName(course.name));
+        return this.run('GSPro creeks', [
+            path.join(this.pipelineDir, 'gspro.py'), 'creeks',
+            '--square-3006', terrainArg(terrain.inner),
+            '--course', courseId,
+            '--dem', dem,
+            '--sidecar', sidecar,
+            '--out', out,
+        ], out);
+    }
+
+    /**
+     * GreenKeeper's course file for GSPro: tee boxes, pins, green centres,
+     * aim points, water hazards and the OOB ring as Unity positions on the
+     * INNER terrain, written by `gspro.py gkd` into the course's GSPro folder
+     * (`<folder>/<scene>.GKD`, or the `.GKD` already there) and merged into
+     * it, so what GreenKeeper owns — name, location, ratings, the range —
+     * stays. Reads the inner heightmap sidecar (and the GeoTIFF next to it)
+     * for the terrain's zero, so that must be exported first.
+     */
+    async exportGkd(courseId: string): Promise<GsproExportResult> {
+        const course = await this.courses.get(courseId);
+        const { courseDir, gkdFile } = await this.settings(courseId);
+        if (!courseDir || !gkdFile) {
+            throw new ConflictError('Set the GSPro course folder first — the course\'s folder under GSPro\'s Courses, where its .gspcrse is');
+        }
+        if (!await statOrNull(courseDir)) throw new ConflictError(`The GSPro course folder ${courseDir} is gone`);
+        const terrain = await this.resolveTerrain(courseId, 'export the GreenKeeper course file for');
+        const dir = await this.exportDir(courseId);
+        const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, 'inner', terrain.inner.sideM)));
+        if (!await statOrNull(sidecar)) {
+            throw new ConflictError(`Export the inner heightmap first — its sidecar (${path.basename(sidecar)}) and GeoTIFF give the GKD its heights`);
+        }
+        const out = path.join(courseDir, gkdFile);
+        const args = [
+            path.join(this.pipelineDir, 'gspro.py'), 'gkd',
+            '--square-3006', terrainArg(terrain.inner),
+            '--course', courseId,
+            '--sidecar', sidecar,
+            '--out', out,
+        ];
+        return this.run('GreenKeeper course file', args, out);
+    }
+
     // --- Jobs ---
 
     /**
@@ -666,13 +1045,18 @@ export class GsproExportService {
     /** The synchronous export behind a job request. */
     private perform(courseId: string, r: GsproExportRequest): Promise<GsproExportResult> {
         switch (r.kind) {
-            case 'svg': return this.export(courseId);
-            case 'ortho': return this.exportOrtho(courseId, r.source!, r.darken, tintOptions(r));
-            case 'outer-ortho': return this.exportOuterOrtho(courseId, r.collection!, r.darken, tintOptions(r));
+            case 'svg': return this.export(courseId, { excludeFeatureIds: r.excludeFeatureIds, variant: r.variant });
+            case 'ortho': return this.exportOrtho(courseId, r.source!, r.darken, tintOptions(r), floorOptions(r), r.removeBuildings === true);
+            case 'outer-ortho': return this.exportOuterOrtho(courseId, r.collection!, r.darken, tintOptions(r), floorOptions(r), r.removeBuildings === true);
             case 'dem': return this.exportDem(courseId, r.terrain!);
+            case 'unity-terrain': return this.exportUnityTerrain(courseId, r.terrain!);
+            case 'unity-sculpt': return this.exportUnitySculpt(courseId, r.terrain!);
             case 'hillshade': return this.exportHillshade(courseId, r.terrain!);
             case 'trees': return this.exportTrees(courseId, r.terrain!);
             case 'buildings': return this.exportBuildings(courseId, r.terrain!);
+            case 'zones': return this.exportZones(courseId, r.terrain!);
+            case 'creeks': return this.exportCreeks(courseId);
+            case 'gkd': return this.exportGkd(courseId);
         }
     }
 
@@ -707,11 +1091,37 @@ export class GsproExportService {
      * lines of a gridding that had to happen first.
      */
     private async demSource(siteId: string, kind: TerrainKind, square: TerrainSquare): Promise<{ src: string; fetched: string[] }> {
-        if (kind === 'inner') return { src: await this.innerDem(siteId), fetched: [] };
+        if (kind === 'inner') {
+            const src = await this.innerDem(siteId);
+            const stale = await this.staleInnerDem(siteId, src);
+            return { src, fetched: stale ? [`warning: ${stale}`] : [] };
+        }
         const src = path.join(this.sourcesDir(siteId), OUTER_DEM_SOURCE);
         const fetched = await this.ensureOuterDem(siteId, square, src);
         const edited = await this.outerDemWithEdits(siteId, src);
         return edited ? { src: edited.path, fetched: [...fetched, ...edited.report] } : { src, fetched };
+    }
+
+    /**
+     * Why the inner DEM an export would use does not carry the site's
+     * current terrain edits, or null when it does. The inner exports read
+     * what "Apply to terrain" last wrote (D-TE2: the export shows what the
+     * map shows), so an edit generated, changed or switched after that — or
+     * edits never applied at all — is missing from them, while the outer
+     * export replays the edits fresh and has it: the two heightmaps then
+     * disagree under it. (A deleted edit leaves no trace to compare.)
+     */
+    private async staleInnerDem(siteId: string, src: string): Promise<string | null> {
+        const edits = (await this.terrainEdits.listBySite(siteId)).filter(e => e.enabled);
+        if (edits.length === 0) return null;
+        if (path.basename(src) !== 'dem-edited.tif') {
+            return `the site has ${edits.length} enabled terrain edit(s) but no edited DEM, so this heightmap has none of them: press Apply to terrain in the terrain tool, then export again`;
+        }
+        const built = (await stat(src)).mtimeMs;
+        const changed = edits.filter(e => Date.parse(`${e.updatedAt.replace(' ', 'T')}Z`) > built + 1000);
+        if (changed.length === 0) return null;
+        const origins = [...new Set(changed.map(e => e.origin ?? 'hand-drawn'))].join(', ');
+        return `${changed.length} terrain edit(s) (${origins}) changed after the last Apply to terrain, so this heightmap lacks them: press Apply to terrain in the terrain tool, then export again`;
     }
 
     /**
@@ -729,7 +1139,7 @@ export class GsproExportService {
         const work = await mkdtemp(path.join(os.tmpdir(), 'gspro-outer-edits-'));
         try {
             const editsPath = path.join(work, 'terrain-edits.geojson');
-            await writeFile(editsPath, JSON.stringify(terrainEditsGeojson(edits)));
+            await writeFile(editsPath, JSON.stringify(terrainEditsGeojson(edits, { sculptDir: path.join(this.sourcesDir(siteId), SCULPT_DIR) })));
             const r = await this.runner(['-m', 'golfpipe', 'apply-dem-edits', '--input', src, '--edits', editsPath, '--out', out], this.pipelineDir);
             if (r.code !== 0) throw failure('GSPro outer DEM terrain edits', r.code, r.stdout, r.stderr);
             return { path: out, report: [`replayed ${edits.length} terrain edit(s) onto the outer DEM`] };
@@ -880,11 +1290,18 @@ export class GsproExportService {
      * One render, two JPEGs: `out` as-is and its `-terrain` twin darkened
      * (in linear light, by `darken` or the default) for the Unity terrain.
      * With `tint`, a third: the `-meshes` variant, the darkened one
-     * with the course's grass surfaces tinted by its own drawn features
-     * (the pipeline reads them from the app database by course id).
+     * softened and with the course's grass surfaces tinted by its own drawn
+     * features (the pipeline reads them from the app database by course
+     * id), at `MESH_TEXTURE_SIZE`. With `floor`, the course's woodland_floor
+     * zones are painted as forest floor on the render first, so all the
+     * files carry it. With `buildings`, the roofs (lidar `roofs.tif` and/or
+     * the building survey's footprints) and their shadows are filled from
+     * the ground round them before that; with neither file on disk the
+     * render goes ahead and the report says what to run.
      */
     private async renderOrtho(what: string, square: TerrainSquare, src: string, out: string, courseId: string,
-                              darken?: number, tint?: TerrainTintOptions): Promise<GsproExportResult> {
+                              darken?: number, tint?: TerrainTintOptions, floor?: ForestFloorOptions,
+                              buildings?: BuildingSources): Promise<GsproExportResult> {
         const factor = darken ?? TERRAIN_TEXTURE_DARKEN;
         const [lo, hi] = TERRAIN_TEXTURE_DARKEN_RANGE;
         if (!Number.isFinite(factor) || factor < lo || factor > hi) {
@@ -895,13 +1312,40 @@ export class GsproExportService {
             const opacity = tint.opacity ?? TERRAIN_TINT_OPACITY;
             const [tlo, thi] = TERRAIN_TINT_OPACITY_RANGE;
             if (!Number.isFinite(opacity) || opacity < tlo || opacity > thi) {
-                throw new ConflictError(`Surface tint opacity must be between ${tlo} and ${thi} (0.3 = the usual Photoshop layer)`);
+                throw new ConflictError(`Surface tint opacity must be between ${tlo} and ${thi} (${TERRAIN_TINT_OPACITY} = the photo at half strength over green)`);
             }
             tintArgs.push(
                 '--tint-out', meshTextureFileName(out),
                 '--tint-course', courseId,
                 '--tint-opacity', String(opacity),
+                '--soften-m', String(MESH_TEXTURE_SOFTEN_M),
+                '--tint-size', String(MESH_TEXTURE_SIZE),
             );
+            if (tint.darkenTint) tintArgs.push('--darken-tint');
+            if (tint.grade) tintArgs.push('--tint-grade', tint.grade.join(','));
+        }
+        const floorArgs: string[] = [];
+        if (floor) {
+            if (floor.color !== undefined && !/^#[0-9a-fA-F]{6}$/.test(floor.color)) {
+                throw new ConflictError(`Forest floor colour must be #rrggbb (got ${floor.color})`);
+            }
+            if (floor.mix !== undefined && (!Number.isFinite(floor.mix) || floor.mix < 0 || floor.mix > 1)) {
+                throw new ConflictError('Forest floor photo mix must be between 0 and 1');
+            }
+            floorArgs.push('--floor-course', courseId);
+            if (floor.color !== undefined) floorArgs.push('--floor-color', floor.color);
+            if (floor.mix !== undefined) floorArgs.push('--floor-mix', String(floor.mix));
+        }
+        const buildingArgs: string[] = [];
+        const notes: string[] = [];
+        if (buildings) {
+            if (!buildings.roofs && !buildings.survey) {
+                notes.push('Buildings not removed: no roof heights for this course yet — run "Regenerate trees" on the map (and "Generate building pads" for buildings newer than the lidar)');
+            } else {
+                buildingArgs.push('--remove-buildings');
+                if (buildings.roofs) buildingArgs.push('--roofs', buildings.roofs);
+                if (buildings.survey) buildingArgs.push('--buildings-survey', buildings.survey);
+            }
         }
         const args = [
             path.join(this.pipelineDir, 'gspro.py'), 'ortho',
@@ -914,8 +1358,21 @@ export class GsproExportService {
             '--size', String(ORTHO_EXPORT_SIZE),
             '--quality', String(ORTHO_EXPORT_QUALITY),
             ...tintArgs,
+            ...floorArgs,
+            ...buildingArgs,
         ];
-        return this.run(what, args, out);
+        const rendered = await this.run(what, args, out);
+        return notes.length ? { path: rendered.path, report: [...notes, ...rendered.report] } : rendered;
+    }
+
+    /** The site's roof heights and building survey, each null when not on disk. */
+    private async buildingSources(siteId: string): Promise<BuildingSources> {
+        const roofs = path.join(this.sourcesDir(siteId), ROOFS_SOURCE);
+        const survey = path.join(this.sourcesDir(siteId), BUILDINGS_SURVEY_SOURCE);
+        return {
+            roofs: await statOrNull(roofs) ? roofs : null,
+            survey: await statOrNull(survey) ? survey : null,
+        };
     }
 
     private async run(what: string, args: string[], out: string): Promise<GsproExportResult> {
@@ -943,13 +1400,24 @@ export function describeRequest(r: GsproExportRequest): string {
         if (!ok) throw new ConflictError(`A ${r.kind} export needs ${what}`);
     };
     switch (r.kind) {
-        case 'svg': return 'course SVG';
+        case 'svg': {
+            const notes = [
+                r.variant?.trim() ? `variant ${courseSlug(r.variant)}` : '',
+                r.excludeFeatureIds?.length ? `${r.excludeFeatureIds.length} feature(s) excluded` : '',
+            ].filter(Boolean);
+            return notes.length ? `course SVG (${notes.join(', ')})` : 'course SVG';
+        }
         case 'ortho': need(r.source, 'a source'); return 'inner orthophoto';
         case 'outer-ortho': need(r.collection, 'a collection'); return 'outer orthophoto';
         case 'dem': need(r.terrain, 'a terrain'); return `${r.terrain} heightmap`;
+        case 'unity-terrain': need(r.terrain, 'a terrain'); return `${r.terrain} heightmap into Unity`;
+        case 'unity-sculpt': need(r.terrain, 'a terrain'); return `${r.terrain} Unity sculpt into golf-map`;
         case 'hillshade': need(r.terrain, 'a terrain'); return `${r.terrain} hillshade`;
         case 'trees': need(r.terrain, 'a terrain'); return `${r.terrain} trees`;
         case 'buildings': need(r.terrain, 'a terrain'); return `${r.terrain} buildings`;
+        case 'zones': need(r.terrain, 'a terrain'); return `${r.terrain} vegetation zones`;
+        case 'creeks': return 'creeks (R.A.M. splines)';
+        case 'gkd': return 'GreenKeeper course file';
         default: throw new ConflictError(`Unknown export kind '${String((r as { kind: unknown }).kind)}'`);
     }
 }
@@ -1009,9 +1477,33 @@ async function linkLidar(from: string, to: string): Promise<void> {
     }
 }
 
+/**
+ * The `.GKD` in a GSPro course folder: the one already there (GreenKeeper
+ * names it after the scene, whatever its case), else `<folder name>.GKD`.
+ */
+export async function gkdFileIn(courseDir: string): Promise<string> {
+    let names: string[] = [];
+    try {
+        names = await readdir(courseDir);
+    } catch {
+        // not there (yet): the name it will get
+    }
+    return names.find(n => n.toLowerCase().endsWith('.gkd')) ?? `${path.basename(courseDir)}.GKD`;
+}
+
 export async function statOrNull(p: string) {
     try {
         return await stat(p);
+    } catch {
+        return null;
+    }
+}
+
+/** A heightmap sidecar's `minM` (the terrain's zero), null when there is none. */
+async function readSidecarMin(file: string): Promise<number | null> {
+    try {
+        const min = JSON.parse(await readFile(file, 'utf8')).minM;
+        return typeof min === 'number' ? min : null;
     } catch {
         return null;
     }

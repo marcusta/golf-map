@@ -210,6 +210,53 @@ namespace GolfMap.Editor
             return problems;
         }
 
+        // The colours the tree shaders multiply onto the albedo. Scaling their saturation is the one
+        // course-wide colour grade available on GSPro-safe shaders; a grey tint has none to lose.
+        static readonly string[] TintProperties = { "_HealthyColor", "_DryColor", "_Color", "_GolfMapLeafTint" };
+
+        // The tint colours of one material under the names VSP's item panel uses. NM leaves carry a
+        // white _Color the shader does not tint with, so only healthy/dry are offered there.
+        public static List<KeyValuePair<string, string>> ColourKeys(Material m)
+        {
+            var keys = new List<KeyValuePair<string, string>>();
+            if (!m) return keys;
+            bool leaves = m.HasProperty("_HealthyColor");
+            if (leaves) keys.Add(new KeyValuePair<string, string>("_HealthyColor", "Healthy Color"));
+            if (m.HasProperty("_DryColor")) keys.Add(new KeyValuePair<string, string>("_DryColor", "Dry Color"));
+            if (m.HasProperty("_GolfMapLeafTint")) keys.Add(new KeyValuePair<string, string>("_GolfMapLeafTint", "Leaf tint"));
+            if (!leaves && m.HasProperty("_Color")) keys.Add(new KeyValuePair<string, string>("_Color", m.shader.name.Contains("Bark") ? "Bark Color" : "Color"));
+            // SpeedTree shifts each tree towards this colour by an amount that depends on where it stands.
+            if (m.IsKeywordEnabled("EFFECT_HUE_VARIATION") && m.HasProperty("_HueVariation")) keys.Add(new KeyValuePair<string, string>("_HueVariation", "Hue variation (alpha = strength)"));
+            return keys;
+        }
+
+        // Materials that are tuned as one: same shader, same part of the tree, same colours on offer
+        // (a SpeedTree crown is one material per LOD and leaf type, all meant to look alike).
+        public static string ColourGroup(Material m)
+        {
+            return m.shader.name + "|" + (m.IsKeywordEnabled("GEOM_TYPE_BRANCH") ? "branch" : "") + "|" + string.Join(",", ColourKeys(m).Select(k => k.Key).ToArray());
+        }
+
+        public static int ScaleSaturation(IEnumerable<Material> materials, float factor)
+        {
+            int changed = 0;
+            foreach (var m in materials.Where(m => m))
+            {
+                Undo.RecordObject(m, "Tree look saturation");
+                foreach (var key in TintProperties.Where(k => m.HasProperty(k)))
+                {
+                    var c = m.GetColor(key);
+                    float h, s, v;
+                    Color.RGBToHSV(c, out h, out s, out v);
+                    var scaled = Color.HSVToRGB(h, Mathf.Clamp01(s * factor), v);
+                    scaled.a = c.a;
+                    if (scaled != c) { m.SetColor(key, scaled); changed++; }
+                }
+                EditorUtility.SetDirty(m);
+            }
+            return changed;
+        }
+
         static float[] Four(List<object> values)
         {
             var result = new float[4];
@@ -224,6 +271,8 @@ namespace GolfMap.Editor
     {
         [SerializeField] bool showLooks = true;
         string openSpecies = "", editLook = "", newLookName = "";
+        float saturationFactor = 0.85f;
+        bool showAllMaterialSettings;
         readonly Dictionary<Material, UnityEditor.Editor> materialEditors = new Dictionary<Material, UnityEditor.Editor>();
         readonly Dictionary<string, int> previewLooks = new Dictionary<string, int>();   // "<species>:<look>" -> stems
 
@@ -327,11 +376,52 @@ namespace GolfMap.Editor
             var materials = GolfMapLooks.Materials(course, draft, label, look);
             if (!look.original && materials.Count == 0)
             {
-                EditorGUILayout.HelpBox("This look has no material copies in this project yet. Regenerate creates them; Apply JSON then sets the recorded values.", MessageType.Info);
+                EditorGUILayout.HelpBox("This look is recorded in palette.json but has no material copies in this project yet.", MessageType.Info);
+                if (GUILayout.Button("Create this look (copies the materials and prefabs, then sets the recorded values)"))
+                {
+                    string made = GolfMapLooks.Generate(course, draft, label, look, null);
+                    var problems = GolfMapLooks.Apply(course, draft, label, look);
+                    paletteNote = "Look '" + look.id + "': " + made + (problems.Count == 0 ? ". Next: Show in Lab to judge it, then Plant to use it." : "\n" + string.Join("\n", problems.ToArray()));
+                    CloseMaterialEditors();
+                }
                 return;
             }
+            if (!look.original)
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Space(EditorGUI.indentLevel * 15);
+                    saturationFactor = Mathf.Clamp(EditorGUILayout.FloatField(new GUIContent("Tint saturation x", "Scales the saturation of every leaf and bark tint colour in this look. Undo restores."), saturationFactor), 0f, 2f);
+                    if (GUILayout.Button("Apply", GUILayout.Width(60)))
+                    {
+                        int n = GolfMapLooks.ScaleSaturation(materials, saturationFactor);
+                        GolfMapLooks.Capture(course, draft, label, look);
+                        paletteNote = "Look '" + look.id + "': " + n + " tint colour(s) scaled by " + saturationFactor + ". Apply to course to see it on planted trees.";
+                        GUI.changed = true;
+                    }
+                }
             EditorGUI.BeginChangeCheck();
-            foreach (var material in materials)
+            // The colours VSP's own item panel shows, per material. Set here they stick: the planter and
+            // Refresh vegetation from materials copy them into VSP, overwriting what is typed there.
+            foreach (var set in materials.Where(m => m && m.shader).GroupBy(m => GolfMapLooks.ColourGroup(m)))
+            {
+                var first = set.First();
+                var keys = GolfMapLooks.ColourKeys(first);
+                if (keys.Count == 0) continue;
+                var names = set.Select(m => m.name).Distinct().ToArray();
+                EditorGUILayout.LabelField(set.Count() == 1 ? first.name : set.Count() + " materials, set together: " + string.Join(", ", names), EditorStyles.boldLabel);
+                EditorGUI.indentLevel++;
+                foreach (var key in keys)
+                {
+                    var before = first.GetColor(key.Key);
+                    bool mixed = set.Any(m => m.GetColor(key.Key) != before);
+                    var after = EditorGUILayout.ColorField(new GUIContent(key.Value + (mixed ? "  (differs, pick to align)" : "")), before);
+                    if (after != before) foreach (var m in set) { Undo.RecordObject(m, "Tree look colour"); m.SetColor(key.Key, after); EditorUtility.SetDirty(m); }
+                }
+                EditorGUI.indentLevel--;
+            }
+            EditorGUILayout.LabelField("Lab trees change as you pick. Planted trees: Apply to course. Outer billboards: Plant outer with Rebake on.", EditorStyles.wordWrappedMiniLabel);
+            showAllMaterialSettings = EditorGUILayout.Foldout(showAllMaterialSettings, "All material settings (advanced)", true);
+            if (showAllMaterialSettings) foreach (var material in materials)
             {
                 UnityEditor.Editor editor;
                 if (!materialEditors.TryGetValue(material, out editor) || !editor) materialEditors[material] = editor = UnityEditor.Editor.CreateEditor(material);

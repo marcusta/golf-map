@@ -80,6 +80,31 @@ the hit stack under the cursor (cycles downward, wrapping), **?** opens contextu
 draw-mode shortcut documentation moves to a contextual help modal (prior art:
 `golf-map-2/webapp/frontend/src/editor/HelpModal.tsx`); the panel keyboard-manual block dies.
 
+**D28. Roughs layer at the bottom, course-level on top (amends D24; 2026-09-22).** A third
+kind of group: `course_features.layer = 'roughs'` (migration 020; `hole_id` is then NULL), one
+per course. Composition order becomes **Roughs < hole 1 < hole 2 < … < course-level**, so a
+hole's rough no longer paints over its neighbour's fairway, and shared ponds/paths/trees kept at
+course level win over the holes they cross (this reverses D24's "course-level always loses").
+`stackKey = groupRank * 4096 + sort_order` with groupRank 0 for Roughs, the hole's number for a
+hole, 1023 for course-level — defined ONCE in `shared/render/stack-key.ts` (server GeoJSON, web
+overlay, planner lie map) and mirrored in SQL by `pipeline/gspro.py`. Membership: rough types
+only (`outside`, `deep_rough`, `rough`, `semi_rough`), enforced by the server. Manual: new
+shapes still land in the draw target's group; a rough is moved in from the selection panel's
+move select ("Roughs (bottom)"), which is one undo step. Assigning a hole, or retyping to a
+non-rough type, moves the feature back out (to that hole / course-level). Nothing was migrated:
+existing course-level roughs now sit on TOP of the holes until they are moved by hand. A rough
+island inside a fairway stays on its hole (scenario 1). Scenario 3 below is inverted by this
+decision.
+
+**D29. Roads always on top (amends D28; 2026-09-25).** The opposite end from the Roughs: every
+`path` feature (fetched roads and hand-drawn cart paths alike; `ROADS_TYPES` in
+`shared/render/stack-key.ts`) gets groupRank 1024, above course-level, whatever its hole or
+`sort_order` — a road crosses roughs, fairways and water, and nothing is drawn over it. The
+feature stays in its hole / course-level group for editing; only the paint/hit/lie key moves,
+and `sort_order` still orders paths among themselves. `pipeline/gspro.py` mirrors it in SQL and
+writes them to a `Roads` SVG layer after the holes, so it is topmost in Inkscape and Blender
+never cuts anything into a road.
+
 ## Cross-cutting acceptance scenarios
 
 1. **Rough island (the motivating case).** Fairway + smaller rough polygon inside it, rough above

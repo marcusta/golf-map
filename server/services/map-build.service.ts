@@ -5,11 +5,13 @@ import { mkdtemp, mkdir, copyFile, readdir, rename, rm, stat, writeFile } from '
 import { tmpdir } from 'node:os';
 import type { Database, MapBuildJobsTable } from '../db/schema';
 import type { AssetsService } from './assets.service';
-import { TerrainEditsService, type TerrainEdit } from './terrain-edits.service';
+import { DIG_PARAM_KEYS, SCULPT_DIR, TerrainEditsService, type TerrainEdit } from './terrain-edits.service';
+import { CourseFeaturesService, type GeneratedFeatureCollection } from './course-features.service';
 import { sweref99tmToWgs84 } from './geo';
 import { innerSquareFromWgs84, squareArg, squareSideM, terrainManifestField } from './terrain-square';
 import type { Bbox3006 } from './course-bbox';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
+import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 
 // --- Public types ---
 
@@ -18,7 +20,7 @@ export type BuildStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 export type BuildStep =
     | 'fetch-lidar' | 'grid-dem' | 'apply-dem-edits' | 'fetch-ortho' | 'tile-ortho'
     | 'tile-terrain' | 'tile-hillshade' | 'manifest' | 'install' | 'register'
-    | 'canopy' | 'trees-stems';
+    | 'canopy' | 'trees-stems' | 'woodland';
 
 /** Job kind: the full pipeline, the fast terrain-edit replay (T56), or the tree regeneration. */
 export type BuildJobKind = 'build' | 're-terrain' | 'trees';
@@ -48,11 +50,23 @@ export const RE_TERRAIN_STEPS: readonly BuildStep[] = [
 /**
  * Ordered steps of the tree regeneration job (`kind: 'trees'`): rebuild the
  * canopy / canopy-color / surface tile pyramids and the tree-stems asset from
- * the persisted lidar + DEM, then re-register the manifest. No fetches. The
- * pipeline commands write straight into the installed tile tree and merge
- * their own manifest entries, so there is no install step.
+ * the persisted lidar + DEM, replace the course's lidar woodland-floor zones
+ * (D-VZ10) with the stands the canopy step wrote, then re-register the
+ * manifest. No fetches. The pipeline commands write straight into the
+ * installed tile tree and merge their own manifest entries, so there is no
+ * install step.
  */
-export const TREES_STEPS: readonly BuildStep[] = ['canopy', 'trees-stems', 'register'];
+export const TREES_STEPS: readonly BuildStep[] = ['canopy', 'trees-stems', 'woodland', 'register'];
+
+/** `source` of the woodland-floor zones the tree job writes (bulk-replaced per run). */
+export const WOODLAND_SOURCE = 'lidar-woodland';
+
+/**
+ * The lidar roof heights the tree job keeps under `sources/<siteId>/` (the
+ * canopy step's `--roofs-out`): what the orthophoto export's "Remove
+ * buildings" fills.
+ */
+export const ROOFS_SOURCE = 'roofs.tif';
 
 export interface Bbox {
     west: number;
@@ -134,6 +148,8 @@ export interface MapBuildDeps {
     runner?: PipelineRunner;
     /** Source of the site's terrain edits; defaults to a db-backed instance. */
     terrainEdits?: TerrainEditsService;
+    /** Where the tree job's woodland stands are imported; defaults to a db-backed instance. */
+    courseFeatures?: CourseFeaturesService;
 }
 
 // The three asset kinds a build (re)writes for a course.
@@ -180,6 +196,7 @@ export class MapBuildService {
     private readonly python: string;
     private readonly runner: PipelineRunner;
     private readonly terrainEdits: TerrainEditsService;
+    private readonly courseFeatures: CourseFeaturesService;
 
     /** jobId → in-flight run promise (so tests can await a build to completion). */
     private readonly inflight = new Map<string, Promise<void>>();
@@ -190,7 +207,7 @@ export class MapBuildService {
         this.dataDir = deps.dataDir;
         this.pipelineDir = deps.pipelineDir
             ?? process.env.MAP_PIPELINE_DIR
-            ?? path.resolve(process.cwd(), '../pipeline');
+            ?? DEFAULT_PIPELINE_DIR;
         // Same seam as the publish CLI (scripts/publish.ts): one interpreter
         // resolution for every golfpipe caller, so an override that works for
         // a map build works for dem-analysis too.
@@ -199,6 +216,7 @@ export class MapBuildService {
             ?? path.join(this.pipelineDir, '.venv', 'bin', 'python');
         this.runner = deps.runner ?? defaultRunner(this.python);
         this.terrainEdits = deps.terrainEdits ?? new TerrainEditsService(deps.db);
+        this.courseFeatures = deps.courseFeatures ?? new CourseFeaturesService(deps.db);
     }
 
     // --- Queries ---
@@ -445,7 +463,7 @@ export class MapBuildService {
             return null;
         }
         const editsPath = path.join(work, 'terrain-edits.geojson');
-        await writeFile(editsPath, JSON.stringify(terrainEditsGeojson(edits)));
+        await writeFile(editsPath, JSON.stringify(terrainEditsGeojson(edits, { sculptDir: path.join(this.sourcesDir(siteId), SCULPT_DIR) })));
         const demEdited = path.join(work, 'dem-edited.tif');
         if (!await this.exec(jobId, 'apply-dem-edits', gp('apply-dem-edits', '--input', demTif, '--edits', editsPath, '--out', demEdited), env)) {
             return false;
@@ -617,8 +635,20 @@ export class MapBuildService {
             const oldManifest = await this.readInstalledManifest(siteId);
 
             // Canopy zoom range matches the existing course data (terrain range + 1).
-            if (!await this.exec(jobId, 'canopy', gp('canopy', ...lidarArgs, '--dem', dem, '--course-id', siteId, '--tiles-dir', installedRoot, '--workdir', path.join(work, 'canopy'), '--minzoom', '12', '--maxzoom', '17', '--trees-out', path.join(this.sourcesDir(siteId), 'trees.geojson')), env)) return;
+            // The same grid also yields the woodland stands, floor colours
+            // sampled from the active ortho vintage when its source is kept.
+            const woodlandOut = path.join(work, 'woodland.geojson');
+            const woodlandOrtho = await this.activeOrthoSource(siteId, oldManifest);
+            if (!await this.exec(jobId, 'canopy', gp('canopy', ...lidarArgs, '--dem', dem, '--course-id', siteId, '--tiles-dir', installedRoot, '--workdir', path.join(work, 'canopy'), '--minzoom', '12', '--maxzoom', '17', '--trees-out', path.join(this.sourcesDir(siteId), 'trees.geojson'), '--woodland-out', woodlandOut, ...(woodlandOrtho ? ['--woodland-ortho', woodlandOrtho] : []), '--roofs-out', path.join(this.sourcesDir(siteId), ROOFS_SOURCE)), env)) return;
             if (!await this.exec(jobId, 'trees-stems', gp('trees-stems', ...lidarArgs, '--dem', dem, '--course-id', siteId, '--tiles-dir', installedRoot, '--out', path.join(work, 'tree-stems.geojson')), env)) return;
+
+            // woodland is TS, not a subprocess: the server owns the DB. It
+            // replaces only this generator's rows (source lidar-woodland).
+            await this.setStep(jobId, 'woodland');
+            const stands = JSON.parse(await Bun.file(woodlandOut).text()) as GeneratedFeatureCollection;
+            const { deleted, inserted } = await this.courseFeatures.replaceGenerated(courseId, WOODLAND_SOURCE, stands);
+            await this.appendLog(jobId, 'woodland', `Woodland-floor zones: ${inserted} imported, ${deleted} replaced
+`, '', env);
 
             await this.setStep(jobId, 'register');
             await this.refreshManifestAsset(siteId, courseId, oldManifest);
@@ -629,6 +659,14 @@ export class MapBuildService {
         } finally {
             await rm(work, { recursive: true, force: true }).catch(() => {});
         }
+    }
+
+    /** The persisted source GeoTIFF of the manifest's active ortho vintage, or null when it is not on disk. */
+    private async activeOrthoSource(siteId: string, manifest: Record<string, unknown> | null): Promise<string | null> {
+        const active = manifest?.activeOrtho;
+        if (typeof active !== 'string' || active.length === 0) return null;
+        const src = path.join(this.sourcesDir(siteId), orthoSourceName(active));
+        return await Bun.file(src).exists() ? src : null;
     }
 
     /** The installed manifest.json for a site, parsed, or null when absent/invalid. */
@@ -977,7 +1015,7 @@ function orthoSourceName(collection: string): string {
  * pipeline's defensive re-sort agrees. GeoJSON linear rings must be closed —
  * the tool stores open rings, so the first point is repeated at the end.
  */
-export function terrainEditsGeojson(edits: TerrainEdit[]): {
+export function terrainEditsGeojson(edits: TerrainEdit[], opts: { sculptDir?: string } = {}): {
     type: 'FeatureCollection';
     features: object[];
 } {
@@ -1012,6 +1050,10 @@ export function terrainEditsGeojson(edits: TerrainEdit[]): {
                 } : {}),
                 ...(edit.params.smoothM !== undefined ? { smoothM: edit.params.smoothM } : {}),
                 ...(edit.params.widthM !== undefined ? { widthM: edit.params.widthM } : {}),
+                // dig: its profile params, verbatim.
+                ...Object.fromEntries(DIG_PARAM_KEYS.filter(k => edit.params[k] !== undefined).map(k => [k, edit.params[k]])),
+                // delta (a Unity sculpt): the GeoTIFF it adds, as a path the pipeline can open.
+                ...(edit.op === 'delta' && edit.params.raster ? { raster: path.join(opts.sculptDir ?? '', edit.params.raster) } : {}),
                 createdAt: edit.createdAt,
             },
         })),

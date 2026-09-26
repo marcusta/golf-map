@@ -21,20 +21,33 @@ const StartInput = Type.Object({
     courseId: Type.String(),
     kind: Type.Union([
         Type.Literal('svg'), Type.Literal('ortho'), Type.Literal('outer-ortho'),
-        Type.Literal('dem'), Type.Literal('hillshade'), Type.Literal('trees'), Type.Literal('buildings'),
+        Type.Literal('dem'), Type.Literal('unity-terrain'), Type.Literal('unity-sculpt'), Type.Literal('hillshade'), Type.Literal('trees'), Type.Literal('buildings'),
+        Type.Literal('zones'), Type.Literal('creeks'), Type.Literal('gkd'),
     ]),
     /** `ortho`: a `source` file name from `orthoSources`. */
     source: Type.Optional(Type.String()),
     /** `outer-ortho`: Lantmäteriet collection to fetch the outer square from, e.g. `orto-l2-2025`. */
     collection: Type.Optional(Type.String()),
-    /** `dem`, `hillshade`, `trees`, `buildings`: which GSPro terrain. */
+    /** `dem`, `hillshade`, `trees`, `buildings`, `zones`: which GSPro terrain. */
     terrain: Type.Optional(TerrainInput),
     /** `ortho`, `outer-ortho`: light multiplier for the `-terrain` texture twin (linear light); omitted = the server default. */
     darken: Type.Optional(Type.Number({ minimum: 0.05, maximum: 1 })),
     /** `ortho`, `outer-ortho`: also write the `-meshes` variant for the course meshes — the darkened twin with the grass surfaces tinted from the drawn features. */
     tint: Type.Optional(Type.Boolean()),
-    /** With `tint`: the tint layer's opacity 0..1; omitted = the server default (0.3). */
+    /** With `tint`: the tint layer's opacity 0..1; omitted = the server default (0.5). */
     tintOpacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+    /** `ortho`, `outer-ortho`: paint the course's woodland_floor zones as forest floor on every file. */
+    forestFloor: Type.Optional(Type.Boolean()),
+    /** With `forestFloor`: palette floor colour `#rrggbb`; omitted = the pipeline default. */
+    floorColor: Type.Optional(Type.String({ pattern: '^#[0-9a-fA-F]{6}$' })),
+    /** With `forestFloor`: share of each zone's photo-sampled colour, 0..1; omitted = 0.5. */
+    floorMix: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+    /** `ortho`, `outer-ortho`: fill the roofs (lidar roof heights + building survey) and their shadows from the ground round them. */
+    removeBuildings: Type.Optional(Type.Boolean()),
+    /** `svg`: feature ids to leave out (test variants for the Blender build); a road's kerb fillets go with it. */
+    excludeFeatureIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 200000 })),
+    /** `svg`: variant name; the file becomes `<course>-<variant>.svg` instead of overwriting `<course>.svg`. */
+    variant: Type.Optional(Type.String({ maxLength: 60 })),
 });
 
 const JobInput = Type.Object({
@@ -62,6 +75,14 @@ export function createGsproExportApi(svc: GsproExportService) {
             method: 'POST' as const,
             path: '/gspro-export/dir',
             fn: (input: Static<typeof SetDirInput>) => svc.setDir(input.courseId, input.dir),
+            schema: SetDirInput,
+            middleware: mw,
+        },
+        /** The course's folder under GSPro's Courses, where the GreenKeeper .GKD export writes (must exist). */
+        setCourseDir: {
+            method: 'POST' as const,
+            path: '/gspro-export/course-dir',
+            fn: (input: Static<typeof SetDirInput>) => svc.setCourseDir(input.courseId, input.dir),
             schema: SetDirInput,
             middleware: mw,
         },

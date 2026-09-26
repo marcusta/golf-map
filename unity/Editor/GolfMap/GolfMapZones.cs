@@ -1,8 +1,14 @@
-// Model and loader for a golf-map "unity-zones-v1" export: vegetation zones
-// rasterised into RGBA texture masks for Vegetation Studio Pro (one channel
-// per zone type), plus the zone polygons for the Scene-view overlay and the
-// item bindings the importer turns into VSP texture mask rules.
-// See docs/feature-vegetation-zones.md section 7 and unity/README.md.
+// Model and loader for a golf-map "unity-zones-v2" export: vegetation zones
+// rasterised into RGBA texture masks for Vegetation Studio Pro, one channel per
+// VSP item (the pipeline bakes each item's final density into its channel), plus
+// the zone polygons for the Scene-view overlay and the zone types with their
+// variants for the summary. See docs/feature-vegetation-zones.md and unity/README.md.
+//
+// Why one channel per item and not per zone type: VSP multiplies an item's texture
+// mask density rules (TextureMask.cs, SpawnChance *= value/256 * DensityMultiplier
+// per rule), so an item bound to two channels would only spawn where both are
+// non-zero. With variants sharing items that is the normal case, so every item gets
+// exactly one density and one include rule against its own channel.
 //
 // Plain JsonUtility classes: objects and lists only, no dictionaries. The plot
 // record is shared with unity-trees-v1 (GolfMapTreePlot) so terrain matching
@@ -11,6 +17,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using UnityEngine;
 
 namespace GolfMap.Editor
@@ -21,8 +28,12 @@ namespace GolfMap.Editor
         public string format;
         public GolfMapTreePlot plot;
         public List<GolfMapZoneMask> masks;
+        public List<GolfMapZoneItem> items;
         public List<GolfMapZoneType> zoneTypes;
         public List<GolfMapZone> zones;
+        // Not in the file: consistency notes found while loading (unknown slot keys and
+        // the like). They do not stop an import; the summary and the report list them.
+        [NonSerialized] public List<string> warnings = new List<string>();
     }
 
     [Serializable]
@@ -30,7 +41,17 @@ namespace GolfMap.Editor
     {
         public string file;              // PNG next to the JSON
         public int resolution;           // square, pixels
-        public List<string> channels;    // zone type key per channel R, G, B, A ("" = unused)
+        public List<string> channels;    // VSP item name per channel R, G, B, A ("" = unused)
+    }
+
+    // One VSP item and the mask channel holding its baked density.
+    [Serializable]
+    public class GolfMapZoneItem
+    {
+        public string item;              // VegetationItemInfoPro.Name in the package
+        public int texture;              // index into masks
+        public int channel;              // 0 R, 1 G, 2 B, 3 A
+        public List<string> sources;     // slot keys binding it: "<type>" (Default) or "<type>/<variant>"
     }
 
     [Serializable]
@@ -39,8 +60,15 @@ namespace GolfMap.Editor
         public string key;
         public string name;
         public string color;             // "#rrggbb" for the overlay
-        public int texture;              // index into masks
-        public int channel;              // 0 R, 1 G, 2 B, 3 A
+        public List<GolfMapZoneItemBinding> items;       // the Default mix
+        public List<GolfMapZoneVariant> variants;
+    }
+
+    [Serializable]
+    public class GolfMapZoneVariant
+    {
+        public string key;
+        public string name;
         public List<GolfMapZoneItemBinding> items;
     }
 
@@ -48,8 +76,8 @@ namespace GolfMap.Editor
     public class GolfMapZoneItemBinding
     {
         public string item;              // VegetationItemInfoPro.Name in the package
-        public float minDensity;
-        public float maxDensity = 1;
+        public float minDensity;         // information only: VSP has no density floor
+        public float maxDensity = 1;     // baked into the item's mask pixels by the pipeline
     }
 
     [Serializable]
@@ -57,6 +85,7 @@ namespace GolfMap.Editor
     {
         public string id;
         public string zoneType;
+        public string variant;           // variant key, "" = the type's Default mix
         public float weight = 1;
         public float feather = 2;
         public float noise;
@@ -78,16 +107,26 @@ namespace GolfMap.Editor
 
     public static class GolfMapZones
     {
-        public const string Format = "unity-zones-v1";
-        // Texture mask groups the importer owns are named after the zone type key so a
-        // re-import finds and updates them in place.
+        public const string Format = "unity-zones-v2";
+        const string LegacyFormat = "unity-zones-v1";
+        // Every texture mask group whose name starts with this belongs to the importer: a
+        // re-import updates the current ones in place and deletes the rest.
         public const string GroupPrefix = "golfmap-zone:";
+        // The per-item groups: "golfmap-zone:item:<VSP item name>".
+        public const string ItemGroupPrefix = GroupPrefix + "item:";
 
-        public static string GroupName(string key) { return GroupPrefix + key; }
+        public static string GroupName(string item) { return ItemGroupPrefix + item; }
 
         public static bool IsGroupName(string name) { return name != null && name.StartsWith(GroupPrefix, StringComparison.Ordinal); }
 
-        public static string KeyFromGroupName(string name) { return IsGroupName(name) ? name.Substring(GroupPrefix.Length) : null; }
+        // The item a per-item group is for; null for any other name (v1 per-type groups included).
+        public static string ItemFromGroupName(string name)
+        {
+            return name != null && name.StartsWith(ItemGroupPrefix, StringComparison.Ordinal) ? name.Substring(ItemGroupPrefix.Length) : null;
+        }
+
+        // "rough_tall" for the Default mix, "rough_tall/dry" for a variant.
+        public static string SlotKey(string type, string variant) { return string.IsNullOrEmpty(variant) ? type : type + "/" + variant; }
 
         static bool Finite(float v) { return !float.IsNaN(v) && !float.IsInfinity(v); }
 
@@ -97,11 +136,15 @@ namespace GolfMap.Editor
         public static GolfMapZoneFile Load(string path)
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) throw new Exception("Zones file not found: " + path);
-            var file = JsonUtility.FromJson<GolfMapZoneFile>(File.ReadAllText(path).TrimStart('\uFEFF'));
+            var file = JsonUtility.FromJson<GolfMapZoneFile>(File.ReadAllText(path).TrimStart('﻿'));
+            if (file != null && file.format == LegacyFormat)
+                throw new Exception(Path.GetFileName(path) + " is " + LegacyFormat + ": re-export zones from golf-map (v2: one mask channel per item).");
             if (file == null || file.format != Format) throw new Exception("format must be " + Format);
+            file.warnings = new List<string>();
             if (file.plot == null || !(file.plot.sizeM > 0) || !Finite(file.plot.sizeM)) throw new Exception("plot.sizeM missing");
             if (file.plot.terrain != "inner" && file.plot.terrain != "outer") throw new Exception("plot.terrain must be inner or outer");
             if (file.masks == null || file.masks.Count == 0) throw new Exception("masks missing");
+            if (file.items == null) file.items = new List<GolfMapZoneItem>();
             if (file.zoneTypes == null) file.zoneTypes = new List<GolfMapZoneType>();
             if (file.zones == null) file.zones = new List<GolfMapZone>();
 
@@ -111,7 +154,7 @@ namespace GolfMap.Editor
                 var mask = file.masks[i];
                 if (mask == null || string.IsNullOrEmpty(mask.file)) throw new Exception("masks[" + i + "].file missing");
                 if (mask.resolution <= 0) throw new Exception("masks[" + i + "].resolution must be positive");
-                if (mask.channels == null || mask.channels.Count == 0 || mask.channels.Count > 4) throw new Exception("masks[" + i + "].channels must list 1 to 4 zone type keys");
+                if (mask.channels == null || mask.channels.Count == 0 || mask.channels.Count > 4) throw new Exception("masks[" + i + "].channels must list 1 to 4 item names");
                 var png = Path.Combine(folder, mask.file);
                 if (!File.Exists(png)) throw new Exception("Mask PNG missing: " + png);
                 int w, h;
@@ -119,23 +162,52 @@ namespace GolfMap.Editor
                 if (w != mask.resolution || h != mask.resolution) throw new Exception(mask.file + " is " + w + "x" + h + ", expected " + mask.resolution + " square");
             }
 
+            // Zone types first: item sources are checked against their slot keys.
             var keys = new HashSet<string>();
+            var slots = new HashSet<string>();
             foreach (var type in file.zoneTypes)
             {
                 if (type == null || string.IsNullOrEmpty(type.key)) throw new Exception("zoneTypes entry without key");
                 if (!keys.Add(type.key)) throw new Exception("Duplicate zone type key " + type.key);
-                if (type.texture < 0 || type.texture >= file.masks.Count) throw new Exception("Zone type " + type.key + " names texture " + type.texture + " but there are " + file.masks.Count + " masks");
-                if (type.channel < 0 || type.channel > 3) throw new Exception("Zone type " + type.key + " channel must be 0..3");
-                var channels = file.masks[type.texture].channels;
-                if (type.channel >= channels.Count || channels[type.channel] != type.key)
-                    throw new Exception("Zone type " + type.key + " claims texture " + type.texture + " channel " + type.channel + " but masks[].channels says '" + (type.channel < channels.Count ? channels[type.channel] : "") + "'");
-                if (type.items == null) type.items = new List<GolfMapZoneItemBinding>();
-                foreach (var binding in type.items)
+                slots.Add(type.key);
+                type.items = CheckBindings(type.items, "Zone type " + type.key);
+                if (type.variants == null) type.variants = new List<GolfMapZoneVariant>();
+                var variantKeys = new HashSet<string>();
+                foreach (var variant in type.variants)
                 {
-                    if (binding == null || string.IsNullOrEmpty(binding.item)) throw new Exception("Zone type " + type.key + " has an item binding without a name");
-                    if (!Finite(binding.minDensity) || !Finite(binding.maxDensity) || binding.minDensity < 0 || binding.maxDensity > 1 || binding.maxDensity < binding.minDensity)
-                        throw new Exception("Zone type " + type.key + " item '" + binding.item + "' density range must satisfy 0 <= min <= max <= 1");
+                    if (variant == null || string.IsNullOrEmpty(variant.key)) throw new Exception("Zone type " + type.key + " has a variant without key");
+                    if (!variantKeys.Add(variant.key)) throw new Exception("Zone type " + type.key + " has duplicate variant key " + variant.key);
+                    variant.items = CheckBindings(variant.items, "Zone type " + type.key + " variant " + variant.key);
+                    slots.Add(SlotKey(type.key, variant.key));
                 }
+            }
+
+            // Items: one channel each, and the mask manifest must say the same.
+            var names = new HashSet<string>();
+            for (int i = 0; i < file.items.Count; i++)
+            {
+                var item = file.items[i];
+                if (item == null || string.IsNullOrEmpty(item.item)) throw new Exception("items[" + i + "] has no item name");
+                if (!names.Add(item.item)) throw new Exception("Item '" + item.item + "' is listed twice in items[]");
+                if (item.texture < 0 || item.texture >= file.masks.Count) throw new Exception("Item '" + item.item + "' names texture " + item.texture + " but there are " + file.masks.Count + " masks");
+                if (item.channel < 0 || item.channel > 3) throw new Exception("Item '" + item.item + "' channel must be 0..3");
+                var channels = file.masks[item.texture].channels;
+                if (item.channel >= channels.Count || channels[item.channel] != item.item)
+                    throw new Exception("Item '" + item.item + "' claims texture " + item.texture + " channel " + item.channel + " but masks[].channels says '" + (item.channel < channels.Count ? channels[item.channel] : "") + "'");
+                if (item.sources == null) item.sources = new List<string>();
+                foreach (var source in item.sources)
+                    if (!slots.Contains(source)) file.warnings.Add("Item '" + item.item + "' names source '" + source + "', which is no zone type or variant in the file.");
+            }
+            for (int t = 0; t < file.masks.Count; t++)
+                foreach (var channel in file.masks[t].channels)
+                    if (!string.IsNullOrEmpty(channel) && !names.Contains(channel)) throw new Exception("masks[" + t + "] has a channel for '" + channel + "' but items[] has no entry for it");
+            foreach (var type in file.zoneTypes)
+            {
+                foreach (var b in type.items)
+                    if (!names.Contains(b.item)) file.warnings.Add("Zone type " + type.key + " binds '" + b.item + "' but items[] has no mask for it.");
+                foreach (var v in type.variants)
+                    foreach (var b in v.items)
+                        if (!names.Contains(b.item)) file.warnings.Add("Zone type " + type.key + " variant " + v.key + " binds '" + b.item + "' but items[] has no mask for it.");
             }
 
             var ids = new HashSet<string>();
@@ -146,6 +218,9 @@ namespace GolfMap.Editor
                 if (string.IsNullOrEmpty(zone.id)) zone.id = "zone-" + i;
                 if (!ids.Add(zone.id)) throw new Exception("Duplicate zone id " + zone.id);
                 if (!keys.Contains(zone.zoneType)) throw new Exception("Zone " + zone.id + " uses unknown zone type '" + zone.zoneType + "'");
+                if (zone.variant == null) zone.variant = "";
+                if (zone.variant.Length > 0 && !slots.Contains(SlotKey(zone.zoneType, zone.variant)))
+                    file.warnings.Add("Zone " + zone.id + " names variant '" + zone.variant + "' that zone type " + zone.zoneType + " does not have.");
                 if (zone.rings == null) zone.rings = new List<GolfMapZoneRing>();
                 foreach (var ring in zone.rings)
                 {
@@ -155,6 +230,25 @@ namespace GolfMap.Editor
                 }
             }
             return file;
+        }
+
+        // Blank item names are dropped (the pipeline skips them too); ranges must be sane.
+        static List<GolfMapZoneItemBinding> CheckBindings(List<GolfMapZoneItemBinding> bindings, string owner)
+        {
+            if (bindings == null) return new List<GolfMapZoneItemBinding>();
+            bindings = bindings.Where(b => b != null && (b.item ?? "").Trim().Length > 0).ToList();
+            foreach (var binding in bindings)
+                if (!Finite(binding.minDensity) || !Finite(binding.maxDensity) || binding.minDensity < 0 || binding.maxDensity > 1 || binding.maxDensity < binding.minDensity)
+                    throw new Exception(owner + " item '" + binding.item + "' density range must satisfy 0 <= min <= max <= 1");
+            return bindings;
+        }
+
+        // Display name of a zone's variant: "Default" for none.
+        public static string VariantName(GolfMapZoneType type, string variant)
+        {
+            if (string.IsNullOrEmpty(variant)) return "Default";
+            var v = type == null ? null : type.variants.FirstOrDefault(x => x.key == variant);
+            return v == null ? variant + " (unknown)" : (string.IsNullOrEmpty(v.name) ? v.key : v.name);
         }
 
         // Width and height from the IHDR chunk; false when the signature does not match.

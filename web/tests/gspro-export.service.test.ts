@@ -1,6 +1,6 @@
 import { test, expect, afterEach } from 'bun:test';
 import { _reset } from '@basics/core/client/error-report';
-import { GsproExportService, terrainLabel, jobLabel } from '../src/export/gspro-export.service';
+import { GsproExportService, terrainLabel, jobLabel, DEFAULT_FLOOR_COLOR } from '../src/export/gspro-export.service';
 import type { GsproExportApi, GsproExportSettings, GsproOrthoSource, CourseTerrain, GsproExportJob } from '../../shared/api/gspro-export.gen';
 
 // GsproExportService against an in-memory fake of the export API injected
@@ -36,7 +36,7 @@ const TERRAIN: CourseTerrain = {
 /** Fake server: holds one folder per course, same null-means-default rule. */
 function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproOrthoSource[]; noTerrain?: boolean } = {}) {
     const dirs = new Map<string, string | null>();
-    const calls = { settings: 0, setDir: 0, run: 0, runOrtho: [] as string[], runOuterOrtho: [] as string[], runDem: [] as string[], runHillshade: [] as string[], runTrees: [] as string[], terrain: 0, darken: [] as (number | undefined)[], tint: [] as [boolean | undefined, number | undefined][] };
+    const calls = { svg: [] as { excludeFeatureIds?: string[]; variant?: string }[], settings: 0, setDir: 0, run: 0, runOrtho: [] as string[], runOuterOrtho: [] as string[], runDem: [] as string[], runHillshade: [] as string[], runTrees: [] as string[], runZones: [] as string[], terrain: 0, darken: [] as (number | undefined)[], tint: [] as [boolean | undefined, number | undefined][], floor: [] as [boolean | undefined, string | undefined, number | undefined][], buildings: [] as (boolean | undefined)[] };
 
     const settingsFor = (courseId: string): GsproExportSettings => {
         const dir = dirs.get(courseId) ?? null;
@@ -54,7 +54,8 @@ function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproO
             dirs.set(courseId, dir && dir.trim() ? dir.trim() : null);
             return settingsFor(courseId);
         },
-        async run({ courseId }) {
+        async run({ courseId, excludeFeatureIds, variant }) {
+            calls.svg.push({ excludeFeatureIds, variant });
             calls.run++;
             if (opts.failRun) throw new Error(opts.failRun);
             const { dir } = settingsFor(courseId);
@@ -63,10 +64,12 @@ function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproO
         async orthoSources() {
             return opts.sources ?? SOURCES;
         },
-        async runOrtho({ courseId, source, darken, tint, tintOpacity }) {
+        async runOrtho({ courseId, source, darken, tint, tintOpacity, forestFloor, floorColor, floorMix, removeBuildings }) {
             calls.runOrtho.push(source);
+            calls.buildings.push(removeBuildings);
             calls.darken.push(darken);
             calls.tint.push([tint, tintOpacity]);
+            calls.floor.push([forestFloor, floorColor, floorMix]);
             if (opts.failRun) throw new Error(opts.failRun);
             const { dir } = settingsFor(courseId);
             return { path: `${dir}/vreta-orto-l2-2025-8192.jpg`, report: ['rendering ortho-orto-l2-2025.tif', 'wrote x.jpg'] };
@@ -76,10 +79,12 @@ function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproO
             if (opts.noTerrain) throw new Error('Course has no map area to lay out the GSPro terrains for: build the course map first.');
             return TERRAIN;
         },
-        async runOuterOrtho({ courseId, collection, darken, tint, tintOpacity }) {
+        async runOuterOrtho({ courseId, collection, darken, tint, tintOpacity, forestFloor, floorColor, floorMix, removeBuildings }) {
             calls.runOuterOrtho.push(collection);
+            calls.buildings.push(removeBuildings);
             calls.darken.push(darken);
             calls.tint.push([tint, tintOpacity]);
+            calls.floor.push([forestFloor, floorColor, floorMix]);
             if (opts.failRun) throw new Error(opts.failRun);
             const { dir } = settingsFor(courseId);
             return { path: `${dir}/vreta-outer-${collection}-8192.jpg`, report: [`fetched outer-ortho-${collection}.tif`, 'wrote x.jpg'] };
@@ -102,6 +107,12 @@ function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproO
             const { dir } = settingsFor(courseId);
             return { path: `${dir}/vreta-${terrain}-trees.json`, report: ['Wrote x.json', '120 trees'] };
         },
+        async runZones({ courseId, terrain }) {
+            calls.runZones.push(terrain);
+            if (opts.failRun) throw new Error(opts.failRun);
+            const { dir } = settingsFor(courseId);
+            return { path: `${dir}/vreta-${terrain}-zones.json`, report: ['Wrote x.json', '14 zones'] };
+        },
     };
     const api = jobApi(handlers);
     return { api, calls, dirs };
@@ -120,11 +131,12 @@ function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => 
         settings: h.settings, setDir: h.setDir, orthoSources: h.orthoSources, terrain: h.terrain,
         async start(input) {
             const { courseId, kind } = input;
-            const result = kind === 'svg' ? await h.run({ courseId })
-                : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity })
-                : kind === 'outer-ortho' ? await h.runOuterOrtho({ courseId, collection: input.collection, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity })
+            const result = kind === 'svg' ? await h.run({ courseId, excludeFeatureIds: input.excludeFeatureIds, variant: input.variant })
+                : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity, forestFloor: input.forestFloor, floorColor: input.floorColor, floorMix: input.floorMix, removeBuildings: input.removeBuildings })
+                : kind === 'outer-ortho' ? await h.runOuterOrtho({ courseId, collection: input.collection, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity, forestFloor: input.forestFloor, floorColor: input.floorColor, floorMix: input.floorMix, removeBuildings: input.removeBuildings })
                 : kind === 'dem' ? await h.runDem({ courseId, terrain: input.terrain })
                 : kind === 'hillshade' ? await h.runHillshade({ courseId, terrain: input.terrain })
+                : kind === 'zones' ? await h.runZones({ courseId, terrain: input.terrain })
                 : await h.runTrees({ courseId, terrain: input.terrain });
             last = { id: `job-${kind}-${Date.now()}`, courseId, kind, label: kind, status: 'succeeded',
                 startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), result, error: null };
@@ -424,6 +436,54 @@ test('the surface tint travels with both orthophoto exports: on by default, a bl
     expect(calls.tint).toHaveLength(3);
 });
 
+test('the forest floor travels with both cleaned orthophoto exports: on by default with the picked colour, a blank mix meaning the default', async () => {
+    const { svc, calls } = await openService();
+    expect(await svc.runOrtho(true)).toBe(true);
+    svc.floorColor.set('#604830');
+    svc.floorMix.set(' 0,2 ');
+    expect(await svc.runOuterOrtho(true)).toBe(true);
+    svc.forestFloor.set(false);  // off: no floor fields at all, so the pipeline paints nothing
+    expect(await svc.runOrtho(true)).toBe(true);
+    expect(calls.floor).toEqual([[true, DEFAULT_FLOOR_COLOR, undefined], [true, '#604830', 0.2], [undefined, undefined, undefined]]);
+    // Nonsense never reaches the server.
+    svc.forestFloor.set(true);
+    svc.floorMix.set('lots');
+    expect(await svc.runOrtho(true)).toBe(false);
+    expect(svc.error.peek()).toMatch(/photo mix must be a number between 0 and 1/);
+    expect(calls.floor).toHaveLength(3);
+});
+
+test('building removal travels with both cleaned orthophoto exports, on by default', async () => {
+    const { svc, calls } = await openService();
+    expect(await svc.runOrtho(true)).toBe(true);
+    expect(await svc.runOuterOrtho(true)).toBe(true);
+    svc.removeBuildings.set(false);
+    expect(await svc.runOrtho(true)).toBe(true);
+    expect(calls.buildings).toEqual([true, true, undefined]);
+});
+
+test('the plain orthophoto exports never ask for building removal or forest floor', async () => {
+    const { svc, calls } = await openService();
+    expect(await svc.runOrtho()).toBe(true);
+    expect(await svc.runOuterOrtho()).toBe(true);
+    expect(calls.buildings).toEqual([undefined, undefined]);
+    expect(calls.floor).toEqual([[undefined, undefined, undefined], [undefined, undefined, undefined]]);
+    // A cleaned export with both boxes off has nothing to do and never reaches the server.
+    svc.removeBuildings.set(false);
+    svc.forestFloor.set(false);
+    expect(await svc.runOrtho(true)).toBe(false);
+    expect(svc.error.peek()).toMatch(/Remove buildings.*Forest floor/);
+    expect(calls.buildings).toHaveLength(2);
+});
+
+test('runZones exports the named terrain and reports the zones file', async () => {
+    const { svc, calls } = await openService();
+    expect(await svc.runZones('inner')).toBe(true);
+    expect(svc.lastPath.peek()).toBe(`${DEFAULT_DIR}/vreta-inner-zones.json`);
+    expect(calls.runZones).toEqual(['inner']);
+    expect(svc.report.peek()).toEqual(['Wrote x.json', '14 zones']);
+});
+
 test('a failed DEM or outer run surfaces the server message like the other runs', async () => {
     const { svc } = await openService({ failRun: 'GSPro outer DEM fetch failed: No DEM items found' });
     expect(await svc.runDem('outer')).toBe(false);
@@ -514,6 +574,15 @@ test('opening the panel shows the last finished job\'s outcome', async () => {
     expect(jobLabel(svc.job.peek())).toMatch(/^Last export: inner heightmap, done in/);
 });
 
+test('opening the panel on a server with no job yet shows no outcome', async () => {
+    // The server's null reaches the client as the framework's bare `{ ok: true }`.
+    const api: GsproExportApi = { ...fakeApi().api, async current() { return { ok: true } as never; } };
+    const svc = new GsproExportService(api, 1);
+    await svc.openFor('course-1', 'Vreta');
+    expect(svc.job.peek()).toBeNull();
+    expect(svc.error.peek()).toBe('');
+});
+
 test('a start refused because an export is already running re-attaches to that job', async () => {
     const running = runningJob('course-1', 'outer trees');
     let polled = 0;
@@ -544,4 +613,100 @@ test('jobLabel reads elapsed time for running and finished jobs', () => {
 
 test('terrainLabel reads as side × side and a thin-spaced centre', () => {
     expect(terrainLabel(TERRAIN.inner)).toBe('2010 m × 2010 m, centre 530\u2009035 E 6\u2009487\u2009675 N (EPSG:3006)');
+});
+
+// --- SVG test variants (features left out for the Blender build) ---
+
+/** A Map-backed stand-in for localStorage, so tests never share state. */
+function memoryStorage() {
+    const data = new Map<string, string>();
+    return {
+        data,
+        getItem: (k: string) => data.get(k) ?? null,
+        setItem: (k: string, v: string) => { data.set(k, v); },
+        removeItem: (k: string) => { data.delete(k); },
+    };
+}
+
+test('a plain SVG export sends no exclusions and no variant', async () => {
+    const { api, calls } = fakeApi();
+    const svc = new GsproExportService(api, 1, memoryStorage());
+    await svc.openFor('course-1', 'Vreta');
+    await svc.run();
+    expect(calls.svg).toEqual([{ excludeFeatureIds: undefined, variant: undefined }]);
+});
+
+test('excluded features and the variant name travel with the SVG export', async () => {
+    const { api, calls } = fakeApi();
+    const svc = new GsproExportService(api, 1, memoryStorage());
+    await svc.openFor('course-1', 'Vreta');
+    svc.excludeFromSvg(['road-1', 'road-2', 'bunker-7']);
+    svc.includeInSvg(['bunker-7']);
+    svc.toggleSvgExcluded('green-3');
+    svc.setSvgVariant('  no roads ');
+    expect(await svc.run()).toBe(true);
+    expect(calls.svg).toEqual([{ excludeFeatureIds: ['road-1', 'road-2', 'green-3'], variant: 'no roads' }]);
+});
+
+test('exclusions are kept per course and come back when the panel reopens', async () => {
+    const { api } = fakeApi();
+    const storage = memoryStorage();
+    const svc = new GsproExportService(api, 1, storage);
+    await svc.openFor('course-1', 'Vreta');
+    svc.excludeFromSvg(['road-1']);
+    svc.setSvgVariant('no-roads');
+
+    await svc.openFor('course-2', 'Landeryd');
+    expect(svc.svgExcluded.peek().size).toBe(0);
+    expect(svc.svgVariant.peek()).toBe('');
+
+    await svc.openFor('course-1', 'Vreta');
+    expect([...svc.svgExcluded.peek()]).toEqual(['road-1']);
+    expect(svc.svgVariant.peek()).toBe('no-roads');
+
+    svc.clearSvgExclusions();
+    svc.setSvgVariant('');
+    expect(storage.data.size).toBe(0);  // nothing left behind for a clean course
+});
+
+test('without storage (private mode) exclusions still hold for the session', async () => {
+    const { api, calls } = fakeApi();
+    const svc = new GsproExportService(api, 1, null);
+    await svc.openFor('course-1', 'Vreta');
+    svc.excludeFromSvg(['road-1']);
+    await svc.run();
+    expect(calls.svg[0].excludeFeatureIds).toEqual(['road-1']);
+});
+
+test('a bisect exports each step as its own variant, narrowing on every answer', async () => {
+    const { api, calls } = fakeApi();
+    const storage = memoryStorage();
+    const svc = new GsproExportService(api, 1, storage);
+    await svc.openFor('course-1', 'Vreta');
+    svc.excludeFromSvg(['tree-1']);
+
+    svc.startSvgBisect(['p1', 'p2', 'p3', 'p4']);
+    expect(await svc.answerSvgBisect(true)).toBe(false);  // nothing to answer before the step is exported
+    await svc.run();
+    expect(calls.svg.at(-1)).toEqual({ excludeFeatureIds: ['tree-1', 'p1', 'p2'], variant: 'bisect-1' });
+
+    await svc.answerSvgBisect(false);  // still failed: the culprit is in p3, p4
+    expect(calls.svg.at(-1)).toEqual({ excludeFeatureIds: ['tree-1', 'p3'], variant: 'bisect-2' });
+
+    // A reload mid-bisect picks it up where it was.
+    const again = new GsproExportService(api, 1, storage);
+    await again.openFor('course-1', 'Vreta');
+    expect(again.svgBisect.peek()?.candidates).toEqual(['p3', 'p4']);
+    expect(again.svgBisect.peek()?.exported).toBe(true);
+
+    await again.answerSvgBisect(true);  // built without p3: it is p3
+    expect(calls.svg.at(-1)).toEqual({ excludeFeatureIds: ['tree-1', 'p3'], variant: 'bisect-3' });
+    await again.answerSvgBisect(true);  // confirmed, and nothing more to export
+    expect(again.svgBisect.peek()?.result).toBe('confirmed');
+    expect(calls.svg).toHaveLength(3);
+
+    again.stopSvgBisect();
+    expect(again.svgBisect.peek()).toBeNull();
+    expect(again.svgVariant.peek()).toBe('');
+    expect([...again.svgExcluded.peek()]).toEqual(['tree-1', 'p3']);  // the culprit stays out
 });

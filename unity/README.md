@@ -3,7 +3,10 @@
 Unity editor scripts for getting golf-map output into an OPCD/GSPro course project.
 Nothing here runs in the golf-map build. Copy `Editor/GolfMap/` into the OPCD base
 project under `Assets/Editor/GolfMap/` (any folder named `Editor` works). The menu
-items appear under `GolfMap`.
+items appear under `GolfMap`. [`install.json`](install.json) lists every folder that goes into a
+course project; the `unity` MCP server's `unity_sync` does the copying, and the editor bridge
+(`Editor/GolfMapBridge/`) lets an agent recompile, run menus, read the console and take
+screenshots in the open editor. See [mcp/README.md](mcp/README.md).
 
 ## Terrain Importer
 
@@ -20,10 +23,12 @@ sidecars, nothing is named after a course.
    picker per terrain for the overlay. Every orthophoto export comes as two or three JPEGs:
    the photo as-is, a `-terrain` twin darkened for the terrain shader (which lights the
    photo a second time and washes an untouched one out) and, with the panel's mesh texture
-   on, a `-meshes` variant: the darkened twin with the course's grass surfaces tinted dark
-   green from its drawn features (the Photoshop overlay step done automatically), meant for
-   the course meshes, not the terrain; the picker defaults to the `-terrain` twin, patched
-   before pristine, then `-meshes`, hillshades last.
+   on, a `-meshes` variant (4096 px): the darkened twin softened to ~1 m of detail, with the
+   course's grass surfaces tinted dark green at 50 % and everything that isn't drawn (the Photoshop overlay step done automatically). The
+   inner's is for the course meshes (the sun-lit tint lifts it); the outer's is the outer
+   terrain's floor: as dark as its `-terrain` twin, with the colouring on top. The picker
+   defaults to the `-terrain` twin for the inner and the `-meshes` variant for the outer,
+   patched before pristine, hillshades last.
 3. **Import terrains**. For each terrain it
    - copies the `.raw`, the sidecar and the picked overlay into
      `Assets/Terrain Backup/<course>/` and sets the overlay's Max Size to 8192 and its compression
@@ -41,6 +46,55 @@ sidecars, nothing is named after a course.
 Existing `Terrain (Inner)` / `Plot (Outer)` objects are replaced when the toggle is on.
 Creation supports Undo. The importer does not touch other terrain settings (pixel error,
 base map distance …); set those as the base project prefers.
+
+### Updating the heights in place (golf-map's "Heightmap → Unity")
+
+The Terrain Importer builds the terrains. After that, a new heightmap (terrain edits, pads, digs) goes
+onto the existing ones with `GolfMap > Terrain > Update heights from export`, or the bridge's
+`golfmap.terrain.update [terrain=inner|outer|both] [outerSink] [dryRun=true]`.
+
+- **In place:** the same Terrain objects and TerrainData assets, so VSP systems, tree storage and
+  references stay. Each TerrainData is backed up to `<course>/Backups/<data>-before-update-<time>.asset`
+  first (`golfmap.terrain.restore` puts the heights back). The overlay texture is left alone.
+- **Outer plot:** re-placed from the two sidecars, keeping the sink it has now (Vreta's is 2.214 m,
+  lowered by hand) unless `outerSink` is given.
+- **Report:** how far the ground moved on each terrain, and `outerShowsThrough` (the area where the outer
+  plot's ground is at or above the inner's, measured on every run, dry runs included). A deep cut
+  under an outer that doesn't carry the same edits shows through the rebuilt meshes there.
+- **Conform:** an update undoes a `golfmap.terrain.conform`. Re-run the conform once the course meshes
+  are rebuilt from the new terrain.
+
+golf-map's GSPro panel drives this with **Inner/Outer heightmap → Unity** (export kind `unity-terrain`;
+CLI `bun run gspro:export -- <course> unity-terrain:inner`). The server exports the heightmap, finds the open
+editor whose active course's export folder is the course's (through the same bridge client as the MCP
+server), and runs the update. It refuses an inner heightmap older than the site's terrain edits (see
+docs/gspro/export.md). Terrain › Export To OBJ for Blender stays manual.
+
+### Sculpting in Unity, carried back to golf-map
+
+Sculpt a terrain in Unity, then press **Inner/Outer Unity sculpt → golf-map** in golf-map's GSPro panel
+(export kind `unity-sculpt`, bridge `golfmap.terrain.capture terrain=inner|outer [threshold=0.01] [dryRun]`,
+`GolfMapTerrainSculpt.cs`). A capture measures, per heightmap vertex:
+
+    sculpt = current − reference + sculptIn − conform
+
+| | |
+|---|---|
+| `reference` | the heights golf-map last put there. `golfmap.terrain.update` keeps a copy in `<course>/Reference/<terrain>-heights.asset` + `-reference.json`. A terrain imported before this existed needs one Heightmap → Unity first |
+| `sculptIn` | the sculpt layer that export already contained (`gspro.py dem --sculpt` writes `<stem>-sculpt-in.raw`, and the update keeps a copy). This makes every capture the whole layer, so replacing the stored layer never loses earlier strokes |
+| `conform` | what `golfmap.terrain.conform` raised under the meshes (`<terrain>-conform.bytes`, cleared by the next update). It is derived, not a sculpt |
+
+Differences under 1 cm are heightmap quantisation. The outer's capture leaves out the inner square. The
+capture goes to the export folder as `<prefix>-<terrain>-sculpt.raw` (float32 m, the heightmap's pixel grid,
+north-up, cropped) + `.json` (golfmap-sculpt-v1). golf-map makes it a GeoTIFF and stores it as that terrain's
+one `delta` terrain edit, replayed after every other edit. A capture with nothing sculpted removes the layer.
+Then Apply to terrain, and the heightmap → Unity again. The layer is additive: regrading or digging under it
+later keeps the sculpt as an offset on top.
+
+Checked on Vreta by restoring an older terrain backup and capturing the difference. The extremes landed on
+the known pad cut (+5.56 m) and fill (−2.76 m), and a spot check matched Unity's heights to 1.6 cm. With nothing
+sculpted a capture finds 0 cells. Commands that save assets take the course folder as a string up front:
+an asset save can reload the course asset and leave a held `GolfMapCourse` without a path.
 
 ### Heightmap sidecar: `<course>-<inner|outer>-dem-<side>m.tif.json`
 
@@ -146,6 +200,13 @@ on any asset shares its species' stems between the variants that fit (pine keeps
 (material settings, shared by all its shapes); the look is drawn on its own hash, so adding
 one never moves a stem to another shape. All three are opt-in: a palette without them
 matches exactly as it did.
+
+`rules.scaleJitter` (0.1 = ±10%) and `rules.maxLeanDeg` add cosmetic per-stem variety after
+the fit, each on its own hash: neighbours of the same measured height, or pinned at
+`minScale`/`maxScale`, stop looking like copies. Jitter may take a stem past the scale limits
+by that fraction and never changes the pick or the review status; hand-edited stems keep their
+exact size. The lean tilts the tree in its own frame (turning it turns the lean); Unity
+terrain-tree planting cannot tilt and ignores it. Both default to 0.
 
 After **Load and check**, the tab previews the draft against the survey: target share, the
 share and count the matcher actually produces, the share at the last check, per-asset
@@ -287,45 +348,90 @@ without saving if any instance moved. Billboards still need rebaking.
 ## Vegetation Zones
 
 `GolfMap > Vegetation Zones` (`GolfMapZoneImporter.cs`, VSP half in
-`GolfMapZoneImporterVsp.cs`, model in `GolfMapZones.cs`) imports a `unity-zones-v1`
-export (`gspro.py zones`, one per terrain: `<course>-<inner|outer>-zones.json` plus
-`<course>-<inner|outer>-zones-<n>.png`, next to the trees files in the export folder)
-into Vegetation Studio Pro texture masks. Plan and format: `docs/feature-vegetation-zones.md`.
+`GolfMapZoneImporterVsp.cs`, model in `GolfMapZones.cs`, bridge commands in
+`GolfMapZoneImporterBridge.cs`) imports a `unity-zones-v2` export (`gspro.py zones`, one per
+terrain: `<course>-<inner|outer>-zones.json` plus `<course>-<inner|outer>-zones-<n>.png`,
+next to the trees files in the export folder) into Vegetation Studio Pro texture masks.
+Plan and format: `docs/feature-vegetation-zones.md`. A `unity-zones-v1` file is refused
+("re-export zones from golf-map").
+
+**One mask channel per VSP item, not per zone type.** VSP multiplies an item's texture-mask
+density rules (`SpawnChance *= value/256 * DensityMultiplier` per rule) while include rules OR,
+so an item bound to two channels would only grow where both are non-zero. Zone types have
+**variants** (a named item mix each; a drawn zone picks type + variant, none = the type's Default
+mix), and variants share items, so the pipeline bakes each item's final density (sum over the
+type/variant slots binding it, times their `maxDensity`, clipped to 1) into its own channel and
+the importer gives every item exactly one density and one include rule against it.
 
 1. Pick the zones JSON, **Load and check**. The importer validates the format, the plot,
-   that every mask PNG exists and is square at `resolution`, and that `zoneTypes[]`
-   texture/channel agree with `masks[].channels`. The terrain is matched by plot side
-   (2050 m inner, 5000 m outer), and the VSP systems covering that terrain are listed
-   the way the tree planter matches storage (terrain in the system's list, bounds =
+   that every mask PNG exists and is square at `resolution`, that `items[]` texture/channel
+   agree with `masks[].channels`, and the zone types, variants and zones (an unknown variant
+   or source key is a warning, not an error). The summary lists, per zone type, the zone
+   count per variant, and every item with its channel and sources. The terrain is matched by
+   plot side (2050 m inner, 5000 m outer), and the VSP systems covering that terrain are
+   listed the way the tree planter matches storage (terrain in the system's list, bounds =
    square + 1 m). The package defaults to the system's `Default`-biome package that is
    not a planter tree catalogue; both are popups if the guess is wrong. The tool never
    creates a system: plant trees first so `GolfMapVspRig` builds it.
-2. **Import masks and rules**:
+2. **Preview import** shows what Import would change (groups to create, update and delete,
+   rules to add, update and remove, bound, missing and unbound items) and writes nothing.
+3. **Import masks and rules**:
    - copies each PNG to `Assets/GolfMap/<Course>/Zones/` and imports it readable,
      RGBA32, uncompressed, no mipmaps, clamp, linear, Max Size >= resolution (VSP samples
      masks on the CPU with `GetRawTextureData`, so nothing else works);
-   - creates or updates, in place, one RGBAChannel **Texture Mask Group** per zone type,
-     named `golfmap-zone:<key>`, with the texture over the terrain's world rectangle and
-     the group's channel selector set to the zone type's channel;
-   - for every `zoneTypes[].items` binding finds the item by `Name` in the package
-     (exact, then trimmed: Arborist biomes carry trailing spaces) and creates or updates
-     a **Density** rule (`DensityMultiplier` = `maxDensity`) and an **Include** rule
-     (`MinDensity` 0.02) against that group. Rules are matched by group id, so re-import
-     updates in place. Nothing else on the item is touched;
+   - creates or updates, in place, one RGBAChannel **Texture Mask Group** per exported item,
+     named `golfmap-zone:item:<item name>`, with the item's texture over the terrain's world
+     rectangle and the group's channel selector set to the item's channel;
+   - **deletes** every other `golfmap-zone:*` group (v1 per-type groups, items no longer
+     exported, duplicates) and removes every rule, in any item's density, include, exclude or
+     scale list, that points at a golfmap group other than that item's own. Groups are removed
+     from the list directly: VSP's own `DeleteTextureMaskGroup` switches an item's include rules
+     off when its list empties, which would let it carpet the terrain;
+   - for every exported item found in the package (by `Name`: exact, then trimmed, since
+     Arborist biomes carry trailing spaces) keeps exactly one **Density** rule (min 0, max 1,
+     `DensityMultiplier` 1: the density is in the pixels) and one **Include** rule
+     (`MinDensity` 0.02) against its own group, created or updated in place (matched by group
+     id). Hand-authored rules (non-golfmap groups) and everything else on the item are untouched;
    - calls `RefreshVegetationSystem` + `ClearCache` on the system so runtime spawn picks
      the masks up, saves assets and marks the scene dirty (save it);
-   - writes `<UnityProject>/GolfMapSpelunk/<Course>_zone_import.txt`: textures, groups
-     created/updated, stale `golfmap-zone:*` groups for types no longer exported (left in
-     place), items bound, items named in bindings but missing from the package, package
-     items with no binding, channels no item uses. The window shows the same summary.
-3. **Draw zone outlines** draws every zone's rings in the Scene view with Handles in the
-   zone type's colour at terrain height (plus the lift), with the zone id, type and
+   - writes `<UnityProject>/GolfMapSpelunk/<Course>_zone_import.txt`: items bound
+     (item <- sources), exported items missing from the package, package items with no export
+     entry and what VSP will do with them, groups created/updated/deleted, rules
+     removed/added/updated, rules pointing at groups the package does not have. The window
+     shows the same summary.
+4. **Draw zone outlines** draws every zone's rings in the Scene view with Handles in the
+   zone type's colour at terrain height (plus the lift), with the zone id, type, variant and
    weight at the centroid (always, or on hover only). Read-only; it exists to check
    alignment against the terrain and the trees.
 
-Limits: VSP's density rule has a multiplier only, so a binding's `minDensity` is stored
-on the rule (`MinDensity`) but does not raise the floor; the include threshold is fixed
-at 0.02. Groups are one texture each, and `Repeat` is always 1.
+Unbound package items (no export entry) lose their golfmap rules. With include rules on and no
+include rule left VSP spawns them **nowhere**: `UnityTerrainSampleJob` resets each spawn
+location's `TextureMaskData` to 0, only a passing include sample sets it to 1, and
+`FilterIncludeMaskJob` (scheduled whenever `UseTextureMaskIncludeRules` is on, rules or not)
+excludes every location still at 0. A rule on a group the package no longer has is skipped the
+same way. The report says per item which case applies; `golfmap.grass.apply` switches runtime
+spawn on only for items with an include rule on an existing group.
+
+Bridge (`unity_command`): `golfmap.zones.check` (`terrain=inner|outer` or `file`, `package`)
+loads and returns the summary plus the import `plan`; `golfmap.zones.import` (same args,
+`dryRun=false`) imports, and with `dryRun=true` validates the target and returns the plan
+without writing anything.
+
+Woodland floor (D-VZ10): `woodland_floor` zones come from the pipeline's `woodland-features`
+(one per closed stand, weight from the lidar understory) and arrive here like any other
+type. Bind the understory items (ferns, blueberry, moss
+clumps, deadwood, forest saplings) to it in the web zone-type panel; the importer does the
+rest. The ground colour under the stands is not a VSP job: it is baked into the terrain
+texture by the orthophoto export ("Forest floor under woodland stands" in the app's Export
+to GSPro panel, `gspro.py ortho --floor-course`). The zones JSON and masks come from the
+same panel's "Export inner/outer vegetation zones" buttons (after the heightmap). The
+panel's "Remove buildings" (on by default) fills the photographed roofs and their shadows
+from the ground round them, so the building planter's prefabs do not stand on a picture of
+themselves.
+
+Limits: VSP has no density floor, so a binding's `minDensity` is carried as information
+only; the include threshold is fixed at 0.02. Groups are one texture each, and `Repeat` is
+always 1. A mask pixel of 255 gives VSP a factor of 255/256.
 
 ## Trees file format: unity-trees-v1
 
@@ -438,6 +544,148 @@ JsonUtility-shaped: no nulls in number fields (0 = unmeasured), the footprint a 
 | `footprint` | the footprint ring, flat `x0, z0, x1, z1, …` in plot metres |
 
 Outer files leave out the buildings on the inner square, like the trees file.
+
+## Bunker Materials
+
+`GolfMap > Bunker Materials` (`GolfMapBunkerMaterials.cs`, model in `GolfMapBunkerChannels.cs`)
+matches bunker and bunker-blend materials to the vertex paint made in Blender. The paint
+conventions come from `blender/conventions/bunker-channels.json`; copy it into the course
+folder (`Assets/GolfMap/<Course>/bunker-channels.json`, the window's default) or pick it.
+
+- **Check paint** (read-only) tallies each bunker's dominant vertex colour per ring counted
+  in from its seam, and each blend's colour on the edge it shares with the bunker (within
+  5 cm) and its outer edge, then scores every convention. A bunker painted the ce.simgolf way
+  (red lip, black, green sand) on an OPCD default material (green = dirt) shows as `!!`.
+  It also flags meshes whose renderer no longer shows the render material of their OPCD
+  `ChannelMaterials` asset. Report: `GolfMapSpelunk/<Course>_bunker_paint.txt`.
+- **Build and apply** works the way OPCD's own channel editor does. OPCD keeps, per mesh, a
+  `MeshChannelMaterialsStore` pointing at a `ChannelMaterials` asset (render material plus a
+  source material and source channel per paint channel), and the MAHS shader keeps each
+  channel's settings under `_Red*`/`_Green*`/`_Blue*`/`_Black*`. The window creates, per
+  original OPCD material, a render material whose channels are copied (properties and
+  keywords) from the convention's sources, a matching `ChannelMaterials` asset, and points
+  the renderer and the store at them. `$bunker`/`$blend` are the mesh's original material,
+  `$outer` the source of the blend's original Black channel (not
+  `BlendTarget.BlendToMaterialBlack`, which on Vreta names the Satellite-theme rough). A `tint` (the fake rolled-lip
+  shadow) or `blendStrength` is baked into its own source material so an OPCD rebuild from
+  the asset gives the same look. Output: `Assets/GolfMap/<Course>/Bunkers/<convention>/`.
+  Originals are never edited; Undo works.
+- **Restore OPCD materials** puts back the material and `ChannelMaterials` asset each mesh
+  had before its first apply (`Bunkers/restore.json`).
+
+Running OPCD's theme window (SetMeshMaterialv4) reassigns bunker materials; apply again
+after it. `blender/tools/bunker_paint_report.py` is the Blender twin of Check paint (same
+file, rings and scores) for comparing a `.blend` with the Unity scene.
+
+## 3D grass on the roughs
+
+`GolfMap > Plant 3D grass to roughs` (`GolfMapRoughGrass.cs`, bridge `golfmap.roughgrass.plant
+material=<name>`) adds a StixGames `GrassRenderer` (it brings `NatureMeshFilter` and `grassonoffnew`
+with it) to every rough course mesh in the active scene - `Spline_*` meshes that `GolfMapSurfaces`
+classifies as Rough, so `*_Rough_-_Mesh` and no blends - and sets its material to `NewRough` (found by
+asset name; the bridge command takes another). Meshes that already have one only get the material, so
+it is safe to re-run after a mesh rebuild. One Undo step. The type is looked up by name, so projects
+without the StixGames Grass Shader still compile and the action reports it missing.
+
+The blades take their colour from the material's `_ColorMap` (the terrain ortho), sampled at world
+x/z divided by `_ColorMapTiling` (the floor colour by `_TerrainSize`). Both must equal the ortho's extent,
+i.e. the inner terrain size (2050 on Vreta), not 2000: a few percent off shifts the lookup by tens of metres
+across the course, and rough grass next to a path turns white where it picks up a bunker or cart path from
+the ortho. The action sets both from the course's inner terrain on every run (logged, one Undo step with the
+rest) and warns if that terrain is not square or not at the origin, which the shader cannot follow.
+
+## Vertex paint
+
+`GolfMap > Vertex Paint > Apply paint.json` (`GolfMapVertexPaint.cs`, bridge `golfmap.paint.apply
+[dryRun=true]`) generates vertex paint on the course meshes from `<course>/paint.json`
+(`golfmap-paint-v1`, written with defaults on the first run; a dry run before that previews the defaults).
+`Restore original meshes` (`golfmap.paint.restore`) puts the FBX meshes back.
+
+How the paint reaches the game:
+
+- **MAHS channels.** OPCD's `4 color Vert Paint MAHS` material draws one texture per paint channel. Course
+  meshes are 100 % red except bunkers, blends and water. Rough's black channel is OPCD's dirt base (index 4)
+  at about half opacity, so black on rough reads as a worn or dry patch.
+- **Stix reads red only.** `NewRough` is `ONE_GRASS_TYPE` + `VERTEX_DENSITY`: a blade spawns with the
+  probability of the vertex colour's **red** component. Black, green and blue all mean no grass, and a
+  gradient thins the grass gradually.
+- **The bake.** Stix draws from the mesh its `NatureMeshFilter` caches (`meshes`, serialized; on Vreta it is
+  the FBX mesh itself, no normalisation). OPCD's own painter (VertexPainterPro) paints a
+  `VertexInstanceStream`, which only the renderer sees, so Stix needs its SaveMesh "bake". This tool writes
+  the baked result directly: a mesh copy per painted object in `<course>/PaintedMeshes/`, swapped into the
+  `MeshFilter` (the `MeshCollider` keeps the FBX mesh), then `ResetCache` + `GetMeshes` on the
+  `NatureMeshFilter`. A hand-painted `VertexInstanceStream` on the same object would draw over the copy;
+  apply warns about it.
+- **Reproducible.** Paint is always computed from the original FBX colours
+  (`PaintedMeshes/restore.json` remembers each object's original), so re-running after tuning or after an
+  FBX re-import gives the same result. Objects no rule touches any more go back to the FBX mesh. Apply marks
+  the scene dirty and does not save it: save the scene to keep the swaps.
+
+Rules (only `kind: edge`, `edge: bunker` so far): paint `channel` onto the `surfaces` (GolfMapSurfaces
+classes) within `widthM` of the outer edge of every bunker blend. World-anchored Perlin noise picks the
+stretches where the rule applies (`coverage` share, `noiseM` long, `seed`), and a second octave varies how
+far each spot reaches (35-100 % of `widthM`). The weight falls off smoothly from `strength` at the edge.
+Vreta's first recipe (`bunker-surround`: rough, black, 2.2 m, strength 0.9, coverage 0.55, 3.5 m) paints
+about 5 900 vertices on 20 of the 60 rough meshes. Many greenside bunkers border fairway or semi rough,
+which have no Stix grass.
+
+Vertex spacing limits the detail: fairway, rough, semi and deep are about 1.2 m, rough within 3 m of a
+bunker about 0.8 m, bunkers 0.19 m and blends 0.09 m. Features under about 2 m do not survive on the grass
+meshes. Check a result from above (`unity_screenshot` with a pitched `rotation`): at eye height from 10 m away,
+a band this narrow is hidden behind the blades.
+
+Read-only helpers: `golfmap.paint.survey` (per class: vertices, edge lengths, current paint, Stix setup,
+bunker centres) and `golfmap.paint.probe x z r` (paint of every course mesh near a point).
+
+## Course meshes: FBX sync
+
+`GolfMap > Meshes > Sync from FBX folder` (`GolfMapCourseMeshes.cs`, bridge `golfmap.meshes.sync`) keeps the
+scene's course meshes in step with the FBX folder the Blender export writes into. The Blender side is
+[`blender/tools/fbx_sync.py`](../blender/README.md#fbx-sync) ("Export changed FBX"), which only rewrites the FBX
+of meshes that changed, so Unity only reimports those.
+
+- **An FBX overwritten in place needs nothing.** The scene object references the mesh inside the FBX by the
+  file's GUID and the mesh name, so the reimport swaps the geometry under the existing object; its collider,
+  materials and `MeshChannelMaterialsStore` stay. Don't delete and re-drag the meshes.
+- **A new FBX** (no scene object shows it anywhere in the scene) is instantiated under the course's mesh parent the
+  way OPCD's `GSP > Add OPCD Meshes` does, given a `MeshCollider`, then OPCD's `GameObject > Set Default Materials`
+  runs on the new objects (materials, channel store, physics material).
+- **An FBX that is gone:** objects under the parent whose mesh reference is missing are listed as `stale`; the
+  menu asks before deleting them, the bridge deletes with `prune=true`.
+- **Vertex paint** renders from mesh copies, so a painted object whose FBX is newer than its copy re-runs
+  `golfmap.paint.apply`; so do new objects when the course has a `paint.json` (`paint=false` skips it).
+- `<course>/meshes-sync.json` remembers each FBX's size and time, so the next sync lists which ones were
+  updated in place. `followUps` names the steps that depend on the meshes (terrain conform, surfaces export,
+  Stix grass on new roughs).
+
+Folder and parent come from the course asset (`meshFolder`, default `fbx` under Assets; `meshParent`, default
+`Meshes`); the bridge takes `folder`/`parent` overrides. `Preview sync` / `dryRun=true` shows the plan. Undo
+covers the scene changes; the scene is marked dirty, not saved.
+
+## Creeks (R.A.M.)
+
+`GolfMap > Creeks > Import creeks (R.A.M.)` (`GolfMapCreeks.cs`, bridge `golfmap.creeks.import
+[file] [dryRun=true]`) turns golf-map's `<prefix>-inner-creeks.json` (unity-creeks-v1, the GSPro panel's
+**Export creeks** / `gspro.py creeks`) into NatureManufacture R.A.M. splines: one `RamSpline` per creek under
+**GolfMap Creeks**, named `Creek feature:<id>`.
+
+- **Control points** are at the creek's water surface in inner-plot metres (the inner terrain sits at the
+  origin; y = DEM height − the sidecar's `minM`), running downstream and never climbing, at most 10 m apart,
+  with the creek's width in `w`. golf-map digs the bed below that same surface (**Dig creeks**), so the water
+  only shows once the heightmap and the Blender meshes are rebuilt with the digs.
+- **Profile**: each creek names a profile asset (default *Small Stream Profile*; a feature's `ramProfile`
+  attribute picks another), applied the way R.A.M.'s own profile picker does it (`ResetToProfile`).
+- **Re-import** refills each spline's points in place. Hand edits to the points are not kept. Creeks no
+  longer exported are removed.
+- R.A.M. is in Assembly-CSharp, so its types are found by name (the offline compile check can't see them).
+- Skip OPCD's **Add Water Plane** for creeks: its one flat plane per mesh, at the lowest rim vertex, would sit
+  under the bed upstream.
+
+The report (`GolfMapSpelunk/<Course>_creeks.txt`) gives each creek's surface against the ground under it (the
+highest collider straight down). On Vreta, before any digs, the median is 4–38 cm under the creek meshes. A
+creek far off means the scene's heightmap is not the one the export measured. Known gap: where creeks meet,
+the end heights can differ by ~10 cm (each creek's profile is its own), and the splines are not joined
+(R.A.M.'s beginning/ending spline connections).
 
 ## Not built yet
 

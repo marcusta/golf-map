@@ -19,7 +19,7 @@ import { ConflictError } from '@basics/core/server/auth';
 import { sweref99tmToWgs84, wgs84ToSweref99tm } from './geo';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
-import { parseTerrainSquare } from './terrain-square';
+import { describeSquare, innerSquareFrom3006, parseTerrainSquare, type TerrainSquare } from './terrain-square';
 
 export interface BboxWgs84 {
     west: number;
@@ -92,6 +92,23 @@ export async function resolveCourseMapBbox(
         `Course has no map area to ${purpose}: no georeference bbox and its site has `
         + 'no tile manifest. Build the course map (Set map area) first.',
     );
+}
+
+/**
+ * The course's INNER terrain square: the site's persisted one, else the one
+ * its map area implies (what the build would snap). The external-data
+ * fetches clip to it: `sweref` is the envelope of the WGS84 map bounds, a
+ * box turned against the grid, so it reaches 10-15 m past the square the
+ * DEM, the map and the GSPro exports use, and so would the fetched features.
+ */
+export async function resolveCourseInnerSquare(
+    courses: CoursesService,
+    assets: AssetsService,
+    courseId: string,
+    purpose: string,
+): Promise<TerrainSquare> {
+    const { sweref, terrainSquare } = await resolveCourseMapBbox(courses, assets, courseId, purpose);
+    return describeSquare(terrainSquare ?? innerSquareFrom3006(sweref));
 }
 
 /** `{ bbox: [minX, minY, maxX, maxY] }` (EPSG:3006) from georeference_json. */

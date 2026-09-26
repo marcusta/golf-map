@@ -156,3 +156,15 @@ def test_apply_dem_edits_single_path_still_works(tmp_path: Path):
     out = cmd_apply_dem_edits(dem_path, pads, tmp_path / "dem-edited.tif")
     with rasterio.open(out) as src:
         assert src.read(1).shape == (80, 80)
+
+
+def test_cmd_building_pads_square_keeps_only_the_inner_terrains_buildings(tmp_path: Path, capsys):
+    garage = [(15.56, 58.41), (15.5602, 58.41), (15.5602, 58.4101), (15.56, 58.4101), (15.56, 58.41)]
+    survey = survey_file(tmp_path, [way(1, HOUSE, building="detached"), way(2, garage, building="garage")])
+    # A square round the house only (the garage is ~1 km away): the inner terrain.
+    xs, ys = reproject([p[0] for p in HOUSE], [p[1] for p in HOUSE])
+    square = (min(xs) - 100, min(ys) - 100, max(xs) + 100, max(ys) + 100)
+    out = cmd_building_pads(survey, tmp_path / "pads.geojson", square_3006=square)
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert [f["properties"]["originRef"] for f in doc["features"]] == ["osm:way/1"]
+    assert "; 1 building(s) outside the square left without a pad" in capsys.readouterr().out

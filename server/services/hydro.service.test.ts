@@ -20,6 +20,7 @@ import {
     CRS_3006_URI,
     type HydroFetchImpl,
 } from './hydro.service';
+import { describeSquare, envelope3006, innerSquareFrom3006, terrainManifestField } from './terrain-square';
 
 // EPSG:3006 bbox around the Linköping test spot; georeference convention
 // `{ bbox: [minX, minY, maxX, maxY] }` as written by the tile pipeline.
@@ -253,7 +254,7 @@ describe('HydroService.fetchForCourse', () => {
             .toBe(`Basic ${Buffer.from('someuser:somepass').toString('base64')}`);
     });
 
-    test('clips water and creeks to the course bbox (server bbox filter is intersects)', async () => {
+    test('clips water and creeks to the inner terrain square (server bbox filter is intersects)', async () => {
         const straddling = squareRing(534000, 6473500, 100); // half outside east edge
         const farPond = squareRing(600000, 6600000, 100);
         const crossingCreek = [[530000, 6473000], [532000, 6473000]]; // enters from the west
@@ -269,7 +270,34 @@ describe('HydroService.fetchForCourse', () => {
         expect(result.water.length).toBe(1); // far pond dropped
         for (const [x] of result.water[0].rings[0]) expect(x).toBeLessThanOrEqual(534000);
         expect(result.creeks.length).toBe(1);
-        expect(result.creeks[0].points[0][0]).toBeCloseTo(531000, 6); // clipped at west edge
+        // Clipped half a ribbon inside the west edge, so the buffered ribbon ends on it.
+        expect(result.creeks[0].points[0][0]).toBeCloseTo(531000 + SUGGESTED_CREEK_WIDTH_M / 2, 6);
+    });
+
+    test('clips to the site persisted terrain square, not the envelope of its WGS84 bounds', async () => {
+        const square: [number, number, number, number] = [531500, 6472500, 533500, 6474500];
+        const straddling = squareRing(533500, 6473500, 100); // half outside the square's east edge
+        const crossingCreek = [[531000, 6473000], [534000, 6473000]]; // crosses the whole square
+        const { fetchImpl, calls } = stubFetch({
+            StandingWater: page([polygonFeature(1, straddling)]),
+            WatercoursePolygon: page([]),
+            WatercourseLine: page([lineFeature(2, crossingCreek)]),
+        });
+        const { ctx, course } = await setupCourse({
+            withManifest: true,
+            manifestMetaJson: JSON.stringify({ bounds: MANIFEST_BOUNDS, terrain: terrainManifestField(square) }),
+        });
+
+        const result = await service(ctx, fetchImpl).fetchForCourse(course.id);
+
+        const { wgs84 } = describeSquare(square);
+        expect(result.bbox).toEqual(wgs84);
+        expect(new URL(calls[0].url).searchParams.get('bbox')).toBe([wgs84.west, wgs84.south, wgs84.east, wgs84.north].join(','));
+        expect(Math.max(...result.water[0].rings[0].map(([x]) => x))).toBeCloseTo(533500, 6);
+        const half = SUGGESTED_CREEK_WIDTH_M / 2;
+        const xs = result.creeks[0].points.map(([x]) => x);
+        expect(Math.min(...xs)).toBeCloseTo(531500 + half, 6);
+        expect(Math.max(...xs)).toBeCloseTo(533500 - half, 6);
     });
 
     test('follows next links; params only on page 1', async () => {
@@ -299,9 +327,11 @@ describe('HydroService.fetchForCourse', () => {
 
         const result = await service(ctx, fetchImpl).fetchForCourse(course.id);
 
-        expect(result.bbox).toEqual(MANIFEST_BOUNDS);
+        // The square the bounds imply (no persisted one), asked for by its envelope.
+        const { wgs84 } = describeSquare(innerSquareFrom3006(envelope3006(MANIFEST_BOUNDS)));
+        expect(result.bbox).toEqual(wgs84);
         const bbox = new URL(calls[0].url).searchParams.get('bbox');
-        expect(bbox).toBe('15.53,58.39,15.58,58.42');
+        expect(bbox).toBe([wgs84.west, wgs84.south, wgs84.east, wgs84.north].join(','));
         expect(result.water).toEqual([]);
         expect(result.creeks).toEqual([]);
     });

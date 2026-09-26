@@ -4,21 +4,30 @@
         {
             "name": "server",
             "runtimeExecutable": "bun",
-            "runtimeArgs": ["run", "dev:server"],
+            "runtimeArgs": [
+                "run",
+                "dev:server"
+            ],
             "cwd": "server",
             "port": 3000
         },
         {
             "name": "demo",
             "runtimeExecutable": "bun",
-            "runtimeArgs": ["run", "demo"],
+            "runtimeArgs": [
+                "run",
+                "demo"
+            ],
             "cwd": "web",
             "port": 5180
         },
         {
             "name": "web",
             "runtimeExecutable": "bun",
-            "runtimeArgs": ["run", "dev"],
+            "runtimeArgs": [
+                "run",
+                "dev"
+            ],
             "cwd": "web",
             "port": 5173,
             "autoPort": true
@@ -26,7 +35,10 @@
         {
             "name": "web-c4",
             "runtimeExecutable": "bun",
-            "runtimeArgs": ["run", "dev"],
+            "runtimeArgs": [
+                "run",
+                "dev"
+            ],
             "cwd": "web",
             "port": 5273,
             "autoPort": true
@@ -34,7 +46,10 @@
         {
             "name": "web-c3",
             "runtimeExecutable": "bun",
-            "runtimeArgs": ["run", "dev"],
+            "runtimeArgs": [
+                "run",
+                "dev"
+            ],
             "cwd": "web",
             "port": 5373,
             "autoPort": true
@@ -43,7 +58,8 @@
             "name": "api-e2e",
             "runtimeExecutable": "powershell",
             "runtimeArgs": [
-                "-NoProfile", "-Command",
+                "-NoProfile",
+                "-Command",
                 "$tmp = (Resolve-Path ..).Path + '\\e2e\\.tmp'; $env:PORT='3100'; $env:DATA_DIR=(Resolve-Path ../data).Path; $env:DB_PATH=\"$tmp\\preview-app.sqlite\"; $env:SESSION_DB_PATH=\"$tmp\\preview-sessions.sqlite\"; $env:OBS_DB_PATH=\"$tmp\\preview-obs.sqlite\"; $env:CROSS_ORIGIN_RESOURCE_POLICY='same-site'; bun db/seed-e2e.ts $env:DB_PATH; if ($LASTEXITCODE -eq 0) { bun main.ts }"
             ],
             "cwd": "server",
@@ -52,9 +68,35 @@
         {
             "name": "web-e2e",
             "runtimeExecutable": "powershell",
-            "runtimeArgs": ["-NoProfile", "-Command", "$env:PORT='5274'; $env:API_PROXY_TARGET='http://localhost:3100'; bunx vite"],
+            "runtimeArgs": [
+                "-NoProfile",
+                "-Command",
+                "$env:PORT='5274'; $env:API_PROXY_TARGET='http://localhost:3100'; bunx vite"
+            ],
             "cwd": "web",
             "port": 5274
+        },
+        {
+            "name": "api-e2e-b",
+            "runtimeExecutable": "powershell",
+            "runtimeArgs": [
+                "-NoProfile",
+                "-Command",
+                "$tmp = (Resolve-Path ..).Path + '\\e2e\\.tmp'; $env:PORT='3150'; $env:DATA_DIR=(Resolve-Path ../data).Path; $env:DB_PATH=\"$tmp\\preview-b-app.sqlite\"; $env:SESSION_DB_PATH=\"$tmp\\preview-b-sessions.sqlite\"; $env:OBS_DB_PATH=\"$tmp\\preview-b-obs.sqlite\"; $env:CROSS_ORIGIN_RESOURCE_POLICY='same-site'; bun db/seed-e2e.ts $env:DB_PATH; if ($LASTEXITCODE -eq 0) { bun main.ts }"
+            ],
+            "cwd": "server",
+            "port": 3150
+        },
+        {
+            "name": "web-e2e-b",
+            "runtimeExecutable": "powershell",
+            "runtimeArgs": [
+                "-NoProfile",
+                "-Command",
+                "$env:PORT='5284'; $env:API_PROXY_TARGET='http://localhost:3150'; bunx vite"
+            ],
+            "cwd": "web",
+            "port": 5284
         }
     ]
 }

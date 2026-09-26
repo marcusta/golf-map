@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Regenerate the lidar tree layers for one site from its persisted sources:
-# canopy / canopy-color / surface tiles, tree-stems.json, and trees.geojson
-# (polygons, for import-generated-features), then re-register the tile
-# manifest so the API serves the new generatedAt.
+# canopy / canopy-color / surface tiles, tree-stems.json, trees.geojson
+# (polygons, for import-generated-features) and woodland.geojson (the
+# woodland-floor stands, D-VZ10), then re-register the tile manifest so the
+# API serves the new generatedAt. Unlike the app's job it does not import
+# the stands; the last line prints the command that does.
 #
 #   bun run trees:regen -- <courseId|siteId>   # or: scripts/regen-trees.sh <courseId|siteId>
 #
@@ -44,10 +46,12 @@ for f in "$SOURCES"/lidar/*.laz; do [[ -f $f ]] && LIDAR+=(--lidar "$f"); done
 cd "$ROOT/pipeline"
 "$PYTHON" -m golfpipe canopy "${LIDAR[@]}" --dem "$DEM" --course-id "$SITE" \
     --tiles-dir "$TILES" --workdir "$WORK/canopy" --minzoom 12 --maxzoom 17 \
-    --trees-out "$SOURCES/trees.geojson"
+    --trees-out "$SOURCES/trees.geojson" --woodland-out "$SOURCES/woodland.geojson" \
+    --roofs-out "$SOURCES/roofs.tif"
 "$PYTHON" -m golfpipe trees-stems "${LIDAR[@]}" --dem "$DEM" --course-id "$SITE" \
     --tiles-dir "$TILES" --out "$WORK/tree-stems.geojson"
 
 cd "$ROOT/server"
 bun scripts/register-tile-manifest.ts "$SITE" --db "$DATA/app.sqlite" --data-dir "$DATA"
 echo "Tree polygons written to $SOURCES/trees.geojson (import with server/scripts/import-generated-features.ts or Import GeoJSON)"
+echo "Woodland stands written to $SOURCES/woodland.geojson (import: cd server && bun scripts/import-generated-features.ts <courseId> $SOURCES/woodland.geojson --source lidar-woodland)"

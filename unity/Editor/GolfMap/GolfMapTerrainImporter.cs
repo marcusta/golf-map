@@ -27,7 +27,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using GolfMap.Bridge;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 
 namespace GolfMap.Editor
@@ -50,6 +52,7 @@ namespace GolfMap.Editor
         public string source;
         public GolfMapRawInfo raw;
         public GolfMapUnityInfo unity;
+        public GolfMapSculptIn sculptIn;  // the Unity sculpt layer this heightmap contains (GolfMapTerrainSculpt)
     }
 
     [Serializable]
@@ -202,15 +205,17 @@ namespace GolfMap.Editor
                 }
                 if (inner == null && outer == null) throw new Exception("no heightmap sidecar (*.tif.json with a raw entry) in the folder — export the inner heightmap from the app first");
 
-                // Overlays: the 8192 px JPEGs. Outer ones carry "-outer-". The
+                // Overlays: the exported JPEGs. Outer ones carry "-outer-". The
                 // "-terrain" twins (darkened for the terrain shader) come first,
                 // patched photos before pristine, then the "-meshes" variants
-                // (the tinted texture meant for the course meshes, listed so it
-                // can be compared) and hillshades last, so the default pick is
-                // the one meant for the terrain.
+                // and hillshades last, so the default pick is the one meant for
+                // the terrain. For the OUTER that is its "-meshes" variant: the
+                // export makes it as dark as the twin with the green colouring
+                // on top and softened, so it goes first there; the inner's is
+                // lifted by its tint for the course meshes and stays a comparison.
                 var jpgs = Directory.GetFiles(folder, "*.jpg")
                     .OrderBy(p => p.Contains("-hillshade-"))
-                    .ThenBy(p => p.EndsWith("-meshes.jpg", StringComparison.OrdinalIgnoreCase))
+                    .ThenBy(p => p.EndsWith("-meshes.jpg", StringComparison.OrdinalIgnoreCase) != Path.GetFileName(p).Contains("-outer-"))
                     .ThenBy(p => !p.EndsWith("-terrain.jpg", StringComparison.OrdinalIgnoreCase))
                     .ThenBy(p => !p.Contains("-patched-"))
                     .ThenBy(p => p).ToList();
@@ -380,6 +385,195 @@ namespace GolfMap.Editor
                 dz = (innerSc.square3006[1] + innerSc.square3006[3]) / 2.0 - (outerSc.square3006[1] + outerSc.square3006[3]) / 2.0;
             }
             return new Vector3((float)(offset - dx), (float)(outerSc.minM - innerSc.minM), (float)(offset - dz));
+        }
+
+        // ---- updating the heights in place (golf-map's "Heightmap -> Unity") ----
+
+        // Import above builds the terrains; this refreshes them after a new
+        // heightmap export (terrain edits, digs) without replacing anything:
+        // the same Terrain objects and TerrainData assets, so the VSP systems,
+        // tree storage and scene references to them stay intact. Each terrain's
+        // TerrainData is backed up to <course>/Backups/ first
+        // (golfmap.terrain.restore puts the heights back). The overlay texture
+        // is left alone. A previous golfmap.terrain.conform is undone by this:
+        // re-run it once the course meshes are rebuilt from the new terrain.
+
+        [MenuItem("GolfMap/Terrain/Update heights from export")]
+        static void UpdateMenu() { Debug.Log("[GolfMap] " + GolfMapJson.Serialize(UpdateHeights("both", null, float.NaN, false), false)); }
+
+        [BridgeCommand("golfmap.terrain.update", "Put the course export folder's heightmaps (<prefix>-<terrain>-dem-<side>m.raw + .tif.json, what golf-map's heightmap export writes) onto the scene's existing terrains in place: heights, size and resolution from the sidecar, the outer plot re-placed from the two sidecars, lowered by the sink it has now (or outerSink). Backs up each TerrainData to <course>/Backups/ first, refreshes VSP. Keeps the objects, their data assets and the overlay. Undoes a terrain conform.",
+            args = "terrain=inner|outer|both (default both; both skips an outer the folder lacks), folder (default: the active course's export folder), outerSink (m below its sidecar position; default: keep the plot's current sink), dryRun=false")]
+        static object UpdateCommand(BridgeArgs a)
+        {
+            return UpdateHeights(a.String("terrain", "both"), a.String("folder"), (float)a.Number("outerSink", double.NaN), a.Bool("dryRun", false));
+        }
+
+        public static Dictionary<string, object> UpdateHeights(string which, string folder, float outerSinkM, bool dryRun)
+        {
+            var course = GolfMapCourses.Require();
+            var courseFolder = GolfMapCourses.Folder(course);   // before any asset work (see GolfMapTerrainSculpt)
+            if (string.IsNullOrEmpty(folder))
+            {
+                if (string.IsNullOrEmpty(course.exportFolder)) throw new BridgeError("The course asset names no export folder; pass folder.");
+                folder = Path.IsPathRooted(course.exportFolder) ? course.exportFolder : Path.Combine(Application.dataPath, course.exportFolder);
+            }
+            folder = Path.GetFullPath(folder);
+            if (!Directory.Exists(folder)) throw new BridgeError("No export folder " + folder + ".");
+            if (which != "both" && which != "inner" && which != "outer") throw new BridgeError("terrain must be inner, outer or both.");
+
+            var innerFound = FindExport(folder, "inner", course.exportPrefix);
+            var scene = EditorSceneManager.GetActiveScene();
+            var rows = new List<object>();
+            var backups = new List<string>();
+            foreach (var kind in which == "both" ? new[] { "inner", "outer" } : new[] { which })
+            {
+                var f = kind == "inner" ? innerFound : FindExport(folder, "outer", course.exportPrefix);
+                if (f == null)
+                {
+                    if (which == "both" && kind == "outer") { rows.Add(new Dictionary<string, object> { { "terrain", "outer" }, { "skipped", "no outer heightmap in the export folder" } }); continue; }
+                    throw new BridgeError("No " + kind + " heightmap export (*-" + kind + "-dem-*.tif.json with its .raw) in " + folder + ".");
+                }
+                if (kind == "outer" && innerFound == null) throw new BridgeError("The outer plot is placed from the inner sidecar, and the folder has none.");
+                var terrain = kind == "outer"
+                    ? GolfMapTreePlanter.RoleTerrain(scene, course.outerTerrainName, course.outerTerrainData, "outer")
+                    : GolfMapTreePlanter.RoleTerrain(scene, course.innerTerrainName, course.innerTerrainData, "inner");
+                var td = terrain.terrainData;
+                var sc = f.sidecar;
+                int res = sc.raw.size > 0 ? sc.raw.size : sc.unity.heightmapResolution;
+                var heights = ReadRaw(f.rawPath, res);
+                var newSize = new Vector3((float)sc.sideM, (float)sc.heightRangeM, (float)sc.sideM);
+                var newPos = terrain.transform.position;
+                float sink = 0;
+                if (kind == "outer")
+                {
+                    // The sink keeps outer ground from showing through the inner; keep
+                    // whatever it is now (set by the importer or lowered by hand)
+                    // unless one is given.
+                    var placed = OuterPosition(innerFound.sidecar, sc);
+                    sink = float.IsNaN(outerSinkM) ? Mathf.Max(0f, placed.y - terrain.transform.position.y) : outerSinkM;
+                    newPos = placed - new Vector3(0, sink, 0);
+                }
+
+                // How much the ground moves, in world metres, on every 4th cell.
+                double maxMove = 0, sumMove = 0; int moved = 0, compared = 0;
+                if (td.heightmapResolution == res)
+                {
+                    var old = td.GetHeights(0, 0, res, res);
+                    float oldY = terrain.transform.position.y, oldH = td.size.y;
+                    for (int z = 0; z < res; z += 4)
+                        for (int x = 0; x < res; x += 4)
+                        {
+                            double dz = (heights[z, x] * newSize.y + newPos.y) - (old[z, x] * oldH + oldY);
+                            compared++;
+                            if (Math.Abs(dz) > 0.02) { moved++; sumMove += Math.Abs(dz); }
+                            if (Math.Abs(dz) > Math.Abs(maxMove)) maxMove = dz;
+                        }
+                }
+                float cellM = (float)sc.sideM / (res - 1) * 4;
+                var row = new Dictionary<string, object>
+                {
+                    { "terrain", terrain.name }, { "sidecar", Path.GetFileName(f.sidecarPath) }, { "source", sc.source },
+                    { "heightRangeM", new object[] { Math.Round(td.size.y, 3), Math.Round(sc.heightRangeM, 3) } },
+                    { "resolution", new object[] { td.heightmapResolution, res } },
+                    { "maxMoveM", compared > 0 ? (object)Math.Round(maxMove, 2) : null },
+                    { "movedM2", compared > 0 ? (object)Math.Round(moved * cellM * cellM) : null },
+                    { "meanMoveM", moved > 0 ? (object)Math.Round(sumMove / moved, 2) : null },
+                };
+                if (kind == "outer") { row["position"] = new object[] { Math.Round(newPos.x, 3), Math.Round(newPos.y, 3), Math.Round(newPos.z, 3) }; row["sinkM"] = Math.Round(sink, 3); }
+                else if (terrain.transform.position != Vector3.zero) row["warning"] = "the inner terrain is not at the origin; golf-map's exports assume it is";
+                rows.Add(row);
+                if (dryRun) continue;
+
+                var dataPath = AssetDatabase.GetAssetPath(td);
+                if (!string.IsNullOrEmpty(dataPath))
+                {
+                    var backupFolder = courseFolder + "Backups";
+                    if (!AssetDatabase.IsValidFolder(backupFolder)) AssetDatabase.CreateFolder(courseFolder.TrimEnd('/'), "Backups");
+                    var backup = backupFolder + "/" + td.name + "-before-update-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".asset";
+                    if (!AssetDatabase.CopyAsset(dataPath, backup)) throw new BridgeError("Could not back up " + dataPath + " to " + backup + "; nothing changed.");
+                    backups.Add(backup);
+                    row["backup"] = backup;
+                }
+                if (td.heightmapResolution != res) td.heightmapResolution = res;
+                td.size = newSize;
+                td.SetHeights(0, 0, heights);
+                terrain.Flush();
+                EditorUtility.SetDirty(td);
+                if (kind == "outer" && terrain.transform.position != newPos)
+                {
+                    Undo.RecordObject(terrain.transform, "Update terrain heights");
+                    terrain.transform.position = newPos;
+                }
+                GolfMapTerrainConform.RefreshVsp(terrain);
+                // What golf-map sent, so a later sculpt can be told apart from it.
+                GolfMapTerrainSculpt.SaveReference(courseFolder, kind, terrain, sc, f.sidecarPath);
+            }
+            if (!dryRun)
+            {
+                AssetDatabase.SaveAssets();
+                EditorSceneManager.MarkSceneDirty(scene);
+            }
+            return new Dictionary<string, object>
+            {
+                { "folder", folder }, { "dryRun", dryRun }, { "terrains", rows }, { "backups", backups },
+                { "outerShowsThrough", OuterShowsThrough(GolfMapCourses.Require(), scene) },  // a dry run measures the scene as it is; re-read: asset saves can reload the course
+                { "next", "Export the terrain OBJ (Terrain > Export To OBJ...) for Blender. Re-run golfmap.terrain.conform once the course meshes are rebuilt." },
+            };
+        }
+
+        // Where the outer plot's ground is at or above the inner terrain's (within
+        // 5 cm), sampled every 2 m over the inner square: the outer shows through
+        // there once the course meshes follow the inner. A deep cut (a pad on a
+        // slope, a dug pond) under an outer not updated with the same edits does
+        // it. Null when the scene lacks either terrain.
+        static object OuterShowsThrough(GolfMapCourse course, UnityEngine.SceneManagement.Scene scene)
+        {
+            Terrain inner, outer;
+            try
+            {
+                inner = GolfMapTreePlanter.RoleTerrain(scene, course.innerTerrainName, course.innerTerrainData, "inner");
+                outer = GolfMapTreePlanter.RoleTerrain(scene, course.outerTerrainName, course.outerTerrainData, "outer");
+            }
+            catch (Exception) { return null; }
+            var size = inner.terrainData.size;
+            var o = inner.transform.position;
+            const float step = 2f;
+            int hits = 0; float worst = float.NegativeInfinity; Vector3 at = Vector3.zero;
+            for (float z = 0; z <= size.z; z += step)
+                for (float x = 0; x <= size.x; x += step)
+                {
+                    var p = new Vector3(o.x + x, 0, o.z + z);
+                    float above = (outer.SampleHeight(p) + outer.transform.position.y) - (inner.SampleHeight(p) + o.y);
+                    if (above > -0.05f) hits++;
+                    if (above > worst) { worst = above; at = p; }
+                }
+            return new Dictionary<string, object>
+            {
+                { "areaM2", Math.Round(hits * step * step) },
+                { "worstM", Math.Round(worst, 2) },
+                { "worstAt", new object[] { Math.Round(at.x, 1), Math.Round(at.z, 1) } },
+            };
+        }
+
+        // The folder's heightmap export for one terrain kind: its sidecar (the
+        // `terrain` field, else -inner-/-outer- in the name, preferring files
+        // that start with the course's export prefix) and the .raw next to it.
+        static Found FindExport(string folder, string kind, string prefix)
+        {
+            return Directory.GetFiles(folder, "*.tif.json")
+                .OrderBy(p => string.IsNullOrEmpty(prefix) || !Path.GetFileName(p).StartsWith(prefix + "-", StringComparison.Ordinal))
+                .ThenBy(p => p, StringComparer.Ordinal)
+                .Select(p =>
+                {
+                    GolfMapDemSidecar sc;
+                    try { sc = JsonUtility.FromJson<GolfMapDemSidecar>(File.ReadAllText(p)); } catch { return null; }
+                    if (sc == null || sc.sideM <= 0 || sc.raw == null || string.IsNullOrEmpty(sc.raw.file)) return null;
+                    var name = Path.GetFileName(p);
+                    var k = !string.IsNullOrEmpty(sc.terrain) ? sc.terrain : name.Contains("-outer-") ? "outer" : name.Contains("-inner-") ? "inner" : null;
+                    var raw = Path.Combine(folder, sc.raw.file);
+                    return k == kind && File.Exists(raw) ? new Found { sidecarPath = p, sidecar = sc, rawPath = raw } : null;
+                })
+                .FirstOrDefault(found => found != null);
         }
 
         // ---- files ---------------------------------------------------------

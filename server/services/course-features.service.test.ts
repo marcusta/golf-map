@@ -556,11 +556,12 @@ describe('CourseFeaturesService.reorder', () => {
     });
 });
 
-describe('CourseFeaturesService.geojsonByCourse — D24 stackKey', () => {
-    test('course-level features get groupRank 0; hole features get groupRank = hole number', async () => {
+describe('CourseFeaturesService.geojsonByCourse — D28 stackKey', () => {
+    test('Roughs group under every hole, holes by number, course-level on top', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);
         const courseLevel = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: squareGeometry() });
+        const roughsRough = await svc.create({ courseId: TEST_COURSE_ID, layer: 'roughs', type: 'rough', geometry: squareGeometry() });
         const hole1Fairway = await svc.create({
             courseId: TEST_COURSE_ID,
             holeId: TEST_HOLE_1_ID, // hole number 1
@@ -571,10 +572,89 @@ describe('CourseFeaturesService.geojsonByCourse — D24 stackKey', () => {
         const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
         const byId = new Map(fc.features.map((f) => [f.id, f.properties]));
 
-        expect(byId.get(courseLevel.id)?.stackKey).toBe(0 * 4096 + courseLevel.sortOrder);
+        expect(byId.get(roughsRough.id)?.layer).toBe('roughs');
+        expect(byId.get(roughsRough.id)?.stackKey).toBe(0 * 4096 + roughsRough.sortOrder);
         expect(byId.get(hole1Fairway.id)?.stackKey).toBe(1 * 4096 + hole1Fairway.sortOrder);
-        // Any hole-1 feature outranks any course-level feature (D24 composition order).
-        expect(byId.get(hole1Fairway.id)!.stackKey).toBeGreaterThan(byId.get(courseLevel.id)!.stackKey);
+        expect(byId.get(courseLevel.id)?.stackKey).toBe(1023 * 4096 + courseLevel.sortOrder);
+        // Roughs < any hole < course-level (D28 composition order).
+        expect(byId.get(hole1Fairway.id)!.stackKey).toBeGreaterThan(byId.get(roughsRough.id)!.stackKey);
+        expect(byId.get(courseLevel.id)!.stackKey).toBeGreaterThan(byId.get(hole1Fairway.id)!.stackKey);
+    });
+
+    test('roads paint on top of everything, on a hole or course-level', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const holeRoad = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'path', geometry: squareGeometry() });
+        const courseRoad = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'path', geometry: squareGeometry() });
+        // Created after the roads, so higher in their own groups' sort order.
+        const courseWater = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: squareGeometry() });
+        const holeBunker = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'bunker', geometry: squareGeometry() });
+
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        const key = new Map(fc.features.map((f) => [f.id, f.properties.stackKey]));
+        const order = new Map(fc.features.map((f) => [f.id, f.properties.sortOrder]));
+
+        expect(key.get(courseRoad.id)).toBe(1024 * 4096 + order.get(courseRoad.id)!);
+        expect(key.get(holeRoad.id)).toBe(1024 * 4096 + order.get(holeRoad.id)!);
+        for (const road of [holeRoad, courseRoad]) {
+            expect(key.get(road.id)!).toBeGreaterThan(key.get(courseWater.id)!);
+            expect(key.get(road.id)!).toBeGreaterThan(key.get(holeBunker.id)!);
+        }
+    });
+});
+
+describe('CourseFeaturesService — Roughs layer (D28)', () => {
+    test('is its own stack group, separate from course-level', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const courseRough = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'rough', geometry: squareGeometry() });
+        const a = await svc.create({ courseId: TEST_COURSE_ID, layer: 'roughs', type: 'rough', geometry: squareGeometry() });
+        const b = await svc.create({ courseId: TEST_COURSE_ID, layer: 'roughs', type: 'deep_rough', geometry: squareGeometry() });
+
+        // deep_rough ranks under rough (D26), inside the Roughs group only.
+        const rows = new Map((await svc.listByCourse(TEST_COURSE_ID)).map((f) => [f.id, f]));
+        expect(rows.get(b.id)?.sortOrder).toBe(0);
+        expect(rows.get(a.id)?.sortOrder).toBe(1);
+        expect(rows.get(courseRough.id)?.sortOrder).toBe(courseRough.sortOrder);
+
+        await svc.reorder(TEST_COURSE_ID, null, [a.id, b.id], 'roughs');
+        expect((await svc.findById(a.id)).sortOrder).toBe(0);
+        // The course-level scope does not see Roughs members.
+        await expect(svc.reorder(TEST_COURSE_ID, null, [a.id, b.id])).rejects.toBeInstanceOf(ConflictError);
+    });
+
+    test('rejects non-rough types and hole-assigned features', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await expect(
+            svc.create({ courseId: TEST_COURSE_ID, layer: 'roughs', type: 'fairway', geometry: squareGeometry() }),
+        ).rejects.toBeInstanceOf(InvalidFeatureError);
+        await expect(
+            svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, layer: 'roughs', type: 'rough', geometry: squareGeometry() }),
+        ).rejects.toBeInstanceOf(InvalidFeatureError);
+
+        const fairway = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'fairway', geometry: squareGeometry() });
+        await expect(svc.update(fairway.id, fairway.version, { layer: 'roughs' })).rejects.toBeInstanceOf(InvalidFeatureError);
+    });
+
+    test('moving in drops the hole; a hole or a non-rough type moves it back out', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const rough = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'rough', geometry: squareGeometry() });
+
+        const moved = await svc.update(rough.id, rough.version, { layer: 'roughs' });
+        expect(moved.layer).toBe('roughs');
+        expect(moved.holeId).toBeNull();
+        expect(moved.sortOrder).toBe(0);
+
+        const onHole = await svc.update(moved.id, moved.version, { holeId: TEST_HOLE_2_ID });
+        expect(onHole.layer).toBeNull();
+        expect(onHole.holeId).toBe(TEST_HOLE_2_ID);
+
+        const back = await svc.update(onHole.id, onHole.version, { layer: 'roughs' });
+        const retyped = await svc.update(back.id, back.version, { type: 'fairway' });
+        expect(retyped.layer).toBeNull();
+        expect(retyped.holeId).toBeNull();
     });
 });
 
@@ -1061,6 +1141,39 @@ describe('CourseFeaturesService — vegetation_zone', () => {
         }
     });
 
+    test('zoneVariant is an optional string: kept through create, update and GeoJSON; non-strings rejected', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const zone = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone',
+            geometry: squareGeometry(), attributes: { ...zoneAttributes, zoneVariant: 'dry_straw' },
+        });
+        expect(zone.attributes).toEqual({ ...zoneAttributes, zoneVariant: 'dry_straw' });
+
+        // '' is Default; so is an absent key.
+        const cleared = await svc.update(zone.id, 1, { attributes: { ...zoneAttributes, zoneVariant: '' } });
+        expect(cleared.attributes!.zoneVariant).toBe('');
+        const reset = await svc.update(zone.id, 2, { attributes: zoneAttributes });
+        expect(reset.attributes).toEqual(zoneAttributes);
+
+        // Not checked against the zone-type table (like zoneType).
+        const unknown = await svc.update(zone.id, 3, { attributes: { ...zoneAttributes, zoneVariant: 'no_such_variant' } });
+        expect(unknown.attributes!.zoneVariant).toBe('no_such_variant');
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        expect(fc.features.find((f) => f.id === zone.id)!.properties.attributes!.zoneVariant).toBe('no_such_variant');
+
+        for (const zoneVariant of [7, true]) {
+            await expect(svc.create({
+                courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone',
+                geometry: squareGeometry(), attributes: { ...zoneAttributes, zoneVariant } as never,
+            })).rejects.toBeInstanceOf(InvalidFeatureError);
+            await expect(svc.update(zone.id, 4, { attributes: { ...zoneAttributes, zoneVariant } as never }))
+                .rejects.toBeInstanceOf(InvalidFeatureError);
+        }
+        expect((await svc.findById(zone.id)).version).toBe(4);
+    });
+
     test('rejects out-of-range weight / feather / noise on create and update', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);
@@ -1101,5 +1214,194 @@ describe('CourseFeaturesService — vegetation_zone', () => {
 
         const stack = (await svc.listByHole(TEST_HOLE_2_ID)).map((f) => f.type);
         expect(stack).toEqual(['green', 'vegetation_zone', 'trees']);
+    });
+});
+
+describe('CourseFeaturesService — clearing imports', () => {
+    async function seeded() {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const make = (type: string, x: number, source?: string) => svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type, geometry: squareGeometry(x, x),
+            ...(source ? { source, license: source === 'osm' ? 'ODbL' : 'CC0-1.0' } : {}),
+        });
+        await make('path', 10, 'osm');
+        await make('path', 20, 'osm');
+        await make('path', 30, 'nvdb');
+        await make('fairway', 40, 'osm');
+        await make('water', 50, 'lantmateriet-hydrografi');
+        const handDrawn = await make('path', 60);
+        // Generated rows share a source namespace but are never imports.
+        await svc.replaceGenerated(TEST_COURSE_ID, 'osm', collection([treeFeature(200, 200, 'osm')]));
+        return { db, svc, handDrawn };
+    }
+
+    test('imported features are counted per source and type; hand-drawn and generated ones are not imports', async () => {
+        const { svc } = await seeded();
+        expect(await svc.importedByCourse(TEST_COURSE_ID)).toEqual([
+            { source: 'lantmateriet-hydrografi', type: 'water', count: 1 },
+            { source: 'nvdb', type: 'path', count: 1 },
+            { source: 'osm', type: 'fairway', count: 1 },
+            { source: 'osm', type: 'path', count: 2 },
+        ]);
+        await expect(svc.importedByCourse('no-such-course')).rejects.toThrow(NotFoundError);
+    });
+
+    test('removing the roads (osm + nvdb paths) keeps OSM fairways, hand-drawn paths and generated rows', async () => {
+        const { svc, handDrawn } = await seeded();
+        expect(await svc.removeImported(TEST_COURSE_ID, ['osm', 'nvdb'], ['path'])).toEqual({ removed: 3 });
+        const left = await svc.listByCourse(TEST_COURSE_ID);
+        expect(left.some((f) => f.id === handDrawn.id)).toBe(true);
+        expect(left.filter((f) => f.source === 'osm').map((f) => [f.type, f.generated])).toEqual(
+            expect.arrayContaining([['fairway', false], ['trees', true]]),
+        );
+        expect(left.filter((f) => f.type === 'path' && f.source !== null)).toHaveLength(0);
+
+        // Without types, everything the source imported goes.
+        expect(await svc.removeImported(TEST_COURSE_ID, ['lantmateriet-hydrografi'])).toEqual({ removed: 1 });
+        expect(await svc.importedByCourse(TEST_COURSE_ID)).toEqual([{ source: 'osm', type: 'fairway', count: 1 }]);
+        expect(await svc.removeImported(TEST_COURSE_ID, ['nvdb'])).toEqual({ removed: 0 });
+    });
+
+    test('an empty source list and an unknown course are refused before anything is deleted', async () => {
+        const { svc } = await seeded();
+        await expect(svc.removeImported(TEST_COURSE_ID, [])).rejects.toThrow(InvalidFeatureError);
+        await expect(svc.removeImported('no-such-course', ['osm'])).rejects.toThrow(NotFoundError);
+        expect((await svc.importedByCourse(TEST_COURSE_ID)).reduce((n, g) => n + g.count, 0)).toBe(5);
+    });
+});
+
+describe('CourseFeaturesService — path surface', () => {
+    test('a path may carry a known surface; anything else is refused on create and update', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const road = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'path', geometry: squareGeometry(), attributes: { surface: 'gravel' },
+        });
+        expect(road.attributes).toEqual({ surface: 'gravel' });
+        // Unknown (absent) is fine, and other keys ride along untouched.
+        const plain = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'path', geometry: squareGeometry(20, 20) });
+        const updated = await svc.update(plain.id, plain.version, { attributes: { surface: 'asphalt', note: 'clubhouse' } });
+        expect(updated.attributes).toEqual({ surface: 'asphalt', note: 'clubhouse' });
+
+        await expect(svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'path', geometry: squareGeometry(), attributes: { surface: 'lava' },
+        })).rejects.toThrow(InvalidFeatureError);
+        await expect(svc.update(road.id, road.version, { attributes: { surface: 3 } })).rejects.toThrow(/attributes.surface must be one of/);
+        // Other types don't know the key: a bunker's `surface` is just a free attribute.
+        const bunker = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'bunker', geometry: squareGeometry(40, 40), attributes: { surface: 'lava' },
+        });
+        expect(bunker.attributes).toEqual({ surface: 'lava' });
+    });
+});
+
+describe('CourseFeaturesService — centerline paths', () => {
+    const X = 538_000, Y = 6_398_000;
+    const line = (dx = 0) => ({
+        crs: 'EPSG:3006',
+        // Whatever the client sends as rings is replaced by the corridor.
+        rings: squareGeometry(0, 0, 1).rings,
+        centerline: { points: [{ x: X + dx, y: Y }, { x: X + dx + 40, y: Y }, { x: X + dx + 40, y: Y + 30, corner: false }], widthM: 4 },
+    });
+    const xs = (f: { geometry: FeatureGeometry }) => f.geometry.rings[0].points.map(p => p.x);
+
+    test('create derives the corridor rings from the centerline and keeps the line', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const f = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line() });
+        expect(f.geometry.centerline).toEqual({ points: [{ x: X, y: Y }, { x: X + 40, y: Y }, { x: X + 40, y: Y + 30 }], widthM: 4 });
+        expect(f.geometry.curveType).toBe('bezier');
+        // The corridor spans the line plus the 2 m round caps.
+        expect(Math.min(...xs(f))).toBeCloseTo(X - 2, 1);
+        expect(Math.max(...xs(f))).toBeGreaterThan(X + 41);
+        expect(f.geojson!.type).toBe('Polygon');
+        const stored = (await svc.listByCourse(TEST_COURSE_ID)).find(s => s.id === f.id)!;
+        expect(stored.geometry).toEqual(f.geometry);
+    });
+
+    test('update re-derives the rings: moving the line moves the road', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const f = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line() });
+        const moved = await svc.update(f.id, f.version, { geometry: { ...f.geometry, centerline: line(100).centerline } });
+        expect(Math.min(...xs(moved))).toBeCloseTo(X + 98, 1);
+        const wider = await svc.update(moved.id, moved.version, { geometry: { ...moved.geometry, centerline: { ...moved.geometry.centerline!, widthM: 8 } } });
+        expect(Math.min(...xs(wider))).toBeCloseTo(X + 96, 1);
+    });
+
+    test('rejects an unusable centerline', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const bad = (centerline: unknown) => svc.create({
+            courseId: TEST_COURSE_ID, type: 'path', geometry: { crs: 'EPSG:3006', rings: [], centerline } as FeatureGeometry,
+        });
+        await expect(bad({ points: [{ x: X, y: Y }], widthM: 3 })).rejects.toThrow(InvalidFeatureError);
+        await expect(bad({ points: [{ x: X, y: Y }, { x: X + 5, y: Y }], widthM: 0 })).rejects.toThrow(InvalidFeatureError);
+        await expect(bad({ points: [{ x: X, y: Y }, { x: Number.NaN, y: Y }], widthM: 3 })).rejects.toThrow(InvalidFeatureError);
+    });
+});
+
+describe('CourseFeaturesService — road junction fillets', () => {
+    const X = 538_000, Y = 6_398_000;
+    const line = (pts: Array<[number, number]>, widthM = 4): FeatureGeometry => ({
+        crs: 'EPSG:3006', rings: [], centerline: { points: pts.map(([x, y]) => ({ x: X + x, y: Y + y })), widthM },
+    });
+    const fillets = async (svc: CourseFeaturesService) =>
+        (await svc.listByCourse(TEST_COURSE_ID)).filter(f => f.source === 'road-junctions');
+
+    test('a tee grows its kerb fillets, moving the branch off drops them, deleting a road too', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const main = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line([[-50, 0], [50, 0]]), attributes: { surface: 'asphalt' } });
+        expect(await fillets(svc)).toHaveLength(0);
+        const branch = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line([[0, 0], [0, 40]]), attributes: { surface: 'asphalt' } });
+        const made = await fillets(svc);
+        expect(made).toHaveLength(2);
+        expect(made.every(f => f.generated && f.type === 'path')).toBe(true);
+        expect(made[0].attributes).toEqual({ surface: 'asphalt' });
+        expect(made[0].sourceRef!.split(',').sort()).toEqual([branch.id, main.id].sort());
+
+        const away = await svc.update(branch.id, branch.version, { geometry: line([[0, 20], [0, 60]]) });
+        expect(await fillets(svc)).toHaveLength(0);
+        const back = await svc.update(away.id, away.version, { geometry: line([[0, 0], [0, 40]]) });
+        expect(await fillets(svc)).toHaveLength(2);
+        await svc.remove(main.id, main.version);
+        expect(await fillets(svc)).toHaveLength(0);
+        expect(back.id).toBe(branch.id);
+    });
+
+    test('roads created concurrently (the import wizard) all get their fillets', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await Promise.all([
+            svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line([[-100, 0], [100, 0]]) }),
+            ...[-80, -40, 0, 40, 80].map(x => svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line([[x, 0], [x, 40]]) })),
+        ]);
+        expect(await fillets(svc)).toHaveLength(10);
+    });
+
+    test('turning a road\'s kerb rounding off drops its fillets; junk values are rejected', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line([[-50, 0], [50, 0]]) });
+        const branch = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line([[0, 0], [0, 40]]) });
+        expect(await fillets(svc)).toHaveLength(2);
+        const off = await svc.update(branch.id, branch.version, { attributes: { surface: 'gravel', kerbFillets: false } });
+        expect(await fillets(svc)).toHaveLength(0);
+        await svc.update(off.id, off.version, { attributes: { surface: 'gravel' } });
+        expect(await fillets(svc)).toHaveLength(2);
+        await expect(svc.create({
+            courseId: TEST_COURSE_ID, type: 'path', geometry: line([[0, 60], [0, 90]]), attributes: { kerbFillets: 'no' },
+        })).rejects.toThrow(InvalidFeatureError);
+    });
+
+    test('polygon paths and other types never make fillets', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line([[-50, 0], [50, 0]]) });
+        await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: squareGeometry(X, Y + 10, 5) });
+        await svc.create({ courseId: TEST_COURSE_ID, type: 'bunker', geometry: line([[0, 0], [0, 40]]) });
+        expect(await fillets(svc)).toHaveLength(0);
     });
 });

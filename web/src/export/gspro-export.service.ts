@@ -17,7 +17,9 @@
 // The folder is TYPED, not picked: the browser cannot show an OS folder
 // chooser for a path the SERVER writes to, and the server is the one holding
 // the pen. It is per course, persisted server-side; blank means the server
-// default (the OS Downloads folder).
+// default (the OS Downloads folder). The GreenKeeper `.GKD` goes elsewhere —
+// into the course's own folder under GSPro's Courses — which is a second
+// typed, per-course folder with no default.
 //
 // DI singleton; the panel component is the only UI. Testable headlessly —
 // the constructor takes the API client.
@@ -27,6 +29,10 @@ import { api } from '../api';
 import type {
     GsproExportApi, GsproExportSettings, GsproOrthoSource, CourseTerrain, TerrainSquare, GsproExportJob,
 } from '../../../shared/api/gspro-export.gen';
+import { browserStorage, loadExclusions, saveExclusions, type ExclusionStorage } from './svg-exclusions';
+import {
+    startBisect, answerBisect, undoBisect, bisectExclusions, bisectVariant, type SvgBisect,
+} from './svg-bisect';
 
 /** What `start` takes besides the course: the kind and the fields it needs. */
 type GsproExportRequest = Omit<Parameters<GsproExportApi['start']>[0], 'courseId'>;
@@ -37,6 +43,9 @@ export type { GsproExportJob };
 /** How often a running job is polled (ms); tests pass something tiny. */
 export const DEFAULT_POLL_MS = 1500;
 
+/** The pipeline's default forest-floor colour (golfpipe/woodland_floor.py DEFAULT_FLOOR_RGB), shown in the picker. */
+export const DEFAULT_FLOOR_COLOR = '#505834';
+
 export class GsproExportService {
     /** Course the panel is open for; null = closed. */
     readonly courseId = new Signal<string | null>(null);
@@ -45,6 +54,8 @@ export class GsproExportService {
     readonly settings = new Signal<GsproExportSettings | null>(null);
     /** Folder text being edited; empty means "use the default". */
     readonly dirDraft = new Signal<string>('');
+    /** GSPro course folder text being edited (where the .GKD goes); empty = not set. */
+    readonly courseDirDraft = new Signal<string>('');
     readonly busy = new Signal<boolean>(false);
     /** Lines the exporter printed on the last successful run (SVG or ortho). */
     readonly report = new Signal<string[]>([]);
@@ -69,8 +80,24 @@ export class GsproExportService {
      * Photoshop overlay step OPCD builders do by hand from the SVG.
      */
     readonly tintTerrain = new Signal<boolean>(true);
-    /** Opacity of that tint layer as typed, 0..1. Blank means the server default (0.3). */
+    /** Opacity of that tint layer as typed, 0..1. Blank means the server default (0.5). */
     readonly tintOpacity = new Signal<string>('');
+    /**
+     * Paint the course's woodland-floor zones (the lidar stands Regenerate
+     * trees makes, D-VZ10) as forest floor on every orthophoto file, so the
+     * terrain under the planted trees is ground, not photographed crowns.
+     */
+    readonly forestFloor = new Signal<boolean>(true);
+    /** Palette floor colour `#rrggbb` as picked. */
+    readonly floorColor = new Signal<string>(DEFAULT_FLOOR_COLOR);
+    /** Share of each stand's photo-sampled colour as typed, 0..1. Blank means the server default (0.5). */
+    readonly floorMix = new Signal<string>('');
+    /**
+     * Fill the roofs (lidar roof heights from Regenerate trees, plus the
+     * building survey from Generate building pads) and their shadows from
+     * the ground round them, since Unity puts a prefab on each pad.
+     */
+    readonly removeBuildings = new Signal<boolean>(true);
     /** The course's inner + outer terrain squares (null while loading or unavailable). */
     readonly terrain = new Signal<CourseTerrain | null>(null);
     /** Why the terrains are unavailable (no map area yet) — '' when they loaded. */
@@ -79,8 +106,21 @@ export class GsproExportService {
     readonly job = new Signal<GsproExportJob | null>(null);
     /** Bumped on every poll so elapsed-time text re-renders. */
     readonly tick = new Signal<number>(0);
+    /**
+     * Features the next SVG export leaves out — a test variant for the
+     * Blender build (svg-exclusions.ts). Per course, kept in this browser.
+     */
+    readonly svgExcluded = new Signal<ReadonlySet<string>>(new Set());
+    /** The variant's name: the SVG becomes `<course>-<variant>.svg`; blank = the full `<course>.svg`. */
+    readonly svgVariant = new Signal<string>('');
+    /** A bisect for the shape the Blender build chokes on (svg-bisect.ts); null when none runs. */
+    readonly svgBisect = new Signal<SvgBisect | null>(null);
 
-    constructor(private readonly client: GsproExportApi = api.gsproExport, private readonly pollMs = DEFAULT_POLL_MS) {}
+    constructor(
+        private readonly client: GsproExportApi = api.gsproExport,
+        private readonly pollMs = DEFAULT_POLL_MS,
+        private readonly storage: ExclusionStorage | null = browserStorage(),
+    ) {}
 
     get isOpen(): boolean {
         return this.courseId.peek() !== null;
@@ -99,6 +139,10 @@ export class GsproExportService {
         this.terrain.set(null);
         this.terrainNote.set('');
         this.job.set(null);
+        const saved = loadExclusions(this.storage, courseId);
+        this.svgExcluded.set(new Set(saved.ids));
+        this.svgVariant.set(saved.variant);
+        this.svgBisect.set(saved.bisect);
         await this.reload();
         await this.resume();
     }
@@ -117,7 +161,8 @@ export class GsproExportService {
         } catch {
             return;  // an older server without jobs: nothing to resume
         }
-        if (!current || this.courseId.peek() !== courseId) return;
+        // No job yet: the server's null arrives as the framework's bare `{ ok: true }`.
+        if (!current?.status || this.courseId.peek() !== courseId) return;
         if (current.status === 'running') {
             void this.follow(current);
         } else {
@@ -156,6 +201,7 @@ export class GsproExportService {
             // Show the default as placeholder-ish emptiness rather than a
             // path the user did not choose — saving blank means "default".
             this.dirDraft.set(settings.isDefault ? '' : settings.dir);
+            this.courseDirDraft.set(settings.courseDir ?? '');
             this.orthoSources.set(sources);
             // Preselect what the map is showing (the pristine copy), else the
             // newest vintage — the list is newest first.
@@ -168,11 +214,16 @@ export class GsproExportService {
         }
     }
 
-    /** Persist the typed folder for this course (blank resets to default). */
-    async saveDir(): Promise<boolean> {
+    /**
+     * Persist the typed folder for this course (blank resets to default).
+     * `quiet` leaves `busy` alone: the panel saves when the field loses focus,
+     * and that blur is often the operator clicking an export button, which a
+     * busy flag would disable under the click.
+     */
+    async saveDir(opts: { quiet?: boolean } = {}): Promise<boolean> {
         const courseId = this.courseId.peek();
         if (!courseId) return false;
-        this.busy.set(true);
+        if (!opts.quiet) this.busy.set(true);
         this.error.set('');
         try {
             const dir = this.dirDraft.peek().trim();
@@ -184,21 +235,170 @@ export class GsproExportService {
             this.error.set(messageOf(e));
             return false;
         } finally {
-            this.busy.set(false);
+            if (!opts.quiet) this.busy.set(false);
         }
     }
 
-    /** Save the folder, then export the SVG. Reports where the file landed. */
+    /**
+     * Persist the typed GSPro course folder (blank clears it). The server
+     * refuses a folder that does not exist — building the course in Unity is
+     * what makes it. `quiet` as for `saveDir`.
+     */
+    async saveCourseDir(opts: { quiet?: boolean } = {}): Promise<boolean> {
+        const courseId = this.courseId.peek();
+        if (!courseId) return false;
+        if (!opts.quiet) this.busy.set(true);
+        this.error.set('');
+        try {
+            const dir = this.courseDirDraft.peek().trim();
+            const settings = await this.client.setCourseDir({ courseId, dir: dir || null });
+            this.settings.set(settings);
+            this.courseDirDraft.set(settings.courseDir ?? '');
+            return true;
+        } catch (e) {
+            this.error.set(messageOf(e));
+            return false;
+        } finally {
+            if (!opts.quiet) this.busy.set(false);
+        }
+    }
+
+    /**
+     * Save the GSPro course folder, then write GreenKeeper's course file into
+     * it: tees, pins, green centres, aim points, water hazards and the OOB
+     * ring, merged into the `.GKD` already there. Needs the inner heightmap
+     * exported first.
+     */
+    async runGkd(): Promise<boolean> {
+        if (!this.courseId.peek()) return false;
+        if (!this.courseDirDraft.peek().trim()) {
+            this.error.set('Set the GSPro course folder first — the course\'s folder under GSPro\'s Courses, where its .gspcrse is');
+            return false;
+        }
+        if (!(await this.saveCourseDir())) return false;
+        return this.runExport({ kind: 'gkd' });
+    }
+
+    /**
+     * Save the folder, then export the SVG — without the excluded features,
+     * under the variant's name when one is typed. Reports where the file landed.
+     */
     async run(): Promise<boolean> {
         if (!this.courseId.peek()) return false;
-        return this.runExport({ kind: 'svg' });
+        const ids = [...this.svgExcluded.peek()];
+        const variant = this.svgVariant.peek().trim();
+        const ok = await this.runExport({
+            kind: 'svg',
+            ...(ids.length ? { excludeFeatureIds: ids } : {}),
+            ...(variant ? { variant } : {}),
+        });
+        const bisect = this.svgBisect.peek();
+        if (ok && bisect && !bisect.result) this.setBisect({ ...bisect, exported: true });
+        return ok;
+    }
+
+    /**
+     * Start bisecting `suspects` (in the order the halves split, see
+     * `spatialOrder`): everything else excluded now stays out, and the first
+     * step's exclusions and variant name are set. Export it next.
+     */
+    startSvgBisect(suspects: readonly string[]): void {
+        if (suspects.length === 0) return;
+        this.applyBisectStep(startBisect(suspects, this.svgExcluded.peek()));
+    }
+
+    /**
+     * The operator's answer about the current step's Blender build; narrows
+     * the suspects and exports the next step (nothing more to export once the
+     * confirming step is answered). True when that export succeeded or none was due.
+     */
+    async answerSvgBisect(built: boolean): Promise<boolean> {
+        const bisect = this.svgBisect.peek();
+        if (!bisect?.exported) return false;
+        const next = answerBisect(bisect, built);
+        if (next.result) {
+            this.setBisect(next);
+            return true;
+        }
+        this.applyBisectStep(next);
+        return this.run();
+    }
+
+    /** Take back the last answer (the step it answered has to be exported again). */
+    undoSvgBisect(): void {
+        const bisect = this.svgBisect.peek();
+        if (bisect) this.applyBisectStep(undoBisect(bisect));
+    }
+
+    /** End the bisect; the exclusions stay as they are, the variant name is cleared. */
+    stopSvgBisect(): void {
+        this.svgBisect.set(null);
+        this.svgVariant.set('');
+        this.persistExclusions();
+    }
+
+    private applyBisectStep(bisect: SvgBisect): void {
+        this.svgBisect.set(bisect);
+        this.svgExcluded.set(bisectExclusions(bisect));
+        this.svgVariant.set(bisectVariant(bisect));
+        this.persistExclusions();
+    }
+
+    private setBisect(bisect: SvgBisect): void {
+        this.svgBisect.set(bisect);
+        this.persistExclusions();
+    }
+
+    /** Leave these features out of the next SVG export. */
+    excludeFromSvg(ids: Iterable<string>): void {
+        const next = new Set(this.svgExcluded.peek());
+        for (const id of ids) next.add(id);
+        this.setSvgExcluded(next);
+    }
+
+    /** Put these features back into the next SVG export. */
+    includeInSvg(ids: Iterable<string>): void {
+        const next = new Set(this.svgExcluded.peek());
+        for (const id of ids) next.delete(id);
+        this.setSvgExcluded(next);
+    }
+
+    /** Flip one feature in or out of the next SVG export. */
+    toggleSvgExcluded(id: string): void {
+        if (this.svgExcluded.peek().has(id)) this.includeInSvg([id]);
+        else this.excludeFromSvg([id]);
+    }
+
+    clearSvgExclusions(): void {
+        this.setSvgExcluded(new Set());
+    }
+
+    setSvgVariant(variant: string): void {
+        this.svgVariant.set(variant);
+        this.persistExclusions();
+    }
+
+    private setSvgExcluded(ids: ReadonlySet<string>): void {
+        this.svgExcluded.set(ids);
+        this.persistExclusions();
+    }
+
+    private persistExclusions(): void {
+        const courseId = this.courseId.peek();
+        if (!courseId) return;
+        saveExclusions(this.storage, courseId, {
+            ids: [...this.svgExcluded.peek()], variant: this.svgVariant.peek(), bisect: this.svgBisect.peek(),
+        });
     }
 
     /**
      * Save the folder, then render the picked orthophoto vintage as the
-     * square 8192 px JPEG texture. Reports where the file landed.
+     * square 8192 px JPEG texture. Reports where the file landed. Plain by
+     * default (the photo, its darkened -terrain twin and the tinted -meshes
+     * variant); `clean` is the separate cleaned export — buildings removed
+     * and/or forest floor painted, per the two boxes — into `-clean` files.
      */
-    async runOrtho(): Promise<boolean> {
+    async runOrtho(clean = false): Promise<boolean> {
         const courseId = this.courseId.peek();
         const source = this.orthoSource.peek();
         if (!courseId || !source) return false;
@@ -206,7 +406,21 @@ export class GsproExportService {
         if (darken === false) return false;
         const tint = this.tintValue();
         if (tint === false) return false;
-        return this.runExport({ kind: 'ortho', source, darken, ...tint });
+        const cleaning = this.cleanValue(clean);
+        if (cleaning === false) return false;
+        return this.runExport({ kind: 'ortho', source, darken, ...tint, ...cleaning });
+    }
+
+    /** The cleaned export's fields (nothing for the plain one); false with the error set when it has nothing to do or a bad mix. */
+    private cleanValue(clean: boolean): ({ removeBuildings?: boolean } & Exclude<ReturnType<GsproExportService['floorValue']>, false>) | false {
+        if (!clean) return {};
+        if (!this.removeBuildings.peek() && !this.forestFloor.peek()) {
+            this.error.set('Tick "Remove buildings" and/or "Forest floor" for a cleaned orthophoto (the plain export is the button above)');
+            return false;
+        }
+        const floor = this.floorValue();
+        if (floor === false) return false;
+        return { ...floor, ...this.buildingsValue() };
     }
 
     /** The typed brightness as a number, undefined when blank, false (with the error set) when not a usable number. */
@@ -226,7 +440,7 @@ export class GsproExportService {
      * the 5 km OUTER square as its 8192 px JPEG. The vintage is named by its
      * collection: the outer area is fetched fresh, not cut from the inner copy.
      */
-    async runOuterOrtho(): Promise<boolean> {
+    async runOuterOrtho(clean = false): Promise<boolean> {
         const courseId = this.courseId.peek();
         const collection = this.pickedCollection;
         if (!courseId || !collection) return false;
@@ -234,7 +448,30 @@ export class GsproExportService {
         if (darken === false) return false;
         const tint = this.tintValue();
         if (tint === false) return false;
-        return this.runExport({ kind: 'outer-ortho', collection, darken, ...tint });
+        const cleaning = this.cleanValue(clean);
+        if (cleaning === false) return false;
+        return this.runExport({ kind: 'outer-ortho', collection, darken, ...tint, ...cleaning });
+    }
+
+    /** The building-removal request field: nothing with the box off. */
+    private buildingsValue(): { removeBuildings?: boolean } {
+        return this.removeBuildings.peek() ? { removeBuildings: true } : {};
+    }
+
+    /** The forest-floor request fields: nothing with the box off, false (with the error set) when the mix is not a usable number. */
+    private floorValue(): { forestFloor?: boolean; floorColor?: string; floorMix?: number } | false {
+        if (!this.forestFloor.peek()) return {};
+        const color = this.floorColor.peek();
+        const out: { forestFloor: boolean; floorColor?: string; floorMix?: number } = { forestFloor: true };
+        if (/^#[0-9a-fA-F]{6}$/.test(color)) out.floorColor = color;
+        const text = this.floorMix.peek().trim().replace(',', '.');
+        if (!text) return out;
+        const n = Number(text);
+        if (!Number.isFinite(n) || n < 0 || n > 1) {
+            this.error.set('Forest floor photo mix must be a number between 0 and 1 (0 = the colour as picked, 1 = each stand\'s colour from the photo)');
+            return false;
+        }
+        return { ...out, floorMix: n };
     }
 
     /** The tint request fields: nothing with the box off, false (with the error set) when the opacity is not a usable number. */
@@ -244,7 +481,7 @@ export class GsproExportService {
         if (!text) return { tint: true };
         const n = Number(text);
         if (!Number.isFinite(n) || n < 0 || n > 1) {
-            this.error.set('Surface tint opacity must be a number between 0 and 1 (0.3 = the usual Photoshop layer)');
+            this.error.set('Surface tint opacity must be a number between 0 and 1 (0.5 = the photo at half strength over green)');
             return false;
         }
         return { tint: true, tintOpacity: n };
@@ -258,6 +495,26 @@ export class GsproExportService {
     async runDem(terrain: TerrainKind): Promise<boolean> {
         if (!this.courseId.peek()) return false;
         return this.runExport({ kind: 'dem', terrain });
+    }
+
+    /**
+     * Save the folder, export one terrain's heightmap and put it straight into
+     * the open Unity editor whose GolfMap course imports from the folder (its
+     * terrain updated in place, backed up first). Unity must be open.
+     */
+    async runUnityTerrain(terrain: TerrainKind): Promise<boolean> {
+        if (!this.courseId.peek()) return false;
+        return this.runExport({ kind: 'unity-terrain', terrain });
+    }
+
+    /**
+     * Capture what was sculpted on one terrain in Unity since golf-map's
+     * heights went in, and store it as that terrain's sculpt layer (one
+     * additive terrain edit). Unity must be open; Apply to terrain after.
+     */
+    async runUnitySculpt(terrain: TerrainKind): Promise<boolean> {
+        if (!this.courseId.peek()) return false;
+        return this.runExport({ kind: 'unity-sculpt', terrain });
     }
 
     /**
@@ -291,6 +548,27 @@ export class GsproExportService {
     }
 
     /**
+     * Save the folder, then rasterize one terrain's vegetation zones into
+     * the VSPro texture masks + unity-zones-v2 JSON the Unity Vegetation
+     * Zones window imports. Needs that terrain's heightmap export in the
+     * folder (the height range).
+     */
+    async runZones(terrain: TerrainKind): Promise<boolean> {
+        if (!this.courseId.peek()) return false;
+        return this.runExport({ kind: 'zones', terrain });
+    }
+
+    /**
+     * Save the folder, then write the creeks as R.A.M. splines at their water
+     * surface (unity-creeks-v1) for GolfMap › Creeks. Needs the inner
+     * heightmap export in the folder (the terrain's zero).
+     */
+    async runCreeks(): Promise<boolean> {
+        if (!this.courseId.peek()) return false;
+        return this.runExport({ kind: 'creeks' });
+    }
+
+    /**
      * Save the folder, start the export as a job and follow it to the end.
      * True when it succeeded. A start refused because a job is already
      * running for the course re-attaches to that job instead.
@@ -310,7 +588,7 @@ export class GsproExportService {
             const message = messageOf(e);
             if (/already running/i.test(message)) {
                 const running = await this.client.current({ courseId }).catch(() => null);
-                if (running && running.status === 'running') return this.follow(running);
+                if (running?.status === 'running') return this.follow(running);
             }
             this.error.set(message);
             this.busy.set(false);

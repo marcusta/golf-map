@@ -1,3 +1,4 @@
+import { PATH_SURFACE_COLORS } from '../../shared/features/path-surface';
 import { test, expect, describe } from 'bun:test';
 import {
     FEATURE_TYPES,
@@ -151,7 +152,13 @@ describe('vegetation_zone (docs/feature-vegetation-zones.md)', () => {
         expect(expr[0]).toBe('case');
         expect(expr[1]).toEqual(['all', ['==', ['get', 'type'], 'vegetation_zone'], ['has', 'zoneColor']]);
         expect(expr[2]).toEqual(['get', 'zoneColor']);
-        // The fallback branch is the ordinary per-type palette.
-        expect(expr[3]).toEqual(typeColorExpression('draw'));
+        // Then a path with a known surface paints in that surface's colour …
+        expect(expr[3]).toEqual(['all', ['==', ['get', 'type'], 'path'], ['has', 'surface']]);
+        const match = expr[4] as unknown[];
+        expect(match.slice(0, 2)).toEqual(['match', ['get', 'surface']]);
+        expect(match[match.indexOf('gravel') + 1]).toBe(PATH_SURFACE_COLORS.gravel);
+        expect(match[match.length - 1]).toBe(FEATURE_STYLES.path.draw);
+        // … and the fallback branch is the ordinary per-type palette.
+        expect(expr[5]).toEqual(typeColorExpression('draw'));
     });
 });

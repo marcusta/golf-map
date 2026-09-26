@@ -7,6 +7,7 @@ import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { AssetsService } from './assets.service';
 import { TerrainEditsService } from './terrain-edits.service';
 import { MapBuildService, type PipelineRunner, type BuildStep } from './map-build.service';
+import { CourseFeaturesService } from './course-features.service';
 import { innerSquareFromWgs84, squareArg, terrainManifestField } from './terrain-square';
 
 const BBOX = { west: 15.55, south: 58.39, east: 15.58, north: 58.41 };
@@ -36,6 +37,20 @@ function argValue(args: string[], flag: string): string | undefined {
     const i = args.indexOf(flag);
     return i >= 0 ? args[i + 1] : undefined;
 }
+
+/** The stands the fake `canopy --woodland-out` writes: one woodland-floor zone. */
+const WOODLAND_STANDS = {
+    type: 'FeatureCollection',
+    crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
+    features: [{
+        type: 'Feature',
+        properties: {
+            type: 'vegetation_zone', source: 'lidar-woodland', source_ref: 'item_648_52.copc.laz', license: 'CC0-1.0',
+            zoneType: 'woodland_floor', weight: 0.6, feather: 4, noise: 2, coverPct: 70, areaM2: 10000, floorColor: '#6a6050',
+        },
+        geometry: { type: 'Polygon', coordinates: [[[530000, 6487000], [530100, 6487000], [530100, 6487100], [530000, 6487100], [530000, 6487000]]] },
+    }],
+};
 
 // generatedAt the fake `manifest` command writes — a RE-generated manifest
 // (re-terrain) is distinguishable from the installed one (MANIFEST above).
@@ -105,7 +120,10 @@ function fakeRunner(opts: {
                 ? { ...existing, layers: { ...existing.layers, canopy: { minzoom: 12, maxzoom: 17 } }, generatedAt: REGENERATED_AT }
                 : { ...existing, assets: { 'tree-stems': { path: 'tree-stems.json', format: 'tree-stems-v1', count: 3 } }, generatedAt: REGENERATED_AT };
             await writeFile(target, JSON.stringify(merged));
-            if (step === 'canopy') await writeFile(argValue(args, '--trees-out')!, '{"type":"FeatureCollection","features":[]}');
+            if (step === 'canopy') {
+                await writeFile(argValue(args, '--trees-out')!, '{"type":"FeatureCollection","features":[]}');
+                await writeFile(argValue(args, '--woodland-out')!, JSON.stringify(WOODLAND_STANDS));
+            }
         }
         if (step === 'tile-ortho') {
             // Materialize the output dir so "is this vintage tiled" checks see it.
@@ -646,8 +664,8 @@ test('reconcileOrphans fails jobs left running by a restart', async () => {
 
 // --- Tree regeneration job (canopy tiles + tree-stems asset from persisted sources) ---
 
-test('re-trees runs canopy + trees-stems against the persisted lidar and DEM, then refreshes the manifest asset', async () => {
-    const { svc, assets, dataDir, calls, cleanup } = await setup();
+test('re-trees runs canopy + trees-stems against the persisted lidar and DEM, imports the woodland stands, then refreshes the manifest asset', async () => {
+    const { ctx, svc, assets, dataDir, calls, cleanup } = await setup();
     try {
         const build = await svc.start(TEST_COURSE_ID, BBOX);
         await svc.waitForJob(build.id);
@@ -662,9 +680,21 @@ test('re-trees runs canopy + trees-stems against the persisted lidar and DEM, th
         expect(final.status).toBe('succeeded');
         expect(final.error).toBeNull();
         expect(final.step).toBe('register');
+        expect(final.log).toContain('Woodland-floor zones: 1 imported, 0 replaced');
 
         // No fetch, no install: the two commands write into the installed tree.
         expect(calls.map((c) => c.step)).toEqual(['canopy', 'trees-stems']);
+        // The stands come from the same canopy run, colours from the active vintage's source.
+        expect(argValue(calls[0].args, '--woodland-out')).toMatch(/woodland\.geojson$/);
+        expect(argValue(calls[0].args, '--woodland-ortho')).toBe(path.join(dataDir, 'sources', siteId, 'ortho-orto-l2-2025.tif'));
+        // The roof heights stay with the site for the orthophoto export's building removal.
+        expect(argValue(calls[0].args, '--roofs-out')).toBe(path.join(dataDir, 'sources', siteId, 'roofs.tif'));
+        const features = await new CourseFeaturesService(ctx.db).listByCourse(TEST_COURSE_ID);
+        const zones = features.filter((f) => f.source === 'lidar-woodland');
+        expect(zones).toHaveLength(1);
+        expect(zones[0].generated).toBe(true);
+        expect(zones[0].type).toBe('vegetation_zone');
+        expect(zones[0].attributes).toMatchObject({ zoneType: 'woodland_floor', weight: 0.6, floorColor: '#6a6050' });
         const lidarFile = path.join(dataDir, 'sources', siteId, 'lidar', 'item_648_52.copc.laz');
         const installedRoot = path.join(dataDir, 'tiles', siteId);
         for (const call of calls) {

@@ -3,7 +3,7 @@
 **Status:** accepted 2026-09-16, implementation started the same day (waves 1 to 3)
 **Date:** 2026-09-16, revised 2026-09-16 after review
 **Scope:** `web` (a vegetation-zone area feature), `pipeline` (zone rasterizer, lidar shrub
-proposals and `unity-zones-v1` export), `unity/Editor/GolfMap` (mask import, read-only overlay,
+proposals and `unity-zones` export, v2 since D-VZ11), `unity/Editor/GolfMap` (mask import, read-only overlay,
 verification). Trees stay on `unity-trees-v1` and are out of scope.
 
 ## 1. Purpose
@@ -73,8 +73,11 @@ so the pipeline can. This mirrors `<course>-<terrain>-tree-edits.json`: no round
 conflict rules, and nothing in the first iteration depends on it beyond stable ids.
 
 **D-VZ5. Biome mask areas keep one job.** Switching whole packages where the two sides share
-no items and a hard edge is acceptable, for example forest floor against open ground. That
-is a later, separate export and not part of this plan.
+no items and a hard edge is acceptable. That is a later, separate export and not part of this
+plan.
+Revised 2026-09-23: forest floor against open ground was the example here and is no longer one.
+It is a zone type in the one package (D-VZ10), because a biome edge is a density hole (D-VZ1)
+and the woodland edge is exactly where the understory should thin out, not stop.
 
 **D-VZ6. Runtime spawn stays on.** Lower vegetation is never baked into persistent
 vegetation storage, otherwise a zone edit needs a rebake. Trees remain baked from
@@ -86,6 +89,12 @@ normalised surface model and tree polygons. Cells between `--min-height` (defaul
 way `trees-features` does and imported as generated features with source `lidar-lowveg` and
 zone type `shrub`. They are ordinary zones afterwards: editable, deletable, re-importable by
 source. Nothing is placed from lidar directly.
+Revised 2026-09-22: from `--lidar` the proposal counts returns 0.5 to 3 m above the ground grid
+per cell (at least 3 over the 3x3 cells around it) instead of reading the canopy grid, which keeps
+one return per cell and drops everything under 1 m. Trees still come from the canopy grid, and
+nothing is proposed within 10 m of a detected roof, because garden objects read as shrubs. On
+Vreta's inner square this gave 64 proposals against 110 from the grid, with the housing areas
+cleared and the hedges kept.
 
 **D-VZ8. Per terrain, like trees.** Vreta has a 2050 m inner and a 5000 m outer terrain with
 separate VSPro systems. The rasterizer and the export run once per terrain square, with the
@@ -99,6 +108,46 @@ package lacks, items with no binding, and channels no item uses. Everything else
 item (prefab, spacing, scale, shader) stays as authored in VSPro or Arborist. The binding
 table is edited in the web zone-type panel, so the mapping lives with the course, not in
 the Unity scene.
+
+**D-VZ10. Lidar proposes woodland floor, and the texture follows it.** Under a closed stand
+the ground is needle litter, moss, blueberry and fern, not meadow. `woodland-features` turns
+the cleaned canopy grid into one polygon per stand: cells of 3 m and up, closed by 5 m so
+crowns up to about 10 m apart join, nothing within 5 m of a roof, stands under 0.25 ha or
+under 50 % canopy cover dropped, grown 2 m past the outer crowns. They are imported as zones
+of type `woodland_floor` with source `lidar-woodland`, like the shrub proposals (D-VZ7). The
+weight comes from the understory: the share of cells with a return 0.5 to 3 m above ground,
+1 at a fifth of the cells, never under 0.3, so a sparse spruce floor spawns fewer ferns than
+a birch stand full of scrub (Vreta's leaf-off scan: 1 to 13 % across 14 stands, 204 ha). The
+same polygons drive the terrain texture: with an ortho, each stand gets `floorColor`, the
+median of the warm, mid-bright pixels inside it. On Vreta the lidar gaps showed leaning crowns
+in the newer, non-true ortho, so the pixels that count are the ground the photo does show:
+tracks, clearings, windthrow. `clean-ortho --woodland` repaints the stand with world-anchored
+noise in the palette floor colour mixed half and half with that sample (`--floor-mix`),
+outside the playable corridor and outside `--keep` polygons (roads).
+Revised 2026-09-23: in the app, "Regenerate trees" makes the stands (the `canopy` step's
+`--woodland-out`, imported as generated `lidar-woodland` zones), and the Export to GSPro panel
+paints the floor during the orthophoto export (`gspro.py ortho --floor-course`, keeping the
+drawn playable surfaces, bunkers, paths and water) and exports the zone masks for Unity.
+`clean-ortho --woodland` stays for GeoTIFF work outside the app. Buildings are painted
+over, since Unity puts a prefab on the pad. The tree palette's own woodland flag
+(`woodlandRadiusM` / `woodlandMinNeighbours`, per stem) is a separate test on the stems and
+is not derived from these polygons.
+
+**D-VZ11. Zones pick a variant, and the masks carry one channel per item.** Added 2026-09-24.
+A zone type can hold named variants (Tall rough: Lush, Dry straw), each with its own item
+bindings, next to the type's own bindings, which are the Default variant. A drawn zone picks its
+type and, optionally, a variant (`zoneVariant`). The first plan gave each variant a mask channel
+and bound the variant's items to it. VSPro rules that out: an item's texture mask density rules
+multiply (`VegetationCellSpawner.cs` runs every rule, and `TextureMask.cs` does
+`SpawnChance *= value / 256 * DensityMultiplier`), while include rules OR. An item bound to two
+channels, which variants sharing an item always are, then spawns only where both channels are
+non-zero. This also broke the "an item that belongs to two zones has two rules" line in D-VZ2.
+So the rasterizer resolves the stack per slot (a type's Default, or one of its variants) exactly
+as in section 6, then sums each item's density over the slots that bind it
+(`weight × maxDensity`, clipped to 1). It writes one channel per item. Unity gives each item
+one density rule (multiplier 1, since the density is baked into the pixels) and one include rule
+against its own channel. The zone type's texture and channel no longer matter, and channels are
+allocated per item on every export (`unity-zones-v2`).
 
 ## 4. VSPro mechanics used
 
@@ -144,6 +193,13 @@ priority field). It has no gameplay meaning. Strategy and clearance ignore it. `
 `feather` and `noise` are per-feature properties edited in the selection panel; `zoneType`
 is chosen from the course's table.
 
+Variants (D-VZ11): `course_zone_types.variants_json` holds `[{key, name, items}]` per type
+(migration 022). The type's own `items` are the Default mix. A zone's optional `zoneVariant`
+attribute names a variant key, and absent or empty means Default. The selection panel shows a
+Variant select when the chosen type has variants, and changing the type resets it. The
+zone-type panel no longer shows texture and channel, because the export allocates channels per
+item.
+
 ## 6. Rasterizer
 
 Runs in `gspro.py zones`, once per terrain, with the same square and sidecar checks as
@@ -167,14 +223,20 @@ left, so the channels never sum to more than one. There is no scaling up: a lone
 weight 0.3 stays 0.3, and a feather ramp stays a ramp. Where nothing is drawn every
 channel is zero.
 
-The result is one RGBA PNG per four zone types, 8 bits per channel, written next to the
-`.raw` heightmap, plus the `unity-zones-v1` JSON. The alphamap idea from the first draft is
+Revised 2026-09-24 (D-VZ11): "zone type" above reads "slot", meaning a type's Default or one
+of its variants, so two variants of one type crossfade like two types. The slot weights are
+then projected onto items: `density(item) = min(1, Σ weight(slot) × maxDensity(item, slot))`
+over the slots that bind the item. Every bound item gets a channel, even one with no coverage
+on this terrain, so the Unity import always replaces its rules.
+
+The result is one RGBA PNG per four items, 8 bits per channel, written next to the
+`.raw` heightmap, plus the `unity-zones-v2` JSON. The alphamap idea from the first draft is
 dropped: the terrain importer sets a single splat prototype carrying the ortho, so there
 are no rough or understory splat layers to drive.
 
 ## 7. Export formats
 
-`unity-zones-v1`, plain JSON that `JsonUtility` parses (no dictionaries, arrays of
+The first version, `unity-zones-v1`, was plain JSON that `JsonUtility` parses (no dictionaries, arrays of
 records only):
 
 ```json
@@ -196,6 +258,12 @@ records only):
   ]
 }
 ```
+
+Superseded 2026-09-24 by `unity-zones-v2` (D-VZ11). The mask channels name items, not zone
+types. A top-level `items` list gives each item's `texture`, `channel` and the `sources` (slot
+keys `type` or `type/variant`) that bind it. Zone types lose `texture` and `channel` and gain
+`variants: [{key, name, items}]`. Zones gain `variant` (`""` for Default). The Unity importer
+accepts v2 only.
 
 `nodes` are plot-local metres, x east and z north, the same convention as
 `unity-trees-v1`, flattened to straight segments and simplified to 1 m. They are included
@@ -220,6 +288,10 @@ trees export field for field so the importer's terrain match by bounds is shared
   from the export's `rings`. Read-only in this iteration; it exists to check alignment against
   the terrain and the trees. The later zone editor (D-VZ4) builds on it.
 - Preview: after import, calls VSPro's clear-cache so the changed masks respawn.
+- Since v2 (D-VZ11), there is one group per item, named `golfmap-zone:item:<item>`. Every
+  other `golfmap-zone:*` group (the v1 per-type groups, and items no longer exported) is
+  deleted, and every rule that points at one is removed, so no leftover density rule can
+  multiply an item away.
 
 ## 9. Limits and numbers
 

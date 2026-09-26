@@ -31,6 +31,14 @@ Generation, per way:
    bbox, so a 5 km box otherwise yields a 9 km network), simplify to shed
    buffer vertex spam, drop slivers.
 
+Parking lots: `amenity=parking` areas (closed ways and multipolygon
+relations) that are surface lots are fetched too, used as mapped — they ARE
+the paved surface, where the aisles OSM draws through them only cover strips
+of it. Their `road_class` is `parking`; `service` ways lying inside a lot
+(PARKING_AISLE_INSIDE of their length) are absorbed into it — dropped, lending
+the lot their surface when it has none. Grading fits one tilted `plane` per
+lot (lot_grade_features) instead of a corridor.
+
 Skipped: tunnels (nothing to paint) and SKIP_HIGHWAY classes (steps,
 platforms, proposed/construction). `area=yes` ways are surfaces already and
 are used verbatim when closed. Bridges are kept — they are painted on the
@@ -49,13 +57,16 @@ carries `attribution`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from shapely.geometry import LineString, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
-from golfpipe.osm import ATTRIBUTION, Reproject, _closed, _polygon_coordinates, _way_points, parse_metres
+from golfpipe.osm import (
+    ATTRIBUTION, Reproject, _closed, _polygon_coordinates, _reproject_ring, _rings_to_polygons, _way_points,
+    parse_metres, stitch_rings,
+)
 from golfpipe.water import GEOJSON_CRS_3006
 
 # Total width in metres per highway class, used when a way carries neither
@@ -109,22 +120,68 @@ TUNNEL_VALUES = frozenset({"yes", "building_passage", "culvert"})
 # where they are and still thins a 1 m-sampled straight to its ends.
 DEFAULT_SIMPLIFY_M = 0.1
 DEFAULT_MIN_AREA_M2 = 4.0
+# Douglas-Peucker on the centerline handed to the app with a one-way corridor
+# (`centerline` property). The app draws a curve THROUGH the kept points
+# (shared/features/centerline.ts), which hugs the 1 m-sampled smooth line far
+# closer than the chords do, so a coarse tolerance keeps the line editable —
+# a point every ~10 m on a 30 m-radius bend, two on a straight.
+CENTERLINE_SIMPLIFY_M = 0.25
 # Round joins/caps; 4 segments per quarter circle is plenty at road widths
 # and keeps the vertex count down before simplify.
 BUFFER_QUAD_SEGS = 4
 
 FEATURE_TYPE = "path"
 
+# Parking lots (`amenity=parking`): the road_class / group they carry, and the
+# `parking=*` kinds that are not a surface lot we paint (under a roof, in a
+# building, under the ground).
+PARKING_GROUP = "parking"
+PARKING_SKIP = frozenset({"underground", "multi-storey", "rooftop", "garage_boxes", "carports", "garages"})
+# A service way with at least this share of its length inside a lot is one of
+# the lot's aisles: the lot polygon already covers it.
+PARKING_AISLE_INSIDE = 0.8
+
+
+def is_parking_lot(tags: dict) -> bool:
+    return tags.get("amenity") == "parking" and str(tags.get("parking", "surface")) not in PARKING_SKIP
+
 
 @dataclass
 class RoadWay:
-    osm_id: int
+    osm_id: int | None  # None for a road only NVDB knows (golfpipe.nvdb.fuse)
     highway: str
     group: str
     width_m: float
-    width_source: str  # "width tag" | "lanes tag" | "golf=cartpath" | "class" | "area"
+    # "width tag" | "lanes tag" | "golf=cartpath" | "class" | "area" | "nvdb" | "nvdb type"
+    width_source: str
     geometry: BaseGeometry  # EPSG:3006 corridor polygon (already buffered)
     centerline: LineString | None = None  # EPSG:3006; None for area=yes surfaces
+    surface: str | None = None  # one of PATH_SURFACES, or None (unknown)
+    nvdb_ids: list[str] = field(default_factory=list)  # NVDB elements it runs along / came from
+
+
+# The app's path surfaces — the `surface` attribute on `path` features
+# (shared/features/path-surface.ts is the app's copy; keep them equal). The
+# GSPro export still paints every path as OPCD concrete; the surface picks
+# the look and the collider material in Unity.
+PATH_SURFACES = ("asphalt", "concrete", "paving", "gravel", "dirt", "grass", "wood")
+
+# OSM `surface=*` -> a PATH_SURFACES value. Generic `paved` is asphalt (what a
+# paved Swedish road almost always is), generic `unpaved` gravel; anything
+# not listed stays unknown.
+OSM_SURFACE: dict[str, str] = {
+    **{v: "asphalt" for v in ("asphalt", "paved", "chipseal")},
+    **{v: "concrete" for v in ("concrete", "concrete:plates", "concrete:lanes")},
+    **{v: "paving" for v in ("paving_stones", "sett", "cobblestone", "unhewn_cobblestone", "bricks", "grass_paver")},
+    **{v: "gravel" for v in ("gravel", "fine_gravel", "compacted", "pebblestone", "unpaved", "rock")},
+    **{v: "dirt" for v in ("dirt", "earth", "ground", "mud", "sand", "woodchips")},
+    "grass": "grass",
+    "wood": "wood",
+}
+
+
+def osm_surface(tags: dict) -> str | None:
+    return OSM_SURFACE.get(str(tags.get("surface", "")).strip().lower())
 
 
 def parse_width_m(raw) -> float | None:
@@ -172,7 +229,7 @@ def road_group(tags: dict) -> str:
 
 def build_roads_query(bbox_wgs84: tuple[float, float, float, float]) -> str:
     """Overpass QL for every highway way plus cart paths without a highway
-    tag, in bbox (west, south, east, north WGS84); `out geom` inlines the
+    tag and parking lots (ways and relations), in bbox (west, south, east, north WGS84); `out geom` inlines the
     node coordinates so no separate node resolution is needed.
     """
     west, south, east, north = bbox_wgs84
@@ -181,6 +238,8 @@ def build_roads_query(bbox_wgs84: tuple[float, float, float, float]) -> str:
         "[out:json][timeout:180];\n(\n"
         f'  way["highway"]({b});\n'
         f'  way["golf"="cartpath"]({b});\n'
+        f'  way["amenity"="parking"]({b});\n'
+        f'  relation["amenity"="parking"]({b});\n'
         ");\nout geom;"
     )
 
@@ -258,10 +317,16 @@ def assemble_roads(
     roads: list[RoadWay] = []
     skipped: list[str] = []
     for element in overpass_json.get("elements", []):
-        if element.get("type") != "way":
-            continue
         tags = element.get("tags", {})
         eid = element.get("id")
+        if is_parking_lot(tags):
+            lots, note = _parking_lot_polygons(element, reproject)
+            if note:
+                skipped.append(note)
+            roads += [RoadWay(eid, PARKING_GROUP, PARKING_GROUP, 0.0, "area", lot, None, surface=osm_surface(tags)) for lot in lots]
+            continue
+        if element.get("type") != "way":
+            continue
         resolved = road_width_m(tags, class_widths)
         if resolved is None:
             continue
@@ -288,8 +353,61 @@ def assemble_roads(
                 skipped.append(f"way/{eid}: {highway} way has zero length")
                 continue
             geometry = line.buffer(width / 2.0, quad_segs=BUFFER_QUAD_SEGS, cap_style="round", join_style="round")
-        roads.append(RoadWay(eid, highway, group, width, source, geometry, line))
+        roads.append(RoadWay(eid, highway, group, width, source, geometry, line, surface=osm_surface(tags)))
     return roads, skipped
+
+
+def _parking_lot_polygons(element: dict, reproject: Reproject) -> tuple[list[Polygon], str | None]:
+    """A parking lot element -> its EPSG:3006 polygons (a relation's outer
+    rings, inners as holes), or a note when it has no closed ring."""
+    eid = element.get("id")
+    if element.get("type") == "way":
+        points = _way_points(element.get("geometry", []))
+        if len(points) < 4 or not _closed(points):
+            return [], f"way/{eid}: parking lot is not a closed ring"
+        return [Polygon(_reproject_points(points, reproject))], None
+    if element.get("type") == "relation":
+        outer, inner = [], []
+        for member in element.get("members", []):
+            if member.get("type") == "way" and member.get("geometry"):
+                (inner if member.get("role") == "inner" else outer).append(_way_points(member["geometry"]))
+        outer_rings = [_reproject_ring(r, reproject) for r in stitch_rings(outer)]
+        if not outer_rings:
+            return [], f"relation/{eid}: parking lot relation has no closed outer ring"
+        return _rings_to_polygons(outer_rings, [_reproject_ring(r, reproject) for r in stitch_rings(inner)]), None
+    return [], None
+
+
+def absorb_parking_aisles(ways: list[RoadWay]) -> tuple[list[RoadWay], int]:
+    """Drops the `service` ways (and NVDB-only roads) lying inside a parking
+    lot — its aisles; the lot polygon is the surface they cross. A lot
+    without a surface of its own takes the aisles' majority surface.
+    Returns (ways, number absorbed)."""
+    from collections import Counter
+    from dataclasses import replace
+
+    lots = [w for w in ways if w.group == PARKING_GROUP]
+    if not lots:
+        return ways, 0
+    lot_union = unary_union([lot.geometry for lot in lots]).buffer(0.5)
+    lent: dict[int, list[str]] = {}
+    kept: list[RoadWay] = []
+    absorbed = 0
+    for way in ways:
+        line = way.centerline
+        candidate = line is not None and line.length > 0 and (way.highway == "service" or way.osm_id is None)
+        if candidate and line.intersection(lot_union).length >= PARKING_AISLE_INSIDE * line.length:
+            absorbed += 1
+            if way.surface:
+                host = max(range(len(lots)), key=lambda i: line.intersection(lots[i].geometry).length)
+                lent.setdefault(host, []).append(way.surface)
+            continue
+        kept.append(way)
+    for i, surfaces in lent.items():
+        lot = lots[i]
+        if lot.surface is None:
+            kept[kept.index(lot)] = replace(lot, surface=Counter(surfaces).most_common(1)[0][0])
+    return kept, absorbed
 
 
 @dataclass
@@ -298,6 +416,13 @@ class RoadPolygon:
     polygon: Polygon
     osm_ids: list[int]
     highways: list[str]
+    nvdb_ids: list[str] = field(default_factory=list)
+    surfaces: list[str] = field(default_factory=list)
+    width_m: float | None = None  # when the polygon is one way's corridor
+    width_source: str | None = None
+    # One way's corridor: the stretch of its (clipped) centerline this polygon
+    # was buffered from, for the app to edit as a line.
+    centerline: LineString | None = None
 
 
 def merge_corridors(
@@ -334,14 +459,38 @@ def merge_corridors(
                 if simplified.is_empty or simplified.geom_type != "Polygon":
                     continue
                 feeders = [r for r in sources if r.geometry.intersects(polygon)] if merge else sources
+                line = None
+                if not merge and sources[0].centerline is not None and sources[0].width_source != "area":
+                    line = _centerline_within(sources[0].centerline, clip, polygon)
                 out.append(RoadPolygon(
                     group=group,
                     polygon=simplified,
-                    osm_ids=sorted({r.osm_id for r in feeders}),
+                    osm_ids=sorted({r.osm_id for r in feeders if r.osm_id is not None}),
                     highways=sorted({r.highway for r in feeders}),
+                    nvdb_ids=sorted({i for r in feeders for i in r.nvdb_ids}),
+                    surfaces=sorted({r.surface for r in feeders if r.surface}),
+                    width_m=feeders[0].width_m if len(feeders) == 1 else None,
+                    width_source=feeders[0].width_source if len(feeders) == 1 else None,
+                    centerline=line,
                 ))
     out.sort(key=lambda p: (-p.polygon.area, p.group))
     return out
+
+
+def _centerline_within(line: LineString, clip: BaseGeometry | None, polygon: Polygon) -> LineString | None:
+    """The piece of a way's centerline (clipped like its corridor) that runs
+    down `polygon` — a way leaving and re-entering the area is several
+    corridor pieces, each with its own stretch of line — simplified for
+    editing. None when no piece fits."""
+    clipped = line.intersection(clip) if clip is not None else line
+    parts = [part for part in _each_line(clipped) if part.length > 0]
+    if not parts:
+        return None
+    best = max(parts, key=lambda part: part.intersection(polygon).length)
+    if best.intersection(polygon).length <= 0:
+        return None
+    simplified = best.simplify(CENTERLINE_SIMPLIFY_M, preserve_topology=False)
+    return simplified if simplified.length > 0 else None
 
 
 def _each_polygon(geom: BaseGeometry):
@@ -354,35 +503,58 @@ def _each_polygon(geom: BaseGeometry):
             yield from _each_polygon(part)
 
 
-def build_roads_geojson(polygons: list[RoadPolygon], *, fetch_date: str) -> dict:
+NVDB_LICENSE = "CC0-1.0"
+
+
+def _provenance(osm_ids, nvdb_ids) -> dict:
+    """Geometry decides the source: a corridor drawn from an OSM centerline
+    is ODbL even when NVDB lent it its width; one only NVDB knows is CC0
+    with the NVDB element as its source_ref."""
+    if osm_ids:
+        return {"source": "osm", "license": "ODbL", "osm_ids": list(osm_ids), "nvdb_ids": list(nvdb_ids)}
+    return {"source": "nvdb", "license": NVDB_LICENSE, "source_ref": f"nvdb:{nvdb_ids[0]}" if nvdb_ids else None,
+            "nvdb_ids": list(nvdb_ids)}
+
+
+def build_roads_geojson(polygons: list[RoadPolygon], *, fetch_date: str, attribution: str = ATTRIBUTION) -> dict:
     """EPSG:3006 FeatureCollection: `type` always `path`; `road_class` is
-    the merge group for the wizard to bucket on; ODbL provenance per
-    feature and `attribution` on the collection.
+    the merge group for the wizard to bucket on; `surface` paved / unpaved
+    (PATH_SURFACES) when known — left out when a merged network mixes
+    several; provenance per
+    feature (see _provenance) and `attribution` on the collection.
     """
     features = []
     for rp in polygons:
+        props = {
+            "type": FEATURE_TYPE,
+            # The corridor IS the shape (buffered, unioned, simplified):
+            # the wizard imports it verbatim instead of spline-fitting
+            # it — a network ring kilometres long collapses under the
+            # fitter's control cap.
+            "exact": True,
+            "road_class": rp.group,
+            "highways": rp.highways,
+            "surface": rp.surfaces[0] if len(rp.surfaces) == 1 else None,
+            "area_m2": round(rp.polygon.area, 1),
+            **_provenance(rp.osm_ids, rp.nvdb_ids),
+            "fetched": fetch_date,
+        }
+        if rp.width_m is not None and rp.width_source != "area":
+            props["widthM"] = round(rp.width_m, 2)
+            props["widthSource"] = rp.width_source
+            if rp.centerline is not None:
+                # The app imports the road as this line + widthM (the
+                # polygon is its fallback when the line is unusable).
+                props["centerline"] = [[round(x, 2), round(y, 2)] for x, y, *_ in rp.centerline.coords]
         features.append({
             "type": "Feature",
-            "properties": {
-                "type": FEATURE_TYPE,
-                # The corridor IS the shape (buffered, unioned, simplified):
-                # the wizard imports it verbatim instead of spline-fitting
-                # it — a network ring kilometres long collapses under the
-                # fitter's control cap.
-                "exact": True,
-                "road_class": rp.group,
-                "highways": rp.highways,
-                "area_m2": round(rp.polygon.area, 1),
-                "source": "osm",
-                "osm_ids": rp.osm_ids,
-                "fetched": fetch_date,
-            },
+            "properties": props,
             "geometry": {"type": "Polygon", "coordinates": _polygon_coordinates(rp.polygon)},
         })
     return {
         "type": "FeatureCollection",
         "crs": GEOJSON_CRS_3006,
-        "attribution": ATTRIBUTION,
+        "attribution": attribution,
         "features": features,
     }
 
@@ -404,30 +576,55 @@ def _each_line(geom: BaseGeometry):
             yield from _each_line(part)
 
 
-def build_centerlines_geojson(ways: list[RoadWay], *, fetch_date: str, clip: BaseGeometry | None = None) -> dict:
-    """EPSG:3006 LineString FeatureCollection of the road centerlines with
-    their resolved widths — what `road-grades` turns into corridor terrain
+def build_centerlines_geojson(ways: list[RoadWay], *, fetch_date: str, clip: BaseGeometry | None = None,
+                              attribution: str = ATTRIBUTION) -> dict:
+    """EPSG:3006 FeatureCollection of the road centerlines (LineStrings) with
+    their resolved widths, plus the parking lots (Polygons, `road_class`
+    parking) — what `road-grades` turns into corridor / plane terrain
     edits. Clipped to `clip` like the corridors (a way cut by the edge can
     come back in several pieces, each its own feature)."""
     features = []
     for way in ways:
+        if way.group == PARKING_GROUP:
+            lot = way.geometry.intersection(clip) if clip is not None else way.geometry
+            for index, part in enumerate(_each_polygon(lot)):
+                if part.area < DEFAULT_MIN_AREA_M2:
+                    continue
+                features.append({
+                    "type": "Feature",
+                    "properties": {
+                        "id": f"osm:parking/{way.osm_id}" + (f"#{index}" if index else ""),
+                        "highway": PARKING_GROUP,
+                        "road_class": PARKING_GROUP,
+                        "surface": way.surface,
+                        "areaM2": round(part.area, 1),
+                        "source": "osm",
+                        "osm_id": way.osm_id,
+                        "fetched": fetch_date,
+                    },
+                    "geometry": {"type": "Polygon", "coordinates": _polygon_coordinates(part)},
+                })
+            continue
         if way.centerline is None:
             continue
         line = way.centerline.intersection(clip) if clip is not None else way.centerline
+        base = f"osm:way/{way.osm_id}" if way.osm_id is not None else f"nvdb:{way.nvdb_ids[0]}"
         for index, part in enumerate(_each_line(line)):
             if part.length <= 0:
                 continue
             features.append({
                 "type": "Feature",
                 "properties": {
-                    "id": f"osm:way/{way.osm_id}" + (f"#{index}" if index else ""),
+                    "id": base + (f"#{index}" if index else ""),
                     "highway": way.highway,
                     "road_class": way.group,
                     "widthM": round(way.width_m, 2),
                     "widthSource": way.width_source,
+                    "surface": way.surface,
                     "lengthM": round(part.length, 1),
-                    "source": "osm",
+                    "source": "osm" if way.osm_id is not None else "nvdb",
                     "osm_id": way.osm_id,
+                    "nvdb_ids": way.nvdb_ids,
                     "fetched": fetch_date,
                 },
                 "geometry": {"type": "LineString", "coordinates": [[round(x, 2), round(y, 2)] for x, y, *_ in part.coords]},
@@ -435,7 +632,7 @@ def build_centerlines_geojson(ways: list[RoadWay], *, fetch_date: str, clip: Bas
     return {
         "type": "FeatureCollection",
         "crs": GEOJSON_CRS_3006,
-        "attribution": ATTRIBUTION,
+        "attribution": attribution,
         "features": features,
     }
 
@@ -478,6 +675,7 @@ def grade_edit_features(
     feather_m: float = DEFAULT_GRADE_FEATHER_M,
     smooth_m: float = DEFAULT_GRADE_SMOOTH_M,
     created_at: str = "",
+    first_index: int = 0,
 ) -> list[dict]:
     """One D-TE5 `corridor` terrain edit per centerline: the polygon is the
     paved corridor grown by `feather_m` (dem_edit feathers inside the
@@ -485,9 +683,10 @@ def grade_edit_features(
     and `widthM` ride along in the properties for the along/across frame
     and the profile sampling, `smoothM` is the along-road window. Same
     origin/originRef/createdAt conventions as the building pads so the
-    server import replaces a generation cleanly."""
+    server import replaces a generation cleanly. `first_index` continues the
+    parking lots' createdAt numbering: the roads replay after the lots."""
     features = []
-    for index, c in enumerate(centerlines):
+    for index, c in enumerate(centerlines, start=first_index):
         polygon = c.line.buffer(c.width_m / 2.0 + feather_m, quad_segs=BUFFER_QUAD_SEGS, cap_style="round", join_style="round")
         exterior = list(polygon.exterior.coords)
         lons, lats = to_wgs84([p[0] for p in exterior], [p[1] for p in exterior])
@@ -514,6 +713,77 @@ def grade_edit_features(
     return features
 
 
+@dataclass
+class ParkingLot:
+    id: str
+    polygon: Polygon  # EPSG:3006
+    surface: str | None
+
+
+def read_parking_lots(path) -> list[ParkingLot]:
+    """The parking lots in a fetch-roads `--centerlines-out` file."""
+    import json
+    from pathlib import Path
+
+    from shapely.geometry import shape
+
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    out: list[ParkingLot] = []
+    for feature in doc.get("features", []):
+        props = feature.get("properties") or {}
+        geometry = feature.get("geometry") or {}
+        if geometry.get("type") != "Polygon" or props.get("road_class") != PARKING_GROUP:
+            continue
+        out.append(ParkingLot(id=props["id"], polygon=shape(geometry), surface=props.get("surface")))
+    return out
+
+
+DEFAULT_LOT_FEATHER_M = 2.0
+
+
+def lot_grade_features(
+    lots: list[ParkingLot],
+    to_wgs84: Reproject,
+    *,
+    feather_m: float = DEFAULT_LOT_FEATHER_M,
+    created_at: str = "",
+    first_index: int = 0,
+) -> list[dict]:
+    """One D-TE5 `plane` terrain edit per parking lot: an outlier-rejected
+    least-squares plane — a lot on a slope stays evenly sloped, as lots are
+    built, not dug level — over the lot grown by `feather_m` (dem_edit
+    feathers inside the polygon, so the lot itself is fully on the plane).
+    Holes are graded with the lot. Same origin as the road corridors, and
+    numbered before them, so the lots replay FIRST: a corridor takes its
+    profile from the heights as they are when it replays, so a road ending
+    at a lot runs into the lot's plane, and a road passing through or along
+    one stays one smooth line. Replayed after the roads, a lot's plane
+    overwrote the graded road inside it and its feather left a step where
+    the road went on (Vreta: 1.5 m in 3 m beside a gravel yard)."""
+    features = []
+    for offset, lot in enumerate(lots):
+        polygon = Polygon(lot.polygon.exterior).buffer(feather_m, quad_segs=BUFFER_QUAD_SEGS, join_style="round")
+        exterior = list(polygon.exterior.coords)
+        lons, lats = to_wgs84([p[0] for p in exterior], [p[1] for p in exterior])
+        ring = [[round(float(lon), 7), round(float(lat), 7)] for lon, lat in zip(lons, lats)]
+        index = first_index + offset
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "op": "plane",
+                "featherM": feather_m,
+                "createdAt": f"{created_at}#{index:05d}" if created_at else None,
+                "origin": GRADES_ORIGIN,
+                "originRef": lot.id,
+                "highway": PARKING_GROUP,
+                "road_class": PARKING_GROUP,
+                "areaM2": round(lot.polygon.area, 1),
+            },
+            "geometry": {"type": "Polygon", "coordinates": [ring]},
+        })
+    return features
+
+
 def bbox_polygon_3006(bbox_wgs84: tuple[float, float, float, float], reproject: Reproject) -> Polygon:
     """The WGS84 area as an EPSG:3006 polygon, edges densified so the clip
     follows the graticule instead of cutting straight between the corners.
@@ -526,3 +796,59 @@ def bbox_polygon_3006(bbox_wgs84: tuple[float, float, float, float], reproject: 
     ring += [(east - (east - west) * i / n, north) for i in range(n)]
     ring += [(west, north - (north - south) * i / n) for i in range(n)]
     return Polygon(_reproject_points(ring, reproject))
+
+
+def square_polygon_3006(square_3006: tuple[float, float, float, float]) -> Polygon:
+    """An EPSG:3006 terrain square (x0, y0, x1, y1) as the clip polygon. The
+    WGS84 envelope of the square is larger than it (the grid is turned off
+    north by the meridian convergence), so clipping to bbox_polygon_3006 of
+    that envelope lets roads run 10-15 m past the square's edges."""
+    x0, y0, x1, y1 = square_3006
+    return Polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+
+
+# Course features that define "near the course" for fetch-roads --near: the
+# playing surfaces and penalty areas someone mapped. Not water or creeks (an
+# imported watercourse runs kilometres off the course and would pull in every
+# road along it; a pond on the course is within reach of its fairways anyway),
+# not the roads themselves (a previous import would grow the area along every
+# road), not the deep-rough / outside / OOB fill, not generated vegetation.
+NEAR_TYPES = frozenset({
+    "green", "tee", "fairway", "semi_rough", "rough", "bunker",
+    "penalty_yellow", "penalty_red",
+})
+DEFAULT_NEAR_M = 200.0
+
+
+def near_area_3006(doc: dict, reproject: Reproject, distance_m: float = DEFAULT_NEAR_M) -> BaseGeometry | None:
+    """The course features in a GeoJSON FeatureCollection (EPSG:3006 when
+    its `crs` says so, else WGS84 — the app's course features), grown by
+    `distance_m`: roads farther than that from anything on the course are
+    scenery. Only NEAR_TYPES count when a feature says its `type`; untyped
+    features all count, generated ones never. None when nothing qualifies."""
+    from shapely.geometry import shape
+    from shapely.ops import transform as shapely_transform
+
+    crs = (doc.get("crs") or {}).get("properties", {}).get("name", "")
+    in_3006 = "3006" in crs
+
+    def to_3006(xs, ys, zs=None):
+        es, ns = reproject(list(xs), list(ys))
+        return list(es), list(ns)
+
+    parts = []
+    for feature in doc.get("features", []):
+        props = feature.get("properties") or {}
+        kind = props.get("type")
+        if (kind is not None and kind not in NEAR_TYPES) or props.get("generated"):
+            continue
+        try:
+            geom = shape(feature.get("geometry"))
+        except Exception:  # noqa: BLE001 — a malformed feature is skipped
+            continue
+        if geom.is_empty:
+            continue
+        parts.append(geom if in_3006 else shapely_transform(to_3006, geom))
+    if not parts:
+        return None
+    return unary_union(parts).buffer(distance_m, quad_segs=8)

@@ -4,7 +4,7 @@ import { parseEditsGeojson, type TerrainEditsService } from '../services/terrain
 
 // --- Input schemas ---
 
-const OpSchema = Type.Union([Type.Literal('plane'), Type.Literal('smooth'), Type.Literal('corridor')]);
+const OpSchema = Type.Union([Type.Literal('plane'), Type.Literal('smooth'), Type.Literal('corridor'), Type.Literal('dig'), Type.Literal('delta')]);
 
 // A straight-segment ring in the DEM CRS (EPSG:3006).
 const RingSchema = Type.Array(Type.Object({ x: Type.Number(), y: Type.Number() }));
@@ -18,6 +18,22 @@ const ParamsSchema = Type.Object({
     centerline: Type.Optional(RingSchema),
     smoothM: Type.Optional(Type.Number()),
     widthM: Type.Optional(Type.Number()),
+    // dig (generated bunker/water digs): depth profile below a level or a fitted plane.
+    depthM: Type.Optional(Type.Number()),
+    bankSlopeDeg: Type.Optional(Type.Number()),
+    faceSlopeDeg: Type.Optional(Type.Number()),
+    faceBearingDeg: Type.Optional(Type.Number()),
+    shelfM: Type.Optional(Type.Number()),
+    shelfDepthM: Type.Optional(Type.Number()),
+    reference: Type.Optional(Type.Union([Type.Literal('level'), Type.Literal('plane'), Type.Literal('stream')])),
+    rimM: Type.Optional(Type.Number()),
+    variation: Type.Optional(Type.Number()),
+    seed: Type.Optional(Type.Number()),
+    // delta (a Unity sculpt layer, "Unity sculpt → golf-map"): its GeoTIFF's name and what it holds.
+    raster: Type.Optional(Type.String()),
+    changedM2: Type.Optional(Type.Number()),
+    maxRaiseM: Type.Optional(Type.Number()),
+    maxLowerM: Type.Optional(Type.Number()),
 });
 
 const ListTerrainEditsInput = Type.Object({

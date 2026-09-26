@@ -34,6 +34,7 @@ namespace GolfMap.Editor
             public string itemId;
             public Vector3 position, scale;   // as stored in VSP (world space)
             public Quaternion rotation;
+            public float yaw;                 // rotation about Y; rotation adds the match's lean
             public bool stored;               // instance found in VSP storage
             public int cellIndex = -1;        // VSP cell holding the instance (-1 unknown)
         }
@@ -155,7 +156,7 @@ namespace GolfMap.Editor
 
         void LoadFields(EditorTree et)
         {
-            fieldsFor = et.tree.id; fieldH = et.tree.h; fieldR = et.tree.r; fieldRot = et.rotation.eulerAngles.y;
+            fieldsFor = et.tree.id; fieldH = et.tree.h; fieldR = et.tree.r; fieldRot = et.yaw;
             GolfMapTreeEdit edit; treeEdits.TryGetValue(et.tree, out edit);
             fieldSpecies = edit != null ? edit.species : ""; fieldGuid = edit != null ? edit.guid : ""; fieldDy = edit != null ? edit.dy : 0;
         }
@@ -186,7 +187,7 @@ namespace GolfMap.Editor
                     if (!InsidePlot(tree) || tree.h < minHeightM) continue;
                     var p = PrepareOne(tree, editProbe, editProtoCache, ref meshHits, ref terrainHits, ref clamped);
                     if (!p.prefab) continue;
-                    var et = new EditorTree { tree = tree, prefab = p.prefab, position = p.position, scale = p.scale, rotation = p.rotation };
+                    var et = new EditorTree { tree = tree, prefab = p.prefab, position = p.position, scale = p.scale, rotation = p.rotation, yaw = p.yaw };
                     ResolveCell(editSystem, ref et.position);
                     string itemId; if (itemIds.TryGetValue(p.prefab, out itemId)) { et.itemId = itemId; et.stored = FindInstance(et) >= 0; }
                     if (et.stored) stored++;
@@ -327,7 +328,8 @@ namespace GolfMap.Editor
             float hs = HeightScale(et.tree, proto);
             float ws = WidthScale(et.tree, proto, hs);
             et.scale = new Vector3(ws, hs, ws);
-            et.rotation = Quaternion.Euler(0, (float)m.rotation, 0);
+            et.yaw = (float)m.rotation;
+            et.rotation = Orientation(m, et.yaw);
         }
 
         float GroundHeight(GolfMapTree t)
@@ -592,7 +594,7 @@ namespace GolfMap.Editor
                 if (EditorGUI.EndChangeCheck())
                 {
                     float delta = Mathf.DeltaAngle(first.rotation.eulerAngles.y, rot.eulerAngles.y);
-                    foreach (var t in trees) UpdateInstanceInPlace(t, t.position, Quaternion.Euler(0, t.rotation.eulerAngles.y + delta, 0), t.scale);
+                    foreach (var t in trees) { t.yaw += delta; UpdateInstanceInPlace(t, t.position, Quaternion.Euler(0, delta, 0) * t.rotation, t.scale); }
                     dragRotate = true; SceneView.RepaintAll();
                 }
                 Handles.color = SelectedColour;
@@ -643,7 +645,7 @@ namespace GolfMap.Editor
                     {
                         var edit = RecordFor(t);
                         if (move) { t.tree.x = t.position.x - terrain.transform.position.x; t.tree.z = t.position.z - terrain.transform.position.z; edit.dy = t.position.y - GroundHeight(t.tree); }
-                        if (rotate) { edit.rotation = t.rotation.eulerAngles.y; edit.rotationSet = true; }
+                        if (rotate) { edit.rotation = Mathf.Repeat(t.yaw, 360); edit.rotationSet = true; }
                         if (scale) { t.tree.h *= fh; t.tree.r *= forceBillboards ? fh : fw; }
                         CommitTree(t);
                     }

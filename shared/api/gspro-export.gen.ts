@@ -3,6 +3,8 @@ import { apiFetch } from '@basics/core/client/fetch';
 
 export interface GsproExportSettings {
     dir: string;
+    courseDir: null | string;
+    gkdFile: null | string;
     isDefault: boolean;
     defaultDir: string;
 }
@@ -22,7 +24,7 @@ export interface GsproOrthoSource {
 export interface GsproExportJob {
     id: string;
     courseId: string;
-    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'hillshade' | 'trees' | 'buildings';
+    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'creeks' | 'gkd';
     label: string;
     status: 'running' | 'succeeded' | 'failed';
     startedAt: string;
@@ -60,9 +62,10 @@ export interface BboxWgs84 {
 export interface GsproExportApi {
     settings(input: { courseId: string }): Promise<GsproExportSettings>;
     setDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
+    setCourseDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
     terrain(input: { courseId: string }): Promise<CourseTerrain>;
     orthoSources(input: { courseId: string }): Promise<GsproOrthoSource[]>;
-    start(input: { source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'hillshade' | 'trees' | 'buildings' }): Promise<GsproExportJob>;
+    start(input: { source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'creeks' | 'gkd' }): Promise<GsproExportJob>;
     job(input: { jobId: string }): Promise<GsproExportJob>;
     current(input: { courseId: string }): Promise<null | GsproExportJob>;
 }
@@ -78,6 +81,9 @@ export function createGsproExportClient(baseUrl: string): GsproExportApi {
         },
         async setDir(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/dir`, body: input });
+        },
+        async setCourseDir(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/course-dir`, body: input });
         },
         async terrain(input) {
             const params = new URLSearchParams();

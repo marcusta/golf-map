@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { test, expect } from 'bun:test';
 import { createTestDb } from '../testing/db';
 import { seedCourse } from '../db/seeds/course';
@@ -296,4 +297,67 @@ test('a corridor edit round-trips through create and the D-TE5 export', async ()
     const back = parseEditsGeojson(terrainEditsGeojson([edit])).edits[0]!;
     expect(Math.abs(back.params.centerline![0]!.x - 533000)).toBeLessThan(0.01);
     expect(Math.abs(back.params.centerline![1]!.y - 6475000)).toBeLessThan(0.01);
+});
+
+test('a dig edit validates its profile and round-trips through the D-TE5 export', async () => {
+    const { svc, siteId } = await setup();
+    const { terrainEditsGeojson } = await import('./map-build.service');
+    const params = {
+        featherM: 0, depthM: 0.45, bankSlopeDeg: 18, faceSlopeDeg: 40, faceBearingDeg: 90,
+        reference: 'plane' as const, rimM: 2.5, variation: 0.25, seed: 42,
+    };
+    const edit = await svc.create({ siteId, op: 'dig', params, rings: [SQUARE], origin: 'bunker-digs', originRef: 'feature:b1' });
+    expect(edit.params).toEqual(params);
+
+    const bad: Array<Record<string, unknown>> = [
+        { featherM: 0 },                                         // no depth
+        { featherM: 0, depthM: 1, bankSlopeDeg: 90 },
+        { featherM: 0, depthM: 1, faceSlopeDeg: 40 },            // face without bearing
+        { featherM: 0, depthM: 1, shelfDepthM: 1 },              // shelf as deep as the floor
+        { featherM: 0, depthM: 1, reference: 'sea' },
+        { featherM: 0, depthM: 1, variation: 2 },
+        { featherM: 0, depthM: 1, seed: 1.5 },
+    ];
+    for (const p of bad) {
+        await expect(svc.create({ siteId, op: 'dig', params: p as any, rings: [SQUARE] })).rejects.toBeInstanceOf(InvalidTerrainEditError);
+    }
+
+    const [feature] = terrainEditsGeojson([edit]).features as any[];
+    expect(feature.properties).toMatchObject({ op: 'dig', featherM: 0, depthM: 0.45, bankSlopeDeg: 18, faceSlopeDeg: 40, faceBearingDeg: 90, reference: 'plane', rimM: 2.5, variation: 0.25, seed: 42 });
+    expect(feature.properties.shelfM).toBeUndefined();
+    expect(parseEditsGeojson(terrainEditsGeojson([edit])).edits[0]!.params).toEqual(params);
+});
+
+test('generated edits replay in the generators\' fixed order (roads last), each in file order, before hand-drawn ones', async () => {
+    const { svc, siteId } = await setup();
+    const input = (ref: string) => ({ op: 'plane' as const, params: { featherM: 2 }, rings: [SQUARE], originRef: ref });
+    await svc.create({ siteId, op: 'smooth', params: { featherM: 2 }, rings: [SQUARE] });            // hand-drawn, first in time
+    // Generated in the "wrong" order, and with overlapping indexes.
+    await svc.replaceByOrigin(siteId, 'road-grades', [input('lot'), input('road')]);
+    await svc.replaceByOrigin(siteId, 'creek-digs', [input('creek')]);
+    await svc.replaceByOrigin(siteId, 'building-pads', [input('pad1'), input('pad2'), input('pad3')]);
+    await svc.replaceByOrigin(siteId, 'bunker-digs', [input('bunker')]);
+    await svc.replaceByOrigin(siteId, 'water-digs', [input('pond')]);
+    const order = (await svc.listBySite(siteId)).map(e => e.originRef ?? 'hand-drawn');
+    expect(order).toEqual(['pad1', 'pad2', 'pad3', 'pond', 'bunker', 'creek', 'lot', 'road', 'hand-drawn']);
+});
+
+test('a Unity sculpt layer replays after every other edit, hand-drawn ones included, and goes out with its raster path', async () => {
+    const { svc, siteId } = await setup();
+    const { terrainEditsGeojson } = await import('./map-build.service');
+    const sculpt = { op: 'delta' as const, params: { featherM: 0, raster: 'inner-sculpt.tif', changedM2: 120, maxRaiseM: 0.3, maxLowerM: -0.2 }, rings: [SQUARE], originRef: 'inner' };
+    await svc.replaceByOrigin(siteId, 'unity-sculpt-inner', [sculpt]);
+    await svc.replaceByOrigin(siteId, 'road-grades', [{ op: 'plane', params: { featherM: 2 }, rings: [SQUARE], originRef: 'lot' }]);
+    await svc.create({ siteId, op: 'smooth', params: { featherM: 2 }, rings: [SQUARE] });   // hand-drawn, after the capture
+    const edits = await svc.listBySite(siteId);
+    expect(edits.map(e => e.origin ?? 'hand-drawn')).toEqual(['road-grades', 'hand-drawn', 'unity-sculpt-inner']);
+
+    const [feature] = terrainEditsGeojson([edits[2]!], { sculptDir: '/data/sources/s1/terrain-sculpt' }).features as any[];
+    expect(feature.properties.op).toBe('delta');
+    expect(feature.properties.raster.split(path.sep).join('/')).toBe('/data/sources/s1/terrain-sculpt/inner-sculpt.tif');
+
+    for (const raster of [undefined, '../../etc/passwd', 'inner.tif']) {
+        await expect(svc.create({ siteId, op: 'delta', params: { featherM: 0, raster } as any, rings: [SQUARE] }))
+            .rejects.toBeInstanceOf(InvalidTerrainEditError);
+    }
 });

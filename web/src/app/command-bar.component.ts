@@ -12,7 +12,7 @@ import { FeaturesService } from '../draw/features.service';
 import { HelpModalService } from '../editor/help-modal.component';
 import { DrawToolService, DRAW_TOOL_ID } from '../draw/draw-tool.service';
 import { drawTool } from '../draw/draw-tool';
-import { FEATURE_TYPES, FEATURE_STYLES, digitForFeatureType, type FeatureType } from '../draw/feature-palette';
+import { FEATURE_TYPES, FEATURE_STYLES, digitForFeatureType, isRulesType, type FeatureType } from '../draw/feature-palette';
 import { EditorModeService } from '../editor/editor-mode.service';
 import { ServerModeService, visibleEditorTools } from './server-mode.service';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
@@ -23,6 +23,7 @@ import { MapBuildClientService, formatBytes } from '../map-build/map-build.servi
 import { TilesetService } from '../map/tileset.service';
 import { MapService } from '../map/map.service';
 import { PublishClientService, PUBLISH_STEP_LABELS, type PublishState } from './publish-client.service';
+import { PATH_SURFACE_LABELS, PATH_SURFACES, type PathSurface } from '../../../shared/features/path-surface';
 
 type CommandBarMode = 'create' | 'plan';
 
@@ -74,6 +75,7 @@ const zone3Tpl = template(`
         <button bind="newPoly" type="button" class="cmdbar__new"></button>
         <button bind="newPath" type="button" class="cmdbar__path"></button>
         <input bind="pathWidth" type="number" class="cmdbar__path-width" min="0.5" step="0.5" aria-label="Path width (m)" data-testid="path-width-input">
+        <select bind="pathSurface" class="cmdbar__path-width cmdbar__path-surface" aria-label="Path surface" data-testid="path-surface-default"></select>
         <button bind="boxSelect" type="button" class="cmdbar__box"></button>
         <span class="cmdbar__divider cmdbar__divider--sm"></span>
         <button bind="undoBtn" type="button" class="cmdbar__hist" aria-label="Undo">${icon('undo', 16)}</button>
@@ -296,6 +298,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 font-size: 12px;
                 &.show { display: inline-block; }
             }
+            & .cmdbar__path-surface { width: auto; }
 
             /* (i) round info button. */
             & .cmdbar__info-btn {
@@ -733,8 +736,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             newPath: {
                 innerHTML: icon('route', 16),
                 title: () => (this.pathArmed()
-                    ? 'Drawing a path — click to stop (Esc). Click along its centre, Enter commits it at the width'
-                    : 'New path (P): click along its centre, Enter commits it at the set width'),
+                    ? 'Drawing a road/path centerline — click to stop (Esc). Click along its centre (Shift = corner) and press Enter, or drag it freehand'
+                    : 'New road/path centerline (P) — a creek centerline when Creek is the draw type: click along its centre and press Enter, or drag it freehand. Edit it later as one line with a width'),
                 'aria-label': () => (this.pathArmed() ? 'Stop drawing the path' : 'New path'),
                 'aria-pressed': () => this.pathArmed(),
                 'data-testid': 'new-path-btn',
@@ -747,10 +750,23 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 className: () => (this.pathArmed() ? 'cmdbar__path-width show' : 'cmdbar__path-width'),
                 title: 'Path width in metres',
             },
+            pathSurface: {
+                className: () => (this.pathArmed() ? 'cmdbar__path-width cmdbar__path-surface show' : 'cmdbar__path-width cmdbar__path-surface'),
+                title: 'Surface of the paths you draw (what it looks and plays like in GSPro)',
+            },
         });
         const pathWidthInput = this.ref(frag, 'pathWidth') as HTMLInputElement;
         pathWidthInput.addEventListener('change', () => this.tool.setPathWidthM(Number(pathWidthInput.value)));
         this.track(effect(() => { pathWidthInput.value = String(this.tool.pathWidthM.get()); }));
+        const pathSurfaceSelect = this.ref(frag, 'pathSurface') as HTMLSelectElement;
+        for (const [value, label] of [['', 'Unknown surface'] as const, ...PATH_SURFACES.map(v => [v, PATH_SURFACE_LABELS[v]] as const)]) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            pathSurfaceSelect.appendChild(option);
+        }
+        pathSurfaceSelect.addEventListener('change', () => this.tool.setPathSurface(pathSurfaceSelect.value as PathSurface | ''));
+        this.track(effect(() => { pathSurfaceSelect.value = this.tool.pathSurface.get(); }));
 
         // Sub-mode dropdown.
         this.spawn(PopoverComponent, this.ref(frag, 'subHost'), {
@@ -859,7 +875,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         const follow = host.querySelector<HTMLInputElement>('[data-k="follow"]')!;
         const defaultRow = host.querySelector<HTMLElement>('[data-k="defaultRow"]')!;
         const defaultSel = host.querySelector<HTMLSelectElement>('[data-k="defaultSel"]')!;
-        for (const type of FEATURE_TYPES) {
+        // The rules lines (penalties, OOB) are Furniture's, not Draw's.
+        const drawTypes = FEATURE_TYPES.filter(type => !isRulesType(type));
+        for (const type of drawTypes) {
             const opt = document.createElement('option');
             opt.value = type;
             opt.textContent = FEATURE_STYLES[type].label;
@@ -872,7 +890,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             defaultRow.classList.toggle('hide', this.tool.typeFollowsLast.get());
             defaultSel.value = this.tool.defaultDrawType.get();
         }));
-        for (const type of FEATURE_TYPES) {
+        for (const type of drawTypes) {
             const style = FEATURE_STYLES[type];
             const row = document.createElement('div');
             row.className = 'cmd-ft-row';
@@ -1014,9 +1032,10 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             // names the reclaimable size, and the delete is confirmed first.
             this.mountDeleteLidar(host, close);
 
-            // Regenerate trees — re-runs the lidar canopy tiling and the stem
-            // detector against the persisted lidar + DEM (a server job, same
-            // plumbing as re-terrain). Needs the lidar files to still exist.
+            // Regenerate trees — re-runs the lidar canopy tiling, the stem
+            // detector and the woodland-floor stands against the persisted
+            // lidar + DEM (a server job, same plumbing as re-terrain). Needs
+            // the lidar files to still exist.
             const treesBtn = document.createElement('button');
             treesBtn.type = 'button';
             treesBtn.className = 'menu-item';
@@ -1277,8 +1296,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private async confirmRegenerateTrees(courseId: string): Promise<void> {
         const ok = await this.confirm.confirm({
             title: 'Regenerate trees?',
-            body: 'Rebuilds the canopy layers and the individual tree stems from the stored lidar and DEM.',
-            detail: 'Takes a few minutes for a full course. Tree polygons are written to the site sources as trees.geojson for Import GeoJSON; existing tree features are not changed.',
+            body: 'Rebuilds the canopy layers, the individual tree stems and the woodland-floor zones from the stored lidar and DEM.',
+            detail: 'Takes a few minutes for a full course. Tree polygons are written to the site sources as trees.geojson for Import GeoJSON; existing tree features are not changed. The lidar woodland-floor zones (one per closed stand) are replaced, including any you deleted.',
             confirmLabel: 'Regenerate trees',
             cancelLabel: 'Cancel',
             tone: 'primary',
@@ -1288,10 +1307,13 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             const job = await this.mapBuild.regenerateTrees(courseId);
             if (job.status !== 'succeeded') throw new Error(job.error ?? 'unknown error');
             await this.reloadTilesKeepingCamera(courseId);
+            await this.features.reloadOrLoad(courseId);
             const count = this.tileset.manifest.peek()?.assets?.['tree-stems']?.count;
+            const stands = this.features.store.items.peek().filter((f) => f.source === 'lidar-woodland').length;
             await this.confirm.confirm({
                 title: 'Trees regenerated',
-                body: count !== undefined ? `${count.toLocaleString()} tree stems detected.` : 'Canopy layers and tree stems rebuilt.',
+                body: (count !== undefined ? `${count.toLocaleString()} tree stems detected` : 'Canopy layers and tree stems rebuilt')
+                    + `, ${stands} woodland-floor zone${stands === 1 ? '' : 's'}.`,
                 confirmLabel: 'Done',
                 cancelLabel: 'Close',
                 tone: 'primary',

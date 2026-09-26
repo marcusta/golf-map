@@ -5,6 +5,7 @@ import type { Database } from '../db/schema';
 import type { AssetsService, CourseAsset } from './assets.service';
 import { NotFoundError } from '@basics/core/server/auth';
 import type { PipelineRunner } from './map-build.service';
+import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 
 // --- Public types ---
 
@@ -233,7 +234,7 @@ export class OrthoPatchesService {
         this.dataDir = deps.dataDir;
         this.pipelineDir = deps.pipelineDir
             ?? process.env.MAP_PIPELINE_DIR
-            ?? path.resolve(process.cwd(), '../pipeline');
+            ?? DEFAULT_PIPELINE_DIR;
         this.python = deps.python ?? path.join(this.pipelineDir, '.venv', 'bin', 'python');
         this.lamaWeights = deps.lamaWeights
             ?? process.env.GOLFPIPE_LAMA_WEIGHTS

@@ -45,4 +45,40 @@ describe('DrawToolService rendering mode', () => {
         tool.deactivate();
         expect(features.niceRendering.get()).toBe(true);
     });
+
+    test('Draw hides the rules lines; the rules scope (Furniture) edits only those, in nice rendering', () => {
+        di.set(ConfirmService, new ConfirmService());
+        const features = new FeaturesService({} as CourseFeaturesApi);
+        const tool = new DrawToolService();
+
+        tool.activate(context(features));
+        expect([...features.modeHiddenTypes.get()].sort()).toEqual(['oob', 'penalty_red', 'penalty_yellow']);
+        tool.chooseType('oob');
+        expect(tool.drawType.get()).toBe('bunker'); // Draw never picks a rules type
+        tool.chooseType('green');
+        tool.deactivate();
+        expect(features.modeHiddenTypes.get().size).toBe(0);
+
+        const ctx = context(features);
+        (ctx.map.interactionMode as Signal<string>).set('furniture');
+        tool.activate(ctx, { scope: 'rules', toolId: 'furniture' });
+        expect(tool.scope.get()).toBe('rules');
+        expect(features.niceRendering.get()).toBe(true);
+        expect(features.rulesOutlines.get()).toBe(true);
+        expect(features.modeHiddenTypes.get().size).toBe(0);
+        expect(tool.drawType.get()).toBe('penalty_yellow');
+        tool.chooseType('fairway');
+        expect(tool.drawType.get()).toBe('penalty_yellow'); // only rules types here
+        tool.armRules('oob');
+        expect(tool.drawType.get()).toBe('oob');
+        expect(tool.state.isDrawing.get()).toBe(true);
+        expect(tool.isEngaged()).toBe(true);
+        tool.cancelDrawing();
+        expect(tool.isEngaged()).toBe(false);
+
+        tool.deactivate();
+        expect(tool.scope.get()).toBe('surfaces');
+        expect(features.rulesOutlines.get()).toBe(false);
+        expect(tool.drawType.get()).toBe('green'); // Draw's own type comes back
+    });
 });

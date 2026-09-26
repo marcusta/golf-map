@@ -48,6 +48,7 @@ import {
 import { createTarZst } from '../services/bundle-archive';
 import { toGeoJson, type FeatureGeometry } from '../services/geo';
 import { defaultRunner, type PipelineRunner, type PipelineRunResult } from '../services/map-build.service';
+import { DEFAULT_PIPELINE_DIR } from '../services/pipeline-dir';
 
 export interface PublishDeps {
     db: Kysely<Database>;
@@ -387,7 +388,7 @@ async function installAnalysisDem(
 
     const pipelineDir = deps.pipelineDir
         ?? process.env.MAP_PIPELINE_DIR
-        ?? path.resolve(process.cwd(), '../pipeline');
+        ?? DEFAULT_PIPELINE_DIR;
     const python = deps.python ?? process.env.MAP_PIPELINE_PYTHON ?? path.join(pipelineDir, '.venv', 'bin', 'python');
     const runner = deps.runner ?? defaultRunner(python);
 

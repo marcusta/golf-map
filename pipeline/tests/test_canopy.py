@@ -384,3 +384,31 @@ def test_cmd_canopy_trees_out_writes_polygons_from_the_same_grid(tmp_path: Path,
     assert props["source_ref"] == "scene.las" and props["license"] == "CC0-1.0"
     assert props["heightMaxM"] == pytest.approx(8.0, abs=0.05)
     assert props["areaM2"] == pytest.approx(144, rel=0.25)  # 12x12 block (+ closing/filter growth)
+
+
+def test_cmd_canopy_woodland_out_writes_stands_from_the_same_grid(tmp_path: Path, scene, capsys):
+    las, dem = scene
+    tiles = tmp_path / "tiles"
+    tiles.mkdir()
+    woodland_out = tmp_path / "woodland.geojson"
+    cmd_canopy([las], dem, "c1", tiles, tmp_path / "work", minzoom=17, maxzoom=17, woodland_out=woodland_out)
+
+    fc = json.loads(woodland_out.read_text(encoding="utf-8"))
+    assert fc["courseId"] == "c1" and fc["crs"]["properties"]["name"].endswith("3006")
+    assert fc["features"] == []  # a 144 m² crown block is no wood (min area 2500 m²)
+    report = capsys.readouterr().out
+    assert "Counting understory returns" in report and "Woodland stands: 0" in report and "roof buffer 5 m" in report
+
+
+def test_cmd_canopy_roofs_out_keeps_the_roof_heights(tmp_path: Path, scene):
+    las, dem = scene
+    tiles = tmp_path / "tiles"
+    tiles.mkdir()
+    roofs_out = tmp_path / "sources" / "roofs.tif"
+    cmd_canopy([las], dem, "c1", tiles, tmp_path / "work", minzoom=17, maxzoom=17, roofs_out=roofs_out)
+    with rasterio.open(roofs_out) as src:
+        heights = src.read(1)
+        assert src.crs == CRS.from_epsg(3006)
+    # The 10x10 roof block at 18 m on 10 m ground; the crown block is not a roof.
+    assert np.count_nonzero(heights) == pytest.approx(100, abs=25)
+    assert heights.max() == pytest.approx(8.0, abs=0.1)

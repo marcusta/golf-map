@@ -6,6 +6,8 @@ import { FurnitureToolService } from './furniture-tool.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { teeFill } from './furniture-overlay';
 import { icon } from '../ui/icons';
+import { FeaturesService } from '../draw/features.service';
+import { FEATURE_STYLES, RULES_TYPES, isRulesType, type FeatureType } from '../draw/feature-palette';
 
 const tpl = template(`
     <div class="furn-panel" bind="root">
@@ -31,6 +33,19 @@ const tpl = template(`
                 <button bind="gpBack" type="button" class="gp-btn">B</button>
             </div>
             <div bind="hint" class="place-hint"></div>
+        </div>
+
+        <div class="furn-panel__section">
+            <h4 class="section-title">Rules lines</h4>
+            <div bind="ruleButtons" class="place-grid rules-grid"></div>
+            <div bind="ruleHint" class="place-hint"></div>
+        </div>
+
+        <div bind="ruleSelection" class="furn-panel__section selection">
+            <h4 class="section-title">Selected line</h4>
+            <div bind="ruleCard" class="sel-card"></div>
+            <div bind="ruleRetype" class="rules-grid"></div>
+            <button bind="ruleDelete" type="button" class="delete-btn">Delete</button>
         </div>
 
         <div bind="teeAttrs" class="furn-panel__section attr">
@@ -140,6 +155,18 @@ export class FurniturePanelComponent extends Component {
                 }
             }
 
+            & .rules-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr;
+                gap: 2px;
+            }
+            & .rule-dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                flex: none;
+            }
+
             & .place-hint {
                 display: none;
                 font-size: 0.72rem;
@@ -217,6 +244,7 @@ export class FurniturePanelComponent extends Component {
 
     private svc = this.inject(FurnitureService);
     private tool = this.inject(FurnitureToolService);
+    private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
 
     render(): DocumentFragment {
@@ -292,6 +320,15 @@ export class FurniturePanelComponent extends Component {
                 // Green points are structural — no delete for them.
                 className: () => this.svc.selection.get()?.kind === 'green' ? 'delete-btn hide' : 'delete-btn',
             },
+            ruleHint: {
+                textContent: () => this.ruleHint(),
+                className: () => (this.tool.drawingRule.get() ? 'place-hint show' : 'place-hint'),
+            },
+            ruleSelection: {
+                className: () => (this.selectedRules().length > 0 ? 'furn-panel__section selection show' : 'furn-panel__section selection'),
+            },
+            ruleCard: { textContent: () => '' }, // filled via effect (multiline)
+            ruleDelete: { onclick: () => void this.tool.rules.deleteSelected() },
             summary: { className: () => this.tool.selectedHole.get() ? 'furn-panel__section summary show' : 'furn-panel__section summary' },
             summaryBody: { textContent: () => '' }, // filled via effect
             status: {
@@ -333,6 +370,28 @@ export class FurniturePanelComponent extends Component {
         pinDiff.addEventListener('change', () => this.svc.pendingPinDifficulty.set(pinDiff.value as never));
         this.track(effect(() => { pinDiff.value = this.svc.pendingPinDifficulty.get(); }));
 
+        // Rules-line arm buttons (toggle) and the selected line's retype row.
+        const ruleButtons = this.ref(frag, 'ruleButtons');
+        const ruleRetype = this.ref(frag, 'ruleRetype');
+        for (const type of RULES_TYPES) {
+            const arm = ruleButton(type);
+            arm.addEventListener('click', () => this.tool.armRule(type));
+            this.track(effect(() => {
+                arm.className = this.tool.drawingRule.get() === type ? 'place-btn active' : 'place-btn';
+            }));
+            ruleButtons.appendChild(arm);
+
+            const retype = ruleButton(type);
+            retype.addEventListener('click', () => this.tool.rules.retypeSelection(type));
+            this.track(effect(() => {
+                const selected = this.selectedRules();
+                retype.className = selected.length > 0 && selected.every(f => f.type === type) ? 'place-btn active' : 'place-btn';
+            }));
+            ruleRetype.appendChild(retype);
+        }
+        const ruleCard = this.ref(frag, 'ruleCard');
+        this.track(effect(() => { ruleCard.innerHTML = this.ruleCardHtml(); }));
+
         // Multiline selection card (built imperatively so it can hold rows).
         const selCard = this.ref(frag, 'selCard');
         this.track(effect(() => { selCard.innerHTML = this.selectionCardHtml(); }));
@@ -342,6 +401,36 @@ export class FurniturePanelComponent extends Component {
         this.track(effect(() => { summaryBody.innerHTML = this.summaryHtml(); }));
 
         return frag;
+    }
+
+    /** The selected rules lines (the rules engine only ever selects those here). */
+    private selectedRules() {
+        return this.features.selectedFeatures.get().filter(f => isRulesType(f.type));
+    }
+
+    private holeLabel(holeId: string | null): string {
+        if (!holeId) return 'course level';
+        const hole = this.courseDetail.holes.get().find(h => h.id === holeId);
+        return hole ? `hole ${hole.number}` : 'a hole';
+    }
+
+    private ruleHint(): string {
+        const type = this.tool.drawingRule.get();
+        if (!type) return '';
+        return `Drawing ${FEATURE_STYLES[type].label} on ${this.holeLabel(this.tool.rules.drawHoleId.get())} — click to add points, `
+            + 'click the first point or Enter to close, press-drag to trace, Esc to cancel.';
+    }
+
+    private ruleCardHtml(): string {
+        const selected = this.selectedRules();
+        if (selected.length === 0) return '';
+        if (selected.length > 1) return `<b>${selected.length} lines</b>`;
+        const f = selected[0]!;
+        const points = f.geometry.rings.reduce((n, ring) => n + ring.points.length, 0);
+        return [
+            `<b>${escapeHtml(FEATURE_STYLES[f.type as FeatureType]?.label ?? f.type)}</b> · ${this.holeLabel(f.holeId)}`,
+            `${metricSpan(points)} point${plural(points)}`,
+        ].join('<br>');
     }
 
     private placeClass(kind: Exclude<PlacementKind, null>): string {
@@ -448,6 +537,19 @@ function card(
         holeId ? `hole ${escapeHtml(holeId).slice(0, 8)}…` : 'no hole',
         `<span class="metric">${lat.toFixed(6)}, ${lon.toFixed(6)}</span>`,
     ].join('<br>');
+}
+
+/** A rules-type button: its line colour as a dot, then the short label. */
+function ruleButton(type: FeatureType): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'place-btn';
+    const dot = document.createElement('span');
+    dot.className = 'rule-dot';
+    dot.style.background = FEATURE_STYLES[type].outline;
+    button.append(dot, FEATURE_STYLES[type].label.replace(' penalty', ''));
+    button.title = FEATURE_STYLES[type].label;
+    return button;
 }
 
 /** Mono tabular numeric readout (guide §02) — optional unit dropped via `.metric__unit`. */

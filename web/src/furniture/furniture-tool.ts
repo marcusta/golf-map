@@ -29,6 +29,18 @@ const HELP: HelpSection[] = [
             { keys: 'Del / Backspace', desc: 'Delete selection' },
         ],
     },
+    {
+        title: 'Rules lines (OOB, yellow and red penalty)',
+        shortcuts: [
+            { keys: 'OOB / Yellow / Red, click map', desc: 'Draw a line; click the first point or Enter to close' },
+            { keys: 'Press-drag while armed', desc: 'Trace a line freehand' },
+            { keys: 'Click a line', desc: 'Select (OOB: click on its line; penalty areas: anywhere inside)' },
+            { keys: 'Drag vertex / drag inside', desc: 'Reshape / move the selected line' },
+            { keys: 'Click edge · right-click vertex', desc: 'Insert / remove a vertex' },
+            { keys: '⌘/Ctrl-Z · ⌘/Ctrl-Shift-Z', desc: 'Undo / redo line edits' },
+            { keys: 'Esc', desc: 'Cancel the line in progress, then the selection' },
+        ],
+    },
 ];
 
 /**

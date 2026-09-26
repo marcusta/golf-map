@@ -40,7 +40,10 @@ import { GeolocationService, type GpsFix } from '../gps/geolocation.service';
 import { GPS_OVERLAY_ID, buildGpsGeojson, gpsLayers } from '../gps/gps-overlay';
 import { WakeLock } from '../gps/wake-lock';
 import { FeaturesGeojsonService } from './features-geojson.service';
-import { fillColorExpression, outlineColorExpression, typeSortKeyExpression, typeZRank } from './feature-colors';
+import {
+    fillColorExpression, outlineColorExpression, typeSortKeyExpression, typeZRank,
+    filledFilter, outlineOnlyFilter,
+} from './feature-colors';
 import { frameHole, type LngLatPoint } from './hole-frame';
 import { hazardRingsFromGeojson, tappableRingsFromGeojson } from './hazard-rings';
 import { HoleOverrideService, suggestedHole } from './hole-override.service';
@@ -1077,6 +1080,9 @@ function featureLayers(): OverlayLayerSpec[] {
         {
             id: `${FEATURES_OVERLAY_ID}-fill`,
             type: 'fill',
+            // OOB encloses the whole property: it is a white boundary LINE,
+            // never a fill (see the builder's OUTLINE_ONLY_TYPES).
+            filter: filledFilter() as never,
             layout: { 'fill-sort-key': sortKey as never },
             paint: { 'fill-color': fillColorExpression() as never, 'fill-opacity': 0.5 },
         },
@@ -1085,6 +1091,20 @@ function featureLayers(): OverlayLayerSpec[] {
             type: 'line',
             layout: { 'line-sort-key': sortKey as never },
             paint: { 'line-color': outlineColorExpression() as never, 'line-width': 1, 'line-opacity': 0.7 },
+        },
+        {
+            // The OOB boundary, drawn over the surfaces: a dark casing so the
+            // bone white reads over sand and paths, then the white line.
+            id: `${FEATURES_OVERLAY_ID}-oob-casing`,
+            type: 'line',
+            filter: outlineOnlyFilter() as never,
+            paint: { 'line-color': '#3a4148', 'line-width': 3, 'line-opacity': 0.55 },
+        },
+        {
+            id: `${FEATURES_OVERLAY_ID}-oob-line`,
+            type: 'line',
+            filter: outlineOnlyFilter() as never,
+            paint: { 'line-color': outlineColorExpression() as never, 'line-width': 1.5 },
         },
     ];
 }

@@ -4,6 +4,8 @@ import { _reset } from '@basics/core/client/error-report';
 import { GsproExportPanelComponent } from '../src/export/gspro-export-panel.component';
 import { GsproExportService } from '../src/export/gspro-export.service';
 import type { GsproExportApi, GsproExportSettings, GsproOrthoSource, CourseTerrain, GsproExportJob } from '../../shared/api/gspro-export.gen';
+import { FeaturesService } from '../src/draw/features.service';
+import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 // Render smoke for the GSPro export panel (there are no per-component specs by
 // design — TESTING.md — but the folder field, the default hint and the report
@@ -37,24 +39,39 @@ const TERRAIN: CourseTerrain = {
 };
 
 function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSource[] = SOURCES, terrain: CourseTerrain | null = TERRAIN) {
-    const settings = (): GsproExportSettings =>
-        ({ dir: dir ?? DEFAULT_DIR, isDefault: dir === null, defaultDir: DEFAULT_DIR });
+    let courseDir: string | null = null;
+    const settings = (): GsproExportSettings => ({
+        dir: dir ?? DEFAULT_DIR, isDefault: dir === null, defaultDir: DEFAULT_DIR,
+        courseDir, gkdFile: courseDir ? `${courseDir.split('\\').pop()}.GKD` : null,
+    });
+    const gkdCalls: (string | null)[] = [];
     const orthoCalls: string[] = [];
     const outerCalls: string[] = [];
     const demCalls: string[] = [];
     const hillshadeCalls: string[] = [];
     const treesCalls: string[] = [];
+    const zonesCalls: string[] = [];
+    const floorCalls: (string | undefined)[] = [];
+    const svgCalls: { excludeFeatureIds?: string[]; variant?: string }[] = [];
     const handlers: Record<string, (input: any) => Promise<any>> = {
         async settings() { return settings(); },
         async setDir() { return settings(); },
-        async run() {
+        async setCourseDir({ dir: next }) { courseDir = next; return settings(); },
+        async runGkd() {
+            if (run) run();
+            gkdCalls.push(courseDir);
+            return { path: `${courseDir}\\${settings().gkdFile}`, report: ['Wrote x.GKD', '18 holes, par 72'] };
+        },
+        async run({ excludeFeatureIds, variant }) {
+            svgCalls.push({ excludeFeatureIds, variant });
             if (run) run();
             return { path: `${dir ?? DEFAULT_DIR}\\vreta.svg`, report: ['Wrote vreta.svg', '200 features in 19 layer(s)', 'warning: 5 outside'] };
         },
         async orthoSources() { return sources; },
-        async runOrtho({ source }) {
+        async runOrtho({ source, forestFloor, floorColor }) {
             if (run) run();
             orthoCalls.push(source);
+            floorCalls.push(forestFloor ? floorColor : undefined);
             return { path: `${dir ?? DEFAULT_DIR}\\vreta-orto-l2-2025-8192.jpg`, report: ['rendering ortho-orto-l2-2025.tif', 'wrote vreta-orto-l2-2025-8192.jpg'] };
         },
         async terrain() {
@@ -81,9 +98,14 @@ function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSourc
             treesCalls.push(kind);
             return { path: `${dir ?? DEFAULT_DIR}\\vreta-${kind}-trees.json`, report: ['Wrote x.json'] };
         },
+        async runZones({ terrain: kind }) {
+            if (run) run();
+            zonesCalls.push(kind);
+            return { path: `${dir ?? DEFAULT_DIR}\\vreta-${kind}-zones.json`, report: ['Wrote x.json'] };
+        },
     };
     const api = jobApi(handlers);
-    return { api, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls };
+    return { api, svgCalls, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls };
 }
 
 
@@ -96,14 +118,16 @@ function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSourc
 function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => Promise<GsproExportJob | null> = async () => null): GsproExportApi {
     let last: GsproExportJob | null = null;
     return {
-        settings: h.settings, setDir: h.setDir, orthoSources: h.orthoSources, terrain: h.terrain,
+        settings: h.settings, setDir: h.setDir, setCourseDir: h.setCourseDir, orthoSources: h.orthoSources, terrain: h.terrain,
         async start(input) {
             const { courseId, kind } = input;
-            const result = kind === 'svg' ? await h.run({ courseId })
-                : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity })
+            const result = kind === 'svg' ? await h.run({ courseId, excludeFeatureIds: input.excludeFeatureIds, variant: input.variant })
+                : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity, forestFloor: input.forestFloor, floorColor: input.floorColor })
                 : kind === 'outer-ortho' ? await h.runOuterOrtho({ courseId, collection: input.collection, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity })
                 : kind === 'dem' ? await h.runDem({ courseId, terrain: input.terrain })
                 : kind === 'hillshade' ? await h.runHillshade({ courseId, terrain: input.terrain })
+                : kind === 'zones' ? await h.runZones({ courseId, terrain: input.terrain })
+                : kind === 'gkd' ? await h.runGkd({ courseId })
                 : await h.runTrees({ courseId, terrain: input.terrain });
             last = { id: `job-${kind}-${Date.now()}`, courseId, kind, label: kind, status: 'succeeded',
                 startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), result, error: null };
@@ -118,12 +142,12 @@ function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => 
 }
 
 async function mount(dir: string | null = null, run?: () => never, sources?: GsproOrthoSource[], terrain?: CourseTerrain | null) {
-    const { api, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls } = fakeApi(dir, run, sources, terrain);
+    const { api, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls } = fakeApi(dir, run, sources, terrain);
     const svc = new GsproExportService(api, 1);
     di.set(GsproExportService, svc);
     const host = document.createElement('div');
     new GsproExportPanelComponent({}).mount(host);
-    return { host, svc, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls };
+    return { host, svc, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls };
 }
 
 test('the panel stays hidden until a course opens it', async () => {
@@ -200,7 +224,7 @@ test('the vintage picker lists the persisted orthophotos and preselects the one 
     const { host, svc } = await mount();
     await svc.openFor('course-1', 'Vreta');
 
-    const select = host.querySelector('select') as HTMLSelectElement;
+    const select = host.querySelector('[data-testid=gspro-ortho-source]') as HTMLSelectElement;
     expect(select.parentElement?.className).not.toContain('hidden');
     expect([...select.options].map(o => o.textContent)).toEqual([
         'orto-l2-2025 (shown on map)', 'orto-l2-2025 (patched)', 'orto-l2-2023',
@@ -218,7 +242,7 @@ test('picking another vintage exports that one', async () => {
     const { host, svc, orthoCalls } = await mount();
     await svc.openFor('course-1', 'Vreta');
 
-    const select = host.querySelector('select') as HTMLSelectElement;
+    const select = host.querySelector('[data-testid=gspro-ortho-source]') as HTMLSelectElement;
     select.value = 'ortho-orto-l2-2023.tif';
     select.dispatchEvent(new Event('change'));
     expect(svc.orthoSource.peek()).toBe('ortho-orto-l2-2023.tif');
@@ -235,7 +259,7 @@ test('a never-built course hides the picker, says why, and cannot export a JPEG'
     const { host, svc, orthoCalls } = await mount(null, undefined, []);
     await svc.openFor('course-1', 'Vreta');
 
-    const select = host.querySelector('select') as HTMLSelectElement;
+    const select = host.querySelector('[data-testid=gspro-ortho-source]') as HTMLSelectElement;
     expect(select.parentElement?.className).toContain('hidden');
     expect(host.textContent).toContain('build its map first');
     const button = host.querySelector('.gspro-export__run-ortho') as HTMLButtonElement;
@@ -276,7 +300,7 @@ test('the outer orthophoto export uses the picked vintage\'s collection', async 
     expect(button.disabled).toBe(false);
     expect(host.textContent).toContain('5000 m outer square');
 
-    const select = host.querySelector('select') as HTMLSelectElement;
+    const select = host.querySelector('[data-testid=gspro-ortho-source]') as HTMLSelectElement;
     select.value = 'ortho-orto-l2-2023.tif';
     select.dispatchEvent(new Event('change'));
     button.click();
@@ -369,4 +393,234 @@ test('a course with no map area says why the terrains are unavailable and cannot
     expect(await svc.runDem('inner')).toBe(true);  // the server is the judge; the button just guards
     expect(demCalls).toEqual(['inner']);
     expect(outerCalls).toEqual([]);
+});
+
+test('the forest floor box is on, its colour and mix hide with it, and the pick reaches the cleaned export', async () => {
+    const { host, svc, floorCalls } = await mount();
+    await svc.openFor('course-1', 'Vreta');
+
+    const box = [...host.querySelectorAll('.gspro-export__check')]
+        .find(l => l.textContent?.includes('Forest floor'))!.querySelector('input') as HTMLInputElement;
+    const fields = host.querySelector('.gspro-export__floor') as HTMLElement;
+    const color = fields.querySelector('input[type="color"]') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(fields.className).not.toContain('hidden');
+    expect(color.value).toBe('#505834');
+
+    color.value = '#604830';
+    color.dispatchEvent(new Event('input'));
+    const button = host.querySelector('.gspro-export__run-clean-ortho') as HTMLButtonElement;
+    button.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    expect(fields.className).toContain('hidden');
+    button.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect(floorCalls).toEqual(['#604830', undefined]);
+});
+
+test('the vegetation zone buttons export the inner and the outer terrain', async () => {
+    const { host, svc, zonesCalls } = await mount();
+    await svc.openFor('course-1', 'Vreta');
+
+    const inner = host.querySelector('.gspro-export__run-inner-zones') as HTMLButtonElement;
+    const outer = host.querySelector('.gspro-export__run-outer-zones') as HTMLButtonElement;
+    expect(inner.textContent).toBe('Export inner vegetation zones');
+    expect(outer.textContent).toBe('Export outer vegetation zones');
+    inner.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    outer.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect(zonesCalls).toEqual(['inner', 'outer']);
+    expect(host.textContent).toContain('vreta-outer-zones.json');
+});
+
+// --- GreenKeeper course file ---
+
+const SCENE = 'C:\\GSProV1\\Core\\GSP\\Courses\\Vreta_lidar_scene';
+
+test('the GKD export waits for a GSPro course folder, saves it, and writes the GKD there', async () => {
+    const { host, svc, gkdCalls } = await mount();
+    await svc.openFor('course-1', 'Vreta');
+
+    const button = host.querySelector('.gspro-export__run-gkd') as HTMLButtonElement;
+    expect(button.textContent).toBe('Export GreenKeeper course file');
+    expect(button.disabled).toBe(true);
+
+    const field = [...host.querySelectorAll('input[type="text"]')]
+        .find(i => (i as HTMLInputElement).placeholder.includes('Courses')) as HTMLInputElement;
+    field.value = SCENE;
+    field.dispatchEvent(new Event('input'));
+    expect(button.disabled).toBe(false);
+    expect(host.textContent).toContain('Saved with the course when you export.');
+
+    button.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect(gkdCalls).toEqual([SCENE]);
+    expect(host.textContent).toContain(`Wrote ${SCENE}\\Vreta_lidar_scene.GKD`);
+    expect(host.textContent).toContain('Writes Vreta_lidar_scene.GKD there.');
+});
+
+test('the GKD export without a course folder says what to set', async () => {
+    const { svc, gkdCalls } = await mount();
+    await svc.openFor('course-1', 'Vreta');
+    expect(await svc.runGkd()).toBe(false);
+    expect(svc.error.peek()).toMatch(/Set the GSPro course folder first/);
+    expect(gkdCalls).toEqual([]);
+});
+
+// --- SVG test variants ---
+
+test('features are left out of the SVG from the filtered list and the map selection, and marked on the map', async () => {
+    const geometry = { crs: 'EPSG:3006', rings: [{ points: [{ x: 530000, y: 6487000 }, { x: 530010, y: 6487000 }, { x: 530000, y: 6487010 }] }] };
+    const item = (id: string, type: string) => ({
+        id, courseId: 'course-1', holeId: null, layer: null, type, geometry, geojson: null, sortOrder: 0,
+        source: null, generated: false, sourceRef: null, license: null, attributes: null, version: 1,
+    }) as CourseFeature;
+    const features = new FeaturesService({
+        listByCourse: async () => [item('road-1', 'path'), item('road-2', 'path'), item('green-1', 'green'), item('oob-1', 'oob')],
+    } as unknown as CourseFeaturesApi);
+    di.set(FeaturesService, features);
+    const { api, svgCalls } = fakeApi(null);
+    const svc = new GsproExportService(api, 1, null);
+    di.set(GsproExportService, svc);
+    const host = document.createElement('div');
+    new GsproExportPanelComponent({}).mount(host);
+    await svc.openFor('course-1', 'Vreta');
+    await new Promise(r => setTimeout(r, 0));  // the panel loads the course's features
+
+    const list = () => [...host.querySelectorAll('[data-testid=gspro-svg-features] li')];
+    expect(list()).toHaveLength(3);  // OOB is never in the SVG, so never offered
+
+    const type = host.querySelector('select[aria-label=Type]') as HTMLSelectElement;
+    type.value = 'path';
+    type.dispatchEvent(new Event('change'));
+    expect(list()).toHaveLength(2);
+    (host.querySelector('[data-testid=gspro-exclude-shown]') as HTMLButtonElement).click();
+
+    features.setSelection(['green-1']);
+    (host.querySelector('[data-testid=gspro-exclude-selected]') as HTMLButtonElement).click();
+    expect([...features.exportExcludedIds.peek()].sort()).toEqual(['green-1', 'road-1', 'road-2']);
+
+    const variant = host.querySelector('[data-testid=gspro-svg-variant]') as HTMLInputElement;
+    variant.value = 'bare';
+    variant.dispatchEvent(new Event('input'));
+    expect(host.textContent).toContain('Writes vreta-bare.svg');
+
+    await svc.run();
+    expect(svgCalls).toEqual([{ excludeFeatureIds: ['road-1', 'road-2', 'green-1'], variant: 'bare' }]);
+
+    svc.close();
+    expect(features.exportExcludedIds.peek().size).toBe(0);  // no marks once the panel is closed
+});
+
+test('bisecting the shown paths walks the steps to the culprit', async () => {
+    const geometry = (x: number) => ({ crs: 'EPSG:3006', rings: [{ points: [{ x, y: 6487000 }, { x: x + 10, y: 6487000 }, { x, y: 6487010 }] }] });
+    const item = (id: string, type: string, x: number) => ({
+        id, courseId: 'course-1', holeId: null, layer: null, type, geometry: geometry(x), geojson: null, sortOrder: 0,
+        source: null, generated: false, sourceRef: null, license: null, attributes: null, version: 1,
+    }) as CourseFeature;
+    const paths = ['road-a', 'road-b', 'road-c', 'road-d'].map((id, i) => item(id, 'path', 530000 + i * 100));
+    const features = new FeaturesService({
+        listByCourse: async () => [...paths, item('green-1', 'green', 530500)],
+    } as unknown as CourseFeaturesApi);
+    di.set(FeaturesService, features);
+    const { api, svgCalls } = fakeApi(null);
+    const svc = new GsproExportService(api, 1, null);
+    di.set(GsproExportService, svc);
+    const host = document.createElement('div');
+    new GsproExportPanelComponent({}).mount(host);
+    await svc.openFor('course-1', 'Vreta');
+    await new Promise(r => setTimeout(r, 0));
+
+    const type = host.querySelector('select[aria-label=Type]') as HTMLSelectElement;
+    type.value = 'path';
+    type.dispatchEvent(new Event('change'));
+    const start = host.querySelector('[data-testid=gspro-bisect-start]') as HTMLButtonElement;
+    expect(start.textContent).toBe('Bisect the 4 shown');
+    start.click();
+    await new Promise(r => setTimeout(r, 10));  // step 1 exports straight away
+
+    const box = () => (host.querySelector('[data-testid=gspro-bisect]') as HTMLElement).textContent ?? '';
+    expect(box()).toContain('Step 1: 4 suspects');
+    expect(box()).toContain('vreta-bisect-1.svg leaves out 2 of them');
+    // The culprit is road-c: Blender builds exactly when it is left out.
+    const answer = async () => {
+        const excluded = svgCalls.at(-1)?.excludeFeatureIds ?? [];
+        const ok = excluded.includes('road-c');
+        (host.querySelector(`[data-testid=gspro-bisect-${ok ? 'ok' : 'failed'}]`) as HTMLButtonElement).click();
+        await new Promise(r => setTimeout(r, 10));
+    };
+    for (let i = 0; i < 3 && !svc.svgBisect.peek()?.result; i++) await answer();
+    expect(svc.svgBisect.peek()?.result).toBe('confirmed');
+    expect(box()).toContain('Found it: Path (road-c)');
+    expect(svgCalls.map(c => c.variant)).toEqual(['bisect-1', 'bisect-2', 'bisect-3']);
+});
+
+// --- (i) tips ---
+
+test('the long explanations sit behind (i) tips, not in the panel', async () => {
+    const { host, svc } = await mount();
+    await svc.openFor('course-1', 'Vreta');
+
+    const visible = [...host.querySelectorAll('.hint')].map(h => h.textContent ?? '');
+    for (const text of visible) expect(text.length).toBeLessThan(120);
+    expect(visible.join(' ')).not.toContain('Light multiplier');
+    expect(host.querySelectorAll('.info-tip').length).toBeGreaterThanOrEqual(12);
+});
+
+test('hovering or focusing an (i) shows its text in a popup, and leaving hides it', async () => {
+    const { host, svc } = await mount();
+    document.body.appendChild(host);
+    try {
+        await svc.openFor('course-1', 'Vreta');
+        const tip = [...host.querySelectorAll('.info-tip')]
+            .find(t => t.textContent?.includes('Light multiplier')) as HTMLElement;
+
+        tip.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        const popup = document.getElementById('info-tip-popup') as HTMLElement;
+        expect(popup.style.display).toBe('block');
+        expect(popup.textContent).toContain('Light multiplier for the -terrain twin');
+        expect(tip.getAttribute('aria-describedby')).toBe('info-tip-popup');
+
+        tip.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: host }));
+        expect(popup.style.display).toBe('none');
+
+        // A reactive tip: the outer orthophoto's names the outer square's side.
+        const outer = host.querySelector('.gspro-export__row .info-tip') as HTMLElement;
+        outer.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        expect(popup.textContent).toContain('5000 m outer square');
+        outer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        expect(popup.style.display).toBe('none');
+    } finally {
+        host.remove();
+    }
+});
+
+test('the GSPro course folder is saved when the field is left and is back when the panel opens again', async () => {
+    const { host, svc } = await mount();
+    await svc.openFor('course-1', 'Vreta');
+
+    const field = () => [...host.querySelectorAll('input[type="text"]')]
+        .find(i => (i as HTMLInputElement).placeholder.includes('Courses')) as HTMLInputElement;
+    field().value = SCENE;
+    field().dispatchEvent(new Event('input'));
+    field().dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 0));
+    // Saving on leave must not disable the export button under the click that caused the blur.
+    expect(svc.busy.peek()).toBe(false);
+    expect(svc.settings.peek()?.courseDir).toBe(SCENE);
+
+    svc.close();
+    await svc.openFor('course-1', 'Vreta');
+    expect(field().value).toBe(SCENE);
+    expect(host.textContent).toContain('Writes Vreta_lidar_scene.GKD there.');
 });

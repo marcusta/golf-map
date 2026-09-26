@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db/schema';
 import { type ServerMode, serverMode } from '../mode';
@@ -45,7 +46,9 @@ export interface ServicesConfig {
 }
 
 export function createServices(db: Kysely<Database>, config: ServicesConfig = {}) {
-    const dataDir = config.dataDir ?? process.env.DATA_DIR ?? './data';
+    // Absolute: the services hand paths under it to pipeline processes that
+    // run in pipeline/, where a relative `./data/...` names nothing.
+    const dataDir = path.resolve(config.dataDir ?? process.env.DATA_DIR ?? './data');
     const tapscoreBaseUrl = config.tapscoreBaseUrl ?? process.env.TAPSCORE_BASE_URL ?? '';
     const mode = config.mode ?? serverMode();
 
@@ -79,7 +82,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const zoneTypesService = new ZoneTypesService(db);
     const gsproExportService = new GsproExportService({ db, courses: coursesService, assets: assetsService, dataDir, terrainEdits: terrainEditsService });
     const terrainGeneratorsService = new TerrainGeneratorsService({
-        courses: coursesService, assets: assetsService, terrainEdits: terrainEditsService, dataDir,
+        courses: coursesService, assets: assetsService, terrainEdits: terrainEditsService,
+        courseFeatures: courseFeaturesService, dataDir,
     });
     const publishService = new PublishService({ db, dataDir });
     // Serve-mode ingest endpoint (§8); the service is cheap to construct in

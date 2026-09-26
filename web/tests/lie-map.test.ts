@@ -15,12 +15,13 @@ function squareFeature(
     maxX: number,
     minY: number,
     maxY: number,
-    opts: { sortOrder?: number; holeId?: string | null } = {},
+    opts: { sortOrder?: number; holeId?: string | null; layer?: 'roughs' | null } = {},
 ): CourseFeature {
     return {
         id,
         courseId: 'course-1',
         holeId: opts.holeId ?? null,
+        layer: opts.layer ?? null,
         type,
         geometry: {
             crs: 'EPSG:3006',
@@ -83,14 +84,16 @@ describe('buildLieMap', () => {
         expect(map.classifyLie({ x: 50, y: 100 })).toBe('fairway');
     });
 
-    test('cross-group: a hole feature outranks an overlapping course-level one regardless of area (scenario 3)', () => {
-        // Course-level fairway (rank 0) vs. a LARGER hole-1 water (rank 1):
-        // the hole feature wins by the D24 group key even though it is bigger
-        // and would have lost under smallest-area.
-        const courseFairway = squareFeature('f1', 'fairway', 0, 100, 0, 100, { holeId: null, sortOrder: 5 });
-        const holeWater = squareFeature('w1', 'water', 0, 200, 0, 200, { holeId: 'h1', sortOrder: 0 });
-        const map = buildLieMap([courseFairway, holeWater], new Map([['h1', 1]]));
-        expect(map.classifyLie({ x: 50, y: 50 })).toBe('penalty');
+    test('cross-group: Roughs under a hole under course-level, regardless of area or sortOrder (D28)', () => {
+        // Roughs-layer rough (rank 0, high sortOrder) vs. a hole-1 fairway
+        // (rank 1): the hole feature wins by the group key.
+        const layerRough = squareFeature('r1', 'rough', 0, 100, 0, 100, { holeId: null, layer: 'roughs', sortOrder: 9 });
+        const holeFairway = squareFeature('f1', 'fairway', 0, 200, 0, 200, { holeId: 'h1', sortOrder: 0 });
+        // Course-level water (top rank) only covers the east half.
+        const courseWater = squareFeature('w1', 'water', 60, 300, 0, 300, { holeId: null, sortOrder: 0 });
+        const map = buildLieMap([layerRough, holeFairway, courseWater], new Map([['h1', 1]]));
+        expect(map.classifyLie({ x: 50, y: 50 })).toBe('fairway');
+        expect(map.classifyLie({ x: 80, y: 50 })).toBe('penalty');
     });
 
     test('trees map to recovery and rules areas map to penalty via lieFromFeatureType', () => {

@@ -1,0 +1,96 @@
+"""gspro.py creeks: R.A.M. splines at the creek's water surface (unity-creeks-v1).
+
+A synthetic DEM with a creek channel falling east, a course DB with one creek
+drawn as a centerline (uphill, so it must be turned) and one as a polygon.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+
+import numpy as np
+import pytest
+import rasterio
+from rasterio.crs import CRS
+from rasterio.transform import from_origin
+
+import gspro
+
+E0, N0, SIDE = 529000.0, 6486000.0, 200.0
+EXTENT = (E0, N0, E0 + SIDE, N0 + SIDE)
+RES = 0.5
+MIN_M = 12.0
+
+
+def _dem(path):
+    """Ground falling 3 m west to east at 20..17 m, a 1 m-deep, 3 m-wide
+    channel along y = N0 + 100 and another along y = N0 + 40."""
+    n = int(SIDE / RES)
+    rows, cols = np.mgrid[0:n, 0:n]
+    x = (cols + 0.5) * RES
+    y = SIDE - (rows + 0.5) * RES
+    dem = 20.0 - 3.0 * x / SIDE
+    for yc in (100.0, 40.0):
+        dem = dem - (np.abs(y - yc) <= 1.5) * 1.0
+    with rasterio.open(path, "w", driver="GTiff", width=n, height=n, count=1, dtype="float32",
+                       crs=CRS.from_epsg(3006), transform=from_origin(E0, N0 + SIDE, RES, RES)) as dst:
+        dst.write(dem.astype(np.float32), 1)
+    return path
+
+
+def _db(path):
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """CREATE TABLE courses (id TEXT PRIMARY KEY, name TEXT);
+           CREATE TABLE course_features (
+               id TEXT PRIMARY KEY, course_id TEXT, hole_id TEXT, type TEXT,
+               geometry_json TEXT, sort_order INTEGER, attributes_json TEXT);"""
+    )
+    conn.execute("INSERT INTO courses VALUES ('c1', 'Bäckbana')")
+    # Drawn from east to west: uphill.
+    line = {"crs": "EPSG:3006", "rings": [], "centerline": {
+        "points": [{"x": E0 + 190, "y": N0 + 100}, {"x": E0 + 100, "y": N0 + 100}, {"x": E0 + 10, "y": N0 + 100}], "widthM": 3}}
+    ribbon = {"crs": "EPSG:3006", "curveType": "bezier", "rings": [{"points": [
+        {"x": E0 + 10, "y": N0 + 38.5}, {"x": E0 + 190, "y": N0 + 38.5}, {"x": E0 + 190, "y": N0 + 41.5}, {"x": E0 + 10, "y": N0 + 41.5}]}]}
+    conn.execute("INSERT INTO course_features VALUES ('k1', 'c1', NULL, 'water_creek', ?, 0, ?)",
+                 (json.dumps(line), json.dumps({"ramProfile": "Swamp Profile"})))
+    conn.execute("INSERT INTO course_features VALUES ('k2', 'c1', NULL, 'water_creek', ?, 1, NULL)", (json.dumps(ribbon),))
+    conn.execute("INSERT INTO course_features VALUES ('k3', 'c1', NULL, 'water_creek', ?, 2, ?)",
+                 (json.dumps(ribbon), json.dumps({"ram": False})))
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_creeks_export_splines_at_the_surface_running_downstream(tmp_path, capsys):
+    dem = _dem(tmp_path / "dem.tif")
+    db = _db(tmp_path / "app.sqlite")
+    sidecar = tmp_path / "inner.tif.json"
+    sidecar.write_text(json.dumps({"terrain": "inner", "square3006": list(EXTENT), "minM": MIN_M, "maxM": 30.0}))
+    out = tmp_path / "creeks.json"
+
+    gspro.cmd_creeks(None, db, "c1", dem, sidecar, out, extent=EXTENT)
+
+    doc = json.loads(out.read_text())
+    assert doc["format"] == "unity-creeks-v1"
+    assert doc["plot"] == {"crs": "EPSG:3006", "terrain": "inner", "originX": E0, "originY": N0,
+                           "sizeM": SIDE, "minM": MIN_M, "maxM": 30.0}
+    by_id = {c["id"]: c for c in doc["creeks"]}
+    assert set(by_id) == {"feature:k1", "feature:k2"}                 # ram: false skipped
+    drawn, derived = by_id["feature:k1"], by_id["feature:k2"]
+    assert (drawn["source"], drawn["profile"], drawn["widthM"]) == ("centerline", "Swamp Profile", 3)
+    assert (derived["source"], derived["profile"]) == ("polygon", gspro.DEFAULT_RAM_PROFILE)
+    assert derived["widthM"] == pytest.approx(3.0, rel=0.2)
+
+    for creek, yc in ((drawn, 100.0), (derived, 40.0)):
+        pts = np.array(creek["points"])
+        assert pts[0, 0] < pts[-1, 0]                                  # upstream (west) first
+        assert np.all(np.diff(pts[:, 1]) <= 1e-9)                      # the surface never climbs
+        assert np.all(np.hypot(*np.diff(pts[:, [0, 2]], axis=0).T) <= gspro.CREEK_MAX_POINT_SPACING_M + 1e-6)
+        assert np.allclose(pts[:, 2], yc, atol=0.6)                    # z = metres north of the square's corner
+        # y = the channel floor above the terrain's zero: 19 m − 3 m·x/200 − minM.
+        expect = 20.0 - 1.0 - 3.0 * pts[:, 0] / SIDE - MIN_M
+        assert np.max(np.abs(pts[:, 1] - expect)) < 0.15
+    assert drawn["fallM"] == pytest.approx(3.0 * 180 / SIDE, abs=0.2)
+    assert "skipped creek k3: ram: false" in capsys.readouterr().out

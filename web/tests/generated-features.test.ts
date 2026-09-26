@@ -70,6 +70,8 @@ function listOnlyApi(rows: CourseFeature[]): CourseFeaturesApi {
         update: () => Promise.reject(new Error('not under test')),
         remove: async () => ({ ok: true }),
         reorder: () => Promise.reject(new Error('not under test')),
+        imported: async () => [],
+        removeImported: async () => ({ removed: 0 }),
     };
 }
 

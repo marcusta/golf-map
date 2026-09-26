@@ -38,7 +38,7 @@ const FEATURE_OUTLINE: Record<string, string> = {
     water_creek: '#3f7ba0',
     penalty_yellow: '#c39a2e',
     penalty_red: '#b0402e',
-    oob: '#3a4148',
+    oob: '#efeae0', // bone white — OOB is painted as a line, not a fill
     path: '#866b47',
     outside: '#565c61',
     vegetation_zone: '#4c5a20',
@@ -50,6 +50,23 @@ const TYPE_Z_ORDER: readonly string[] = [
     'vegetation_zone', 'trees', 'bunker', 'water', 'water_creek',
     'penalty_yellow', 'penalty_red', 'oob', 'path',
 ];
+
+/**
+ * Types painted as their boundary line only, never filled (mirrors
+ * OUTLINE_ONLY_TYPES in draw/feature-palette.ts). The OOB ring encloses the
+ * whole property, so filling it would white out the hole.
+ */
+const OUTLINE_ONLY_TYPES: readonly string[] = ['oob'];
+
+/** MapLibre filter: the feature is painted as a boundary line only. */
+export function outlineOnlyFilter(): unknown[] {
+    return ['in', ['get', 'type'], ['literal', [...OUTLINE_ONLY_TYPES]]];
+}
+
+/** MapLibre filter: the feature still gets a fill. */
+export function filledFilter(): unknown[] {
+    return ['!', outlineOnlyFilter()];
+}
 
 /** MapLibre `match` on the feature `type` property → fill color. */
 export function fillColorExpression(): unknown[] {

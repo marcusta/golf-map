@@ -1,7 +1,8 @@
 import { test, expect } from 'bun:test';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { mkdtemp, mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readdir, readFile, utimes } from 'node:fs/promises';
+import { existsSync, writeFileSync } from 'node:fs';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { CoursesService } from './courses.service';
@@ -9,12 +10,13 @@ import { AssetsService } from './assets.service';
 import {
     GsproExportService, defaultExportDir, exportFileName, orthoExportFileName, parseOrthoSourceName,
     outerOrthoExportFileName, demExportFileName, demSidecarName, hillshadeExportFileName, outerOrthoSourceName,
-    terrainTextureFileName, TERRAIN_TEXTURE_DARKEN, meshTextureFileName, TERRAIN_TINT_OPACITY, treesExportFileName, OUTER_TREES_DIR, OUTER_TREES_RESOLUTION_M,
+    terrainTextureFileName, TERRAIN_TEXTURE_DARKEN, meshTextureFileName, TERRAIN_TINT_OPACITY, MESH_TEXTURE_SOFTEN_M, MESH_TEXTURE_SIZE, OUTER_TERRAIN_GRADE, treesExportFileName, OUTER_TREES_DIR, OUTER_TREES_RESOLUTION_M,
     ORTHO_EXPORT_SIZE, ORTHO_EXPORT_QUALITY, DEM_EXPORT_RESOLUTION_M, OUTER_DEM_SOURCE, OUTER_LIDAR_DIR, type ExportRunner,
-    buildingsExportFileName, BUILDINGS_SURVEY_SOURCE, OUTER_DEM_EDITED_SOURCE, describeRequest,
+    buildingsExportFileName, BUILDINGS_SURVEY_SOURCE, OUTER_DEM_EDITED_SOURCE, describeRequest, zonesExportFileName, creeksExportFileName,
 } from './gspro-export.service';
 import { TerrainEditsService } from './terrain-edits.service';
 import { innerSquareFrom3006, outerSquareFor, squareArg, terrainManifestField, toSquareBox, OUTER_TERRAIN_SIDE_M } from './terrain-square';
+import { defaultUnityBridge, type UnityBridge } from './unity-bridge';
 import { NotFoundError, ConflictError } from '@basics/core/server/auth';
 
 /**
@@ -56,7 +58,7 @@ const GEOREF = JSON.stringify({ bbox: GEOREF_BBOX });
 /** …which the exports square and snap to the 10 m step: 2054 m -> 2050 m. */
 const GEOREF_INNER = innerSquareFrom3006(GEOREF_BBOX);
 
-async function setup(runner: ExportRunner, opts: { georeference?: boolean } = {}) {
+async function setup(runner: ExportRunner, opts: { georeference?: boolean; unityBridge?: UnityBridge } = {}) {
     const ctx = await createTestDb(seedCourse);
     if (opts.georeference !== false) {
         await ctx.db.updateTable('courses').set({ georeference_json: GEOREF })
@@ -67,7 +69,7 @@ async function setup(runner: ExportRunner, opts: { georeference?: boolean } = {}
     const assets = new AssetsService(ctx.db, dataDir);
     const svc = new GsproExportService({
         db: ctx.db, courses, assets, dataDir,
-        pipelineDir: '/pipeline', runner,
+        pipelineDir: '/pipeline', runner, unityBridge: opts.unityBridge,
     });
     return { ctx, svc, db: ctx.db, dataDir, assets };
 }
@@ -196,6 +198,33 @@ test('export writes into the course folder, named after the course', async () =>
     expect(args[1]).toBe('svg');
     expect(args[args.indexOf('--out') + 1]).toBe(res.path);
     expect(args[args.indexOf('--course') + 1]).toBe(TEST_COURSE_ID);
+});
+
+test('an SVG variant leaves the excluded features out, into its own file', async () => {
+    // The ids go to the pipeline as a file (a variant can drop thousands of
+    // canopy trees); read it while the pipeline "runs" — it is gone after.
+    let passed: unknown = null;
+    const runner: ExportRunner = async (args) => {
+        passed = JSON.parse(await readFile(args[args.indexOf('--exclude-ids') + 1], 'utf-8'));
+        return { code: 0, stdout: 'Wrote x.svg\n  excluded on request: 2 feature(s) - path 2\n', stderr: '' };
+    };
+    const { svc } = await setup(runner);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await svc.setDir(TEST_COURSE_ID, dir);
+
+    const res = await svc.export(TEST_COURSE_ID, { excludeFeatureIds: ['a', 'b', 'a'], variant: 'No paths' });
+
+    expect(res.path).toBe(path.join(dir, 'linkan-no-paths.svg'));
+    expect(passed).toEqual(['a', 'b']);
+    expect(res.report).toContain('excluded on request: 2 feature(s) - path 2');
+});
+
+test('an SVG export with nothing excluded passes no exclusion list', async () => {
+    const { calls, runner } = recordingRunner();
+    const { svc } = await setup(runner);
+    await svc.setDir(TEST_COURSE_ID, await mkdtemp(path.join(os.tmpdir(), 'gspro-out-')));
+    await svc.export(TEST_COURSE_ID, { excludeFeatureIds: [] });
+    expect(calls[0].args).not.toContain('--exclude-ids');
 });
 
 test('export creates the folder if it does not exist yet', async () => {
@@ -368,6 +397,15 @@ test('exportOrtho renders the chosen source as an 8192px quality-92 JPEG over th
     expect(flag(tinted, '--tint-out')).toBe(path.join(dir, 'linkan-orto-l2-2025-8192-meshes.jpg'));
     expect(flag(tinted, '--tint-course')).toBe(TEST_COURSE_ID);
     expect(flag(tinted, '--tint-opacity')).toBe(String(TERRAIN_TINT_OPACITY));
+    // The mesh texture is the soft one: photo at half strength, 1 m of detail, 4096 px.
+    expect(TERRAIN_TINT_OPACITY).toBe(0.5);
+    expect(flag(tinted, '--soften-m')).toBe(String(MESH_TEXTURE_SOFTEN_M));
+    expect(flag(tinted, '--tint-size')).toBe(String(MESH_TEXTURE_SIZE));
+    expect(MESH_TEXTURE_SIZE).toBe(4096);
+    expect(args).not.toContain('--soften-m');
+    // The inner's is for the course meshes: the tint colour goes on as it is.
+    expect(tinted).not.toContain('--darken-tint');
+    expect(tinted).not.toContain('--tint-grade');
     expect(flag(tinted, '--terrain-out')).toBe(path.join(dir, 'linkan-orto-l2-2025-8192-terrain.jpg'));
     await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, { opacity: 0.2 });
     expect(flag(calls[3].args, '--tint-opacity')).toBe('0.2');
@@ -449,6 +487,15 @@ test('the outer orthophoto is fetched for the outer square once, kept with the s
     expect(calls).toHaveLength(3);
     expect(calls[2].args[1]).toBe('ortho');
     expect(await readdir(sourcesDir)).toContain('outer-ortho-orto-l2-2025.tif');
+
+    // The outer's tinted file is the terrain's floor: the twin's darkness with
+    // the colouring on top, so the tint colour is darkened too. Never without the tint.
+    expect(calls[2].args).not.toContain('--darken-tint');
+    await t.svc.exportOuterOrtho(TEST_COURSE_ID, 'orto-l2-2025', undefined, {});
+    expect(calls[3].args).toContain('--tint-out');
+    expect(calls[3].args).toContain('--darken-tint');
+    // …and graded so the terrain shader renders it like the course meshes next to it.
+    expect(flag(calls[3].args, '--tint-grade')).toBe(OUTER_TERRAIN_GRADE.join(','));
 });
 
 test('the outer sources do not show up in the inner vintage list', async () => {
@@ -590,6 +637,8 @@ test('the buildings export needs the heightmap sidecar and the survey, then writ
     expect(flag(outerArgs, '--exclude-square')).toBe(squareArg(BUILT_INNER));
     expect(describeRequest({ kind: 'buildings', terrain: 'outer' })).toBe('outer buildings');
     expect(() => describeRequest({ kind: 'buildings' })).toThrow(ConflictError);
+    expect(describeRequest({ kind: 'svg' })).toBe('course SVG');
+    expect(describeRequest({ kind: 'svg', excludeFeatureIds: ['a', 'b'], variant: 'No paths' })).toBe('course SVG (variant no-paths, 2 feature(s) excluded)');
 });
 
 test('the hillshade export renders the terrain\'s DEM as an 8192 px JPEG over its square', async () => {
@@ -897,6 +946,9 @@ test('the ortho file name carries course, vintage, patched flag and size', () =>
     const src = { source: 'x', collection: 'orto-l2-2025', patched: false, active: false };
     expect(orthoExportFileName('Vreta', src)).toBe('vreta-orto-l2-2025-8192.jpg');
     expect(orthoExportFileName('Norrköping - Klinga', { ...src, patched: true })).toBe('norrkoping-klinga-orto-l2-2025-patched-8192.jpg');
+    // The cleaned export (buildings removed / forest floor) never overwrites the plain files.
+    expect(orthoExportFileName('Vreta', { ...src, patched: true }, true)).toBe('vreta-orto-l2-2025-patched-clean-8192.jpg');
+    expect(outerOrthoExportFileName('Vreta', 'orto-l2-2025', true)).toBe('vreta-outer-orto-l2-2025-clean-8192.jpg');
 });
 
 test('the file name is a slug of the course name', () => {
@@ -905,4 +957,387 @@ test('the file name is a slug of the course name', () => {
     expect(exportFileName('Norrköping - Klinga')).toBe('norrkoping-klinga.svg');
     expect(exportFileName('  A6 golfklubb ')).toBe('a6-golfklubb.svg');
     expect(exportFileName('///')).toBe('course.svg');
+    expect(exportFileName('Vreta', 'No paths #2')).toBe('vreta-no-paths-2.svg');
+    expect(exportFileName('Vreta', '  ')).toBe('vreta.svg');
+});
+
+// --- Forest floor (D-VZ10) and vegetation zones ---
+
+test('forest floor is opt-in on the orthophotos: the pipeline paints the course woodland_floor zones', async () => {
+    const { calls, runner } = recordingRunner();
+    const t = await setup(runner);
+    await buildSite(t, ['dem.tif', 'ortho-orto-l2-2025.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif');
+    expect(calls[0].args).not.toContain('--floor-course');
+
+    const job = await t.svc.start(TEST_COURSE_ID, {
+        kind: 'ortho', source: 'ortho-orto-l2-2025.tif', forestFloor: true, floorColor: '#585638', floorMix: 0.25,
+    });
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    expect(t.svc.job(job.id).status).toBe('succeeded');
+    const args = calls[1].args;
+    expect(flag(args, '--floor-course')).toBe(TEST_COURSE_ID);
+    expect(flag(args, '--floor-color')).toBe('#585638');
+    expect(flag(args, '--floor-mix')).toBe('0.25');
+
+    // Defaults stay with the pipeline; nonsense is refused before anything runs.
+    await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, undefined, {});
+    expect(flag(calls[2].args, '--floor-course')).toBe(TEST_COURSE_ID);
+    expect(calls[2].args).not.toContain('--floor-color');
+    expect(calls[2].args).not.toContain('--floor-mix');
+    await expect(t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, undefined, { color: 'brown' }))
+        .rejects.toBeInstanceOf(ConflictError);
+    await expect(t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, undefined, { mix: 2 }))
+        .rejects.toBeInstanceOf(ConflictError);
+    expect(calls).toHaveLength(3);
+});
+
+test('the outer orthophoto carries the forest floor too', async () => {
+    const { calls, runner } = recordingRunner();
+    const t = await setup(runner);
+    await buildSite(t, ['dem.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    await t.svc.exportOuterOrtho(TEST_COURSE_ID, 'orto-l2-2025', undefined, undefined, { mix: 0 });
+    const render = calls.find((c) => c.args[1] === 'ortho')!.args;
+    expect(flag(render, '--floor-course')).toBe(TEST_COURSE_ID);
+    expect(flag(render, '--floor-mix')).toBe('0');
+});
+
+test('the zones export needs the heightmap sidecar, then rasterizes the course zones over the square', async () => {
+    const { calls, runner } = recordingRunner({ stdout: 'Wrote x.json\n  14 zones on the 2050 m inner square\n' });
+    const t = await setup(runner);
+    await buildSite(t, ['dem.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    await expect(t.svc.exportZones(TEST_COURSE_ID, 'inner')).rejects.toThrow(/Export the inner heightmap first/);
+    const sidecar = path.join(dir, 'linkan-inner-dem-2050m.tif.json');
+    await writeFile(sidecar, '{}');
+
+    const job = await t.svc.start(TEST_COURSE_ID, { kind: 'zones', terrain: 'inner' });
+    expect(job.label).toBe('inner vegetation zones');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const res = t.svc.job(job.id).result!;
+    expect(res.path).toBe(path.join(dir, 'linkan-inner-zones.json'));
+    expect(res.report).toEqual(['Wrote x.json', '14 zones on the 2050 m inner square']);
+    const args = calls[0].args;
+    expect(args[1]).toBe('zones');
+    expect(flag(args, '--square-3006')).toBe(squareArg(GEOREF_INNER));
+    expect(flag(args, '--course')).toBe(TEST_COURSE_ID);
+    expect(flag(args, '--sidecar')).toBe(sidecar);
+    expect(flag(args, '--out')).toBe(res.path);
+    expect(flag(args, '--terrain')).toBe('inner');
+    expect(args).not.toContain('--exclude-square');
+
+    // The outer leaves the inner square to the inner file.
+    await writeFile(path.join(dir, `linkan-outer-dem-${OUTER_TERRAIN_SIDE_M}m.tif.json`), '{}');
+    await t.svc.exportZones(TEST_COURSE_ID, 'outer');
+    expect(flag(calls[1].args, '--exclude-square')).toBe(squareArg(GEOREF_INNER));
+    expect(zonesExportFileName('Vreta Kloster', 'outer')).toBe('vreta-kloster-outer-zones.json');
+    expect(() => describeRequest({ kind: 'zones' })).toThrow(/needs a terrain/);
+});
+
+test('remove buildings passes the site roof heights and building survey that are on disk', async () => {
+    const { calls, runner } = recordingRunner({ stdout: '  buildings: 12 roof(s) and their shadows removed\n' });
+    const t = await setup(runner);
+    const sources = await buildSite(t, ['dem.tif', 'ortho-orto-l2-2025.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    // Nothing on disk yet: the render goes ahead, and the report says what to run.
+    const bare = await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, undefined, undefined, true);
+    expect(calls[0].args).not.toContain('--remove-buildings');
+    expect(bare.report[0]).toMatch(/Buildings not removed.*Regenerate trees/);
+    expect(path.basename(bare.path)).toBe('linkan-orto-l2-2025-clean-8192.jpg');
+
+    await writeFile(path.join(sources, 'roofs.tif'), '');
+    await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, undefined, undefined, true);
+    expect(calls[1].args).toContain('--remove-buildings');
+    expect(flag(calls[1].args, '--roofs')).toBe(path.join(sources, 'roofs.tif'));
+    expect(calls[1].args).not.toContain('--buildings-survey');
+
+    await writeFile(path.join(sources, BUILDINGS_SURVEY_SOURCE), '{}');
+    const job = await t.svc.start(TEST_COURSE_ID, { kind: 'ortho', source: 'ortho-orto-l2-2025.tif', removeBuildings: true });
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    expect(t.svc.job(job.id).result?.report).toEqual(['buildings: 12 roof(s) and their shadows removed']);
+    expect(flag(calls[2].args, '--buildings-survey')).toBe(path.join(sources, BUILDINGS_SURVEY_SOURCE));
+
+    // Off: nothing about buildings reaches the pipeline, and the plain file is written.
+    const plain = await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif');
+    expect(path.basename(plain.path)).toBe('linkan-orto-l2-2025-8192.jpg');
+    expect(calls[3].args).not.toContain('--remove-buildings');
+    expect(calls[3].args).not.toContain('--roofs');
+});
+
+// --- GreenKeeper course file ---
+
+test('the GSPro course folder is unset until chosen, must exist, and names the GKD in it', async () => {
+    const { svc } = await setup(recordingRunner().runner);
+    expect((await svc.settings(TEST_COURSE_ID)).courseDir).toBeNull();
+    expect((await svc.settings(TEST_COURSE_ID)).gkdFile).toBeNull();
+
+    const courses = await mkdtemp(path.join(os.tmpdir(), 'gspro-courses-'));
+    await expect(svc.setCourseDir(TEST_COURSE_ID, path.join(courses, 'Missing_scene'))).rejects.toThrow(ConflictError);
+
+    // A fresh scene folder: the file gets the folder's name.
+    const scene = path.join(courses, 'Vreta_lidar_scene');
+    await mkdir(scene);
+    const fresh = await svc.setCourseDir(TEST_COURSE_ID, scene);
+    expect(fresh.courseDir).toBe(scene);
+    expect(fresh.gkdFile).toBe('Vreta_lidar_scene.GKD');
+
+    // GreenKeeper already wrote one: that file, whatever its case.
+    await writeFile(path.join(scene, 'vreta_lidar_scene.gkd'), '{}');
+    expect((await svc.settings(TEST_COURSE_ID)).gkdFile).toBe('vreta_lidar_scene.gkd');
+
+    // The export folder is its own setting.
+    expect((await svc.settings(TEST_COURSE_ID)).isDefault).toBe(true);
+    const cleared = await svc.setCourseDir(TEST_COURSE_ID, '  ');
+    expect(cleared.courseDir).toBeNull();
+    await expect(svc.setCourseDir('nope', null)).rejects.toThrow(NotFoundError);
+});
+
+test('the GKD export needs the course folder and the inner heightmap, then writes into the course folder', async () => {
+    const { calls, runner } = recordingRunner({ stdout: 'Wrote x.GKD\n  18 holes, par 72\n' });
+    const t = await setup(runner);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    await expect(t.svc.exportGkd(TEST_COURSE_ID)).rejects.toThrow(/Set the GSPro course folder first/);
+    const scene = path.join(await mkdtemp(path.join(os.tmpdir(), 'gspro-courses-')), 'Linkan_scene');
+    await mkdir(scene);
+    await t.svc.setCourseDir(TEST_COURSE_ID, scene);
+
+    await expect(t.svc.exportGkd(TEST_COURSE_ID)).rejects.toThrow(/Export the inner heightmap first/);
+    const sidecar = path.join(dir, 'linkan-inner-dem-2050m.tif.json');
+    await writeFile(sidecar, '{}');
+
+    const job = await t.svc.start(TEST_COURSE_ID, { kind: 'gkd' });
+    expect(job.label).toBe('GreenKeeper course file');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const res = t.svc.job(job.id).result!;
+    expect(res.path).toBe(path.join(scene, 'Linkan_scene.GKD'));
+    expect(res.report).toEqual(['Wrote x.GKD', '18 holes, par 72']);
+    const args = calls[0].args;
+    expect(args[0]).toBe(path.join('/pipeline', 'gspro.py'));
+    expect(args[1]).toBe('gkd');
+    expect(flag(args, '--square-3006')).toBe(squareArg(GEOREF_INNER));
+    expect(flag(args, '--course')).toBe(TEST_COURSE_ID);
+    expect(flag(args, '--sidecar')).toBe(sidecar);
+    expect(flag(args, '--out')).toBe(res.path);
+});
+
+test('the pipeline is found from the code, whatever folder the server was started in', async () => {
+    const { DEFAULT_PIPELINE_DIR } = await import('./pipeline-dir');
+    expect(existsSync(path.join(DEFAULT_PIPELINE_DIR, 'gspro.py'))).toBe(true);
+    const cwd = process.cwd();
+    try {
+        process.chdir(path.resolve(import.meta.dir, '..', '..'));  // the repo root, as `bun run dev` starts it
+        const svc = new GsproExportService({ db: undefined as never, courses: undefined as never, assets: undefined as never, dataDir: os.tmpdir() });
+        expect((svc as unknown as { pipelineDir: string }).pipelineDir).toBe(process.env.MAP_PIPELINE_DIR ?? DEFAULT_PIPELINE_DIR);
+    } finally {
+        process.chdir(cwd);
+    }
+});
+
+test('the creeks export reads the raw DEM (not the dug one) and the inner sidecar, inner terrain only', async () => {
+    const { calls, runner } = recordingRunner({ stdout: '  wrote x.json  (13 creek(s) for Linkan)\n' });
+    const t = await setup(runner);
+    const sourcesDir = await buildSite(t, ['dem.tif', 'dem-edited.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    await expect(t.svc.exportCreeks(TEST_COURSE_ID)).rejects.toThrow(/Export the inner heightmap first/);
+    const sidecar = path.join(dir, 'linkan-inner-dem-2050m.tif.json');
+    await writeFile(sidecar, '{}');
+
+    const job = await t.svc.start(TEST_COURSE_ID, { kind: 'creeks' });
+    expect(job.label).toBe('creeks (R.A.M. splines)');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const res = t.svc.job(job.id).result!;
+    expect(res.path).toBe(path.join(dir, 'linkan-inner-creeks.json'));
+    const args = calls[0].args;
+    expect(args[1]).toBe('creeks');
+    expect(flag(args, '--square-3006')).toBe(squareArg(GEOREF_INNER));
+    expect(flag(args, '--dem')).toBe(path.join(sourcesDir, 'dem.tif'));
+    expect(flag(args, '--sidecar')).toBe(sidecar);
+    expect(creeksExportFileName('Vreta Kloster')).toBe('vreta-kloster-inner-creeks.json');
+});
+
+
+// --- Heightmap into Unity (a stand-in editor on the bridge protocol) ---
+
+/** An editor whose active course exports to `exportFolder` (the test publishes its discovery file). */
+function fakeEditor(name: string, exportFolder: string, update: Record<string, unknown>) {
+    const calls: Array<{ command: string; args: any }> = [];
+    const server = Bun.serve({
+        port: 0,
+        async fetch(req) {
+            if (req.headers.get('X-Bridge-Token') !== 'tok') return Response.json({ ok: false, error: 'token' }, { status: 403 });
+            const command = decodeURIComponent(new URL(req.url).pathname.replace('/cmd/', ''));
+            calls.push({ command, args: await req.json() });
+            if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name, exportFolder } } });
+            if (command === 'golfmap.terrain.update') return Response.json({ ok: true, result: update });
+            return Response.json({ ok: false, error: `unknown ${command}` });
+        },
+    });
+    return { calls, server };
+}
+
+test('unity-terrain exports the heightmap, then updates the terrain in the Unity project that imports from the folder', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const calls: string[][] = [];
+    const runner: ExportRunner = async args => {
+        calls.push(args);
+        const out = args[args.indexOf('--out') + 1];
+        await writeFile(out, 'tif');
+        await writeFile(`${out}.json`, JSON.stringify({ minM: 64.8 }));   // the dug pond is the new low point
+        return { code: 0, stdout: `  wrote ${out}
+`, stderr: '' };
+    };
+    // Two editors: another course's project, and this one's (its folder relative to Assets).
+    const project = await mkdtemp(path.join(os.tmpdir(), 'unity-proj-'));
+    const other = fakeEditor('Other', 'D:/somewhere/else', {});
+    const ours = fakeEditor('Linkan', path.relative(path.join(project, 'Assets'), exportDir), {
+        terrains: [{ terrain: 'Terrain (Inner)', sidecar: 'linkan-inner-dem-2050m.tif.json', source: 'dem-edited.tif', movedM2: 38700, meanMoveM: 0.05, maxMoveM: -1.48, backup: 'Assets/GolfMap/Linkan/Backups/x.asset' }],
+    });
+    const publish = (file: string, port: number, projectPath: string, projectName: string) =>
+        writeFileSync(path.join(discovery, file), JSON.stringify({ pid: process.pid, port, token: 'tok', projectPath, projectName, unityVersion: '2018.2.8f1', started: '' }));
+    publish('bridge-1.json', other.server.port!, 'D:/unity/other', 'other');
+    publish('bridge-2.json', ours.server.port!, project, 'linkan_v4');
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        await buildSite(t, ['dem.tif']);
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+        await writeFile(path.join(exportDir, 'linkan-inner-dem-2050m.tif.json'), JSON.stringify({ minM: 65.58 }));
+
+        const job = await t.svc.start(TEST_COURSE_ID, { kind: 'unity-terrain', terrain: 'inner' });
+        expect(job.label).toBe('inner heightmap into Unity');
+        await t.svc.whenIdle(TEST_COURSE_ID);
+        const res = t.svc.job(job.id);
+        expect(res.error).toBeNull();
+        expect(calls.map(a => a[1])).toEqual(['dem']);
+        expect(ours.calls.map(c => c.command)).toEqual(['golfmap.course', 'golfmap.terrain.update']);
+        expect(ours.calls[1]!.args).toEqual({ terrain: 'inner' });
+        expect(other.calls.map(c => c.command)).not.toContain('golfmap.terrain.update');
+        const report = res.result!.report;
+        expect(report.some(l => l.startsWith("warning: the heightmap's zero moved -0.78 m"))).toBe(true);
+        expect(report).toContain('Unity Terrain (Inner) (linkan_v4): heights from linkan-inner-dem-2050m.tif.json (dem-edited.tif); 3.9 ha moved more than 2 cm (mean 0.05 m, max -1.48 m); backup Assets/GolfMap/Linkan/Backups/x.asset');
+    } finally {
+        other.server.stop(true);
+        ours.server.stop(true);
+    }
+});
+
+test('unity-terrain with no Unity project on the folder says which ones are open and exports nothing', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const { calls, runner } = recordingRunner();
+    const other = fakeEditor('Other', 'D:/somewhere/else', {});
+    writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({ pid: process.pid, port: other.server.port!, token: 'tok', projectPath: 'D:/unity/other', projectName: 'other', unityVersion: '', started: '' }));
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        await buildSite(t, ['dem.tif']);
+        await t.svc.setDir(TEST_COURSE_ID, await mkdtemp(path.join(os.tmpdir(), 'gspro-out-')));
+        await expect(t.svc.exportUnityTerrain(TEST_COURSE_ID, 'inner')).rejects.toThrow(/No open Unity editor imports from .*other: course Other exports to/);
+        expect(calls).toHaveLength(0);
+        expect(() => describeRequest({ kind: 'unity-terrain' })).toThrow(/needs a terrain/);
+    } finally {
+        other.server.stop(true);
+    }
+});
+
+test('a terrain edit newer than the last Apply to terrain: the inner heightmap warns, and is not put into Unity', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const { calls, runner } = recordingRunner({ stdout: '  wrote x\n' });
+    const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+    const sources = await buildSite(t, ['dem.tif', 'dem-edited.tif']);
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, exportDir);
+    // The edited DEM was written an hour before the pad was (re)generated.
+    const anHourAgo = new Date(Date.now() - 3600_000);
+    await utimes(path.join(sources, 'dem-edited.tif'), anHourAgo, anHourAgo);
+    await new TerrainEditsService(t.db).create({
+        siteId: SITE_ID, op: 'plane', params: { featherM: 4, flat: true }, origin: 'building-pads', originRef: 'osm:way/1',
+        rings: [[{ x: 529500, y: 6486700 }, { x: 529530, y: 6486700 }, { x: 529530, y: 6486740 }]],
+    });
+
+    const dem = await t.svc.exportDem(TEST_COURSE_ID, 'inner');
+    expect(dem.report[0]).toBe('warning: 1 terrain edit(s) (building-pads) changed after the last Apply to terrain, so this heightmap lacks them: press Apply to terrain in the terrain tool, then export again');
+    await expect(t.svc.exportUnityTerrain(TEST_COURSE_ID, 'inner')).rejects.toThrow(/Not put into Unity: 1 terrain edit\(s\) \(building-pads\) changed after the last Apply/);
+    expect(calls.map(c => c.args[1])).toEqual(['dem']);   // the refused run exported nothing
+
+    // Applied since: no warning.
+    const now = new Date(Date.now() + 5000);
+    await utimes(path.join(sources, 'dem-edited.tif'), now, now);
+    expect((await t.svc.exportDem(TEST_COURSE_ID, 'inner')).report[0]).not.toMatch(/^warning/);
+});
+
+test('unity-sculpt captures in Unity, makes the GeoTIFF and stores it as the terrain\'s one delta layer; nothing sculpted removes it', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const project = await mkdtemp(path.join(os.tmpdir(), 'unity-proj-'));
+    let sculpted = true;
+    const unityCalls: string[] = [];
+    const server = Bun.serve({
+        port: 0,
+        async fetch(req) {
+            const command = decodeURIComponent(new URL(req.url).pathname.replace('/cmd/', ''));
+            unityCalls.push(command);
+            if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name: 'Linkan', exportFolder: exportDir } } });
+            // Like the real capture: the files in the export folder, the summary back.
+            const file = path.join(exportDir, 'linkan-inner-sculpt.json');
+            await writeFile(file, '{}');
+            return Response.json({ ok: true, result: sculpted
+                ? { terrain: 'Terrain (Inner)', file, cells: 480, areaM2: 120, maxRaiseM: 0.31, maxLowerM: -0.22, conformCellsLeftOut: 7 }
+                : { terrain: 'Terrain (Inner)', file, cells: 0, areaM2: 0 } });
+        },
+    });
+    writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({ pid: process.pid, port: server.port!, token: 'tok', projectPath: project, projectName: 'linkan_v4', unityVersion: '', started: '' }));
+    const runs: string[][] = [];
+    const runner: ExportRunner = async args => {
+        runs.push(args);
+        if (args[2] === 'sculpt-tif') {
+            await writeFile(args[args.indexOf('--out') + 1]!, 'tif');
+            return { code: 0, stdout: 'Sculpt layer: 480 cell(s)\nbounds3006 529500,6487500,529510,6487512\nWrote x\n', stderr: '' };
+        }
+        const out = args[args.indexOf('--out') + 1]!;
+        await writeFile(out, 'tif');
+        return { code: 0, stdout: '', stderr: '' };
+    };
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        const sources = await buildSite(t, ['dem.tif']);
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+
+        const res = await t.svc.exportUnitySculpt(TEST_COURSE_ID, 'inner');
+        expect(unityCalls).toEqual(['golfmap.course', 'golfmap.terrain.capture']);
+        expect(runs[0]!.slice(0, 3)).toEqual(['-m', 'golfpipe', 'sculpt-tif']);
+        const tif = path.join(sources, 'terrain-sculpt', 'inner-sculpt.tif');
+        expect(res.path).toBe(tif);
+        expect(res.report[0]).toBe('Unity Terrain (Inner) (linkan_v4): 0.01 ha sculpted (up to +0.31 m / -0.22 m); 7 conform-raised cell(s) left out');
+        const [edit] = await new TerrainEditsService(t.db).listBySite(SITE_ID);
+        expect(edit).toMatchObject({ op: 'delta', origin: 'unity-sculpt-inner', originRef: 'inner' });
+        expect(edit!.params).toMatchObject({ featherM: 0, raster: 'inner-sculpt.tif', changedM2: 120, maxRaiseM: 0.31, maxLowerM: -0.22 });
+        expect(edit!.rings[0]).toEqual([{ x: 529500, y: 6487500 }, { x: 529510, y: 6487500 }, { x: 529510, y: 6487512 }, { x: 529500, y: 6487512 }]);
+
+        // The heightmap export now tells Unity about the layer it contains.
+        await writeFile(path.join(sources, 'dem-edited.tif'), '');
+        await t.svc.exportDem(TEST_COURSE_ID, 'inner');
+        expect(flag(runs.at(-1)!, '--sculpt')).toBe(tif);
+
+        // Everything undone in Unity: the layer goes.
+        sculpted = false;
+        const cleared = await t.svc.exportUnitySculpt(TEST_COURSE_ID, 'inner');
+        expect(cleared.report[0]).toBe("Unity Terrain (Inner): nothing sculpted since golf-map's heights went in; the previous sculpt layer is removed");
+        expect(await new TerrainEditsService(t.db).listBySite(SITE_ID)).toHaveLength(0);
+        expect(existsSync(tif)).toBe(false);
+    } finally {
+        server.stop(true);
+    }
 });

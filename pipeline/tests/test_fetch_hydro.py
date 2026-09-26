@@ -219,6 +219,26 @@ def test_build_hydro_geojson_empty_inputs():
 
 # ─── cmd_fetch_hydro end-to-end (stubbed session) ────────────────────────────
 
+def test_cmd_fetch_hydro_clips_to_the_exact_square(tmp_path: Path, creds):
+    # The square cuts POND on the south and CREEK on the north: nothing, the
+    # buffered creek ribbon included, may pass its edges.
+    square = (531100.0, 6472950.0, 532500.0, 6474000.0)
+    session = _StubSession(first_pages={
+        "StandingWater": page([feature(POND)]),
+        "WatercoursePolygon": page([]),
+        "WatercourseLine": page([feature(CREEK)]),
+    })
+    out = tmp_path / "hydro.geojson"
+    cmd_fetch_hydro(BBOX_WGS84, out, creek_width_m=3.0, session=session, square_3006=square)
+
+    features = json.loads(out.read_text(encoding="utf-8"))["features"]
+    bounds = {f["properties"]["type"]: shapely.geometry.shape(f["geometry"]).bounds for f in features}
+    assert bounds["water"][1] == pytest.approx(6472950.0)
+    x0, y0, x1, y1 = bounds["water_creek"]
+    assert y1 <= 6474000.0 + 1e-6 and y1 > 6474000.0 - 0.01  # the ribbon's end sits on the edge
+    assert x0 >= square[0] and x1 <= square[2] and y0 >= square[1]
+
+
 def test_cmd_fetch_hydro_end_to_end(tmp_path: Path, creds, capsys):
     next_url = f"{hydro.HYDRO_API_URL}/collections/WatercourseLine/items?f=json&startindex=1"
     session = _StubSession(

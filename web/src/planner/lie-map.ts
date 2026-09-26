@@ -7,8 +7,8 @@
 // hitFeature(): topmost-in-STACK point-in-feature testing (decision D23,
 // which amends D17) via geo/bezier.ts (flattenRing / pointInGeometry),
 // except here EVERY feature type is classified (not just green) because
-// optimizeAim needs the full lie taxonomy. Nesting is resolved by the D24
-// GLOBAL stack key (`groupRank * GROUP_RANK_SPAN + sortOrder`, topmost wins),
+// optimizeAim needs the full lie taxonomy. Nesting is resolved by the D28
+// GLOBAL stack key (shared/render/stack-key.ts, topmost wins),
 // the SAME order the map renders and the editor hits — no longer smallest-
 // area. Features are pre-sorted topmost-first here, so `surfaces()` hands
 // aim.ts an array whose order already IS priority order (D23 contract).
@@ -35,6 +35,7 @@ import {
     type Lie,
     type Vec2,
 } from '../../../shared/strategy';
+import { stackKey } from '../../../shared/render/stack-key';
 import { flattenRing } from '../geo/bezier';
 
 /** Corridor-obstacle feature types (shared/strategy corridor.ts), as a Set for O(1) lookup. */
@@ -43,14 +44,6 @@ const HAZARD_TYPES = new Set(DEFAULT_HAZARD_TYPES);
 /** Matches features.service.ts's flatten tolerance (what's actually drawn). */
 export const LIE_MAP_TOLERANCE_M = 0.25;
 
-/**
- * D24 group-rank span — must match `GROUP_RANK_SPAN` in
- * draw/features.service.ts (and the server's `geojsonByCourse`) so this
- * module's stack order agrees with what's rendered and hit-tested. Duplicated
- * (not imported) to keep the planner→draw dependency direction, same as
- * `LIE_MAP_TOLERANCE_M` duplicates the flatten tolerance.
- */
-const GROUP_RANK_SPAN = 4096;
 
 interface ClassifiedFeatureRing {
     ring: FlatRing;
@@ -114,11 +107,12 @@ function bbox(ring: FlatRing): { minX: number; maxX: number; minY: number; maxY:
  * per-hole subset (perf on huge courses) can pre-filter by `holeId` before
  * calling; this module doesn't assume one way or the other.
  *
- * `holeNumberById` maps each hole's id to its number for the D24 group rank
- * (course-level features, `holeId: null`, rank 0). Omit it and every feature
- * ranks 0, i.e. the stack collapses to `sortOrder` order across all groups —
- * correct for a single group, but a caller spanning multiple holes MUST pass
- * it so cross-group precedence (D24) resolves the way the map renders.
+ * `holeNumberById` maps each hole's id to its number for the D28 group rank
+ * (Roughs layer at the bottom, holes by number, course-level on top —
+ * shared/render/stack-key.ts). Omit it and every feature ranks 0, i.e. the
+ * stack collapses to `sortOrder` order across all groups — correct for a
+ * single group, but a caller spanning multiple groups MUST pass it so
+ * cross-group precedence resolves the way the map renders.
  */
 export function buildLieMap(
     features: readonly CourseFeature[],
@@ -131,9 +125,9 @@ export function buildLieMap(
         if (flat.length < 3) continue;
         const points = flat.map(([x, y]) => ({ x, y }));
         const ring: FlatRing = { points, kind: feature.type };
-        const groupRank = feature.holeId === null ? 0 : holeNumberById?.get(feature.holeId) ?? 0;
-        const stackKey = groupRank * GROUP_RANK_SPAN + feature.sortOrder;
-        classified.push({ ring, stackKey, holeId: feature.holeId, ...bbox(ring) });
+        const holeNumber = feature.holeId === null ? null : holeNumberById?.get(feature.holeId) ?? 0;
+        const key = holeNumberById ? stackKey(feature.layer, holeNumber, feature.sortOrder, feature.type) : feature.sortOrder;
+        classified.push({ ring, stackKey: key, holeId: feature.holeId, ...bbox(ring) });
     }
     // Topmost-first (highest stack key) so the FIRST containing ring wins
     // nesting (D23/D24) — the same order the map renders and the editor hits.

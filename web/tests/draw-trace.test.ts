@@ -38,6 +38,8 @@ function fakeApi() {
         update: reject,
         remove: async () => ({}) as never,
         reorder: reject,
+        imported: async () => [],
+        removeImported: async () => ({ removed: 0 }),
     };
     return api;
 }
@@ -147,13 +149,15 @@ describe('DrawToolService commitTrace (T40)', () => {
         expect(controls.every(c => !c.corner && !c.hIn && !c.hOut)).toBe(true);
     });
 
-    test('commit stays armed (chain-draw) with a cleared draft', async () => {
-        const { tool } = await loadedTool();
+    test('commit leaves drawing mode with the new feature selected for editing', async () => {
+        const { tool, features } = await loadedTool();
         tool.state.arm();
         tool.commitTrace(circleStroke(538_000, 6_398_000, 10, 120));
         await tick();
-        expect(tool.state.mode.peek()).toBe('draw');
+        expect(tool.state.mode.peek()).toBe('select');
         expect(tool.state.draft.peek()).toHaveLength(0);
+        const [created] = features.store.items.peek();
+        expect([...features.selectedIds.peek()]).toEqual([created.id]);
     });
 
     test('ONE history entry: a single undo removes the traced feature', async () => {

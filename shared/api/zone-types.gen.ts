@@ -11,6 +11,7 @@ export interface CourseZoneType {
     channel: number;
     sortOrder: number;
     items: ZoneTypeItem[];
+    variants: ZoneTypeVariant[];
     createdAt: string;
     updatedAt: string;
 }
@@ -21,11 +22,17 @@ export interface ZoneTypeItem {
     maxDensity: number;
 }
 
+export interface ZoneTypeVariant {
+    key: string;
+    name: string;
+    items: ZoneTypeItem[];
+}
+
 export interface ZoneTypesApi {
     list(input: { courseId: string }): Promise<CourseZoneType[]>;
     addDefaults(input: { courseId: string }): Promise<CourseZoneType[]>;
-    create(input: { textureIndex?: number; channel?: number; items?: { item: string; minDensity: number; maxDensity: number }[]; courseId: string; name: string; color: string; key: string }): Promise<CourseZoneType>;
-    update(input: { name?: string; color?: string; key?: string; textureIndex?: number; channel?: number; items?: { item: string; minDensity: number; maxDensity: number }[]; id: string }): Promise<CourseZoneType>;
+    create(input: { textureIndex?: number; channel?: number; items?: { item: string; minDensity: number; maxDensity: number }[]; variants?: { name: string; key: string; items: { item: string; minDensity: number; maxDensity: number }[] }[]; courseId: string; name: string; color: string; key: string }): Promise<CourseZoneType>;
+    update(input: { name?: string; color?: string; key?: string; textureIndex?: number; channel?: number; items?: { item: string; minDensity: number; maxDensity: number }[]; variants?: { name: string; key: string; items: { item: string; minDensity: number; maxDensity: number }[] }[]; id: string }): Promise<CourseZoneType>;
     remove(input: { id: string }): Promise<{ ok: boolean }>;
     reorder(input: { orderedIds: string[]; courseId: string }): Promise<CourseZoneType[]>;
 }

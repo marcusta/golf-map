@@ -13,7 +13,8 @@ import { s, btn, primaryBtn, glassPanel, panelTitle, metric, OVERLAY_W, OVERLAY_
 import { MapService } from '../map/map.service';
 import { FeaturesService, geometryToWgs84Rings } from '../draw/features.service';
 import { FEATURE_TYPES, FEATURE_STYLES, typeColorExpression } from '../draw/feature-palette';
-import { GeojsonImportService, OSM_FETCH_FILENAME, ROADS_FETCH_FILENAME } from './geojson-import.service';
+import { GeojsonImportService, OSM_FETCH_FILENAME, ROADS_FETCH_FILENAME, type ImportGroup } from './geojson-import.service';
+import { ConfirmService } from '../app/confirm-dialog.component';
 import type { BuildResult } from './svg-import.service';
 import type { GeojsonBucket } from './geojson-parse';
 import { icon } from '../ui/icons';
@@ -62,6 +63,22 @@ const tpl = template(`
             <div bind="summaryText" class="summary"></div>
             <div bind="warnings" class="warnings"></div>
         </div>
+
+        <div bind="importedSection" class="geojson-import__section" data-testid="geojson-imported">
+            <h4 class="section-title">Imported on this course</h4>
+            <div class="hint">Remove an earlier import to fetch and import it again. Hand-drawn features are kept.</div>
+            <div bind="importedList" class="imported-list"></div>
+            <div bind="clearError" class="error"></div>
+        </div>
+    </div>
+`);
+
+const importedRowTpl = template(`
+    <div bind="row" class="imported-row">
+        <span bind="label" class="imported-label"></span>
+        <span bind="count" class="bucket-count"></span>
+        <button bind="remove" type="button" class="fetch-btn"></button>
+        <span bind="types" class="imported-types"></span>
     </div>
 `);
 
@@ -192,6 +209,17 @@ export class GeojsonImportPanelComponent extends Component {
                 }
             }
 
+            & .imported-row {
+                display: grid;
+                grid-template-columns: 1fr auto auto;
+                align-items: center;
+                gap: ${s('xs')} ${s('sm')};
+                padding: 2px 0;
+                & .imported-label { font-size: 0.75rem; min-width: 0; overflow-wrap: anywhere; }
+                & .bucket-count { font-size: 0.7rem; color: ${t('color-text-tertiary')}; ${metric()} }
+                & .imported-types { grid-column: 1 / -1; font-size: 0.68rem; color: ${t('color-text-secondary')}; }
+            }
+
             & .summary { font-size: 0.75rem; white-space: pre-line; }
             & .warnings { font-size: 0.7rem; color: ${t('color-text-secondary')}; white-space: pre-line; }
         }
@@ -200,6 +228,7 @@ export class GeojsonImportPanelComponent extends Component {
     private svc = this.inject(GeojsonImportService);
     private mapSvc = this.inject(MapService);
     private features = this.inject(FeaturesService);
+    private confirmDialog = this.inject(ConfirmService);
     /** True while the dashed preview overlay is on the live map. */
     private previewAdded = false;
 
@@ -237,9 +266,9 @@ export class GeojsonImportPanelComponent extends Component {
             },
             fetchRoads: {
                 textContent: () => this.svc.fetching.get() && this.svc.fetchSource.get() === 'roads'
-                    ? 'Fetching roads from OpenStreetMap…'
-                    : 'Fetch roads from OpenStreetMap',
-                title: 'Every OSM road in the map area as a corridor polygon (path) — bucket on road_class to keep roads and drop footpaths',
+                    ? 'Fetching roads (OSM + NVDB)…'
+                    : 'Fetch roads (OSM + NVDB)',
+                title: 'Every road within 200 m of the course as a corridor polygon (path): OSM, with NVDB widths, paved/gravel and the roads OSM lacks — bucket on road_class to keep roads and drop footpaths',
                 disabled: () => this.svc.fetching.get(),
                 onclick: () => void this.svc.fetchFromRoads(),
             },
@@ -297,6 +326,8 @@ export class GeojsonImportPanelComponent extends Component {
                 if (summary.error) text += `\nFAILED: ${summary.error} (import stopped — already-created features kept)`;
                 return text;
             },
+            importedSection: { className: () => this.svc.imported.get().length > 0 ? 'geojson-import__section' : 'geojson-import__section hidden' },
+            clearError: () => this.svc.clearError.get() ?? '',
             warnings: () => {
                 const summary = this.svc.summary.get();
                 const warnings = summary?.warnings ?? this.svc.built.get()?.warnings ?? [];
@@ -327,6 +358,14 @@ export class GeojsonImportPanelComponent extends Component {
             propertySelect.value = current ?? '';
         }));
 
+        // Earlier imports, clearable per group.
+        this.$each(
+            this.ref(frag, 'importedList'),
+            () => this.svc.imported.get(),
+            (group, _i, track) => this.importedRow(group, track),
+            group => `${group.key}∷${group.count}`,
+        );
+
         // Bucket mapping rows. Bucket identity is (file, property, value);
         // the row's select stays live via the assignments signal.
         this.$each(
@@ -337,6 +376,33 @@ export class GeojsonImportPanelComponent extends Component {
         );
 
         return frag;
+    }
+
+    private importedRow(group: ImportGroup, track: (d: () => void) => void): HTMLElement {
+        const typeLabel = (type: string) => FEATURE_STYLES[type as keyof typeof FEATURE_STYLES]?.label ?? type;
+        return this.wireEl(importedRowTpl, {
+            label: { textContent: group.label },
+            count: { textContent: `×${group.count}` },
+            types: { textContent: group.types.map(t => `${typeLabel(t.type)} ${t.count}`).join(' · ') },
+            remove: {
+                textContent: () => this.svc.clearing.get() === group.key ? 'Removing…' : 'Remove',
+                disabled: () => this.svc.clearing.get() !== null || this.svc.importing.get(),
+                onclick: async () => {
+                    const ok = await this.confirmDialog.confirm({
+                        title: `Remove ${group.count} imported feature${group.count === 1 ? '' : 's'}?`,
+                        body: `${group.label}: every feature this import created on the course, including any you have edited since.`,
+                        detail: 'Hand-drawn features and generated layers (lidar trees, grass zones) are kept. This cannot be undone — fetch and import again to get them back. '
+                            + (group.key === 'roads' ? 'The road grading (terrain edits) stays until you grade roads again.' : ''),
+                        confirmLabel: 'Remove',
+                        tone: 'danger',
+                    });
+                    if (!ok) return;
+                    const removed = await this.svc.clearImported(group);
+                    const courseId = this.svc.targetCourseId;
+                    if (removed !== null && courseId) await this.features.reloadOrLoad(courseId);
+                },
+            },
+        }, track);
     }
 
     private bucketRow(bucket: GeojsonBucket, track: (d: () => void) => void): HTMLElement {

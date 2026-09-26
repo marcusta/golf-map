@@ -14,6 +14,7 @@ import {
     paramsSummary,
     type TerrainEditRenderer,
     type TerrainEditView,
+    type TerrainGeneratorKind,
 } from '../src/terrain-edit/terrain-edit-tool.service';
 
 // T55b — terrain-edit tool. The pointer/overlay wiring needs a live
@@ -160,7 +161,7 @@ function fakeRenderer(): FakeRenderer {
 }
 
 interface FakeGenerators extends TerrainGeneratorsApi {
-    calls: Array<{ courseId: string; kind: 'building-pads' | 'road-grades' }>;
+    calls: Array<{ courseId: string; kind: TerrainGeneratorKind }>;
     result: TerrainGenerateResult | Error;
 }
 
@@ -168,7 +169,9 @@ function fakeGenerators(): FakeGenerators {
     const g: FakeGenerators = {
         calls: [],
         result: { kind: 'building-pads', imported: 3, skipped: [], report: [] },
-        fetchRoads: () => Promise.reject(new Error('not under test')),
+        startRoadsFetch: () => Promise.reject(new Error('not under test')),
+        roadsFetchJob: () => Promise.reject(new Error('not under test')),
+        currentRoadsFetch: () => Promise.reject(new Error('not under test')),
         async generate(input) {
             g.calls.push(input);
             if (g.result instanceof Error) throw g.result;

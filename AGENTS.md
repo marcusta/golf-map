@@ -1,47 +1,60 @@
 # golf-map — AGENTS
 
-Ground-up rebuild of a golf course map system. Server is source of truth; web builds courses + plans strategy; iOS is on-course GPS, game data collection and strategy planning (not done yet). See [ROADMAP.md](./ROADMAP.md) for architecture + phases.
+Golf course map system. Server is the source of truth; web builds courses and plans strategy; iOS is on-course GPS (in progress). **Current focus: building courses in the app and taking them into OPCD/GSPro (Blender + Unity).** Architecture and phases: [ROADMAP.md](./ROADMAP.md).
 
-## Areas (each has its own AGENTS.md)
+## Areas (read the area's AGENTS.md before working in it)
 
 | Dir | Stack | Role |
 |-----|-------|------|
-| [server/](server/AGENTS.md) | Bun + Hono + Kysely + SQLite, `@basics/core` | Course data, game plans, rounds, tile/asset serving. Source of truth. |
-| [web/](web/AGENTS.md) | Vite + TS, `@basics/core` client, MapLibre | Course building (SVG/vector), strategy planning, analytics. |
-| [ios/](ios/AGENTS.md) | SwiftUI (iOS 17+), MapLibre, GRDB | On-course GPS, distances, plays-like. No course building. |
-| [pipeline/](pipeline/AGENTS.md) | Python, rasterio | Lantmäteriet DEM + orthophoto GeoTIFFs → XYZ tile pyramids. |
-| [unity/](unity/AGENTS.md) | C# editor scripts (Unity 2018.2, C# 6) | OPCD/GSPro side: terrain importer (builds both GSPro terrains from an export folder), scene spelunker report, tree planter reading `unity-trees-v1`. Not part of the build; scripts are copied into the current Unity project — see unity/AGENTS.md for the project path and the edit→copy workflow. |
-| `shared/` | TS | `api/*.gen.ts` (codegen'd typed clients — never hand-edit), `strategy/` (shared strategy math: ellipse, corridor, wind, plays-like). |
+| [server/](server/AGENTS.md) | Bun + Hono + Kysely + SQLite, `@basics/core` | Course data, map-build jobs, GSPro export, tiles. `builder` mode (local, runs the pipeline) vs serve mode (VPS). |
+| [web/](web/AGENTS.md) | Vite + TS, MapLibre | Create mode (map build, drawing, zones, export panel), strategy planner, analytics. |
+| [pipeline/](pipeline/AGENTS.md) | Python venv, rasterio | `golfpipe`: Lantmäteriet lidar/ortho → DEM + tile pyramids, tree/zone/building detection. `gspro.py`: GSPro export files. |
+| [unity/](unity/AGENTS.md) | C# 6, Unity 2018.2 editor scripts | Terrain importer, tree/building planters (VSP), zone importer, bunker materials. Edited here, **synced into** the Unity project with the `unity` MCP server (`unity/mcp/`), which also drives the open editor. |
+| [blender/](blender/AGENTS.md) | Python (`bpy`, Blender 4.5) | Bunker paint conventions + tools on the OPCD `.blend`. |
+| [ios/](ios/AGENTS.md) | SwiftUI, MapLibre, GRDB | On-course GPS. No course building. |
+| `shared/` | TS | `api/*.gen.ts` (generated — never hand-edit), `strategy/`, `render/`. |
 
-## Layout & conventions
+## Course → GSPro chain
 
-- Bun workspaces: `server`, `web`, `shared`. Package scripts assume **cwd = the package dir**. The ROOT scripts (`start`, `start:vps`, `db:migrate`, `db:health`) assume cwd = repo root — that is what the VPS systemd unit and sig-infra's deploy run. `start:vps` is the deploy entrypoint: it carries the whole serve-mode environment (mode, port, data paths, body limit) so the systemd unit needs nothing but the `PUBLISH_TOKEN` secret; `scripts/vps-start.test.ts` pins it against `deploy.json`. Change the port or DB paths there, never in the unit. `scripts/` is outside every workspace, so it rides along in `server`'s `check:server` tsconfig and `bun run test:scripts` at the root.
-- `@basics/core` is consumed as a **versioned tarball**, committed at `vendor/basics-core-<X.Y.Z>.tgz`. Declared by **all four** package.json files (`server`, `web`, `shared`, root), so a plain `bun install` wires up every `node_modules/@basics/core` it needs; no framework checkout is required to build or deploy this repo. Move to a new framework release with `bun run fw:update [X.Y.Z]` from the repo root (needs the `mackans-client-fw` checkout as a sibling), then commit `vendor/*.tgz` + all four package.jsons + `bun.lock` together. **Never** hand-edit the vendored tarball or the dep strings.
-- **Never** edit anything under `node_modules/@basics/core`, and never repoint a package.json back at `../mackans-client-fw/core`. Framework fixes go in `../mackans-client-fw`, get released there (`bun release.ts <major|minor|patch>`, which needs a matching `## <version>` heading in its `CHANGELOG.md`), then land here via `fw:update`.
-- Active framework work uses `bun link @basics/core` for a live loop (`web/vite.config.ts` excludes the package from `optimizeDeps` so Vite serves and HMRs the linked source); **never commit while linked**. `bun run fw:check` (fronted onto every `test` script) fails loudly if you do — don't remove or bypass that guard. Finish by cutting a real framework release and running `fw:update`.
-- After any `fw:update` or `bun link`/`unlink`, **restart the Vite dev server**; `rm -rf web/node_modules/.vite` if modules look stale (`does not provide an export named ...`).
-- Known and accepted: a fresh clone with no `mackans-client-fw` sibling can't run `bun run test` (the `assert-not-linked` module isn't found). `bun test` directly works, and no deploy path runs tests.
-- This repo does **not** use core's UI component library or its `btn()`/`input()`/`card()` recipes — only the `s` spacing scale. See [web/AGENTS.md](web/AGENTS.md) before touching styling.
-- `data/` (gitignored): `app.sqlite`, `sessions.sqlite`, `obs.sqlite`, `tiles/`.
-- Typed clients in `shared/api/` are generated by `bun run generate` (cwd `server/`) from `server/api/*.api.ts`. Change the API descriptor, regenerate — don't edit `.gen.ts`.
-- Auth: cookie-session via `@basics/core`. No signup endpoint; provision users with `create-user` CLI. Tile routes are unauthenticated.
+| Stage | Where | Output |
+|---|---|---|
+| 1. Map build (area → lidar DEM, ortho, tiles) | web Create mode → `MapBuildService` → `golfpipe` | `data/tiles/<siteId>/`, `data/sources/<siteId>/` |
+| 2. Draw features, terrain edits, vegetation zones; Regenerate trees | web `draw/`, `terrain-edit/`, `zones/` | `data/app.sqlite` |
+| 3. **Export to GSPro** | web `export/` → `GsproExportService` → `gspro.py` ([docs/gspro/export.md](docs/gspro/export.md)) | SVG, orthos, DEM `.raw`+sidecar, trees/zones/buildings JSON in the course's export folder |
+| 4. SVG → meshes (OPCD) | Inkscape/OPCD web tools → Blender + OPCD add-on | course `.blend` → FBX |
+| 5. Assemble | Unity: OPCD tools + `GolfMap >` menus | GSPro course |
 
-## Docs
+External paths (Vreta is the test course; nothing in code may hardcode it):
 
-`docs/` holds feature proposals (planner strategy engine, yardages, smart caddy) and `docs/reference/`, `docs/prompts/`. Read before touching the planner/strategy layer.
+| | |
+|---|---|
+| Export folder | `D:\gspro_courses\vreta-opcd` (the course's `gspro_export_dir`) |
+| Unity project | `D:\gspro_courses\vreta_v4_2025_12_02` (Unity 2018.2.8f1, GSPro base v4 2025-12-02, VSP) |
+| Blender file | `D:\gspro_courses\vreta-opcd\vreta_svg_1602.blend` (regenerated by OPCD tools; name may change) |
+| OPCD docs (agent-oriented) | `D:\gspro_courses\gspro-docs\opcd\README.md` (24-step pipeline, Blender, Unity, VSP, Greenkeeper) |
+| Course notes | [docs/gspro/vreta/](docs/gspro/vreta/) (workflow, palette, foliage passes); tree/shader fixes: [docs/tree-rendering-fixes.md](docs/tree-rendering-fixes.md) |
 
-For Unity/VSP/GSPro tree rendering, read [docs/tree-rendering-fixes.md](docs/tree-rendering-fixes.md)
-before changing foliage materials or shaders. It records confirmed fixes, refresh steps and failed approaches.
+## Conventions
+
+- Bun workspaces `server`, `web`, `shared`: package scripts run with **cwd = the package dir**; root scripts (`start`, `dev`, `start:vps`, `db:migrate`, `db:health`) with cwd = repo root. `bun run dev` (`scripts/dev.ts`) is local development: `start`'s server under `bun --watch` (restarts on any server/shared change; in-memory export/build jobs die with it) plus the web Vite dev server proxying to it; `PORT` = server (3000), `WEB_PORT` = Vite (5173). `start:vps` carries the whole serve-mode environment (pinned by `scripts/vps-start.test.ts` against `deploy.json`); change port/DB paths there, never in the systemd unit.
+- `@basics/core` is a vendored tarball (`vendor/basics-core-<X.Y.Z>.tgz`) declared by all four package.json files. Upgrade only with `bun run fw:update [X.Y.Z]` (needs sibling `../mackans-client-fw`), then commit tarball + package.jsons + `bun.lock` together. Never edit `node_modules/@basics/core`, the tarball or the dep strings; fix the framework upstream and release it (`bun release.ts <level>`, needs a `CHANGELOG.md` heading).
+- `bun link @basics/core` for live framework work; **never commit while linked** (`fw:check` guards every `test` script — don't bypass). Restart Vite after link/unlink/update; `rm -rf web/node_modules/.vite` if exports look stale.
+- API: change `server/api/*.api.ts`, then `bun run generate` (cwd `server/`).
+- Styling: only core's `s` spacing scale is used — see [web/AGENTS.md](web/AGENTS.md).
+- `data/` (gitignored): `app.sqlite`, `sessions.sqlite`, `obs.sqlite`, `tiles/`, `sources/`.
+- Auth: cookie sessions; no signup — `create-user` CLI. Tile routes are public.
+- `docs/`: feature proposals and decisions (`decisions-*.md`, `feature-*.md`); read the relevant one before touching the planner/strategy layer or a feature it covers.
+
+## This machine (Windows 11, native, no WSL)
+
+- GSPro exports without the web panel: `bun run gspro:export -- status <course>` / `-- <course> <kind[:terrain]>...` (`scripts/gspro-export.ts`, same service as the panel).
+- No `node` on PATH — use `bun` (also for `unity/*.test.mjs`). Pipeline venv: `pipeline/.venv/Scripts/python.exe` (`.venv/bin` is a junction).
+- Port 3000 is excluded: use preview configs `api-e2e` (3100, isolated e2e DB) + `web-e2e` (5274) from `.claude/launch.json`; login `marcus` / `test-password-123`, course `/course/course-1`.
+- `server` `bun test` has ~17 known Windows-only failures (symlinks, `/` paths, bsdtar); Playwright e2e can't launch Chrome here.
 
 ## Testing
 
-See [TESTING.md](TESTING.md) for the strategy. In short: integration-first, **no
-mocks**, unit tests only for hard algorithms, user journeys covered by the E2E
-harness. One service = one service test. No CI — run the suites before pushing.
-
-For iOS UI changes, a successful compile is not sufficient verification. After
-building, install the resulting `.app` on an iPhone Simulator and launch it so
-Marcus can visually verify the change.
+[TESTING.md](TESTING.md): integration-first, **no mocks**, units only for hard algorithms, one service = one service test. No CI — run the suites before pushing. iOS UI changes: build, install on a Simulator and launch so Marcus can check visually.
 
 ## Git
 

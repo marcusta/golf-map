@@ -12,8 +12,25 @@ import { wgs84ToSweref99tm } from './geo';
  * road graded smooth along its centerline and level across it — which only
  * the pipeline generates (`golfpipe road-grades`); the tool has no line
  * drawing, so the panel lists and toggles corridors but never arms one.
+ * `dig` — a bunker or pond dug below a reference (a flat water `level`, or a
+ * `plane` fitted to the ground around it) along a depth profile in from its
+ * edge; generated from the course's bunkers and water (`bunker-digs`,
+ * `water-digs`), listed and toggled like corridors.
  */
-export const TERRAIN_EDIT_OPS = ['plane', 'smooth', 'corridor'] as const;
+export const TERRAIN_EDIT_OPS = ['plane', 'smooth', 'corridor', 'dig', 'delta'] as const;
+
+/**
+ * Unity sculpt layers (`delta`): heights changed in Unity, captured and
+ * carried back ("Unity sculpt → golf-map"). One per terrain, each its own
+ * origin so a new capture replaces only that terrain's layer; the GeoTIFF is
+ * `sources/<siteId>/terrain-sculpt/<raster>`.
+ */
+export const SCULPT_ORIGINS = { inner: 'unity-sculpt-inner', outer: 'unity-sculpt-outer' } as const;
+export const SCULPT_DIR = 'terrain-sculpt';
+const SCULPT_RASTER = /^(inner|outer)-sculpt\.tif$/;
+
+export const DIG_REFERENCES = ['level', 'plane', 'stream'] as const;
+export type DigReference = (typeof DIG_REFERENCES)[number];
 export type TerrainEditOp = (typeof TERRAIN_EDIT_OPS)[number];
 
 // --- Output types ---
@@ -33,7 +50,28 @@ export interface TerrainEditParams {
     centerline?: TerrainEditRing;
     smoothM?: number;
     widthM?: number;
+    /** dig: floor depth below the reference, bank angle, optional steeper face towards a compass bearing, shelf, reference, rim band, perimeter variation. */
+    depthM?: number;
+    bankSlopeDeg?: number;
+    faceSlopeDeg?: number;
+    faceBearingDeg?: number;
+    shelfM?: number;
+    shelfDepthM?: number;
+    reference?: DigReference;
+    rimM?: number;
+    variation?: number;
+    seed?: number;
+    /** delta: the sculpt GeoTIFF's file name in `sources/<siteId>/terrain-sculpt/`, and what it holds (for the panel). */
+    raster?: string;
+    changedM2?: number;
+    maxRaiseM?: number;
+    maxLowerM?: number;
 }
+
+/** The dig params, in the order they go into the pipeline handoff. */
+export const DIG_PARAM_KEYS = [
+    'depthM', 'bankSlopeDeg', 'faceSlopeDeg', 'faceBearingDeg', 'shelfM', 'shelfDepthM', 'reference', 'rimM', 'variation', 'seed',
+] as const;
 
 export interface TerrainEdit {
     id: string;
@@ -61,13 +99,26 @@ export interface TerrainEditInput {
 }
 
 /**
- * `created_at` for generated edits: the epoch plus the edit's index in its
- * generation, in SQLite's own `datetime('now')` spelling so it sorts as a
- * plain string against real timestamps — before every one of them.
+ * `created_at` for generated edits: the epoch, the origin's slot in
+ * GENERATED_ORDER as its second, and the edit's index in its generation as
+ * the fraction — SQLite's own `datetime('now')` spelling, so it sorts as a
+ * plain string against real timestamps, before every one of them. Edits
+ * replay in `created_at` order and a later one wins where they overlap, so
+ * the slot decides which generator wins: without it every generation
+ * started at the same instant and pads, digs and road grades interleaved by
+ * index (a pad beside a road could overwrite the graded road).
  */
-export const GENERATED_EPOCH = '2000-01-01 00:00:00';
-export function generatedCreatedAt(index: number): string {
-    return `${GENERATED_EPOCH}.${String(index).padStart(6, '0')}`;
+export const GENERATED_EPOCH = '2000-01-01 00:00';
+/** Replay order of the generators, first to last (last wins). Roads last: a creek or a pad never cuts a graded road. */
+export const GENERATED_ORDER = ['building-pads', 'water-digs', 'bunker-digs', 'creek-digs', 'road-grades'] as const;
+export function generatedCreatedAt(index: number, origin?: string): string {
+    // A Unity sculpt was made on top of everything, hand-drawn edits included: it replays last of all.
+    const sculpt = Object.values(SCULPT_ORIGINS).indexOf(origin as (typeof SCULPT_ORIGINS)[keyof typeof SCULPT_ORIGINS]);
+    if (sculpt >= 0) return `2999-01-01 00:00:${String(sculpt * 2 + 1).padStart(2, '0')}.${String(index).padStart(6, '0')}`;
+    const slot = GENERATED_ORDER.indexOf(origin as (typeof GENERATED_ORDER)[number]);
+    // Unknown origins go in the middle second, between the known ones and never past them.
+    const second = slot >= 0 ? slot * 2 + 1 : GENERATED_ORDER.length;
+    return `${GENERATED_EPOCH}:${String(second).padStart(2, '0')}.${String(index).padStart(6, '0')}`;
 }
 
 // --- Row mapping ---
@@ -122,6 +173,10 @@ export function parseEditsGeojson(doc: unknown): { edits: TerrainEditInput[]; sk
         if (props.flat) params.flat = true;
         if (props.smoothM !== undefined) params.smoothM = Number(props.smoothM);
         if (props.widthM !== undefined && props.widthM !== null) params.widthM = Number(props.widthM);
+        for (const key of DIG_PARAM_KEYS) {
+            if (props[key] === undefined || props[key] === null) continue;
+            (params as unknown as Record<string, unknown>)[key] = key === 'reference' ? String(props[key]) : Number(props[key]);
+        }
         if (Array.isArray(props.centerline)) {
             params.centerline = props.centerline.map((p: unknown) =>
                 Array.isArray(p) && p.length >= 2 ? wgs84ToSweref99tm(Number(p[1]), Number(p[0])) : { x: NaN, y: NaN });
@@ -194,6 +249,36 @@ function assertOpParams(op: TerrainEditOp, params: TerrainEditParams): void {
     if (op === 'corridor' && !params.centerline) {
         throw new InvalidTerrainEditError('A corridor edit needs a centerline');
     }
+    if (op === 'dig') assertDigParams(params);
+    if (op === 'delta' && (typeof params.raster !== 'string' || !SCULPT_RASTER.test(params.raster))) {
+        throw new InvalidTerrainEditError('A delta edit needs raster: inner-sculpt.tif or outer-sculpt.tif');
+    }
+}
+
+// Mirrors the pipeline's dem_edit._dig_params, so a stored dig never gets skipped at replay.
+function assertDigParams(p: TerrainEditParams): void {
+    const finite = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+    if (!finite(p.depthM) || p.depthM! <= 0) throw new InvalidTerrainEditError('A dig edit needs depthM > 0');
+    for (const key of ['bankSlopeDeg', 'faceSlopeDeg'] as const) {
+        const v = p[key];
+        if (v !== undefined && (!finite(v) || v <= 0 || v >= 90)) throw new InvalidTerrainEditError(`${key} must be between 0 and 90 degrees`);
+    }
+    if ((p.faceSlopeDeg === undefined) !== (p.faceBearingDeg === undefined)) {
+        throw new InvalidTerrainEditError('faceSlopeDeg and faceBearingDeg go together');
+    }
+    if (p.faceBearingDeg !== undefined && !finite(p.faceBearingDeg)) throw new InvalidTerrainEditError('faceBearingDeg must be a finite number');
+    if (p.shelfM !== undefined && (!finite(p.shelfM) || p.shelfM < 0)) throw new InvalidTerrainEditError('shelfM must be >= 0');
+    if (p.shelfDepthM !== undefined && (!finite(p.shelfDepthM) || p.shelfDepthM < 0 || p.shelfDepthM >= p.depthM!)) {
+        throw new InvalidTerrainEditError('shelfDepthM must be in [0, depthM)');
+    }
+    if (p.reference !== undefined && !(DIG_REFERENCES as readonly string[]).includes(p.reference)) {
+        throw new InvalidTerrainEditError(`reference must be one of ${DIG_REFERENCES.join(', ')}`);
+    }
+    if (p.rimM !== undefined && (!finite(p.rimM) || p.rimM <= 0)) throw new InvalidTerrainEditError('rimM must be > 0');
+    if (p.variation !== undefined && (!finite(p.variation) || p.variation < 0 || p.variation > 1)) {
+        throw new InvalidTerrainEditError('variation must be in [0, 1]');
+    }
+    if (p.seed !== undefined && !Number.isInteger(p.seed)) throw new InvalidTerrainEditError('seed must be an integer');
 }
 
 function assertValidRings(rings: TerrainEditRing[]): void {
@@ -282,10 +367,10 @@ export class TerrainEditsService {
                     origin,
                     origin_ref: input.originRef ?? null,
                     version: 1,
-                    // Dated at the epoch (+ file order) so the one apply rule —
+                    // Dated at the epoch (+ the origin's slot + file order) so the one apply rule —
                     // createdAt order, D-TE4 — puts every generated edit before
                     // any hand-drawn one, here and in the pipeline's replay.
-                    created_at: generatedCreatedAt(index),
+                    created_at: generatedCreatedAt(index, origin),
                 }).execute();
             }
             if (ids.length === 0) return [];

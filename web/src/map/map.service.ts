@@ -441,7 +441,7 @@ export class MapService {
      */
     fitBounds(
         bounds: [number, number, number, number],
-        opts: { padding?: number; maxZoom?: number } = {},
+        opts: { padding?: number | { top: number; right: number; bottom: number; left: number }; maxZoom?: number } = {},
     ): void {
         const map = this.map.get();
         if (!map) return;

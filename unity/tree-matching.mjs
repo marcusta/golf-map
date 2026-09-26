@@ -95,7 +95,12 @@ export function matchTree(stem,config,override) {
  if(![position.x,position.z].every(Number.isFinite))throw Error('Invalid override position');
  const rotation=override?.rotationY??hash(config.seed+':'+stem.id+':rotation')*360;
  if(!Number.isFinite(rotation))throw Error('Invalid rotation');
+ // Cosmetic per-stem variety, after the fit and its review: neighbours with the same measured
+ // height (or pinned at a scale limit) would otherwise be identical copies. Authored scales stay exact.
+ const scale=override?.guid?chosen.scale:chosen.scale*(1+(rules.scaleJitter||0)*(2*speciesHash(config.seed+':'+stem.id+':scale')-1));
+ const leanDeg=(rules.maxLeanDeg||0)*speciesHash(config.seed+':'+stem.id+':lean');
+ const leanDirectionY=leanDeg>0?speciesHash(config.seed+':'+stem.id+':leanDirection')*360:0;
  return {stemId:stem.id,status:override?.guid?'authored':reasons.length?'review':'proposed',source:override?.guid?'override':'rules',
-   guid:chosen.guid,name:chosen.name,look,scale:chosen.scale,rotationY:rotation,position,reasons,
+   guid:chosen.guid,name:chosen.name,look,scale,rotationY:rotation,leanDeg,leanDirectionY,position,reasons,
    measured:{heightM:stem.h,crownRadiusM:stem.r,kind:stem.k},alternatives:ranked.slice(0,3)};
 }

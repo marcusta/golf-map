@@ -62,6 +62,7 @@ export interface CoursesTable {
     notes: string | null;
     site_id: string | null; // the site whose map this course uses (null = no map yet)
     gspro_export_dir: string | null; // GSPro SVG export folder; null = the server default (Downloads)
+    gspro_course_dir: string | null; // GSPro course (scene) folder the GreenKeeper .GKD export writes into; null = not set
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;
@@ -143,7 +144,8 @@ export interface CourseFeaturesTable {
     type: string; // see CourseFeaturesService.FEATURE_TYPES
     geometry_json: string; // native path/bezier geometry in projected CRS
     geojson: string | null; // derived WGS84 GeoJSON
-    sort_order: number; // per-group (course_id, hole_id) stack z-order; higher = on top (D23)
+    layer: string | null; // 'roughs' = the Roughs group under every hole (hole_id is then NULL); null = hole / course-level (D28)
+    sort_order: number; // per-group (course_id, hole_id, layer) stack z-order; higher = on top (D23)
     source: string | null; // import provenance: producer id (e.g. 'osm'), null = hand-drawn (T49)
     generated: Generated<number>; // 1 = written by the pipeline bulk-replace route (read-only in the editor), 0 = hand-drawn or imported
     source_ref: string | null; // source-local ref (e.g. 'way/123456')
@@ -387,7 +389,8 @@ export interface CourseZoneTypesTable {
     texture_index: number; // VSPro mask texture index, >= 0
     channel: number; // RGBA channel 0..3 of that texture (unique per course+texture)
     sort_order: number;
-    items_json: string; // JSON [{ item, minDensity, maxDensity }] — VSPro item bindings (D-VZ9)
+    items_json: string; // JSON [{ item, minDensity, maxDensity }] — VSPro item bindings (D-VZ9), the Default mix
+    variants_json: Generated<string>; // JSON [{ key, name, items }] — named item mixes a zone picks by `zoneVariant` (migration 022)
     created_at: Generated<string>;
     updated_at: Generated<string>;
 }

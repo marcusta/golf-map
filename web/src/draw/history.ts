@@ -27,12 +27,28 @@ import { Signal, Computed } from '@basics/core/client/core';
 import type { FeatureGeometry } from '../geo/bezier';
 import type { FeaturesService } from './features.service';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
+import { isRoughsLayerType, type FeatureLayer } from '../../../shared/render/stack-key';
 
 /** Everything undo/redo restores about a feature. */
 export interface FeatureSnapshot {
     geometry: FeatureGeometry;
     type: string;
     holeId: string | null;
+    /**
+     * Absent on the geometry-only snapshots the draw tool builds by hand: an
+     * update then leaves the feature's layer alone.
+     */
+    layer?: FeatureLayer;
+}
+
+/**
+ * The layer a snapshot restores to. A retype out of the rough types leaves
+ * the Roughs layer server-side, so a snapshot pairing the old layer with the
+ * new type (`{ ...snapshotOf(f), type }`) means course-level.
+ */
+function layerOf(snapshot: FeatureSnapshot): FeatureLayer | undefined {
+    if (snapshot.layer === undefined) return undefined;
+    return isRoughsLayerType(snapshot.type) ? snapshot.layer : null;
 }
 
 /**
@@ -56,7 +72,7 @@ export const MAX_HISTORY = 100;
 
 /** Snapshot the restorable fields of a feature. */
 export function snapshotOf(feature: CourseFeature): FeatureSnapshot {
-    return { geometry: feature.geometry, type: feature.type, holeId: feature.holeId };
+    return { geometry: feature.geometry, type: feature.type, holeId: feature.holeId, layer: feature.layer ?? null };
 }
 
 export class EditHistory {
@@ -132,6 +148,7 @@ export class EditHistory {
                     const created = await features.create({
                         type: target.type,
                         holeId: target.holeId,
+                        layer: layerOf(target),
                         geometry: target.geometry,
                     });
                     if (!created) return this.dropOnConflict();
@@ -144,6 +161,7 @@ export class EditHistory {
                         geometry: target.geometry,
                         type: target.type,
                         holeId: target.holeId,
+                        layer: layerOf(target),
                     });
                     if (!updated) return this.dropOnConflict();
                 }

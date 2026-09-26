@@ -153,6 +153,42 @@ def test_stack_opcd_lifts_green_tee_bunker_and_leaves_the_rest_alone(tmp_path):
         "green", "bunker"]
 
 
+def test_the_roughs_layer_is_written_under_the_course_level_features(tmp_path):
+    """The app's Roughs layer (course_features.layer = 'roughs', no hole) sits
+    under everything, so inside Others its shapes come before the course-level
+    ones whatever their sort_order."""
+    feats = [
+        ("water", None, 0, [_ring((0.20, 0.70), 25)], "bspline"),
+        ("rough", None, 7, [_ring((0.20, 0.70), 60)], "bspline"),
+    ]
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    db = tmp_path / "app.sqlite"
+    _make_db(db, feats)
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE course_features ADD COLUMN layer TEXT")
+    conn.execute("UPDATE course_features SET layer = 'roughs' WHERE type = 'rough'")
+    conn.commit()
+    conn.close()
+    out = tmp_path / "course.svg"
+    gspro.cmd_svg(BBOX, out, db, "Testbana", flatten=None, precision=3, mapped={}, stack="app")
+    assert _types_in(out, "Others") == ["rough", "water"]
+
+
+def test_roads_get_their_own_layer_on_top_of_everything(tmp_path):
+    """Roads and paths, on a hole or not and whatever their sort_order, go to
+    a 'Roads' layer written last — topmost in Inkscape, over Hole1 — the
+    opposite end of the stack from the Roughs."""
+    feats = BASIC + [
+        ("path", None, -5, [_ring((0.30, 0.50), 8)], "bspline"),
+        ("path", 1, 0, [_ring((0.41, 0.41), 4)], "bspline"),
+    ]
+    for stack in ("app", "opcd"):
+        layers = _layers(_export(tmp_path / stack, feats, stack=stack))
+        assert [label for label, _ in layers] == ["Others", "Hole2", "Hole1", "Roads"]
+        assert dict(layers)["Roads"] == ["roads_1", "roads_2"]
+        assert "path" not in _types_in(tmp_path / stack / "course.svg", "Hole1")
+
+
 def test_the_lift_does_not_reach_across_layers(tmp_path):
     """Lifting is per layer: hole 1's green must not jump over hole 2's
     shapes, and off-hole features stay in Others."""
@@ -348,3 +384,184 @@ def test_course_resolves_by_name_substring_or_id(tmp_path):
     assert gspro._resolve_course(conn, "testb")["id"] == COURSE
     assert gspro._resolve_course(conn, COURSE)["name"] == "Testbana"
     conn.close()
+
+
+def _rect(x0, y0, x1, y1):
+    """An axis-aligned ring in metres from the extent's centre (straight edges)."""
+    cx, cy = _square((0.5, 0.5))
+    return {"points": [{"x": cx + x, "y": cy + y} for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]}
+
+
+def _shape(out, pid):
+    """A written path as a shapely geometry in SVG units (even-odd rings)."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    d = next(p for p in ET.parse(out).getroot().iter(f"{SVG_NS}path") if p.get("id") == pid).get("d")
+    rings = [Polygon([tuple(map(float, xy.split(","))) for xy in re.findall(r"(-?[\d.]+,-?[\d.]+)", sub)])
+             for sub in d.split("Z") if sub.strip()]
+    shape = rings[0]
+    for r in rings[1:]:
+        shape = shape.symmetric_difference(r)
+    return unary_union(shape)
+
+
+def test_touching_road_pieces_are_one_shape_with_the_slits_between_them_closed(tmp_path):
+    """Blender cuts each shape on its own, so a road and the kerb fillet, drawn
+    parking area or next road beside it are written as ONE shape: a hairline
+    slit between them (here 0.2 m) is closed, the ids of every piece kept."""
+    feats = [
+        ("path", None, 0, [_rect(-30, -3, 0, 3)], "bezier"),
+        ("path", None, 1, [_rect(0.2, -3, 30, 3)], "bezier"),   # 0.2 m short of the first
+        ("path", None, 2, [_rect(80, -3, 90, 3)], "bezier"),    # apart: its own shape
+    ]
+    out = _export(tmp_path, feats)
+    assert dict(_layers(out))["Roads"] == ["roads_1", "roads_2"]
+    root = ET.parse(out).getroot()
+    ids = {p.get("id"): p.get("data-feature-id") for p in root.iter(f"{SVG_NS}path")}
+    assert ids == {"roads_1": "feat-0 feat-1", "roads_2": "feat-2"}
+    road = _shape(out, "roads_1")
+    assert road.geom_type == "Polygon" and not road.interiors
+    assert road.area == pytest.approx(60 * 6, rel=1e-3)  # the slit filled
+
+
+def test_a_small_hole_inside_the_roads_is_filled_a_big_one_kept(tmp_path):
+    """Four pieces round a 0.5 m pocket fill it; a ring road round a real island keeps it."""
+    feats = [
+        ("path", None, 0, [_rect(-10, -10, 10, -0.25), _rect(-0.25, -0.25, 0.25, 0.25)], "bezier"),
+        ("path", None, 1, [_rect(-10, 0.25, 10, 10)], "bezier"),
+        ("path", None, 2, [_rect(-10, -0.25, -0.25, 0.25)], "bezier"),
+        ("path", None, 3, [_rect(0.25, -0.25, 10, 0.25)], "bezier"),
+        ("path", None, 4, [_rect(40, -10, 60, 10), _rect(45, -5, 55, 5)], "bezier"),
+    ]
+    out = _export(tmp_path, feats)
+    pocket = _shape(out, "roads_1")
+    assert pocket.geom_type == "Polygon" and not pocket.interiors
+    ring = _shape(out, "roads_2")
+    assert ring.area == pytest.approx(400 - 100, rel=1e-3)
+
+
+def test_a_rough_drawn_just_short_of_a_road_is_grown_to_it(tmp_path):
+    """A 0.4 m sliver between a road and the rough beside it goes to the rough
+    (written flattened); a green the same distance off is left alone."""
+    feats = [
+        ("path", None, 0, [_rect(-50, -3, 50, 3)], "bezier"),
+        ("rough", 1, 0, [_rect(-50, 3.4, 50, 30)], "bezier"),
+        ("green", 1, 1, [_rect(-20, -20, 20, -3.4)], "bezier"),
+    ]
+    out = _export(tmp_path, feats)
+    rough = _shape(out, "hole_1_1")
+    assert rough.area == pytest.approx(100 * (30 - 3) + 100 * 0.02, rel=2e-3)  # down to the kerb, a hair under it
+    green = _shape(out, "hole_1_2")
+    assert green.area == pytest.approx(40 * 16.6, rel=1e-6)
+
+
+# --- Exclusions (test variants of the SVG for the Blender build) -------------
+
+
+def _feature_ids(out):
+    return sorted(p.get("data-feature-id") for p in ET.parse(out).getroot().iter(f"{SVG_NS}path"))
+
+
+def test_excluded_ids_and_types_are_left_out_and_reported(tmp_path, capsys):
+    """Excluding by id drops exactly those shapes; by type every shape of it.
+    The report counts what went, and warns about ids the course doesn't have."""
+    out = _export(tmp_path, BASIC, exclude_ids={"feat-2", "feat-4", "gone-1"}, exclude_types={"water"})
+    assert _feature_ids(out) == ["feat-0", "feat-1", "feat-3"]
+    report = capsys.readouterr().out
+    assert "excluded on request: 3 feature(s)" in report
+    assert "1 excluded id(s) are not features of this course" in report and "gone-1" in report
+
+
+def test_excluding_everything_on_a_hole_drops_its_layer(tmp_path):
+    out = _export(tmp_path, BASIC, exclude_ids={"feat-3", "feat-4"})
+    assert [label for label, _ in _layers(out)] == ["Others", "Hole1"]
+
+
+def test_an_excluded_road_takes_its_junction_fillets_with_it(tmp_path):
+    """The server stores a road's kerb fillets as generated `path` features
+    (source road-junctions, source_ref = the roads' ids); excluding a road must
+    not leave its fillet behind as an orphan patch."""
+    feats = [
+        ("path", None, 0, [_rect(-30, -3, 0, 3)], "bezier"),
+        ("path", None, 1, [_rect(80, -3, 90, 3)], "bezier"),
+        ("path", None, 2, [_rect(0, 3, 2, 5)], "bezier"),    # fillet of feat-0
+        ("path", None, 3, [_rect(90, 3, 92, 5)], "bezier"),  # fillet of feat-1
+    ]
+    db = tmp_path / "app.sqlite"
+    _make_db(db, feats)
+    conn = sqlite3.connect(db)
+    conn.executescript("ALTER TABLE course_features ADD COLUMN source TEXT;"
+                       "ALTER TABLE course_features ADD COLUMN source_ref TEXT;")
+    conn.execute("UPDATE course_features SET source = 'road-junctions', source_ref = 'feat-0' WHERE id = 'feat-2'")
+    conn.execute("UPDATE course_features SET source = 'road-junctions', source_ref = 'feat-1' WHERE id = 'feat-3'")
+    conn.commit()
+    conn.close()
+    out = tmp_path / "course.svg"
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", exclude_ids={"feat-0"})
+    assert _feature_ids(out) == ["feat-1 feat-3"]
+
+
+def test_exclude_ids_file_is_a_json_array_or_one_id_per_line(tmp_path):
+    js = tmp_path / "ids.json"
+    js.write_text('["a", " b ", ""]', encoding="utf-8")
+    assert gspro._read_exclude_ids(js) == {"a", "b"}
+    txt = tmp_path / "ids.txt"
+    txt.write_text("# broken paths\na\n\n  b\n", encoding="utf-8")
+    assert gspro._read_exclude_ids(txt) == {"a", "b"}
+    assert gspro._read_exclude_ids(None) == set()
+
+
+# --- Nothing past the terrain square ------------------------------------------
+
+
+def _edge_ring(fx, fy, radius_m, n=8):
+    """A b-spline control ring centred at (fx, fy) of the extent."""
+    return _ring((fx, fy), radius_m, n)
+
+
+def test_a_creek_reaching_past_the_square_is_cut_to_it(tmp_path, capsys):
+    """Blender cuts the meshes out of the terrain, so a shape overhanging the
+    square's edge breaks the build: it is written cut to the square instead."""
+    feats = [("water_creek", None, 0, [_edge_ring(0.999, 0.5, 20)], "bspline")]
+    out = _export(tmp_path, feats)
+    e0, n0, e1, n1 = gspro._square_3006_extent(BBOX)
+    side = e1 - e0
+    creek = _shape(out, "others_1")
+    x0, y0, x1, y1 = creek.bounds
+    assert x1 <= side + 1e-3 and x0 >= 0 and y0 >= 0 and y1 <= side
+    assert x1 == pytest.approx(side, abs=1e-3)  # reaches the edge, not short of it
+    assert "1 shape(s) reached past the terrain square and were cut to it" in capsys.readouterr().out
+
+
+def test_a_shape_whose_control_points_are_outside_but_curve_inside_keeps_its_curves(tmp_path, capsys):
+    """A b-spline passes inside its control points: one control point just past
+    the edge doesn't mean the curve is, and then nothing is cut or flattened."""
+    e0, n0, e1, n1 = gspro._square_3006_extent(BBOX)
+    ring = _edge_ring(0.5, 0.5, 20, n=8)
+    ring["points"][0]["x"] = e1 + 0.5  # a spike out to the edge; the curve stays well inside
+    ring["points"][0]["y"] = (n0 + n1) / 2
+    for p in ring["points"][1:]:
+        p["x"] = e1 - 60 + (p["x"] - (e0 + e1) / 2)
+    out = _export(tmp_path, [("water_creek", None, 0, [ring], "bspline")])
+    d = next(p for p in ET.parse(out).getroot().iter(f"{SVG_NS}path")).get("d")
+    assert "C" in d  # still cubic beziers
+    assert "cut to it" not in capsys.readouterr().out
+
+
+def test_a_shape_wholly_outside_the_square_is_left_out(tmp_path, capsys):
+    feats = [
+        ("water", None, 0, [_edge_ring(1.2, 0.5, 20)], "bspline"),
+        ("green", 1, 0, [_edge_ring(0.5, 0.5, 20)], "bspline"),
+    ]
+    out = _export(tmp_path, feats)
+    assert [label for label, _ in _layers(out)] == ["Hole1"]
+    assert "1 shape(s) lie wholly outside the terrain square and were left out: water 1" in capsys.readouterr().out
+
+
+def test_a_road_running_off_the_square_is_cut_at_its_edge(tmp_path):
+    e0, n0, e1, n1 = gspro._square_3006_extent(BBOX)
+    half = (e1 - e0) / 2
+    out = _export(tmp_path, [("path", None, 0, [_rect(half - 50, -3, half + 50, 3)], "bezier")])
+    x0, _, x1, _ = _shape(out, "roads_1").bounds
+    assert x1 == pytest.approx(e1 - e0, abs=1e-3)
+    assert x1 - x0 == pytest.approx(50, abs=0.2)

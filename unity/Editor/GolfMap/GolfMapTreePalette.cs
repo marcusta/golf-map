@@ -138,6 +138,7 @@ namespace GolfMap.Editor
             var r = draft.rules;
             if (!(r.minScale > 0 && r.maxScale >= r.minScale)) return "scale limits need 0 < min <= max.";
             if (r.variationBand < 0 || r.speciesFitSlack < 0 || r.maxHeightError < 0 || r.maxWidthError < 0) return "bands, slack and tolerances cannot be negative.";
+            if (!(r.scaleJitter >= 0 && r.scaleJitter < 1) || !(r.maxLeanDeg >= 0 && r.maxLeanDeg <= 45)) return "scale jitter needs 0 <= jitter < 1 and max lean 0-45 degrees.";
             if (r.speciesWeights != null && r.speciesWeights.species.Any(s => r.speciesWeights.Weight(s) < 0)) return "species weights cannot be negative.";
             if (string.IsNullOrEmpty(draft.seed)) return "the seed is empty.";
             if (!draft.assets.Any(a => a.enabled)) return "every asset is disabled.";
@@ -286,6 +287,8 @@ namespace GolfMap.Editor
             r.speciesFitSlack = Rule("Species fit slack", "A species enters the weighted race for a stem when its best asset scores within this of the overall best. Raise it to let the weights win over fit.", r.speciesFitSlack, 0, 10);
             r.maxHeightError = Rule("Max height error", "Relative height error above which a match is flagged imperfect (0.25 = 25%).", r.maxHeightError, 0, 10);
             r.maxWidthError = Rule("Max width error", "Relative crown width error above which a match is flagged imperfect.", r.maxWidthError, 0, 10);
+            r.scaleJitter = Rule("Scale jitter", "Random size change per stem after the fit (0.1 = up to 10% smaller or larger), so neighbours of the same measured height, or pinned at a scale limit, are not identical. May go past min/max scale by this much.", r.scaleJitter, 0, 0.5);
+            r.maxLeanDeg = Rule("Max lean (deg)", "Random tilt off vertical per stem, in a random direction, up to this many degrees. VSP and GameObject planting only: Unity terrain trees cannot tilt.", r.maxLeanDeg, 0, 45);
             EditorGUILayout.LabelField("Woodland (dense stands match as canopy)", EditorStyles.miniBoldLabel);
             r.woodlandRadiusM = Rule("Neighbour radius (m)", "A stem is woodland when enough others stand within this radius. 0 turns woodland matching off.", r.woodlandRadiusM, 0, 1000);
             r.woodlandMinNeighbours = Math.Max(0, EditorGUILayout.IntField(new GUIContent("Min neighbours", "Neighbours within the radius that make a stem woodland."), r.woodlandMinNeighbours));

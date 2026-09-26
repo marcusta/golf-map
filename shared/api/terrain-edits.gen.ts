@@ -4,7 +4,7 @@ import { apiFetch } from '@basics/core/client/fetch';
 export interface TerrainEdit {
     id: string;
     siteId: string;
-    op: 'corridor' | 'plane' | 'smooth';
+    op: 'corridor' | 'plane' | 'smooth' | 'dig' | 'delta';
     params: TerrainEditParams;
     rings: { x: number; y: number }[][];
     enabled: boolean;
@@ -22,12 +22,26 @@ export interface TerrainEditParams {
     centerline?: { x: number; y: number }[];
     smoothM?: number;
     widthM?: number;
+    depthM?: number;
+    bankSlopeDeg?: number;
+    faceSlopeDeg?: number;
+    faceBearingDeg?: number;
+    shelfM?: number;
+    shelfDepthM?: number;
+    reference?: 'plane' | 'level' | 'stream';
+    rimM?: number;
+    variation?: number;
+    seed?: number;
+    raster?: string;
+    changedM2?: number;
+    maxRaiseM?: number;
+    maxLowerM?: number;
 }
 
 export interface TerrainEditsApi {
     list(input: { siteId: string }): Promise<TerrainEdit[]>;
-    create(input: { enabled?: boolean; params: { flat?: boolean; radiusM?: number; centerline?: { x: number; y: number }[]; smoothM?: number; widthM?: number; featherM: number }; rings: { x: number; y: number }[][]; siteId: string; op: 'corridor' | 'plane' | 'smooth' }): Promise<TerrainEdit>;
-    update(input: { params?: { flat?: boolean; radiusM?: number; centerline?: { x: number; y: number }[]; smoothM?: number; widthM?: number; featherM: number }; rings?: { x: number; y: number }[][]; op?: 'corridor' | 'plane' | 'smooth'; enabled?: boolean; id: string; version: number }): Promise<TerrainEdit>;
+    create(input: { enabled?: boolean; params: { centerline?: { x: number; y: number }[]; widthM?: number; flat?: boolean; radiusM?: number; smoothM?: number; depthM?: number; bankSlopeDeg?: number; faceSlopeDeg?: number; faceBearingDeg?: number; shelfM?: number; shelfDepthM?: number; reference?: 'plane' | 'level' | 'stream'; rimM?: number; variation?: number; seed?: number; raster?: string; changedM2?: number; maxRaiseM?: number; maxLowerM?: number; featherM: number }; rings: { x: number; y: number }[][]; siteId: string; op: 'corridor' | 'plane' | 'smooth' | 'dig' | 'delta' }): Promise<TerrainEdit>;
+    update(input: { params?: { centerline?: { x: number; y: number }[]; widthM?: number; flat?: boolean; radiusM?: number; smoothM?: number; depthM?: number; bankSlopeDeg?: number; faceSlopeDeg?: number; faceBearingDeg?: number; shelfM?: number; shelfDepthM?: number; reference?: 'plane' | 'level' | 'stream'; rimM?: number; variation?: number; seed?: number; raster?: string; changedM2?: number; maxRaiseM?: number; maxLowerM?: number; featherM: number }; rings?: { x: number; y: number }[][]; op?: 'corridor' | 'plane' | 'smooth' | 'dig' | 'delta'; enabled?: boolean; id: string; version: number }): Promise<TerrainEdit>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
     import(input: { siteId: string; origin: string; geojson: unknown }): Promise<{ imported: TerrainEdit[]; skipped: string[] }>;
 }

@@ -24,26 +24,85 @@ This is a **deliberate, assessed** divergence from the other `@basics/core` cons
 
 ## Layout (`src/`)
 
-`app/` shell · `auth/` login+guard · `courses/` list · `course-detail/` · `editor/` (toolbar + `tools/`) · `draw/` (SVG feature drawing, history/undo) · `import/` (SVG orthophoto trace import) · `export/` (GSPro/OPCD export panel: SVG, inner/outer orthophoto JPEGs, inner/outer DEM GeoTIFFs over the two terrain squares) · `measure/` · `analysis/` (green slope) · `planner/` (strategy: overlay, gates, plan service) · `player/` (club config) · `map/` (MapLibre style/tiles/interaction; `tree-renderer.ts` is the three.js tree drawing shared with the vegetation scene) · `geo/` (bezier, bspline, transform) · `furniture/` · `vegetation/` (dev-only tree test scene).
+`app/` shell · `auth/` login+guard · `courses/` list · `course-detail/` · `editor/` (toolbar + `tools/`) · `draw/` (SVG feature drawing, history/undo) · `import/` (SVG orthophoto trace import) · `export/` (GSPro/OPCD export panel: SVG, inner/outer orthophoto JPEGs, inner/outer DEM GeoTIFFs over the two terrain squares, and GreenKeeper's .GKD into the course's GSPro folder; long explanations go behind `ui/info-tip.ts` (i) tips, only what the operator must act on stays in view) · `measure/` · `analysis/` (green slope) · `planner/` (strategy: overlay, gates, plan service) · `player/` (club config) · `map/` (MapLibre style/tiles/interaction; `tree-renderer.ts` is the three.js tree drawing shared with the vegetation scene) · `geo/` (bezier, bspline, transform) · `furniture/` · `vegetation/` (dev-only tree test scene).
 
 ## Vegetation zones (docs/feature-vegetation-zones.md, wave 1)
 
 `zones/` — `ZoneTypesService` (the course's zone-type legend, loaded with the
 features in `editor/toolbar.component.ts`) and `ZoneTypesPanelComponent` (the
-table editor: colour, mask texture/channel and the VSPro item bindings). The
-panel is spawned by `CourseDetailComponent` and opened from the command bar's ⋯
-menu, like the GSPro export panel.
+table editor: colour, the VSPro item bindings of the type's "Default" mix, and
+its named variants, each with its own bindings; item inputs autocomplete from
+a `<datalist>` of every item name in the table). No mask texture/channel
+inputs: the export gives every bound item its own channel. "Add variant"
+creates `New variant` under a key slugged once and made unique in the type
+(`uniqueVariantKey`) — renaming later changes the name only, so zones stay
+bound. The panel is spawned by `CourseDetailComponent` and opened from the
+command bar's ⋯ menu, like the GSPro export panel.
 
 `vegetation_zone` is a normal drawable feature type in `draw/feature-palette.ts`
 (no digit shortcut; mirrored by hand into `mobile/course/feature-colors.ts`).
-Its four attributes are edited in the selection panel's "Vegetation zone"
-section and saved through `features.update(id, { attributes })`, which replaces
-the whole object — the section always sends all four keys. `FeaturesService.create`
-fills in the zone defaults (first zone type, weight 1, feather 2 m, noise 0) for
-any zone that reaches it without a `zoneType`, so freshly drawn, duplicated,
-stamped and retyped zones are all valid server-side. The overlay fill uses
-`featureFillColorExpression`, which paints a zone in its zone type's own colour
-(`properties.zoneColor`) and everything else from the palette.
+Its attributes (`zoneType`, `zoneVariant`, `weight`, `feather`, `noise`) are
+edited in the selection panel's "Vegetation zone" section and saved through
+`features.update(id, { attributes })`, which replaces the whole object — the
+section always sends all five keys. The Variant select (`zone-variant-select`:
+"Default" = `''` plus the type's variants) is hidden while the type has none;
+changing the zone type also resets `zoneVariant` to `''`. `FeaturesService.create`
+fills in the zone defaults (first zone type, Default variant, weight 1, feather
+2 m, noise 0) for any zone that reaches it without a `zoneType`, so freshly
+drawn, duplicated, stamped and retyped zones are all valid server-side;
+duplicate/paste copy attributes generically, variant included. The overlay fill
+uses `featureFillColorExpression`, which paints a zone in its zone type's own
+colour (`properties.zoneColor`; variants share it, `properties.zoneVariant`
+carries the key) and everything else from the palette.
+
+## Roads and paths are centerlines
+
+A `path` drawn in path mode (`P`) or imported from Fetch roads is a
+**centerline feature**: `geometry.centerline` (`points`, with `corner` flags,
+and `widthM`) is the shape, and `geometry.rings` is the corridor derived from
+it by `shared/features/centerline.ts` (Catmull-Rom curve through the points,
+buffered with round joins/caps). The server re-derives the rings on every
+write, so every ring consumer (render, lie, surface stack, GSPro SVG, iOS) is
+unchanged. In the draw tool the vertex ops run on an **edit view**
+(`draw-state` `editViewOf` / `applyVertexEdit` / `fromEditView`): the control
+points as one open b-spline-flavoured ring, mapped back with the corridor
+re-derived. Move/offset/simplify act on the line (offset = width), the
+selection panel's Width field sets `widthM`, and the terrain tool's Grade
+roads grades these lines. Old polygon paths stay polygons. Path mode draws by
+clicks + Enter or by a freehand press-drag (thinned to a few points); `N`
+draws a plain area (a paved yard is a `path` polygon, graded as a plane).
+
+Kerb fillets where centerline roads meet, and width tapers where a road ends
+in a narrower one (`shared/features/road-junctions.ts`), are derived, never
+edited: `FeaturesService.junctionFeatures` computes them
+live into the map collection (not selectable), and the server's stored copies
+(generated, source `road-junctions`, for export/iOS) are dropped on load.
+Per road, the selection panel's "Round kerbs at junctions" box sets the
+`kerbFillets` attribute (`false` = off, absent = on); a corner is rounded only
+when both roads meeting there have it on. Tapers ignore it.
+
+## Rules lines live in Furniture
+
+The penalty areas and OOB (`RULES_TYPES` in `draw/feature-palette.ts`) are
+drawn and edited in Furniture mode, not Draw. There is one polygon engine:
+`FurnitureToolService` runs `DrawToolService` in its `rules` scope
+(`activate(ctx, { scope: 'rules', toolId, yieldTo })`), which hit-tests and
+creates only those types (OOB by its line, not its inside), keeps nice
+rendering with the penalty outlines stroked, has its own undo history, and
+leaves presses on furniture markers (and everything while a placement is
+armed) to the Furniture tool. Draw (`surfaces` scope) puts them in
+`FeaturesService.modeHiddenTypes`: off the map, out of hit tests, the type
+picker and the stack panel. `resolveSurfaceStack` passes them through like
+OOB, so a higher shape never trims them away.
+
+## Hiding the Roughs layer is editor-only
+
+The stack panel's "Roughs layer" eye (`FeaturesService.roughsLayerHidden`)
+drops every `layer: 'roughs'` feature from the overlay and hit tests, but only
+while the editor owns the overlay (`attachOverlay(map, { editor: true })`,
+from `editor/toolbar.component.ts`). The planner attaches without the flag, so
+it always draws the roughs; the GSPro SVG export reads stored features on the
+server. Session-only, never persisted.
 
 ## Commands (cwd `web/`)
 

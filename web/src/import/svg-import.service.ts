@@ -38,6 +38,8 @@ export interface BuiltFeature {
     source?: string;
     sourceRef?: string;
     license?: string;
+    /** Feature attributes carried from the source (a `path`'s `surface`). */
+    attributes?: Record<string, string | number | boolean>;
 }
 
 export interface BuildResult {

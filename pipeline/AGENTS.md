@@ -16,95 +16,32 @@ pytest                  # tests — synthetic in-memory GeoTIFF fixtures, no moc
 
 ## Layout (`golfpipe/`)
 
-`__main__.py` + `commands.py` (CLI) · `stac.py` (Lantmäteriet STAC search/download, needs `LANTMATERIET_USER`/`PASS`) · `raster.py`, `grid_dem.py` (LAS/LAZ lidar → DEM via laspy; `DEFAULT_CLASSES` 2, 9, 17 = ground, water, bridge deck — OPCD's CloudCompare filter, so a bridge is not a trench) · `terrain_rgb.py` (16-bit terrain PNG) · `canopy.py` (lidar nDSM → canopy height / colour ramp / DSM for the `canopy` command) · `trees_features.py` (cleaned canopy grid → tree polygons + height stats for `trees-features` / `canopy --trees-out`) · `lowveg_features.py` (the same grid's 0.5..3 m cells minus trees and a `--tree-buffer` → `vegetation_zone` shrub proposals, source `lidar-lowveg`, for `lowveg-features`; D-VZ7 in `docs/feature-vegetation-zones.md`) · `tiling.py` (reproject → Web Mercator, XYZ pyramid) · `aoi.py`/`bbox_course.py` (area: `--bbox west,south,east,north` WGS84 **or** `--aoi file.geojson`) · `osm.py` (Overpass golf/land-cover polygons, `fetch-osm`) · `roads.py` (Overpass highway centerlines → buffered, per-class-unioned road corridor polygons, `fetch-roads`; width from the `width` tag, else `lanes`, else `CLASS_WIDTH_M`; `--centerlines-out` keeps the clipped centerlines + widths, which `road-grades` turns into one `corridor` terrain edit per road — smooth along, flat across — as the D-TE5 edits handoff) · `buildings.py` (Overpass building footprints + minimum rotated rectangle + lidar nDSM eave/ridge heights → the building survey, `fetch-buildings`; the survey → one flat `plane` terrain edit per footprint as the D-TE5 edits handoff, `building-pads` — a building is not an app feature type, it is a pad on the terrain plus a prefab the Unity planter places) · `manifest.py`.
+`__main__.py` + `commands.py` (CLI) · `stac.py` (Lantmäteriet STAC search/download, needs `LANTMATERIET_USER`/`PASS`) · `raster.py`, `grid_dem.py` (LAS/LAZ lidar → DEM via laspy; `DEFAULT_CLASSES` 2, 9, 17 = ground, water, bridge deck — OPCD's CloudCompare filter, so a bridge is not a trench) · `terrain_rgb.py` (16-bit terrain PNG) · `canopy.py` (lidar nDSM → canopy height / colour ramp / DSM for the `canopy` command) · `trees_features.py` (cleaned canopy grid → tree polygons + height stats for `trees-features` / `canopy --trees-out`) · `lowveg_features.py` (`vegetation_zone` shrub proposals, source `lidar-lowveg`, for `lowveg-features`: with `--lidar` it counts returns 0.5..3 m above the ground grid per cell, `--min-points` over 3x3 cells, trees and roofs from the canopy grid, nothing within `--roof-buffer` 10 m of a roof since garden objects read as shrubs; `--canopy-tif` uses the grid's cells, which never go under 1 m; D-VZ7 in `docs/feature-vegetation-zones.md`) · `woodland_features.py` (`vegetation_zone` woodland-floor proposals, source `lidar-woodland`, for `woodland-features`: one polygon per closed stand of the canopy grid, weight from 0.5..3 m understory returns, `floorColor` sampled from the ortho between the crowns; D-VZ10) · `woodland_floor.py` (`clean-ortho --woodland`: repaints stands as forest floor outside the corridor and `--keep` polygons) · `building_removal.py` (`gspro.py ortho --remove-buildings`: lidar roof heights from canopy `--roofs-out` plus building-survey footprints, shadow direction and length measured from the photo, holes filled from the nearest ground) · `tiling.py` (reproject → Web Mercator, XYZ pyramid) · `aoi.py`/`bbox_course.py` (area: `--bbox west,south,east,north` WGS84 **or** `--aoi file.geojson`) · `osm.py` (Overpass golf/land-cover polygons, `fetch-osm`) · `roads.py` (Overpass highway centerlines → buffered, per-class-unioned road corridor polygons, `fetch-roads`; width from the `width` tag, else `lanes`, else `CLASS_WIDTH_M`; `--near` keeps only roads within 200 m of the course features; `--centerlines-out` keeps the clipped centerlines + widths, which `road-grades` turns into one `corridor` terrain edit per road — smooth along, flat across — as the D-TE5 edits handoff) · `nvdb.py` (Trafikverket NVDB via the open data API, `TRAFIKVERKET_API_KEY`: fuses measured widths, paved/unpaved and OSM-missing roads into `fetch-roads`; OSM geometry kept, OSM-only when no key) · `buildings.py` (Overpass building footprints + minimum rotated rectangle + lidar nDSM eave/ridge heights → the building survey, `fetch-buildings`; the survey → one flat `plane` terrain edit per footprint as the D-TE5 edits handoff, `building-pads` — a building is not an app feature type, it is a pad on the terrain plus a prefab the Unity planter places) · `manifest.py`.
+
+## `grass_zones.py` — tall-grass zones by rule
+
+Whole-course `vegetation_zone` features (source `tall-grass`) from the Unity surface map
+(`golfmap.surfaces.export`) or, without one, the app's features in OPCD paint order: deep rough +
+Outer_Deep, a little spill into rough, within 75 m of play, clear of tees/fairways/greens/semi/bunkers/
+water/blends, roads (OSM centerlines + `path`) and buildings (`fetch-buildings` survey). Run through
+`bun run grass:zones -- <course>` (imports + re-exports zones). Rules and loop:
+`.claude/skills/grass-planting/SKILL.md`; tests `tests/test_grass_zones.py`.
 
 ## `gspro.py` — GSPro/OPCD assets (not part of the tile pipeline)
 
-Standalone CLI next to `golfpipe`, for the Unity/GSPro side. Everything renders over
-one square EPSG:3006 extent so the outputs overlay exactly. The square comes in two ways
-(`_resolve_area`, mutually exclusive): `--square-3006 x0,y0,x1,y1` is used verbatim — this is
-what the app passes, its inner or outer **terrain square** (see `server/services/terrain-square.ts`:
-the inner is the map area snapped to a 10 m side step, the outer 5 km centred on it) — and
-`--bbox` (WGS84) is reprojected and squared by `_square_3006_extent`, the side rounded UP to
-the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terrain either:
+Standalone CLI the server's GSPro export shells out to. Full reference: [docs/gspro/export.md](../docs/gspro/export.md).
+Everything renders over one square EPSG:3006 extent (`--square-3006` verbatim from the app, or `--bbox` squared up to a 10 m side) so outputs overlay.
 
-- `ortho` / `hillshade` — square JPEGs (default 8192 px, `--quality`, default 92) from orthophoto
-  vintages or a DEM. `ortho --ortho <tif>` renders an already-persisted GeoTIFF instead of
-  fetching (cubic resampling — the 0.16 m source is downsampled, and OPCD's own overlay step is a
-  cubic 16000→8192); with a single source, `--out` names the exact file (what the app's export
-  uses) instead of `--out-dir`'s `ortho_<stem>_<size>px.jpg`, and `--terrain-out` adds a second
-  JPEG of the same render dimmed by `--darken` (`DEFAULT_TERRAIN_DARKEN` 0.4) in `--darken-space` `linear`
-  (default: sRGB-decode, multiply the light, re-encode — hue-preserving, an albedo-like result) or `srgb`
-  (multiply the bytes, the brightness-slider look); encoded at `TERRAIN_JPEG_QUALITY` 97 with no chroma
-  subsampling since the reduced tonal range makes q92 blocking visible. For the Unity terrain texture,
-  which the terrain shader would otherwise wash out. `--tint-out` adds a third JPEG (the app names it `-meshes`, the texture for the course meshes): that twin with the
-  course's grass surfaces tinted — the Photoshop step OPCD builders do by hand (SVG shapes as
-  selections, a dark-green layer at ~30 %), computed from the app's own features instead
-  (`--tint-course <id|name>` out of `--db`, same loader as `svg`). `TINT_TYPES` (fairway, green, tee,
-  semi/rough, deep_rough) get `--tint-color` (`DEFAULT_TINT_COLOR` #1e5a2c) at `--tint-opacity`
-  (`DEFAULT_TINT_OPACITY` 0.3); `TINT_MASK_TYPES` (bunker, path) are painted at opacity 0 in
-  the SVG's `opcd` stacking order so they cut the tint out of what is under them; `TINT_WATER_TYPES`
-  (water, water_creek) are a second layer composited over the grass result — `--water-color`
-  (`DEFAULT_WATER_COLOR` #4a3d22, a dark brown) at `--water-opacity` (0.4) on the darkened photo, its
-  coverage box-blurred by `--water-feather` metres (`DEFAULT_WATER_FEATHER_M` 4, converted to px at
-  render time, symmetric about the drawn edge) so the shoreline runs from the water tint into the
-  green (or the untouched photo) instead of cutting it; undrawn ground is
-  untouched; `--tint TYPE=#rrggbb[@a]|@a|none` overrides per type. Masks are rasterised from the same
-  bezier expansion as the SVG (even-odd for rings-with-holes), feathered `TINT_FEATHER_PX` 1 px, and
-  composited as a normal blend in sRGB like the Photoshop layer it replaces, in `TINT_CHUNK_ROWS` row
-  chunks so the 8192² texture never goes float32 in one piece. Vreta at 8192 px (194 features): ~3 s on top of the ~45 s render.
-- `dem` — clip + bilinear-resample a DEM GeoTIFF (`--dem`, e.g. `sources/<id>/dem-edited.tif`
-  or the outer `outer-dem.tif` golfpipe `grid-dem` built from lidar) to the square at `--resolution`
-  m/px (default 1; the side must be a whole number of cells) as a float32 EPSG:3006 GeoTIFF,
-  **and** do OPCD's TIF→RAW step: `<stem>.raw`, the Unity heightmap — `--raw-size`² (default
-  `UNITY_HEIGHTMAP_RESOLUTION` 4097, 0 = skip) uint16 little-endian north-up, `[min,max]→[0,65535]`,
-  resampled straight from the source DEM (the same one gdal_translate call the `.bat` makes).
-  The `<out>.json` sidecar has `terrain` (`--terrain inner|outer`), `square3006`, `centre3006`,
-  `sideM`, `resolution`, `size`, `minM`/`maxM`/`heightRangeM` (one range for TIF and RAW), `raw`
-  (file/size/dtype/byteOrder/rowOrder) and `unity` (Width/Length/Height, import dialog values,
-  `position`: `0,0,0` for the inner; for an outer given `--inner-sidecar <inner .tif.json>`, the
-  outer terrain's transform with the inner at the origin — half the side difference to the
-  south-west, y = difference in minima — what OPCD's MinMax sheet computes by hand). The Unity
-  importer (`unity/`) reads that sidecar. Voids are mean-filled like the hillshade's.
-- `trees` — a tree-stems asset (`--stems tree-stems.json`, golfpipe `trees-stems` output) as the
-  `unity-trees-v1` file the Unity Tree Planter reads, over the square: `x`/`z` metres from the
-  south-west corner, `id` `epsg3006:<x>:<y>`, `bush` when the crown radius exceeds 0.35 × height,
-  `plot.terrain` from `--terrain`, `plot.minM/maxM` copied from `--sidecar` (that terrain's
-  heightmap sidecar, which must be for the same square) so the planter's ground check matches the
-  terrain; `--exclude-square` drops the inner square's stems from an outer file.
-- `zones` — a course's `vegetation_zone` features (`--course` out of `--db`, `attributes_json` keys
-  `zoneType`/`weight`/`feather`/`noise`) rasterized into VSPro texture masks for one terrain square, the
-  `docs/feature-vegetation-zones.md` §6 rasterizer: one RGBA PNG per four zone types next to `--out`
-  (`<stem>-<texture>.png`, `--resolution` default 4096, channel from the course's `course_zone_types`
-  table, which must exist), plus the `unity-zones-v1` JSON (§7) with `plot` from `--sidecar` as `trees`,
-  `masks[]`, `zoneTypes[]` with item bindings, and `zones[]` as plot-local polygons simplified to
-  `--simplify` 1 m for the Scene-view overlay. Per zone: even-odd fill in the tint's pixel frame, signed
-  distance from two `distance_transform_edt`s, value noise (`--seed`) on the distance,
-  `clamp(0.5 - d/feather, 0, 1) × weight`; overlaps are a per-pixel budget of 1 processed from the last
-  zone to the first (`render_zone_masks`): a later zone claims first, same-type zones take the maximum,
-  nothing is scaled up. Zones are processed in bounding-box crops; the accumulators are one float32
-  frame per zone type plus the budget (64 MB each at 4096). `--exclude-square` as for trees, zeroed in
-  the masks and cut from the polygons. Unknown zone types are warned about and skipped.
-- `buildings` — a building survey (`--survey buildings.geojson`, golfpipe `fetch-buildings` output) as the
-  `unity-buildings-v1` file the Unity building planter reads, over the square, the same way `trees` does it:
-  rectangle centre as `x`/`z` from the south-west corner, the footprint ring in the same local metres,
-  `lengthM`/`widthM` and `yawDeg` (the Unity Y rotation, clockwise from above, that turns a prefab's local +x
-  onto the footprint's long axis — the planter adds 90/180 for the prefab's own axis and the facade side),
-  `eaveM`/`ridgeM` from the lidar, `heightM` + `heightSource` (`lidar` ridge, else the OSM `tag`, else
-  `levels` × 3 m), `plot` from `--sidecar`; `--exclude-square` as for trees. Ids are the OSM element ids.
-- `svg` — a course's drawn features straight out of `data/app.sqlite` as a layered,
-  fill-only SVG for the Inkscape/Blender leg of OPCD. One layer per hole (`Hole1`…, the
-  unpadded spelling the course files use), anything not on a hole on `Others` (not the
-  reserved `Hole99` — that changes how Blender cuts); shapes named
-  `hole_<hole>_<index>` (`others_<n>` off-hole) with the golf-map type kept in `data-type`,
-  since the mesh already carries the material from the fill; within a layer the paint order is the
-  app's own, except that `TOP_TYPES` (green, tee, bunker) are lifted to the top so nothing
-  on the hole cuts them — `--stack app` keeps it verbatim; **fills are `OPCD_PALETTE`, transcribed from the
-  installed `OPCD Palette.gpl`** — fill colour is how OPCD is told what a shape is, so
-  don't touch those hexes. Every path is `stroke:none`. B-spline rings expand to the
-  identical beziers the app draws (`web/src/geo/bspline.ts`). A type OPCD has no surface
-  for (`trees`, `penalty_*`, `oob`) is skipped rather than guessed at, until `--map
-  trees=pinestraw` gives it one. `--flatten TOL` swaps the curves for polylines.
+| Subcommand | Output |
+|---|---|
+| `svg` | Layered fill-only SVG from `data/app.sqlite` for Inkscape/Blender (OPCD). Layers `Hole1`…/`Others`, shapes `hole_<h>_<i>`; `Roads` on top, every touching road/fillet/taper merged into one `roads_<i>` (slits < 0.6 m closed, `data-feature-id` lists the pieces), and a rough/fairway drawn < 1 m short of a road grown to it (written flattened). **Fills are `OPCD_PALETTE` (from `OPCD Palette.gpl`) — fill colour tells OPCD what a shape is; never change those hexes.** |
+| `ortho` | 8192 px JPEG + `--terrain-out` darkened twin + `--tint-out` course-tinted `-meshes` texture; `--floor-course`, `--remove-buildings` |
+| `dem` | float32 GeoTIFF + Unity `.raw` (4097² uint16) + `.json` sidecar (height range, Unity import values, outer position); `--sculpt <tif>` (repeatable) adds `<stem>-sculpt-in.raw` + `sculptIn`: the Unity sculpt layers the DEM contains, on the .raw's pixel grid (`golfpipe/sculpt.py`) |
+| `hillshade` | JPEG for checking overlays |
+| `trees` / `buildings` | `unity-trees-v1` / `unity-buildings-v1` JSON (plot-local metres, `plot` from the DEM sidecar, `--exclude-square` for outer) |
+| `zones` | `vegetation_zone` features → VSPro RGBA mask PNGs, **one channel per VSP item** (4 per PNG; density = Σ slot weight × maxDensity over the type Default / `<type>/<variant>` slots binding it, clipped — VSP multiplies an item's density rules, so never one channel per zone type) + `unity-zones-v2` JSON |
+| `creeks` | `water_creek` features → unity-creeks-v1 R.A.M. splines for the inner terrain: the drawn centerline (or `golfpipe.creeks.ribbon_centerline` down a polygon) with points at the water surface (`creeks.surface_profile` over the **raw** DEM: lowest across, turned downstream, only falling), plot-local, y above the sidecar's `minM` |
+| `gkd` | GreenKeeper's `<scene>.GKD` for the GSPro course folder: holes, tee boxes, pins, green centres, aim points from the app's tables, penalty areas + OOB ring from its drawn features, as Unity world positions. Water hazard lines are staked at least 0.5 m outside the water (nodes and the lines between them) and out to the end of its bank. **Merged into the existing file** (GreenKeeper keeps the course metadata), `.GKD.bak` on the first run. |
 
 ## Notes
 

@@ -81,7 +81,7 @@ describe('new-shape type policy', () => {
         expect(tool.defaultDrawType.peek()).toBe('bunker');
     });
 
-    test('policy off: closing a ring (chain-draw) resets the next shape to the default', () => {
+    test('policy off: closing a ring leaves drawing; the next arm resets to the default', () => {
         const cleanups: Array<() => void> = [];
         const tool = makeTool();
         tool.activate({
@@ -103,12 +103,13 @@ describe('new-shape type policy', () => {
             tool.setDefaultDrawType('fairway');
             tool.setTypeFollowsLast(false);
             tool.armDraw();
-            tool.drawType.set('green'); // mid-chain pick for THIS shape
+            tool.drawType.set('green'); // pick for THIS shape
             tool.state.addPoint({ x: 0, y: 0 });
             tool.state.addPoint({ x: 10, y: 0 });
             tool.state.addPoint({ x: 10, y: 10 });
             tool.closeDraft();
-            expect(tool.state.mode.peek()).toBe('draw'); // chain-draw stays armed
+            expect(tool.state.mode.peek()).toBe('select'); // closing leaves drawing
+            tool.armDraw();
             expect(tool.drawType.peek()).toBe('fairway'); // next shape = default
         } finally {
             for (const c of cleanups) c();

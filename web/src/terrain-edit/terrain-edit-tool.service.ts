@@ -25,10 +25,13 @@ import type { MapBuildApi, MapBuildJob } from '../../../shared/api/map-build.gen
 import type { TerrainGeneratorsApi } from '../../../shared/api/terrain-generators.gen';
 
 /** The terrain generators the panel offers (server origins of the edits they write). */
-export type TerrainGeneratorKind = 'building-pads' | 'road-grades';
+export type TerrainGeneratorKind = 'building-pads' | 'road-grades' | 'water-digs' | 'bunker-digs' | 'creek-digs';
 export const GENERATOR_LABELS: Record<TerrainGeneratorKind, string> = {
     'building-pads': 'Building pads',
     'road-grades': 'Road grades',
+    'water-digs': 'Pond digs',
+    'bunker-digs': 'Bunker digs',
+    'creek-digs': 'Creek digs',
 };
 import { STEP_LABELS } from '../map-build/map-build.service';
 import type { ToolContext } from '../editor/tool';
@@ -54,7 +57,7 @@ export const DEFAULT_RADIUS_M = 2;
 export type TerrainEditOp = TerrainEdit['op'];
 
 /** Marker glyph per op (DOM markers — the editor style has no glyphs endpoint). */
-export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿', corridor: '⫽' };
+export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿', corridor: '⫽', dig: '◡', delta: '≈' };
 
 /** One-line params summary for the panel rows and the map glyph tooltips. */
 export function paramsSummary(edit: TerrainEdit): string {
@@ -66,7 +69,18 @@ export function paramsSummary(edit: TerrainEdit): string {
         if (edit.params.widthM !== undefined) parts.push(`w ${edit.params.widthM} m`);
         if (edit.params.smoothM !== undefined) parts.push(`along ${edit.params.smoothM} m`);
     }
-    parts.push(`feather ${edit.params.featherM} m`);
+    if (edit.op === 'dig') {
+        // Generated pond/bunker digs: depth below the water level or the ground around it.
+        parts.push(`${edit.params.depthM} m below ${edit.params.reference === 'plane' ? 'ground' : edit.params.reference === 'stream' ? 'the creek surface' : 'water level'}`);
+        parts.push(edit.params.faceSlopeDeg !== undefined
+            ? `face ${edit.params.faceSlopeDeg}° to ${Math.round(edit.params.faceBearingDeg ?? 0)}°, entry ${edit.params.bankSlopeDeg}°`
+            : `banks ${edit.params.bankSlopeDeg}°`);
+    }
+    if (edit.op === 'delta') {
+        // A Unity sculpt layer ("Unity sculpt → golf-map"): heights changed in Unity, added on top of everything.
+        parts.push(`Unity sculpt, ${((edit.params.changedM2 ?? 0) / 10000).toFixed(2)} ha, +${edit.params.maxRaiseM ?? 0} / ${edit.params.maxLowerM ?? 0} m`);
+    }
+    if (edit.op !== 'dig' && edit.op !== 'delta') parts.push(`feather ${edit.params.featherM} m`);
     // Generated edits (building pads) say so: a regeneration replaces them, a
     // hand-drawn edit it never touches.
     if (edit.origin) parts.push(edit.origin);

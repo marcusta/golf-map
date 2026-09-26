@@ -29,7 +29,7 @@ export const RE_TERRAIN_STEPS = [
 ] as const;
 
 /** Ordered steps of the tree regeneration job — mirrors the server's TREES_STEPS. */
-export const TREES_STEPS = ['canopy', 'trees-stems', 'register'] as const;
+export const TREES_STEPS = ['canopy', 'trees-stems', 'woodland', 'register'] as const;
 
 export type BuildStep = (typeof BUILD_STEPS)[number] | (typeof RE_TERRAIN_STEPS)[number] | (typeof TREES_STEPS)[number];
 
@@ -54,6 +54,7 @@ export const STEP_LABELS: Record<BuildStep, string> = {
     'register': 'Register assets',
     'canopy': 'Canopy tiles from lidar',
     'trees-stems': 'Detect tree stems',
+    'woodland': 'Import woodland-floor zones',
 };
 
 const POLL_MS = 1500;

@@ -20,6 +20,7 @@ import {
     OSM_USER_AGENT,
     type OsmFetchImpl,
 } from './osm.service';
+import { describeSquare, envelope3006, innerSquareFrom3006 } from './terrain-square';
 
 // EPSG:3006 bbox around the Linköping test spot (matches the hydro tests);
 // its WGS84 footprint is roughly lon 15.51–15.57, lat 58.38–58.41.
@@ -326,9 +327,11 @@ describe('OsmService.fetchForCourse', () => {
 
         const result = await service(ctx, fetchImpl).fetchForCourse(course.id);
 
-        expect(result.bbox).toEqual(MANIFEST_BOUNDS);
+        // The square the bounds imply (no persisted one), asked for by its envelope.
+        const { wgs84 } = describeSquare(innerSquareFrom3006(envelope3006(MANIFEST_BOUNDS)));
+        expect(result.bbox).toEqual(wgs84);
         const query = decodeURIComponent(calls[0].init.body.replace(/^data=/, ''));
-        expect(query).toContain('(58.39,15.53,58.42,15.58)');
+        expect(query).toContain(`(${wgs84.south},${wgs84.west},${wgs84.north},${wgs84.east})`);
         expect(result.features).toEqual([]);
     });
 

@@ -473,3 +473,165 @@ def test_main_reports_bad_edits_file_as_error(tmp_path: Path, capsys):
     ])
     assert rc == 1
     assert "FeatureCollection" in capsys.readouterr().err
+
+
+# --- dig ---------------------------------------------------------------------
+
+
+def test_dig_drop_starts_at_the_edge_follows_the_bank_and_floors_at_depth():
+    d = np.linspace(0.0, 20.0, 401)
+    drop = dem_edit.dig_drop(d, depth_m=1.2, slope_deg=10.0)
+    assert drop[0] == pytest.approx(0.0, abs=1e-9)
+    assert np.all(np.diff(drop) >= -1e-12)          # only ever deeper going in
+    assert drop.max() <= 1.2 + 1e-9                 # never past the floor
+    # The bank runs at the requested angle until the toe rounds off.
+    tan10 = np.tan(np.radians(10.0))
+    assert drop[d == 2.0][0] == pytest.approx(2.0 * tan10, rel=0.05)
+    # Past the toe (1.2 / tan 10° = 6.8 m, plus the rounding) it is the floor.
+    assert drop[d >= 12.0].min() == pytest.approx(1.2, abs=0.01)
+
+
+def test_dig_drop_shelf_comes_before_the_bank():
+    d = np.array([0.0, 1.0, 2.0, 4.0, 30.0])
+    drop = dem_edit.dig_drop(d, depth_m=1.0, slope_deg=30.0, shelf_m=2.0, shelf_depth_m=0.2)
+    assert drop[1] == pytest.approx(0.1)            # halfway down the shelf
+    assert drop[2] == pytest.approx(0.2, abs=1e-6)  # shelf edge
+    assert drop[4] == pytest.approx(1.0, abs=1e-3)
+
+
+def pond_dem() -> np.ndarray:
+    """A pond at 10 m (lidar sees the water surface) in ground at 12 m."""
+    dem = np.full((SIZE, SIZE), 12.0, dtype=np.float32)
+    dem[rect_mask(20, 60, 20, 60)] = 10.0
+    return dem
+
+
+def test_dig_level_deepens_a_pond_below_its_water_level_and_keeps_its_rim():
+    dem = pond_dem()
+    edit = edit_3006("dig", rect_3006(20, 60, 20, 60), feather_m=0.0,
+                     depth_m=1.5, bank_slope_deg=20.0, reference="level")
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None)
+
+    assert np.all(out <= dem + 1e-6)                           # digs, never fills
+    outside = ~rect_mask(20, 60, 20, 60)
+    assert np.array_equal(out[outside], dem[outside])          # banks untouched
+    assert out[40, 40] == pytest.approx(10.0 - 1.5, abs=0.01)  # floor at level − depth
+    # The outermost ring (cell centres 0.5 m in) barely moves, so the water
+    # plane OPCD puts at the lowest rim vertex stays at the water level.
+    rim = rect_mask(20, 60, 20, 60) & ~rect_mask(21, 59, 21, 59)
+    assert float(dem[rim].min() - out[rim].min()) < 0.25
+
+
+def test_dig_level_on_a_narrow_arm_never_reaches_full_depth():
+    dem = np.full((SIZE, SIZE), 10.0, dtype=np.float32)
+    edit = edit_3006("dig", rect_3006(10, 70, 38, 42), feather_m=0.0,
+                     depth_m=2.0, bank_slope_deg=15.0, reference="level")
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None)
+    # 4 m wide: 2 m from the centre line to the bank at 15° is ~0.54 m of drop.
+    assert 10.0 - float(out[40, 40]) < 0.6
+    assert 10.0 - float(out[40, 40]) > 0.3
+
+
+def test_dig_plane_follows_the_tilted_ground_and_steepens_its_face():
+    x, y = cell_coords()
+    dem = (20.0 + 0.05 * (x - ORIGIN_X)).astype(np.float32)   # 5 % grade rising east
+    # Face towards the east (bearing 90°): steep there, gentle entry on the west.
+    edit = edit_3006("dig", rect_3006(25, 55, 25, 55), feather_m=0.0,
+                     depth_m=0.5, bank_slope_deg=15.0, face_slope_deg=45.0, face_bearing_deg=90.0,
+                     reference="plane")
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None)
+
+    drop = dem - out
+    assert np.all(drop >= -1e-6)
+    assert drop[40, 40] == pytest.approx(0.5, abs=0.02)        # floor follows the grade
+    # The outermost cells (0.5 m in): the east (face) side drops far more than the west.
+    east, west = drop[40, 54], drop[40, 25]
+    assert east > 2 * west
+    assert west == pytest.approx(0.5 * np.tan(np.radians(15.0)), abs=0.02)
+
+
+def test_dig_plane_reference_ignores_the_smoothed_hollow():
+    x, y = cell_coords()
+    dem = np.full((SIZE, SIZE), 30.0, dtype=np.float32)
+    dem[rect_mask(30, 50, 30, 50)] = 29.9      # the lidar kept only 10 cm of the bunker
+    edit = edit_3006("dig", rect_3006(30, 50, 30, 50), feather_m=0.0,
+                     depth_m=0.6, bank_slope_deg=40.0, reference="plane")
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None)
+    assert out[40, 40] == pytest.approx(30.0 - 0.6, abs=0.01)  # measured from the ground around it
+
+
+def test_dig_variation_changes_the_bank_around_the_outline_and_is_seeded():
+    dem = pond_dem()
+    base = dict(feather_m=0.0, depth_m=1.5, bank_slope_deg=12.0, reference="level", variation=1.0)
+    a = apply_edits(dem, TRANSFORM, NODATA, [edit_3006("dig", rect_3006(20, 60, 20, 60), seed=1, **base)], log=lambda *_: None)
+    b = apply_edits(dem, TRANSFORM, NODATA, [edit_3006("dig", rect_3006(20, 60, 20, 60), seed=1, **base)], log=lambda *_: None)
+    c = apply_edits(dem, TRANSFORM, NODATA, [edit_3006("dig", rect_3006(20, 60, 20, 60), seed=2, **base)], log=lambda *_: None)
+    assert np.array_equal(a, b)
+    assert not np.array_equal(a, c)
+    # Same distance in on the four sides, different drops.
+    sides = [a[40, 23], a[40, 56], a[23, 40], a[56, 40]]
+    assert max(sides) - min(sides) > 0.02
+
+
+def test_load_edits_reads_dig_params_and_skips_bad_ones(tmp_path: Path):
+    ring = rect_3006(20, 60, 20, 60)
+    path = write_edits(tmp_path, [
+        wgs84_feature("dig", ring, featherM=0, depthM=0.4, bankSlopeDeg=18, faceSlopeDeg=40,
+                      faceBearingDeg=270, reference="plane", rimM=3, variation=0.3, seed=7),
+        wgs84_feature("dig", ring, featherM=0),                                   # no depth
+        wgs84_feature("dig", ring, featherM=0, depthM=1, faceSlopeDeg=40),       # face without bearing
+        wgs84_feature("dig", ring, featherM=0, depthM=1, reference="sea"),
+    ])
+    logged: list[str] = []
+    edits = load_edits(path, log=logged.append)
+    assert len(edits) == 1
+    e = edits[0]
+    assert (e.op, e.depth_m, e.bank_slope_deg, e.face_slope_deg, e.face_bearing_deg) == ("dig", 0.4, 18.0, 40.0, 270.0)
+    assert (e.reference, e.rim_m, e.variation, e.seed) == ("plane", 3.0, 0.3, 7)
+    assert len(logged) == 3 and all("skipped" in line for line in logged)
+
+
+def test_dig_level_tapers_bank_inside_the_outline_down_to_the_water_instead_of_a_wall():
+    dem = pond_dem()
+    # The outline takes in a 2 m strip of bank, 0.8 m above the water, on its east side.
+    dem[rect_mask(56, 60, 20, 60)] = 10.8
+    edit = edit_3006("dig", rect_3006(20, 60, 20, 60), feather_m=0.0,
+                     depth_m=1.0, bank_slope_deg=15.0, reference="level", rim_m=2.0)
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None)
+    # The outermost bank cell (0.5 m in) keeps nearly all of its height ...
+    assert float(dem[40, 59] - out[40, 59]) < 0.15
+    # ... and the bank comes down in slopes, not a wall: under 30° per 1 m cell,
+    # the steepest where the (unnaturally sharp) test strip meets the water.
+    steps = np.abs(np.diff(out[40, 46:60].astype(float)))
+    assert steps.max() < 0.6
+    assert out[40, 40] == pytest.approx(9.0, abs=0.01)     # the level is still the water's
+
+
+def test_dig_stream_digs_a_creek_bed_below_its_falling_surface():
+    # A creek along row 40 falling 2 m west to east, 1 m below grassy banks.
+    x, y = cell_coords()
+    dem = (20.0 - 2.0 * (x - ORIGIN_X) / (SIZE * RES) + 1.0).astype(np.float32)
+    dem[38:43, :] -= 1.0
+    ring = rect_3006(4, 76, 38, 43)
+    edits = [
+        edit_3006("dig", ring, feather_m=0.0, depth_m=0.4, bank_slope_deg=30.0, reference="stream", rim_m=1.0),
+        edit_3006("dig", ring, feather_m=0.0, depth_m=0.4, bank_slope_deg=30.0, reference="stream", rim_m=1.0,
+                  centerline=[[ORIGIN_X + 76, ORIGIN_Y - 40.5], [ORIGIN_X + 4, ORIGIN_Y - 40.5]], width_m=5.0),
+    ]
+    for edit in edits:   # derived from the polygon, and drawn uphill as a line
+        out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None)
+        assert np.all(out <= dem + 1e-6)
+        assert np.array_equal(out[~rect_mask(4, 76, 38, 43)], dem[~rect_mask(4, 76, 38, 43)])
+        bed = out[40, 8:72].astype(float)
+        assert np.all(np.diff(bed) <= 1e-6)                          # the bed only falls downstream
+        # The middle of the bed is ~the surface minus the depth.
+        surface = dem[40, 8:72].astype(float)
+        assert np.median(surface - bed) == pytest.approx(0.4, abs=0.08)
+
+
+def test_load_edits_reads_a_creek_dig_line_and_width(tmp_path: Path):
+    ring = rect_3006(4, 76, 38, 43)
+    line = ring_to_wgs84([[ORIGIN_X + 4, ORIGIN_Y - 40.5], [ORIGIN_X + 76, ORIGIN_Y - 40.5]])
+    path = write_edits(tmp_path, [wgs84_feature("dig", ring, featherM=0, depthM=0.3, reference="stream", centerline=line, widthM=2.5)])
+    [e] = load_edits(path)
+    assert (e.reference, e.width_m, len(e.centerline)) == ("stream", 2.5, 2)

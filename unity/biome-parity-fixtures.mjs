@@ -8,7 +8,7 @@ const trees=JSON.parse(fs.readFileSync(treesFile,'utf8').replace(/^\uFEFF/,'')).
 const lines=trees.map(t=>{
  const stem={...t,h:Math.fround(t.h),r:Math.fround(t.r)};
  const m=matchTree(stem,config);
- return [t.id,stem.h,stem.r,t.k,m.guid||'-',m.scale||0,m.rotationY||0,m.status==='review',false,m.look||'-'].join('\t');
+ return [t.id,stem.h,stem.r,t.k,m.guid||'-',m.scale||0,m.rotationY||0,m.status==='review',false,m.look||'-',m.leanDeg||0,m.leanDirectionY||0].join('\t');
 });
 fs.writeFileSync(output,lines.join('\n'));
 console.log('Prepared '+lines.length+' JS expectations');

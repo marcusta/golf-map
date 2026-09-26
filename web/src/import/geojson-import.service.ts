@@ -14,12 +14,19 @@
 
 import { Signal, Computed, batch } from '@basics/core/client/core';
 import { api } from '../api';
-import type { CourseFeaturesApi } from '../../../shared/api/course-features.gen';
+import type { CourseFeaturesApi, ImportedFeatureCount } from '../../../shared/api/course-features.gen';
+import { PATH_SURFACE_ATTRIBUTE, isPathSurface } from '../../../shared/features/path-surface';
 import type { HydroApi, HydroFetchResult } from '../../../shared/api/hydro.gen';
 import type { OsmApi, OsmFetchResult } from '../../../shared/api/osm.gen';
-import type { TerrainGeneratorsApi } from '../../../shared/api/terrain-generators.gen';
+import type { RoadsFetchJob, TerrainGeneratorsApi } from '../../../shared/api/terrain-generators.gen';
 import type { BucketAssignment, BuiltFeature, BuildResult, ImportSummary } from './svg-import.service';
 import { bufferPolyline } from '../geo/polyline-buffer';
+import {
+    IMPORTED_CORNER_TURN_DEG,
+    autoCorners,
+    centerlineGeometry,
+    type FeatureCenterline,
+} from '../../../shared/features/centerline';
 import {
     parseGeojsonDocument,
     bucketByProperty,
@@ -27,6 +34,70 @@ import {
     type ParsedGeojson,
     type GeojsonBucket,
 } from './geojson-parse';
+
+/**
+ * One clearable group of a course's imported features, as the wizard lists
+ * them: what to call it, how many there are, and the `sources` (+ `types`)
+ * that remove exactly those.
+ */
+export interface ImportGroup {
+    key: string;
+    label: string;
+    count: number;
+    /** Per type, e.g. `path 57`; the panel labels the types. */
+    types: Array<{ type: string; count: number }>;
+    sources: string[];
+    /** Only these types of `sources` — unset means everything they imported. */
+    onlyTypes?: string[];
+}
+
+/** Import sources the fetches stamp, by how the wizard names them. */
+const SOURCE_LABELS: Record<string, string> = {
+    'osm': 'OpenStreetMap features',
+    'nvdb': 'NVDB roads',
+    'lantmateriet-hydrografi': 'Lantmäteriet water',
+};
+/** fetch-roads output: `path` features from OSM, and from NVDB where OSM lacks the road. */
+const ROAD_SOURCES = ['osm', 'nvdb'];
+
+/**
+ * A course's imported (source, type) counts → the wizard's clearable groups.
+ * The roads fetch gets its own group (`path` from osm + nvdb, parking lots
+ * included) so re-fetching roads never takes the OSM fairways with it; every
+ * other source is one group of whatever it imported. Pure — exported for tests.
+ */
+export function importGroups(counts: ImportedFeatureCount[]): ImportGroup[] {
+    const groups: ImportGroup[] = [];
+    const roads = counts.filter(c => ROAD_SOURCES.includes(c.source) && c.type === 'path');
+    if (roads.length > 0) {
+        groups.push({
+            key: 'roads',
+            label: 'Roads & parking (OSM + NVDB)',
+            count: roads.reduce((n, c) => n + c.count, 0),
+            types: [{ type: 'path', count: roads.reduce((n, c) => n + c.count, 0) }],
+            sources: [...new Set(roads.map(c => c.source))],
+            onlyTypes: ['path'],
+        });
+    }
+    const rest = counts.filter(c => !roads.includes(c));
+    for (const source of [...new Set(rest.map(c => c.source))]) {
+        const mine = rest.filter(c => c.source === source);
+        const nonRoad = ROAD_SOURCES.includes(source);
+        groups.push({
+            key: `source:${source}`,
+            label: SOURCE_LABELS[source] ?? source,
+            count: mine.reduce((n, c) => n + c.count, 0),
+            types: mine.map(c => ({ type: c.type, count: c.count })),
+            sources: [source],
+            // An OSM/NVDB group without the roads must not delete the roads.
+            ...(nonRoad ? { onlyTypes: mine.map(c => c.type) } : {}),
+        });
+    }
+    return groups;
+}
+
+/** How often a running road fetch job is polled (ms); tests pass something tiny. */
+export const ROADS_POLL_MS = 1500;
 
 /** Parallel create requests during confirm (matches SvgImportService). */
 const CREATE_CONCURRENCY = 6;
@@ -66,6 +137,41 @@ export function provenanceFromProperties(
     return result;
 }
 
+/**
+ * The attributes a source feature brings along for the type it is imported
+ * as: a `path` keeps a valid `surface` property (fetch-roads writes one from
+ * NVDB / the OSM surface tag). Everything else stays a source property only.
+ * Null when there is nothing to carry. Pure — exported for tests.
+ */
+export function attributesFromProperties(type: string, props: Record<string, unknown>): Record<string, string> | null {
+    if (type === 'path' && isPathSurface(props[PATH_SURFACE_ATTRIBUTE])) {
+        return { [PATH_SURFACE_ATTRIBUTE]: props[PATH_SURFACE_ATTRIBUTE] as string };
+    }
+    return null;
+}
+
+/**
+ * A fetch-roads corridor that is ONE way's carries that way's clipped
+ * `centerline` ([[x, y], …], EPSG:3006) and `widthM`; such a road is
+ * imported as a centerline feature — the line is the shape, the corridor is
+ * derived — so moving it later is moving one line. Bends of
+ * IMPORTED_CORNER_TURN_DEG or more are corners (the pipeline's own rule).
+ * Null when the properties carry no usable line (the polygon is imported
+ * instead). Pure — exported for tests.
+ */
+export function centerlineFromProperties(props: Record<string, unknown>): FeatureCenterline | null {
+    const line = props['centerline'];
+    const widthM = props['widthM'];
+    if (!Array.isArray(line) || typeof widthM !== 'number') return null;
+    const points: Array<{ x: number; y: number }> = [];
+    for (const c of line) {
+        if (!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) return null;
+        points.push({ x: c[0] as number, y: c[1] as number });
+    }
+    const centerline = { points: autoCorners(points, IMPORTED_CORNER_TURN_DEG), widthM };
+    return centerlineGeometry('EPSG:3006', centerline) ? centerline : null;
+}
+
 /** Wizard-facing filename for the one-click Lantmäteriet fetch (T50). */
 export const HYDRO_FETCH_FILENAME = 'lantmateriet-hydrografi.geojson';
 
@@ -101,7 +207,11 @@ export function hydroToFeatureCollection(result: HydroFetchResult): {
         if (!ring) continue; // degenerate centerline run — nothing to import
         features.push({
             type: 'Feature',
-            properties: properties('water_creek', creek.sourceRef),
+            // The line rides along as `centerline` + `widthM`, so the wizard
+            // imports the creek as a centerline feature (like a fetched road):
+            // the creek digs and the R.A.M. export follow its line, and it
+            // edits as one line with a width. The ribbon is the preview shape.
+            properties: { ...properties('water_creek', creek.sourceRef), centerline: creek.points, widthM: result.suggestedCreekWidthM },
             geometry: { type: 'Polygon', coordinates: [ring] },
         });
     }
@@ -172,6 +282,11 @@ export class GeojsonImportService {
     /** Which fetch variant is in flight (labels the right button). */
     readonly fetchSource = new Signal<'lantmateriet' | 'osm' | 'roads' | null>(null);
     readonly fetchError = new Signal<string | null>(null);
+    /** The course's imported features, grouped for clearing (loaded on open and after imports). */
+    readonly imported = new Signal<ImportGroup[]>([]);
+    /** Key of the group being removed, while it is. */
+    readonly clearing = new Signal<string | null>(null);
+    readonly clearError = new Signal<string | null>(null);
 
     private courseId: string | null = null;
 
@@ -219,6 +334,7 @@ export class GeojsonImportService {
         private hydroApi: HydroApi = api.hydro,
         private osmApi: OsmApi = api.osm,
         private generatorsApi: TerrainGeneratorsApi = api.terrainGenerators,
+        private readonly pollMs = ROADS_POLL_MS,
     ) {}
 
     /** Open the wizard for a course (coordinates are already EPSG:3006 —
@@ -238,7 +354,47 @@ export class GeojsonImportService {
             this.fetching.set(false);
             this.fetchSource.set(null);
             this.fetchError.set(null);
+            this.imported.set([]);
+            this.clearing.set(null);
+            this.clearError.set(null);
         });
+        void this.loadImported();
+    }
+
+    /** Refresh `imported` for the open course (a failure just leaves the list empty). */
+    async loadImported(): Promise<void> {
+        const courseId = this.courseId;
+        if (!courseId) return;
+        try {
+            const counts = await this.featuresApi.imported({ courseId });
+            if (this.courseId === courseId) this.imported.set(importGroups(counts));
+        } catch {
+            if (this.courseId === courseId) this.imported.set([]);
+        }
+    }
+
+    /**
+     * Delete one group of imported features (the caller confirms first and
+     * reloads the map's features after). Returns how many were removed, or
+     * null when it failed (`clearError` says why).
+     */
+    async clearImported(group: ImportGroup): Promise<number | null> {
+        const courseId = this.courseId;
+        if (!courseId || this.clearing.peek()) return null;
+        this.clearing.set(group.key);
+        this.clearError.set(null);
+        try {
+            const { removed } = await this.featuresApi.removeImported({
+                courseId, sources: group.sources, ...(group.onlyTypes ? { types: group.onlyTypes } : {}),
+            });
+            await this.loadImported();
+            return removed;
+        } catch (e) {
+            this.clearError.set(e instanceof Error ? e.message : String(e));
+            return null;
+        } finally {
+            this.clearing.set(null);
+        }
     }
 
     close(): void {
@@ -285,20 +441,38 @@ export class GeojsonImportService {
 
     /**
      * One-click roads (T-roads): the server runs the pipeline's `fetch-roads`
-     * over the course's area and hands back the corridor polygons as the
-     * typed EPSG:3006 collection the wizard already reads (`path` features;
-     * bucket on `road_class` to keep roads and drop footpaths). The
-     * centerlines stay on the server for the terrain tool's road grading.
+     * over the course's area as a job — Overpass is retried while busy, so it
+     * can take a minute — and the finished job hands back the corridor
+     * polygons as the typed EPSG:3006 collection the wizard already reads
+     * (`path` features; bucket on `road_class` to keep roads and drop
+     * footpaths). The centerlines stay on the server for the terrain tool's
+     * road grading. A start refused because a fetch already runs for the
+     * course follows that one instead.
      */
     async fetchFromRoads(): Promise<void> {
         await this.runFetch('roads', async courseId => {
-            const result = await this.generatorsApi.fetchRoads({ courseId });
-            const collection = result.geojson as { features?: unknown[] };
+            let job: RoadsFetchJob;
+            try {
+                job = await this.generatorsApi.startRoadsFetch({ courseId });
+            } catch (e) {
+                const running = e instanceof Error && /already running/i.test(e.message)
+                    ? await this.generatorsApi.currentRoadsFetch({ courseId }).catch(() => null)
+                    : null;
+                if (running?.status !== 'running') throw e;
+                job = running;
+            }
+            while (job.status === 'running') {
+                await new Promise(r => setTimeout(r, this.pollMs));
+                if (this.courseId !== courseId) return;  // the wizard moved on
+                job = await this.generatorsApi.roadsFetchJob({ jobId: job.id });
+            }
+            if (job.status === 'failed' || !job.result) throw new Error(job.error ?? 'Road fetch failed');
+            const collection = job.result.geojson as { features?: unknown[] };
             if (!collection.features || collection.features.length === 0) {
-                this.fetchError.set('No OSM roads found within the course map area.');
+                this.fetchError.set('No roads found near the course.');
                 return;
             }
-            this.loadGeojsonText(JSON.stringify(result.geojson), ROADS_FETCH_FILENAME);
+            this.loadGeojsonText(JSON.stringify(job.result.geojson), ROADS_FETCH_FILENAME);
         });
     }
 
@@ -389,13 +563,20 @@ export class GeojsonImportService {
             if (!type || type === 'skip') continue;
             for (const feature of bucket.features) {
                 const provenance = provenanceFromProperties(feature.properties);
+                const attributes = attributesFromProperties(type, feature.properties);
+                const centerline = centerlineFromProperties(feature.properties);
+                const lineGeometry = centerline ? centerlineGeometry('EPSG:3006', centerline) : null;
+                if (lineGeometry) {
+                    features.push({ type, geometry: lineGeometry, ...provenance, ...(attributes ? { attributes } : {}) });
+                    continue;
+                }
                 feature.polygons.forEach((rings, polyIdx) => {
                     const label = `${bucket.value} feature ${feature.index + 1}${feature.polygons.length > 1 ? `.${polyIdx + 1}` : ''}`;
                     const { geometry, warnings: ringWarnings } = polygonToGeometry(rings, label, {
                         exact: feature.properties['exact'] === true,
                     });
                     warnings.push(...ringWarnings);
-                    if (geometry) features.push({ type, geometry, ...provenance });
+                    if (geometry) features.push({ type, geometry, ...provenance, ...(attributes ? { attributes } : {}) });
                 });
             }
         }
@@ -435,6 +616,7 @@ export class GeojsonImportService {
                         source: item.source,
                         sourceRef: item.sourceRef,
                         license: item.license,
+                        ...(item.attributes ? { attributes: item.attributes } : {}),
                     });
                     created[item.type] = (created[item.type] ?? 0) + 1;
                     done++;
@@ -453,6 +635,7 @@ export class GeojsonImportService {
             this.importing.set(false);
             this.built.set(null); // imported — preview off, real features take over
         });
+        await this.loadImported();
         return summary;
     }
 }

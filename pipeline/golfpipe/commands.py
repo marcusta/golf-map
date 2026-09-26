@@ -28,12 +28,15 @@ from golfpipe import detect_trees as detect_trees_mod
 from golfpipe import detect_water as detect_water_mod
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro as hydro_mod
+from golfpipe import nvdb as nvdb_mod
 from golfpipe import osm as osm_mod
 from golfpipe import patches as patches_mod
 from golfpipe import roads as roads_mod
 from golfpipe import stac
 from golfpipe import trees_features as trees_features_mod
 from golfpipe import lowveg_features as lowveg_features_mod
+from golfpipe import woodland_features as woodland_features_mod
+from golfpipe import woodland_floor as woodland_floor_mod
 from golfpipe import sources as sources_mod
 from golfpipe import water as water_mod
 from golfpipe.hillshade import write_hillshade_geotiff
@@ -324,7 +327,7 @@ def cmd_fetch_osm(
     fetch = overpass_fetch or osm_mod.fetch_overpass
     query = osm_mod.build_overpass_query(bbox)
     print(f"Querying Overpass for golf/terrain features in bbox {bbox} ...")
-    overpass_json = fetch(query, url=overpass_url)
+    overpass_json = osm_mod.with_retries(fetch)(query, url=overpass_url)
 
     src = CRS.from_epsg(4326)
     dst = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
@@ -369,30 +372,38 @@ def cmd_fetch_roads(
     min_area_m2: float = roads_mod.DEFAULT_MIN_AREA_M2,
     centerlines_out: Path | None = None,
     merge: bool = False,
+    near_path: Path | None = None,
+    near_m: float = roads_mod.DEFAULT_NEAR_M,
+    nvdb_key: str | None = None,
+    nvdb_fetch=None,
+    square_3006: tuple[float, float, float, float] | None = None,
 ) -> Path:
     """Queries Overpass for OSM highway centerlines in bbox (WGS84), buffers
     each to its road width (width tag > lanes > class table, see
-    golfpipe/roads.py), unions the corridors per class group into road
-    network polygons, clips them to the bbox and writes one EPSG:3006
+    golfpipe/roads.py), clips them to the bbox and writes one EPSG:3006
     GeoJSON FeatureCollection of `path` features to `out`, importable by the
     web GeoJSON draft-import wizard (bucket on `road_class` to pick roads /
     tracks / footpaths apart). `class_widths` overrides the per-class
     default widths (`{"service": 4.0}`). `centerlines_out` also writes the
     clipped centerlines with their widths — the input for `road-grades`.
     One polygon per OSM way unless `merge` (see roads.merge_corridors).
+    `square_3006` (x0, y0, x1, y1 EPSG:3006 metres, the terrain square bbox
+    is the envelope of) clips to the exact square instead of to the bbox.
+
+    `near_path` (a GeoJSON of the course's features) narrows the area to
+    within `near_m` of them (roads.near_area_3006) — roads beyond that are
+    scenery. `nvdb_key` (Trafikverket open data API key) fuses NVDB in:
+    measured widths, paved/unpaved, and the roads OSM lacks (golfpipe/nvdb.py).
+    Without a key, or when the NVDB call fails, the result is OSM only.
 
     LICENSING: OSM is ODbL — each polygon carries the ids of the ways merged
     into it and the collection a top-level `attribution` (see cmd_fetch_osm).
+    NVDB is CC0; NVDB-only roads say so per feature.
     """
     from datetime import date
 
     from rasterio.crs import CRS
     from rasterio.warp import transform as warp_transform
-
-    fetch = overpass_fetch or osm_mod.fetch_overpass
-    query = roads_mod.build_roads_query(bbox)
-    print(f"Querying Overpass for highway ways in bbox {bbox} ...")
-    overpass_json = fetch(query, url=overpass_url)
 
     src = CRS.from_epsg(4326)
     dst = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
@@ -400,21 +411,72 @@ def cmd_fetch_roads(
     def reproject(lons, lats):
         return warp_transform(src, dst, list(lons), list(lats))
 
+    area = roads_mod.bbox_polygon_3006(bbox, reproject)
+    if square_3006 is not None:
+        area = area.intersection(roads_mod.square_polygon_3006(square_3006))
+    if near_path is not None:
+        import json
+
+        near = roads_mod.near_area_3006(json.loads(Path(near_path).read_text(encoding="utf-8")), reproject, near_m)
+        if near is None:
+            print(f"No course features in {near_path} — keeping the whole area")
+        else:
+            area = area.intersection(near)
+            e0, n0, e1, n1 = area.bounds
+            lons, lats = warp_transform(dst, src, [e0, e1, e0, e1], [n0, n0, n1, n1])
+            bbox = (max(bbox[0], min(lons)), max(bbox[1], min(lats)), min(bbox[2], max(lons)), min(bbox[3], max(lats)))
+            print(f"Limited to {near_m:g} m around the course features: {area.area / 1e6:.2f} km²")
+
+    fetch = overpass_fetch or osm_mod.fetch_overpass
+    query = roads_mod.build_roads_query(bbox)
+    print(f"Querying Overpass for highway ways in bbox {bbox} ...")
+    overpass_json = osm_mod.with_retries(fetch)(query, url=overpass_url)
+
     ways, skipped = roads_mod.assemble_roads(overpass_json, reproject, class_widths)
+    print(f"OSM road ways: {len(ways)}")
+
+    clip_geom = area if clip else None
+    attribution = roads_mod.ATTRIBUTION
+    if nvdb_key or nvdb_fetch is not None:
+        fetch_nvdb = nvdb_fetch or nvdb_mod.fetch_nvdb
+        try:
+            e0, n0, e1, n1 = area.bounds
+            rows = fetch_nvdb(nvdb_key, (e0, n0, e1, n1))
+        except nvdb_mod.NvdbError as exc:
+            print(f"NVDB unavailable, OSM only: {exc}")
+        else:
+            network = nvdb_mod.build_network(rows, today=date.today().isoformat())
+            if network.truncated:
+                print(f"NVDB: row limit hit for {', '.join(network.truncated)} — the area is too large, results are partial")
+            ways, fused = nvdb_mod.fuse(ways, network, clip=area)
+            attribution = f"{roads_mod.ATTRIBUTION}; {nvdb_mod.ATTRIBUTION}"
+            print(f"NVDB links: {len(network.links)} — along OSM ways: {fused.matched} "
+                  f"(measured width {fused.measured_width}, road-type width {fused.kind_width}, surface {fused.surface}); "
+                  f"added {fused.added} road(s) OSM lacks, {fused.added_m / 1000:.2f} km")
+    else:
+        print(f"NVDB skipped (no {nvdb_mod.API_KEY_ENV}) — widths from OSM tags and the class table")
+
+    ways, absorbed = roads_mod.absorb_parking_aisles(ways)
+    lots = sum(1 for w in ways if w.group == roads_mod.PARKING_GROUP)
+    if lots:
+        print(f"Parking lots: {lots} (absorbed {absorbed} aisle(s) inside them)")
+
     sources: dict[str, int] = {}
     for way in ways:
-        sources[way.width_source] = sources.get(way.width_source, 0) + 1
-    print(f"Road ways: {len(ways)} (" + (", ".join(f"{k}: {n}" for k, n in sorted(sources.items())) or "none") + ")")
+        if way.group != roads_mod.PARKING_GROUP:
+            sources[way.width_source] = sources.get(way.width_source, 0) + 1
+    print(f"Road widths: " + (", ".join(f"{k}: {n}" for k, n in sorted(sources.items())) or "none"))
 
-    clip_geom = roads_mod.bbox_polygon_3006(bbox, reproject) if clip else None
     polygons = roads_mod.merge_corridors(ways, clip=clip_geom, simplify_m=simplify_m, min_area_m2=min_area_m2, merge=merge)
-    collection = roads_mod.build_roads_geojson(polygons, fetch_date=date.today().isoformat())
+    collection = roads_mod.build_roads_geojson(polygons, fetch_date=date.today().isoformat(), attribution=attribution)
     water_mod.write_geojson(collection, out)
     if centerlines_out is not None:
-        lines = roads_mod.build_centerlines_geojson(ways, fetch_date=date.today().isoformat(), clip=clip_geom)
+        lines = roads_mod.build_centerlines_geojson(ways, fetch_date=date.today().isoformat(), clip=clip_geom, attribution=attribution)
         water_mod.write_geojson(lines, centerlines_out)
-        print(f"Centerlines: {len(lines['features'])}, "
-              f"{sum(f['properties']['lengthM'] for f in lines['features']) / 1000:.1f} km — wrote {centerlines_out}")
+        center = [f for f in lines["features"] if f["geometry"]["type"] == "LineString"]
+        n_lots = len(lines["features"]) - len(center)
+        print(f"Centerlines: {len(center)}, {sum(f['properties']['lengthM'] for f in center) / 1000:.1f} km"
+              + (f" + {n_lots} parking lot(s)" if n_lots else "") + f" — wrote {centerlines_out}")
 
     groups: dict[str, int] = {}
     for rp in polygons:
@@ -442,7 +504,8 @@ def cmd_road_grades(
     classes: set[str] | None = None,
 ) -> Path:
     """Turns fetch-roads centerlines into the road grading: one `corridor`
-    terrain edit per centerline — smooth along the road over `smooth_m`,
+    terrain edit per centerline, one tilted `plane` per parking lot (replayed
+    before the corridors, see roads.lot_grade_features) — smooth along the road over `smooth_m`,
     flat across its width, feathered `feather_m` beyond the pavement (see
     golfpipe/dem_edit.py). `classes` keeps only those road_class groups
     (road / track / path). Written as the D-TE5 edits handoff like
@@ -455,8 +518,10 @@ def cmd_road_grades(
     from rasterio.warp import transform as warp_transform
 
     lines = roads_mod.read_centerlines(centerlines_path)
+    lots = roads_mod.read_parking_lots(centerlines_path)
     if classes:
         lines = [c for c in lines if c.group in classes]
+        lots = lots if roads_mod.PARKING_GROUP in classes else []
     src = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
     dst = CRS.from_epsg(4326)
 
@@ -464,13 +529,17 @@ def cmd_road_grades(
         return warp_transform(src, dst, list(xs), list(ys))
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    features = roads_mod.grade_edit_features(lines, to_wgs84, feather_m=feather_m, smooth_m=smooth_m, created_at=stamp)
+    # Lots first: the corridors then grade each road over them (see roads.lot_grade_features).
+    features = roads_mod.lot_grade_features(lots, to_wgs84, created_at=stamp)
+    features += roads_mod.grade_edit_features(lines, to_wgs84, feather_m=feather_m, smooth_m=smooth_m, created_at=stamp,
+                                              first_index=len(features))
     water_mod.write_geojson({"type": "FeatureCollection", "attribution": roads_mod.ATTRIBUTION, "features": features}, out)
     groups: dict[str, int] = {}
     for c in lines:
         groups[c.group] = groups.get(c.group, 0) + 1
-    print(f"Road grades: {len(features)} corridor edits (" + (", ".join(f"{g}={n}" for g, n in sorted(groups.items())) or "none")
-          + f"), {sum(c.line.length for c in lines) / 1000:.1f} km, smooth {smooth_m:g} m along, feather {feather_m:g} m")
+    print(f"Road grades: {len(lines)} corridor edits (" + (", ".join(f"{g}={n}" for g, n in sorted(groups.items())) or "none")
+          + f"), {sum(c.line.length for c in lines) / 1000:.1f} km, smooth {smooth_m:g} m along, feather {feather_m:g} m"
+          + (f"; {len(lots)} parking lot plane(s), {sum(l.polygon.area for l in lots):,.0f} m²" if lots else ""))
     print(f"Wrote {out}")
     return out
 
@@ -504,7 +573,7 @@ def cmd_fetch_buildings(
     fetch = overpass_fetch or osm_mod.fetch_overpass
     query = buildings_mod.build_buildings_query(bbox)
     print(f"Querying Overpass for buildings in bbox {bbox} ...")
-    overpass_json = fetch(query, url=overpass_url)
+    overpass_json = osm_mod.with_retries(fetch)(query, url=overpass_url)
 
     src = CRS.from_epsg(4326)
     dst = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
@@ -573,6 +642,7 @@ def cmd_building_pads(
     buffer_m: float = buildings_mod.DEFAULT_PAD_BUFFER_M,
     feather_m: float = buildings_mod.DEFAULT_PAD_FEATHER_M,
     flat: bool = True,
+    square_3006: tuple[float, float, float, float] | None = None,
 ) -> Path:
     """Turns a fetch-buildings survey into the flat pads under its buildings:
     one `plane` terrain edit per footprint (dead-flat unless `flat` is off,
@@ -582,7 +652,11 @@ def cmd_building_pads(
     (WGS84 FeatureCollection) so it can go straight to `apply-dem-edits
     --edits` next to the site's own edits, or into the server's terrain_edits
     via `bun run import-terrain-edits` (origin `building-pads`, replacing
-    the previous generation and nothing else).
+    the previous generation and nothing else). With `square_3006` only the
+    buildings whose footprint centre lies inside that square get a pad: the
+    inner terrain's. The outer plot is scenery, and a pad there only cuts
+    and fills ground nobody plays on (the survey still covers it for the
+    outer buildings export).
     """
     from datetime import datetime, timezone
 
@@ -590,6 +664,12 @@ def cmd_building_pads(
     from rasterio.warp import transform as warp_transform
 
     survey = buildings_mod.read_survey(survey_path)
+    outside = 0
+    if square_3006 is not None:
+        x0, y0, x1, y1 = square_3006
+        kept = [b for b in survey if x0 <= b.polygon.centroid.x <= x1 and y0 <= b.polygon.centroid.y <= y1]
+        outside = len(survey) - len(kept)
+        survey = kept
     src = CRS.from_epsg(osm_mod.SWEREF99_TM_SRID)
     dst = CRS.from_epsg(4326)
 
@@ -603,7 +683,8 @@ def cmd_building_pads(
     water_mod.write_geojson(buildings_mod.build_pads_geojson(features), out)
     total = sum(b.polygon.area for b in survey)
     print(f"Building pads: {len(features)} plane edits ({'flat' if flat else 'fitted slope'}, "
-          f"apron {buffer_m:g} m, feather {feather_m:g} m) over {total:,.0f} m² of footprint")
+          f"apron {buffer_m:g} m, feather {feather_m:g} m) over {total:,.0f} m² of footprint"
+          + (f"; {outside} building(s) outside the square left without a pad" if square_3006 is not None else ""))
     print(f"Wrote {out}")
     return out
 
@@ -613,6 +694,7 @@ def cmd_fetch_hydro(
     out: Path,
     creek_width_m: float = water_mod.DEFAULT_CREEK_WIDTH_M,
     session=None,
+    square_3006: tuple[float, float, float, float] | None = None,
 ) -> Path:
     """Fetches Lantmäteriet Hydrografi Direkt (OGC API Features, basic auth)
     features intersecting bbox (WGS84) and writes one EPSG:3006 GeoJSON
@@ -624,6 +706,11 @@ def cmd_fetch_hydro(
     This is the authoritative creek source — Marktäcke (fetch-water) has no
     watercourse lines at all in some areas (verified at Landeryd), while
     the hydrography network carries them everywhere.
+
+    `square_3006` (x0, y0, x1, y1 EPSG:3006 metres, the terrain square bbox
+    is the envelope of) clips to the exact square instead of the bbox's grid
+    envelope, which reaches past it; creek centerlines stop half a ribbon
+    inside it so the buffered ribbons do too.
     """
     surface_geoms: list = []
     for collection_id in hydro_mod.WATER_SURFACE_COLLECTIONS:
@@ -635,9 +722,14 @@ def cmd_fetch_hydro(
     )
     print(f"{hydro_mod.WATERCOURSE_LINE_COLLECTION}: {len(line_geoms)} feature(s) intersecting bbox")
 
-    bbox_3006 = cmd_reproject_bbox(bbox)
+    bbox_3006 = square_3006 or cmd_reproject_bbox(bbox)
     polygons = hydro_mod.clip_geometries(surface_geoms, bbox_3006, "polygon")
-    lines = hydro_mod.clip_geometries(line_geoms, bbox_3006, "line")
+    if square_3006 is not None:
+        half = creek_width_m / 2.0
+        x0, y0, x1, y1 = square_3006
+        lines = hydro_mod.clip_geometries(line_geoms, (x0 + half, y0 + half, x1 - half, y1 - half), "line")
+    else:
+        lines = hydro_mod.clip_geometries(line_geoms, bbox_3006, "line")
 
     collection = hydro_mod.build_hydro_geojson(polygons, lines, creek_width_m=creek_width_m)
     hydro_mod.write_geojson(collection, out)
@@ -981,6 +1073,12 @@ def cmd_clean_ortho(
     device: str | None = None,
     mask_out: Path | None = None,
     inpaint_fn=None,
+    woodland_path: Path | None = None,
+    keep_paths: list[Path] | None = None,
+    floor_color: str | None = None,
+    floor_feather_m: float = woodland_floor_mod.DEFAULT_FEATHER_M,
+    floor_mix: float = woodland_floor_mod.DEFAULT_FLOOR_MIX,
+    seed: int = 0,
 ) -> Path:
     """Batch orthophoto cleaning for game-engine texture export: LaMa-inpaints
     tree canopy + cast shadows (and any manual-mask extras) out of the playable
@@ -994,10 +1092,16 @@ def cmd_clean_ortho(
     is constructed lazily, and only if the mask is non-empty — torch/weights
     are never touched for an empty mask.
 
+    With woodland_path (woodland-features output) every stand is first
+    repainted as forest floor outside the corridor and outside the polygons
+    of keep_paths (roads), in floor_color mixed with the stand's floorColor
+    at floor_mix — see golfpipe.woodland_floor. The LaMa pass then runs as before.
+
     The cleaned GeoTIFF keeps the source CRS/transform/compression, so
     tile-ortho can be pointed at it directly.
     """
     from golfpipe.inpaint import LamaInpainter, inpaint_tiled
+    from shapely.ops import unary_union
 
     out = out or default_clean_out_path(ortho_path)
     if out.resolve() == ortho_path.resolve():
@@ -1037,6 +1141,7 @@ def cmd_clean_ortho(
         image = np.moveaxis(src.read([1, 2, 3]), 0, -1)
         mask = clean_ortho_mod.rasterize_mask(mask_geom, src.transform, (src.height, src.width))
         pixel_area = abs(src.transform.a * src.transform.e)
+        ortho_transform = src.transform
 
     masked_px = int(np.count_nonzero(mask))
     print(f"Mask: {masked_px:,} px (~{masked_px * pixel_area:,.0f} m², "
@@ -1049,8 +1154,23 @@ def cmd_clean_ortho(
             dst.write((mask * 255).astype(np.uint8), 1)
         print(f"Wrote mask {mask_out}")
 
+    if woodland_path is not None:
+        fallback = woodland_floor_mod.parse_hex_color(floor_color) if floor_color else woodland_floor_mod.DEFAULT_FLOOR_RGB
+        stands = woodland_floor_mod.load_woodland_stands(woodland_path, fallback_rgb=fallback, mix=floor_mix)
+        keep = list(corridor)
+        for keep_path in keep_paths or []:
+            keep.extend(geom for _, geom in clean_ortho_mod.load_typed_polygons(keep_path))
+        own = sum(1 for s in stands if s.sampled)
+        print(f"Woodland: {len(stands)} stand(s) ({own} with their own floor colour), "
+              f"{len(keep)} keep polygon(s), feather {floor_feather_m:g} m")
+        image, painted = woodland_floor_mod.paint_woodland_floor(
+            image, ortho_transform, stands, keep=unary_union(keep) if keep else None,
+            feather_m=floor_feather_m, seed=seed,
+        )
+        print(f"Forest floor: {painted:,} px (~{painted * pixel_area:,.0f} m²)")
+
     if masked_px == 0:
-        print("(mask is empty — writing an unmodified copy; nothing to inpaint)")
+        print("(mask is empty — nothing to inpaint" + (")" if woodland_path else "; writing an unmodified copy)"))
         cleaned = image
     else:
         fn = inpaint_fn or LamaInpainter(weights=weights, device=device)
@@ -1567,8 +1687,10 @@ class CanopyGrid:
     DSM needs."""
 
     def __init__(self, canopy, transform, ground_dem, suppressed_ndsm, resolution: float,
-                 surface_count=None, multi_count=None, roof_mask=None):
+                 surface_count=None, multi_count=None, roof_mask=None, ndsm=None):
         self.canopy = canopy
+        # The nDSM before roof suppression: roof heights for --roofs-out.
+        self.ndsm = ndsm
         self.transform = transform
         self.ground_dem = ground_dem
         self.suppressed_ndsm = suppressed_ndsm
@@ -1618,7 +1740,8 @@ def _build_canopy_grid(
     print(f"Canopy cells >= {canopy_mod.MIN_CANOPY_HEIGHT_M} m: {raw_cells:,} raw, "
           f"{roof_cells:,} suppressed as roofs, {canopy_cells:,} after cleaning "
           f"(~{canopy_cells * resolution * resolution:,.0f} m²); max height {float(canopy.max()):.1f} m")
-    return CanopyGrid(canopy, transform, ground_dem, suppressed, resolution, surface_count, multi_count, roof_mask)
+    return CanopyGrid(canopy, transform, ground_dem, suppressed, resolution, surface_count, multi_count, roof_mask,
+                      ndsm=ndsm)
 
 
 def _write_roof_mask(roof_mask: np.ndarray, transform, path: Path) -> None:
@@ -1741,20 +1864,31 @@ def cmd_lowveg_features(
     min_hole_area_m2: float = lowveg_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
     source_ref: str | None = None,
     resolution: float = detect_trees_mod.DEFAULT_RESOLUTION,
+    min_points: int = lowveg_features_mod.DEFAULT_MIN_POINTS,
+    roof_buffer_m: float = lowveg_features_mod.DEFAULT_ROOF_BUFFER_M,
 ) -> Path:
     """Shrub-zone proposals (GeoJSON, EPSG:3006, `vegetation_zone` features
-    of zone type `shrub`, source `lidar-lowveg`) from the cleaned canopy
-    grid: cells between min_height_m and max_height_m that are not trees.
-    Input is either canopy_tif (the canopy.tif in a canopy workdir,
-    optionally clipped to bbox_3006) or lidar_paths (+ dem_path for the
-    area when bbox_3006 is not given), gridded exactly as cmd_canopy grids
-    it. trees_path is a trees GeoJSON (trees-features output) whose
+    of zone type `shrub`, source `lidar-lowveg`): low vegetation between
+    min_height_m and max_height_m that is not trees.
+    With lidar_paths (+ dem_path for the area when bbox_3006 is not given)
+    the returns in that height band are counted per cell (min_points over
+    3x3 cells), with trees and roofs from the canopy grid cmd_canopy builds
+    and nothing proposed within roof_buffer_m of a roof. With canopy_tif
+    (the canopy.tif in a canopy workdir, optionally clipped to bbox_3006)
+    the cleaned grid's cells in the band are used, which never go under
+    1 m. trees_path is a trees GeoJSON (trees-features output) whose
     polygons, buffered by tree_buffer_m, are cut out on top of the grid's
     own above-max_height cells. See golfpipe/lowveg_features.py for the
     steps and the property contract."""
+    band = None
+    roof_mask = None
     if canopy_tif is not None:
         print(f"Reading cleaned canopy from {canopy_tif}")
         canopy, transform = lowveg_features_mod.read_canopy_tif(canopy_tif, bbox_3006)
+        if min_height_m < canopy_mod.MIN_CANOPY_HEIGHT_M:
+            print(f"Note: the cleaned canopy has no cells under {canopy_mod.MIN_CANOPY_HEIGHT_M:g} m, so "
+                  f"{min_height_m:g}..{canopy_mod.MIN_CANOPY_HEIGHT_M:g} m scrub is missing; "
+                  "run with --lidar to count points instead")
         if source_ref is None:
             source_ref = canopy_tif.name
     elif lidar_paths:
@@ -1764,7 +1898,13 @@ def cmd_lowveg_features(
             bbox_3006 = _dem_bbox_3006(dem_path)
         print(f"Area (EPSG:3006): {', '.join(f'{v:.1f}' for v in bbox_3006)}")
         grid = _build_canopy_grid(lidar_paths, bbox_3006, resolution=resolution)
-        canopy, transform = grid.canopy, grid.transform
+        canopy, transform, roof_mask = grid.canopy, grid.transform, grid.roof_mask
+        print(f"Counting returns {min_height_m:g}..{max_height_m:g} m above ground ...")
+        band = lowveg_features_mod.count_band_points(
+            lidar_paths, bbox_3006, grid.ground_dem, resolution,
+            min_height_m=min_height_m, max_height_m=max_height_m, exclude_classes=detect_trees_mod.NOISE_CLASSES,
+        )
+        print(f"Returns in the band: {int(band.count.sum()):,} in {int(np.count_nonzero(band.count)):,} cells")
         if source_ref is None:
             source_ref = ",".join(p.name for p in lidar_paths)
     else:
@@ -1774,21 +1914,131 @@ def cmd_lowveg_features(
     if trees_path is not None:
         trees = lowveg_features_mod.read_tree_polygons(trees_path)
         print(f"Trees to cut out: {len(trees)} polygon(s) from {trees_path.name}, buffered {tree_buffer_m:g} m")
-    zones = lowveg_features_mod.lowveg_from_canopy(
-        canopy, transform, min_height_m=min_height_m, max_height_m=max_height_m,
-        trees=trees, tree_buffer_m=tree_buffer_m, min_area_m2=min_area_m2,
-        close_m=close_m, round_m=round_m, simplify_m=simplify_m, min_hole_area_m2=min_hole_area_m2,
+    shared = dict(
+        min_height_m=min_height_m, max_height_m=max_height_m, trees=trees, tree_buffer_m=tree_buffer_m,
+        min_area_m2=min_area_m2, close_m=close_m, round_m=round_m, simplify_m=simplify_m,
+        min_hole_area_m2=min_hole_area_m2,
     )
+    if band is not None:
+        zones = lowveg_features_mod.lowveg_from_points(
+            band, canopy, transform, roof_mask=roof_mask, min_points=min_points, roof_buffer_m=roof_buffer_m,
+            **shared,
+        )
+    else:
+        zones = lowveg_features_mod.lowveg_from_canopy(canopy, transform, **shared)
     collection = lowveg_features_mod.build_lowveg_feature_collection(zones, source_ref, course_id=course_id)
     water_mod.write_geojson(collection, out)
     total_area = sum(z.area_m2 for z in zones)
     print(f"Shrub zone proposals: {len(zones)} ({min_height_m:g}..{max_height_m:g} m, >= {min_area_m2:g} m², "
           f"holes >= {min_hole_area_m2:g} m², tree buffer {tree_buffer_m:g} m, close {close_m:g} m, "
-          f"round {round_m:g} m, simplify {simplify_m:g} m); total area {total_area:,} m²")
+          f"round {round_m:g} m, simplify {simplify_m:g} m"
+          + (f", >= {min_points} returns per 3x3 cells, roof buffer {roof_buffer_m:g} m" if band is not None else "")
+          + f"); total area {total_area:,} m²")
     if not zones:
         print("(no low vegetation in that height band; try a wider --min-height/--max-height)")
     print(f"Wrote {out}")
     return out
+
+
+def cmd_woodland_features(
+    out: Path,
+    canopy_tif: Path | None = None,
+    lidar_paths: list[Path] | None = None,
+    dem_path: Path | None = None,
+    roof_tif: Path | None = None,
+    ortho_path: Path | None = None,
+    course_id: str | None = None,
+    bbox_3006: tuple[float, float, float, float] | None = None,
+    min_height_m: float = woodland_features_mod.DEFAULT_MIN_HEIGHT_M,
+    close_m: float = woodland_features_mod.DEFAULT_CLOSE_M,
+    min_area_m2: float = woodland_features_mod.DEFAULT_MIN_AREA_M2,
+    min_hole_area_m2: float = woodland_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
+    edge_m: float = woodland_features_mod.DEFAULT_EDGE_M,
+    min_cover: float = woodland_features_mod.DEFAULT_MIN_COVER,
+    roof_buffer_m: float = woodland_features_mod.DEFAULT_ROOF_BUFFER_M,
+    round_m: float = woodland_features_mod.DEFAULT_ROUND_M,
+    simplify_m: float = woodland_features_mod.DEFAULT_SIMPLIFY_M,
+    min_weight: float = woodland_features_mod.DEFAULT_MIN_WEIGHT,
+    source_ref: str | None = None,
+    resolution: float = detect_trees_mod.DEFAULT_RESOLUTION,
+) -> Path:
+    """Woodland-floor zone proposals (GeoJSON, EPSG:3006, `vegetation_zone`
+    features of zone type `woodland_floor`, source `lidar-woodland`): one
+    polygon per closed stand of the cleaned canopy grid. With lidar_paths the
+    grid is built in-process (roofs from it, understory returns 0.5..3 m
+    counted for the weight); with canopy_tif (+ roof_tif from the same
+    canopy workdir) the grid is read and every weight is 1. ortho_path, an
+    RGB GeoTIFF in EPSG:3006, adds each stand's floor colour. See
+    golfpipe/woodland_features.py for the steps and the property contract."""
+    roof_mask = None
+    band_count = None
+    if canopy_tif is not None:
+        print(f"Reading cleaned canopy from {canopy_tif}")
+        canopy, transform = trees_features_mod.read_canopy_tif(canopy_tif, bbox_3006)
+        if roof_tif is not None:
+            roof_mask = _read_roof_mask(roof_tif, bbox_3006, canopy.shape)
+        if source_ref is None:
+            source_ref = canopy_tif.name
+    elif lidar_paths:
+        if bbox_3006 is None:
+            if dem_path is None:
+                raise ValueError("woodland-features from lidar needs --bbox or --dem to define the area")
+            bbox_3006 = _dem_bbox_3006(dem_path)
+        print(f"Area (EPSG:3006): {', '.join(f'{v:.1f}' for v in bbox_3006)}")
+        grid = _build_canopy_grid(lidar_paths, bbox_3006, resolution=resolution)
+        canopy, transform, roof_mask = grid.canopy, grid.transform, grid.roof_mask
+        print("Counting understory returns 0.5..3 m above ground ...")
+        band = lowveg_features_mod.count_band_points(
+            lidar_paths, bbox_3006, grid.ground_dem, resolution, exclude_classes=detect_trees_mod.NOISE_CLASSES,
+        )
+        band_count = band.count
+        if source_ref is None:
+            source_ref = ",".join(p.name for p in lidar_paths)
+    else:
+        raise ValueError("woodland-features needs --canopy-tif or --lidar")
+
+    _write_woodland_features(
+        canopy, transform, out, source_ref, course_id, roof_mask=roof_mask, band_count=band_count,
+        ortho_path=ortho_path, min_height_m=min_height_m, close_m=close_m, min_area_m2=min_area_m2,
+        min_hole_area_m2=min_hole_area_m2, edge_m=edge_m, min_cover=min_cover, roof_buffer_m=roof_buffer_m,
+        round_m=round_m, simplify_m=simplify_m, min_weight=min_weight,
+    )
+    return out
+
+
+def _write_woodland_features(
+    canopy, transform, out: Path, source_ref: str, course_id: str | None, roof_mask=None, band_count=None,
+    ortho_path: Path | None = None, min_height_m: float = woodland_features_mod.DEFAULT_MIN_HEIGHT_M,
+    close_m: float = woodland_features_mod.DEFAULT_CLOSE_M, min_area_m2: float = woodland_features_mod.DEFAULT_MIN_AREA_M2,
+    min_hole_area_m2: float = woodland_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
+    edge_m: float = woodland_features_mod.DEFAULT_EDGE_M, min_cover: float = woodland_features_mod.DEFAULT_MIN_COVER,
+    roof_buffer_m: float = woodland_features_mod.DEFAULT_ROOF_BUFFER_M,
+    round_m: float = woodland_features_mod.DEFAULT_ROUND_M, simplify_m: float = woodland_features_mod.DEFAULT_SIMPLIFY_M,
+    min_weight: float = woodland_features_mod.DEFAULT_MIN_WEIGHT,
+) -> None:
+    """Stands from a cleaned canopy grid -> woodland GeoJSON at out, with the
+    report; shared by cmd_woodland_features and cmd_canopy --woodland-out."""
+    stands = woodland_features_mod.woodland_from_canopy(
+        canopy, transform, roof_mask=roof_mask, band_count=band_count,
+        min_height_m=min_height_m, close_m=close_m, min_area_m2=min_area_m2, min_hole_area_m2=min_hole_area_m2,
+        edge_m=edge_m, min_cover=min_cover, roof_buffer_m=roof_buffer_m, round_m=round_m, simplify_m=simplify_m,
+        min_weight=min_weight,
+    )
+    if ortho_path is not None and stands:
+        print(f"Sampling floor colours from {ortho_path} ...")
+        n = woodland_features_mod.floor_colors(stands, canopy, transform, ortho_path)
+        print(f"Floor colour for {n} of {len(stands)} stand(s)"
+              + ("" if n == len(stands) else "; the rest have too few visible floor pixels (clean-ortho falls back)"))
+    collection = woodland_features_mod.build_woodland_feature_collection(stands, source_ref, course_id=course_id)
+    water_mod.write_geojson(collection, out)
+    total_ha = sum(s.area_m2 for s in stands) / 10_000
+    print(f"Woodland stands: {len(stands)} (canopy >= {min_height_m:g} m, close {close_m:g} m, "
+          f">= {min_area_m2:g} m², cover >= {min_cover:.0%}, edge {edge_m:g} m"
+          + (f", roof buffer {roof_buffer_m:g} m" if roof_mask is not None else ", no roof mask")
+          + f"); total {total_ha:,.1f} ha")
+    if not stands:
+        print("(no closed stands; try a larger --close or a smaller --min-area / --min-cover)")
+    print(f"Wrote {out}")
 
 
 # Tree-stems tiling (opt-in, --tile-m): the square is cut into tiles of about
@@ -1972,6 +2222,9 @@ def cmd_canopy(
     surface_shape: str = "crown",
     trees_out: Path | None = None,
     min_hole_area_m2: float = trees_features_mod.DEFAULT_MIN_HOLE_AREA_M2,
+    woodland_out: Path | None = None,
+    woodland_ortho: Path | None = None,
+    roofs_out: Path | None = None,
 ) -> dict[str, int]:
     """Lidar -> canopy height (nDSM, buildings suppressed, cleaned) ->
     three XYZ tile pyramids under tiles_dir plus a manifest.json update:
@@ -1990,8 +2243,13 @@ def cmd_canopy(
     height in metres AGL, nodata 0) and surface.tif (float32, EPSG:3006)
     land in workdir. trees_out, when given, also writes the trees-features
     GeoJSON (default thresholds; min_hole_area_m2 fills interior rings
-    smaller than that) from the same cleaned grid. Returns tile counts per
-    layer.
+    smaller than that) from the same cleaned grid. woodland_out, when given,
+    writes the woodland-features GeoJSON from that grid too (understory
+    returns counted in one more pass over the lidar; floor colours from
+    woodland_ortho when given). roofs_out, when given, writes the roof
+    heights (metres above ground on the roof cells, 0 elsewhere; float32
+    EPSG:3006 on the canopy grid) that `gspro.py ortho --remove-buildings`
+    reads. Returns tile counts per layer.
     """
     if surface_shape not in ("crown", "flat"):
         raise ValueError(f"surface_shape must be 'crown' or 'flat', got {surface_shape!r}")
@@ -2018,6 +2276,20 @@ def cmd_canopy(
         _write_trees_features(
             canopy, transform, trees_out, ",".join(p.name for p in lidar_paths), course_id,
             min_hole_area_m2=min_hole_area_m2, roof_mask=grid.roof_mask,
+        )
+    if roofs_out is not None:
+        heights = np.where(grid.roof_mask, np.nan_to_num(grid.ndsm, nan=0.0), 0.0).astype(np.float32)
+        roofs_out.parent.mkdir(parents=True, exist_ok=True)
+        grid_dem_mod.write_dem_geotiff(heights, transform, roofs_out, nodata_value=-1.0)
+        print(f"Wrote {roofs_out} ({int(np.count_nonzero(heights)):,} roof cells)")
+    if woodland_out is not None:
+        print("Counting understory returns 0.5..3 m above ground ...")
+        band = lowveg_features_mod.count_band_points(
+            lidar_paths, bbox_3006, ground_dem, resolution, exclude_classes=detect_trees_mod.NOISE_CLASSES,
+        )
+        _write_woodland_features(
+            canopy, transform, woodland_out, ",".join(p.name for p in lidar_paths), course_id,
+            roof_mask=grid.roof_mask, band_count=band.count, ortho_path=woodland_ortho,
         )
 
     ground = ground_dem.astype(np.float64)

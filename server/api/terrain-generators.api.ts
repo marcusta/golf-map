@@ -8,9 +8,13 @@ const CourseInput = Type.Object({
     courseId: Type.String(),
 });
 
+const JobInput = Type.Object({
+    jobId: Type.String(),
+});
+
 const GenerateInput = Type.Object({
     courseId: Type.String(),
-    kind: Type.Union([Type.Literal('building-pads'), Type.Literal('road-grades')]),
+    kind: Type.Union([Type.Literal('building-pads'), Type.Literal('road-grades'), Type.Literal('water-digs'), Type.Literal('bunker-digs'), Type.Literal('creek-digs')]),
 });
 
 // --- API descriptor ---
@@ -22,12 +26,32 @@ const GenerateInput = Type.Object({
 export function createTerrainGeneratorsApi(svc: TerrainGeneratorsService) {
     const mw = [requireAuth()];
     return {
-        // The OSM road network as corridor polygons for the import wizard
-        // (POST: Overpass rate-limits, like fetch-osm).
-        fetchRoads: {
+        /**
+         * The road network (OSM + NVDB) as corridor polygons for the import
+         * wizard, as a job (returns at once, `status: running`): Overpass is
+         * retried while busy, so a fetch can take a minute. Poll
+         * `roadsFetchJob` / `currentRoadsFetch`; the polygons are the
+         * finished job's `result`.
+         */
+        startRoadsFetch: {
             method: 'POST' as const,
-            path: '/course-features/fetch-roads',
-            fn: (input: Static<typeof CourseInput>) => svc.fetchRoads(input.courseId),
+            path: '/course-features/fetch-roads/start',
+            fn: (input: Static<typeof CourseInput>) => svc.startRoadsFetch(input.courseId),
+            schema: CourseInput,
+            middleware: mw,
+        },
+        roadsFetchJob: {
+            method: 'GET' as const,
+            path: '/course-features/fetch-roads/job',
+            fn: (input: Static<typeof JobInput>) => svc.roadsFetchJob(input.jobId),
+            schema: JobInput,
+            middleware: mw,
+        },
+        /** The course's running road fetch, else its latest finished one, else null — what a reopened wizard resumes. */
+        currentRoadsFetch: {
+            method: 'GET' as const,
+            path: '/course-features/fetch-roads/current',
+            fn: (input: Static<typeof CourseInput>) => svc.currentRoadsFetch(input.courseId),
             schema: CourseInput,
             middleware: mw,
         },

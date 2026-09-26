@@ -7,10 +7,13 @@ import {
     HYDRO_FETCH_FILENAME,
     OSM_FETCH_FILENAME,
     ROADS_FETCH_FILENAME,
+    importGroups,
+    attributesFromProperties,
+    centerlineFromProperties,
 } from '../src/import/geojson-import.service';
 import type { HydroApi, HydroFetchResult } from '../../shared/api/hydro.gen';
 import type { OsmApi, OsmFetchResult } from '../../shared/api/osm.gen';
-import type { TerrainGeneratorsApi, RoadsFetchResult } from '../../shared/api/terrain-generators.gen';
+import type { TerrainGeneratorsApi, RoadsFetchResult, RoadsFetchJob } from '../../shared/api/terrain-generators.gen';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 // Pipeline-shaped draft (fetch-water convention): EPSG:3006 crs member,
@@ -78,6 +81,8 @@ function fakeApi(failAfter = Infinity) {
         update: reject,
         remove: reject,
         reorder: reject,
+        imported: async () => [],
+        removeImported: async () => ({ removed: 0 }),
     };
     return { api, created };
 }
@@ -304,6 +309,9 @@ describe('GeojsonImportService.fetchFromLantmateriet (T50)', () => {
         const ring = creek.geometry.coordinates[0];
         expect(ring[0]).toEqual(ring[ring.length - 1]);
         for (const [x] of ring) expect(Math.abs(x - 531200)).toBeCloseTo(1, 6);
+        // The line rides along, so the wizard imports a centerline creek.
+        expect(creek.properties['centerline']).toEqual(HYDRO_RESULT.creeks[0]!.points);
+        expect(creek.properties['widthM']).toBe(HYDRO_RESULT.suggestedCreekWidthM);
     });
 
     test('degenerate creek runs are dropped, not imported', () => {
@@ -342,8 +350,10 @@ describe('GeojsonImportService.fetchFromLantmateriet (T50)', () => {
         const pond = created.find(c => (c as Record<string, unknown>).sourceRef === 'StandingWater/123') as Record<string, unknown>;
         expect(pond.source).toBe('lantmateriet-hydrografi');
         expect(pond.license).toBeUndefined(); // Hydrografi Direkt is not ODbL
-        const creek = created.find(c => c.type === 'water_creek') as Record<string, unknown>;
+        const creek = created.find(c => c.type === 'water_creek') as Record<string, any>;
         expect(creek.sourceRef).toBe('WatercourseLine/9');
+        expect(creek.geometry.centerline.widthM).toBe(HYDRO_RESULT.suggestedCreekWidthM);
+        expect(creek.geometry.centerline.points.length).toBeGreaterThanOrEqual(2);
     });
 
     test('fetch failure surfaces fetchError and leaves the wizard usable', async () => {
@@ -545,28 +555,44 @@ describe('GeojsonImportService.fetchFromRoads (T-roads)', () => {
         },
     };
 
-    function roadsService(result: RoadsFetchResult | Error = ROADS) {
+    /** A fake job API: the job runs for `polls` polls, then ends with `outcome`. */
+    function roadsService(outcome: RoadsFetchResult | Error = ROADS, opts: { polls?: number; alreadyRunning?: boolean } = {}) {
         const { api, created } = fakeApi();
-        const calls: Array<{ courseId: string }> = [];
+        const calls: string[] = [];
+        let polls = opts.polls ?? 2;
+        const job = (status: RoadsFetchJob['status']): RoadsFetchJob => ({
+            id: 'job-1', courseId: 'course-1', status, startedAt: '2026-09-24T10:00:00Z', finishedAt: null,
+            result: status === 'succeeded' && !(outcome instanceof Error) ? outcome : null,
+            error: status === 'failed' && outcome instanceof Error ? outcome.message : null,
+        });
         const generators: TerrainGeneratorsApi = {
-            fetchRoads: async input => {
-                calls.push(input);
-                if (result instanceof Error) throw result;
-                return result;
+            startRoadsFetch: async input => {
+                calls.push(`start ${input.courseId}`);
+                if (opts.alreadyRunning) throw new Error('A road fetch is already running for this course (job job-1) — wait for it to finish');
+                return job('running');
+            },
+            roadsFetchJob: async input => {
+                calls.push(`poll ${input.jobId}`);
+                polls -= 1;
+                return job(polls > 0 ? 'running' : outcome instanceof Error ? 'failed' : 'succeeded');
+            },
+            currentRoadsFetch: async input => {
+                calls.push(`current ${input.courseId}`);
+                return job('running');
             },
             generate: () => Promise.reject(new Error('not under test')),
         };
         const hydro: HydroApi = { fetchHydro: () => Promise.reject(new Error('not under test')) };
         const osm: OsmApi = { fetchOsm: () => Promise.reject(new Error('not under test')) };
-        const svc = new GeojsonImportService(api, hydro, osm, generators);
+        const svc = new GeojsonImportService(api, hydro, osm, generators, 1);
         svc.openFor('course-1');
         return { svc, created, calls };
     }
 
-    test('the road polygons load into the wizard as path features, bucketable by road_class', async () => {
+    test('the fetch runs as a job; its road polygons load into the wizard as path features, bucketable by road_class', async () => {
         const { svc, calls } = roadsService();
         await svc.fetchFromRoads();
-        expect(calls).toEqual([{ courseId: 'course-1' }]);
+        expect(calls).toEqual(['start course-1', 'poll job-1', 'poll job-1']);
         expect(svc.fileName.get()).toBe(ROADS_FETCH_FILENAME);
         expect(svc.fetchError.get()).toBeNull();
         const parsed = svc.parsed.get()!;
@@ -576,10 +602,18 @@ describe('GeojsonImportService.fetchFromRoads (T-roads)', () => {
         expect(svc.buckets.get().map(b => b.value).sort()).toEqual(['path', 'road']);
     });
 
-    test('no roads and a failed fetch both surface as the wizard\'s fetch error', async () => {
+    test('a fetch already running for the course is followed instead of refused', async () => {
+        const { svc, calls } = roadsService(ROADS, { alreadyRunning: true, polls: 1 });
+        await svc.fetchFromRoads();
+        expect(calls).toEqual(['start course-1', 'current course-1', 'poll job-1']);
+        expect(svc.fetchError.get()).toBeNull();
+        expect(svc.parsed.get()!.features).toHaveLength(2);
+    });
+
+    test('no roads and a failed job both surface as the wizard\'s fetch error', async () => {
         const empty = roadsService({ ...ROADS, geojson: { type: 'FeatureCollection', features: [] } });
         await empty.svc.fetchFromRoads();
-        expect(empty.svc.fetchError.get()).toMatch(/No OSM roads/);
+        expect(empty.svc.fetchError.get()).toMatch(/No roads found near the course/);
         expect(empty.svc.fileName.get()).toBeNull();
 
         const failed = roadsService(new Error('Road fetch failed: Overpass 504'));
@@ -587,5 +621,134 @@ describe('GeojsonImportService.fetchFromRoads (T-roads)', () => {
         expect(failed.svc.fetchError.get()).toBe('Road fetch failed: Overpass 504');
         expect(failed.svc.fetching.get()).toBe(false);
         expect(failed.svc.fetchSource.get()).toBeNull();
+    });
+});
+
+describe('clearing earlier imports', () => {
+    const COUNTS = [
+        { source: 'lantmateriet-hydrografi', type: 'water', count: 13 },
+        { source: 'nvdb', type: 'path', count: 1 },
+        { source: 'osm', type: 'fairway', count: 4 },
+        { source: 'osm', type: 'path', count: 57 },
+    ];
+
+    test('roads get their own group, so clearing them never takes the OSM fairways (and vice versa)', () => {
+        expect(importGroups(COUNTS)).toEqual([
+            { key: 'roads', label: 'Roads & parking (OSM + NVDB)', count: 58, types: [{ type: 'path', count: 58 }],
+                sources: ['nvdb', 'osm'], onlyTypes: ['path'] },
+            { key: 'source:lantmateriet-hydrografi', label: 'Lantmäteriet water', count: 13,
+                types: [{ type: 'water', count: 13 }], sources: ['lantmateriet-hydrografi'] },
+            { key: 'source:osm', label: 'OpenStreetMap features', count: 4,
+                types: [{ type: 'fairway', count: 4 }], sources: ['osm'], onlyTypes: ['fairway'] },
+        ]);
+        expect(importGroups([])).toEqual([]);
+        expect(importGroups([{ source: 'my-file', type: 'bunker', count: 2 }])[0]).toEqual(
+            { key: 'source:my-file', label: 'my-file', count: 2, types: [{ type: 'bunker', count: 2 }], sources: ['my-file'] });
+    });
+
+    test('opening the wizard lists the imports; removing a group sends its sources and types and refreshes the list', async () => {
+        let counts = [...COUNTS];
+        const removals: unknown[] = [];
+        const { api } = fakeApi();
+        api.imported = async () => counts;
+        api.removeImported = async input => {
+            removals.push(input);
+            counts = counts.filter(c => !(input.sources.includes(c.source) && (!input.types || input.types.includes(c.type))));
+            return { removed: 58 };
+        };
+        const svc = new GeojsonImportService(api);
+        svc.openFor('course-1');
+        await svc.loadImported();
+        expect(svc.imported.get().map(g => g.key)).toEqual(['roads', 'source:lantmateriet-hydrografi', 'source:osm']);
+
+        const removed = await svc.clearImported(svc.imported.get()[0]!);
+        expect(removed).toBe(58);
+        expect(removals).toEqual([{ courseId: 'course-1', sources: ['nvdb', 'osm'], types: ['path'] }]);
+        expect(svc.imported.get().map(g => g.key)).toEqual(['source:lantmateriet-hydrografi', 'source:osm']);
+        expect(svc.clearing.get()).toBeNull();
+    });
+
+    test('a failed removal is reported and leaves the list as it was', async () => {
+        const { api } = fakeApi();
+        api.imported = async () => COUNTS;
+        api.removeImported = () => Promise.reject(new Error('Course features: forbidden'));
+        const svc = new GeojsonImportService(api);
+        svc.openFor('course-1');
+        await svc.loadImported();
+        expect(await svc.clearImported(svc.imported.get()[0]!)).toBeNull();
+        expect(svc.clearError.get()).toBe('Course features: forbidden');
+        expect(svc.imported.get()).toHaveLength(3);
+    });
+});
+
+describe('path surfaces on import', () => {
+    test('a path keeps a valid surface property as its attribute; nothing else carries over', () => {
+        expect(attributesFromProperties('path', { surface: 'gravel', road_class: 'road' })).toEqual({ surface: 'gravel' });
+        expect(attributesFromProperties('path', { surface: 'mixed' })).toBeNull();
+        expect(attributesFromProperties('path', {})).toBeNull();
+        expect(attributesFromProperties('bunker', { surface: 'gravel' })).toBeNull();
+    });
+
+    test('imported road corridors are created with their surface', async () => {
+        const { api, created } = fakeApi();
+        const svc = new GeojsonImportService(api);
+        svc.openFor('course-1');
+        svc.loadGeojsonText(JSON.stringify({
+            type: 'FeatureCollection',
+            crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
+            features: [
+                { type: 'Feature', properties: { type: 'path', surface: 'asphalt', exact: true, source: 'osm' },
+                    geometry: { type: 'Polygon', coordinates: [square(531500, 6473000, 20)] } },
+                { type: 'Feature', properties: { type: 'path', exact: true, source: 'osm' },
+                    geometry: { type: 'Polygon', coordinates: [square(531600, 6473000, 20)] } },
+            ],
+        }), 'osm-roads.geojson');
+        await svc.confirmImport();
+        const attrs = created.map(c => (c as { attributes?: unknown }).attributes);
+        expect(attrs).toEqual([{ surface: 'asphalt' }, undefined]);
+    });
+});
+
+describe('road centerlines (fetch-roads `centerline` + `widthM`)', () => {
+    const road = (props: Record<string, unknown>) => ({
+        type: 'Feature',
+        properties: { type: 'path', road_class: 'road', source: 'osm', osm_ids: [7], surface: 'gravel', ...props },
+        geometry: { type: 'Polygon', coordinates: [square(530050, 6487000, 3)] },
+    });
+
+    test('centerlineFromProperties reads the line, flags the pipeline corners, rejects junk', () => {
+        const line = [[530000, 6487000], [530060, 6487000], [530060, 6487050], [530070, 6487090]];
+        const c = centerlineFromProperties({ centerline: line, widthM: 5 })!;
+        expect(c.widthM).toBe(5);
+        expect(c.points.map(q => q.corner === true)).toEqual([false, true, false, false]); // 90° ≥ 70°, 11° not
+        expect(centerlineFromProperties({ centerline: line })).toBeNull();
+        expect(centerlineFromProperties({ centerline: [[530000, 6487000]], widthM: 5 })).toBeNull();
+        expect(centerlineFromProperties({ centerline: [[530000, 'x'], [1, 2]], widthM: 5 })).toBeNull();
+        expect(centerlineFromProperties({ widthM: 5 })).toBeNull();
+    });
+
+    test('a road with a centerline imports as a centerline path; one without keeps its polygon', async () => {
+        const { api, created } = fakeApi();
+        const svc = new GeojsonImportService(api);
+        svc.openFor('course-1');
+        svc.loadGeojsonText(JSON.stringify({
+            type: 'FeatureCollection',
+            crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
+            features: [
+                road({ centerline: [[530000, 6487000], [530100, 6487000]], widthM: 6 }),
+                road({ exact: true }),
+            ],
+        }), ROADS_FETCH_FILENAME);
+        await svc.confirmImport();
+        expect(created).toHaveLength(2);
+        const [line, polygon] = created as Array<{ geometry: { centerline?: { widthM: number }; rings: Array<{ points: Array<{ x: number; y: number }> }> }; attributes?: unknown; source?: string }>;
+        expect(line.geometry.centerline).toEqual({ points: [{ x: 530000, y: 6487000 }, { x: 530100, y: 6487000 }], widthM: 6 });
+        // Its corridor rides along (the server re-derives the same one).
+        const xs = line.geometry.rings[0].points.map(q => q.x);
+        expect(Math.min(...xs)).toBeCloseTo(529997, 3);
+        expect(Math.max(...xs)).toBeCloseTo(530103, 3);
+        expect(line.attributes).toEqual({ surface: 'gravel' });
+        expect(line.source).toBe('osm');
+        expect(polygon.geometry.centerline).toBeUndefined();
     });
 });

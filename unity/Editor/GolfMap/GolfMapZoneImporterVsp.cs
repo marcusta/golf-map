@@ -1,14 +1,35 @@
 // Vegetation Studio Pro half of GolfMap > Vegetation Zones (GolfMapZoneImporter.cs).
 //
-// What it writes into the terrain's vegetation package:
-//   - one TextureMaskGroup per zone type, named "golfmap-zone:<key>", of type
-//     RGBAChannel, holding the zone PNG over the terrain's world rectangle with the
-//     group's ChannelSelector default set to the zone type's channel;
-//   - per item binding, a texture mask Density rule (spawn chance times the sampled
-//     channel times maxDensity) and an Include rule (spawn only where the channel is
-//     above a low threshold) against that group, updated in place on re-import.
-// Nothing else about an item is touched (D-VZ9), and no VegetationSystemPro is ever
-// created here: the tree planter builds systems through GolfMapVspRig.
+// What it writes into the terrain's vegetation package (unity-zones-v2):
+//   - one TextureMaskGroup per exported item, named "golfmap-zone:item:<item>", of
+//     type RGBAChannel, holding the item's mask PNG over the terrain's world
+//     rectangle with the group's ChannelSelector default set to the item's channel;
+//   - on that package item exactly one Density rule (min 0, max 1, multiplier 1: the
+//     pipeline bakes the density into the pixels) and one Include rule (spawn only
+//     where the channel is above a low threshold) against its own group, updated in
+//     place on re-import;
+//   - every other "golfmap-zone:*" group (v1 per-type groups, items no longer
+//     exported, duplicates) is deleted, and every rule on any item that points at a
+//     golfmap group other than that item's own is removed. Hand-authored rules
+//     (non-golfmap groups) and everything else about an item are left alone (D-VZ9).
+// No VegetationSystemPro is ever created here: the tree planter builds systems
+// through GolfMapVspRig.
+//
+// The work is split into a plan (BuildPlan: what would change, touching nothing) and
+// its application (ApplyPlan), so Preview import / the bridge's dryRun show exactly
+// what Import does.
+//
+// VSP semantics this relies on (VSP Runtime/VegetationSystemPro source):
+//   - density rules multiply (TextureMask.cs SampleRgbaChannelDensityMaskJob:
+//     SpawnChance *= value/256 * DensityMultiplier), hence one rule per item;
+//   - include rules OR into TextureMaskData, which UnityTerrainSampleJob resets to 0
+//     per spawn location (Terrains/UnityTerrain.cs), and FilterIncludeMaskJob
+//     (Jobs/CellSpawnJob.cs) excludes every location still at 0. It runs whenever
+//     UseTextureMaskIncludeRules is on (VegetationCellSpawner.cs), even with no rules
+//     or only rules whose group is gone: such an item spawns nowhere.
+//   - VegetationPackagePro.DeleteTextureMaskGroup switches UseTextureMaskIncludeRules
+//     off when an item's include list empties, which would make that item carpet the
+//     terrain. Groups are therefore removed from the list directly, never through it.
 //
 // VSP reads mask textures on the CPU with GetRawTextureData, so the PNG is imported
 // readable, RGBA32, uncompressed, no mipmaps, clamped. The selector convention is the
@@ -37,6 +58,7 @@ namespace GolfMap.Editor
         List<VegetationSystemPro> systems = new List<VegetationSystemPro>();
         [SerializeField] int systemIndex;
         [SerializeField] int packageIndex;
+        ImportPlan lastPlan;   // the plan the last summary, preview or import worked out
 
         VegetationSystemPro VspSystem { get { return systemIndex >= 0 && systemIndex < systems.Count ? systems[systemIndex] : null; } }
 
@@ -52,7 +74,7 @@ namespace GolfMap.Editor
 
         // Same test the tree planter applies to its storage: the system lists the terrain and its
         // bounds are the terrain square plus VSP's 1 m margin.
-        static bool SystemMatchesTerrain(VegetationSystemPro system, Terrain target)
+        internal static bool SystemMatchesTerrain(VegetationSystemPro system, Terrain target)
         {
             if (!system || !target || !target.terrainData || system.gameObject.scene != target.gameObject.scene) return false;
             if (!system.VegetationStudioTerrainObjectList.Contains(target.gameObject)) return false;
@@ -60,6 +82,14 @@ namespace GolfMap.Editor
             var center = target.transform.position + size / 2;
             return Mathf.Abs(bounds.size.x - (size.x + 2)) <= 2 && Mathf.Abs(bounds.size.z - (size.z + 2)) <= 2 &&
                 Mathf.Abs(bounds.center.x - center.x) <= 1 && Mathf.Abs(bounds.center.z - center.z) <= 1;
+        }
+
+        // True when VSP will actually let the item through its include filter somewhere: include
+        // rules are on and at least one points at a group that exists in the package. With the
+        // flag on and no such rule VSP excludes every spawn location (see the header).
+        internal static bool HasLiveIncludeRule(VegetationPackagePro package, VegetationItemInfoPro item)
+        {
+            return item.UseTextureMaskIncludeRules && item.TextureMaskIncludeRuleList.Any(r => r != null && package.GetTextureMaskGroup(r.TextureMaskGroupID) != null);
         }
 
         partial void OnFileLoaded()
@@ -104,115 +134,251 @@ namespace GolfMap.Editor
 
         partial void VspSummary(ref string text)
         {
+            lastPlan = null;
             if (!terrain) return;
             if (systems.Count == 0) { text += "\nNo VSP system covers the terrain."; return; }
             var package = Package;
             text += "\nVSP system: " + VspSystem.name + (package ? ", package '" + package.PackageName + "' (" + package.VegetationInfoList.Count + " items)" : ", no package");
-            if (package == null || loaded == null) return;
-            var names = new HashSet<string>(package.VegetationInfoList.Select(i => (i.Name ?? "").Trim()));
-            var missing = loaded.zoneTypes.SelectMany(t => t.items).Select(b => b.item.Trim()).Distinct().Where(n => !names.Contains(n)).ToList();
-            if (missing.Count > 0) text += "\nWARNING " + missing.Count + " bound item(s) not in the package: " + string.Join(", ", missing.ToArray());
-            var groups = package.TextureMaskGroupList.Count(g => GolfMapZones.IsGroupName(g.TextureMaskName));
-            text += "\nExisting golfmap-zone mask groups in the package: " + groups + ".";
+            if (package == null || loaded == null || GolfMapTreePlanter.IsImportedCatalogue(package)) return;
+            lastPlan = BuildPlan(package);
+            if (lastPlan.missing.Count > 0) text += "\nWARNING " + lastPlan.missing.Count + " exported item(s) not in the package: " + string.Join(", ", lastPlan.missing.ToArray());
+            text += "\nImport would: " + PlanCounts(lastPlan) + " Preview import lists the details.";
         }
 
-        // ---- import --------------------------------------------------------
+        // ---- plan ----------------------------------------------------------
 
-        class ImportReport
+        // One exported item: its group (existing, or null = create) and, when the package has
+        // the item, the density/include rules on its own group that are kept (null = add).
+        class ItemPlan
         {
-            public List<string> groupsCreated = new List<string>(), groupsUpdated = new List<string>(), staleGroups = new List<string>();
-            public List<string> bound = new List<string>(), missingItems = new List<string>(), unboundItems = new List<string>(), unusedChannels = new List<string>();
-            public List<string> textures = new List<string>();
-            public int rulesCreated, rulesUpdated;
+            public GolfMapZoneItem entry;
+            public string groupName;
+            public TextureMaskGroup group;
+            public VegetationItemInfoPro item;
+            public TextureMaskRule density, include;
         }
 
-        partial void ImportVsp()
+        class RuleRemoval
         {
-            var system = VspSystem;
-            var package = Package;
+            public List<TextureMaskRule> list;
+            public TextureMaskRule rule;
+            public string line;
+        }
+
+        class ImportPlan
+        {
+            public string course, folder;
+            public List<ItemPlan> items = new List<ItemPlan>();
+            public List<TextureMaskGroup> deleteGroups = new List<TextureMaskGroup>();
+            public List<RuleRemoval> removals = new List<RuleRemoval>();
+            public List<string> textures = new List<string>(), groupsCreate = new List<string>(), groupsUpdate = new List<string>(), groupsDelete = new List<string>();
+            public List<string> rulesAdd = new List<string>(), rulesUpdate = new List<string>();
+            public List<string> bound = new List<string>(), missing = new List<string>(), unbound = new List<string>(), dangling = new List<string>();
+        }
+
+        // The active course's folder; a project without a course asset falls back to the export's name.
+        void ZonesFolder(out string course, out string folder)
+        {
+            var active = GolfMapCourses.Active();
+            course = active ? GolfMapCourses.Name(active) : GolfMapZones.CourseName(loadedPath, loaded.plot);
+            folder = (active ? GolfMapCourses.Folder(active) : GolfMapCourses.Root + course + "/") + "Zones/";
+        }
+
+        static string Sources(GolfMapZoneItem entry)
+        {
+            return entry.sources.Count > 0 ? string.Join(", ", entry.sources.ToArray()) : "(no source)";
+        }
+
+        // Works out everything an import changes, from the loaded file and the package as it is
+        // now. Reads only; ApplyPlan carries it out.
+        ImportPlan BuildPlan(VegetationPackagePro package)
+        {
+            var plan = new ImportPlan();
+            ZonesFolder(out plan.course, out plan.folder);
+            foreach (var mask in loaded.masks)
+                plan.textures.Add(mask.file + " -> " + plan.folder + Path.GetFileName(mask.file));
+
+            // Groups: keep the first per-item group of every exported item, delete every other golfmap one.
+            var exported = new HashSet<string>(loaded.items.Select(i => i.item));
+            var kept = new Dictionary<string, TextureMaskGroup>();
+            var names = new Dictionary<string, string>();   // group id -> name, for the report
+            var golfIds = new HashSet<string>();
+            var deletedIds = new HashSet<string>();
+            foreach (var g in package.TextureMaskGroupList)
+            {
+                if (g == null) continue;
+                if (g.TextureMaskGroupID != null) names[g.TextureMaskGroupID] = g.TextureMaskName;
+                if (!GolfMapZones.IsGroupName(g.TextureMaskName)) continue;
+                if (g.TextureMaskGroupID != null) golfIds.Add(g.TextureMaskGroupID);
+                var itemName = GolfMapZones.ItemFromGroupName(g.TextureMaskName);
+                if (itemName != null && exported.Contains(itemName) && !kept.ContainsKey(g.TextureMaskName)) { kept[g.TextureMaskName] = g; continue; }
+                plan.deleteGroups.Add(g);
+                if (g.TextureMaskGroupID != null) deletedIds.Add(g.TextureMaskGroupID);
+                plan.groupsDelete.Add(g.TextureMaskName + (itemName == null ? " (per-zone-type group from v1)" : !exported.Contains(itemName) ? " (item no longer exported)" : " (duplicate)"));
+            }
+
+            // Exported items against the package.
+            var owner = new Dictionary<VegetationItemInfoPro, ItemPlan>();
+            foreach (var entry in loaded.items)
+            {
+                var ip = new ItemPlan { entry = entry, groupName = GolfMapZones.GroupName(entry.item) };
+                kept.TryGetValue(ip.groupName, out ip.group);
+                (ip.group == null ? plan.groupsCreate : plan.groupsUpdate).Add(ip.groupName + " (texture " + entry.texture + " channel " + "RGBA"[entry.channel] + ")");
+                var item = FindItem(package, entry.item);
+                ItemPlan other;
+                if (item == null) plan.missing.Add(entry.item + " <- " + Sources(entry));
+                else if (owner.TryGetValue(item, out other)) plan.missing.Add(entry.item + " <- " + Sources(entry) + " (matches the same package item as '" + other.entry.item + "'; only that one is bound)");
+                else { ip.item = item; owner[item] = ip; }
+                plan.items.Add(ip);
+            }
+
+            // Rules on every package item.
+            foreach (var item in package.VegetationInfoList)
+            {
+                if (item == null) continue;
+                ItemPlan own;
+                owner.TryGetValue(item, out own);
+                var ownId = own != null && own.group != null ? own.group.TextureMaskGroupID : null;
+                var label = "'" + item.Name + "'";
+                var density = ScanRules(plan, label, "density", item.TextureMaskDensityRuleList, ownId, true, golfIds, deletedIds, names);
+                var include = ScanRules(plan, label, "include", item.TextureMaskIncludeRuleList, ownId, true, golfIds, deletedIds, names);
+                ScanRules(plan, label, "exclude", item.TextureMaskExcludeRuleList, ownId, false, golfIds, deletedIds, names);
+                ScanRules(plan, label, "scale", item.TextureMaskScaleRuleList, ownId, false, golfIds, deletedIds, names);
+                var spawnOff = item.EnableRuntimeSpawn ? "" : " [runtime spawn off]";
+                if (own != null)
+                {
+                    own.density = density; own.include = include;
+                    (density == null ? plan.rulesAdd : plan.rulesUpdate).Add(label + " density -> " + own.groupName);
+                    (include == null ? plan.rulesAdd : plan.rulesUpdate).Add(label + " include -> " + own.groupName);
+                    int handDensity = item.TextureMaskDensityRuleList.Count(r => r != null && !golfIds.Contains(r.TextureMaskGroupID ?? "") && names.ContainsKey(r.TextureMaskGroupID ?? ""));
+                    plan.bound.Add(item.Name + " <- " + Sources(own.entry) + (handDensity > 0 ? " (+" + handDensity + " hand-authored density rule(s) multiply in)" : "") + spawnOff);
+                    continue;
+                }
+                // Unbound: what VSP will do once the golfmap rules are gone.
+                var removed = new HashSet<TextureMaskRule>(plan.removals.Where(r => r.list == item.TextureMaskIncludeRuleList).Select(r => r.rule));
+                int live = item.TextureMaskIncludeRuleList.Count(r => r != null && !removed.Contains(r) && names.ContainsKey(r.TextureMaskGroupID ?? "") && !deletedIds.Contains(r.TextureMaskGroupID));
+                string state;
+                if (!item.UseTextureMaskIncludeRules) state = "spawns everywhere its other rules allow (include rules off)";
+                else if (live == 0) state = "spawns nowhere (include rules on, none left)";
+                else state = "spawns only inside " + live + " hand-authored include mask(s)";
+                plan.unbound.Add(item.Name + ": unbound, " + state + spawnOff);
+            }
+            return plan;
+        }
+
+        // Plans removal of every rule in `list` that points at a golfmap group, except the first
+        // one on the item's own group when `keepOwn` (density/include); returns that kept rule.
+        // Rules on groups the package does not have are reported, not touched.
+        static TextureMaskRule ScanRules(ImportPlan plan, string label, string kind, List<TextureMaskRule> list, string ownId, bool keepOwn,
+            HashSet<string> golfIds, HashSet<string> deletedIds, Dictionary<string, string> names)
+        {
+            TextureMaskRule kept = null;
+            if (list == null) return null;
+            foreach (var rule in list)
+            {
+                if (rule == null) continue;
+                var id = rule.TextureMaskGroupID ?? "";
+                if (!golfIds.Contains(id))
+                {
+                    if (!names.ContainsKey(id)) plan.dangling.Add(label + " " + kind + " rule -> group id '" + id + "' not in the package (VSP skips it)");
+                    continue;
+                }
+                if (keepOwn && ownId != null && id == ownId && kept == null) { kept = rule; continue; }
+                string reason;
+                if (deletedIds.Contains(id)) reason = "group deleted";
+                else if (id == ownId) reason = keepOwn ? "duplicate" : "golfmap rule in the " + kind + " list";
+                else reason = "another item's mask";
+                plan.removals.Add(new RuleRemoval { list = list, rule = rule, line = label + " " + kind + " rule -> " + names[id] + " (" + reason + ")" });
+            }
+            return kept;
+        }
+
+        static string PlanCounts(ImportPlan p)
+        {
+            return p.items.Count + " item mask group(s) (" + p.groupsCreate.Count + " new, " + p.groupsUpdate.Count + " updated), delete " + p.deleteGroups.Count + " group(s), remove "
+                + p.removals.Count + " rule(s), add " + p.rulesAdd.Count + " and update " + p.rulesUpdate.Count + " rule(s); " + p.bound.Count + " item(s) bound, "
+                + p.missing.Count + " missing from the package, " + p.unbound.Count + " package item(s) unbound.";
+        }
+
+        void CheckPackage(out VegetationSystemPro system, out VegetationPackagePro package)
+        {
+            system = VspSystem;
+            package = Package;
             if (!system) throw new Exception("No VegetationSystemPro covers '" + terrain.name + "'. Plant trees first so the planter builds the system (GolfMapVspRig).");
             if (!package) throw new Exception("Choose the vegetation package that holds the lower vegetation.");
             if (GolfMapTreePlanter.IsImportedCatalogue(package)) throw new Exception("Refusing to write zone masks into the planter's tree catalogue. Pick the lower-vegetation package.");
             if (!EditorUtility.IsPersistent(package)) throw new Exception("The vegetation package is not a saved asset.");
+        }
 
-            // The active course's folder; a project without a course asset falls back to the export's name.
-            var active = GolfMapCourses.Active();
-            var course = active ? GolfMapCourses.Name(active) : GolfMapZones.CourseName(loadedPath, loaded.plot);
-            var folder = (active ? GolfMapCourses.Folder(active) : GolfMapCourses.Root + course + "/") + "Zones/";
-            var report = new ImportReport();
+        // ---- preview and import --------------------------------------------
 
-            // 1. Textures: copy next to the trees file and import readable RGBA32.
+        partial void PreviewVsp()
+        {
+            VegetationSystemPro system; VegetationPackagePro package;
+            CheckPackage(out system, out package);
+            lastPlan = BuildPlan(package);
+            status = "Preview (nothing written): " + PlanText(lastPlan, package, false);
+        }
+
+        partial void ImportVsp()
+        {
+            VegetationSystemPro system; VegetationPackagePro package;
+            CheckPackage(out system, out package);
+            var plan = lastPlan = BuildPlan(package);
+
+            // 1. Textures: copy into the course's Zones folder and import readable RGBA32.
             var textures = new List<Texture2D>();
+            plan.textures.Clear();
             foreach (var mask in loaded.masks)
             {
                 var source = Path.Combine(Path.GetDirectoryName(loadedPath) ?? "", mask.file);
-                var texture = ImportMaskTexture(source, folder + Path.GetFileName(mask.file), mask.resolution);
+                var texture = ImportMaskTexture(source, plan.folder + Path.GetFileName(mask.file), mask.resolution);
                 textures.Add(texture);
-                report.textures.Add(AssetDatabase.GetAssetPath(texture) + " " + texture.width + "x" + texture.height + " " + texture.format);
+                plan.textures.Add(AssetDatabase.GetAssetPath(texture) + " " + texture.width + "x" + texture.height + " " + texture.format);
             }
 
-            // 2. Mask groups, one per zone type, over the terrain square (world x east, z north).
+            // 2. Groups and rules that go. Not DeleteTextureMaskGroup: see the header.
+            foreach (var g in plan.deleteGroups) package.TextureMaskGroupList.Remove(g);
+            foreach (var r in plan.removals) r.list.Remove(r.rule);
+
+            // 3. One group per exported item over the terrain square (world x east, z north).
             var size = terrain.terrainData.size;
             var rect = new Rect(terrain.transform.position.x, terrain.transform.position.z, size.x, size.z);
-            var groupsByKey = new Dictionary<string, TextureMaskGroup>();
-            foreach (var type in loaded.zoneTypes)
+            foreach (var ip in plan.items)
             {
-                var name = GolfMapZones.GroupName(type.key);
-                var group = package.TextureMaskGroupList.FirstOrDefault(g => g.TextureMaskName == name);
+                var group = ip.group;
                 if (group == null)
                 {
-                    group = new TextureMaskGroup(TextureMaskType.RGBAChannel) { TextureMaskName = name };
+                    group = ip.group = new TextureMaskGroup(TextureMaskType.RGBAChannel) { TextureMaskName = ip.groupName };
                     package.TextureMaskGroupList.Add(group);
-                    report.groupsCreated.Add(name);
                 }
-                else report.groupsUpdated.Add(name);
                 group.TextureMaskType = TextureMaskType.RGBAChannel;
-                SetChannel(group.Settings.ControlerPropertyList, type.channel);
+                SetChannel(group.Settings.ControlerPropertyList, ip.entry.channel);
                 // One texture per group; a stale second entry from a hand edit is dropped.
                 while (group.TextureMaskList.Count > 1) group.TextureMaskList.RemoveAt(group.TextureMaskList.Count - 1);
                 if (group.TextureMaskList.Count == 0) group.TextureMaskList.Add(new TextureMask());
                 var tm = group.TextureMaskList[0];
-                tm.MaskTexture = textures[type.texture];
+                tm.MaskTexture = textures[ip.entry.texture];
                 tm.TextureRect = rect;
                 tm.Repeat = Vector2.one;
-                groupsByKey[type.key] = group;
-            }
-            foreach (var g in package.TextureMaskGroupList)
-                if (GolfMapZones.IsGroupName(g.TextureMaskName) && !groupsByKey.ContainsKey(GolfMapZones.KeyFromGroupName(g.TextureMaskName)))
-                    report.staleGroups.Add(g.TextureMaskName);
 
-            // 3. Item rules from the binding table.
-            var boundItems = new HashSet<VegetationItemInfoPro>();
-            foreach (var type in loaded.zoneTypes)
-            {
-                var group = groupsByKey[type.key];
-                int used = 0;
-                foreach (var binding in type.items)
-                {
-                    var item = FindItem(package, binding.item);
-                    if (item == null) { report.missingItems.Add(binding.item + " (" + type.key + ")"); continue; }
-                    used++;
-                    boundItems.Add(item);
-                    bool created;
-                    var density = EnsureRule(item.TextureMaskDensityRuleList, group, out created);
-                    if (created) report.rulesCreated++; else report.rulesUpdated++;
-                    density.MinDensity = binding.minDensity;
-                    density.MaxDensity = binding.maxDensity;
-                    density.DensityMultiplier = Mathf.Clamp01(binding.maxDensity);
-                    item.UseTextureMaskDensityRules = true;
-                    var include = EnsureRule(item.TextureMaskIncludeRuleList, group, out created);
-                    if (created) report.rulesCreated++; else report.rulesUpdated++;
-                    include.MinDensity = kIncludeThreshold;
-                    include.MaxDensity = 1f;
-                    item.UseTextureMaskIncludeRules = true;
-                    report.bound.Add(item.Name + " <- " + type.key + " (density x" + GolfMapZones.F(binding.maxDensity) + (binding.minDensity > 0 ? ", min " + GolfMapZones.F(binding.minDensity) + " recorded only" : "") + ")");
-                }
-                if (used == 0) report.unusedChannels.Add(type.key + " (texture " + type.texture + " channel " + "RGBA"[type.channel] + ")");
+                // 4. The item's own density and include rule.
+                var item = ip.item;
+                if (item == null) continue;
+                var density = ip.density ?? AddRule(item.TextureMaskDensityRuleList, group);
+                StampChannel(density, ip.entry.channel);
+                density.MinDensity = 0;
+                density.MaxDensity = 1;
+                density.DensityMultiplier = 1;
+                item.UseTextureMaskDensityRules = true;
+                var include = ip.include ?? AddRule(item.TextureMaskIncludeRuleList, group);
+                StampChannel(include, ip.entry.channel);
+                include.MinDensity = kIncludeThreshold;
+                include.MaxDensity = 1f;
+                item.UseTextureMaskIncludeRules = true;
             }
-            foreach (var item in package.VegetationInfoList)
-                if (!boundItems.Contains(item)) report.unboundItems.Add(item.Name + (item.EnableRuntimeSpawn ? "" : " [runtime spawn off]"));
 
-            // 4. Save and make VSP respawn from the new masks.
+            // 5. Save and make VSP respawn from the new masks.
             EditorUtility.SetDirty(package);
             system.RefreshVegetationSystem();
             system.ClearCache();
@@ -221,9 +387,9 @@ namespace GolfMap.Editor
             AssetDatabase.SaveAssets();
             SceneView.RepaintAll();
 
-            // 5. Report next to the tree import report.
-            status = WriteReport(course, package, report);
-            Debug.Log("[GolfMap] " + status.Split('\n')[0] + " Report: GolfMapSpelunk/" + course + "_zone_import.txt");
+            // 6. Report next to the tree import report.
+            status = WriteReport(plan, package);
+            Debug.Log("[GolfMap] " + status.Split('\n')[0] + " Report: GolfMapSpelunk/" + plan.course + "_zone_import.txt");
         }
 
         // Copies the PNG into the project and imports it the way VSP's CPU sampler needs it:
@@ -295,51 +461,83 @@ namespace GolfMap.Editor
         // match is accepted second. Ambiguous trimmed matches are reported as missing.
         static VegetationItemInfoPro FindItem(VegetationPackagePro package, string name)
         {
-            var exact = package.VegetationInfoList.FirstOrDefault(i => i.Name == name);
+            var exact = package.VegetationInfoList.FirstOrDefault(i => i != null && i.Name == name);
             if (exact != null) return exact;
             var trimmed = name.Trim();
-            var loose = package.VegetationInfoList.Where(i => (i.Name ?? "").Trim() == trimmed).ToList();
+            var loose = package.VegetationInfoList.Where(i => i != null && (i.Name ?? "").Trim() == trimmed).ToList();
             return loose.Count == 1 ? loose[0] : null;
         }
 
-        // The rule against `group` in `list`, created from the group's settings when absent.
-        // The channel is stamped on the rule either way: VSP samples the rule's own copy.
-        static TextureMaskRule EnsureRule(List<TextureMaskRule> list, TextureMaskGroup group, out bool created)
+        static TextureMaskRule AddRule(List<TextureMaskRule> list, TextureMaskGroup group)
         {
-            var rule = list.FirstOrDefault(r => r.TextureMaskGroupID == group.TextureMaskGroupID);
-            created = rule == null;
-            if (created) { rule = new TextureMaskRule(group.Settings) { TextureMaskGroupID = group.TextureMaskGroupID }; list.Add(rule); }
-            SetChannel(rule.TextureMaskPropertiesList, group.Settings.GetIntPropertyValue(kChannelProperty));
+            var rule = new TextureMaskRule(group.Settings) { TextureMaskGroupID = group.TextureMaskGroupID };
+            list.Add(rule);
             return rule;
         }
 
-        string WriteReport(string course, VegetationPackagePro package, ImportReport r)
+        // The channel is stamped on the rule itself: VSP samples the rule's own property copy.
+        static void StampChannel(TextureMaskRule rule, int channel)
         {
-            var summary = "Imported " + loaded.zoneTypes.Count + " zone type(s): " + r.groupsCreated.Count + " mask group(s) created, " + r.groupsUpdated.Count + " updated; "
-                + r.bound.Count + " item binding(s) applied (" + r.rulesCreated + " rules created, " + r.rulesUpdated + " updated); "
-                + r.missingItems.Count + " bound item(s) missing from the package, " + r.unboundItems.Count + " package item(s) without a binding, "
-                + r.unusedChannels.Count + " channel(s) no item uses" + (r.staleGroups.Count > 0 ? ", " + r.staleGroups.Count + " stale golfmap-zone group(s) left in place" : "") + ". Save the scene.";
+            SetChannel(rule.TextureMaskPropertiesList, channel);
+        }
+
+        // Human-readable plan (preview) or result (import).
+        string PlanText(ImportPlan p, VegetationPackagePro package, bool imported)
+        {
+            var text = (imported ? "Imported: " : "Import would do: ") + PlanCounts(p) + (imported ? " Save the scene." : "");
+            if (p.missing.Count > 0) text += "\nMissing items: " + string.Join(", ", p.missing.ToArray());
+            if (p.groupsDelete.Count > 0) text += "\nGroups deleted: " + string.Join(", ", p.groupsDelete.ToArray());
+            if (p.removals.Count > 0) text += "\nRules removed:\n  " + string.Join("\n  ", p.removals.Select(r => r.line).ToArray());
+            if (p.bound.Count > 0) text += "\nBound:\n  " + string.Join("\n  ", p.bound.ToArray());
+            if (p.unbound.Count > 0) text += "\nUnbound:\n  " + string.Join("\n  ", p.unbound.ToArray());
+            if (p.dangling.Count > 0) text += "\nDangling rules (left alone):\n  " + string.Join("\n  ", p.dangling.ToArray());
+            return text;
+        }
+
+        // Plain lists for the bridge's JSON.
+        static Dictionary<string, object> PlanJson(ImportPlan p)
+        {
+            Func<List<string>, List<object>> o = l => l.Select(s => (object)s).ToList();
+            return new Dictionary<string, object>
+            {
+                { "summary", PlanCounts(p) },
+                { "textures", o(p.textures) },
+                { "groupsCreate", o(p.groupsCreate) },
+                { "groupsUpdate", o(p.groupsUpdate) },
+                { "groupsDelete", o(p.groupsDelete) },
+                { "rulesRemove", p.removals.Select(r => (object)r.line).ToList() },
+                { "rulesAdd", o(p.rulesAdd) },
+                { "rulesUpdate", o(p.rulesUpdate) },
+                { "bound", o(p.bound) },
+                { "missing", o(p.missing) },
+                { "unbound", o(p.unbound) },
+                { "dangling", o(p.dangling) },
+            };
+        }
+
+        string WriteReport(ImportPlan p, VegetationPackagePro package)
+        {
             var sb = new System.Text.StringBuilder();
             sb.AppendLine(DateTime.UtcNow.ToString("o"));
-            sb.AppendLine(summary);
-            sb.AppendLine("Zones file: " + loadedPath);
+            sb.AppendLine("Imported " + loaded.items.Count + " item mask(s) for " + loaded.zoneTypes.Count + " zone type(s): " + PlanCounts(p));
+            sb.AppendLine("Zones file: " + loadedPath + " (" + loaded.format + ")");
             sb.AppendLine("Terrain: " + terrain.name + " at " + terrain.transform.position + " size " + terrain.terrainData.size);
             sb.AppendLine("System: " + VspSystem.name + "  Package: " + package.PackageName + " (" + AssetDatabase.GetAssetPath(package) + ")");
-            Section(sb, "Mask textures", r.textures);
-            Section(sb, "Mask groups created", r.groupsCreated);
-            Section(sb, "Mask groups updated", r.groupsUpdated);
-            Section(sb, "Stale golfmap-zone groups (zone type no longer exported; delete by hand if unwanted)", r.staleGroups);
-            Section(sb, "Items bound (density x maxDensity, include above " + GolfMapZones.F(kIncludeThreshold) + ")", r.bound);
-            Section(sb, "Items named in bindings but missing from the package", r.missingItems);
-            Section(sb, "Package items with no binding (untouched)", r.unboundItems);
-            Section(sb, "Channels no item uses", r.unusedChannels);
+            Section(sb, "File warnings", loaded.warnings);
+            Section(sb, "Mask textures", p.textures);
+            Section(sb, "Items bound (item <- sources; density baked into the mask, include above " + GolfMapZones.F(kIncludeThreshold) + ")", p.bound);
+            Section(sb, "Exported items missing from the package", p.missing);
+            Section(sb, "Package items with no export entry", p.unbound);
+            Section(sb, "Mask groups created", p.groupsCreate);
+            Section(sb, "Mask groups updated", p.groupsUpdate);
+            Section(sb, "Mask groups deleted", p.groupsDelete);
+            Section(sb, "Rules removed", p.removals.Select(r => r.line).ToList());
+            Section(sb, "Rules added", p.rulesAdd);
+            Section(sb, "Rules updated", p.rulesUpdate);
+            Section(sb, "Rules on groups not in the package (left alone; VSP skips them)", p.dangling);
             Directory.CreateDirectory("GolfMapSpelunk");
-            File.WriteAllText("GolfMapSpelunk/" + course + "_zone_import.txt", sb.ToString());
-            var shown = summary;
-            if (r.missingItems.Count > 0) shown += "\nMissing items: " + string.Join(", ", r.missingItems.ToArray());
-            if (r.unusedChannels.Count > 0) shown += "\nUnused channels: " + string.Join(", ", r.unusedChannels.ToArray());
-            if (r.unboundItems.Count > 0) shown += "\nUnbound package items: " + string.Join(", ", r.unboundItems.ToArray());
-            return shown;
+            File.WriteAllText("GolfMapSpelunk/" + p.course + "_zone_import.txt", sb.ToString());
+            return PlanText(p, package, true);
         }
 
         static void Section(System.Text.StringBuilder sb, string title, List<string> lines)

@@ -2,7 +2,7 @@ import { test, expect, describe, afterEach } from 'bun:test';
 import { di, Signal } from '@basics/core/client/core';
 import { ApiError } from '@basics/core/client/api-error';
 import { _reset } from '@basics/core/client/error-report';
-import { FeaturesService, geometryToWgs84Rings, shiftBlock, moveBlockToEdge } from '../src/draw/features.service';
+import { COURSE_SCOPE, FeaturesService, geometryToWgs84Rings, shiftBlock, moveBlockToEdge } from '../src/draw/features.service';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { wgs84ToSweref99tm } from '../src/geo/transform';
@@ -10,6 +10,8 @@ import type { FeatureGeometry } from '../src/geo/bezier';
 import type { Hole } from '../../shared/api/holes.gen';
 import { ZoneTypesService } from '../src/zones/zone-types.service';
 import type { ZoneTypesApi } from '../../shared/api/zone-types.gen';
+import type { FeatureCollection, MultiPolygon } from 'geojson';
+import { createInlineSurfaceStackClient } from '../src/draw/surface-stack-client';
 
 afterEach(() => { _reset(); di.reset(); });
 
@@ -62,6 +64,7 @@ function fakeApi(initial: CourseFeature[] = []) {
                 id: `f${++idSeq}`,
                 courseId: input.courseId,
                 holeId: input.holeId ?? null,
+                layer: input.layer ?? null,
                 type: input.type,
                 geometry: structuredClone(input.geometry),
                 geojson: null,
@@ -94,9 +97,12 @@ function fakeApi(initial: CourseFeature[] = []) {
             rows.delete(input.id);
             return { ok: true };
         },
+        imported: async () => [],
+        removeImported: async () => ({ removed: 0 }),
         async reorder(input) {
             calls.reorder++;
-            const scope = [...rows.values()].filter(f => f.courseId === input.courseId && f.holeId === (input.holeId ?? null));
+            const scope = [...rows.values()].filter(f => f.courseId === input.courseId
+                && f.holeId === (input.holeId ?? null) && (f.layer ?? null) === (input.layer ?? null));
             const scopeIds = new Set(scope.map(f => f.id));
             const wantedIds = new Set(input.orderedIds);
             if (scopeIds.size !== wantedIds.size || [...scopeIds].some(id => !wantedIds.has(id))) {
@@ -109,15 +115,49 @@ function fakeApi(initial: CourseFeature[] = []) {
     return { api, rows, calls };
 }
 
-function feature(id: string, type = 'bunker', version = 1, opts: { holeId?: string | null; sortOrder?: number } = {}): CourseFeature {
+function feature(id: string, type = 'bunker', version = 1, opts: { holeId?: string | null; layer?: 'roughs' | null; sortOrder?: number } = {}): CourseFeature {
     return {
-        id, courseId: 'c1', holeId: opts.holeId ?? null, type,
+        id, courseId: 'c1', holeId: opts.holeId ?? null, layer: opts.layer ?? null, type,
         geometry: squareGeometry(), geojson: null, sortOrder: opts.sortOrder ?? 0,
         source: null, generated: false, sourceRef: null, license: null, attributes: null, version,
     };
 }
 
 describe('load', () => {
+    test('generated vegetation zones start hidden; a shown source stays shown across reloads', async () => {
+        const zone = (id: string, source: string, generated: boolean): CourseFeature => ({
+            ...feature(id, 'vegetation_zone'), source, generated, attributes: { zoneType: 'rough_tall' },
+        });
+        const { api } = fakeApi([
+            zone('g1', 'tall-grass', true), zone('w1', 'lidar-woodland', true),
+            zone('h1', 'hand', false), { ...feature('t1', 'trees'), source: 'lidar-canopy', generated: true },
+        ]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        // Only the generated zone sources: hand-drawn zones and generated trees stay visible.
+        expect([...svc.hiddenSources.get()].sort()).toEqual(['lidar-woodland', 'tall-grass']);
+        expect(svc.generatedGeojson.get().features.map(f => f.id)).toEqual(['t1']);
+
+        svc.toggleSourceVisibility('tall-grass');
+        await svc.reload();
+        expect([...svc.hiddenSources.get()]).toEqual(['lidar-woodland']);
+    });
+
+    test('mode-hidden types leave the map and hit tests but not the user\'s own eye toggles', async () => {
+        const { api } = fakeApi([feature('b1', 'bunker'), feature('r1', 'penalty_red'), feature('o1', 'oob')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        svc.modeHiddenTypes.set(new Set(['penalty_red', 'oob']));
+        expect(svc.geojson.get().features.map(f => f.id)).toEqual(['b1']);
+        expect(svc.isHidden(svc.store.items.get().find(f => f.id === 'r1')!)).toBe(true);
+        expect(svc.hiddenTypes.get().size).toBe(0);
+
+        svc.modeHiddenTypes.set(new Set());
+        expect(svc.geojson.get().features.map(f => f.id)).toEqual(['b1', 'r1', 'o1']);
+    });
+
     test('populates the store; cached per courseId', async () => {
         const { api, calls } = fakeApi([feature('a'), feature('b')]);
         const svc = new FeaturesService(api);
@@ -256,6 +296,39 @@ describe('patchLocal', () => {
 });
 
 describe('nice rendering', () => {
+    test('shows the plain surfaces at once and swaps in the resolved stack when it arrives', async () => {
+        const fairway = { ...feature('fw', 'fairway'), geometry: squareGeometry(20) };
+        const green = { ...feature('gr', 'green', 1, { sortOrder: 1 }), geometry: squareGeometry(5) };
+        const { api } = fakeApi([fairway, green]);
+        const svc = new FeaturesService(api, createInlineSurfaceStackClient());
+        await svc.load('c1');
+        const sent: FeatureCollection[] = [];
+        const map = {
+            ready: new Signal(false),
+            map: new Signal(null),
+            addOverlayLayer: (id: string, data: FeatureCollection) => { if (id === 'features') sent.push(data); },
+            updateOverlayData: (id: string, data: FeatureCollection) => { if (id === 'features') sent.push(data); },
+            removeOverlayLayer: () => {},
+        };
+
+        const dispose = svc.attachOverlay(map as never);
+        map.ready.set(true);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]).toBe(svc.geojson.get()); // unresolved, no blocking clip
+
+        await Bun.sleep(0);
+        expect(sent).toHaveLength(2);
+        const resolvedFairway = sent[1]!.features.find(f => f.id === 'fw')!;
+        expect(resolvedFairway.geometry.type).toBe('MultiPolygon');
+        // The green is punched out of the fairway: an outer ring plus a hole.
+        expect((resolvedFairway.geometry as MultiPolygon).coordinates[0]).toHaveLength(2);
+
+        // Draw mode goes back to the plain collection without another resolve.
+        svc.niceRendering.set(false);
+        expect(sent.at(-1)).toBe(svc.geojson.get());
+        dispose();
+    });
+
     test('creates a cold-start overlay with nice paint instead of briefly defaulting to Draw paint', () => {
         const { api } = fakeApi();
         const svc = new FeaturesService(api);
@@ -282,6 +355,46 @@ describe('nice rendering', () => {
         expect(fill.paint?.['fill-opacity']).toEqual(['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0.4]);
         expect(outline.paint?.['line-opacity']).toEqual(['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0]);
         expect(rulesOutline.paint?.['line-opacity']).toEqual(['case', ['boolean', ['feature-state', 'dragging'], false], 0, 0]);
+
+        dispose();
+    });
+
+    // OOB is a white boundary line, not a surface: it is filtered out of the
+    // fill layer, and its line is the one stroke nice mode keeps — with no
+    // fill behind it, hiding the line would erase OOB from the planning view.
+    test('OOB renders as an always-visible boundary line and never as a fill', () => {
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        let layers: Array<{ id: string; filter?: unknown; paint?: Record<string, unknown> }> = [];
+        const map = {
+            ready: new Signal(false),
+            map: new Signal(null),
+            addOverlayLayer: (_id: string, _data: unknown, nextLayers: Array<{ id: string; filter?: unknown; paint?: Record<string, unknown> }>) => {
+                layers = [...layers, ...nextLayers];
+            },
+            updateOverlayData: () => {},
+            removeOverlayLayer: () => {},
+        };
+
+        const dispose = svc.attachOverlay(map as never);
+        map.ready.set(true);
+
+        const outlineOnly = ['in', ['get', 'type'], ['literal', ['oob']]];
+        const fill = layers.find(layer => layer.id === 'features-fill')!;
+        const oobLine = layers.find(layer => layer.id === 'features-oob-line')!;
+        const oobCasing = layers.find(layer => layer.id === 'features-oob-casing')!;
+        const rulesOutline = layers.find(layer => layer.id === 'features-rules-outline')!;
+
+        expect(fill.filter).toEqual(['!', outlineOnly]);
+        expect(oobLine.filter).toEqual(outlineOnly);
+        expect(oobCasing.filter).toEqual(outlineOnly);
+        // The penalty outlines keep their own layer, without OOB in it.
+        expect(rulesOutline.filter).toEqual(['in', ['get', 'type'], ['literal', ['penalty_yellow', 'penalty_red']]]);
+        // Nice mode (the cold-start default) hides every other stroke; the
+        // OOB line stays at full opacity, hidden only while it is dragged.
+        expect(svc.niceRendering.peek()).toBe(true);
+        expect(oobLine.paint?.['line-opacity']).toEqual(['case', ['boolean', ['feature-state', 'dragging'], false], 0, 1]);
+        expect(oobLine.paint?.['line-width']).toBe(2);
 
         dispose();
     });
@@ -428,6 +541,43 @@ describe('multi-select', () => {
     });
 });
 
+describe('Roughs layer toggle', () => {
+    const overlayMap = () => ({
+        ready: new Signal(false),
+        map: new Signal(null),
+        addOverlayLayer: () => {},
+        updateOverlayData: () => {},
+        removeOverlayLayer: () => {},
+    });
+    const ids = (svc: FeaturesService) => svc.geojson.get().features.map(f => f.id).sort();
+
+    test('hides the layer only while the editor owns the overlay; the planner still draws it', async () => {
+        const { api } = fakeApi([feature('r', 'rough', 1, { layer: 'roughs' }), feature('b', 'bunker')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.setSelection(['r', 'b']);
+
+        const editor = svc.attachOverlay(overlayMap() as never, { editor: true });
+        svc.toggleRoughsLayerVisibility();
+        expect(ids(svc)).toEqual(['b']);
+        expect(svc.isHidden(svc.store.items.peek().find(f => f.id === 'r')!)).toBe(true);
+        expect([...svc.selectedIds.get()]).toEqual(['b']); // invisible → not silently editable
+        editor();
+
+        // Planner: same service, no editor flag — every layer draws.
+        const planner = svc.attachOverlay(overlayMap() as never);
+        expect(ids(svc)).toEqual(['b', 'r']);
+        planner();
+
+        // Back in the editor the toggle still holds.
+        const again = svc.attachOverlay(overlayMap() as never, { editor: true });
+        expect(ids(svc)).toEqual(['b']);
+        svc.toggleRoughsLayerVisibility();
+        expect(ids(svc)).toEqual(['b', 'r']);
+        again();
+    });
+});
+
 describe('geojson derivation', () => {
     test('flattens EPSG:3006 rings to closed WGS84 polygons near the course', async () => {
         const { api } = fakeApi([feature('a')]);
@@ -536,9 +686,10 @@ describe('geojson derivation', () => {
         expect(geometryToWgs84Rings(squareGeometry())).not.toBe(geometryToWgs84Rings(geometry));
     });
 
-    test('stackKey (D24): course-level rank 0, hole rank = hole number', async () => {
+    test('stackKey (D28): Roughs rank 0, hole rank = hole number, course-level on top', async () => {
         withHoleNumbers([{ id: 'h1', number: 1 }, { id: 'h2', number: 7 }]);
         const { api } = fakeApi([
+            feature('r', 'rough', 1, { holeId: null, layer: 'roughs', sortOrder: 4 }),
             feature('a', 'fairway', 1, { holeId: null, sortOrder: 3 }),
             feature('b', 'fairway', 1, { holeId: 'h1', sortOrder: 2 }),
             feature('c', 'fairway', 1, { holeId: 'h2', sortOrder: 5 }),
@@ -547,16 +698,18 @@ describe('geojson derivation', () => {
         await svc.load('c1');
 
         const byId = (id: string) => svc.geojson.get().features.find(f => f.id === id)!;
-        expect(byId('a').properties!.stackKey).toBe(0 * 4096 + 3);
+        expect(byId('r').properties!.stackKey).toBe(0 * 4096 + 4);
+        expect(byId('a').properties!.stackKey).toBe(1023 * 4096 + 3);
         expect(byId('b').properties!.stackKey).toBe(1 * 4096 + 2);
         expect(byId('c').properties!.stackKey).toBe(7 * 4096 + 5);
     });
 });
 
 describe('stackFor / stackTopDown (D23 ordered accessors)', () => {
-    test('stackFor groups by holeId and orders ascending by sortOrder', async () => {
+    test('stackFor groups by scope and orders ascending by sortOrder', async () => {
         withHoleNumbers([{ id: 'h1', number: 1 }]);
         const { api } = fakeApi([
+            feature('roughs-rough', 'rough', 1, { holeId: null, layer: 'roughs', sortOrder: 0 }),
             feature('course-top', 'path', 1, { holeId: null, sortOrder: 1 }),
             feature('course-bottom', 'rough', 1, { holeId: null, sortOrder: 0 }),
             feature('hole-feature', 'fairway', 1, { holeId: 'h1', sortOrder: 0 }),
@@ -564,21 +717,23 @@ describe('stackFor / stackTopDown (D23 ordered accessors)', () => {
         const svc = new FeaturesService(api);
         await svc.load('c1');
 
-        expect(svc.stackFor(null).map(f => f.id)).toEqual(['course-bottom', 'course-top']);
-        expect(svc.stackFor('h1').map(f => f.id)).toEqual(['hole-feature']);
+        expect(svc.stackFor(COURSE_SCOPE).map(f => f.id)).toEqual(['course-bottom', 'course-top']);
+        expect(svc.stackFor({ holeId: 'h1', layer: null }).map(f => f.id)).toEqual(['hole-feature']);
+        expect(svc.stackFor({ holeId: null, layer: 'roughs' }).map(f => f.id)).toEqual(['roughs-rough']);
     });
 
-    test('stackTopDown orders the whole course topmost-first: hole groups above course-level, higher hole number above lower', async () => {
+    test('stackTopDown orders the whole course topmost-first: course-level, holes by descending number, Roughs last', async () => {
         withHoleNumbers([{ id: 'h1', number: 1 }, { id: 'h2', number: 2 }]);
         const { api } = fakeApi([
-            feature('course', 'rough', 1, { holeId: null, sortOrder: 99 }), // high local sortOrder, still bottom group
+            feature('roughs', 'rough', 1, { holeId: null, layer: 'roughs', sortOrder: 99 }), // high local sortOrder, still bottom group
+            feature('course', 'path', 1, { holeId: null, sortOrder: 0 }), // low local sortOrder, still top group
             feature('hole1', 'fairway', 1, { holeId: 'h1', sortOrder: 0 }),
             feature('hole2', 'fairway', 1, { holeId: 'h2', sortOrder: 0 }),
         ]);
         const svc = new FeaturesService(api);
         await svc.load('c1');
 
-        expect(svc.stackTopDown.get().map(f => f.id)).toEqual(['hole2', 'hole1', 'course']);
+        expect(svc.stackTopDown.get().map(f => f.id)).toEqual(['course', 'hole2', 'hole1', 'roughs']);
     });
 });
 
@@ -615,7 +770,7 @@ describe('raise/lower/raiseToTop/lowerToBottom (D27 reorder ops)', () => {
 
         const ok = await svc.raise(['a']);
         expect(ok).toBe(true);
-        expect(svc.stackFor(null).map(f => f.id)).toEqual(['b', 'a']);
+        expect(svc.stackFor(COURSE_SCOPE).map(f => f.id)).toEqual(['b', 'a']);
         expect(rows.get('a')!.sortOrder).toBe(1);
         expect(rows.get('b')!.sortOrder).toBe(0);
     });
@@ -630,7 +785,7 @@ describe('raise/lower/raiseToTop/lowerToBottom (D27 reorder ops)', () => {
         await svc.load('c1');
 
         await svc.lowerToBottom(['c']);
-        expect(svc.stackFor(null).map(f => f.id)).toEqual(['c', 'a', 'b']);
+        expect(svc.stackFor(COURSE_SCOPE).map(f => f.id)).toEqual(['c', 'a', 'b']);
     });
 
     test('raiseToTop is a no-op (and does not call the endpoint) when already at the top', async () => {
@@ -674,7 +829,7 @@ describe('raise/lower/raiseToTop/lowerToBottom (D27 reorder ops)', () => {
         expect(svc.saveError.get()?.code).toBe('conflict');
 
         await Bun.sleep(0); // reload() fires async
-        expect(svc.stackFor(null).map(f => f.id)).toEqual(['a', 'b']); // reverted to server truth
+        expect(svc.stackFor(COURSE_SCOPE).map(f => f.id)).toEqual(['a', 'b']); // reverted to server truth
     });
 });
 
@@ -699,7 +854,7 @@ describe('imported vs generated editability', () => {
         expect(svc.generatedFeatures.get()).toEqual([]); // rendered in the editable overlay
 
         expect(await svc.raise(['w1'])).toBe(true);
-        expect(svc.stackFor(null).map(f => f.id)).toEqual(['r1', 'w1']);
+        expect(svc.stackFor(COURSE_SCOPE).map(f => f.id)).toEqual(['r1', 'w1']);
     });
 
     test('generated rows stay read-only', async () => {
@@ -753,7 +908,7 @@ describe('vegetation zones (docs/feature-vegetation-zones.md)', () => {
         } as unknown as ZoneTypesApi);
         svc.items.set(types.map((z, i) => ({
             id: `z${i}`, courseId: 'c1', key: z.key, name: z.name, color: z.color,
-            textureIndex: 0, channel: i, sortOrder: i, items: [], createdAt: '', updatedAt: '',
+            textureIndex: 0, channel: i, sortOrder: i, items: [], variants: [], createdAt: '', updatedAt: '',
         })));
         di.set(ZoneTypesService, svc);
         return svc;
@@ -767,7 +922,7 @@ describe('vegetation zones (docs/feature-vegetation-zones.md)', () => {
         await svc.load('c1');
 
         const created = await svc.create({ type: 'vegetation_zone', geometry: squareGeometry() });
-        expect(created!.attributes).toEqual({ zoneType: 'rough_tall', weight: 1, feather: 2, noise: 0 });
+        expect(created!.attributes).toEqual({ zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0 });
     });
 
     test('an empty zone-type table still names a zone type (the fallback key)', async () => {
@@ -830,5 +985,42 @@ describe('vegetation zones (docs/feature-vegetation-zones.md)', () => {
         // A zone type the table does not know has no colour to paint with.
         expect(bunker.properties!.zoneType).toBeUndefined();
         expect(bunker.properties!.zoneColor).toBeUndefined();
+    });
+
+    test('a path carries its surface for the map; an unknown or invalid one is left out', async () => {
+        withHoleNumbers([]);
+        withZoneTypes([]);
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        await svc.create({ type: 'path', geometry: squareGeometry(), attributes: { surface: 'gravel' } });
+        await svc.create({ type: 'path', geometry: squareGeometry() });
+        await svc.create({ type: 'path', geometry: squareGeometry(), attributes: { surface: 'lava' } });
+        await svc.create({ type: 'bunker', geometry: squareGeometry(), attributes: { surface: 'gravel' } });
+
+        const [gravel, unknown, invalid, bunker] = svc.geojson.get().features;
+        expect(gravel.properties!.surface).toBe('gravel');
+        expect(unknown.properties!.surface).toBeUndefined();
+        expect(invalid.properties!.surface).toBeUndefined();
+        expect(bunker.properties!.surface).toBeUndefined();
+    });
+
+    test('a zone with a variant carries its key; the fill stays the type colour', async () => {
+        withHoleNumbers([]);
+        withZoneTypes([{ key: 'shrub', name: 'Shrubs', color: '#6b8f3a' }]);
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        await svc.create({
+            type: 'vegetation_zone', geometry: squareGeometry(),
+            attributes: { zoneType: 'shrub', zoneVariant: 'dense', weight: 1, feather: 2, noise: 0 },
+        });
+        await svc.create({ type: 'vegetation_zone', geometry: squareGeometry() });
+
+        const [withVariant, byDefault] = svc.geojson.get().features;
+        expect(withVariant.properties!.zoneVariant).toBe('dense');
+        expect(withVariant.properties!.zoneColor).toBe('#6b8f3a');
+        expect(byDefault.properties!.zoneVariant).toBeUndefined();
+        expect(byDefault.properties!.zoneColor).toBe('#6b8f3a');
     });
 });

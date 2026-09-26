@@ -33,7 +33,8 @@
 
 import { ConflictError } from '@basics/core/server/auth';
 import { wgs84ToSweref99tm } from './geo';
-import { resolveCourseMapBbox } from './course-bbox';
+import { resolveCourseInnerSquare } from './course-bbox';
+import { squareTuple } from './terrain-square';
 import { clipPolygonToBbox } from './hydro.service';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
@@ -341,14 +342,14 @@ export class OsmService {
     }
 
     /**
-     * Fetch OSM golf + terrain polygons intersecting the course's map
-     * area, typed, reprojected to EPSG:3006 and clipped to the course
-     * bbox, each carrying ODbL provenance.
+     * Fetch OSM golf + terrain polygons intersecting the course's inner
+     * terrain square, typed, reprojected to EPSG:3006 and clipped to the
+     * square, each carrying ODbL provenance.
      */
     async fetchForCourse(courseId: string): Promise<OsmFetchResult> {
-        const { wgs84, sweref } = await resolveCourseMapBbox(
-            this.courses, this.assets, courseId, 'fetch OSM features for',
-        );
+        const inner = await resolveCourseInnerSquare(this.courses, this.assets, courseId, 'fetch OSM features for');
+        const { wgs84 } = inner;
+        const sweref = squareTuple(inner.square);
 
         const overpassJson = await this.queryOverpass(buildOverpassQuery(wgs84));
         const { polygons, skipped } = assembleOsmPolygons(overpassJson);
