@@ -21,6 +21,7 @@ import { createTerrainGeneratorsClient } from '../../shared/api/terrain-generato
 import { createPublishClient } from '../../shared/api/publish.gen';
 import { createGsproExportClient } from '../../shared/api/gspro-export.gen';
 import { createZoneTypesClient } from '../../shared/api/zone-types.gen';
+import { createPhotosClient } from '../../shared/api/photos.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
@@ -57,4 +58,5 @@ export const api = {
     publish: createPublishClient(API_BASE),
     gsproExport: createGsproExportClient(API_BASE),
     zoneTypes: createZoneTypesClient(API_BASE),
+    photos: createPhotosClient(API_BASE),
 };

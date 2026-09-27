@@ -24,7 +24,7 @@ This is a **deliberate, assessed** divergence from the other `@basics/core` cons
 
 ## Layout (`src/`)
 
-`app/` shell · `auth/` login+guard · `courses/` list · `sites/` (site setup page `/sites`, builder only: rename sites and courses, add a course on an existing site, detach, delete an empty site; `SitesService` also backs the new-course wizard's New site / Existing site step) · `course-detail/` · `editor/` (toolbar + `tools/`) · `draw/` (SVG feature drawing, history/undo) · `import/` (SVG orthophoto trace import) · `export/` (GSPro/OPCD export panel: SVG, inner/outer orthophoto JPEGs, inner/outer DEM GeoTIFFs over the two terrain squares, and GreenKeeper's .GKD into the course's GSPro folder; long explanations go behind `ui/info-tip.ts` (i) tips, only what the operator must act on stays in view) · `measure/` · `analysis/` (green slope) · `planner/` (strategy: overlay, gates, plan service) · `player/` (club config) · `map/` (MapLibre style/tiles/interaction; `tree-renderer.ts` is the three.js tree drawing shared with the vegetation scene) · `geo/` (bezier, bspline, transform) · `furniture/` · `vegetation/` (dev-only tree test scene).
+`app/` shell · `auth/` login+guard · `courses/` list · `sites/` (site setup page `/sites`, builder only: rename sites and courses, add a course on an existing site, detach, delete an empty site; `SitesService` also backs the new-course wizard's New site / Existing site step) · `course-detail/` · `editor/` (toolbar + `tools/`) · `draw/` (SVG feature drawing, history/undo) · `import/` (SVG orthophoto trace import) · `export/` (GSPro/OPCD export panel: SVG, inner/outer orthophoto JPEGs, inner/outer DEM GeoTIFFs over the two terrain squares, and GreenKeeper's .GKD into the course's GSPro folder; long explanations go behind `ui/info-tip.ts` (i) tips, only what the operator must act on stays in view) · `measure/` · `analysis/` (green slope) · `planner/` (strategy: overlay, gates, plan service) · `player/` (club config) · `map/` (MapLibre style/tiles/interaction; `tree-renderer.ts` is the three.js tree drawing shared with the vegetation scene) · `geo/` (bezier, bspline, transform) · `furniture/` · `vegetation/` (dev-only tree test scene) · `photos/` (reference photo browser, see below).
 
 ## Vegetation zones (docs/feature-vegetation-zones.md, wave 1)
 
@@ -37,14 +37,27 @@ inputs: the export gives every bound item its own channel. "Add variant"
 creates `New variant` under a key slugged once and made unique in the type
 (`uniqueVariantKey`) — renaming later changes the name only, so zones stay
 bound. The panel is spawned by `CourseDetailComponent` and opened from the
-command bar's ⋯ menu, like the GSPro export panel.
+Vegetation mode's zone-type picker ("Edit zone types…") or the selection
+panel's zone section.
 
-`vegetation_zone` is a normal drawable feature type in `draw/feature-palette.ts`
-(no digit shortcut; mirrored by hand into `mobile/course/feature-colors.ts`).
-Its attributes (`zoneType`, `zoneVariant`, `weight`, `feather`, `noise`) are
+`vegetation_zone` is a feature type in `draw/feature-palette.ts`
+(`VEGETATION_TYPES`; no digit shortcut; mirrored by hand into
+`mobile/course/feature-colors.ts`), drawn and edited in Vegetation mode only
+(see below).
+Its attributes (`zoneType`, `zoneVariant`, `weight`, `feather`, `noise`,
+`blend`, `extraPalettes`) are
 edited in the selection panel's "Vegetation zone" section and saved through
 `features.update(id, { attributes })`, which replaces the whole object — the
-section always sends all five keys. The Variant select (`zone-variant-select`:
+section always sends all seven keys. "Generated vegetation under it"
+(`zone-blend-select`, attribute `blend`) is Replace it / Add to it: drawn zones
+always add up with each other (D-VZ14); "Also plants" lists `extraPalettes`
+(`shared/features/zone-layers.ts`) as rows of type, variant, weight and
+Remove, and every edit writes the whole string back. A zone's hole is only
+where it is filed (D-VZ14): with only zones selected the move select reads
+"Hole (folder)" with a hint and no Roughs, and the Vegetation stack panel
+defaults to `ALL_ZONES_KEY` ("All zones, by hole": a heading per hole, rows
+named by what the zone plants), keeps it when a zone is selected, and shows
+no reorder verbs for zones. The Variant select (`zone-variant-select`:
 "Default" = `''` plus the type's variants) is hidden while the type has none;
 changing the zone type also resets `zoneVariant` to `''`. `FeaturesService.create`
 fills in the zone defaults (first zone type, Default variant, weight 1, feather
@@ -81,6 +94,23 @@ Per road, the selection panel's "Round kerbs at junctions" box sets the
 `kerbFillets` attribute (`false` = off, absent = on); a corner is rounded only
 when both roads meeting there have it on. Tapers ignore it.
 
+## Photos sub-mode (docs/feature-reference-photos.md §7)
+
+`photos/` — browse and tag the site's reference photos from the iPhone capture
+mode. A normal EditorTool (`photos`, not builder-only: the photo routes are
+mounted in both modes). `PhotosService` holds the list (by the course's
+`siteId`), the filter (hole, picked position + radius, tags any/all or
+untagged), the List/Map view (localStorage) and the selection; tag/note/hole
+saves are serialized and each computes its patch from the row the previous
+save left. `photo-filter.ts` is the pure filter: "near hole" = the phone's
+stored hole OR within `HOLE_NEAR_M` of the play line (tees → aim points → green
+centre, from `FurnitureService`, which the tool loads itself). The dock hosts
+`PhotosPanelComponent` (filters); `PhotoBrowserComponent`, spawned by
+`CourseDetailComponent` into the editor canvas, draws the List catalog, the
+Map view's photo card and the large viewer. `photos-overlay.ts` draws markers
+and view wedges (dashed = heading not refined). Thumbnails are the 2048 px
+previews, lazy-loaded; the server has no smaller size.
+
 ## Rules lines live in Furniture
 
 The penalty areas and OOB (`RULES_TYPES` in `draw/feature-palette.ts`) are
@@ -90,10 +120,51 @@ drawn and edited in Furniture mode, not Draw. There is one polygon engine:
 creates only those types (OOB by its line, not its inside), keeps nice
 rendering with the penalty outlines stroked, has its own undo history, and
 leaves presses on furniture markers (and everything while a placement is
-armed) to the Furniture tool. Draw (`surfaces` scope) puts them in
-`FeaturesService.modeHiddenTypes`: off the map, out of hit tests, the type
-picker and the stack panel. `resolveSurfaceStack` passes them through like
+armed) to the Furniture tool. Draw (`surfaces` scope) puts them, and the
+vegetation zones, in `FeaturesService.modeHiddenTypes`: off the map, out of
+hit tests, the type picker and the stack panel. `resolveSurfaceStack` passes them through like
 OOB, so a higher shape never trims them away.
+
+## Vegetation zones live in Vegetation mode
+
+The zones are drawn and edited in the Vegetation sub-mode
+(`zones/vegetation-tool.ts`), the draw engine in its `vegetation` scope
+(`activate(ctx, { scope: 'vegetation', toolId })`, one history per scope,
+`scopeOwnsType` decides what each scope hits, picks and marquees). There the
+course features (`modeBackdropTypes` in `FeaturesService`) paint as a faint
+outline with no fill, out of hit tests and the stack panel, and the command
+bar swaps the feature-type picker for a zone-type picker
+(`DrawToolService.chooseZoneType`: the next zone's type, or retype the
+selected zones). Outside Vegetation mode the zones, drawn and generated, are
+in `modeHiddenTypes` by type — the default that `resetModeView()` restores at
+the end of every draw-engine span — so Draw, Furniture, the other tools and
+the planner never show them. The dock hosts the selection and stack panels
+for Vegetation as for Draw.
+
+Of the backdrop, Vegetation still selects the creeks and water
+(`scopeSelectsType`; `takesBankVeg` in shared/features/creek-vegetation.ts)
+so their bank vegetation is set point-and-click: a click takes a hand-drawn
+zone first, then the water, then generated zones (`vegetationHitOrder`: the
+generated creek-bank zones lie over the water they came from). A backdrop
+row is read-only there: `editableSelected`/`editableSelectedFeatures` leave
+out `modeBackdropTypes` (no handles, move, duplicate, retype), and delete and
+stack reorder skip it, so the selection panel shows only "Bank vegetation"
+and a hint that the shape is Draw's.
+
+The command bar's **Plant vegetation** (Vegetation mode only) runs the
+server's `vegetation` export job through `zones/plant-vegetation.service.ts`
+(start, or follow the planting already running; poll to the end): every
+vegetation generator, the zones export and the import into the open Unity
+project. Then the features reload and the job's report is shown. With zones
+selected, **Update in Unity** (`update-zones-btn`, `PlantVegetationService.update`)
+runs the `vegetation-update` job for just them (`GsproExportService.updateZones`:
+`gspro.py zones-patch` per exported terrain, then `golfmap.zones.patch`). It runs
+no generators and has no confirm; the result dialog warns when a terrain was
+skipped. A zone
+type whose Default mix binds nothing starts new and retyped zones on its
+first variant (`ZoneTypesService.startVariantOf`), and the Variant picker
+says so on Default; creek_bank's `<palette>_wet` halves are not offered
+(`pickableVariantsOf`).
 
 ## Hiding the Roughs layer is editor-only
 

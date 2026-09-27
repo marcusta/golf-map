@@ -26,6 +26,9 @@ Where tall grass grows (all in EPSG:3006 metres):
            keeps CLEARANCE (noise + 0.5 m) from every surface it must never
            touch (semi, fairway, green, tee, bunker, water, blend strips) and
            from the reach limit; the inward feather still fades the edge.
+           Creeks marked for bank vegetation (a `bankVeg` palette) keep no
+           clearance: creek_bank_zones.py plants their banks with zones that
+           sit on top, and the tall rough fills in where those fade out.
 
 From a surface map the rules become a WEIGHT FIELD instead of an area, so every
 fade is one gradient: deep rough 1; rough 1 at the deep border down to 0 at
@@ -167,7 +170,7 @@ def cut_blockers(area: BaseGeometry, buildings: list[BaseGeometry], roads: list[
 
 
 # Surface map codes (unity/Editor/GolfMap/GolfMapSurfaces.cs, golfmap-surfaces-v1).
-S_DEEP, S_ROUGH = 1, 2
+S_NONE, S_DEEP, S_ROUGH, S_WATER = 0, 1, 2, 8
 S_PLAY = (2, 3, 4, 5, 6, 7)   # rough, semi, fairway, green, tee, bunker
 S_FORBIDDEN = (3, 4, 5, 6, 7, 8, 9)   # semi, fairway, green, tee, bunker, water, blend
 
@@ -202,15 +205,18 @@ def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules
 
 def tall_grass_from_surfaces(cls: np.ndarray, cell: float, west: float, north: float,
                              buildings: list[BaseGeometry], roads: list[tuple[LineString, float]],
-                             rules: Rules = Rules(), levels=BAND_LEVELS) -> Result:
+                             rules: Rules = Rules(), levels=BAND_LEVELS, paths: list[BaseGeometry] = ()) -> Result:
     """`cls`: surface codes, rows north to south, `cell` metres; (`west`, `north`) the EPSG:3006
-    corner of row 0, column 0. The weight field as nested bands; `area` is the lowest band."""
+    corner of row 0, column 0. The weight field as nested bands; `area` is the lowest band.
+    `paths`: the app's `path` features (OPCD's path meshes are not in the surface map), kept
+    clear by `rules.path_margin` like roads."""
     from rasterio import features
     from rasterio.transform import Affine
 
     transform = Affine(cell, 0, west, 0, -cell, north)
     blockers = [b.buffer(rules.building_margin, join_style=2) for b in buildings] + \
-               [line.buffer(width / 2 + rules.road_margin, cap_style=2) for line, width in roads]
+               [line.buffer(width / 2 + rules.road_margin, cap_style=2) for line, width in roads] + \
+               [g.buffer(rules.path_margin) for g in paths]
     blocked = features.rasterize(blockers, out_shape=cls.shape, transform=transform).astype(bool) if blockers else None
     w = weight_field(cls, cell, blocked, rules)
 
@@ -341,7 +347,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.surfaces:
         cls, cell, west, north, doc = load_surfaces_map(Path(args.surfaces), Path(args.sidecar) if args.sidecar else None)
         course = {"name": doc.get("course", args.course)}
-        r = tall_grass_from_surfaces(cls, cell, west, north, buildings, roads, rules)
+        # Creeks marked for bank vegetation: no water clearance there, the tall rough
+        # runs up to them and the creek-bank zones on top take the banks.
+        from creek_bank_zones import marked_water_mask
+        marked = marked_water_mask(Path(args.db), args.course, cls.shape, cell, west, north) & (cls == S_WATER)
+        if marked.any():
+            cls = cls.copy()
+            cls[marked] = S_NONE
+            print(f"  {marked.sum() * cell * cell:,.0f} m2 of water on creeks marked for bank vegetation: no clearance")
+        from creek_bank_zones import load_paths
+        r = tall_grass_from_surfaces(cls, cell, west, north, buildings, roads, rules,
+                                     paths=load_paths(Path(args.db), args.course))
     else:
         course, surfaces = load_surfaces(Path(args.db), args.course)
         r = tall_grass_area(surfaces, buildings, roads, rules)

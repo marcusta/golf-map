@@ -36,6 +36,8 @@ namespace GolfMap
         public string meshFolder = "fbx";
         [Tooltip("Scene object the course meshes sit under; GolfMap > Meshes > Sync adds new FBX there.")]
         public string meshParent = "Meshes";
+        [Tooltip("Comma-separated FBX name prefixes the sync never adds (and removes from the scene): OPCD's Gap_Issue markers.")]
+        public string meshExclude = "Gap_Issue";
 
         [Header("Scene")]
         public string innerTerrainName = "Terrain (Inner)";

@@ -1,0 +1,159 @@
+{
+ "type": "FeatureCollection",
+ "crs": {
+  "type": "name",
+  "properties": {
+   "name": "EPSG:3006"
+  }
+ },
+ "features": [
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       530192.96,
+       6487549.34
+      ],
+      [
+       530196.51,
+       6487558.26
+      ],
+      [
+       530192.24,
+       6487559.96
+      ],
+      [
+       530188.69,
+       6487551.04
+      ],
+      [
+       530192.96,
+       6487549.34
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "path",
+    "source": "props-bridges",
+    "source_ref": "bridge_wood",
+    "license": "own",
+    "surface": "bridge"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       530053.49,
+       6487558.69
+      ],
+      [
+       530060.56,
+       6487562.42
+      ],
+      [
+       530058.51,
+       6487566.31
+      ],
+      [
+       530051.44,
+       6487562.58
+      ],
+      [
+       530053.49,
+       6487558.69
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "path",
+    "source": "props-bridges",
+    "source_ref": "bridge_brick",
+    "license": "own",
+    "surface": "bridge"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       529809.37,
+       6487361.57
+      ],
+      [
+       529817.85,
+       6487366.87
+      ],
+      [
+       529815.63,
+       6487370.43
+      ],
+      [
+       529807.15,
+       6487365.13
+      ],
+      [
+       529809.37,
+       6487361.57
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "path",
+    "source": "props-bridges",
+    "source_ref": "bridge_rope",
+    "license": "own",
+    "surface": "bridge"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       529854.1,
+       6487968.98
+      ],
+      [
+       529863.96,
+       6487970.63
+      ],
+      [
+       529863.26,
+       6487974.78
+      ],
+      [
+       529853.4,
+       6487973.13
+      ],
+      [
+       529854.1,
+       6487968.98
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "path",
+    "source": "props-bridges",
+    "source_ref": "bridge_rope_n",
+    "license": "own",
+    "surface": "bridge"
+   }
+  }
+ ]
+}

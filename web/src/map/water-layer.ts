@@ -24,7 +24,10 @@ export class WaterLayer implements CustomLayerInterface {
     private dataKey = '';
     private readonly materials = [waterMaterial(), waterMaterial(true)];
     private meshes: Mesh<BufferGeometry, ShaderMaterial>[] = [];
+    /** `meshes` by feature key (see setData), for reuse across updates. */
+    private built = new Map<string, Mesh<BufferGeometry, ShaderMaterial>[]>();
     private anchor = MercatorCoordinate.fromLngLat([0, 0]);
+    private anchored = false;
     private units = 1;
     private heightsDirty = true;
     private lastSample = -Infinity;
@@ -48,32 +51,30 @@ export class WaterLayer implements CustomLayerInterface {
 
     setData(data: FeatureCollection): void {
         const waters = data.features.filter(f => f.properties?.type === 'water' || f.properties?.type === 'water_creek');
-        const key = JSON.stringify(waters.map(f => [f.properties?.type, f.geometry]));
+        const occurrences = new Map<string, number>();
+        const keyed = waters.map(feature => {
+            const base = JSON.stringify([feature.properties?.type, feature.geometry]);
+            const n = occurrences.get(base) ?? 0;
+            occurrences.set(base, n + 1);
+            return { feature, key: `${n}:${base}` };
+        });
+        const key = keyed.map(k => k.key).join('\n');
         if (key === this.dataKey) return;
         this.dataKey = key;
-        for (const mesh of this.meshes) { this.scene.remove(mesh); mesh.geometry.dispose(); }
+        // Meshes are kept per feature while its type and geometry are unchanged:
+        // editing one creek rebuilds that creek, not all of the course's water
+        // (triangulating and subdividing every water feature takes about a second).
+        const previous = this.built;
+        this.built = new Map();
         this.meshes = [];
-        let anchored = false;
-        for (const feature of waters) {
-            const polygons = feature.geometry?.type === 'Polygon' ? [feature.geometry.coordinates]
-                : feature.geometry?.type === 'MultiPolygon' ? feature.geometry.coordinates : [];
-            for (const polygon of polygons) {
-                if (!polygon[0]?.length) continue;
-                if (!anchored) {
-                    this.anchor = MercatorCoordinate.fromLngLat(polygon[0][0] as [number, number]);
-                    this.units = this.anchor.meterInMercatorCoordinateUnits();
-                    anchored = true;
-                }
-                const rings = polygon.map(ring => ring.map(p => {
-                    const merc = MercatorCoordinate.fromLngLat(p as [number, number]);
-                    return new Vector2((merc.x - this.anchor.x) / this.units, (this.anchor.y - merc.y) / this.units);
-                }));
-                const mesh = new Mesh(waterGeometry(rings), this.materials[feature.properties?.type === 'water_creek' ? 1 : 0]);
-                // Bounds are recomputed after terrain samples arrive.
-                mesh.visible = false;
-                this.scene.add(mesh);
-                this.meshes.push(mesh);
-            }
+        for (const { feature, key: featureKey } of keyed) {
+            const meshes = previous.get(featureKey) ?? this.buildMeshes(feature);
+            previous.delete(featureKey);
+            this.built.set(featureKey, meshes);
+            this.meshes.push(...meshes);
+        }
+        for (const meshes of previous.values()) {
+            for (const mesh of meshes) { this.scene.remove(mesh); mesh.geometry.dispose(); }
         }
         this.elevationQueue = new WaterElevationQueue(this.meshes.map(mesh => mesh.geometry));
         this.sampledTerrain = null;
@@ -81,6 +82,31 @@ export class WaterLayer implements CustomLayerInterface {
         this.lastSample = -Infinity;
         Object.assign(this.stats, { maxDrapeMs: 0, samples: 0, verticesProcessed: 0, pending: false });
         this.map.triggerRepaint();
+    }
+
+    /** One feature's meshes, positioned against the layer's anchor (fixed once set, so kept meshes stay valid). */
+    private buildMeshes(feature: FeatureCollection['features'][number]): Mesh<BufferGeometry, ShaderMaterial>[] {
+        const polygons = feature.geometry?.type === 'Polygon' ? [feature.geometry.coordinates]
+            : feature.geometry?.type === 'MultiPolygon' ? feature.geometry.coordinates : [];
+        const meshes: Mesh<BufferGeometry, ShaderMaterial>[] = [];
+        for (const polygon of polygons) {
+            if (!polygon[0]?.length) continue;
+            if (!this.anchored) {
+                this.anchor = MercatorCoordinate.fromLngLat(polygon[0][0] as [number, number]);
+                this.units = this.anchor.meterInMercatorCoordinateUnits();
+                this.anchored = true;
+            }
+            const rings = polygon.map(ring => ring.map(p => {
+                const merc = MercatorCoordinate.fromLngLat(p as [number, number]);
+                return new Vector2((merc.x - this.anchor.x) / this.units, (this.anchor.y - merc.y) / this.units);
+            }));
+            const mesh = new Mesh(waterGeometry(rings), this.materials[feature.properties?.type === 'water_creek' ? 1 : 0]);
+            // Bounds are recomputed after terrain samples arrive.
+            mesh.visible = false;
+            this.scene.add(mesh);
+            meshes.push(mesh);
+        }
+        return meshes;
     }
 
     render(_gl: WebGLRenderingContext | WebGL2RenderingContext, args: CustomRenderMethodInput): void {

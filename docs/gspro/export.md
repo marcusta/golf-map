@@ -73,7 +73,7 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   heightmap sidecar, which must be for the same square) so the planter's ground check matches the
   terrain; `--exclude-square` drops the inner square's stems from an outer file.
 - `zones` — a course's `vegetation_zone` features (`--course` out of `--db`, `attributes_json` keys
-  `zoneType`/`zoneVariant`/`weight`/`feather`/`noise`) rasterized into VSPro texture masks for one terrain
+  `zoneType`/`zoneVariant`/`weight`/`feather`/`noise`/`blend`/`extraPalettes`) rasterized into VSPro texture masks for one terrain
   square, the `docs/feature-vegetation-zones.md` §6 rasterizer with D-VZ11's per-item projection. It writes
   one RGBA PNG per four VSP items next to `--out` (`<stem>-<texture>.png`, `--resolution` default 4096,
   and stale higher-numbered PNGs are removed). Channels are allocated per item in the order the course's
@@ -83,14 +83,29 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   bindings, and `zones[]` (with `variant`) as plot-local polygons simplified to `--simplify` 1 m for the
   Scene-view overlay. Per zone: even-odd fill in the tint's pixel frame, signed distance from two
   `distance_transform_edt`s, value noise (`--seed`) on the distance, then
-  `clamp(0.5 - d/feather, 0, 1) × weight`. Overlaps use a per-pixel budget of 1, processed from the
-  last zone to the first (`render_zone_masks`) and keyed by slot (`type` or `type/variant`). A later
-  zone claims first, same-slot zones take the maximum, and nothing is scaled up. Each item's channel is
+  `clamp(0.5 - d/feather, 0, 1) × weight`. Drawn zones come first and add up in any order (the
+  same slot takes the maximum); a drawn replace zone's weight is taken from the ground left to the
+  generated zones (D-VZ14). The generated zones share the rest with a per-pixel budget, processed from
+  the last to the first (`render_zone_masks`) and keyed by slot (`type` or `type/variant`): a later one
+  claims first, same-slot zones take the maximum, and nothing is scaled up. Each item's channel is
   then `min(1, Σ slot weight × maxDensity)` over the slots that bind it. It is a sum and not one rule
   per slot, because VSPro multiplies an item's density rules. Zones are processed in bounding-box crops.
   The accumulators are one float32 frame per slot plus the budget (64 MB each at 4096). `--exclude-square`
   works as for trees: zeroed in the masks and cut from the polygons. Unknown zone types are warned about
   and skipped. An unknown variant is warned about and falls back to Default.
+- `zones-patch` — the quick path for some zones (the web's **Update in Unity**, `bun run zones -- update`):
+  `--zones-json` (a terrain's zones export) `--ids` (zone ids) `--course` re-rasterizes only the window those
+  zones cover, now and in that export (its rows), plus any exported zone the course no longer has.
+  `render_zone_masks(window=)` gives exactly the full render's pixels there, since each zone's crop is only
+  clipped to the window plus its `feather/2 + noise` margin. Only the textures whose pixels change are
+  rewritten, and only the zones' rows in the JSON. `--result` writes a `unity-zones-patch-v1` record (changed
+  textures, the window in plot-local metres) for Unity's `golfmap.zones.patch`. When the zones reach the square
+  and the zone types' item bindings differ from the export's, the channels may have moved: it exits 3 before
+  writing anything, and the square needs a full export. The zones JSON carries `seed` and `simplifyM` so a
+  patch rasterizes and simplifies like the export did. Zones the export has not seen (drawn since, or a
+  re-run generator's new ids) are matched to vanished rows by content: identical ones are renamed in the
+  JSON and patch nothing (`renamed` in the record), the others are patched in. Hand-drawn `creek_bank`
+  zones are creek sections (left out) only near a creek or water (`creek_section_ids`).
 - `buildings` — a building survey (`--survey buildings.geojson`, golfpipe `fetch-buildings` output) as the
   `unity-buildings-v1` file the Unity building planter reads, over the square, the same way `trees` does it:
   rectangle centre as `x`/`z` from the south-west corner, the footprint ring in the same local metres,
@@ -146,6 +161,19 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   the edge is written cut to the square (flattened, `_clip_to_square`); merged roads and road-sliver
   fills the same; one wholly outside is left out. Both are counted in the report. Vreta's three
   Lantmäteriet creeks overhung by 6–8 m.
+  **Left out, not ground**: bridge decks (`path` with the attribute `surface: bridge`, the props'
+  deck outlines kept only so vegetation zones clear them; with their kerb fillets) and any drawn,
+  non-road shape under `MIN_SHAPE_AREA_M2` (1 m²: a click or drag that collapsed while drawing -
+  Vreta's 0 m² bunker broke the Blender build). Both are named in the report.
+  **Road-edge slivers** (`_road_edge_fills`): a gap under 1 m between a road and a rough/semi/deep/
+  fairway/trees surface goes to that surface, written flattened. A "gap" thinner than 1 cm on average
+  is closing noise along the kerb and is not filled (filled plus the 2 cm overlap it became a 16 m
+  needle); where a surface edge leaves the road at a slant, the wedge is filled only up to a cut square
+  to the road (`_square_off_wedge`) - the closing's slanted end ran along the kerb into a spike
+  beside a notch.
+  **Bisect against earlier states** (`bun run gspro:bisect`, see AGENTS.md): every full SVG export is
+  kept in `<export dir>/export-history/`, and the edit history rebuilds the course at any time since
+  migration 025; variants are exported from a copy of the database.
   **Test variants** (for finding the shape the Blender build chokes on): `--exclude-ids FILE` (a JSON array
   of feature ids, or one per line) and `--exclude-type TYPE` (repeatable) leave features out before the
   road merge; excluding a road also drops the stored kerb fillets / tapers (`source = road-junctions`)

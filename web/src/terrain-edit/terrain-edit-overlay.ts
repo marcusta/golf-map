@@ -48,7 +48,7 @@ export function terrainEditGeojson(view: TerrainEditView): FeatureCollection {
         });
         features.push({
             type: 'Feature',
-            properties: { role: 'edit', enabled: edit.enabled },
+            properties: { role: 'edit', enabled: edit.enabled, highlight: edit.id === view.highlightId },
             geometry: { type: 'Polygon', coordinates: rings },
         });
     }
@@ -120,6 +120,13 @@ function terrainEditLayers(): OverlayLayerSpec[] {
             },
         },
         {
+            // The edit under the pointer in the panel's list, or whose form is open.
+            id: 'terrain-edit-highlight',
+            type: 'line',
+            filter: ['all', role('edit'), ['==', ['get', 'highlight'], true]] as FilterSpecification,
+            paint: { 'line-color': '#ffffff', 'line-width': 4, 'line-opacity': 0.95 },
+        },
+        {
             id: 'terrain-edit-draft-close',
             type: 'line',
             filter: role('draft-close'),
@@ -171,7 +178,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
             const anchor = editLabelAnchor(edit);
             if (!anchor) continue;
             const el = document.createElement('div');
-            el.textContent = `${OP_GLYPHS[edit.op]} ${edit.op}`;
+            el.textContent = `${OP_GLYPHS[edit.op]} ${view.labels[edit.id] ?? edit.op}`;
             el.title = paramsSummary(edit);
             el.style.cssText =
                 `background: ${GLYPH_BG}; color: ${EDIT_COLOR}; font: 600 10px/1.5 system-ui, sans-serif;` +

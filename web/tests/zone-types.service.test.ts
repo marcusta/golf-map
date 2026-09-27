@@ -98,7 +98,7 @@ describe('ZoneTypesService', () => {
         ]);
         const svc = new ZoneTypesService(api);
         await svc.load('c1');
-        expect(svc.defaultAttributes()).toEqual({ zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0 });
+        expect(svc.defaultAttributes()).toEqual({ zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0, blend: 'replace', extraPalettes: '' });
 
         const empty = new ZoneTypesService(fakeApi().api);
         expect(empty.defaultAttributes().zoneType).toBe('shrub');
@@ -109,13 +109,17 @@ describe('ZoneTypesService', () => {
         const svc = new ZoneTypesService(api);
         await svc.load('c1');
 
-        expect(svc.attributesOf(null)).toEqual({ zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0 });
+        expect(svc.attributesOf(null)).toEqual({ zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0, blend: 'replace', extraPalettes: '' });
         expect(svc.attributesOf({ zoneType: 'fern', weight: 0.25 }))
-            .toEqual({ zoneType: 'fern', zoneVariant: '', weight: 0.25, feather: 2, noise: 0 });
+            .toEqual({ zoneType: 'fern', zoneVariant: '', weight: 0.25, feather: 2, noise: 0, blend: 'replace', extraPalettes: '' });
         expect(svc.attributesOf({ zoneType: 'fern', zoneVariant: 'dense' }).zoneVariant).toBe('dense');
         expect(svc.attributesOf({ zoneType: 'fern', zoneVariant: 3 }).zoneVariant).toBe('');
         // A stored 0 is a value, not a missing key.
         expect(svc.attributesOf({ zoneType: 'fern', weight: 0 }).weight).toBe(0);
+        expect(svc.attributesOf({ zoneType: 'fern', blend: 'mix', extraPalettes: 'shrub/rocks=0.4' }))
+            .toMatchObject({ blend: 'mix', extraPalettes: 'shrub/rocks=0.4' });
+        expect(svc.attributesOf({ zoneType: 'fern', blend: 'bogus', extraPalettes: 7 }))
+            .toMatchObject({ blend: 'replace', extraPalettes: '' });
     });
 
     test('every write re-reads the table', async () => {

@@ -14,12 +14,12 @@ describe('ZoneTypesService.listByCourse', () => {
         const { svc } = await setup();
 
         const types = await svc.listByCourse(TEST_COURSE_ID);
-        expect(types.map((z) => z.key)).toEqual(['rough_tall', 'shrub', 'fern', 'meadow', 'woodland_floor']);
-        expect(types.map((z) => z.name)).toEqual(['Tall rough', 'Shrubs', 'Ferns', 'Meadow', 'Woodland floor']);
-        expect(types.map((z) => z.color)).toEqual(['#8a9a3c', '#6b8f3a', '#4f8c5a', '#b8a94a', '#6b5a34']);
-        expect(types.map((z) => z.textureIndex)).toEqual([0, 0, 0, 0, 1]);
-        expect(types.map((z) => z.channel)).toEqual([0, 1, 2, 3, 0]);
-        expect(types.map((z) => z.sortOrder)).toEqual([0, 1, 2, 3, 4]);
+        expect(types.map((z) => z.key)).toEqual(['rough_tall', 'shrub', 'fern', 'meadow', 'woodland_floor', 'creek_bank']);
+        expect(types.map((z) => z.name)).toEqual(['Tall rough', 'Shrubs', 'Ferns', 'Meadow', 'Woodland floor', 'Creek bank']);
+        expect(types.map((z) => z.color)).toEqual(['#8a9a3c', '#6b8f3a', '#4f8c5a', '#b8a94a', '#6b5a34', '#5f8a4a']);
+        expect(types.map((z) => z.textureIndex)).toEqual([0, 0, 0, 0, 1, 1]);
+        expect(types.map((z) => z.channel)).toEqual([0, 1, 2, 3, 0, 1]);
+        expect(types.map((z) => z.sortOrder)).toEqual([0, 1, 2, 3, 4, 5]);
         expect(types.every((z) => z.items.length === 0)).toBe(true);
     });
 
@@ -35,7 +35,7 @@ describe('ZoneTypesService.listByCourse', () => {
         const [first] = await svc.listByCourse(TEST_COURSE_ID);
         await svc.remove(first!.id);
         const after = await svc.listByCourse(TEST_COURSE_ID);
-        expect(after.map((z) => z.key)).toEqual(['shrub', 'fern', 'meadow', 'woodland_floor']);
+        expect(after.map((z) => z.key)).toEqual(['shrub', 'fern', 'meadow', 'woodland_floor', 'creek_bank']);
     });
 
     test('404s for an unknown course rather than seeding one into existence', async () => {
@@ -71,9 +71,9 @@ describe('ZoneTypesService.create', () => {
 
     test('continues on the second texture once the first is full', async () => {
         const { svc } = await setup();
-        await svc.listByCourse(TEST_COURSE_ID); // seeds 0:0..0:3 and 1:0
-        const sixth = await svc.create({ courseId: TEST_COURSE_ID, key: 'heather', name: 'Heather', color: '#7a5f8a' });
-        expect([sixth.textureIndex, sixth.channel]).toEqual([1, 1]);
+        await svc.listByCourse(TEST_COURSE_ID); // seeds 0:0..0:3, 1:0 and 1:1
+        const seventh = await svc.create({ courseId: TEST_COURSE_ID, key: 'heather', name: 'Heather', color: '#7a5f8a' });
+        expect([seventh.textureIndex, seventh.channel]).toEqual([1, 2]);
     });
 
     test('stores item bindings', async () => {
@@ -182,7 +182,7 @@ describe('ZoneTypesService.update / remove / reorder', () => {
 
         const after = await svc.reorder(TEST_COURSE_ID, reversed);
         expect(after.map((z) => z.id)).toEqual(reversed);
-        expect(after.map((z) => z.sortOrder)).toEqual([0, 1, 2, 3, 4]);
+        expect(after.map((z) => z.sortOrder)).toEqual([0, 1, 2, 3, 4, 5]);
 
         await expect(svc.reorder(TEST_COURSE_ID, reversed.slice(1))).rejects.toBeInstanceOf(ConflictError);
     });
@@ -197,7 +197,7 @@ describe('ZoneTypesService.addDefaults', () => {
         const added = await svc.addDefaults(TEST_COURSE_ID);
         expect(added.map((z) => z.key)).toEqual(['fern']);
         expect((await svc.listByCourse(TEST_COURSE_ID)).map((z) => z.key).sort())
-            .toEqual(['fern', 'meadow', 'rough_tall', 'shrub', 'woodland_floor']);
+            .toEqual(['creek_bank', 'fern', 'meadow', 'rough_tall', 'shrub', 'woodland_floor']);
     });
 
     test('a default whose slot is taken by another type takes the first free slot', async () => {
@@ -207,7 +207,8 @@ describe('ZoneTypesService.addDefaults', () => {
         await svc.create({ courseId: TEST_COURSE_ID, key: 'heather', name: 'Heather', color: '#7a5f8a', textureIndex: 1, channel: 0 });
 
         const added = await svc.addDefaults(TEST_COURSE_ID);
-        expect(added.map((z) => [z.key, z.textureIndex, z.channel])).toEqual([['woodland_floor', 1, 1]]);
+        // 1:0 is heather's, 1:1 the seeded creek_bank's.
+        expect(added.map((z) => [z.key, z.textureIndex, z.channel])).toEqual([['woodland_floor', 1, 2]]);
     });
 });
 

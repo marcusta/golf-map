@@ -8,6 +8,8 @@ import { FEATURE_STYLES } from './feature-palette';
 import { icon } from '../ui/icons';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { ROUGHS_LAYER } from '../../../shared/render/stack-key';
+import { ZoneTypesService, zoneTypeKeyOf, zoneVariantKeyOf } from '../zones/zone-types.service';
+import { zoneBlendOf, zoneExtraPalettesOf } from '../../../shared/features/zone-layers';
 import {
     generatedBadgeLabel,
     generatedGroupLabel,
@@ -45,6 +47,20 @@ const rowTpl = template(`
         <button bind="eye" type="button" class="stack-row__eye" data-testid="stack-row-eye"></button>
     </div>
 `);
+
+/** A hole's heading in the Vegetation mode's "All zones" list. */
+const headerRowTpl = template(`
+    <div bind="row" class="stack-header" data-testid="stack-header-row"></div>
+`);
+
+/**
+ * The Vegetation mode's default list: every zone, under a heading per hole
+ * (course level first). A zone's hole is only where it is filed (D-VZ14),
+ * so this is how to find one; the per-scope stacks stay a pick away.
+ */
+export const ALL_ZONES_KEY = '__all-zones';
+
+type PanelRow = StackRow | { kind: 'header'; key: string; label: string };
 
 /** One collapsed row per generated (source, type) group — never N tree rows. */
 const groupRowTpl = template(`
@@ -112,6 +128,14 @@ export class FeatureStackPanelComponent extends Component {
 
             /* The long list scrolls INSIDE the panel (law 01); rows carry
                structure with spacing + hover tint, not hairlines (law 03). */
+            & .stack-header {
+                padding: ${s('sm')} ${s('xs')} ${s('xs')};
+                font-size: 0.7rem;
+                font-weight: 600;
+                letter-spacing: 0.06em;
+                text-transform: uppercase;
+                color: ${t('color-text-secondary')};
+            }
             & .stack-rows {
                 display: flex;
                 flex-direction: column;
@@ -235,6 +259,9 @@ export class FeatureStackPanelComponent extends Component {
     private tool = this.inject(DrawToolService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
+    private zoneTypes = this.inject(ZoneTypesService);
+    /** Vegetation mode: the list defaults to every zone, grouped by hole. */
+    private vegetation = new Computed(() => this.tool.scope.get() === 'vegetation');
 
     /**
      * Scope filter, as a `scopeKey`. Follows the draw target until the user
@@ -264,13 +291,18 @@ export class FeatureStackPanelComponent extends Component {
             },
             // Contextual controls (law 04): reorder ops appear only while a
             // row is selected — selection is the context they act on.
+            // Not for the backdrop rows Vegetation selects (creeks, water):
+            // their stack order is Draw's.
+            // Nor for vegetation zones: drawn ones add up whatever their
+            // order (D-VZ14), so a stack position would promise nothing.
             reorderOps: {
-                className: () => this.selectedIds().length > 0
+                className: () => this.features.selectedFeatures.get()
+                    .some(f => !this.features.modeBackdropTypes.get().has(f.type) && f.type !== 'vegetation_zone')
                     ? 'stack-panel__section reorder-ops show'
                     : 'stack-panel__section reorder-ops',
             },
             // Reorder is a hand-drawn verb: disabled while any generated
-            // (read-only) row is in the selection.
+            // (read-only) or backdrop row is in the selection.
             raiseBtn: {
                 onclick: () => void this.features.raise(this.selectedIds()),
                 disabled: () => !this.canReorder(),
@@ -303,6 +335,12 @@ export class FeatureStackPanelComponent extends Component {
             const holes = this.courseDetail.holes.get();
             const value = this.scopeKey.get();
             this.scopeSelect.textContent = '';
+            if (this.vegetation.get()) {
+                const all = document.createElement('option');
+                all.value = ALL_ZONES_KEY;
+                all.textContent = 'All zones, by hole';
+                this.scopeSelect.appendChild(all);
+            }
             fillScopeOptions(this.scopeSelect, holes);
             this.scopeSelect.value = value;
         }));
@@ -311,17 +349,25 @@ export class FeatureStackPanelComponent extends Component {
         this.$each(
             this.rowsHost,
             () => this.stack(),
-            (row, _index, track) => row.kind === 'group'
-                ? this.renderGroupRow(row, track)
-                : this.renderRow(row.feature, track),
+            (row, _index, track) => row.kind === 'header'
+                ? this.wireEl(headerRowTpl, { row: { textContent: row.label } }, track)
+                : row.kind === 'group'
+                    ? this.renderGroupRow(row, track)
+                    : this.renderRow(row.feature, track),
             row => row.key,
         );
 
-        // Follow the draw target while the stack filter is still implicit.
+        // Follow the draw target while the stack filter is still implicit;
+        // Vegetation mode lists every zone instead (and leaving it drops
+        // that choice, which Draw does not have).
         this.track(effect(() => {
             const drawHoleId = this.tool.drawHoleId.get();
-            if (this.scopeUserPinned) return;
-            untrack(() => this.scopeKey.set(scopeKey({ holeId: drawHoleId, layer: null })));
+            const vegetation = this.vegetation.get();
+            untrack(() => {
+                if (!vegetation && this.scopeKey.peek() === ALL_ZONES_KEY) this.scopeUserPinned = false;
+                if (this.scopeUserPinned) return;
+                this.scopeKey.set(vegetation ? ALL_ZONES_KEY : scopeKey({ holeId: drawHoleId, layer: null }));
+            });
         }));
 
         // Follow selection: a shape selected on the map (or via alt-cycle)
@@ -332,7 +378,8 @@ export class FeatureStackPanelComponent extends Component {
             const selected = this.features.selected.get();
             if (!selected) return;
             untrack(() => {
-                this.scopeKey.set(scopeKey(scopeOf(selected)));
+                // "All zones" already lists it; only a scoped list switches.
+                if (this.scopeKey.peek() !== ALL_ZONES_KEY) this.scopeKey.set(scopeKey(scopeOf(selected)));
                 queueMicrotask(() => {
                     this.rowsHost
                         .querySelector(`[data-feature-id="${CSS.escape(selected.id)}"]`)
@@ -350,14 +397,32 @@ export class FeatureStackPanelComponent extends Component {
      * ("Trees (lidar) · 2200") and only the selected generated ones listed
      * individually beneath it.
      */
-    private stack(): StackRow[] {
+    private stack(): PanelRow[] {
         // Types the mode keeps off the map (Draw: the rules lines, which
-        // Furniture edits) are not listed either.
+        // Furniture edits) or shows only as a backdrop (Vegetation: the
+        // course) are not listed either.
         const modeHidden = this.features.modeHiddenTypes.get();
-        const topDown = [...this.features.stackFor(scopeFromKey(this.scopeKey.get()))]
-            .filter(f => !modeHidden.has(f.type))
-            .reverse();
-        return groupStackRows(topDown, this.features.selectedIds.get());
+        const backdrop = this.features.modeBackdropTypes.get();
+        const rowsOf = (scope: string) => groupStackRows(
+            [...this.features.stackFor(scopeFromKey(scope))]
+                .filter(f => !modeHidden.has(f.type) && !backdrop.has(f.type))
+                .reverse(),
+            this.features.selectedIds.get(),
+        );
+        const key = this.scopeKey.get();
+        if (key !== ALL_ZONES_KEY) return rowsOf(key);
+        const groups: [string, string][] = [
+            [scopeKey({ holeId: null, layer: null }), 'No hole (course level)'],
+            ...this.courseDetail.holes.get().map(h => [h.id, `Hole ${h.number}`] as [string, string]),
+        ];
+        const rows: PanelRow[] = [];
+        for (const [scope, label] of groups) {
+            const scoped = rowsOf(scope);
+            if (scoped.length === 0) continue;
+            const zones = scoped.filter(r => r.kind === 'feature').length;
+            rows.push({ kind: 'header', key: `header:${scope}:${zones}`, label: `${label} · ${zones} drawn` }, ...scoped);
+        }
+        return rows;
     }
 
     private selectedIds(): string[] {
@@ -366,7 +431,8 @@ export class FeatureStackPanelComponent extends Component {
 
     private canReorder(): boolean {
         const items = this.features.selectedFeatures.get();
-        return items.length > 0 && items.every(f => !isGeneratedFeature(f));
+        const backdrop = this.features.modeBackdropTypes.get();
+        return items.length > 0 && items.every(f => !isGeneratedFeature(f) && !backdrop.has(f.type));
     }
 
     private renderGroupRow(group: Extract<StackRow, { kind: 'group' }>, track: (d: () => void) => void): HTMLElement {
@@ -401,7 +467,7 @@ export class FeatureStackPanelComponent extends Component {
     private liveGroupCount(group: Extract<StackRow, { kind: 'group' }>): number {
         return this.features.store.items.get()
             .filter(f => f.source === group.source && f.type === group.type
-                && scopeKey(scopeOf(f)) === this.scopeKey.get())
+                && (this.scopeKey.get() === ALL_ZONES_KEY || scopeKey(scopeOf(f)) === this.scopeKey.get()))
             .length;
     }
 
@@ -430,10 +496,12 @@ export class FeatureStackPanelComponent extends Component {
             swatch: {
                 'style': () => {
                     const style = FEATURE_STYLES[this.liveType(feature.id) as keyof typeof FEATURE_STYLES];
-                    return style ? `background:${style.fill}; border-color:${style.outline}` : '';
+                    const zoneColor = this.liveType(feature.id) === 'vegetation_zone'
+                        ? this.zoneTypes.colorFor(zoneTypeKeyOf(this.liveFeature(feature.id)?.attributes)) : '';
+                    return style ? `background:${zoneColor || style.fill}; border-color:${style.outline}` : '';
                 },
             },
-            label: { textContent: () => FEATURE_STYLES[this.liveType(feature.id) as keyof typeof FEATURE_STYLES]?.label ?? this.liveType(feature.id) },
+            label: { textContent: () => this.rowLabel(feature.id) },
             badge: {
                 className: () => this.generatedBadge(feature.id) ? 'stack-row__badge show' : 'stack-row__badge',
                 textContent: () => this.generatedBadge(feature.id) ?? '',
@@ -443,6 +511,25 @@ export class FeatureStackPanelComponent extends Component {
         el.dataset.featureId = feature.id;
         if (isGeneratedFeature(feature)) el.dataset.generated = 'true';
         return el;
+    }
+
+    /**
+     * A row's name: the type's palette label, except a vegetation zone, which
+     * says what it plants - "Creek bank · Vass (common reed) + 2 · adds" - so
+     * zones can be told apart in the list.
+     */
+    private rowLabel(id: string): string {
+        const f = this.liveFeature(id);
+        const type = f?.type ?? '';
+        if (!f || type !== 'vegetation_zone') return FEATURE_STYLES[type as keyof typeof FEATURE_STYLES]?.label ?? type;
+        const zoneType = zoneTypeKeyOf(f.attributes);
+        const variantKey = zoneVariantKeyOf(f.attributes);
+        const variant = variantKey ? this.zoneTypes.variantsOf(zoneType).find(v => v.key === variantKey)?.name ?? variantKey : '';
+        const extras = zoneExtraPalettesOf(f.attributes).length;
+        return [
+            this.zoneTypes.labelFor(zoneType) + (variant ? ` · ${variant}` : '') + (extras ? ` + ${extras}` : ''),
+            zoneBlendOf(f.attributes) === 'mix' ? 'adds' : '',
+        ].filter(Boolean).join(' · ');
     }
 
     private liveFeature(id: string): CourseFeature | undefined {

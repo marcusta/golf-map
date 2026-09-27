@@ -81,6 +81,97 @@ To undo, restore the original material and refresh vegetation again.
 Do not rerun the older `prepare-oak-nm-shader.py` conversion over this fix: it
 targets the metallic shader and writes older smoothness/back-face settings.
 
+## Experiment: Forst's CTI shaders under stock names (2026-09-26)
+
+**Applied in Unity on 2026-09-26. GSPro not yet checked. Reversible.**
+
+Forst's manual recommends its CTI shaders for the oaks and birches in VSP, with
+`VSPro_CTIShaderController.unitypackage`. That package is no use for GSPro: it only
+replaces `CTIShaderController.cs`, and C# never reaches GSPro (courses load as asset
+bundles; GSPro runs its own VSP build). Checked by IL in both GSPro builds on this
+machine:
+
+| | Release (2025-12) | Public beta (2026-06) |
+| --- | --- | --- |
+| Controller lookup | every `IShaderController` in the VSP runtime assembly, no fallback | same |
+| `CTIShaderController.MatchShader` | `name == "CTI/LOD Leaves"` / `"CTI/LOD Bark"` / `"CTI/LOD Bark Array"` | `"CTI/LOD Leaves".Contains(name)` - Forst's patch, compares the wrong way round |
+| `CTI/LOD Leaves 301` (Forst's name) | unknown: drops the whole package | unknown: drops the whole package |
+| `CTI/LOD Leaves` | known | known |
+
+So the trial copies Forst's three 301 shaders under the stock names, changing nothing
+else except `exclude_path:deferred exclude_path:prepass` on the leaves. CTI leaves in
+deferred need Forst's `CTI_Internal-DeferredShading` in Graphics settings, which GSPro's
+are not ours to set; forward-only leaves light correctly either way. VSP's own
+`CTIWindController` (present in GSPro) feeds `_TerrainLODWind`, which "Use Wind from
+Script" reads. The materials are Forst's originals, extracted from the Asset Store
+cache: every Forst material in the project had been converted in place to NM shaders.
+
+- `pipeline/.venv/Scripts/python unity/prepare-cti-trial.py <UnityProject>` writes new files only:
+  `Assets/GolfMap/CTI/Shaders/` and `<course>/CTITrial/` (materials + `trial.json`).
+- `golfmap.cti.status` / `golfmap.cti.apply` / `golfmap.cti.restore`
+  ([GolfMapCtiTrial.cs](../unity/Editor/GolfMap/GolfMapCtiTrial.cs)). Apply backs up the
+  palette prefabs it swaps, both tree catalogues and their billboard folders to
+  `GolfMapSpelunk/cti-trial/<stamp>/` (outside Assets), swaps the oak and birch
+  leaf/bark materials, refreshes vegetation from materials and resets VSP. Restore puts
+  that backup back; `backup=<stamp>` picks an older one.
+- Only planted items are swapped: the 4 oak prefabs, `FoliageTrialV2/PF Birch C wide` and
+  the four `Looks/birch/darker` birches (most planted birches are that look). Each swap
+  has its own trial material, because restore reverses swaps in memory. The darker-look
+  birches still get the original birch colour; Marcus never liked the dark look.
+- `pipeline/.venv/Scripts/python unity/prepare-cti-maps.py <UnityProject> oak birch` tunes the look.
+  CTI has no tint or specular controls, so every change is a texture copy under
+  `<course>/CTITrial/Textures/`, recorded as an override in `trial.json`. Re-running
+  `golfmap.cti.apply` on an applied trial only updates the trial materials.
+
+Unity result: the shaders render cleanly (alpha, bark, VSP instancing, wind). Billboards
+are VSP's default atlas while the trial is applied. The look took three steps, each
+confirmed by Marcus on screen (2026-09-26/27):
+
+1. **Too bright.** Untinted, the CTI oaks were about 4.5× the approved oak. The NM
+   materials multiply albedo by `_HealthyColor`/`_Color` ≈ 0.5, and in this linear
+   project a colour property is linearised first (×0.22). The tint is baked into albedo
+   copies: linear RGB × the linearised NM tint.
+2. **Grey-white, "too little olive".** With the albedo at the approved level, Forst's 4%
+   dielectric leaf reflection (spec 0.043 in `_BumpSpecMap` B, smoothness up to 0.41 in
+   `_TranslucencyMap` A) outshone the leaf. Both channels are zeroed in copies, the same
+   fix as the NM oak above. Then the oak was shifted "a tad greener": red ×0.88,
+   renormalised to the same luma.
+3. **Birches still pale.** A black-albedo probe left the birch leaves grey-white, so the
+   light wasn't albedo. The project's `Birch Leaves [Normal] [Spec] 4K.psd` had been
+   switched to *Normal map* import on 2026-09-14 (Forst ships it as Default, and the manual
+   says to keep it Default and linear). A Normal-map import repacks the channels, so the
+   zeroed spec channel was no longer zero. Packed-map copies now always import as Default
+   and linear. The birch tint is then scaled to the approved birch/oak brightness ratio
+   (1.6×, from `prepare-foliage-luma.py`'s references).
+4. **"Much better but slightly darker"** (2026-09-27): birch gain 0.69 → 0.60 (×0.87
+   linear); the birch leaves in a golfer's view measured ~16 % darker.
+5. **Wind "almost like a storm"** (2026-09-27): `_BaseWindMultipliers` (x primary
+   bending, y branch turbulence, z edge flutter) 1/1/1 → 0.5/0.5/0.5 on all six trial
+   materials, leaves and bark alike so the leaves stay on their branches. It is set by
+   `golfmap.cti.apply` (`WindMultipliers` in GolfMapCtiTrial.cs). VSP's CTI controller
+   does not override it, and the global wind the other trees use is unchanged.
+
+Restore was verified end to end four times. All four backups are byte-identical to
+each other, so every restore returned exactly the original files, and the view matches
+the pre-trial screenshot. What it took, which applies to any tool that puts files back
+under an open Unity 2018.2 editor:
+
+1. Unity does not reload a loaded prefab or ScriptableObject when its file is replaced
+   and force-reimported. The editor kept the trial state in memory and would have saved
+   it back over the restored files. Restore therefore reverses the prefab swap in memory
+   (Unity's save of it is byte-identical to the backup), and calls
+   `Resources.UnloadAsset` on the catalogues after copying them back, so they reload from
+   disk. It then checks memory against disk before continuing.
+2. VSP then kept drawing the oaks from stale managed state: opaque leaf cards with no
+   alpha cut. Neither a refresh nor disabling and re-enabling the systems cleared it; a
+   script reload did. Apply and restore end with `InternalEditorUtility.RequestScriptReload()`.
+   GSPro loads the bundle fresh, so this is editor-only.
+
+Next: build the course and check oaks and birches in GSPro. Check that the whole
+package loads, that the oaks and birches don't come out "colourful", and that wind
+works. Record the result here. To end the trial, run `golfmap.cti.restore`. To remove it
+completely, also delete `Assets/GolfMap/CTI/` and `<course>/CTITrial/`.
+
 ## Recurring pitfalls and diagnosis
 
 ### One-click comparisons in Unity

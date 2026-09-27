@@ -1,19 +1,23 @@
 // Unity 2018.2 / C# 6. Keeps the scene's course meshes in step with the FBX folder
-// the Blender export writes into (course.meshFolder, one FBX per OPCD mesh).
-//
-// An FBX overwritten in place needs nothing here: the scene object references
-// the mesh sub-asset by the FBX's GUID and the mesh name, so Unity's reimport
-// swaps the geometry under the existing object and its collider, materials and
-// MeshChannelMaterialsStore stay. Only the set of files changes the scene:
-//   - an FBX with no scene object is instantiated under course.meshParent the way
-//     OPCD's GSP > Add OPCD Meshes does, given a MeshCollider (pipeline step 18),
-//     then OPCD's own GameObject > Set Default Materials runs on the new objects;
-//   - a scene object under the parent whose FBX is gone (mesh reference missing)
-//     is reported, and deleted with prune.
-// Vertex paint renders from mesh copies (GolfMapVertexPaint), so a painted object
-// whose FBX is newer than its copy would keep showing the old geometry: the sync
-// re-runs the paint then. <course>/meshes-sync.json remembers each FBX's size and
-// time at the last sync of that folder, only to report which ones were updated in place.
+// the Blender export writes into (course.meshFolder, one FBX per OPCD mesh), the way
+// the manual step does it: an FBX whose content changed gets its scene object
+// deleted and added again, like GSP > Add OPCD Meshes (instantiate under
+// course.meshParent, MeshCollider, then OPCD's own GameObject > Set Default
+// Materials), and only those objects; unchanged meshes are left alone.
+//   - Changed = the FBX file's size or time differs from the last sync
+//     (<course>/meshes-sync.json). The Blender FBX sync only rewrites meshes that
+//     changed; after OPCD's Batch Export every mesh is replaced. The first sync has nothing to compare
+//     with: it records the scene as it is (replaceAll=true rebuilds everything).
+//   - FBX whose name starts with a course.meshExclude prefix (default: OPCD's Gap_Issue
+//     markers) are never added; objects showing one are stale.
+//   - An FBX with no scene object is added; an object under the parent that shows no
+//     current FBX (deleted FBX, or a painted copy left of one) is stale (prune deletes).
+//   - An FBX the Blender FBX sync's record (<folder>/.golfmap-fbx-sync.json) does not
+//     list is a leftover of an older .blend (OPCD renumbers meshes when it regenerates
+//     the file): never added, reported with its objects; the Blender export deletes it.
+//     A record older than any FBX is ignored (OPCD's Batch Export bypasses it).
+// Vertex paint renders from mesh copies (GolfMapVertexPaint): after any add or
+// replace the paint is applied again, so the copies follow the new geometry.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -27,10 +31,10 @@ namespace GolfMap.Editor
 {
     public static class GolfMapCourseMeshes
     {
-        const string StateFormat = "golfmap-meshes-sync-v1";
+        const string StateFormat = "golfmap-meshes-sync-v2";
         const string StateFile = "meshes-sync.json";
+        const string BlenderManifest = ".golfmap-fbx-sync.json";
         const string PaintFile = "paint.json";
-        const string PaintedFolder = "PaintedMeshes/";
         const string SetDefaultMaterialsMenu = "GameObject/Set Default Materials";  // OPCD, SetMeshEditorDLL: acts on Selection.gameObjects
         const string GrassRendererType = "StixGames.GrassShader.GrassRenderer";
 
@@ -43,22 +47,36 @@ namespace GolfMap.Editor
             var plan = Sync(true, false, true);
             int stale = ((List<object>)plan["stale"]).Count;
             bool prune = stale > 0 && EditorUtility.DisplayDialog("Sync course meshes",
-                stale + " object(s) under '" + plan["parent"] + "' have lost their FBX (see the Console). Delete them?", "Delete", "Keep");
+                stale + " object(s) under '" + plan["parent"] + "' no longer have an FBX (see the Console). Delete them?", "Delete", "Keep");
+            if (plan.ContainsKey("leftoversHint")) Debug.LogWarning("[GolfMap Meshes] " + plan["leftoversHint"]);
+            if (plan.ContainsKey("warnings")) foreach (var w in (List<object>)plan["warnings"]) Debug.LogWarning("[GolfMap Meshes] " + w);
             Log(Sync(false, prune, true));
         }
 
-        [BridgeCommand("golfmap.meshes.sync", "Bring the scene's course meshes in step with the course's FBX folder (Blender export): refresh the asset database (FBX overwritten in place update their scene objects by themselves), add every FBX without a scene object under the course's mesh parent with a MeshCollider and OPCD's Set Default Materials, report objects whose FBX is gone (delete with prune), re-run vertex paint where a painted mesh's FBX is newer than its copy. Marks the scene dirty, does not save it.",
-            args = "dryRun=false (plan only), prune=false (delete objects whose FBX is gone), paint=true, folder (under Assets; default: the course's meshFolder), parent (default: the course's meshParent)")]
-        static object Command(BridgeArgs a)
+        [MenuItem("GolfMap/Meshes/Rebuild all from FBX folder")]
+        static void RebuildMenu()
         {
-            return Sync(a.Bool("dryRun", false), a.Bool("prune", false), a.Bool("paint", true), a.String("folder"), a.String("parent"));
+            if (!EditorUtility.DisplayDialog("Rebuild course meshes", "Delete every course mesh object and add it again from the FBX folder (collider, OPCD Set Default Materials, vertex paint)?", "Rebuild", "Cancel")) return;
+            Log(Sync(false, true, true, null, null, true));
         }
 
-        public static Dictionary<string, object> Sync(bool dryRun, bool prune, bool paint, string folderName = null, string parentName = null)
+        [BridgeCommand("golfmap.meshes.sync", "Bring the scene's course meshes in step with the course's FBX folder (Blender export) the way deleting and re-adding them by hand does, but only where something changed: an FBX whose content changed since the last sync (file size+time) has its object deleted and added again, new FBX are added (under the course's mesh parent, MeshCollider, OPCD's Set Default Materials), objects that show no current FBX are stale (deleted with prune), then vertex paint is applied again. The first sync only records the scene (replaceAll rebuilds everything). FBX the Blender manifest does not list (leftovers of an older .blend) are never added. Marks the scene dirty, does not save it.",
+            args = "dryRun=false (plan only), prune=false (delete stale objects), paint=true, replaceAll=false, folder (under Assets; default: the course's meshFolder), parent (default: the course's meshParent), exclude (comma-separated FBX name prefixes; default: the course's meshExclude)")]
+        static object Command(BridgeArgs a)
+        {
+            return Sync(a.Bool("dryRun", false), a.Bool("prune", false), a.Bool("paint", true), a.String("folder"), a.String("parent"), a.Bool("replaceAll", false), a.String("exclude"));
+        }
+
+        public static Dictionary<string, object> Sync(bool dryRun, bool prune, bool paint, string folderName = null, string parentName = null, bool replaceAll = false, string excludePrefixes = null)
         {
             var course = GolfMapCourses.Require();
             var folder = "Assets/" + (folderName ?? course.meshFolder).Trim('/', '\\').Replace('\\', '/');
             var parentObject = parentName ?? course.meshParent;
+            // Read everything from the course now: OPCD's Set Default Materials saves assets and unloads
+            // unused ones, and the course asset (referenced by nothing in the scene) goes with them.
+            var courseFolder = GolfMapCourses.Folder(course);
+            var exclude = (excludePrefixes ?? course.meshExclude ?? "").Split(',').Select(x => x.Trim()).Where(x => x.Length > 0).ToArray();
+            course = null;
             if (!AssetDatabase.IsValidFolder(folder)) throw new InvalidOperationException("Course mesh folder " + folder + " does not exist (course.meshFolder).");
             AssetDatabase.Refresh();  // imports what the export rewrote, like focusing Unity would
 
@@ -68,33 +86,51 @@ namespace GolfMap.Editor
             var all = scene.GetRootGameObjects().SelectMany(r => r.GetComponentsInChildren<Transform>(true)).Select(t => t.gameObject).ToList();
             var parent = all.FirstOrDefault(g => g.transform.parent == null && g.name == parentObject)
                       ?? all.FirstOrDefault(g => g.name == parentObject);
+            var underParent = parent == null ? new List<GameObject>()
+                : parent.GetComponentsInChildren<Transform>(true).Select(t => t.gameObject).Where(g => g != parent).ToList();
 
-            // Which scene objects show which FBX.
+            // Which scene objects show which FBX. Course mesh objects are leaves: the parent, or anything
+            // with children, is never one (replacing it would delete everything under it), even when it
+            // carries a mesh of its own - e.g. a parent made by dragging an FBX in and renaming it.
             var byFile = new Dictionary<string, List<GameObject>>(StringComparer.OrdinalIgnoreCase);
+            var holders = new List<object>();
             foreach (var go in all)
             {
                 var src = SourceFbx(go, folder);
+                if (src != null && (go == parent || go.transform.childCount > 0))
+                {
+                    holders.Add(PathOf(go) + " renders " + Path.GetFileNameWithoutExtension(src) + " itself: it draws twice where that mesh's own object is. Remove its MeshFilter/MeshRenderer/MeshCollider.");
+                    continue;
+                }
                 if (src == null) continue;
                 List<GameObject> list;
                 if (!byFile.TryGetValue(src, out list)) byFile[src] = list = new List<GameObject>();
                 list.Add(go);
             }
-            var missing = files.Where(f => !byFile.ContainsKey(f)).ToList();
+            // The Blender record is only current while no FBX is newer than it (OPCD's own Batch Export
+            // rewrites the files without it); a stale one would hide new meshes as leftovers.
+            var manifest = BlenderExport(folder);
+            bool manifestStale = manifest != null && files.Any(f => File.GetLastWriteTimeUtc(f) > File.GetLastWriteTimeUtc(folder + "/" + BlenderManifest).AddSeconds(2));
+            if (manifestStale) manifest = null;
+            var leftovers = manifest == null ? new List<string>() : files.Where(f => !manifest.ContainsKey(Path.GetFileNameWithoutExtension(f))).ToList();
+            Func<string, bool> excluded = f => f != null && exclude.Any(x => Path.GetFileNameWithoutExtension(f).StartsWith(x, StringComparison.Ordinal));
+            var skipped = files.Where(excluded).ToList();
+            leftovers = leftovers.Where(f => !excluded(f)).ToList();
+            var current = files.Where(f => !leftovers.Contains(f) && !excluded(f)).ToList();
+            var versions = current.ToDictionary(f => f, Version, StringComparer.OrdinalIgnoreCase);
+
+            var statePath = courseFolder + StateFile;
+            var previous = LoadState(statePath, folder);
+            var missing = current.Where(f => !byFile.ContainsKey(f)).ToList();
+            var changed = current.Where(f => byFile.ContainsKey(f) &&
+                (replaceAll || (previous != null && (!previous.ContainsKey(f) || previous[f] != versions[f])))).ToList();
+            // Stale: a course mesh object under the parent that shows no current FBX. Its mesh reads
+            // null once the FBX is deleted, but a painted copy keeps rendering, so that alone is not enough.
+            // Objects showing an excluded FBX (course.meshExclude, e.g. OPCD's Gap_Issue markers) go the same way.
+            var stale = underParent.Where(g => g.transform.childCount == 0 && g.GetComponent<MeshFilter>() != null &&
+                (SourceFbx(g, folder) == null || excluded(SourceFbx(g, folder)))).ToList();
             var duplicates = byFile.Where(kv => kv.Value.Count > 1)
                 .Select(kv => (object)new Dictionary<string, object> { { "fbx", kv.Key }, { "objects", kv.Value.Select(g => (object)PathOf(g)).ToList() } }).ToList();
-            var stale = parent == null ? new List<GameObject>() : parent.GetComponentsInChildren<Transform>(true)
-                .Select(t => t.gameObject).Where(g => g != parent && LostMesh(g)).ToList();
-
-            // Updated in place since the last sync (report only; Unity already reimported them).
-            var statePath = GolfMapCourses.Folder(course) + StateFile;
-            var previous = LoadState(statePath, folder);
-            var now = files.ToDictionary(f => f, Stamp, StringComparer.OrdinalIgnoreCase);
-            var updated = previous == null ? new List<string>()
-                : files.Where(f => previous.ContainsKey(f) && previous[f] != now[f]).ToList();
-
-            // Painted copies older than their FBX.
-            var paintedFolder = GolfMapCourses.Folder(course) + PaintedFolder;
-            var stalePaint = all.Where(g => PaintIsStale(g, folder, paintedFolder)).Select(g => (object)PathOf(g)).ToList();
 
             var result = new Dictionary<string, object>
             {
@@ -102,15 +138,25 @@ namespace GolfMap.Editor
                 { "folder", folder },
                 { "parent", parentObject },
                 { "dryRun", dryRun },
-                { "fbx", files.Count },
-                { "inScene", files.Count - missing.Count },
-                { "updatedSinceLastSync", previous == null ? (object)"no record yet (first sync)" : updated.Select(f => (object)Path.GetFileNameWithoutExtension(f)).ToList() },
+                { "fbx", current.Count },
+                { "excluded", skipped.Count },
+                { "firstSync", previous == null && !replaceAll },
                 { "added", missing.Select(f => (object)Path.GetFileNameWithoutExtension(f)).ToList() },
+                { "replaced", changed.Select(f => (object)Path.GetFileNameWithoutExtension(f)).ToList() },
                 { "stale", stale.Select(g => (object)PathOf(g)).ToList() },
                 { "duplicates", duplicates },
-                { "stalePaint", stalePaint },
+                { "leftovers", manifest == null ? (object)(manifestStale
+                        ? "not checked: FBX were written after " + BlenderManifest + " (e.g. by OPCD's Batch Export)"
+                        : "not checked: no " + BlenderManifest + " (Blender FBX sync not used on this folder)")
+                    : leftovers.Select(f => (object)new Dictionary<string, object> {
+                        { "fbx", Path.GetFileNameWithoutExtension(f) },
+                        { "objects", byFile.ContainsKey(f) ? byFile[f].Select(g => (object)PathOf(g)).ToList() : new List<object>() } }).ToList() },
             };
-            if (parent == null && missing.Count > 0) result["parentCreated"] = true;
+            if (holders.Count > 0) result["warnings"] = holders;
+            if (leftovers.Count > 0)
+                result["leftoversHint"] = leftovers.Count + " FBX are not exported by the current .blend: run Export changed FBX in Blender with 'Delete FBX of removed meshes' ticked, then sync again.";
+            if (previous == null && !replaceAll)
+                result["firstSyncNote"] = "No record of a previous sync: the scene's existing objects are taken as current and recorded. Use Rebuild all (replaceAll=true) if they may be out of date.";
             if (dryRun) return result;
 
             Undo.IncrementCurrentGroup();
@@ -118,18 +164,26 @@ namespace GolfMap.Editor
             Undo.SetCurrentGroupName("Sync course meshes");
             var errors = new List<object>();
             var created = new List<GameObject>();
-            if (missing.Count > 0 && parent == null)
+            if (missing.Count + changed.Count > 0 && parent == null)
             {
                 parent = new GameObject(parentObject);
                 Undo.RegisterCreatedObjectUndo(parent, "Sync course meshes");
             }
-            foreach (var file in missing)
+            foreach (var file in missing.Concat(changed))
             {
                 var model = AssetDatabase.LoadAssetAtPath<GameObject>(file);
                 if (model == null) { errors.Add(file + ": Unity did not import it as a model."); continue; }
+                // A replaced object keeps its place under its parent.
+                List<GameObject> old;
+                byFile.TryGetValue(file, out old);
+                var place = old != null ? old[0].transform : null;
+                var at = place != null && place.parent != null ? place.parent : parent.transform;
+                int index = place != null ? place.GetSiblingIndex() : -1;
+                if (old != null) foreach (var g in old) Undo.DestroyObjectImmediate(g);
                 var go = (GameObject)PrefabUtility.InstantiatePrefab(model, scene);
                 Undo.RegisterCreatedObjectUndo(go, "Sync course meshes");
-                go.transform.SetParent(parent.transform, false);
+                go.transform.SetParent(at, false);
+                if (index >= 0) go.transform.SetSiblingIndex(index);
                 go.transform.localPosition = Vector3.zero;
                 go.transform.localRotation = Quaternion.identity;
                 var filter = go.GetComponent<MeshFilter>();
@@ -150,16 +204,40 @@ namespace GolfMap.Editor
             Undo.CollapseUndoOperations(undoGroup);
 
             // Painting reads the FBX colours, so it runs after the new objects exist.
-            bool paintNeeded = stalePaint.Count > 0 || (created.Count > 0 && File.Exists(GolfMapCourses.Folder(course) + PaintFile));
-            if (paint && paintNeeded) result["paint"] = GolfMapVertexPaint.Apply(false);
+            if (paint && created.Count > 0 && File.Exists(courseFolder + PaintFile)) result["paint"] = Summary(GolfMapVertexPaint.Apply(false));
 
             if (created.Count > 0 || (prune && stale.Count > 0)) EditorSceneManager.MarkSceneDirty(scene);
-            SaveState(statePath, folder, now);
+            SaveState(statePath, folder, versions);
 
             result["prunedStale"] = prune && stale.Count > 0;
             result["errors"] = errors;
-            result["followUps"] = FollowUps(created, missing.Count > 0 || updated.Count > 0 || (prune && stale.Count > 0));
+            result["followUps"] = FollowUps(created, created.Count > 0 || (prune && stale.Count > 0));
             return result;
+        }
+
+        // What the scene object was built from: the file's size and time. The Blender FBX sync only
+        // rewrites changed meshes; OPCD's Batch Export rewrites all, which then all get replaced.
+        static string Version(string file)
+        {
+            var info = new FileInfo(file);
+            return info.Length + "@" + info.LastWriteTimeUtc.Ticks;
+        }
+
+        static Dictionary<string, object> Summary(Dictionary<string, object> paint)
+        {
+            return paint.Where(kv => kv.Key != "meshes").ToDictionary(kv => kv.Key, kv => kv.Value);
+        }
+
+        // Name -> fingerprint of what the current .blend exports (the Blender FBX sync's manifest); null without one.
+        static Dictionary<string, string> BlenderExport(string folder)
+        {
+            var path = folder + "/" + BlenderManifest;
+            if (!File.Exists(path)) return null;
+            var files = GolfMapJsonDoc.ParseObject(File.ReadAllText(path)).Object("files");
+            if (files == null) return null;
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var key in files.keys) map[key] = files.String(key) ?? "";
+            return map;
         }
 
         // The FBX (under folder) an object's mesh comes from: the collider keeps the
@@ -186,16 +264,6 @@ namespace GolfMap.Editor
             return collider == null || collider.sharedMesh == null;
         }
 
-        static bool PaintIsStale(GameObject go, string folder, string paintedFolder)
-        {
-            var filter = go.GetComponent<MeshFilter>();
-            if (filter == null || filter.sharedMesh == null) return false;
-            var copy = AssetDatabase.GetAssetPath(filter.sharedMesh);
-            if (!copy.StartsWith(paintedFolder, StringComparison.OrdinalIgnoreCase)) return false;
-            var src = SourceFbx(go, folder);
-            return src != null && File.GetLastWriteTimeUtc(src) > File.GetLastWriteTimeUtc(copy);
-        }
-
         static List<object> FollowUps(List<GameObject> created, bool meshesChanged)
         {
             var list = new List<object>();
@@ -212,12 +280,6 @@ namespace GolfMap.Editor
         static bool IsRough(string name)
         {
             return name.StartsWith("Spline_", StringComparison.Ordinal) && GolfMapSurfaces.Classify(name) == GolfMapSurfaces.Surface.Rough;
-        }
-
-        static string Stamp(string file)
-        {
-            var info = new FileInfo(file);
-            return info.Length + "@" + info.LastWriteTimeUtc.Ticks;
         }
 
         static Dictionary<string, string> LoadState(string path, string folder)

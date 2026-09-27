@@ -149,6 +149,73 @@ one density rule (multiplier 1, since the density is baked into the pixels) and 
 against its own channel. The zone type's texture and channel no longer matter, and channels are
 allocated per item on every export (`unity-zones-v2`).
 
+**D-VZ12. Zones add up: Mix and extra palettes.** Added 2026-09-27. Two cases the stack could
+not say: a pond with its own palette and reeds or lily pads growing in parts of it, and tall
+grass with rocks scattered through it. In both, the lower palette must keep growing where the
+upper one is. With D-VZ3's budget the later zone took its weight from the one below, so the
+reeds pushed the pond palette out.
+A zone now has `blend`: `replace` (absent, the old rule) or `mix`. A mix zone raises its own slot
+exactly as before but takes nothing from the budget, so the zones below keep their share and both
+slots are non-zero there. Their items then sum per item as in D-VZ11 (an item in both mixes gets
+both densities, clipped to 1). A replace zone above a mix zone still cuts it, so the stack order
+keeps its meaning. Replace stays the default because the generators rely on it: the creek-bank
+zones sit on top of the tall rough and claim the bank, and the rough fills in where they fade.
+A zone can also plant several palettes on one footprint: `extraPalettes` lists more slots with a
+weight factor each, and they rasterize as mix layers on the zone's own weight raster
+(`weight × feather ramp × factor`), before the zone's primary palette takes its share. That is
+the same as drawing the same polygon again as a mix zone, without the copy to keep in sync.
+Feature attributes are flat scalars (server), so `extraPalettes` is one string,
+`"shrub/rocks=0.4, fern"`: comma-separated `<type>[/<variant>][=<weight 0..1>]`, the pipeline's
+slot notation (`shared/features/zone-layers.ts`, mirrored in `gspro.py`).
+Hand-drawn `creek_bank` zones are still creek sections (they pick a creek's bank palette and are
+not rasterized), whatever their blend; their extra palettes are ignored with them.
+
+**D-VZ13. Update selected zones without planting everything.** Added 2026-09-27. Planting runs
+the generators, rasterizes every zone into all the 4096 masks, and has Unity reimport all of them
+and respawn the whole terrain. For an edit to a few drawn zones only their area needs any of that.
+"Update in Unity" on the selected zones re-rasterizes the window they cover, now and in the last
+export (the rows of the zones JSON, so a moved zone's old spot clears), plus zones that export has
+and the course no longer has. The window is exact: each zone's weight still comes from its own
+crop, clipped only to the window plus its `feather / 2 + noise`, beyond which a pixel's weight does
+not depend on the edge. The stack is resolved per pixel, so the patched masks equal a full export
+(tested pixel for pixel, also on Vreta). Unity reimports only the textures that changed and clears
+VSP's cache only in the window. On Vreta a 68 m zone took 2.4 s in the pipeline and 3.5 s for the
+whole job with nothing to change, against minutes for a planting. The channel layout cannot move
+in a patch: when the zone types' item bindings changed since a terrain's export, that terrain is
+skipped (the outer, which planting does not refresh, often is), and when every terrain is, the
+job asks for Plant vegetation. Unity must be open first, so the export and the scene cannot drift
+apart silently.
+Revised 2026-09-27: a hand-drawn creek_bank zone is a creek section only within a creek's or
+water's bank reach + 10 m of it (`gspro.creek_section_ids`, the creek-bank generator's own
+`near_sections` reach); farther away it plants its palette like any zone. A section plants
+nothing itself: the creek-bank generator does, from its palette. So when the selection holds a
+hand-drawn creek_bank zone, the update runs that generator first (only it, the last in the
+stack, about 4 s on Vreta). A generator replaces its zones under new ids, so the patch matches
+zones the export has not seen against vanished rows by content: an identical one is the same
+zone renamed and patches nothing, the rest (and any zone drawn since the export, selected or
+not) are patched in. On Vreta, switching a pond's section to Lush patched 111 zones (529
+renamed) in 35 s, with Unity respawning 748 x 133 m in 2.2 s.
+
+**D-VZ14. Drawn zones sit over generated ones and add up with each other; a hole is a folder.**
+Added 2026-09-27. Two things made filing zones under holes go wrong. The export stacks by group
+(holes 1, 2, ... then course level on top), so a zone moved into a hole dropped under every
+course-level zone, and the generated ones (tall rough, creek banks, lidar) are all course level.
+And each planting re-inserts the generated zones at the top of the course-level stack, so they
+already beat the drawn zones there. On Vreta the one drawn shrub thicket lost about 3,100 m² to
+them. The hole field also sat next to the stack panel's scope filter, two lookalike "Course level
+(top)" selects, and picking Course level in the wrong one moved the zone back (the edit history
+showed each move to hole 15 undone that way within seconds).
+The rule now is: drawn zones first, in any order. Each paints its palettes at its weight, and the
+same palette twice takes the maximum. Where they overlap, all of them grow. A drawn zone's `blend`
+says what it does to the generated vegetation under it: `replace` takes its weight of that ground
+(two overlapping drawn replace zones take the larger weight, not the sum), and `mix` ("Add to it")
+grows on top of it. The generated zones then share what is left with the section 6 budget in their
+own stack order, so creek banks still claim over tall rough. Order among drawn zones, and their
+hole, change nothing, so a zone's hole is only where it is filed. The web says so: the selection
+panel calls it "Hole (folder)", the Vegetation stack panel defaults to "All zones, by hole" with a
+heading per hole and each zone named by what it plants ("Creek bank · Vass (common reed) + 1 ·
+adds"), and zones get no raise/lower verbs.
+
 ## 4. VSPro mechanics used
 
 - A texture mask group binds one texture channel over a world rectangle. A texture
@@ -193,6 +260,11 @@ priority field). It has no gameplay meaning. Strategy and clearance ignore it. `
 `feather` and `noise` are per-feature properties edited in the selection panel; `zoneType`
 is chosen from the course's table.
 
+Layers (D-VZ12): `blend` (`replace` | `mix`, absent = replace) and `extraPalettes` (a string,
+see D-VZ12) are two more per-feature attributes, edited in the selection panel as Overlap and
+"Also plants". The export's zone rows carry both (`extraPalettes` as
+`[{zoneType, variant, weight}]`); Unity ignores them, since the masks already hold the result.
+
 Variants (D-VZ11): `course_zone_types.variants_json` holds `[{key, name, items}]` per type
 (migration 022). The type's own `items` are the Default mix. A zone's optional `zoneVariant`
 attribute names a variant key, and absent or empty means Default. The selection panel shows a
@@ -224,7 +296,13 @@ weight 0.3 stays 0.3, and a feather ramp stays a ramp. Where nothing is drawn ev
 channel is zero.
 
 Revised 2026-09-24 (D-VZ11): "zone type" above reads "slot", meaning a type's Default or one
-of its variants, so two variants of one type crossfade like two types. The slot weights are
+of its variants, so two variants of one type crossfade like two types.
+Revised 2026-09-27 (D-VZ12): a mix zone takes nothing from the budget, so the slots can sum above
+one where a mix zone overlaps others; a zone's extra palettes are mix layers on its own weight
+raster, scaled by their factor, applied before its primary slot claims its share.
+Revised 2026-09-27 (D-VZ14): the budget above is for the generated zones only. Drawn zones are
+applied first and add up (maximum per slot); their replace weights, combined as a maximum, are
+taken out of the budget the generated zones start with. The slot weights are
 then projected onto items: `density(item) = min(1, Σ weight(slot) × maxDensity(item, slot))`
 over the slots that bind the item. Every bound item gets a channel, even one with no coverage
 on this terrain, so the Unity import always replaces its rules.

@@ -22,13 +22,13 @@ const StartInput = Type.Object({
     kind: Type.Union([
         Type.Literal('svg'), Type.Literal('ortho'), Type.Literal('outer-ortho'),
         Type.Literal('dem'), Type.Literal('unity-terrain'), Type.Literal('unity-sculpt'), Type.Literal('hillshade'), Type.Literal('trees'), Type.Literal('buildings'),
-        Type.Literal('zones'), Type.Literal('creeks'), Type.Literal('gkd'),
+        Type.Literal('zones'), Type.Literal('vegetation'), Type.Literal('vegetation-update'), Type.Literal('creeks'), Type.Literal('gkd'),
     ]),
     /** `ortho`: a `source` file name from `orthoSources`. */
     source: Type.Optional(Type.String()),
     /** `outer-ortho`: Lantmäteriet collection to fetch the outer square from, e.g. `orto-l2-2025`. */
     collection: Type.Optional(Type.String()),
-    /** `dem`, `hillshade`, `trees`, `buildings`, `zones`: which GSPro terrain. */
+    /** `dem`, `hillshade`, `trees`, `buildings`, `zones`, `vegetation`: which GSPro terrain. */
     terrain: Type.Optional(TerrainInput),
     /** `ortho`, `outer-ortho`: light multiplier for the `-terrain` texture twin (linear light); omitted = the server default. */
     darken: Type.Optional(Type.Number({ minimum: 0.05, maximum: 1 })),
@@ -48,6 +48,8 @@ const StartInput = Type.Object({
     excludeFeatureIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 200000 })),
     /** `svg`: variant name; the file becomes `<course>-<variant>.svg` instead of overwriting `<course>.svg`. */
     variant: Type.Optional(Type.String({ maxLength: 60 })),
+    /** `vegetation-update`: the vegetation_zone feature ids to update in Unity (re-rasterize their area, patch the masks, respawn there). */
+    zoneIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 5000 })),
 });
 
 const JobInput = Type.Object({

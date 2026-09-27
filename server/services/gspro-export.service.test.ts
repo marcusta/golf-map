@@ -18,6 +18,8 @@ import { TerrainEditsService } from './terrain-edits.service';
 import { innerSquareFrom3006, outerSquareFor, squareArg, terrainManifestField, toSquareBox, OUTER_TERRAIN_SIDE_M } from './terrain-square';
 import { defaultUnityBridge, type UnityBridge } from './unity-bridge';
 import { NotFoundError, ConflictError } from '@basics/core/server/auth';
+import { CourseFeaturesService } from './course-features.service';
+import { generatorsFrom } from './vegetation-generators';
 
 /**
  * The real exporter is pinned by pipeline/tests/test_gspro_svg.py; here the
@@ -219,6 +221,36 @@ test('an SVG variant leaves the excluded features out, into its own file', async
     expect(res.report).toContain('excluded on request: 2 feature(s) - path 2');
 });
 
+test('a full SVG export is kept with the features it was made from; a variant is not', async () => {
+    const runner: ExportRunner = async (args) => {
+        await writeFile(args[args.indexOf('--out') + 1], '<svg/>');
+        return { code: 0, stdout: 'Wrote out.svg\n', stderr: '' };
+    };
+    const { svc } = await setup(runner);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await svc.setDir(TEST_COURSE_ID, dir);
+
+    const full = await svc.export(TEST_COURSE_ID);
+    await svc.export(TEST_COURSE_ID, { variant: 'No paths', excludeFeatureIds: ['a'] });
+
+    const kept = await readdir(path.join(dir, 'export-history'));
+    expect(kept).toHaveLength(1);
+    expect((await readdir(path.join(dir, 'export-history', kept[0]))).sort()).toEqual(['features.json', 'linkan.svg']);
+    expect(full.report).toContain(`kept as ${path.join('export-history', kept[0])}`);
+});
+
+test('an SVG from a variant database reads its features from there and is not kept', async () => {
+    const { calls, runner } = recordingRunner();
+    const { svc } = await setup(runner);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await svc.setDir(TEST_COURSE_ID, dir);
+
+    await svc.export(TEST_COURSE_ID, { variant: 'bisect 1', dbPath: '/tmp/variant.sqlite' });
+
+    expect(flag(calls[0].args, '--db')).toBe('/tmp/variant.sqlite');
+    expect(existsSync(path.join(dir, 'export-history'))).toBe(false);
+});
+
 test('an SVG export with nothing excluded passes no exclusion list', async () => {
     const { calls, runner } = recordingRunner();
     const { svc } = await setup(runner);
@@ -312,7 +344,8 @@ test('the exporter report comes back for the operator to read', async () => {
     const { runner } = recordingRunner({ stdout: 'Wrote x.svg\n  200 features in 19 layer(s)\n  warning: 5 outside\n' });
     const { svc } = await setup(runner);
     const res = await svc.export(TEST_COURSE_ID);
-    expect(res.report).toEqual(['Wrote x.svg', '200 features in 19 layer(s)', 'warning: 5 outside']);
+    expect(res.report.slice(0, 3)).toEqual(['Wrote x.svg', '200 features in 19 layer(s)', 'warning: 5 outside']);
+    expect(res.report[3]).toMatch(/^kept as export-history/);  // the full export's snapshot
 });
 
 // --- Orthophoto sources ---
@@ -867,7 +900,7 @@ test('start runs an export as a job the panel polls, one at a time per course', 
     const done = t.svc.job(job.id);
     expect(done.status).toBe('succeeded');
     expect(done.result?.path).toBe(path.join(dir, 'linkan.svg'));
-    expect(done.result?.report).toEqual(['Wrote out.svg', '200 features']);
+    expect(done.result?.report.slice(0, 2)).toEqual(['Wrote out.svg', '200 features']);
     expect(done.finishedAt).not.toBeNull();
     expect(t.svc.current(TEST_COURSE_ID)?.status).toBe('succeeded');
     // Returned jobs are snapshots: the caller cannot mutate the service's copy.
@@ -1337,6 +1370,339 @@ test('unity-sculpt captures in Unity, makes the GeoTIFF and stores it as the ter
         expect(cleared.report[0]).toBe("Unity Terrain (Inner): nothing sculpted since golf-map's heights went in; the previous sculpt layer is removed");
         expect(await new TerrainEditsService(t.db).listBySite(SITE_ID)).toHaveLength(0);
         expect(existsSync(tif)).toBe(false);
+    } finally {
+        server.stop(true);
+    }
+});
+
+
+// --- Plant vegetation (generators -> zones export -> Unity) ---
+
+/** A runner standing in for the vegetation generators and `gspro.py zones`: each writes its --out. */
+function vegetationRunner(zones: Record<string, Record<string, unknown>[]>) {
+    const runs: string[][] = [];
+    const runner: ExportRunner = async args => {
+        runs.push(args);
+        const out = args[args.indexOf('--out') + 1]!;
+        const script = path.basename(args[0]!);
+        if (script in zones) {
+            const source = script === 'grass_zones.py' ? 'tall-grass' : 'creek-bank';
+            await writeFile(out, JSON.stringify({
+                type: 'FeatureCollection',
+                features: zones[script]!.map((p, i) => ({
+                    type: 'Feature',
+                    geometry: { type: 'Polygon', coordinates: [[[529500 + i, 6487500], [529510 + i, 6487500], [529510 + i, 6487510], [529500 + i, 6487500]]] },
+                    properties: { type: 'vegetation_zone', source, weight: 1, feather: 1, noise: 0, ...p },
+                })),
+            }));
+            return { code: 0, stdout: `  ${script}: ${zones[script]!.length} zones\n`, stderr: '' };
+        }
+        await writeFile(out, '{}');
+        return { code: 0, stdout: '  wrote zones\n', stderr: '' };
+    };
+    return { runs, runner };
+}
+
+test('vegetation: every generator in stack order, replacing only its own zones, then the zones export and the import in Unity', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const unity: Array<{ command: string; args: unknown }> = [];
+    let applies = 0;
+    const server = Bun.serve({
+        port: 0,
+        async fetch(req) {
+            const command = decodeURIComponent(new URL(req.url).pathname.replace('/cmd/', ''));
+            unity.push({ command, args: await req.json() });
+            if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name: 'Linkan', exportFolder: exportDir } } });
+            if (command === 'golfmap.zones.import') return Response.json({ ok: true, result: { status: 'Imported 3 zone groups' } });
+            // The first apply adds a new species (no mask rules yet at that import); later ones add nothing.
+            const log = ++applies === 1 ? ["added item 'Creek vass - reed stand'"] : [];
+            return Response.json({ ok: true, result: { system: 'Inner VSP', items: [{}, {}], log } });
+        },
+    });
+    writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({ pid: process.pid, port: server.port!, token: 'tok', projectPath: 'D:/unity/linkan', projectName: 'linkan_v4', unityVersion: '', started: '' }));
+    const { runs, runner } = vegetationRunner({
+        'grass_zones.py': [{ zoneType: 'rough_tall' }, { zoneType: 'rough_tall', weight: 0.5 }],
+        // A creek_bank section left on Default, which binds nothing.
+        'creek_bank_zones.py': [{ zoneType: 'creek_bank', zoneVariant: '' }],
+    });
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        const sources = await buildSite(t, []);
+        await writeFile(path.join(sources, 'buildings.geojson'), '{}');
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+        await writeFile(path.join(exportDir, 'linkan-inner-surfaces.json'), '{}');
+        await writeFile(path.join(exportDir, 'linkan-inner-dem-2050m.tif.json'), '{}');
+        const features = new CourseFeaturesService(t.db);
+        const drawn = await features.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone',
+            geometry: { crs: 'EPSG:3006', rings: [{ points: [{ x: 529400, y: 6487400 }, { x: 529420, y: 6487400 }, { x: 529420, y: 6487420 }] }] },
+            attributes: { zoneType: 'creek_bank', zoneVariant: '', weight: 1, feather: 2, noise: 0 },
+        });
+
+        for (const round of [1, 2]) {
+            const job = await t.svc.start(TEST_COURSE_ID, { kind: 'vegetation', terrain: 'inner' });
+            expect(job.label).toBe('inner vegetation, planted into Unity');
+            await t.svc.whenIdle(TEST_COURSE_ID);
+            const done = t.svc.job(job.id);
+            expect(done.error).toBeNull();
+            if (round === 1) {
+                const report = done.result!.report;
+                expect(report).toContain('tall rough: replaced 0 zones with 2');
+                expect(report).toContain('creek banks: replaced 0 zones with 1');
+                expect(report).toContain('warning: 1 creek_bank zones use its Default mix, which has no items: nothing grows there - pick a palette that has items');
+                expect(report).toContain("Unity (linkan_v4): imported linkan-inner-zones.json into 'GolfMap lower vegetation' - Imported 3 zone groups");
+                expect(report).toContain('Unity (linkan_v4): grass palettes applied (2 items on Inner VSP)');
+                expect(report.at(-1)).toBe('Save the scene in Unity to keep it.');
+            }
+        }
+        // Generators in stack order, then the zones export; each gets the course's inputs.
+        expect(runs.map(a => path.basename(a[0]!) + (a[1] === 'zones' ? ' zones' : ''))).toEqual([
+            'grass_zones.py', 'creek_bank_zones.py', 'gspro.py zones', 'grass_zones.py', 'creek_bank_zones.py', 'gspro.py zones',
+        ]);
+        expect(flag(runs[0]!, '--surfaces')).toBe(path.join(exportDir, 'linkan-inner-surfaces.json'));
+        expect(flag(runs[0]!, '--buildings')).toBe(path.join(sources, 'buildings.geojson'));
+        expect(flag(runs[1]!, '--course')).toBe(TEST_COURSE_ID);
+        // Run 1: the new item gets a second import + apply round to bind and spawn; run 2: one round.
+        const importAndApply = [
+            { command: 'golfmap.zones.import', args: { terrain: 'inner', package: 'GolfMap lower vegetation' } },
+            { command: 'golfmap.grass.apply', args: { terrain: 'inner' } },
+        ];
+        expect(unity.filter(c => c.command !== 'golfmap.course')).toEqual([...importAndApply, ...importAndApply, ...importAndApply]);
+        // A re-run replaced its own zones; the hand-drawn one stays.
+        const zones = (await features.listByCourse(TEST_COURSE_ID)).filter(f => f.type === 'vegetation_zone');
+        expect(zones.filter(f => f.source === 'tall-grass')).toHaveLength(2);
+        expect(zones.filter(f => f.source === 'creek-bank')).toHaveLength(1);
+        expect(zones.some(f => f.id === drawn.id)).toBe(true);
+    } finally {
+        server.stop(true);
+    }
+});
+
+test('vegetation without the surface map or an open Unity: what can run does, the rest is reported, the job still succeeds', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const { runs, runner } = vegetationRunner({ 'grass_zones.py': [{ zoneType: 'rough_tall' }] });
+    const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+    await buildSite(t, []);
+    await t.svc.setDir(TEST_COURSE_ID, exportDir);
+    await writeFile(path.join(exportDir, 'linkan-inner-dem-2050m.tif.json'), '{}');
+
+    const res = await t.svc.plantVegetation(TEST_COURSE_ID, 'inner');
+    expect(runs.map(a => path.basename(a[0]!))).toEqual(['grass_zones.py', 'gspro.py']);
+    expect(flag(runs[0]!, '--surfaces')).toBeUndefined();
+    expect(res.report).toContain("tall rough: warning: no surface map from Unity - run golfmap.surfaces.export in the course's Unity project; the drawn features stand in (they miss OPCD's Outer_Deep fill)");
+    expect(res.report).toContain("creek banks: not planted (no surface map from Unity - run golfmap.surfaces.export in the course's Unity project)");
+    expect(res.report.at(-1)).toMatch(/^Not in Unity yet: no open Unity editor imports from .* \(none is open\)/);
+});
+
+test('vegetation generators: a run from one generator re-runs every one after it (the zone stack order holds)', () => {
+    expect(generatorsFrom(undefined).map(g => g.source)).toEqual(['tall-grass', 'creek-bank']);
+    expect(generatorsFrom('creek-bank').map(g => g.source)).toEqual(['creek-bank']);
+    expect(() => generatorsFrom('ferns')).toThrow("No vegetation generator 'ferns' (have: tall-grass, creek-bank)");
+});
+
+
+// --- Update zones in Unity (zones-patch -> golfmap.zones.patch) ---
+
+/** A fake Unity editor for the course's export folder; records every command with its args. */
+function fakeUnity(exportDir: string, discovery: string, patchResult: (args: Record<string, unknown>) => Response = () =>
+    Response.json({ ok: true, result: { status: 'Patched 1 mask texture(s) for 1 zone(s), respawned 68 x 68 m in 640 ms. Save the scene.' } })) {
+    const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
+    const server = Bun.serve({
+        port: 0,
+        async fetch(req) {
+            const command = decodeURIComponent(new URL(req.url).pathname.replace('/cmd/', ''));
+            const args = await req.json() as Record<string, unknown>;
+            calls.push({ command, args });
+            if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name: 'Linkan', exportFolder: exportDir } } });
+            return patchResult(args);
+        },
+    });
+    writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({ pid: process.pid, port: server.port!, token: 'tok', projectPath: 'D:/unity/linkan', projectName: 'linkan_v4', unityVersion: '', started: '' }));
+    return { calls, server };
+}
+
+/** A runner standing in for `gspro.py zones-patch`: writes the --result record with `changed`, or exits with `code` (for `codeFor` terrains only, when given). */
+function patchRunner(changed: Record<string, boolean>, code = 0, codeFor?: string) {
+    const runs: string[][] = [];
+    const runner: ExportRunner = async args => {
+        runs.push(args);
+        const zonesJson = flag(args, '--zones-json')!;
+        const kind = zonesJson.includes('-outer-') ? 'outer' : 'inner';
+        if (code !== 0 && (!codeFor || codeFor === kind)) {
+            return { code, stdout: '', stderr: `error: the zone types' item bindings changed since linkan-${kind}-zones.json was exported` };
+        }
+        await writeFile(flag(args, '--result')!, JSON.stringify({ format: 'unity-zones-patch-v1', changed: changed[kind] ?? false, textures: [] }));
+        return { code: 0, stdout: `Patched ${path.basename(zonesJson)}: 2 zone(s)\n`, stderr: '' };
+    };
+    return { runs, runner };
+}
+
+test('vegetation-update patches each exported terrain for the zones and sends only the changed ones to Unity', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const { calls, server } = fakeUnity(exportDir, discovery);
+    const { runs, runner } = patchRunner({ inner: true, outer: false });
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+        await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
+        await writeFile(path.join(exportDir, 'linkan-outer-zones.json'), '{}');
+
+        const job = await t.svc.start(TEST_COURSE_ID, { kind: 'vegetation-update', zoneIds: ['z1', 'z2'] });
+        expect(job.label).toBe('2 vegetation zone(s) updated in Unity');
+        await t.svc.whenIdle(TEST_COURSE_ID);
+        const done = t.svc.job(job.id);
+        expect(done.error).toBeNull();
+
+        // No generators: one zones-patch per terrain, the outer leaving the inner square out.
+        expect(runs.map(a => [path.basename(a[0]!), a[1]])).toEqual([['gspro.py', 'zones-patch'], ['gspro.py', 'zones-patch']]);
+        expect(flag(runs[0]!, '--ids')).toBe('z1,z2');
+        expect(flag(runs[0]!, '--course')).toBe(TEST_COURSE_ID);
+        expect(flag(runs[0]!, '--result')).toBe(path.join(exportDir, 'linkan-inner-zones-patch.json'));
+        expect(flag(runs[0]!, '--exclude-square')).toBeUndefined();
+        expect(flag(runs[1]!, '--exclude-square')).toBe(squareArg(GEOREF_INNER));
+        // Only the inner masks changed: only they go to Unity.
+        expect(calls.filter(c => c.command !== 'golfmap.course')).toEqual([{
+            command: 'golfmap.zones.patch',
+            args: { terrain: 'inner', patch: path.join(exportDir, 'linkan-inner-zones-patch.json'), package: 'GolfMap lower vegetation' },
+        }]);
+        expect(done.result!.report).toEqual([
+            'inner: Patched linkan-inner-zones.json: 2 zone(s)',
+            'outer: Patched linkan-outer-zones.json: 2 zone(s)',
+            'Unity (linkan_v4): Patched 1 mask texture(s) for 1 zone(s), respawned 68 x 68 m in 640 ms. Save the scene.',
+            'Save the scene in Unity to keep it.',
+        ]);
+    } finally {
+        server.stop(true);
+    }
+});
+
+test('vegetation-update: an outer export older than the bindings is skipped and the inner still goes into Unity', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const { calls, server } = fakeUnity(exportDir, discovery);
+    const { runner } = patchRunner({ inner: true }, 3, 'outer');
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+        await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
+        await writeFile(path.join(exportDir, 'linkan-outer-zones.json'), '{}');
+        const res = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
+        expect(res.report).toContain("outer: skipped - linkan-outer-zones.json is older than the zone types' item bindings, so its channels may have moved; export the outer vegetation zones (or plant) to bring it in step");
+        expect(calls.filter(c => c.command === 'golfmap.zones.patch').map(c => c.args.terrain)).toEqual(['inner']);
+        expect(res.report.at(-1)).toBe('Save the scene in Unity to keep it.');
+    } finally {
+        server.stop(true);
+    }
+});
+
+test('vegetation-update with nothing changed leaves Unity alone', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const { calls, server } = fakeUnity(exportDir, discovery);
+    const { runner } = patchRunner({ inner: false });
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+        await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
+        const res = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
+        expect(res.report.at(-1)).toBe('Nothing changed in the masks, so nothing to take into Unity');
+        expect(calls.map(c => c.command)).toEqual(['golfmap.course']);
+    } finally {
+        server.stop(true);
+    }
+});
+
+test('vegetation-update refuses before patching: no planting yet, Unity not open, or the item bindings moved', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const moved = patchRunner({}, 3);
+    const t = await setup(moved.runner, { unityBridge: defaultUnityBridge(discovery) });
+    await t.svc.setDir(TEST_COURSE_ID, exportDir);
+
+    await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(/No vegetation zones export in .* yet: plant vegetation once first/);
+    await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
+    await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(/Open the course's Unity project first: no open Unity editor imports from/);
+    expect(moved.runs).toHaveLength(0);   // masks patched without Unity would leave the scene behind
+
+    const { calls, server } = fakeUnity(exportDir, discovery);
+    try {
+        await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(
+            "The zone types' item bindings changed since the last planting, so the inner masks' channels may have moved: use Plant vegetation this time");
+        expect(calls.map(c => c.command)).toEqual(['golfmap.course']);
+        await expect(t.svc.start(TEST_COURSE_ID, { kind: 'vegetation-update', zoneIds: [] })).rejects.toThrow('A vegetation-update export needs the zones to update');
+    } finally {
+        server.stop(true);
+    }
+});
+
+test('vegetation-update: a Unity that cannot take the patch says how to catch up', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const { server } = fakeUnity(exportDir, discovery, () =>
+        Response.json({ ok: false, error: "The scene does not hold this zones export's import (no mask group for 'Reed'). Plant vegetation (a full import) instead." }));
+    const { runner } = patchRunner({ inner: true });
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+        await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
+        await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(
+            /The inner masks are updated in .*, but Unity \(linkan_v4\) could not take them: .*no mask group for 'Reed'.*Plant vegetation to bring Unity in step/);
+    } finally {
+        server.stop(true);
+    }
+});
+
+
+test('vegetation-update with a drawn creek_bank zone (a creek section) re-runs only the creek-bank generator first', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const { calls, server } = fakeUnity(exportDir, discovery);
+    const patch = patchRunner({ inner: true });
+    const runs: string[][] = [];
+    const runner: ExportRunner = async (args, cwd) => {
+        if (path.basename(args[0]!) === 'creek_bank_zones.py') {
+            runs.push(args);
+            await writeFile(args[args.indexOf('--out') + 1]!, JSON.stringify({ type: 'FeatureCollection', features: [{
+                type: 'Feature',
+                geometry: { type: 'Polygon', coordinates: [[[529500, 6487500], [529510, 6487500], [529510, 6487510], [529500, 6487500]]] },
+                properties: { type: 'vegetation_zone', source: 'creek-bank', zoneType: 'creek_bank', zoneVariant: 'lush', weight: 1, feather: 1, noise: 0 },
+            }] }));
+            return { code: 0, stdout: '  creek_bank_zones.py: 1 zones\n', stderr: '' };
+        }
+        runs.push(args);
+        return patch.runner(args, cwd);
+    };
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        await buildSite(t, []);
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+        await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
+        await writeFile(path.join(exportDir, 'linkan-inner-surfaces.json'), '{}');
+        const features = new CourseFeaturesService(t.db);
+        const ring = { points: [{ x: 529400, y: 6487400 }, { x: 529420, y: 6487400 }, { x: 529420, y: 6487420 }] };
+        const section = await features.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone', geometry: { crs: 'EPSG:3006', rings: [ring] },
+            attributes: { zoneType: 'creek_bank', zoneVariant: 'lush', weight: 1, feather: 2, noise: 0 },
+        });
+        const shrub = await features.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone', geometry: { crs: 'EPSG:3006', rings: [ring] },
+            attributes: { zoneType: 'shrub', weight: 1, feather: 2, noise: 0 },
+        });
+
+        // A plain zone: no generator.
+        await t.svc.updateZones(TEST_COURSE_ID, [shrub.id]);
+        expect(runs.map(a => path.basename(a[0]!) + (a[1] === 'zones-patch' ? ' zones-patch' : ''))).toEqual(['gspro.py zones-patch']);
+
+        runs.length = 0;
+        const res = await t.svc.updateZones(TEST_COURSE_ID, [section.id, shrub.id]);
+        expect(runs.map(a => path.basename(a[0]!) + (a[1] === 'zones-patch' ? ' zones-patch' : ''))).toEqual(['creek_bank_zones.py', 'gspro.py zones-patch']);
+        expect(flag(runs[0]!, '--surfaces')).toBe(path.join(exportDir, 'linkan-inner-surfaces.json'));
+        expect(res.report).toContain('creek banks: replaced 0 zones with 1');
+        expect((await features.listByCourse(TEST_COURSE_ID)).filter(f => f.source === 'creek-bank')).toHaveLength(1);
+        expect(calls.filter(c => c.command === 'golfmap.zones.patch')).toHaveLength(2);
     } finally {
         server.stop(true);
     }

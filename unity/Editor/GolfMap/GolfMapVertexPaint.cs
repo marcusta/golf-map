@@ -11,14 +11,20 @@
 // (VertexPainterPro) paints into a VertexInstanceStream that only the renderer
 // sees and "bakes" it into a mesh asset for Stix. This tool writes the baked
 // result directly: a mesh copy per painted object under <course>/PaintedMeshes/,
-// swapped into the MeshFilter (the MeshCollider keeps the FBX mesh; colours do not
-// matter to physics), and the Stix NatureMeshFilter cache reset so the grass
+// swapped into the MeshFilter (the MeshCollider keeps the FBX mesh, colours do not
+// matter to physics, unless wall ground changed the shape: see below), and the
+// Stix NatureMeshFilter cache reset so the grass
 // renders from the copy. Paint is always computed from the original FBX colours,
 // so a re-run after tuning or after an FBX re-import gives the same result.
 //
 // The recipe is <course>/paint.json (golfmap-paint-v1), written with defaults on
 // the first run. <course>/PaintedMeshes/restore.json remembers each object's
 // original mesh for restore and re-runs.
+//
+// Stone walls with `ground` (GolfMapWallGround, from <course>/stone-walls.json) reshape
+// the meshes on their banks here too, before the rules paint: the copy is then a
+// new shape (subdivided, raised, painted on the face), and the MeshCollider takes it
+// as well; every other copy leaves the collider on the FBX mesh.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -206,6 +212,8 @@ namespace GolfMap.Editor
 
             var scene = EditorSceneManager.GetActiveScene();
             var filters = CourseMeshes(scene);
+            var ground = GolfMapWallGround.Load(course, filters,
+                f => IsPaintedCopy(f.sharedMesh, meshFolder) ? LoadOriginal(records, PathOf(f.transform)) : f.sharedMesh);
 
             // Edges from the meshes as they are now (blends are never painted by this tool).
             var bunkerEdge = new PointGrid(Mathf.Max(1f, rules.Where(r => r.edge == "bunker").Select(r => r.widthM).DefaultIfEmpty(1f).Max()));
@@ -231,13 +239,17 @@ namespace GolfMap.Editor
                 var surface = GolfMapSurfaces.Classify(f.name);
                 string path = PathOf(f.transform);
                 bool isPainted = IsPaintedCopy(f.sharedMesh, meshFolder);
-                if (!targets.Contains(surface) && !isPainted) continue;
+                bool reshape = ground != null && ground.Touches(f);
+                if (!targets.Contains(surface) && !isPainted && !reshape) continue;
 
                 var source = isPainted ? LoadOriginal(records, path) : f.sharedMesh;
                 if (source == null) { errors.Add(path + ": has a painted mesh but its original is not in " + RestoreFile + "; restore it by hand (reassign the FBX mesh)."); continue; }
+                var shaped = reshape ? ground.Shape(f, source, surface) : null;
+                bool reshaped = shaped != null;  // held: `shaped` is destroyed once copied into an existing asset
+                var baseMesh = shaped ?? source;
 
-                var local = source.vertices;
-                var colors = source.colors;
+                var local = baseMesh.vertices;
+                var colors = baseMesh.colors;
                 if (colors == null || colors.Length != local.Length) colors = Enumerable.Repeat(new Color(1, 0, 0, 1), local.Length).ToArray();
                 int count = 0;
                 var outColors = new Color[local.Length];
@@ -260,11 +272,11 @@ namespace GolfMap.Editor
                 totalVerts += local.Length;
                 totalPainted += count;
 
-                if (count == 0)
+                if (count == 0 && !reshaped)
                 {
                     if (!isPainted) { unchanged++; continue; }
                     reverted++;
-                    if (!dryRun) { SetMesh(f, source); records.Remove(path); }
+                    if (!dryRun) { SetMesh(f, source, source); PutBackMaterial(f, records, path); records.Remove(path); }
                     continue;
                 }
                 if (Component(f, PainterStreamType) != null)
@@ -272,16 +284,32 @@ namespace GolfMap.Editor
                 painted.Add(new Dictionary<string, object> { { "object", f.name }, { "surface", surface.ToString() }, { "vertices", local.Length }, { "painted", count } });
                 if (dryRun) continue;
 
-                var copy = UnityEngine.Object.Instantiate(source);
-                copy.name = source.name + " (painted)";
+                var copy = shaped ?? UnityEngine.Object.Instantiate(source);
+                if (!reshaped) copy.name = source.name + " (painted)";
                 copy.colors = outColors;
                 var assetPath = meshFolder + Safe(f.name) + ".asset";
                 var existing = AssetDatabase.LoadAssetAtPath<Mesh>(assetPath);
                 Mesh saved;
                 if (existing == null) { AssetDatabase.CreateAsset(copy, assetPath); saved = copy; }
                 else { EditorUtility.CopySerialized(copy, existing); UnityEngine.Object.DestroyImmediate(copy); saved = existing; EditorUtility.SetDirty(saved); }
-                SetMesh(f, saved);
-                records[path] = new[] { AssetDatabase.GetAssetPath(source), source.name };
+                SetMesh(f, saved, reshaped ? saved : source);
+                // a reshaped rough draws its stone channel from a copy of its material (the original is remembered)
+                string material = null;
+                var mr = f.GetComponent<MeshRenderer>();
+                if (reshaped && surface == GolfMapSurfaces.Surface.Rough && mr != null)
+                {
+                    var known = RecordMaterial(records, path);
+                    var original = known ?? mr.sharedMaterial;
+                    var stone = ground.StoneMaterial(original);
+                    if (stone != null && stone != original)
+                    {
+                        if (mr.sharedMaterial != stone) { Undo.RecordObject(mr, "Vertex paint"); mr.sharedMaterial = stone; }
+                        material = AssetDatabase.GetAssetPath(original);
+                    }
+                    else if (stone != null && known == null) errors.Add(path + ": renders a walls stone material but its original is not in " + RestoreFile + ".");
+                }
+                if (material == null) PutBackMaterial(f, records, path);
+                records[path] = material == null ? new[] { AssetDatabase.GetAssetPath(source), source.name } : new[] { AssetDatabase.GetAssetPath(source), source.name, material };
             }
 
             if (!dryRun)
@@ -306,6 +334,7 @@ namespace GolfMap.Editor
                 { "checkedVertices", totalVerts },
                 { "reverted", reverted },
                 { "untouched", unchanged },
+                { "ground", ground == null ? null : ground.report },
                 { "meshes", painted },
                 { "warnings", warnings },
                 { "errors", errors },
@@ -331,7 +360,8 @@ namespace GolfMap.Editor
                 var path = PathOf(f.transform);
                 var original = LoadOriginal(records, path);
                 if (original == null) { errors.Add(path + ": original mesh unknown"); continue; }
-                SetMesh(f, original);
+                SetMesh(f, original, original);
+                PutBackMaterial(f, records, path);
                 records.Remove(path);
                 restored++;
             }
@@ -346,7 +376,7 @@ namespace GolfMap.Editor
         {
             return scene.GetRootGameObjects()
                 .SelectMany(r => r.GetComponentsInChildren<MeshFilter>(true))
-                .Where(f => f.sharedMesh != null && f.name.StartsWith("Spline_", StringComparison.Ordinal))
+                .Where(f => f.sharedMesh != null && f.name.StartsWith("Spline_", StringComparison.Ordinal) && !GolfMapWaterplanes.IsWaterPlane(f.name))
                 .OrderBy(f => f.name, StringComparer.Ordinal)
                 .ToList();
         }
@@ -357,11 +387,20 @@ namespace GolfMap.Editor
             return !string.IsNullOrEmpty(p) && p.StartsWith(meshFolder, StringComparison.OrdinalIgnoreCase);
         }
 
-        // Swap the rendered mesh and rebuild the Stix cache from it (the bake).
-        static void SetMesh(MeshFilter f, Mesh mesh)
+        // Swap the rendered mesh and rebuild the Stix cache from it (the bake); the MeshCollider gets `collider`
+        // (the FBX mesh, or a wall-ground copy that changed the shape).
+        static void SetMesh(MeshFilter f, Mesh mesh, Mesh collider)
         {
             Undo.RecordObject(f, "Vertex paint");
             f.sharedMesh = mesh;
+            var mc = f.GetComponent<MeshCollider>();
+            // a reshaped copy is rewritten in place on a re-run: assign it again so the collider cooks the new shape
+            if (mc != null && (mc.sharedMesh != collider || collider == mesh))
+            {
+                Undo.RecordObject(mc, "Vertex paint");
+                mc.sharedMesh = null;
+                mc.sharedMesh = collider;
+            }
             var nmf = Component(f, NatureMeshFilterType);
             if (nmf == null) return;
             Undo.RecordObject(nmf, "Vertex paint");
@@ -391,7 +430,7 @@ namespace GolfMap.Editor
             foreach (var key in meshes.keys)
             {
                 var o = meshes.Object(key);
-                if (o != null) records[key] = new[] { o.String("asset"), o.String("mesh") };
+                if (o != null) records[key] = o.String("material") == null ? new[] { o.String("asset"), o.String("mesh") } : new[] { o.String("asset"), o.String("mesh"), o.String("material") };
             }
             return records;
         }
@@ -401,8 +440,28 @@ namespace GolfMap.Editor
             if (records.Count == 0 && !File.Exists(path)) return;
             var meshes = new Dictionary<string, object>();
             foreach (var kv in records.OrderBy(k => k.Key, StringComparer.Ordinal))
-                meshes[kv.Key] = new Dictionary<string, object> { { "asset", kv.Value[0] }, { "mesh", kv.Value[1] } };
+            {
+                var m = new Dictionary<string, object> { { "asset", kv.Value[0] }, { "mesh", kv.Value[1] } };
+                if (kv.Value.Length > 2) m["material"] = kv.Value[2];
+                meshes[kv.Key] = m;
+            }
             File.WriteAllText(path, GolfMapJson.Serialize(new Dictionary<string, object> { { "format", RestoreFormat }, { "meshes", meshes } }));
+        }
+
+        // The material a wall-ground mesh had before it drew stone (null when it was never swapped).
+        static Material RecordMaterial(Dictionary<string, string[]> records, string objectPath)
+        {
+            string[] r;
+            return records.TryGetValue(objectPath, out r) && r.Length > 2 && !string.IsNullOrEmpty(r[2]) ? AssetDatabase.LoadAssetAtPath<Material>(r[2]) : null;
+        }
+
+        static void PutBackMaterial(MeshFilter f, Dictionary<string, string[]> records, string objectPath)
+        {
+            var original = RecordMaterial(records, objectPath);
+            var mr = f.GetComponent<MeshRenderer>();
+            if (original == null || mr == null || mr.sharedMaterial == original) return;
+            Undo.RecordObject(mr, "Vertex paint");
+            mr.sharedMaterial = original;
         }
 
         static Mesh LoadOriginal(Dictionary<string, string[]> records, string objectPath)

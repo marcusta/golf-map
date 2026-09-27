@@ -8,11 +8,17 @@ import { ServerModeService, visibleEditorTools } from '../app/server-mode.servic
 import { DRAW_TOOL_ID, DrawToolService } from './draw-tool.service';
 import { FeaturesService } from './features.service';
 import { drawTool } from './draw-tool';
+import { VEGETATION_TOOL_ID } from '../zones/vegetation-tool';
 import { SelectionPanelComponent } from './selection-panel.component';
 import { FeatureStackPanelComponent } from './feature-stack-panel.component';
 
 /** Independent of the left dock so each side remembers its own state; shared
  *  across Create ↔ Plan — one "right dock" concept, like the left key. */
+/** The tools the draw engine runs for with the dock's selection + stack panels (Draw, Vegetation). */
+function hostsFeatureStack(tool: EditorTool): boolean {
+    return tool.id === DRAW_TOOL_ID || tool.id === VEGETATION_TOOL_ID;
+}
+
 const RIGHT_DOCK_KEY = 'golf-map.featureDock.collapsed';
 
 function loadCollapsed(): boolean {
@@ -240,16 +246,16 @@ export class ContextDockComponent extends Component<ContextDockProps> {
             overline: { textContent: () => this.dockLabel() },
             railLabel: { textContent: () => this.dockLabel() },
             railCount: {
-                textContent: () => !this.props.content && this.activeTool().id === DRAW_TOOL_ID
+                textContent: () => !this.props.content && hostsFeatureStack(this.activeTool())
                     ? String(this.stackPanel.get()?.scopeCount.get() ?? 0)
                     : '',
             },
             footer: {
                 className: () => {
-                    if (this.props.content || this.activeTool().id !== DRAW_TOOL_ID) return 'ctx-dock__footer';
+                    if (this.props.content || !hostsFeatureStack(this.activeTool())) return 'ctx-dock__footer';
                     return this.statusIsError() ? 'ctx-dock__footer show error' : 'ctx-dock__footer show';
                 },
-                textContent: () => !this.props.content && this.activeTool().id === DRAW_TOOL_ID
+                textContent: () => !this.props.content && hostsFeatureStack(this.activeTool())
                     ? this.statusText() : '',
             },
             rail: {
@@ -284,7 +290,7 @@ export class ContextDockComponent extends Component<ContextDockProps> {
                 if (this.mountedToolId === tool.id) return;
                 this.mountedToolId = tool.id;
                 this.clearBody();
-                if (tool.id === DRAW_TOOL_ID) {
+                if (hostsFeatureStack(tool)) {
                     this.selectionPanel = this.spawn(SelectionPanelComponent, this.body);
                     this.stackPanel.set(this.spawn(FeatureStackPanelComponent, this.body));
                 } else if (tool.panel) {
@@ -295,11 +301,11 @@ export class ContextDockComponent extends Component<ContextDockProps> {
             });
         }));
 
-        // Auto-expand when a selection appears while collapsed (draw only).
+        // Auto-expand when a selection appears while collapsed (Draw, Vegetation).
         // Never auto-collapses on deselect.
         this.track(effect(() => {
             const hasSelection = this.features.selectedIds.get().size > 0;
-            const isDraw = this.activeTool().id === DRAW_TOOL_ID;
+            const isDraw = hostsFeatureStack(this.activeTool());
             if (hasSelection && isDraw && this.collapsed.peek()) {
                 untrack(() => this.setCollapsed(false));
             }

@@ -22,7 +22,11 @@
 //                     falls back to the fetched centerlines.
 //
 // Generated edits replace their previous generation only (a disabled pad
-// stays disabled) and replay before every hand-drawn edit; "Apply to
+// stays disabled) and replay before every hand-drawn edit. Several courses
+// can share a site: the digs and the grades of a course's own paths are
+// that course's (originRef `feature:<id>`), so a run on one course leaves
+// another course's alone; building pads and grades of fetched centerlines
+// are the site's, and each run replaces all of them; "Apply to
 // terrain" then bakes them into the DEM every terrain export derives from.
 // The pipeline runs through the same runner seam as the GSPro exports, so
 // tests need no venv.
@@ -33,7 +37,7 @@ import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
 import type { CourseFeaturesService } from './course-features.service';
-import { parseEditsGeojson, type TerrainEditInput, type TerrainEditParams, type TerrainEditsService } from './terrain-edits.service';
+import { FEATURE_ORIGIN_REF, parseEditsGeojson, type TerrainEditInput, type TerrainEditParams, type TerrainEditsService } from './terrain-edits.service';
 import { resolveCourseMapBbox, type BboxWgs84 } from './course-bbox';
 import { bboxArg, courseTerrainFor, innerSquareFrom3006, terrainArg, type TerrainSquare } from './terrain-square';
 import {
@@ -42,6 +46,11 @@ import {
 } from './gspro-export.service';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 import { flattenCenterline } from '../../shared/features/centerline';
+import {
+    BUNKER_DIG, CREEK_DIG_PRESETS, DEFAULT_CREEK_DIG_PRESET, DEFAULT_WATER_DIG_PRESET, WATER_DIG_PRESETS,
+    type CreekDigPreset, type WaterDigPreset,
+} from '../../shared/features/dig-presets';
+export { BUNKER_DIG, CREEK_DIG_PRESETS, DEFAULT_CREEK_DIG_PRESET, DEFAULT_WATER_DIG_PRESET, WATER_DIG_PRESETS, type CreekDigPreset, type WaterDigPreset };
 import { pathSurfaceOf } from '../../shared/features/path-surface';
 import { flattenRing } from './geo';
 
@@ -49,45 +58,8 @@ import { flattenRing } from './geo';
 export type TerrainGeneratorKind = 'building-pads' | 'road-grades' | 'water-digs' | 'bunker-digs' | 'creek-digs';
 export const TERRAIN_GENERATOR_KINDS: readonly TerrainGeneratorKind[] = ['building-pads', 'road-grades', 'water-digs', 'bunker-digs', 'creek-digs'];
 
-/**
- * Creek bed profiles for `creek-digs`, a creek feature's `digPreset`: bank
- * slope and depth below the water surface from Shoreline Studio's creek
- * presets (its channel shape recipe — meander, pools — is not ours).
- */
-export const CREEK_DIG_PRESETS = {
-    maintained_drain: { label: 'Maintained Drain', bankSlopeDeg: 18, depthM: 0.35 },
-    meadow_brook: { label: 'Meadow Brook', bankSlopeDeg: 10, depthM: 0.28 },
-    estate_stream: { label: 'Estate Stream', bankSlopeDeg: 22, depthM: 0.42 },
-    pool_riffle: { label: 'Pool & Riffle', bankSlopeDeg: 25, depthM: 0.55 },
-    rocky_runnel: { label: 'Rocky Runnel', bankSlopeDeg: 31, depthM: 0.32 },
-    eroded_gully: { label: 'Eroded Gully', bankSlopeDeg: 38, depthM: 0.70 },
-} as const;
-export type CreekDigPreset = keyof typeof CREEK_DIG_PRESETS;
-export const DEFAULT_CREEK_DIG_PRESET: CreekDigPreset = 'maintained_drain';
-/** The band over which bank inside a creek's outline comes down to its surface. */
+/** The band outside a creek's outline over which its bank comes down to the water. */
 export const CREEK_DIG_RIM_M = 1;
-
-/**
- * Pond profiles for `water-digs`, a feature's `digPreset`. Bank slope and
- * depth are Shoreline Studio's lake presets; shelf and perimeter variation
- * are ours (its shelf/edge shape recipe does not map onto a DEM profile).
- */
-export const WATER_DIG_PRESETS = {
-    parkland_shelf: { label: 'Parkland Shelf', bankSlopeDeg: 10, depthM: 1.2, shelfM: 2.0, shelfDepthM: 0.25, variation: 0.1 },
-    natural_pond: { label: 'Natural Pond', bankSlopeDeg: 11, depthM: 1.0, shelfM: 1.5, shelfDepthM: 0.2, variation: 0.5 },
-    cove_point: { label: 'Cove & Point', bankSlopeDeg: 14, depthM: 1.4, shelfM: 1.0, shelfDepthM: 0.2, variation: 0.45 },
-    deep_water: { label: 'Deep Water', bankSlopeDeg: 34, depthM: 2.0, shelfM: 0.5, shelfDepthM: 0.15, variation: 0.06 },
-} as const;
-export type WaterDigPreset = keyof typeof WATER_DIG_PRESETS;
-export const DEFAULT_WATER_DIG_PRESET: WaterDigPreset = 'natural_pond';
-
-/**
- * Bunker profile for `bunker-digs`: the floor this far below a plane fitted to
- * the ground around it, a steep face towards the hole's green and a gentle
- * entry opposite. A feature's `digDepthM` / `digBankSlopeDeg` /
- * `digFaceSlopeDeg` override these.
- */
-export const BUNKER_DIG = { depthM: 0.45, bankSlopeDeg: 18, faceSlopeDeg: 40, rimM: 2.5, variation: 0.25 } as const;
 
 /** The building survey (`fetch-buildings` output) under `sources/<siteId>/`. */
 export const BUILDINGS_SURVEY = 'buildings.geojson';
@@ -134,7 +106,7 @@ export interface RoadsFetchJob {
 
 export interface TerrainGenerateResult {
     kind: TerrainGeneratorKind;
-    /** Edits now in the site's terrain_edits under this origin. */
+    /** Edits this run wrote under this origin (another course's on the same site not counted). */
     imported: number;
     /** Features the import could not read (never fatal). */
     skipped: string[];
@@ -341,9 +313,9 @@ export class TerrainGeneratorsService {
                     noGreen++;
                 }
             }
-            inputs.push({ op: 'dig', params, rings, originRef: `feature:${f.id}` });
+            inputs.push({ op: 'dig', params, rings, originRef: FEATURE_ORIGIN_REF + f.id });
         }
-        const rows = await this.terrainEdits.replaceByOrigin(siteId, kind, inputs);
+        const rows = await this.terrainEdits.replaceByOrigin(siteId, kind, inputs, { courseId });
         if (kind === 'water-digs') {
             report.push(`${rows.length} pond(s) dug below their water level` + (presets.size ? ` (${[...presets].map(([l, n]) => `${l} ${n}`).join(', ')})` : ''));
         } else {
@@ -390,9 +362,9 @@ export class TerrainGeneratorsService {
                 params.widthM = f.geometry.centerline.widthM;
                 lines++;
             }
-            inputs.push({ op: 'dig', params, rings, originRef: `feature:${f.id}` });
+            inputs.push({ op: 'dig', params, rings, originRef: FEATURE_ORIGIN_REF + f.id });
         }
-        const rows = await this.terrainEdits.replaceByOrigin(siteId, 'creek-digs', inputs);
+        const rows = await this.terrainEdits.replaceByOrigin(siteId, 'creek-digs', inputs, { courseId });
         const report = [`${rows.length} creek bed(s) dug below their falling water surface`
             + (presets.size ? ` (${[...presets].map(([l, n]) => `${l} ${n}`).join(', ')})` : '')
             + (rows.length ? `; ${lines} along a drawn centerline, ${rows.length - lines} along the line found down their polygon` : '')];
@@ -471,7 +443,7 @@ export class TerrainGeneratorsService {
             const grades = path.join(work, 'road-grades.geojson');
             const gen = await this.runner(['-m', 'golfpipe', 'road-grades', '--centerlines', centerlines, '--out', grades], this.pipelineDir);
             if (gen.code !== 0) throw failure('Road grades', gen.code, gen.stdout, gen.stderr);
-            const imported = await this.importEdits(siteId, 'road-grades', grades);
+            const imported = await this.importEdits(siteId, 'road-grades', grades, { courseId });
             return { kind: 'road-grades', ...imported, report: [...report, ...reportLines(gen.stdout)] };
         } finally {
             await rm(work, { recursive: true, force: true });
@@ -502,7 +474,7 @@ export class TerrainGeneratorsService {
                 for (let i = 1; i < line.length; i++) lengthM += Math.hypot(line[i].x - line[i - 1].x, line[i].y - line[i - 1].y);
                 lines.push({
                     type: 'Feature',
-                    properties: { id: `feature:${f.id}`, highway: '', road_class: 'road', widthM: f.geometry.centerline.widthM, lengthM: Math.round(lengthM * 10) / 10 },
+                    properties: { id: FEATURE_ORIGIN_REF + f.id, highway: '', road_class: 'road', widthM: f.geometry.centerline.widthM, lengthM: Math.round(lengthM * 10) / 10 },
                     geometry: { type: 'LineString', coordinates: line.map(q => [r2(q.x), r2(q.y)]) },
                 });
                 continue;
@@ -515,17 +487,19 @@ export class TerrainGeneratorsService {
             }
             areas.push({
                 type: 'Feature',
-                properties: { id: `feature:${f.id}`, road_class: 'parking', surface: pathSurfaceOf(f.attributes) },
+                properties: { id: FEATURE_ORIGIN_REF + f.id, road_class: 'parking', surface: pathSurfaceOf(f.attributes) },
                 geometry: { type: 'Polygon', coordinates: rings.map(ring => [...ring, ring[0]].map(([x, y]) => [r2(x), r2(y)])) },
             });
         }
         return { lines, areas, skipped };
     }
 
-    private async importEdits(siteId: string, origin: TerrainGeneratorKind, file: string): Promise<{ imported: number; skipped: string[] }> {
+    private async importEdits(
+        siteId: string, origin: TerrainGeneratorKind, file: string, scope: { courseId?: string } = {},
+    ): Promise<{ imported: number; skipped: string[] }> {
         const doc = JSON.parse(await readFile(file, 'utf8')) as unknown;
         const { edits, skipped } = parseEditsGeojson(doc);
-        const rows = await this.terrainEdits.replaceByOrigin(siteId, origin, edits);
+        const rows = await this.terrainEdits.replaceByOrigin(siteId, origin, edits, scope);
         return { imported: rows.length, skipped };
     }
 

@@ -40,7 +40,7 @@ export interface Photo {
     refinedYawDeg: null | number;
     refinedPitchDeg: null | number;
     refinedRollDeg: null | number;
-    refineMethod: null | 'skyline' | 'manual';
+    refineMethod: null | 'manual' | 'skyline';
     refineResidualDeg: null | number;
     refinedAt: null | string;
     version: number;
@@ -56,7 +56,7 @@ export interface AttitudeQuat {
 }
 
 export interface PhotosApi {
-    create(input: { courseId?: null | string; hole?: null | number; gpsAltM?: null | number; vAccM?: null | number; attitudeQuat?: null | { x: number; y: number; w: number; z: number }; headingAccDeg?: null | number; magCalibration?: null | number; eyeHeightM?: number; deviceModel?: null | string; lens?: string; tags?: string[]; note?: null | string; id: string; capturedAt: string; siteId: string; lat: number; lon: number; hAccM: number; yawDeg: number; pitchDeg: number; rollDeg: number; hfovDeg: number; vfovDeg: number; width: number; height: number }): Promise<Photo>;
+    create(input: { courseId?: null | string; hole?: null | number; gpsAltM?: null | number; vAccM?: null | number; attitudeQuat?: null | { x: number; y: number; w: number; z: number }; headingAccDeg?: null | number; magCalibration?: null | number; eyeHeightM?: number; deviceModel?: null | string; lens?: string; tags?: string[]; note?: null | string; lat: number; lon: number; id: string; siteId: string; capturedAt: string; hAccM: number; yawDeg: number; pitchDeg: number; rollDeg: number; hfovDeg: number; vfovDeg: number; width: number; height: number }): Promise<Photo>;
     list(input: { siteId: string }): Promise<Photo[]>;
     get(input: { id: string }): Promise<Photo>;
     update(input: { hole?: null | number; tags?: string[]; note?: null | string; id: string; version: number }): Promise<Photo>;

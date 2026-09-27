@@ -245,6 +245,16 @@ export class MapService {
             attributionControl: false,
         });
 
+        // Wheel events with no vertical movement (a mouse's tilt/side wheel, which
+        // Windows repeats every ~200 ms while held) never zoom, but MapLibre 5.24's
+        // scroll zoom restarts its easing from the stale start zoom on each one, so
+        // the map bounced between zoom levels. Stop them before the canvas sees them.
+        const dropZoomlessWheel = (e: WheelEvent): void => {
+            if (e.deltaY === 0) e.stopPropagation();
+        };
+        container.addEventListener('wheel', dropZoomlessWheel, { capture: true });
+        this.disposers.push(() => container.removeEventListener('wheel', dropZoomlessWheel, { capture: true }));
+
         map.addControl(new MapPerformanceControl(() => this.waterEnabled, enabled => {
             this.waterEnabled = enabled;
             if (this.waterLayer) this.waterLayer.enabled = enabled;

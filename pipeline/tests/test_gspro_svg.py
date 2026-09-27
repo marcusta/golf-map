@@ -455,6 +455,44 @@ def test_a_rough_drawn_just_short_of_a_road_is_grown_to_it(tmp_path):
     assert green.area == pytest.approx(40 * 16.6, rel=1e-6)
 
 
+# Vreta hole 1, where the new fairway's edge comes out from under a curving
+# path at a slant (metres from a local origin, as drawn, flattened).
+SLANT_ROAD = [(1.18, -4.66), (0.65, -3.35), (0.27, -2.14), (0.22, -1.94), (0.01, -0.66), (-0.07, 0.74), (0.0, 3.35),
+              (0.24, 6.0), (3.25, 6.0), (3.0, 3.23), (2.93, 0.74), (3.0, -0.37), (3.16, -1.32), (3.46, -2.3),
+              (3.91, -3.4), (5.17, -6.0), (1.83, -6.0)]
+SLANT_FAIRWAY = [(0.54, 5.34), (-0.07, 1.54), (-0.2, 0.57), (-0.65, -6.0), (-6.0, -6.0), (-6.0, 6.0), (0.62, 6.0)]
+
+
+def test_a_surface_leaving_a_road_at_a_slant_gets_no_spike_along_the_kerb(tmp_path):
+    """The wedge between the fairway's edge and the path it leaves is filled
+    only up to a cut square to the path, not with the closing's slanted end,
+    which ran down along the kerb into a spike beside a notch."""
+    from shapely.geometry import Point, Polygon
+    cx, cy = _square((0.5, 0.5))
+    e0, _, _, n1 = gspro._square_3006_extent(BBOX)
+    to_svg = lambda x, y: (cx + x - e0, n1 - (cy + y))
+    ring = lambda pts: {"points": [{"x": cx + x, "y": cy + y} for x, y in pts]}
+    out = _export(tmp_path, [("path", None, 0, [ring(SLANT_ROAD)], "bezier"),
+                             ("fairway", 1, 0, [ring(SLANT_FAIRWAY)], "bezier")])
+    road = Polygon([to_svg(*p) for p in SLANT_ROAD])
+    added = _shape(out, "hole_1_1").difference(Polygon([to_svg(*p) for p in SLANT_FAIRWAY])).difference(road.buffer(0.03))
+    assert added.area > 0.1  # the narrow part of the wedge is filled
+    # Nothing added more than a few cm from the fairway's own edge: a spike runs away from it along the kerb.
+    edge = Polygon([to_svg(*p) for p in SLANT_FAIRWAY]).boundary
+    assert max(edge.distance(Point(c)) for p in gspro._polygons(added) for c in p.exterior.coords) < 0.4  # the slanted end: 0.58
+
+
+def test_a_hairline_along_a_road_is_not_a_gap(tmp_path):
+    """A surface drawn 1 mm short of the kerb for 40 m: not grown into a
+    needle along the road (the overlap alone would make it 4 cm wide)."""
+    feats = [
+        ("path", None, 0, [_rect(-50, -3, 50, 3)], "bezier"),
+        ("rough", 1, 0, [_rect(-20, 3.001, 20, 30)], "bezier"),
+    ]
+    out = _export(tmp_path, feats)
+    assert _shape(out, "hole_1_1").area == pytest.approx(40 * 26.999, rel=1e-6)
+
+
 # --- Exclusions (test variants of the SVG for the Blender build) -------------
 
 
@@ -499,6 +537,46 @@ def test_an_excluded_road_takes_its_junction_fillets_with_it(tmp_path):
     out = tmp_path / "course.svg"
     gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", exclude_ids={"feat-0"})
     assert _feature_ids(out) == ["feat-1 feat-3"]
+
+
+def test_bridge_decks_are_props_not_ground_and_stay_out_with_their_fillets(tmp_path, capsys):
+    """A path with surface=bridge is a bridge deck placed as a prop in Unity; in
+    the SVG it would lie across the creek under it and break the Blender build."""
+    feats = [
+        ("path", None, 0, [_rect(-30, -3, 0, 3)], "bezier"),    # an ordinary path
+        ("path", None, 1, [_rect(80, -3, 90, 3)], "bezier"),    # a bridge deck
+        ("path", None, 2, [_rect(90, 3, 92, 5)], "bezier"),     # the deck's kerb fillet
+    ]
+    db = tmp_path / "app.sqlite"
+    _make_db(db, feats)
+    conn = sqlite3.connect(db)
+    conn.executescript("ALTER TABLE course_features ADD COLUMN source TEXT;"
+                       "ALTER TABLE course_features ADD COLUMN source_ref TEXT;"
+                       "ALTER TABLE course_features ADD COLUMN attributes_json TEXT;")
+    conn.execute("""UPDATE course_features SET source = 'props-bridges', attributes_json = '{"surface":"bridge"}' WHERE id = 'feat-1'""")
+    conn.execute("UPDATE course_features SET source = 'road-junctions', source_ref = 'feat-1' WHERE id = 'feat-2'")
+    conn.execute("""UPDATE course_features SET attributes_json = '{"surface":"gravel"}' WHERE id = 'feat-0'""")
+    conn.commit()
+    conn.close()
+    out = tmp_path / "course.svg"
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app")
+    assert _feature_ids(out) == ["feat-0"]
+    assert "bridge decks left out (props in Unity, not ground): 2 feature(s)" in capsys.readouterr().out
+
+
+def test_a_shape_that_collapsed_while_drawing_is_left_out_and_named(tmp_path, capsys):
+    """A bunker of 8 points inside 0.4 x 0.15 m (a click that became a feature)
+    breaks OPCD's Blender build; small road pieces (kerb fillets) are fine."""
+    feats = [
+        ("bunker", 1, 0, [_ring((0.42, 0.42), 5)], "bspline"),
+        ("bunker", None, 1, [_ring((0.60, 0.60), 0.2)], "bspline"),   # the slip
+        ("path", None, 2, [_rect(0, 0, 0.5, 0.5)], "bezier"),          # a tiny road piece stays
+    ]
+    out = _export(tmp_path, feats)
+    ids = _feature_ids(out)
+    assert "feat-1" not in " ".join(ids)
+    assert "feat-0" in ids and any("feat-2" in i for i in ids)
+    assert "warning: 1 shape(s) under 1 m2 left out (drawn by mistake? delete them): bunker feat-1" in capsys.readouterr().out
 
 
 def test_exclude_ids_file_is_a_json_array_or_one_id_per_line(tmp_path):

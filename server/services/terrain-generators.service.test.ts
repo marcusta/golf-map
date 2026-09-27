@@ -468,3 +468,109 @@ test('creek digs: a centerline creek sends its line and width, a polygon creek l
     expect(poly.params).toMatchObject({ reference: 'stream', depthM: 0.5, bankSlopeDeg: 18 });
     expect(poly.params.centerline).toBeUndefined();
 });
+
+// --- Several courses on one site ---
+
+test('courses sharing a site: generating digs on one course leaves the other course\'s digs alone', async () => {
+    const t = await setup(recordingRunner().runner);
+    await buildSite(t);
+    const B = (await new CoursesService(t.db).create({ name: 'Second course', siteId: SITE_ID })).id;
+    const X = 530000, Y = 6487000;
+    const features = async (courseId: string, dx: number) => ({
+        pond: await t.courseFeatures.create({ courseId, type: 'water', geometry: rectRing(X + dx, Y, 40, 30) }),
+        bunker: await t.courseFeatures.create({ courseId, type: 'bunker', geometry: rectRing(X + dx, Y + 50, 10, 10) }),
+        creek: await t.courseFeatures.create({ courseId, type: 'water_creek', geometry: rectRing(X + dx, Y + 100, 80, 2) }),
+    });
+    const a = await features(TEST_COURSE_ID, 0);
+    const b = await features(B, 500);
+    const kinds = ['water-digs', 'bunker-digs', 'creek-digs'] as const;
+    const byRef = async () => new Map((await t.terrainEdits.listBySite(SITE_ID)).map(e => [e.originRef, e]));
+
+    for (const kind of kinds) await t.svc.generate(TEST_COURSE_ID, kind);
+    const aPond = (await byRef()).get(`feature:${a.pond.id}`)!;
+    await t.terrainEdits.update(aPond.id, aPond.version, { enabled: false });
+    const aBefore = await byRef();
+
+    // Course B's run adds its digs and counts only them; course A's rows are the very same rows.
+    for (const kind of kinds) expect((await t.svc.generate(B, kind)).imported).toBe(1);
+    const both = await byRef();
+    expect(both.size).toBe(6);
+    for (const f of Object.values(a)) {
+        const ref = `feature:${f.id}`;
+        expect(both.get(ref)).toEqual(aBefore.get(ref)!);
+    }
+    expect(both.get(`feature:${a.pond.id}`)!.enabled).toBe(false);
+    for (const f of Object.values(b)) expect(both.get(`feature:${f.id}`)!.enabled).toBe(true);
+    // Each origin's rows keep distinct replay slots across the two courses.
+    const edits = await t.terrainEdits.listBySite(SITE_ID);
+    for (const kind of kinds) {
+        const stamps = edits.filter(e => e.origin === kind).map(e => e.createdAt);
+        expect(new Set(stamps).size).toBe(2);
+    }
+
+    // A feature course B deletes loses its dig on B's next run; A's still stand.
+    await t.courseFeatures.remove(b.bunker.id, b.bunker.version);
+    await t.svc.generate(B, 'bunker-digs');
+    const afterDelete = await byRef();
+    expect(afterDelete.has(`feature:${b.bunker.id}`)).toBe(false);
+    expect(afterDelete.get(`feature:${a.bunker.id}`)).toEqual(aBefore.get(`feature:${a.bunker.id}`)!);
+
+    // Regenerating A replaces A's own rows (the disabled pond stays disabled) and keeps B's.
+    for (const kind of kinds) await t.svc.generate(TEST_COURSE_ID, kind);
+    const again = await byRef();
+    expect(again.size).toBe(5);
+    expect(again.get(`feature:${a.pond.id}`)!.id).not.toBe(aPond.id);
+    expect(again.get(`feature:${a.pond.id}`)!.enabled).toBe(false);
+    expect(again.get(`feature:${b.pond.id}`)).toEqual(both.get(`feature:${b.pond.id}`)!);
+    expect(again.get(`feature:${b.creek.id}`)).toEqual(both.get(`feature:${b.creek.id}`)!);
+});
+
+test('courses sharing a site: road grades of one course\'s paths survive grading the other course; fetched ones are the site\'s', async () => {
+    // road-grades echoes each centerline it is given as one corridor edit, its id as the originRef.
+    const runner: ExportRunner = async (args) => {
+        const out = args[args.indexOf('--out') + 1];
+        await mkdir(path.dirname(out), { recursive: true });
+        const lines = JSON.parse(await readFile(args[args.indexOf('--centerlines') + 1], 'utf8')) as { features: Array<{ properties: { id: string } }> };
+        const doc = JSON.parse(editsFile('road-grades', lines.features.length, 'corridor')) as { features: Array<{ properties: Record<string, unknown> }> };
+        doc.features.forEach((f, i) => { f.properties.originRef = lines.features[i]!.properties.id; });
+        await writeFile(out, JSON.stringify(doc));
+        return { code: 0, stdout: '', stderr: '' };
+    };
+    const t = await setup(runner);
+    const dir = await buildSite(t);
+    // A fetched network the site already has, for a course with no paths of its own.
+    await writeFile(path.join(dir, ROAD_CENTERLINES), JSON.stringify({ type: 'FeatureCollection', features: [
+        { type: 'Feature', properties: { id: 'osm:way/7' }, geometry: { type: 'LineString', coordinates: [[530000, 6487000], [530100, 6487000]] } },
+    ] }));
+    const B = (await new CoursesService(t.db).create({ name: 'Second course', siteId: SITE_ID })).id;
+    const road = (courseId: string, y: number) => t.courseFeatures.create({
+        courseId, type: 'path', geometry: { crs: 'EPSG:3006', rings: [], centerline: { points: [{ x: 530000, y }, { x: 530100, y }], widthM: 4 } },
+    });
+    const aRoad = await road(TEST_COURSE_ID, 6487200);
+    await t.svc.generate(TEST_COURSE_ID, 'road-grades');
+    const aGrade = (await t.terrainEdits.listBySite(SITE_ID)).find(e => e.originRef === `feature:${aRoad.id}`)!;
+
+    // B has no paths: it grades the fetched centerlines, and A's own road stays graded.
+    await t.svc.generate(B, 'road-grades');
+    const refs = async () => (await t.terrainEdits.listBySite(SITE_ID)).map(e => e.originRef).sort();
+    expect(await refs()).toEqual([`feature:${aRoad.id}`, 'osm:way/7'].sort());
+    expect((await t.terrainEdits.listBySite(SITE_ID)).find(e => e.originRef === `feature:${aRoad.id}`)).toEqual(aGrade);
+
+    // Once B draws its own road, B's run replaces the site's fetched grades with it; A's still stands.
+    const bRoad = await road(B, 6487400);
+    await t.svc.generate(B, 'road-grades');
+    expect(await refs()).toEqual([`feature:${aRoad.id}`, `feature:${bRoad.id}`].sort());
+});
+
+test('building pads are the site\'s: a run on either course replaces the whole generation', async () => {
+    const t = await setup(recordingRunner().runner);
+    await buildSite(t, { lidar: ['a.laz'] });
+    const B = (await new CoursesService(t.db).create({ name: 'Second course', siteId: SITE_ID })).id;
+    await t.db.updateTable('courses').set({ georeference_json: JSON.stringify({ bbox: GEOREF_BBOX }) }).where('id', '=', B).execute();
+    await t.svc.generate(TEST_COURSE_ID, 'building-pads');
+    const first = (await t.terrainEdits.listBySite(SITE_ID)).map(e => e.id);
+    await t.svc.generate(B, 'building-pads');
+    const second = await t.terrainEdits.listBySite(SITE_ID);
+    expect(second).toHaveLength(3);
+    expect(second.some(e => first.includes(e.id))).toBe(false);
+});

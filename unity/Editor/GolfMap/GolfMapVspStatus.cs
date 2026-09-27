@@ -59,5 +59,28 @@ namespace GolfMap.Editor
                 };
             }).ToList();
         }
+
+        // VSP completes the jobs one Update schedules in the next LateUpdate. When
+        // that pairing breaks (an asset refresh or domain event between the two), the
+        // jobs' lists stay claimed and every later frame and every GolfMap command that
+        // refreshes VSP throws "The previously scheduled job ... You must call
+        // JobHandle.Complete()". Disabling a system disposes its cells, cameras and
+        // lists; enabling it builds them fresh.
+        [BridgeCommand("golfmap.vsp.reset", "Disable and re-enable every VegetationSystemPro (fresh cells, cameras and job lists), then refresh it. For VSP stuck throwing 'The previously scheduled job ... JobHandle.Complete()' on every frame.")]
+        static object Reset()
+        {
+            return Object.FindObjectsOfType<VegetationSystemPro>().Select(s =>
+            {
+                string disposeError = null;
+                try { s.enabled = false; }
+                catch (System.Exception e) { disposeError = e.GetType().Name + ": " + e.Message; }
+                s.enabled = true;
+                s.RefreshVegetationSystem();
+                return (object)new Dictionary<string, object>
+                {
+                    { "name", s.name }, { "initDone", s.InitDone }, { "cells", s.VegetationCellList.Count }, { "disposeError", disposeError },
+                };
+            }).ToList();
+        }
     }
 }

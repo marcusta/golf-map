@@ -48,6 +48,7 @@ External paths (Vreta is the test course; nothing in code may hardcode it):
 ## This machine (Windows 11, native, no WSL)
 
 - GSPro exports without the web panel: `bun run gspro:export -- status <course>` / `-- <course> <kind[:terrain]>...` (`scripts/gspro-export.ts`, same service as the panel).
+- A Blender/OPCD build broke after edits: `bun run gspro:bisect -- <course> changes --from <when>` lists what changed (only feature types the SVG draws), `... svg --from <when> --apply <list>|--without <list>` exports `<course>-bisect-<list>.svg` with just those changes applied, from a copy of the DB. `<when>` = an export snapshot (every full SVG export keeps one in `<export dir>/export-history/`), a local time (edit history, migration 025), `db:<file>` or `now` (`scripts/gspro-bisect.ts`, `FeatureHistoryService`).
 - No `node` on PATH — use `bun` (also for `unity/*.test.mjs`). Pipeline venv: `pipeline/.venv/Scripts/python.exe` (`.venv/bin` is a junction).
 - Port 3000 is excluded: use preview configs `api-e2e` (3100, isolated e2e DB) + `web-e2e` (5274) from `.claude/launch.json`; login `marcus` / `test-password-123`, course `/course/course-1`.
 - `server` `bun test` has ~17 known Windows-only failures (symlinks, `/` paths, bsdtar); Playwright e2e can't launch Chrome here.

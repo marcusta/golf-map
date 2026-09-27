@@ -3,9 +3,9 @@ import { _reset } from '@basics/core/client/error-report';
 import { di, Signal } from '@basics/core/client/core';
 import type { ToolContext } from '../src/editor/tool';
 import { ConfirmService } from '../src/app/confirm-dialog.component';
-import { DrawToolService, DRAW_TOOL_ID } from '../src/draw/draw-tool.service';
+import { DrawToolService, DRAW_TOOL_ID, scopeOwnsType, scopeSelectsType, vegetationHitOrder } from '../src/draw/draw-tool.service';
 import { FeaturesService } from '../src/draw/features.service';
-import type { CourseFeaturesApi } from '../../shared/api/course-features.gen';
+import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 afterEach(() => { _reset(); di.reset(); });
 
@@ -52,12 +52,14 @@ describe('DrawToolService rendering mode', () => {
         const tool = new DrawToolService();
 
         tool.activate(context(features));
-        expect([...features.modeHiddenTypes.get()].sort()).toEqual(['oob', 'penalty_red', 'penalty_yellow']);
+        expect([...features.modeHiddenTypes.get()].sort()).toEqual(['oob', 'penalty_red', 'penalty_yellow', 'vegetation_zone']);
         tool.chooseType('oob');
         expect(tool.drawType.get()).toBe('bunker'); // Draw never picks a rules type
+        tool.chooseType('vegetation_zone');
+        expect(tool.drawType.get()).toBe('bunker'); // nor a zone
         tool.chooseType('green');
         tool.deactivate();
-        expect(features.modeHiddenTypes.get().size).toBe(0);
+        expect([...features.modeHiddenTypes.get()]).toEqual(['vegetation_zone']); // zones stay hidden outside Vegetation
 
         const ctx = context(features);
         (ctx.map.interactionMode as Signal<string>).set('furniture');
@@ -65,7 +67,7 @@ describe('DrawToolService rendering mode', () => {
         expect(tool.scope.get()).toBe('rules');
         expect(features.niceRendering.get()).toBe(true);
         expect(features.rulesOutlines.get()).toBe(true);
-        expect(features.modeHiddenTypes.get().size).toBe(0);
+        expect([...features.modeHiddenTypes.get()]).toEqual(['vegetation_zone']);
         expect(tool.drawType.get()).toBe('penalty_yellow');
         tool.chooseType('fairway');
         expect(tool.drawType.get()).toBe('penalty_yellow'); // only rules types here
@@ -80,5 +82,56 @@ describe('DrawToolService rendering mode', () => {
         expect(tool.scope.get()).toBe('surfaces');
         expect(features.rulesOutlines.get()).toBe(false);
         expect(tool.drawType.get()).toBe('green'); // Draw's own type comes back
+    });
+
+    test('the vegetation scope edits only the zones, over the course as a backdrop', () => {
+        di.set(ConfirmService, new ConfirmService());
+        const features = new FeaturesService({} as CourseFeaturesApi);
+        const tool = new DrawToolService();
+        tool.chooseType('fairway');
+
+        const ctx = context(features);
+        (ctx.map.interactionMode as Signal<string>).set('vegetation');
+        tool.activate(ctx, { scope: 'vegetation', toolId: 'vegetation' });
+        expect(tool.scope.get()).toBe('vegetation');
+        expect(features.niceRendering.get()).toBe(false);
+        expect([...features.modeHiddenTypes.get()].sort()).toEqual(['oob', 'penalty_red', 'penalty_yellow']);
+        const backdrop = features.modeBackdropTypes.get();
+        expect(backdrop.has('fairway') && backdrop.has('green') && backdrop.has('trees')).toBe(true);
+        expect(backdrop.has('vegetation_zone') || backdrop.has('oob')).toBe(false);
+        expect(tool.drawType.get()).toBe('vegetation_zone');
+        tool.chooseType('bunker');
+        expect(tool.drawType.get()).toBe('vegetation_zone'); // only zones here
+        tool.chooseZoneType('fern'); // nothing selected: the next zone's type
+        expect(tool.drawZoneType.get()).toBe('fern');
+
+        tool.deactivate();
+        expect(tool.scope.get()).toBe('surfaces');
+        expect(features.modeBackdropTypes.get().size).toBe(0);
+        expect([...features.modeHiddenTypes.get()]).toEqual(['vegetation_zone']);
+        expect(tool.drawType.get()).toBe('fairway'); // Draw's own type comes back
+    });
+
+    test('scopes own disjoint types', () => {
+        for (const type of ['green', 'trees', 'path', 'water_creek']) {
+            expect([scopeOwnsType('surfaces', type), scopeOwnsType('rules', type), scopeOwnsType('vegetation', type)]).toEqual([true, false, false]);
+        }
+        expect([scopeOwnsType('surfaces', 'oob'), scopeOwnsType('rules', 'oob'), scopeOwnsType('vegetation', 'oob')]).toEqual([false, true, false]);
+        expect([scopeOwnsType('surfaces', 'vegetation_zone'), scopeOwnsType('rules', 'vegetation_zone'), scopeOwnsType('vegetation', 'vegetation_zone')])
+            .toEqual([false, false, true]);
+    });
+
+    test('Vegetation also selects the creeks and water (for their bank vegetation), nothing else of the course', () => {
+        for (const type of ['water_creek', 'water']) {
+            expect([scopeSelectsType('surfaces', type), scopeSelectsType('rules', type), scopeSelectsType('vegetation', type)]).toEqual([true, false, true]);
+        }
+        for (const type of ['green', 'fairway', 'bunker', 'oob']) expect(scopeSelectsType('vegetation', type)).toBe(false);
+        expect(scopeSelectsType('vegetation', 'vegetation_zone')).toBe(true);
+    });
+
+    test('a Vegetation click takes a hand-drawn zone, then the water, then the generated zones planted on it', () => {
+        const f = (id: string, type: string, generated = false) => ({ id, type, generated }) as CourseFeature;
+        const topDown = [f('gen-bank', 'vegetation_zone', true), f('creek', 'water_creek'), f('gen-rough', 'vegetation_zone', true), f('section', 'vegetation_zone'), f('pond', 'water')];
+        expect(vegetationHitOrder(topDown).map(x => x.id)).toEqual(['section', 'creek', 'pond', 'gen-bank', 'gen-rough']);
     });
 });

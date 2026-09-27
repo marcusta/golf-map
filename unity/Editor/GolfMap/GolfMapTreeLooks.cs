@@ -52,6 +52,14 @@ namespace GolfMap.Editor
             return prefab.GetComponentsInChildren<Renderer>(true).Where(r => !(r is BillboardRenderer));
         }
 
+        // What these prefabs really draw with (a trial may have re-pointed a look's prefab copies
+        // at materials outside its folder), in a stable order.
+        public static List<Material> DrawnMaterials(IEnumerable<GameObject> prefabs)
+        {
+            return prefabs.Where(p => p).SelectMany(Drawn).SelectMany(r => r.sharedMaterials).Where(m => m && m.shader).Distinct()
+                .OrderBy(m => m.name, StringComparer.Ordinal).ThenBy(m => Guid(m), StringComparer.Ordinal).ToList();
+        }
+
         // The materials a species draws with, across all its shapes, in a stable order.
         public static List<Material> SourceMaterials(GolfMapBiome biome, string species)
         {
@@ -210,53 +218,6 @@ namespace GolfMap.Editor
             return problems;
         }
 
-        // The colours the tree shaders multiply onto the albedo. Scaling their saturation is the one
-        // course-wide colour grade available on GSPro-safe shaders; a grey tint has none to lose.
-        static readonly string[] TintProperties = { "_HealthyColor", "_DryColor", "_Color", "_GolfMapLeafTint" };
-
-        // The tint colours of one material under the names VSP's item panel uses. NM leaves carry a
-        // white _Color the shader does not tint with, so only healthy/dry are offered there.
-        public static List<KeyValuePair<string, string>> ColourKeys(Material m)
-        {
-            var keys = new List<KeyValuePair<string, string>>();
-            if (!m) return keys;
-            bool leaves = m.HasProperty("_HealthyColor");
-            if (leaves) keys.Add(new KeyValuePair<string, string>("_HealthyColor", "Healthy Color"));
-            if (m.HasProperty("_DryColor")) keys.Add(new KeyValuePair<string, string>("_DryColor", "Dry Color"));
-            if (m.HasProperty("_GolfMapLeafTint")) keys.Add(new KeyValuePair<string, string>("_GolfMapLeafTint", "Leaf tint"));
-            if (!leaves && m.HasProperty("_Color")) keys.Add(new KeyValuePair<string, string>("_Color", m.shader.name.Contains("Bark") ? "Bark Color" : "Color"));
-            // SpeedTree shifts each tree towards this colour by an amount that depends on where it stands.
-            if (m.IsKeywordEnabled("EFFECT_HUE_VARIATION") && m.HasProperty("_HueVariation")) keys.Add(new KeyValuePair<string, string>("_HueVariation", "Hue variation (alpha = strength)"));
-            return keys;
-        }
-
-        // Materials that are tuned as one: same shader, same part of the tree, same colours on offer
-        // (a SpeedTree crown is one material per LOD and leaf type, all meant to look alike).
-        public static string ColourGroup(Material m)
-        {
-            return m.shader.name + "|" + (m.IsKeywordEnabled("GEOM_TYPE_BRANCH") ? "branch" : "") + "|" + string.Join(",", ColourKeys(m).Select(k => k.Key).ToArray());
-        }
-
-        public static int ScaleSaturation(IEnumerable<Material> materials, float factor)
-        {
-            int changed = 0;
-            foreach (var m in materials.Where(m => m))
-            {
-                Undo.RecordObject(m, "Tree look saturation");
-                foreach (var key in TintProperties.Where(k => m.HasProperty(k)))
-                {
-                    var c = m.GetColor(key);
-                    float h, s, v;
-                    Color.RGBToHSV(c, out h, out s, out v);
-                    var scaled = Color.HSVToRGB(h, Mathf.Clamp01(s * factor), v);
-                    scaled.a = c.a;
-                    if (scaled != c) { m.SetColor(key, scaled); changed++; }
-                }
-                EditorUtility.SetDirty(m);
-            }
-            return changed;
-        }
-
         static float[] Four(List<object> values)
         {
             var result = new float[4];
@@ -267,239 +228,39 @@ namespace GolfMap.Editor
 
     // ---- Palette panel: the Looks section -------------------------------------
 
+    // Tuning a look (colours, material settings, the Lab) lives in GolfMap > Vegetation Palettes,
+    // with the lower vegetation: live in the scene, several species at once. Here: what each
+    // species plants with, and the way there.
     public partial class GolfMapTreePlanter
     {
         [SerializeField] bool showLooks = true;
-        string openSpecies = "", editLook = "", newLookName = "";
-        float saturationFactor = 0.85f;
-        bool showAllMaterialSettings;
-        readonly Dictionary<Material, UnityEditor.Editor> materialEditors = new Dictionary<Material, UnityEditor.Editor>();
         readonly Dictionary<string, int> previewLooks = new Dictionary<string, int>();   // "<species>:<look>" -> stems
-
-        void CloseMaterialEditors()
-        {
-            foreach (var e in materialEditors.Values) if (e) DestroyImmediate(e);
-            materialEditors.Clear();
-        }
 
         void DrawLooks()
         {
-            var course = GolfMapCourses.For(component);
+            EditorGUILayout.LabelField("Colours and material settings per species are tuned in GolfMap > Vegetation Palettes (with the lower vegetation): live in the scene, several species at once, with the Lab.", EditorStyles.wordWrappedMiniLabel);
+            if (GUILayout.Button("Open Vegetation Palettes")) GolfMapVegPaletteWindow.Open();
             foreach (var label in draft.assets.Select(a => a.Label).Distinct().OrderBy(l => l, StringComparer.Ordinal).ToList())
             {
                 var group = draft.Species(label);
-                int looks = group == null ? 0 : group.looks.Count;
-                int shapes = draft.assets.Count(a => a.Label == label && a.enabled);
-                bool open = openSpecies == label;
-                bool now = EditorGUILayout.Foldout(open, label + "   " + (looks == 0 ? "original materials" : looks + " look(s)") + ", " + shapes + " shape(s)" +
-                    (looks > 1 ? "  =  up to " + looks * shapes + " VSP items" : ""), true);
-                if (now != open) { openSpecies = now ? label : ""; editLook = ""; CloseMaterialEditors(); }
-                if (!now) continue;
-                EditorGUI.indentLevel++;
-                try { DrawSpeciesLooks(course, label, group); }
-                catch (ExitGUIException) { throw; }
-                catch (Exception e) { paletteNote = label + ": " + e.Message; Debug.LogException(e); }
-                EditorGUI.indentLevel--;
-            }
-        }
-
-        void DrawSpeciesLooks(GolfMapCourse course, string label, GolfMapBiomeSpecies group)
-        {
-            if (group == null || group.looks.Count == 0)
-            {
-                EditorGUILayout.LabelField("Every " + label + " plants with the source prefabs' own materials.", EditorStyles.wordWrappedMiniLabel);
-                DrawLab(course, label, group);
-                if (GUILayout.Button("Start looks for " + label + " (keeps the original as the first one)"))
+                var looks = group == null ? new List<GolfMapBiomeLook>() : group.looks;
+                double sum = looks.Sum(l => l.weight);
+                int pool = looks.Sum(l => Count(previewLooks, label + ":" + l.id));
+                string summary = looks.Count == 0 ? "source materials" : string.Join("  ·  ", looks.Select(l =>
                 {
-                    if (group == null) { group = new GolfMapBiomeSpecies { name = label }; draft.species.Add(group); }
-                    group.looks.Add(new GolfMapBiomeLook { id = "original", weight = 1, original = true });
-                    GUI.changed = true;
-                }
-                return;
-            }
-            double sum = group.looks.Sum(l => l.weight);
-            int pool = group.looks.Sum(l => Count(previewLooks, label + ":" + l.id));
-            foreach (var look in group.looks.ToArray())
-            {
+                    int n = Count(previewLooks, label + ":" + l.id);
+                    return l.id + " " + (sum > 0 ? Percent(l.weight / sum) : "-") + (previewStale || !AnyLoaded || pool == 0 ? "" : " (" + n + ")");
+                }).ToArray());
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    bool editing = editLook == look.id;
-                    if (GUILayout.Toggle(editing, new GUIContent(look.id + (look.original ? "  (source materials)" : ""), "Open this look's materials"), EditorStyles.foldout, GUILayout.MinWidth(120)) != editing)
-                    { editLook = editing ? "" : look.id; CloseMaterialEditors(); }
-                    look.weight = Math.Round(Math.Max(0, EditorGUILayout.DoubleField(look.weight, GUILayout.Width(56))), 3);
-                    GUILayout.Label(new GUIContent(sum > 0 ? Percent(look.weight / sum) : "-", "Target share of this species"), GUILayout.Width(48));
-                    int count = Count(previewLooks, label + ":" + look.id);
-                    GUILayout.Label(new GUIContent(previewStale || !AnyLoaded ? "" : Percent(pool > 0 ? (double)count / pool : 0) + "  " + count, "Share and stems in the preview"), EditorStyles.miniLabel, GUILayout.Width(92));
-                    using (new EditorGUI.DisabledScope(group.looks.Count == 1))
-                        if (GUILayout.Button(new GUIContent("x", "Remove from the palette. Its folder stays on disk: planted trees may still use it until the next Plant."), EditorStyles.miniButton, GUILayout.Width(22)))
-                        { group.looks.Remove(look); if (editLook == look.id) { editLook = ""; CloseMaterialEditors(); } GUI.changed = true; }
+                    GUILayout.Label(label, GUILayout.Width(70));
+                    GUILayout.Label(new GUIContent(summary, "Look weights (share of the species' stems) and, after Load and check, stems in the preview."), EditorStyles.miniLabel);
+                    if (GUILayout.Button(new GUIContent("Tune", "Open this species' looks in Vegetation Palettes."), EditorStyles.miniButton, GUILayout.Width(44)))
+                        GolfMapVegPaletteWindow.OpenWith(looks.Count == 0 ? new List<string> { "t:" + label + "/original" } : looks.Select(l => "t:" + label + "/" + l.id).ToList());
                 }
-                if (editLook == look.id) DrawLookEditor(course, label, group, look);
             }
-            DrawLab(course, label, group);
-            if (group.looks.Count == 1 && group.looks[0].original)
-                EditorGUILayout.LabelField("One look = no change yet. Open it and duplicate it to tune a second setting.", EditorStyles.wordWrappedMiniLabel);
         }
 
         static int Count(Dictionary<string, int> counts, string key) { int n; counts.TryGetValue(key, out n); return n; }
-
-        void DrawLookEditor(GolfMapCourse course, string label, GolfMapBiomeSpecies group, GolfMapBiomeLook look)
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUILayout.Space(EditorGUI.indentLevel * 15);
-                newLookName = GUILayout.TextField(newLookName, GUILayout.MinWidth(80)).Trim();
-                bool valid = newLookName.Length > 0 && newLookName.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && newLookName.IndexOf(':') < 0 && group.looks.All(l => l.id != newLookName);
-                using (new EditorGUI.DisabledScope(!valid))
-                    if (GUILayout.Button(new GUIContent("Duplicate as", "A new look starting from this one's material settings. Type its name first."), GUILayout.Width(90)))
-                    {
-                        var copy = new GolfMapBiomeLook { id = newLookName, weight = look.weight, shapes = look.shapes == null ? null : new List<string>(look.shapes) };
-                        paletteNote = "Look '" + copy.id + "': " + GolfMapLooks.Generate(course, draft, label, copy, look);
-                        GolfMapLooks.Capture(course, draft, label, copy);
-                        group.looks.Insert(group.looks.IndexOf(look) + 1, copy);
-                        editLook = copy.id; newLookName = ""; CloseMaterialEditors();
-                        GUI.changed = true; GUI.FocusControl(null);
-                        return;
-                    }
-                if (!look.original && GUILayout.Button(new GUIContent("Regenerate", "Create missing material and prefab copies and re-point the prefab copies. Tuned materials are kept."), GUILayout.Width(84)))
-                    paletteNote = "Look '" + look.id + "': " + GolfMapLooks.Generate(course, draft, label, look, null);
-                if (!look.original && GUILayout.Button(new GUIContent("Apply JSON", "Set the material copies to the values palette.json records (after a hand edit of the file, or in a new project)."), GUILayout.Width(84)))
-                {
-                    var problems = GolfMapLooks.Apply(course, draft, label, look);
-                    paletteNote = problems.Count == 0 ? "Applied the recorded values to '" + look.id + "'." : string.Join("\n", problems.ToArray());
-                }
-            }
-            if (look.original)
-            {
-                EditorGUILayout.LabelField("These are the source prefabs' own materials: editing them changes every tree that uses them, in any look that has not been given its own copy. Duplicate first to tune a separate look.", EditorStyles.wordWrappedMiniLabel);
-            }
-            var materials = GolfMapLooks.Materials(course, draft, label, look);
-            if (!look.original && materials.Count == 0)
-            {
-                EditorGUILayout.HelpBox("This look is recorded in palette.json but has no material copies in this project yet.", MessageType.Info);
-                if (GUILayout.Button("Create this look (copies the materials and prefabs, then sets the recorded values)"))
-                {
-                    string made = GolfMapLooks.Generate(course, draft, label, look, null);
-                    var problems = GolfMapLooks.Apply(course, draft, label, look);
-                    paletteNote = "Look '" + look.id + "': " + made + (problems.Count == 0 ? ". Next: Show in Lab to judge it, then Plant to use it." : "\n" + string.Join("\n", problems.ToArray()));
-                    CloseMaterialEditors();
-                }
-                return;
-            }
-            if (!look.original)
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Space(EditorGUI.indentLevel * 15);
-                    saturationFactor = Mathf.Clamp(EditorGUILayout.FloatField(new GUIContent("Tint saturation x", "Scales the saturation of every leaf and bark tint colour in this look. Undo restores."), saturationFactor), 0f, 2f);
-                    if (GUILayout.Button("Apply", GUILayout.Width(60)))
-                    {
-                        int n = GolfMapLooks.ScaleSaturation(materials, saturationFactor);
-                        GolfMapLooks.Capture(course, draft, label, look);
-                        paletteNote = "Look '" + look.id + "': " + n + " tint colour(s) scaled by " + saturationFactor + ". Apply to course to see it on planted trees.";
-                        GUI.changed = true;
-                    }
-                }
-            EditorGUI.BeginChangeCheck();
-            // The colours VSP's own item panel shows, per material. Set here they stick: the planter and
-            // Refresh vegetation from materials copy them into VSP, overwriting what is typed there.
-            foreach (var set in materials.Where(m => m && m.shader).GroupBy(m => GolfMapLooks.ColourGroup(m)))
-            {
-                var first = set.First();
-                var keys = GolfMapLooks.ColourKeys(first);
-                if (keys.Count == 0) continue;
-                var names = set.Select(m => m.name).Distinct().ToArray();
-                EditorGUILayout.LabelField(set.Count() == 1 ? first.name : set.Count() + " materials, set together: " + string.Join(", ", names), EditorStyles.boldLabel);
-                EditorGUI.indentLevel++;
-                foreach (var key in keys)
-                {
-                    var before = first.GetColor(key.Key);
-                    bool mixed = set.Any(m => m.GetColor(key.Key) != before);
-                    var after = EditorGUILayout.ColorField(new GUIContent(key.Value + (mixed ? "  (differs, pick to align)" : "")), before);
-                    if (after != before) foreach (var m in set) { Undo.RecordObject(m, "Tree look colour"); m.SetColor(key.Key, after); EditorUtility.SetDirty(m); }
-                }
-                EditorGUI.indentLevel--;
-            }
-            EditorGUILayout.LabelField("Lab trees change as you pick. Planted trees: Apply to course. Outer billboards: Plant outer with Rebake on.", EditorStyles.wordWrappedMiniLabel);
-            showAllMaterialSettings = EditorGUILayout.Foldout(showAllMaterialSettings, "All material settings (advanced)", true);
-            if (showAllMaterialSettings) foreach (var material in materials)
-            {
-                UnityEditor.Editor editor;
-                if (!materialEditors.TryGetValue(material, out editor) || !editor) materialEditors[material] = editor = UnityEditor.Editor.CreateEditor(material);
-                editor.DrawHeader();
-                var materialEditor = editor as MaterialEditor;
-                if (materialEditor == null || materialEditor.isVisible) editor.OnInspectorGUI();
-            }
-            // The materials are assets, edited live; the palette only needs to notice so Save records them.
-            if (EditorGUI.EndChangeCheck() && !look.original) { GolfMapLooks.Capture(course, draft, label, look); GUI.changed = true; }
-        }
-            // ---- Lab: a few real trees in the scene, for tuning looks -----------------
-
-        // Plain instances of the look prefabs, so they draw with the very material assets being
-        // tuned and change as a slider moves - no VSP colour cache, no billboard bake in between.
-        // The root is never saved with the scene or built into the course.
-        const string LabName = "GolfMap Lab (not saved)";
-        static GameObject LabRoot() { return GameObject.Find(LabName); }
-
-        void DrawLab(GolfMapCourse course, string label, GolfMapBiomeSpecies group)
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUILayout.Space(EditorGUI.indentLevel * 15);
-                if (GUILayout.Button(new GUIContent("Show in Lab", "Stand one tree per look and shape at the Scene view's pivot: a row per look, a column per shape. Material edits show on them at once.")))
-                    BuildLab(course, label, group);
-                using (new EditorGUI.DisabledScope(!LabRoot()))
-                {
-                    if (GUILayout.Button("Look at Lab", GUILayout.Width(90))) FrameLab();
-                    if (GUILayout.Button("Clear Lab", GUILayout.Width(80))) { DestroyImmediate(LabRoot()); SceneView.RepaintAll(); }
-                }
-                if (GUILayout.Button(new GUIContent("Apply to course", "Planted trees read NM leaf and bark colours from VSP's cache, not the material: re-sync it now. Billboards still need a rebake (Plant with Regenerate billboards)."), GUILayout.Width(110)))
-                    GolfMapVegetationRefresh.Refresh();
-            }
-        }
-
-        void BuildLab(GolfMapCourse course, string label, GolfMapBiomeSpecies group)
-        {
-            var view = SceneView.lastActiveSceneView;
-            if (!view) { paletteNote = "Open a Scene view first."; return; }
-            if (LabRoot()) DestroyImmediate(LabRoot());
-            var root = new GameObject(LabName) { hideFlags = HideFlags.DontSave };
-            var shapes = draft.assets.Where(a => a.Label == label && a.enabled).OrderBy(a => a.heightM).ToList();
-            var looks = group == null || group.looks.Count == 0 ? new List<GolfMapBiomeLook> { new GolfMapBiomeLook { id = "original", original = true } } : group.looks;
-            float step = (float)shapes.Select(a => a.crownWidthM).DefaultIfEmpty(5).Max() * 1.15f;
-            var origin = view.pivot;
-            int row = 0, missing = 0;
-            foreach (var look in looks)
-            {
-                int column = 0;
-                foreach (var shape in shapes)
-                {
-                    if (look.shapes != null && !look.shapes.Contains(shape.guid)) { column++; continue; }
-                    var prefab = look.original ? AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GUIDToAssetPath(shape.guid)) : GolfMapLooks.Prefab(course, label, look, shape);
-                    if (!prefab) { missing++; column++; continue; }
-                    var tree = Instantiate(prefab, root.transform);
-                    tree.name = look.id + " / " + shape.name;
-                    var position = origin + new Vector3(column * step, 0, row * step);
-                    if (terrain) position.y = terrain.SampleHeight(position) + terrain.transform.position.y;
-                    tree.transform.position = position;
-                    column++;
-                }
-                row++;
-            }
-            paletteNote = "Lab: " + root.transform.childCount + " tree(s), one row per look (" + string.Join(", ", looks.Select(l => l.id).ToArray()) + "), shapes left to right by height." +
-                (missing > 0 ? " " + missing + " prefab(s) missing: Regenerate the look." : "");
-            FrameLab();
-        }
-
-        static void FrameLab()
-        {
-            var root = LabRoot(); var view = SceneView.lastActiveSceneView;
-            if (!root || !view) return;
-            var renderers = root.GetComponentsInChildren<Renderer>();
-            if (renderers.Length == 0) return;
-            var bounds = renderers[0].bounds;
-            foreach (var r in renderers) bounds.Encapsulate(r.bounds);
-            // Not FrameSelected: selecting the Lab would close this Inspector.
-            view.LookAt(bounds.center, view.rotation, bounds.extents.magnitude * 1.2f);
-        }
     }
 }

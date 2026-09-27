@@ -61,9 +61,9 @@ namespace GolfMap.Editor
             return Surface.Other;
         }
 
-        static bool IsCourseMesh(string name)
+        internal static bool IsCourseMesh(string name)
         {
-            return name.StartsWith("Spline_", StringComparison.Ordinal) || name.StartsWith("Gap_Issue", StringComparison.Ordinal);
+            return (name.StartsWith("Spline_", StringComparison.Ordinal) || name.StartsWith("Gap_Issue", StringComparison.Ordinal)) && !GolfMapWaterplanes.IsWaterPlane(name);
         }
 
         [BridgeCommand("golfmap.surfaces.export", "Rasterize the course meshes (Spline_*, Gap_Issue_*) over a terrain into a surface map: <prefix>-<terrain>-surfaces.bin/.json/-preview.png in the course's export folder. Input of pipeline/grass_zones.py --surfaces.",

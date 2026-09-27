@@ -121,6 +121,42 @@ export function generatedCreatedAt(index: number, origin?: string): string {
     return `${GENERATED_EPOCH}:${String(second).padStart(2, '0')}.${String(index).padStart(6, '0')}`;
 }
 
+/**
+ * The `originRef` prefix of an edit generated from one course feature
+ * (`feature:<featureId>`: the digs, a road graded from the course's own
+ * path) — what ties a generated edit on a shared site to its course.
+ */
+export const FEATURE_ORIGIN_REF = 'feature:';
+
+/** Ids per `IN (...)` list, well under SQLite's bound-parameter limit. */
+const SQL_IN_CHUNK = 500;
+
+/** A generated edit's index in its origin (the `created_at` fraction, generatedCreatedAt); -1 for a real timestamp. */
+function generatedIndexOf(createdAt: string): number {
+    const m = /\.(\d+)$/.exec(createdAt);
+    return m ? Number(m[1]) : -1;
+}
+
+/** The `feature:<id>` refs among `rows` whose feature belongs to another course on the site. */
+async function otherCoursesFeatureRefs(
+    db: Kysely<Database>, siteId: string, courseId: string, rows: Array<{ origin_ref: string | null }>,
+): Promise<Set<string>> {
+    const featureIds = [...new Set(rows.flatMap(r =>
+        r.origin_ref?.startsWith(FEATURE_ORIGIN_REF) ? [r.origin_ref.slice(FEATURE_ORIGIN_REF.length)] : []))];
+    const refs = new Set<string>();
+    for (let i = 0; i < featureIds.length; i += SQL_IN_CHUNK) {
+        const owned = await db.selectFrom('course_features')
+            .innerJoin('courses', 'courses.id', 'course_features.course_id')
+            .select('course_features.id')
+            .where('course_features.id', 'in', featureIds.slice(i, i + SQL_IN_CHUNK))
+            .where('courses.site_id', '=', siteId)
+            .where('courses.id', '!=', courseId)
+            .execute();
+        for (const f of owned) refs.add(FEATURE_ORIGIN_REF + f.id);
+    }
+    return refs;
+}
+
 // --- Row mapping ---
 
 type TerrainEditRow = Selectable<TerrainEditsTable>;
@@ -332,8 +368,17 @@ export class TerrainEditsService {
      * generation's rows go, the new ones come in, and a building the user
      * had disabled stays disabled (matched by `originRef`). Hand-drawn edits
      * and other origins are untouched.
+     *
+     * With `scope.courseId` the generation is one course's, not the site's:
+     * a row whose `originRef` is `feature:<id>` of another course on the
+     * same site belongs to that course and stays (several courses share a
+     * site, and each generates the digs of its own features). Every other
+     * row of the origin — the course's own, orphans of deleted features,
+     * site-wide refs — is replaced.
      */
-    async replaceByOrigin(siteId: string, origin: string, inputs: TerrainEditInput[]): Promise<TerrainEdit[]> {
+    async replaceByOrigin(
+        siteId: string, origin: string, inputs: TerrainEditInput[], scope: { courseId?: string } = {},
+    ): Promise<TerrainEdit[]> {
         if (!origin) throw new InvalidTerrainEditError('origin is required');
         for (const input of inputs) {
             assertValidOp(input.op);
@@ -343,17 +388,32 @@ export class TerrainEditsService {
         }
         return this.db.transaction().execute(async (trx) => {
             const previous = await trx.selectFrom('terrain_edits')
-                .select(['origin_ref', 'enabled'])
+                .select(['id', 'origin_ref', 'enabled', 'created_at'])
                 .where('site_id', '=', siteId)
                 .where('origin', '=', origin)
                 .execute();
             const disabled = new Set(previous.filter(r => r.enabled === 0 && r.origin_ref).map(r => r.origin_ref));
-            await trx.deleteFrom('terrain_edits')
-                .where('site_id', '=', siteId)
-                .where('origin', '=', origin)
-                .execute();
+            const othersRefs = scope.courseId ? await otherCoursesFeatureRefs(trx, siteId, scope.courseId, previous) : new Set<string>();
+            const kept = previous.filter(r => r.origin_ref != null && othersRefs.has(r.origin_ref));
+            if (kept.length === 0) {
+                await trx.deleteFrom('terrain_edits')
+                    .where('site_id', '=', siteId)
+                    .where('origin', '=', origin)
+                    .execute();
+            } else {
+                const keptIds = new Set(kept.map(r => r.id));
+                const replaced = previous.filter(r => !keptIds.has(r.id)).map(r => r.id);
+                for (let i = 0; i < replaced.length; i += SQL_IN_CHUNK) {
+                    await trx.deleteFrom('terrain_edits').where('id', 'in', replaced.slice(i, i + SQL_IN_CHUNK)).execute();
+                }
+            }
+            // Kept rows hold their slots in the origin's createdAt order; the new ones take the free ones.
+            const taken = new Set(kept.map(r => generatedIndexOf(r.created_at)));
+            let next = 0;
             const ids: string[] = [];
-            for (const [index, input] of inputs.entries()) {
+            for (const input of inputs) {
+                while (taken.has(next)) next++;
+                const index = next++;
                 const id = crypto.randomUUID();
                 ids.push(id);
                 const keepDisabled = input.originRef != null && disabled.has(input.originRef);

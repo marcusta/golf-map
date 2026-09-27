@@ -1174,6 +1174,39 @@ describe('CourseFeaturesService — vegetation_zone', () => {
         expect((await svc.findById(zone.id)).version).toBe(4);
     });
 
+    test('blend and extraPalettes are optional: kept through create, update and GeoJSON; malformed ones rejected', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const layered = { ...zoneAttributes, blend: 'mix', extraPalettes: 'shrub/rocks=0.4, fern' };
+
+        const zone = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone', geometry: squareGeometry(), attributes: layered,
+        });
+        expect(zone.attributes).toEqual(layered);
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        expect(fc.features.find((f) => f.id === zone.id)!.properties.attributes).toEqual(layered);
+        const replaced = await svc.update(zone.id, 1, { attributes: { ...zoneAttributes, blend: 'replace', extraPalettes: '' } });
+        expect(replaced.attributes).toEqual({ ...zoneAttributes, blend: 'replace', extraPalettes: '' });
+
+        const bad: Record<string, unknown>[] = [
+            { blend: 'multiply' },
+            { blend: 1 },
+            { extraPalettes: 3 },
+            { extraPalettes: 'Shrub' },
+            { extraPalettes: 'shrub/rocks=1.5' },
+            { extraPalettes: 'fern, shrub rocks' },
+        ];
+        for (const patch of bad) {
+            await expect(svc.create({
+                courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone',
+                geometry: squareGeometry(), attributes: { ...zoneAttributes, ...patch } as never,
+            })).rejects.toBeInstanceOf(InvalidFeatureError);
+            await expect(svc.update(zone.id, 2, { attributes: { ...zoneAttributes, ...patch } as never }))
+                .rejects.toBeInstanceOf(InvalidFeatureError);
+        }
+        expect((await svc.findById(zone.id)).version).toBe(2);
+    });
+
     test('rejects out-of-range weight / feather / noise on create and update', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);
@@ -1293,6 +1326,51 @@ describe('CourseFeaturesService — path surface', () => {
             courseId: TEST_COURSE_ID, holeId: null, type: 'bunker', geometry: squareGeometry(40, 40), attributes: { surface: 'lava' },
         });
         expect(bunker.attributes).toEqual({ surface: 'lava' });
+    });
+});
+
+describe('CourseFeaturesService — creek bank vegetation', () => {
+    test('a creek may name a bank palette, cover and cap; bad values are refused on create and update', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const creek = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'water_creek', geometry: squareGeometry(),
+            attributes: { bankVeg: 'reed', bankVegCover: 0.4, digPreset: 'meadow_brook' },
+        });
+        expect(creek.attributes).toEqual({ bankVeg: 'reed', bankVegCover: 0.4, digPreset: 'meadow_brook' });
+        // '' = not planted, like an absent key.
+        const off = await svc.update(creek.id, creek.version, { attributes: { bankVeg: '', bankVegMaxM: 4 } });
+        expect(off.attributes).toEqual({ bankVeg: '', bankVegMaxM: 4 });
+
+        for (const attributes of [{ bankVeg: 'Reed grass' }, { bankVeg: 3 }, { bankVegCover: 1.5 }, { bankVegCover: '0.5' }, { bankVegMaxM: 0 }]) {
+            await expect(svc.create({
+                courseId: TEST_COURSE_ID, holeId: null, type: 'water_creek', geometry: squareGeometry(), attributes: attributes as never,
+            })).rejects.toThrow(InvalidFeatureError);
+            await expect(svc.update(creek.id, off.version, { attributes: attributes as never })).rejects.toThrow(/attributes.bankVeg/);
+        }
+        // Other types don't know the keys.
+        const bunker = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'bunker', geometry: squareGeometry(40, 40), attributes: { bankVeg: 'Reed grass' },
+        });
+        expect(bunker.attributes).toEqual({ bankVeg: 'Reed grass' });
+    });
+
+    test('a water polygon (a dug pond or channel) takes the same keys, validated the same way', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const pond = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: squareGeometry(40, 40),
+            attributes: { digPreset: 'parkland_shelf', bankVeg: 'reed' },
+        });
+        expect(pond.attributes).toEqual({ digPreset: 'parkland_shelf', bankVeg: 'reed' });
+        await expect(svc.update(pond.id, pond.version, { attributes: { bankVeg: 'Reed grass' } })).rejects.toThrow(/attributes.bankVeg/);
+        // The water plants' reach up the bank: 0..10 m.
+        const edge = await svc.update(pond.id, pond.version, { attributes: { bankVeg: 'vass', bankVegWetM: 0.3 } });
+        expect(edge.attributes).toEqual({ bankVeg: 'vass', bankVegWetM: 0.3 });
+        await expect(svc.update(pond.id, edge.version, { attributes: { bankVegWetM: -1 } })).rejects.toThrow(/attributes.bankVegWetM/);
+        await expect(svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: squareGeometry(80, 80), attributes: { bankVegCover: 2 },
+        })).rejects.toThrow(InvalidFeatureError);
     });
 });
 

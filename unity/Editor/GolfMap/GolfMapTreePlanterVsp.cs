@@ -50,7 +50,7 @@ namespace GolfMap.Editor
             unknownPrefabs.Clear(); bushPrefabs.Clear();
             useBiome=true;biomePath="";
             minScale = 0.75f; maxScale = 1.4f; scaleWidth = false;
-            groundMeshes = forceBillboards ? new List<GameObject>() : FindObjectsOfType<MeshFilter>().Where(m => m.gameObject.scene == scene && m.name.StartsWith("Spline_") && !m.name.Contains("Blend") && m.sharedMesh != null).Select(m => m.gameObject).ToList();
+            groundMeshes = forceBillboards ? new List<GameObject>() : FindObjectsOfType<MeshFilter>().Where(m => m.gameObject.scene == scene && m.name.StartsWith("Spline_") && !m.name.Contains("Blend") && !GolfMapWaterplanes.IsWaterPlane(m.name) && m.sharedMesh != null).Select(m => m.gameObject).ToList();
             loaded = null;
             var problem = SyncRole();
             status = GolfMapCourses.Name(course) + " " + RoleKey + " preset ready: " + groundMeshes.Count + " course meshes, terrain fallback. Plant creates dedicated VSP storage if needed." + (string.IsNullOrEmpty(problem) ? "" : "\n" + problem);

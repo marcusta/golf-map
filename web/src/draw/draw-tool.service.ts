@@ -29,6 +29,8 @@ import {
     nearestOnCenterline,
 } from '../../../shared/features/centerline';
 import { PATH_SURFACE_ATTRIBUTE, isPathSurface, type PathSurface } from '../../../shared/features/path-surface';
+import { takesBankVeg } from '../../../shared/features/creek-vegetation';
+import { isGeneratedFeature } from './generated-features';
 import {
     DrawState,
     MIN_RING_POINTS,
@@ -72,7 +74,9 @@ import {
     RULES_TYPES,
     SELECTION_COLOR,
     SURROUND_PAIRINGS,
+    VEGETATION_TYPES,
     isRulesType,
+    isVegetationType,
     typeColorExpression,
     type FeatureType,
 } from './feature-palette';
@@ -473,13 +477,46 @@ export function planSurrounds(
 
 /**
  * What the draw engine edits. `surfaces` is Draw mode: every type but the
- * rules lines, which are hidden there. `rules` is the same engine run by the
- * Furniture tool for the penalty areas and OOB only (RULES_TYPES): nothing
- * else is hit or created, the map stays in nice rendering, clicks on the
- * furniture markers are left to the Furniture tool, and it has its own undo
+ * rules lines and the vegetation zones, which are hidden there. `rules` is
+ * the same engine run by the Furniture tool for the penalty areas and OOB
+ * only (RULES_TYPES): nothing else is hit or created, the map stays in nice
+ * rendering, clicks on the furniture markers are left to the Furniture tool.
+ * `vegetation` is Vegetation mode: the zones only (VEGETATION_TYPES), drawn
+ * over the course shown as an outline backdrop. Each scope has its own undo
  * history.
  */
-export type DrawScope = 'surfaces' | 'rules';
+export type DrawScope = 'surfaces' | 'rules' | 'vegetation';
+
+/** True when `type` is edited in `scope` (see `DrawScope`). Pure + exported for tests. */
+export function scopeOwnsType(scope: DrawScope, type: string): boolean {
+    if (scope === 'rules') return isRulesType(type);
+    if (scope === 'vegetation') return isVegetationType(type);
+    return !isRulesType(type) && !isVegetationType(type);
+}
+
+/**
+ * Whether a click in `scope` may select a `type` feature: the scope's own
+ * types, plus in Vegetation mode the creeks and water, selected there only to
+ * set their bank vegetation (they stay backdrop: read-only, see
+ * `FeaturesService.editableSelected`). Pure + exported for tests.
+ */
+export function scopeSelectsType(scope: DrawScope, type: string): boolean {
+    return scopeOwnsType(scope, type) || (scope === 'vegetation' && takesBankVeg(type));
+}
+
+/**
+ * Vegetation mode's hit order over a topmost-first stack: hand-drawn zones,
+ * then the creeks and water, then generated zones (the generated creek-bank
+ * zones lie over the water they were planted from; a click there means the
+ * water). Stable within each group. Pure + exported for tests.
+ */
+export function vegetationHitOrder(stackTopDown: readonly CourseFeature[]): CourseFeature[] {
+    const rank = (f: CourseFeature) => takesBankVeg(f.type) ? 1 : isGeneratedFeature(f) ? 2 : 0;
+    return stackTopDown.map((f, i) => ({ f, i })).sort((a, b) => rank(a.f) - rank(b.f) || a.i - b.i).map(x => x.f);
+}
+
+/** Draw's own types: the course features. */
+const SURFACE_TYPES: readonly FeatureType[] = FEATURE_TYPES.filter(type => scopeOwnsType('surfaces', type));
 
 /** How a host tool other than Draw runs the engine (see `DrawScope`). */
 export interface DrawActivation {
@@ -497,17 +534,26 @@ export class DrawToolService {
     readonly state = new DrawState();
     /** What the engine edits right now (see `DrawScope`); `surfaces` whenever it is not running for Furniture. */
     readonly scope = new Signal<DrawScope>('surfaces');
-    private readonly surfaceHistory = new EditHistory();
-    private readonly rulesHistory = new EditHistory();
+    private readonly histories: Record<DrawScope, EditHistory> = {
+        surfaces: new EditHistory(),
+        rules: new EditHistory(),
+        vegetation: new EditHistory(),
+    };
     /** Snapshot-based undo/redo of committed edits (see history.ts), one per scope. */
     get history(): EditHistory {
-        return this.scope.get() === 'rules' ? this.rulesHistory : this.surfaceHistory;
+        return this.histories[this.scope.get()];
     }
     /** The interaction mode the engine answers to (Draw's own, or the host tool's). */
     private hostToolId = DRAW_TOOL_ID;
     private yieldTo: DrawActivation['yieldTo'] | null = null;
-    /** Draw mode's type, kept while the rules scope borrows `drawType`. */
+    /** Draw mode's type, kept while another scope borrows `drawType`. */
     private surfacesDrawType: FeatureType | null = null;
+    /**
+     * Zone type (a key of the course's zone-type table) for the next drawn
+     * vegetation zone; '' = the table's first. Set by the Vegetation mode's
+     * zone-type picker.
+     */
+    readonly drawZoneType = new Signal<string>('');
     /** Feature type used for the next created polygon. */
     readonly drawType = new Signal<FeatureType>('bunker');
     /**
@@ -519,7 +565,7 @@ export class DrawToolService {
     readonly typeFollowsLast = new Signal<boolean>(storedPref(TYPE_FOLLOWS_LAST_KEY) !== '0');
     /** The type new shapes reset to when `typeFollowsLast` is off. Persisted. */
     readonly defaultDrawType = new Signal<FeatureType>(
-        (FEATURE_TYPES as readonly string[]).includes(storedPref(DEFAULT_TYPE_KEY) ?? '') && !isRulesType(storedPref(DEFAULT_TYPE_KEY) ?? '')
+        (SURFACE_TYPES as readonly string[]).includes(storedPref(DEFAULT_TYPE_KEY) ?? '')
             ? storedPref(DEFAULT_TYPE_KEY) as FeatureType
             : 'bunker');
 
@@ -711,7 +757,7 @@ export class DrawToolService {
      */
     attach(ctx: ToolContext): void {
         this.features = ctx.features;
-        for (const history of [this.surfaceHistory, this.rulesHistory]) {
+        for (const history of Object.values(this.histories)) {
             history.clear();
             history.notice.set(null);
         }
@@ -723,7 +769,7 @@ export class DrawToolService {
             const err = ctx.features.saveError.get();
             if (!err) return;
             untrack(() => {
-                for (const history of [this.surfaceHistory, this.rulesHistory]) {
+                for (const history of Object.values(this.histories)) {
                     if (history.canUndo.peek() || history.canRedo.peek()) {
                         history.clear();
                         history.notice.set('Edit history dropped after a failed save — re-synced from server.');
@@ -746,14 +792,22 @@ export class DrawToolService {
             ctx.features.rulesOutlines.set(true);
             this.surfacesDrawType = this.drawType.peek();
             if (!isRulesType(this.drawType.peek())) this.drawType.set(RULES_TYPES[0]!);
+        } else if (scope === 'vegetation') {
+            // The zones in Draw's palette over the course as an outline
+            // backdrop: its edges stay readable, but nothing there is hit.
+            ctx.features.niceRendering.set(false);
+            ctx.features.modeHiddenTypes.set(new Set(RULES_TYPES));
+            ctx.features.modeBackdropTypes.set(new Set(SURFACE_TYPES));
+            this.surfacesDrawType = this.drawType.peek();
+            this.drawType.set(VEGETATION_TYPES[0]!);
         } else {
             // Draw means the whole active tool span, not only a currently armed
             // polygon. Its high-contrast vector palette makes existing surfaces
             // legible before the first tracing click.
             ctx.features.niceRendering.set(false);
-            // The rules lines belong to Furniture.
-            ctx.features.modeHiddenTypes.set(new Set(RULES_TYPES));
-            if (isRulesType(this.drawType.peek())) this.drawType.set(this.defaultDrawType.peek());
+            // The rules lines belong to Furniture, the zones to Vegetation.
+            ctx.features.modeHiddenTypes.set(new Set([...RULES_TYPES, ...VEGETATION_TYPES]));
+            if (!scopeOwnsType('surfaces', this.drawType.peek())) this.drawType.set(this.defaultDrawType.peek());
         }
         // QA hook (same pattern as MapService's window.__map): expose the
         // instance for scripted/visual verification tooling. Not public API.
@@ -873,10 +927,8 @@ export class DrawToolService {
         this.cursor.set(null);
         this.clearTransientOpState();
         this.features?.select(null);
-        this.features?.niceRendering.set(true);
-        this.features?.modeHiddenTypes.set(new Set());
-        this.features?.rulesOutlines.set(false);
-        if (this.scope.peek() === 'rules' && this.surfacesDrawType) this.drawType.set(this.surfacesDrawType);
+        this.features?.resetModeView();
+        if (this.scope.peek() !== 'surfaces' && this.surfacesDrawType) this.drawType.set(this.surfacesDrawType);
         this.surfacesDrawType = null;
         this.scope.set('surfaces');
         this.hostToolId = DRAW_TOOL_ID;
@@ -1407,9 +1459,9 @@ export class DrawToolService {
                 // Default 'contain' (fully inside); Alt = 'intersect'.
                 const mode = e.originalEvent.altKey ? 'intersect' : 'contain';
                 const features = this.features;
-                const rules = this.scope.peek() === 'rules';
+                const scope = this.scope.peek();
                 const visible = features.store.items.peek()
-                    .filter(f => !features.isHidden(f) && isRulesType(f.type) === rules);
+                    .filter(f => !features.isHidden(f) && scopeOwnsType(scope, f.type));
                 this.features.setSelection(featuresInRect(visible, rect, mode));
             } else {
                 const single = this.features.editableSelected.peek();
@@ -1629,6 +1681,9 @@ export class DrawToolService {
     private async reorderSelected(key: 'PageUp' | 'PageDown' | 'Home' | 'End'): Promise<void> {
         const features = this.features;
         if (!features) return;
+        // A mode's backdrop rows (Vegetation's creeks and water) keep Draw's order.
+        const backdrop = features.modeBackdropTypes.peek();
+        if (features.selectedFeatures.peek().some(f => backdrop.has(f.type))) return;
         const ids = [...features.selectedIds.peek()];
         if (key === 'PageUp') await features.raise(ids);
         else if (key === 'PageDown') await features.lower(ids);
@@ -1650,17 +1705,29 @@ export class DrawToolService {
         this.state.disarm();
         const features = this.features;
         const type = this.drawType.peek();
-        const surface = type === 'path' ? this.pathSurface.peek() : '';
         void features.create({
             type,
             holeId: this.drawHoleId.peek(),
             geometry: { crs: 'EPSG:3006', curveType, rings: [ring] },
-            ...(surface ? { attributes: { [PATH_SURFACE_ATTRIBUTE]: surface } } : {}),
+            ...this.newShapeAttributes(type),
         }).then(created => {
             if (created) {
                 this.history.push([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
             }
         });
+    }
+
+    /**
+     * Attributes a freshly drawn shape of `type` starts with: a path's set
+     * surface, a zone's picked zone type (the table's defaults otherwise,
+     * filled in by `FeaturesService.create`).
+     */
+    private newShapeAttributes(type: FeatureType): { attributes?: FeatureAttributesPatch } {
+        const surface = type === 'path' ? this.pathSurface.peek() : '';
+        if (surface) return { attributes: { [PATH_SURFACE_ATTRIBUTE]: surface } };
+        const zoneType = type === 'vegetation_zone' ? this.drawZoneType.peek() : '';
+        if (zoneType) return { attributes: { ...this.zoneTypes.defaultAttributes(), zoneType, zoneVariant: this.zoneTypes.startVariantOf(zoneType) } };
+        return {};
     }
 
     /**
@@ -1702,12 +1769,11 @@ export class DrawToolService {
         this.cursor.set(null);
         this.state.disarm();
         const type = this.drawType.peek();
-        const surface = type === 'path' ? this.pathSurface.peek() : '';
         void this.features.create({
             type,
             holeId: this.drawHoleId.peek(),
             geometry,
-            ...(surface ? { attributes: { [PATH_SURFACE_ATTRIBUTE]: surface } } : {}),
+            ...this.newShapeAttributes(type),
         }).then(created => {
             if (created) {
                 this.history.push([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
@@ -1775,7 +1841,10 @@ export class DrawToolService {
      */
     async deleteSelected(): Promise<void> {
         const features = this.features;
-        const items = features?.selectedFeatures.peek() ?? [];
+        // Generated rows may be deleted (false positives); a mode's backdrop
+        // (a creek selected in Vegetation for its bank vegetation) may not.
+        const backdrop = features?.modeBackdropTypes.peek() ?? new Set<string>();
+        const items = (features?.selectedFeatures.peek() ?? []).filter(f => !backdrop.has(f.type));
         if (!features || items.length === 0) return;
         const label = items.length === 1 ? `this ${items[0].type} feature` : `${items.length} features`;
         const ok = await this.confirm.confirm({
@@ -1997,10 +2066,31 @@ export class DrawToolService {
      */
     chooseType(type: FeatureType): void {
         // Each scope picks only its own types (Draw never makes a rules line, Furniture only those).
-        if (isRulesType(type) !== (this.scope.peek() === 'rules')) return;
+        if (!scopeOwnsType(this.scope.peek(), type)) return;
         const hasSelection = (this.features?.selectedIds.peek().size ?? 0) > 0;
         if (!this.state.isDrawing.peek() && hasSelection) this.retypeSelection(type);
         else this.drawType.set(type);
+    }
+
+    /**
+     * The zone-type picker's verb (Vegetation mode), the zone counterpart of
+     * `chooseType`: while armed, or with no zone selected, it sets the zone
+     * type of the next drawn zone; otherwise the selected zones take it (its
+     * Default mix, keeping weight/feather/noise). Attribute saves, like the
+     * selection panel's zone section: not in the undo history.
+     */
+    chooseZoneType(zoneType: string): void {
+        const features = this.features;
+        const zones = this.state.isDrawing.peek() ? []
+            : (features?.editableSelectedFeatures.peek() ?? []).filter(f => isVegetationType(f.type));
+        if (!features || zones.length === 0) {
+            this.drawZoneType.set(zoneType);
+            return;
+        }
+        for (const f of zones) {
+            if (zoneTypeKeyOf(f.attributes) === zoneType) continue;
+            void features.update(f.id, { attributes: { ...this.zoneTypes.attributesOf(f.attributes), zoneType, zoneVariant: this.zoneTypes.startVariantOf(zoneType) } });
+        }
     }
 
     /**
@@ -2178,7 +2268,9 @@ export class DrawToolService {
      * this list. `hitFeature` is just its first element.
      *
      * "Hittable" is `unhittableTypes`: visible, and either a filled type or
-     * the outline-only type the picker currently has armed.
+     * the outline-only type the picker currently has armed. In Vegetation
+     * mode the creeks and water are hittable too (`scopeSelectsType`), in
+     * `vegetationHitOrder`.
      */
     private hitStack(p: Point): CourseFeature[] {
         const features = this.features;
@@ -2187,9 +2279,12 @@ export class DrawToolService {
             return features.stackTopDown.peek()
                 .filter(f => isRulesType(f.type) && !features.isHidden(f) && this.grabs(f, p));
         }
-        const stack = features.stackTopDown.peek();
+        const scope = this.scope.peek();
+        const roughsOff = features.roughsLayerOff.peek();
+        const stack = features.stackTopDown.peek()
+            .filter(f => scopeSelectsType(scope, f.type) && !(roughsOff && f.layer === ROUGHS_LAYER));
         return containingTopDown(
-            features.roughsLayerOff.peek() ? stack.filter(f => f.layer !== ROUGHS_LAYER) : stack,
+            scope === 'vegetation' ? vegetationHitOrder(stack) : stack,
             unhittableTypes(features.effectiveHiddenTypes.peek(), this.drawType.peek()),
             p,
             features.hiddenIds.peek(),

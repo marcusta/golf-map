@@ -444,7 +444,8 @@ namespace GolfMap.Bridge
 
         // "/Root/Child/Leaf". A name shared with siblings gets its position among them:
         // inner and outer both have "/VegetationStudioPro/VegetationSystemPro#0" and "#1".
-        // Names containing '/' or '#' cannot be addressed; they are rare in course scenes.
+        // Names containing '/' cannot be addressed. A name containing '#' (placed props: "<asset>#<index>")
+        // resolves when it is unique among its siblings: an exact name match wins over the "#<position>" suffix.
         static string PathOf(Transform t)
         {
             var parts = new List<string>();
@@ -463,11 +464,12 @@ namespace GolfMap.Bridge
             foreach (var part in path.Trim('/').Split('/'))
             {
                 string name = part;
+                var level = (current == null ? Roots() : current.Cast<Transform>()).ToList();
+                var named = level.Where(t => t.name == part).ToList();
                 int index = -1, hash = part.LastIndexOf('#');
-                if (hash > 0 && int.TryParse(part.Substring(hash + 1), out index)) name = part.Substring(0, hash);
+                if (named.Count == 1) { }
+                else if (hash > 0 && int.TryParse(part.Substring(hash + 1), out index)) { name = part.Substring(0, hash); named = level.Where(t => t.name == name).ToList(); }
                 else index = -1;
-                var level = current == null ? Roots() : current.Cast<Transform>();
-                var named = level.Where(t => t.name == name).ToList();
                 string where = current == null ? "the open scenes" : PathOf(current);
                 if (named.Count == 0) throw new BridgeError("No '" + name + "' in " + where + ". Use scene.find.");
                 if (index >= named.Count) throw new BridgeError("Only " + named.Count + " objects named '" + name + "' in " + where + ".");

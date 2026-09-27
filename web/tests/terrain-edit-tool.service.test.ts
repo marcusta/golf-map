@@ -85,7 +85,13 @@ function fakeApi(listResult: TerrainEdit[] = []): FakeApi {
             api.calls.update.push(input);
             if (api.failUpdate) throw new Error('version conflict');
             const current = api.listResult.find(e => e.id === input.id) ?? makeEdit({ id: input.id });
-            return { ...current, ...('enabled' in input ? { enabled: input.enabled! } : {}), version: input.version + 1 };
+            return {
+                ...current,
+                ...('enabled' in input ? { enabled: input.enabled! } : {}),
+                ...(input.op ? { op: input.op } : {}),
+                ...(input.params ? { params: input.params } : {}),
+                version: input.version + 1,
+            };
         },
         async remove(input) {
             api.calls.remove.push(input);
@@ -181,8 +187,31 @@ function fakeGenerators(): FakeGenerators {
     return g;
 }
 
+interface FakeFeatures {
+    store: { items: Signal<Array<{ id: string; type: string; holeId?: string | null; attributes: Record<string, string | number | boolean> | null }>> };
+    updates: Array<{ id: string; patch: { attributes?: Record<string, string | number | boolean> | null } }>;
+    update(id: string, patch: { attributes?: Record<string, string | number | boolean> | null }): Promise<unknown>;
+}
+
+function fakeFeatures(items: FakeFeatures['store']['items'] extends Signal<infer T> ? T : never = []): FakeFeatures {
+    const f: FakeFeatures = {
+        store: { items: new Signal(items) },
+        updates: [],
+        async update(id, patch) {
+            f.updates.push({ id, patch });
+            const next = f.store.items.peek().map(x => (x.id === id ? { ...x, attributes: patch.attributes ?? null } : x));
+            f.store.items.set(next);
+            return next.find(x => x.id === id);
+        },
+    };
+    return f;
+}
+
 interface Harness {
     svc: TerrainEditToolService;
+    features: FakeFeatures;
+    /** Bounds passed to map.fitBounds ([w, s, e, n], WGS84). */
+    fits: Array<[number, number, number, number]>;
     api: FakeApi;
     mapBuild: FakeMapBuild;
     generators: FakeGenerators;
@@ -199,6 +228,8 @@ interface Harness {
 
 async function harness(opts: {
     listResult?: TerrainEdit[];
+    features?: FakeFeatures;
+    holes?: Array<{ id: string; number: number }>;
     siteId?: string | null;
     mapKey?: string | null;
 } = {}): Promise<Harness> {
@@ -206,11 +237,13 @@ async function harness(opts: {
     const mapBuild = fakeMapBuild();
     const renderer = fakeRenderer();
     const generators = fakeGenerators();
+    const features = opts.features ?? fakeFeatures();
     const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */, generators);
 
     const ready = new Signal(true);
     const interactionMode = new Signal<string>(TERRAIN_EDIT_TOOL_ID);
     const reloads: string[] = [];
+    const fits: Array<[number, number, number, number]> = [];
     const clickHandlers: Harness['clickHandlers'] = [];
     const disposers: Array<() => void> = [];
 
@@ -220,6 +253,7 @@ async function harness(opts: {
             interactionMode,
             ready,
             map: new Signal(null),
+            fitBounds: (bounds: [number, number, number, number]) => { fits.push(bounds); },
             onClick: (h: Harness['clickHandlers'][number]) => {
                 clickHandlers.push(h);
                 return () => {};
@@ -232,8 +266,9 @@ async function harness(opts: {
         } as never,
         courseDetail: {
             course: new Signal(siteId === null ? null : { id: 'course-1', siteId }),
+            holes: new Signal(opts.holes ?? []),
         } as never,
-        features: null as never,
+        features: features as never,
         courseId: 'course-1',
         track: d => {
             disposers.push(d);
@@ -245,6 +280,8 @@ async function harness(opts: {
 
     return {
         svc,
+        features,
+        fits,
         api,
         mapBuild,
         generators,
@@ -600,7 +637,7 @@ describe('generators (building pads / road grades)', () => {
         expect(h.svc.edits.get().map(e => e.id)).toEqual(['g1']);
         expect(h.svc.notice.get()).toBe('Building pads: 3 edit(s) generated. Apply to terrain to bake them.');
         expect(h.svc.generating.get()).toBeNull();
-        expect(paramsSummary(h.svc.edits.get()[0])).toContain('building-pads');
+        expect(h.svc.editName(h.svc.edits.get()[0])).toBe('Building pad');
     });
 
     test('a failed generation surfaces in the notice and one runs at a time', async () => {
@@ -619,5 +656,122 @@ describe('generators (building pads / road grades)', () => {
         release();
         expect(await first).toBe(true);
         expect(h.svc.notice.get()).toBe('Road grades: 1 edit(s) generated (1 feature(s) skipped). Apply to terrain to bake them.');
+    });
+});
+
+describe('changing an edit', () => {
+    const creekDig = makeEdit({
+        id: 'g1', op: 'dig', origin: 'creek-digs', originRef: 'feature:f1',
+        params: { featherM: 0, reference: 'stream', depthM: 0.28, bankSlopeDeg: 10 },
+    });
+    const creek = () => fakeFeatures([{ id: 'f1', type: 'water_creek', attributes: { digPreset: 'meadow_brook', note: 'kept' } }]);
+
+    test('only hand-drawn plane/smooth edits and generated digs open a form', async () => {
+        const h = await harness({ features: creek() });
+        expect(h.svc.formKind(makeEdit())).toBe('params');
+        expect(h.svc.formKind(makeEdit({ op: 'smooth', params: { featherM: 2, radiusM: 2 } }))).toBe('params');
+        expect(h.svc.formKind(creekDig)).toBe('dig');
+        expect(h.svc.formKind(makeEdit({ op: 'plane', origin: 'building-pads', originRef: 'osm:way/1' }))).toBeNull();
+        expect(h.svc.formKind(makeEdit({ op: 'corridor', origin: 'road-grades', originRef: 'osm:way/2' }))).toBeNull();
+        expect(h.svc.formKind(makeEdit({ op: 'delta', origin: 'unity-sculpt-inner', originRef: null }))).toBeNull();
+    });
+
+    test("a generated dig's settings come from its feature, and saving them writes the feature and re-digs", async () => {
+        const h = await harness({ listResult: [creekDig], features: creek() });
+        expect(h.svc.digSettings(creekDig)).toEqual({ preset: 'meadow_brook' });
+
+        expect(await h.svc.saveDigSettings('g1', { preset: 'eroded_gully', depthM: 0.5 })).toBe(true);
+        // The feature keeps its other attributes; the generator re-runs for that kind.
+        expect(h.features.updates).toEqual([{ id: 'f1', patch: { attributes: { note: 'kept', digPreset: 'eroded_gully', digDepthM: 0.5 } } }]);
+        expect(h.generators.calls).toEqual([{ courseId: 'course-1', kind: 'creek-digs' }]);
+        expect(h.svc.notice.get()).toContain('Apply to terrain');
+
+        // Back to the defaults: the dig keys go, the rest stays.
+        await h.svc.saveDigSettings('g1', {});
+        expect(h.features.updates[1]).toEqual({ id: 'f1', patch: { attributes: { note: 'kept' } } });
+    });
+
+    test('deleting a generated dig marks its feature dig: false, so the next run leaves it out too', async () => {
+        const h = await harness({ listResult: [creekDig], features: creek() });
+        await h.svc.remove('g1');
+        expect(h.api.calls.remove).toEqual([]);
+        expect(h.features.updates).toEqual([{ id: 'f1', patch: { attributes: { digPreset: 'meadow_brook', note: 'kept', dig: false } } }]);
+        expect(h.generators.calls).toEqual([{ courseId: 'course-1', kind: 'creek-digs' }]);
+    });
+
+    test("a hand-drawn edit's op and params save in place, with its version", async () => {
+        const h = await harness({ listResult: [makeEdit({ id: 'e1', version: 4, params: { featherM: 2, flat: true } })] });
+        expect(await h.svc.saveParams('e1', { op: 'smooth', featherM: 3, radiusM: 4, flat: true })).toBe(true);
+        expect(h.api.calls.update).toEqual([{ id: 'e1', version: 4, op: 'smooth', params: { featherM: 3, radiusM: 4 } }]);
+        expect(h.svc.edits.get()[0]).toMatchObject({ op: 'smooth', params: { featherM: 3, radiusM: 4 }, version: 5 });
+
+        await h.svc.saveParams('e1', { op: 'plane', featherM: 1, radiusM: 4, flat: true });
+        expect(h.api.calls.update[1]).toEqual({ id: 'e1', version: 5, op: 'plane', params: { featherM: 1, flat: true } });
+    });
+});
+
+describe('finding an edit', () => {
+    const dig = (id: string, origin: string, featureId: string, params: TerrainEdit['params'] = { featherM: 0, depthM: 1, bankSlopeDeg: 11 }) =>
+        makeEdit({ id, op: 'dig', origin, originRef: `feature:${featureId}`, params });
+    const features = () => fakeFeatures([
+        { id: 'b3', type: 'bunker', holeId: 'h3', attributes: null },
+        { id: 'b1', type: 'bunker', holeId: 'h1', attributes: null },
+        { id: 'p5', type: 'water', holeId: 'h5', attributes: { digPreset: 'deep_water' } },
+        { id: 'c', type: 'water_creek', holeId: null, attributes: { digPreset: 'eroded_gully' } },
+    ]);
+    const holes = [{ id: 'h1', number: 1 }, { id: 'h3', number: 3 }, { id: 'h5', number: 5 }];
+    const edits = [
+        dig('d-b3', 'bunker-digs', 'b3'),
+        makeEdit({ id: 'pad', op: 'plane', origin: 'building-pads', originRef: 'osm:way/1', params: { featherM: 4, flat: true } }),
+        dig('d-p5', 'water-digs', 'p5'),
+        makeEdit({ id: 'road', op: 'corridor', origin: 'road-grades', originRef: 'osm:way/2', params: { featherM: 2, widthM: 6 } }),
+        dig('d-b1', 'bunker-digs', 'b1'),
+        dig('d-c', 'creek-digs', 'c'),
+        dig('d-gone', 'water-digs', 'elsewhere'),
+        makeEdit({ id: 'mine', op: 'smooth', params: { featherM: 2, radiusM: 3 } }),
+    ];
+
+    test('each edit is named after what it is: its feature and hole, or its kind', async () => {
+        const h = await harness({ listResult: edits, features: features(), holes });
+        const byId = (id: string) => h.svc.editName(edits.find(e => e.id === id)!);
+        expect(byId('d-b3')).toBe('Bunker · hole 3');
+        expect(byId('d-p5')).toBe('Pond · hole 5 · Deep Water');
+        expect(byId('d-c')).toBe('Creek · Eroded Gully');
+        expect(byId('pad')).toBe('Building pad');
+        expect(byId('road')).toBe('Road grade · 6 m wide');
+        expect(byId('mine')).toBe('Smooth (drawn)');
+        expect(byId('d-gone')).toBe('Pond · not on this course');
+    });
+
+    test('the list is grouped by kind, sorted by hole, with digs from other courses apart', async () => {
+        const h = await harness({ listResult: edits, features: features(), holes });
+        const groups = h.svc.groups.get().map(g => [g.label, g.edits.map(e => e.id)]);
+        expect(groups).toEqual([
+            ['Your edits', ['mine']],
+            ['Ponds', ['d-p5']],
+            ['Bunkers', ['d-b1', 'd-b3']],
+            ['Creeks', ['d-c']],
+            ['Building pads', ['pad']],
+            ['Road grades', ['road']],
+            ['Not on this course', ['d-gone']],
+        ]);
+    });
+
+    test('hovering a row highlights its outline; clicking it zooms the map there', async () => {
+        const h = await harness({ listResult: [makeEdit({ id: 'e1', rings: [[{ x: 533000, y: 6475000 }, { x: 533100, y: 6475000 }, { x: 533100, y: 6475050 }]] })] });
+        h.svc.hoveredId.set('e1');
+        await tick();
+        expect(h.renderer.renders[h.renderer.renders.length - 1].highlightId).toBe('e1');
+        h.svc.hoveredId.set(null);
+        h.svc.editingId.set('e1'); // an open form keeps its edit highlighted
+        await tick();
+        expect(h.renderer.renders[h.renderer.renders.length - 1].highlightId).toBe('e1');
+
+        h.svc.zoomTo('e1');
+        expect(h.fits).toHaveLength(1);
+        const [w, s, e, n] = h.fits[0];
+        expect(w).toBeLessThan(e);
+        expect(s).toBeLessThan(n);
+        expect(e - w).toBeGreaterThan(0.001); // ~100 m of longitude
     });
 });

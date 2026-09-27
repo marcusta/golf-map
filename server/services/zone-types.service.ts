@@ -34,6 +34,9 @@ export const DEFAULT_ZONE_TYPES: readonly {
     // The floor of closed stands (D-VZ10): lidar proposes these zones
     // (`woodland-features`, source `lidar-woodland`), the understory items bind here.
     { key: 'woodland_floor', name: 'Woodland floor', color: '#6b5a34', textureIndex: 1, channel: 0 },
+    // Tall grass on the banks of the creeks marked with a `bankVeg` palette
+    // (shared/features/creek-vegetation.ts; generated, source `creek-bank`).
+    { key: 'creek_bank', name: 'Creek bank', color: '#5f8a4a', textureIndex: 1, channel: 1 },
 ];
 
 // --- Output types ---

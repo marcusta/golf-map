@@ -60,7 +60,8 @@ namespace GolfMap.Editor
             var scene = terrain.gameObject.scene;
             var meshes = UnityEngine.Object.FindObjectsOfType<MeshFilter>()
                 .Where(f => f.sharedMesh && f.gameObject.activeInHierarchy && f.gameObject.scene == scene &&
-                            (f.name.StartsWith("Spline_", StringComparison.Ordinal) || f.name.StartsWith("Gap_Issue", StringComparison.Ordinal)))
+                            (f.name.StartsWith("Spline_", StringComparison.Ordinal) || f.name.StartsWith("Gap_Issue", StringComparison.Ordinal)) &&
+                            !GolfMapWaterplanes.IsWaterPlane(f.name))
                 .ToList();
             int done = 0;
             foreach (var mf in meshes)
@@ -196,7 +197,7 @@ namespace GolfMap.Editor
             foreach (var h in Physics.RaycastAll(new Vector3(x, 10000f, z), Vector3.down, 20000f, ~0, QueryTriggerInteraction.Ignore))
             {
                 var n = h.collider.name;
-                if ((n.StartsWith("Spline_", StringComparison.Ordinal) || n.StartsWith("Gap_Issue", StringComparison.Ordinal)) && h.point.y > best) best = h.point.y;
+                if ((n.StartsWith("Spline_", StringComparison.Ordinal) || n.StartsWith("Gap_Issue", StringComparison.Ordinal)) && !GolfMapWaterplanes.IsWaterPlane(n) && h.point.y > best) best = h.point.y;
             }
             return best;
         }

@@ -1205,9 +1205,11 @@ def _load_course_features(db_path: Path, course_ident: str, stack: str) -> tuple
     cols = {r[1] for r in conn.execute("PRAGMA table_info(course_features)")}
     source = "f.source" if "source" in cols else "NULL"
     source_ref = "f.source_ref" if "source_ref" in cols else "NULL"
+    attributes = "f.attributes_json" if "attributes_json" in cols else "NULL"
     rows = conn.execute(
         f"""SELECT f.id, f.type, f.geometry_json, f.sort_order, h.number AS hole_number,
-                   {rank} AS group_rank, {source} AS source, {source_ref} AS source_ref
+                   {rank} AS group_rank, {source} AS source, {source_ref} AS source_ref,
+                   {attributes} AS attributes_json
            FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
            WHERE f.course_id = ?
            ORDER BY group_rank, f.sort_order, f.id""",
@@ -1538,6 +1540,16 @@ ROAD_EDGE_FILL_TYPES = ("rough", "semi_rough", "deep_rough", "fairway", "trees")
 ROAD_GAP_MIN_M2 = 1e-4
 # How far a filled sliver reaches into what it fills (m): no hairline seam.
 ROAD_GAP_OVERLAP_M = 0.02
+# A "sliver" thinner than this on average (area / length, m) is rounding left by
+# the closing along a road edge, not a gap: filled (and widened by the overlap)
+# it becomes a needle along the kerb, metres long and centimetres wide.
+ROAD_GAP_MIN_WIDTH_M = 0.01
+# A sliver whose outline is open for more than this (m) - not bounded by the
+# road and surfaces all round - is the tip of a wedge where a surface edge
+# leaves the road at a slant. The closing ends it with a slanted line that runs
+# along the kerb into a spike (and leaves a notch beside it); the fill is cut
+# square to the road instead, where it leaves the surface.
+ROAD_GAP_OPEN_M = 0.05
 
 
 @dataclass
@@ -1676,8 +1688,11 @@ def _road_edge_fills(rows: list, fills: dict[str, str], roads: list[MergedRoad],
     around = unary_union([road] + [s for _, _, s in near])
     closed = (around.buffer(ROAD_EDGE_GAP_M, join_style="mitre")
               .buffer(-ROAD_EDGE_GAP_M, join_style="mitre"))
+    solid = around.buffer(1e-3)
     gaps = [g for g in _polygons(closed.difference(around).intersection(reach))
-            if g.area >= ROAD_GAP_MIN_M2 and g.distance(road) < 1e-3]
+            if g.area >= ROAD_GAP_MIN_M2 and g.distance(road) < 1e-3
+            and g.area / max(g.length / 2, 1e-9) >= ROAD_GAP_MIN_WIDTH_M]
+    gaps = [sq for g in gaps for sq in _polygons(_square_off_wedge(g, road, solid))]
     candidates = [(fid, s) for fid, kind, s in near if kind in ROAD_EDGE_FILL_TYPES]
     tree = STRtree([s for _, s in candidates])
     extra: dict[str, list] = {}
@@ -1694,6 +1709,40 @@ def _road_edge_fills(rows: list, fills: dict[str, str], roads: list[MergedRoad],
     shapes = dict((fid, s) for fid, s in candidates)
     grown = {fid: unary_union([shapes[fid], *more]).simplify(tol / 2) for fid, more in extra.items()}
     return grown, sum(len(v) for v in extra.values())
+
+
+def _square_off_wedge(gap, road, solid):
+    """A road-edge sliver with each open end (see ROAD_GAP_OPEN_M) cut square to
+    the road where it leaves the surface. An end already square, or one that is
+    not a line from the road to a surface, stays as it is."""
+    from shapely import unary_union
+    from shapely.geometry import LineString, Point
+    from shapely.ops import linemerge, nearest_points, split
+
+    open_part = gap.boundary.difference(solid)
+    if open_part.length <= ROAD_GAP_OPEN_M:
+        return gap
+    merged = linemerge(open_part) if open_part.geom_type == "MultiLineString" else open_part
+    ends = [g for g in getattr(merged, "geoms", [merged]) if g.geom_type == "LineString" and g.length > ROAD_GAP_OPEN_M]
+    shape = gap
+    for end in ends:
+        pa, pb = Point(end.coords[0]), Point(end.coords[-1])
+        near_a, near_b = road.distance(pa) < 2e-3, road.distance(pb) < 2e-3
+        if near_a == near_b:
+            continue
+        tip, off = (pa, pb) if near_a else (pb, pa)  # the end's point on the kerb; where it leaves the surface
+        foot = nearest_points(road.boundary, off)[0]
+        dx, dy = foot.x - off.x, foot.y - off.y
+        length = (dx * dx + dy * dy) ** 0.5
+        if length < 1e-6 or foot.distance(tip) < 0.05:  # already square
+            continue
+        reach = gap.length + 1.0
+        cut = LineString([(off.x - dx / length * reach, off.y - dy / length * reach),
+                          (foot.x + dx / length * reach, foot.y + dy / length * reach)])
+        kept = [piece for piece in _polygons(split(shape, cut)) if piece.distance(tip) > 1e-3]
+        if kept:
+            shape = unary_union(kept)
+    return shape
 
 
 # How far (m) a shape may sit past the square's edge and still count as
@@ -1717,6 +1766,42 @@ def _read_exclude_ids(path: Path | None) -> set[str]:
             raise SystemExit(f"error: {path} must be a JSON array of feature id strings")
         return {i.strip() for i in ids if i.strip()}
     return {line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")}
+
+
+# A path with the attribute surface=bridge is a bridge deck: a prop placed in
+# Unity, kept as a course feature only so the vegetation zones leave room for
+# it. It is not ground: in the SVG it would become a path mesh lying across the
+# creek or lake under it, which breaks the OPCD Blender build.
+BRIDGE_SURFACE = "bridge"
+
+
+def _is_bridge_deck(row) -> bool:
+    raw = row["attributes_json"] if "attributes_json" in row.keys() else None
+    if not raw:
+        return False
+    try:
+        return json.loads(raw).get("surface") == BRIDGE_SURFACE
+    except (ValueError, AttributeError):
+        return False
+
+
+# A surface smaller than this is a slip of the pen (a click or a drag that
+# collapsed while drawing), not a feature: OPCD cannot build a mesh and blend
+# from it and the whole Blender build fails. Roads are exempt - their kerb
+# fillets are small on purpose and merge into the road shapes.
+MIN_SHAPE_AREA_M2 = 1.0
+
+
+def _tiny_rows(rows: list, tol: float, fills: dict[str, str]) -> list:
+    """Drawn, non-road features whose shape is under MIN_SHAPE_AREA_M2 (or empty)."""
+    tiny = []
+    for r in rows:
+        if r["type"] in ROADS_TYPES or r["type"] not in fills:
+            continue
+        shape = _feature_shape(json.loads(r["geometry_json"]), tol)
+        if shape is None or shape.area < MIN_SHAPE_AREA_M2:
+            tiny.append(r)
+    return tiny
 
 
 def _exclude_rows(rows: list, ids: set[str], types: set[str]) -> tuple[list, dict[str, int], list[str]]:
@@ -1756,10 +1841,15 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     from shapely.geometry import box
 
     course, rows = _load_course_features(db_path, course_ident, stack)
+    # Bridge decks are props, not ground (with their kerb fillets, like any excluded road).
+    rows, decks, _ = _exclude_rows(rows, {r["id"] for r in rows if _is_bridge_deck(r)}, set())
     rows, excluded, unknown_ids = _exclude_rows(rows, exclude_ids or set(), exclude_types or set())
     # A hair of slack: shapes drawn to the edge and snapped there are inside.
     square = box(e0, n0, e1, n1).buffer(SQUARE_EDGE_SLACK_M, join_style="mitre")
     tol = flatten if flatten is not None else ROADS_FLATTEN_M
+    tiny = _tiny_rows(rows, tol, fills)
+    tiny_ids = {r["id"] for r in tiny}
+    rows = [r for r in rows if r["id"] not in tiny_ids]
     roads, road_notes = _merged_roads(rows, fills, tol)
     grown, grown_gaps = _road_edge_fills(rows, fills, roads, tol)
 
@@ -1891,6 +1981,12 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     if grown_gaps:
         print(f"  {grown_gaps} sliver(s) between a road and the surface beside it filled with that surface "
               f"({len(grown)} feature(s), written flattened)")
+    if decks:
+        print(f"  bridge decks left out (props in Unity, not ground): {sum(decks.values())} feature(s)")
+    if tiny:
+        listed = ", ".join(f"{r['type']} {r['id']}" + (f" (hole {r['hole_number']})" if r["hole_number"] is not None else "")
+                           for r in tiny)
+        print(f"  warning: {len(tiny)} shape(s) under {MIN_SHAPE_AREA_M2:g} m2 left out (drawn by mistake? delete them): {listed}")
     if excluded:
         detail = ", ".join(f"{k} {v}" for k, v in sorted(excluded.items(), key=lambda kv: -kv[1]))
         print(f"  excluded on request: {sum(excluded.values())} feature(s) - {detail}")
@@ -1931,6 +2027,10 @@ DEFAULT_ZONE_WEIGHT = 1.0
 DEFAULT_ZONE_FEATHER_M = 2.0
 DEFAULT_ZONE_NOISE_M = 0.0
 DEFAULT_ZONE_SEED = 0
+# How a zone meets the zones below it in the stack (attribute `blend`):
+# replace takes its share of the ground from them, mix plants over them.
+ZONE_BLEND_REPLACE = "replace"
+ZONE_BLEND_MIX = "mix"
 # Curve flattening for the raster, in mask pixels (0.5 m at 4096 over 2 km),
 # and for the exported polygons, in metres (they are simplified afterwards).
 ZONE_FLATTEN_PX = 0.25
@@ -1972,6 +2072,20 @@ def zone_slot(zone_type: str, variant: str = "") -> str:
 
 
 @dataclass
+class ZonePalette:
+    """One more palette a zone plants on its footprint (`extraPalettes`):
+    a type, one of its variants ("" = Default) and a weight factor 0..1
+    on top of the zone's own weight."""
+    zone_type: str
+    variant: str = ""
+    weight: float = 1.0
+
+    @property
+    def slot(self) -> str:
+        return zone_slot(self.zone_type, self.variant)
+
+
+@dataclass
 class ZoneSpec:
     id: str
     zone_type: str
@@ -1980,10 +2094,21 @@ class ZoneSpec:
     noise: float
     geometry: dict  # the feature's geometry_json: rings + curveType
     variant: str = ""  # variant key; "" = the type's Default mix
+    generated: bool = False  # written by a generator (course_features.generated), not drawn
+    blend: str = ZONE_BLEND_REPLACE  # ZONE_BLEND_MIX: over the zones below it instead of taking their share
+    extras: list[ZonePalette] = field(default_factory=list)  # more palettes on the same footprint
 
     @property
     def slot(self) -> str:
         return zone_slot(self.zone_type, self.variant)
+
+    def layers(self) -> list[tuple[str, float, bool]]:
+        """(slot, weight factor, takes the ground) per palette the zone
+        plants, in the order render_zone_masks applies them: the extra
+        palettes first, each mixed over the zone's own footprint, then the
+        primary palette, which takes the ground unless the zone mixes."""
+        return ([(e.slot, e.weight, False) for e in self.extras]
+                + [(self.slot, 1.0, self.blend != ZONE_BLEND_MIX)])
 
 
 @dataclass
@@ -2074,6 +2199,44 @@ def _load_zone_types(conn: sqlite3.Connection, course_id: str) -> list[ZoneType]
     return types
 
 
+CREEK_SECTION_ZONE_TYPE = "creek_bank"   # pipeline/creek_bank_zones.py ZONE_TYPE
+# A hand-drawn creek_bank zone steers creek_bank_zones.py only for the creeks and
+# water it comes near: the generator hands a creek the sections within its bank
+# reach (bankVegMaxM, default below) plus this many metres (its `near_sections`).
+# Farther away it is an ordinary zone and plants its palette itself.
+CREEK_SECTION_WATER_TYPES = ("water_creek", "water")
+CREEK_SECTION_REACH_M = 10.0
+CREEK_SECTION_DEFAULT_MAX_M = 4.5   # creek_bank_zones.DEFAULT_MAX_M
+
+
+def creek_section_ids(db_path: Path, course_id: str, zones: list["ZoneSpec"]) -> set[str]:
+    """The hand-drawn creek_bank zones that are creek sections: within a creek's or
+    water's bank reach + CREEK_SECTION_REACH_M of it. The others plant like any zone."""
+    candidates = [z for z in zones if z.zone_type == CREEK_SECTION_ZONE_TYPE and not z.generated]
+    if not candidates:
+        return set()
+    conn = _open_course_db(db_path)
+    rows = conn.execute(
+        f"SELECT geometry_json, attributes_json FROM course_features WHERE course_id = ? AND type IN "
+        f"({', '.join('?' for _ in CREEK_SECTION_WATER_TYPES)})", (course_id, *CREEK_SECTION_WATER_TYPES)).fetchall()
+    conn.close()
+    waters = []
+    for r in rows:
+        geom = _zone_geometry_m(json.loads(r["geometry_json"]))
+        if geom is None or geom.is_empty:
+            continue
+        attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+        max_m = attrs.get("bankVegMaxM", CREEK_SECTION_DEFAULT_MAX_M) if isinstance(attrs, dict) else CREEK_SECTION_DEFAULT_MAX_M
+        waters.append((geom, float(max_m) if isinstance(max_m, (int, float)) else CREEK_SECTION_DEFAULT_MAX_M))
+    ids = set()
+    for z in candidates:
+        geom = _zone_geometry_m(z.geometry)
+        if geom is not None and not geom.is_empty and any(
+                geom.distance(w) < reach + CREEK_SECTION_REACH_M for w, reach in waters):
+            ids.add(z.id)
+    return ids
+
+
 def _load_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[ZoneType], list[ZoneSpec]]:
     """A course, its zone-type table and its vegetation_zone features in the
     web editor's stack order (server D28: hole 1, 2, ..., then course-level
@@ -2085,9 +2248,11 @@ def _load_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[Zon
     conn = _open_course_db(db_path)
     course = _resolve_course(conn, course_ident)
     types = _load_zone_types(conn, course["id"])
+    has_generated = "generated" in {r[1] for r in conn.execute("PRAGMA table_info(course_features)")}
     try:
         rows = conn.execute(
-            f"""SELECT f.id, f.geometry_json, f.attributes_json, f.sort_order, h.number AS hole_number
+            f"""SELECT f.id, f.geometry_json, f.attributes_json, f.sort_order, h.number AS hole_number,
+                      {"f.generated" if has_generated else "0"} AS generated
                FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
                WHERE f.course_id = ? AND f.type = ?
                ORDER BY {_group_rank_sql(conn)}, f.sort_order, f.id""",
@@ -2109,8 +2274,36 @@ def _load_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[Zon
             noise=max(0.0, _zone_number(attrs, "noise", DEFAULT_ZONE_NOISE_M, r["id"])),
             geometry=json.loads(r["geometry_json"]),
             variant=str(attrs.get("zoneVariant") or ""),
+            generated=bool(r["generated"]),
+            blend=ZONE_BLEND_MIX if attrs.get("blend") == ZONE_BLEND_MIX else ZONE_BLEND_REPLACE,
+            extras=_zone_extra_palettes(attrs.get("extraPalettes"), str(r["id"])),
         ))
     return course, types, zones
+
+
+_ZONE_PALETTE_ENTRY = re.compile(r"([a-z0-9_]+)(?:/([a-z0-9_]+))?(?:=([0-9]*\.?[0-9]+))?")
+
+
+def _zone_extra_palettes(raw, zone_id: str) -> list[ZonePalette]:
+    """A zone's `extraPalettes` attribute — comma-separated
+    `<zoneType>[/<variant>][=<weight 0..1>]`, the format of
+    shared/features/zone-layers.ts — as ZonePalettes (weight default 1).
+    The server validates it; an entry that still does not parse is skipped
+    with a warning."""
+    if not isinstance(raw, str):
+        return []
+    extras: list[ZonePalette] = []
+    for part in raw.split(","):
+        entry = part.strip()
+        if not entry:
+            continue
+        m = _ZONE_PALETTE_ENTRY.fullmatch(entry)
+        weight = float(m.group(3)) if m and m.group(3) is not None else 1.0
+        if m is None or not 0.0 <= weight <= 1.0:
+            print(f"  warning: zone {zone_id}: extra palette {entry!r} is not <zoneType>[/<variant>][=<weight 0..1>]; skipped")
+            continue
+        extras.append(ZonePalette(m.group(1), m.group(2) or "", weight))
+    return extras
 
 
 class _ValueNoise:
@@ -2143,18 +2336,28 @@ def _fill_even_odd(polys: list[list[Pt]], x0: int, y0: int, w: int, h: int) -> n
 
 
 def _zone_weight_crop(polys_px: list[list[Pt]], size: int, px_m: float, weight: float, feather_m: float,
-                      noise_m: float, noise: "_ValueNoise | None") -> tuple[tuple[int, int, int, int], np.ndarray] | None:
+                      noise_m: float, noise: "_ValueNoise | None",
+                      clip: tuple[int, int, int, int] | None = None) -> tuple[tuple[int, int, int, int], np.ndarray] | None:
     """One zone's weight over its bounding-box crop (padded for the feather
     and the noise), as ((y0, y1, x0, x1), float32 crop): the rings filled
     even-odd, the signed distance in metres (negative inside, zero on the
     drawn edge) from two Euclidean distance transforms, the noise added to
     that distance, then `clamp(0.5 - d / feather, 0, 1) × weight` — or a
-    hard edge when the feather is 0. None when nothing lands in the frame."""
+    hard edge when the feather is 0. None when nothing lands in the frame.
+
+    `clip` (y0, y1, x0, x1) limits the crop to that rectangle grown by the
+    same margin: a pixel's weight only depends on the edge within
+    `feather / 2 + noise` of it, so inside `clip` the values are exactly
+    those of the whole crop, without distance transforms over a zone that
+    is much bigger than the part wanted."""
     xs = [x for p in polys_px for x, _ in p]
     ys = [y for p in polys_px for _, y in p]
     margin = int(math.ceil((feather_m / 2.0 + noise_m) / px_m)) + 2
     x0, y0 = max(0, math.floor(min(xs)) - margin), max(0, math.floor(min(ys)) - margin)
     x1, y1 = min(size, math.ceil(max(xs)) + margin + 1), min(size, math.ceil(max(ys)) + margin + 1)
+    if clip is not None:
+        y0, y1 = max(y0, clip[0] - margin), min(y1, clip[1] + margin)
+        x0, x1 = max(x0, clip[2] - margin), min(x1, clip[3] + margin)
     if x1 <= x0 or y1 <= y0:
         return None
     mask = _fill_even_odd(polys_px, x0, y0, x1 - x0, y1 - y0)
@@ -2195,21 +2398,40 @@ def _px_rect(rect: Extent, extent: Extent, size: int) -> tuple[int, int, int, in
 
 
 def render_zone_masks(zones: list[ZoneSpec], extent: Extent, size: int, seed: int = DEFAULT_ZONE_SEED,
-                      exclude: Extent | None = None) -> tuple[dict[str, np.ndarray], int]:
+                      exclude: Extent | None = None,
+                      window: tuple[int, int, int, int] | None = None) -> tuple[dict[str, np.ndarray], int]:
     """Per slot (`<type>` for a type's Default mix, `<type>/<variant>` for a
     variant — ZoneSpec.slot), a float32 size×size weight raster in the
     north-up frame of the terrain texture (only slots that have a zone get
     one), and the count of zones that did not land in the frame.
 
-    Overlaps: zones are processed from the LAST to the first with a running
-    per-pixel budget that starts at 1. A zone of slot S can raise S's
-    raster up to `min(its weight, what S already holds + the budget left)`
-    and takes the difference out of the budget — so a later zone claims its
-    weight first, an earlier zone of another slot keeps only what is left,
-    and zones of the same slot combine as a maximum where the budget allows.
-    The slots never sum above 1 and nothing is scaled up: a lone zone at
-    weight 0.3 stays 0.3 and a feather ramp stays a ramp. `exclude` (the
-    inner square when this is the outer terrain) is zeroed at the end."""
+    Overlaps (D-VZ14): the zones drawn by hand sit above the generated ones
+    (tall rough, creek banks, lidar proposals; ZoneSpec.generated), and
+    their order does not matter. Drawn zones add up: each paints its
+    palettes at its weight (the same palette twice: the maximum). A drawn
+    replace zone (`blend` = replace) takes its weight of the ground from the
+    generated zones below it; a drawn mix zone takes nothing, so the
+    generated fill keeps growing under it.
+
+    The generated zones then share what the drawn replace zones left, in
+    their stack order, processed from the LAST to the first with a running
+    per-pixel budget: a zone of slot S can raise S's raster up to
+    `min(its weight, what S already holds + the budget left)` and takes the
+    difference out of the budget — so a later zone claims its weight first,
+    an earlier zone of another slot keeps only what is left, and zones of
+    the same slot combine as a maximum where the budget allows. A generated
+    mix zone takes nothing out of the budget. Nothing is scaled up: a lone
+    zone at weight 0.3 stays 0.3 and a feather ramp stays a ramp. A zone's
+    extra palettes are mix layers on its own footprint at `weight × factor`
+    (ZoneSpec.layers). `exclude` (the inner square when this is the outer
+    terrain) is zeroed at the end.
+
+    `window` (y0, y1, x0, x1 in frame pixels) renders only that part of the
+    frame: the rasters are the window's size and hold exactly the pixels a
+    full render has there, since every zone's weight is still computed over
+    its own whole crop (the distance field needs the whole polygon) and the
+    stack is resolved per pixel. Only zones whose crop reaches the window
+    count, and only their slots get a raster (the zones-patch step)."""
     e0, n0, e1, n1 = extent
     px_m = (e1 - e0) / size
     scale = 1.0 / px_m
@@ -2217,28 +2439,75 @@ def render_zone_masks(zones: list[ZoneSpec], extent: Extent, size: int, seed: in
     def to_px(xy: Pt) -> Pt:
         return ((xy[0] - e0) * scale, (n1 - xy[1]) * scale)
 
+    wy0, wy1, wx0, wx1 = window if window is not None else (0, size, 0, size)
+    shape = (wy1 - wy0, wx1 - wx0)
     noise = _ValueNoise(seed, e1 - e0) if any(z.noise > 0 for z in zones) else None
-    remaining = np.ones((size, size), dtype=np.float32)
     channels: dict[str, np.ndarray] = {}
     outside = 0
-    for z in reversed(zones):
+
+    def weight_in_window(z: ZoneSpec) -> tuple[tuple[int, int, int, int], np.ndarray] | None | str:
+        """The zone's weight over its crop's overlap with the window, in window
+        coordinates; None when it misses the window, "outside" when it misses the frame."""
         curve = z.geometry.get("curveType") or "bezier"
         polys = [p for p in (_ring_px(r, curve, to_px, ZONE_FLATTEN_PX) for r in z.geometry.get("rings") or [])
                  if len(p) >= 3]
-        crop = _zone_weight_crop(polys, size, px_m, z.weight, z.feather, z.noise, noise) if polys else None
+        if polys and window is not None:
+            # The crop's own padding (_zone_weight_crop), checked before its distance transforms.
+            pad = (z.feather / 2.0 + z.noise) / px_m + 3
+            xs = [x for p in polys for x, _ in p]
+            ys = [y for p in polys for _, y in p]
+            if min(xs) - pad >= wx1 or max(xs) + pad < wx0 or min(ys) - pad >= wy1 or max(ys) + pad < wy0:
+                return None
+        crop = _zone_weight_crop(polys, size, px_m, z.weight, z.feather, z.noise, noise, clip=window) if polys else None
         if crop is None:
+            return "outside"
+        (y0, y1, x0, x1), w = crop
+        cy0, cy1, cx0, cx1 = max(y0, wy0), min(y1, wy1), max(x0, wx0), min(x1, wx1)
+        if cy1 <= cy0 or cx1 <= cx0:
+            return None
+        return (cy0 - wy0, cy1 - wy0, cx0 - wx0, cx1 - wx0), w[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
+
+    # Drawn zones first: each palette adds (same palette: the maximum), whatever the order;
+    # a replace zone's weight is ground the generated fill below does not get.
+    claimed = np.zeros(shape, dtype=np.float32)
+    for z in zones:
+        if z.generated:
+            continue
+        got = weight_in_window(z)
+        if got is None:
+            continue
+        if got == "outside":
             outside += 1
             continue
-        (y0, y1, x0, x1), w = crop
-        held = channels.setdefault(z.slot, np.zeros((size, size), dtype=np.float32))
-        sub_held = held[y0:y1, x0:x1]
+        (y0, y1, x0, x1), w = got
+        for slot, factor, takes_ground in z.layers():
+            held = channels.setdefault(slot, np.zeros(shape, dtype=np.float32))
+            np.maximum(held[y0:y1, x0:x1], w * np.float32(factor), out=held[y0:y1, x0:x1])
+            if takes_ground:
+                np.maximum(claimed[y0:y1, x0:x1], w, out=claimed[y0:y1, x0:x1])
+
+    # Generated zones under them, from the top of their stack down, sharing what is left.
+    remaining = np.clip(1.0 - claimed, 0.0, 1.0).astype(np.float32)
+    for z in reversed([z for z in zones if z.generated]):
+        got = weight_in_window(z)
+        if got is None:
+            continue
+        if got == "outside":
+            outside += 1
+            continue
+        (y0, y1, x0, x1), w = got
         sub_left = remaining[y0:y1, x0:x1]
-        new = np.maximum(sub_held, np.minimum(w, sub_left + sub_held))
-        sub_left -= new - sub_held
-        np.maximum(sub_left, 0.0, out=sub_left)
-        sub_held[...] = new
+        for slot, factor, takes_ground in z.layers():
+            held = channels.setdefault(slot, np.zeros(shape, dtype=np.float32))
+            sub_held = held[y0:y1, x0:x1]
+            new = np.maximum(sub_held, np.minimum(w * np.float32(factor), sub_left + sub_held))
+            if takes_ground:
+                sub_left -= new - sub_held
+                np.maximum(sub_left, 0.0, out=sub_left)
+            sub_held[...] = new
     if exclude is not None:
         y0, y1, x0, x1 = _px_rect(exclude, extent, size)
+        y0, y1, x0, x1 = max(y0, wy0) - wy0, min(y1, wy1) - wy0, max(x0, wx0) - wx0, min(x1, wx1) - wx0
         if y1 > y0 and x1 > x0:
             for arr in channels.values():
                 arr[y0:y1, x0:x1] = 0.0
@@ -2267,12 +2536,13 @@ def zone_items(types: list[ZoneType]) -> list[ZoneItem]:
     return list(by_name.values())
 
 
-def zone_item_density(item: ZoneItem, slots: dict[str, np.ndarray], size: int) -> np.ndarray:
+def zone_item_density(item: ZoneItem, slots: dict[str, np.ndarray], size: int | tuple[int, int]) -> np.ndarray:
     """One item's density raster: `clip(sum over its bindings of
     W_slot × maxDensity, 0, 1)`, W_slot from render_zone_masks (a slot with
     no zone contributes nothing). Summed, not multiplied, because VSP
-    multiplies an item's density rules: the item gets this one channel."""
-    acc = np.zeros((size, size), dtype=np.float32)
+    multiplies an item's density rules: the item gets this one channel.
+    `size` is the raster's edge, or its (rows, cols) for a window."""
+    acc = np.zeros(size if isinstance(size, tuple) else (size, size), dtype=np.float32)
     for slot, max_density in item.bindings:
         w = slots.get(slot)
         if w is not None and max_density != 0.0:
@@ -2342,33 +2612,23 @@ def _zone_rings_local(geom, e0: float, n0: float) -> list[dict]:
     return rings
 
 
-def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Path,
-              terrain: str | None = None, exclude: Extent | None = None, extent: Extent | None = None,
-              resolution: int = DEFAULT_ZONE_RESOLUTION, simplify_m: float = DEFAULT_ZONE_SIMPLIFY_M,
-              seed: int = DEFAULT_ZONE_SEED) -> None:
-    """Rasterize a course's vegetation zones for one terrain into the VSPro
-    texture masks — one channel per bound VSP item, four per
-    `<out stem>-<texture>.png`, RGBA, `resolution`² — and write the
-    unity-zones-v2 JSON at `out`: the plot block copied from the terrain's
-    heightmap sidecar exactly as `trees` does, the mask manifest, the items
-    (texture, channel, the slots that bind them), the zone-type table with
-    its Default items and variants, and every zone that touches the square
-    as plot-local polygons (flattened, clipped to the square, minus
-    `exclude`, simplified to `simplify_m`) for the Scene-view overlay.
-    Zones whose type is not in the course's table are skipped with a
-    warning; a variant not in its type falls back to the Default mix with a
-    warning."""
-    from shapely.geometry import box
-
-    if resolution <= 0:
-        raise SystemExit("error: --resolution must be > 0")
-    if simplify_m < 0:
-        raise SystemExit("error: --simplify must be >= 0")
-    extent = extent or _square_3006_extent(bbox)
-    e0, n0, e1, n1 = extent
-    side = e1 - e0
-    sidecar = _read_plot_sidecar(sidecar_path, extent)
+def _prepare_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[ZoneType], list[ZoneSpec], dict[str, int]]:
+    """The course, its zone types and the zones that rasterize, in stack
+    order, checked against the table (cmd_zones and cmd_zones_patch alike):
+    hand-drawn creek_bank zones (creek sections) are left out, zones of an
+    unknown type are skipped (counted per type in the last value), extra
+    palettes of an unknown type dropped, unknown variants fall back to the
+    Default mix — each with a line in the report."""
     course, types, zones = _load_zones(db_path, course_ident)
+    # A hand-drawn creek_bank zone near a creek or water marks a stretch of it and picks
+    # its palette for creek_bank_zones.py (a creek section); the generated creek-bank
+    # zones plant it. Away from water it is an ordinary zone.
+    sections = creek_section_ids(db_path, course["id"], zones)
+    if sections:
+        zones = [z for z in zones if z.id not in sections]
+        print(f"  {len(sections)} creek section(s) (hand-drawn {CREEK_SECTION_ZONE_TYPE} zones near a creek or water) "
+              f"not rasterized: they pick the palette of those banks, which Plant vegetation plants: "
+              f"{', '.join(sorted(i[:8] for i in sections))}")
     if not types:
         raise SystemExit(f"error: course {course['name']} ({course['id']}) has no zone types "
                          "(add them in the web zone-type panel first)")
@@ -2388,9 +2648,94 @@ def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: P
         if z.variant and all(v.key != z.variant for v in by_key[z.zone_type].variants):
             fallen[(z.zone_type, z.variant)] = fallen.get((z.zone_type, z.variant), 0) + 1
             z.variant = ""
+    dropped: dict[str, int] = {}
+    for z in known:
+        kept: list[ZonePalette] = []
+        for e in z.extras:
+            if e.zone_type not in by_key:
+                dropped[e.zone_type] = dropped.get(e.zone_type, 0) + 1
+                continue
+            if e.variant and all(v.key != e.variant for v in by_key[e.zone_type].variants):
+                fallen[(e.zone_type, e.variant)] = fallen.get((e.zone_type, e.variant), 0) + 1
+                e.variant = ""
+            kept.append(e)
+        z.extras = kept
     for (key, variant), count in sorted(fallen.items()):
         print(f"  warning: {count} zone(s) of zone type {key!r} with variant {variant!r} not in its variants; "
               "using its Default mix")
+    for key, count in sorted(dropped.items()):
+        print(f"  warning: {count} extra palette(s) with zone type {key!r} not in the course's table; skipped")
+
+    return course, types, known, unknown
+
+
+def _zone_row(z: ZoneSpec, square, excl, e0: float, n0: float, simplify_m: float) -> dict | str:
+    """A zone's unity-zones-v2 row (plot-local rings, flattened, clipped to
+    the square minus `excl`, simplified), or "outside" / "excluded" when
+    nothing of it is left."""
+    geom = _zone_geometry_m(z.geometry)
+    clipped = geom.intersection(square) if geom is not None and not geom.is_empty else None
+    if clipped is None or clipped.is_empty:
+        return "outside"
+    if excl is not None:
+        clipped = clipped.difference(excl)
+        if clipped.is_empty:
+            return "excluded"
+    if simplify_m > 0:
+        clipped = clipped.simplify(simplify_m, preserve_topology=True)
+    rings = _zone_rings_local(clipped, e0, n0)
+    if not rings:
+        return "outside"
+    return {
+        "id": z.id,
+        "zoneType": z.zone_type,
+        "variant": z.variant,
+        "weight": z.weight,
+        "feather": z.feather,
+        "noise": z.noise,
+        "blend": z.blend,
+        "extraPalettes": [{"zoneType": e.zone_type, "variant": e.variant, "weight": e.weight} for e in z.extras],
+        "rings": rings,
+    }
+
+
+def _zone_types_json(types: list[ZoneType]) -> list[dict]:
+    return [{"key": t.key, "name": t.name, "color": t.color, "items": t.items,
+             "variants": [{"key": v.key, "name": v.name, "items": v.items} for v in t.variants]}
+            for t in types]
+
+
+def _zone_items_json(items: list[ZoneItem]) -> list[dict]:
+    return [{"item": i.item, "texture": i.texture, "channel": i.channel, "sources": i.sources} for i in items]
+
+
+def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Path,
+              terrain: str | None = None, exclude: Extent | None = None, extent: Extent | None = None,
+              resolution: int = DEFAULT_ZONE_RESOLUTION, simplify_m: float = DEFAULT_ZONE_SIMPLIFY_M,
+              seed: int = DEFAULT_ZONE_SEED) -> None:
+    """Rasterize a course's vegetation zones for one terrain into the VSPro
+    texture masks — one channel per bound VSP item, four per
+    `<out stem>-<texture>.png`, RGBA, `resolution`² — and write the
+    unity-zones-v2 JSON at `out`: the plot block copied from the terrain's
+    heightmap sidecar exactly as `trees` does, the mask manifest, the items
+    (texture, channel, the slots that bind them), the zone-type table with
+    its Default items and variants, and every zone that touches the square
+    as plot-local polygons (flattened, clipped to the square, minus
+    `exclude`, simplified to `simplify_m`) for the Scene-view overlay.
+    Zones whose type is not in the course's table are skipped with a
+    warning, and so are extra palettes whose type is not; a variant not in
+    its type falls back to the Default mix with a warning."""
+    from shapely.geometry import box
+
+    if resolution <= 0:
+        raise SystemExit("error: --resolution must be > 0")
+    if simplify_m < 0:
+        raise SystemExit("error: --simplify must be >= 0")
+    extent = extent or _square_3006_extent(bbox)
+    e0, n0, e1, n1 = extent
+    side = e1 - e0
+    sidecar = _read_plot_sidecar(sidecar_path, extent)
+    course, types, known, unknown = _prepare_zones(db_path, course_ident)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     slots, outside_raster = render_zone_masks(known, extent, resolution, seed=seed, exclude=exclude)
@@ -2402,31 +2747,13 @@ def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: P
     rows: list[dict] = []
     outside = excluded = 0
     for z in known:
-        geom = _zone_geometry_m(z.geometry)
-        clipped = geom.intersection(square) if geom is not None and not geom.is_empty else None
-        if clipped is None or clipped.is_empty:
+        row = _zone_row(z, square, excl, e0, n0, simplify_m)
+        if row == "outside":
             outside += 1
-            continue
-        if excl is not None:
-            clipped = clipped.difference(excl)
-            if clipped.is_empty:
-                excluded += 1
-                continue
-        if simplify_m > 0:
-            clipped = clipped.simplify(simplify_m, preserve_topology=True)
-        rings = _zone_rings_local(clipped, e0, n0)
-        if not rings:
-            outside += 1
-            continue
-        rows.append({
-            "id": z.id,
-            "zoneType": z.zone_type,
-            "variant": z.variant,
-            "weight": z.weight,
-            "feather": z.feather,
-            "noise": z.noise,
-            "rings": rings,
-        })
+        elif row == "excluded":
+            excluded += 1
+        else:
+            rows.append(row)
 
     doc = {
         "format": UNITY_ZONES_FORMAT,
@@ -2440,11 +2767,10 @@ def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: P
             "maxM": float(sidecar["maxM"]),
         },
         "masks": masks,
-        "items": [{"item": i.item, "texture": i.texture, "channel": i.channel, "sources": i.sources}
-                  for i in items],
-        "zoneTypes": [{"key": t.key, "name": t.name, "color": t.color, "items": t.items,
-                       "variants": [{"key": v.key, "name": v.name, "items": v.items} for v in t.variants]}
-                      for t in types],
+        "seed": seed,
+        "simplifyM": simplify_m,
+        "items": _zone_items_json(items),
+        "zoneTypes": _zone_types_json(types),
         "zones": rows,
     }
     out.write_text(json.dumps(doc, separators=(",", ":")) + "\n", encoding="utf-8")
@@ -2457,12 +2783,227 @@ def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: P
           f"{outside} outside the square"
           + (f", {excluded} left to the inner terrain" if exclude is not None else "")
           + (f", {sum(unknown.values())} skipped (unknown zone type)" if unknown else ""))
+    mixing = sum(1 for r in rows if r["blend"] == ZONE_BLEND_MIX)
+    extra = sum(len(r["extraPalettes"]) for r in rows)
+    if mixing or extra:
+        print(f"  {mixing} zone(s) mix over the zones below them, {extra} extra palette(s) on zone footprints")
     print(f"  masks {resolution}² at {side / resolution:.3f} m/px, noise seed {seed}, "
           f"polygons simplified to {simplify_m:g} m, one channel per item: "
           f"{len(items)} item(s) in {len(masks)} texture(s)")
     for i in items:
         print(f"    {masks[i.texture]['file']} {'RGBA'[i.channel]}: {i.item} <- {', '.join(i.sources)}")
     print(f"  plot origin {e0:.0f},{n0:.0f} (EPSG:3006), height range {doc['plot']['minM']:.2f}..{doc['plot']['maxM']:.2f} m from {sidecar_path.name}")
+
+
+# --- Command: zones-patch ---------------------------------------------------
+# Re-rasterize only the part of a terrain's zone masks that some zones cover
+# (the web's "Update in Unity" on selected zones), instead of the whole
+# square: the window around the zones as they are now and as the last export
+# drew them (their rows in the zones JSON), plus zones that export had and
+# the course no longer has. The window renders exactly what a full export
+# would there (render_zone_masks), so the masks stay what `zones` writes.
+# Only the textures whose pixels change are rewritten, and the zones JSON
+# gets the zones' new rows. The channel layout cannot move in a patch: when
+# the zone types' item bindings differ from the export's, it stops and asks
+# for a full export.
+ZONES_PATCH_FORMAT = "unity-zones-patch-v1"
+
+
+ZONES_LAYOUT_CHANGED_EXIT = 3
+
+
+class ZonesLayoutChanged(SystemExit):
+    """The item bindings moved since the export: only a full export can
+    follow. Exits with ZONES_LAYOUT_CHANGED_EXIT after printing why."""
+
+    def __init__(self, message: str):
+        print(f"error: {message}", file=sys.stderr)
+        super().__init__(ZONES_LAYOUT_CHANGED_EXIT)
+        self.message = message
+
+
+def _zone_bindings(types: list[ZoneType]) -> list:
+    """What decides the masks' pixels and channels in a zone-type table: every
+    slot's (item, maxDensity) bindings, in table order."""
+    return [(slot, [(i["item"], float(i["maxDensity"])) for i in items]) for t in types for slot, items in t.slots()]
+
+
+def _zone_types_from_json(raw: list) -> list[ZoneType]:
+    return [ZoneType(str(t["key"]), str(t.get("name") or t["key"]), str(t.get("color") or ""),
+                     _zone_type_items(t.get("items")),
+                     [ZoneVariant(str(v["key"]), str(v.get("name") or v["key"]), _zone_type_items(v.get("items")))
+                      for v in t.get("variants") or []])
+            for t in raw]
+
+
+def _row_slots(row: dict) -> list[str]:
+    return ([zone_slot(row["zoneType"], row.get("variant") or "")]
+            + [zone_slot(e["zoneType"], e.get("variant") or "") for e in row.get("extraPalettes") or []])
+
+
+def _row_rect(row: dict, e0: float, n0: float) -> Extent | None:
+    """A zones-JSON row's outline bounds in EPSG:3006, padded like its crop."""
+    nodes = [n for r in row.get("rings") or [] for n in r.get("nodes") or []]
+    if not nodes:
+        return None
+    pad = float(row.get("feather", DEFAULT_ZONE_FEATHER_M)) / 2.0 + float(row.get("noise", DEFAULT_ZONE_NOISE_M))
+    xs, zs = [e0 + n["x"] for n in nodes], [n0 + n["z"] for n in nodes]
+    return (min(xs) - pad, min(zs) - pad, max(xs) + pad, max(zs) + pad)
+
+
+def _zone_rect(z: ZoneSpec) -> Extent | None:
+    """A zone's outline bounds in EPSG:3006 (curves flattened), padded like its crop."""
+    geom = _zone_geometry_m(z.geometry)
+    if geom is None or geom.is_empty:
+        return None
+    x0, y0, x1, y1 = geom.bounds
+    pad = z.feather / 2.0 + z.noise
+    return (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
+
+
+def cmd_zones_patch(db_path: Path, course_ident: str, zones_json: Path, zone_ids: list[str],
+                    result_path: Path | None = None, exclude: Extent | None = None) -> dict:
+    """Patch a terrain's exported zone masks (`zones_json`, a unity-zones-v2
+    file written by `zones`, and its PNGs next to it) for the zones
+    `zone_ids`: re-rasterize the window they cover, now and in that export,
+    grown by every other zone the export has that the course no longer
+    has, and write back only the textures whose pixels changed; update the
+    JSON's rows for those zones. Returns (and writes to `result_path`) a
+    unity-zones-patch-v1 record: the changed texture files and the window as
+    plot-local metres for the Unity respawn. Raises ZonesLayoutChanged
+    (exit 3) when the item bindings or channels differ from the export's."""
+    from shapely.geometry import box
+
+    prev = json.loads(zones_json.read_text(encoding="utf-8"))
+    if prev.get("format") != UNITY_ZONES_FORMAT:
+        raise SystemExit(f"error: {zones_json} is not a {UNITY_ZONES_FORMAT} file; export the zones first")
+    plot = prev["plot"]
+    e0, n0, side = float(plot["originX"]), float(plot["originY"]), float(plot["sizeM"])
+    extent: Extent = (e0, n0, e0 + side, n0 + side)
+    masks = prev.get("masks") or []
+    size = int(masks[0]["resolution"]) if masks else DEFAULT_ZONE_RESOLUTION
+    seed = int(prev.get("seed", DEFAULT_ZONE_SEED))
+    simplify_m = float(prev.get("simplifyM", DEFAULT_ZONE_SIMPLIFY_M))
+
+    course, types, known, _unknown = _prepare_zones(db_path, course_ident)
+    items = zone_items(types)
+    wanted = set(zone_ids)
+    known_ids = {z.id for z in known}
+    prev_rows = prev.get("zones") or []
+    prev_by_id = {r["id"]: r for r in prev_rows}
+    gone = [r for r in prev_rows if r["id"] not in known_ids]
+    missing = sorted(i for i in wanted if i not in known_ids and i not in prev_by_id)
+    if missing:
+        print(f"  {len(missing)} zone(s) neither in the course's rasterized zones nor in the export: {', '.join(missing)}")
+
+    # Zones the export has not seen: drawn since, or a re-run generator's (it replaces its
+    # zones, so they all get new ids). One whose row is exactly a vanished row's is that
+    # zone under a new id and changes nothing; the others are new and are patched in.
+    square = box(*extent)
+    excl = box(*exclude) if exclude is not None else None
+    fresh_rows: dict[str, dict] = {}
+    unseen = [z for z in known if z.id not in prev_by_id and z.id not in wanted]
+    renamed = 0
+    if unseen:
+        def signature(row: dict) -> str:
+            return json.dumps({k: v for k, v in row.items() if k != "id"}, sort_keys=True)
+        pool: dict[str, list[str]] = {}
+        for r in gone:
+            pool.setdefault(signature(r), []).append(r["id"])
+        matched: set[str] = set()
+        for z in unseen:
+            row = _zone_row(z, square, excl, e0, n0, simplify_m)
+            if not isinstance(row, dict):
+                continue   # not on this square
+            same = pool.get(signature(row))
+            if same:
+                matched.add(same.pop())
+                fresh_rows[z.id] = row
+                renamed += 1
+            else:
+                wanted.add(z.id)
+        gone = [r for r in gone if r["id"] not in matched]
+
+    rects = [r for r in ([_zone_rect(z) for z in known if z.id in wanted]
+                         + [_row_rect(prev_by_id[i], e0, n0) for i in wanted if i in prev_by_id]
+                         + [_row_rect(r, e0, n0) for r in gone]) if r is not None]
+    record: dict = {"format": ZONES_PATCH_FORMAT, "zonesFile": zones_json.name, "terrain": plot.get("terrain") or "",
+                    "changed": False, "textures": [], "window": None, "region": None,
+                    "zones": sorted(wanted & known_ids), "removed": [r["id"] for r in gone], "renamed": renamed}
+    window = None
+    if rects:
+        union = (min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects))
+        y0, y1, x0, x1 = _px_rect(union, extent, size)
+        y0, y1, x0, x1 = max(0, y0 - 2), min(size, y1 + 2), max(0, x0 - 2), min(size, x1 + 2)
+        inside_excluded = exclude is not None and (exclude[0] <= union[0] and exclude[1] <= union[1]
+                                                   and union[2] <= exclude[2] and union[3] <= exclude[3])
+        if y1 > y0 and x1 > x0 and not inside_excluded:
+            window = (y0, y1, x0, x1)
+    # Only a square the zones reach needs the export's channel layout to still hold.
+    if window is not None and (_zone_items_json(items) != prev.get("items")
+            or _zone_bindings(types) != _zone_bindings(_zone_types_from_json(prev.get("zoneTypes") or []))):
+        raise ZonesLayoutChanged(
+            f"the zone types' item bindings changed since {zones_json.name} was exported, so the mask "
+            "channels may have moved; a patch cannot follow - export (plant) the whole terrain")
+
+    if window is None:
+        print(f"Nothing to patch on the {side:g} m {plot.get('terrain') or ''} square: the zones do not reach it")
+    else:
+        y0, y1, x0, x1 = window
+        px_m = side / size
+        slots, _ = render_zone_masks(known, extent, size, seed=seed, exclude=exclude, window=window)
+        # Items that can differ in the window: those of a slot a zone paints there now, or one a
+        # zone of the export painted there. Every other item is 0 there before and after.
+        before = {slot for r in prev_rows if (rr := _row_rect(r, e0, n0)) is not None
+                  and not (rr[2] < extent[0] + x0 * px_m or rr[0] > extent[0] + x1 * px_m
+                           or rr[3] < extent[3] - y1 * px_m or rr[1] > extent[3] - y0 * px_m)
+                  for slot in _row_slots(r)}
+        touched = set(slots) | before
+        for texture, mask in enumerate(masks):
+            members = [i for i in items if i.texture == texture and set(i.sources) & touched]
+            if not members:
+                continue
+            path = zones_json.with_name(mask["file"])
+            rgba = np.array(Image.open(path).convert("RGBA"))
+            if rgba.shape[:2] != (size, size):
+                raise SystemExit(f"error: {path.name} is {rgba.shape[1]}x{rgba.shape[0]}, the export says {size}; export the zones again")
+            region = rgba[y0:y1, x0:x1]
+            new = region.copy()
+            for item in members:
+                d = zone_item_density(item, slots, (y1 - y0, x1 - x0))
+                new[..., item.channel] = np.round(d * 255.0).clip(0, 255).astype(np.uint8)
+            if np.array_equal(new, region):
+                continue
+            rgba[y0:y1, x0:x1] = new
+            Image.fromarray(rgba).save(path, format="PNG")
+            record["textures"].append(mask["file"])
+        record["changed"] = bool(record["textures"])
+        record["window"] = {"y0": y0, "y1": y1, "x0": x0, "x1": x1, "resolution": size}
+        record["region"] = {"x0": round(x0 * px_m, 3), "z0": round(side - y1 * px_m, 3),
+                            "x1": round(x1 * px_m, 3), "z1": round(side - y0 * px_m, 3)}
+
+        print(f"Patched {zones_json.name}: {len(record['zones'])} zone(s)"
+              + (f", {len(gone)} removed" if gone else "")
+              + f", window {x1 - x0}x{y1 - y0} px ({(x1 - x0) * px_m:.0f} x {(y1 - y0) * px_m:.0f} m)"
+              + f", {len(record['textures'])} of {len(masks)} texture(s) changed"
+              + (f": {', '.join(record['textures'])}" if record["textures"] else ""))
+    # The zones' rows as the masks now have them (patched, or the same zone under a new
+    # id); the others keep the export's.
+    for z in known:
+        if z.id in wanted and z.id not in fresh_rows:
+            row = _zone_row(z, square, excl, e0, n0, simplify_m)
+            if isinstance(row, dict):
+                fresh_rows[z.id] = row
+    rows = [fresh_rows[z.id] if z.id in fresh_rows else prev_by_id[z.id]
+            for z in known if z.id in fresh_rows or z.id in prev_by_id]
+    if rows != prev_rows:
+        prev["zones"] = rows
+        zones_json.write_text(json.dumps(prev, separators=(",", ":")) + "\n", encoding="utf-8")
+    if renamed:
+        print(f"  {renamed} zone(s) unchanged under a new id (a re-run generator)")
+    if result_path is not None:
+        result_path.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+    return record
 
 
 # --- Command: gkd -----------------------------------------------------------
@@ -3476,6 +4017,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=DEFAULT_ZONE_SEED,
                    help=f"random seed for the edge noise of zones with noise > 0 (default {DEFAULT_ZONE_SEED})")
 
+    p = sub.add_parser("zones-patch", help="re-rasterize only the part of an exported terrain's zone masks that some zones cover (now and in that export) and update its zones JSON")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+    p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
+    p.add_argument("--zones-json", dest="zones_json", required=True,
+                   help="the terrain's unity-zones-v2 export (written by `zones`); its PNGs next to it are patched in place")
+    p.add_argument("--ids", required=True, help="comma-separated vegetation_zone feature ids to update")
+    p.add_argument("--exclude-square", dest="exclude_square",
+                   help="x0,y0,x1,y1 in EPSG:3006 — the inner square when patching the outer's masks")
+    p.add_argument("--result", help="write the unity-zones-patch-v1 record (changed textures, region) here")
+
     p = sub.add_parser("creeks", help="write a course's creeks as R.A.M. splines at the water surface (unity-creeks-v1) for the inner terrain")
     _add_area(p)
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
@@ -3552,6 +4103,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     _load_dotenv()
+    if args.command == "zones-patch":
+        cmd_zones_patch(Path(args.db), args.course, Path(args.zones_json),
+                        [i.strip() for i in args.ids.split(",") if i.strip()],
+                        Path(args.result) if args.result else None,
+                        _parse_square(args.exclude_square) if args.exclude_square else None)
+        return 0
     bbox, extent = _resolve_area(args)
 
     if args.command == "ortho":

@@ -22,9 +22,16 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
    ../data/sources/<site>/buildings.geojson --lidar ../data/sources/<site>/lidar/*.laz`) and
    `sources/<site>/roads-centerlines.geojson` (the app's road fetch / `fetch-roads
    --centerlines-out`). Golf-map `path` features count as roads too.
-3. **Zones by rule**: `bun run grass:zones -- <course>` runs `pipeline/grass_zones.py`, replaces
-   the course's generated `tall-grass` zones (hand-drawn zones are never touched) and re-exports
-   `zones:inner`. `--dry-run` writes the GeoJSON only.
+3. **Zones by rule, into Unity - one click**: web Vegetation mode, **Plant vegetation** (command bar)
+   runs every vegetation generator (`server/services/vegetation-generators.ts`: tall rough
+   `pipeline/grass_zones.py` source `tall-grass`, then creek/pond banks `pipeline/creek_bank_zones.py`
+   source `creek-bank`), replaces each one's generated zones (hand-drawn zones are never touched),
+   exports `zones:inner`, and in the course's open Unity project runs `golfmap.zones.import` +
+   `golfmap.grass.apply` (export job kind `vegetation`, `GsproExportService.plantVegetation`); the
+   report says what each did and warns on zones whose mix binds no items. Unity not open = exported
+   only, reported. Same handler from the CLI: `bun run grass:zones -- <course> [--only <source>]
+   [--dry-run]` (no Unity step). A new kind of vegetation = one more strategy in
+   `VEGETATION_GENERATORS` (order = zone stack order; `--only X` re-runs X and every one after it).
 4. **Terrain under the meshes** (once per mesh rebuild or terrain re-import): `unity_command
    golfmap.terrain.conform {terrain: "inner"}` lifts the terrain to 1 cm under the course meshes (it
    backs up the TerrainData to `<course>/Backups/` first; `golfmap.terrain.restore {backup}` undoes).
@@ -35,8 +42,13 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
    between samples too. Do NOT use OPCD's right-click "Conform Mesh To Terrain" for this: it moves the
    playing-surface meshes down instead and re-exports their FBX. VSP MeshTerrain (plant on the meshes)
    works in the editor but bakes 7M triangles and is untested in GSPro's forked VSP runtime.
-5. **Unity**: `unity_command golfmap.zones.import {terrain: "inner", package: "GolfMap lower
-   vegetation"}` then `unity_command golfmap.grass.apply {palette: "rough_tall"}`.
+5. **Unity** (done by Plant vegetation; by hand after the CLI): `unity_command golfmap.zones.import
+   {terrain: "inner", package: "GolfMap lower vegetation"}` then `unity_command golfmap.grass.apply`.
+   A **new item** (a species just added to a palette) needs one more round: import binds masks only to
+   items that exist, apply creates the item but turns spawning on only once it has rules - so
+   import, apply ("added item ..."), import, apply. Plant vegetation repeats the round by itself when
+   apply reports an added/replaced item. The item also needs a mask channel first: re-export the zones
+   (`grass:zones`) after binding it.
 6. **Verify** (below), then ask the user to **save the scene** (package list, VSP settings).
 
 ## Where tall grass grows (pipeline/grass_zones.py, tests in pipeline/tests/test_grass_zones.py)
@@ -109,6 +121,14 @@ the palette hidden (`golfmap.grass.apply {spawn: false}`) and shown, compare lin
 the centre, scale the green items' tints by ground/grass (a few iterations) so the grass averages
 to the ground colour; then it blends where VSP thins it with distance.
 
+**Tuning loop without apply**: `golfmap.vegpalette.adjust {select, brightness|saturation|hue|warmth
+|height|width|density|spread, set: {role: value}}` changes the working copy and the scene at once (colours
+graded in linear light: `brightness: -0.15` = x0.85 linear), `golfmap.vegpalette.spots {select, goto: 0}`
+frames where it grows, screenshot, measure, repeat; `golfmap.vegpalette.save` writes grass-palette.json
+(every palette listing a shared item; minimal diff) or `.revert` puts it back. The user does the same in
+`GolfMap > Vegetation Palettes` (`golfmap.vegpalette.show {select}` opens it on what you changed). Texture
+white point and a bush's first `material` override still need `golfmap.vegpalette.rebuild` (= apply).
+
 ## Verify
 
 - Bare line in the grass? Check the mask across it first (weight continuous = not the zones), then
@@ -117,6 +137,9 @@ to the ground colour; then it blends where VSP thins it with distance.
 - Mask audit: the masks carry one channel per VSP item (`unity-zones-v2`; the JSON's `items` list
   names each item's texture and channel). Overlay an item's channel on the surface map; the
   density on forbidden classes and beyond 75 m must be ~0 (edge resampling residue only).
+- VSP stuck throwing "The previously scheduled job ... You must call JobHandle.Complete()" on every
+  frame and every apply (seen after an asset refresh mid-frame): a script reload clears it (any
+  `unity_sync push` that compiles); `golfmap.vsp.reset` disables/re-enables the systems.
 - Screenshots (`unity_screenshot`): `eye: 1.7` for a golfer's view (camera over the visible
   surface), `eye: 30-50` oblique for blending; a tee box, a fairway edge, a road and the
   original problem spot. After an apply/import VSP must re-spawn: `warmup` 20-80 (the bridge
@@ -151,6 +174,122 @@ rough grass runs through the thicket at full weight with no seam. A separate gra
 thicket never matched: tuned by colour it read too bright/lime next to the rough, and darkened to
 the orthophoto's thicket luminance (~0.55x the grass beside it) it read as a dark blot. Same grass +
 bushes on top is what blends; tune the bushes' density for how dark it reads from far.
+
+## Creek banks (`creek_bank` zones, pipeline/creek_bank_zones.py)
+
+Tall, uneven grass from the water's edge up to the top of the bank, and in clumps out into the water,
+on the creeks a builder marks. A `water_creek` or `water` feature's attributes (a `water` polygon is a
+dug pond or channel, e.g. Vreta's `0d59098f`; shared/features/creek-vegetation.ts):
+`bankVeg` = the palette (`default` or a `creek_bank` variant key; absent = not planted), `bankVegCover`
+0..1 (share of the water covered, default 0.5), `bankVegMaxM` (cap on how far up the bank, default 4.5 m),
+`bankVegWetM` (how far up the bank the palette's `_wet` water plants reach, default 1 m; the panel's
+"Water plants up the bank", shown for palettes with a `_wet` half; its hand-over ramp and edge noise
+shrink with it, so 0.3-0.5 m keeps reeds in the water and on the waterline).
+Mark them point-and-click in the web **Vegetation** mode (click a creek or water, ⌘/Ctrl-click for more;
+the selection panel shows only "Bank vegetation": palette + water cover %; the shape stays read-only
+there) or Draw's selection panel, or `bun run zones -- creek <course> <id> --palette reed [--cover 0.4]`
+(`zones -- creeks <course>` lists both types). Cattails without bushes = `reed`; with willows = `thicket`.
+
+- `grass:zones` runs the creek generator after the tall rough (source `creek-bank`, always second, so
+  the creek zones sit on top and claim the banks; `--only creek-bank` re-runs just them). It needs the
+  surface map and the terrain's DEM tif next to it (the edited DEM: creek digs included).
+- Bank = ground next to the water at >= 10 degrees, connected to the water through such ground (walking
+  out, the bank ends where it flattens), min 1 m, max `bankVegMaxM`; weight 1 there, fading over 1 m
+  past the top with +-0.8 m of smooth noise (ragged edge). Vreta's ditches are wide Vs (the ground rises
+  ~16 degrees for ~6 m each side): the first 6 m cap read "slightly too wide", 4.5 m is the default now.
+- Paths: OPCD's path meshes are NOT in the surface map (the cells under a cart path classify as the deep
+  or rough below it), so both generators read the app's `path` features. Creek grass is zero within
+  1.2 m of a path (a ~1 m card leans: a zone that stops at the path edge still hangs over it) and full
+  0.8 m further; the tall rough keeps its `path_margin` (1 m) from them.
+- Wet split: when `creek_bank` has a `<palette>_wet` variant, the water and the lower bank (1 m from the
+  water, a ragged hand-over over 0.6 m) get that mix and the rest of the bank the palette's own. Vreta
+  `reed_wet` = cattails (Dry Cattails 05/01, spacing ~1, scale 0.95-1.35: sparser hid under the base),
+  reed plumes (muted `#636b50`, whitePoint 0.75: brighter read as wheat), broad leaves and the base;
+  `reed` (upper) = the base, broad leaves, the lush palette's tall arching grass and the brown tufts.
+  Items both bind (the base) run through the split with no seam. The web picker hides `_wet` variants;
+  bind one with `zones -- bind <course> creek_bank --variant reed_wet --palette <file>`.
+- Vreta `vass` / `vass_wet` (common reed, Phragmites - "vass"; the pond `0d59098f`, section `a81ef9ae`,
+  2026-09-27, tuned against a phone photo of the pond: mostly fresh yellow-green reed, sparser tan
+  plumes, patchy, wind-bent): `vass` = `reed` as is; `vass_wet` = `reed_wet`'s items **thinned in the
+  binding** (`maxDensity` 0.2-0.3 in the palette file - Unity ignores it, `zones -- bind --palette`
+  bakes it into the mask, so `reed_wet` stays as approved; now 0.13-0.2) plus the `Creek vass - *` items:
+  the reed stand in three copies of one texture (Grass Textures2/013; 2.6 / 3.0 / 3.4 m cards, tints
+  `#97a76d` warm / `#8ba06f` / `#7f996b` cool, spacing 2.08 each = the one stand's density at 1.2, density
+  noise 13 / 9 / 7 - "copy the species with hue and length variations, same total"), leafy reed (Rustic
+  Grass_11 2.6 m, 1.9, `#8ea06d`), plumes (Grass Textures2/014 3.3 m, 2.25, `#a6a17a`) and winter reed (Dry
+  Grass_12 2.8 m, 3.75, `#9c9673`); scale 0.7-1.5, height waves 0.7-1.3. On the pond `bankVegWetM` 0.4 and
+  `bankVegMaxM` 2: the first pass (1 m wet reach, 4.5 m bank) read "too much up on the bank" and "too thick". Tall because it stands on the bed: the pond is dug 1.65 m
+  (2 m shelf at 0.25 m), so 2-4.5 m cards clear the water by 2-3 m. Colour path: a beige tint first
+  rendered orange wheat (hue 37, sat 0.45), pale greys rendered white (2x the fairway's luminance),
+  a fitted per-channel power law gave lime (sat 0.5); what blends is the lime tints desaturated to 72 %
+  in linear light and x0.85: reed mean luminance 1.16x the fairway beside it, hue ~58. That was one
+  direction: from the user's camera (looking north up the pond, Scene view pivot 784.6/12.1/631.1, rotation
+  4/3/0) the same tints read 1.95x (p90 2.9x) - tall cards lit through by the sun. Now x0.6 linear, chroma
+  x1.25 (stand `#6b804c` / `#758646` / `#607b4a`, leafy `#6e8049`, plumes `#858056`, winter `#7d7752`):
+  1.08x (p90 1.46x) there, 0.41x from the south end (between the tall rough ~0.4x and the fairway). Tall
+  grass differs ~2.5x by view direction, so measure both ways and pick the compromise. Measure the
+  reed and the fairway in the same shot (`eye 4.9` from the pond's south end, and `eye 1.7` from the
+  bank), never by eye.
+- Water: shore-to-mid-stream score + noise, thresholded to exactly `bankVegCover` (specks < 0.5 m2
+  dropped): grows in from both banks, open strip down the middle. VSP plants on the terrain, which the
+  conform leaves at the bed, and 1.2-1.9 m cards stand out of 0.3-0.7 m of water.
+- Kept off tees/greens (2 + 2 m), fairways (1 + 1.5), semis/bunkers, paths (above) and "other" meshes,
+  other water, buildings, roads. grass_zones.py drops its water clearance along marked creeks so the
+  tall rough runs up to them and fills in where the bank grass fades.
+- Palettes are `creek_bank/<variant>` in grass-palette.json; bind with
+  `zones -- bind <course> creek_bank --variant lush --name "Lush tall grass" --palette <file>` (the name
+  is what the panel shows). Vreta: `lush` (Rustic 23 broad blades base, Rustic 11, Dune Grass 04, Grass
+  Textures2/026 reed-canary heads) and `reed` (Dune Grass 02 base, 010 broad leaves, 024 plumes, Dry
+  Cattails 05/01); 1.15-1.9 m cards, scale 0.7-1.35 plus height-wave noise (`noiseScaleMin/Max/Scale`)
+  for the uneven top. Colour: the first pass was 2x darker than the rough from 25 m (dense tall grass
+  shades itself); tints x1.45 (linear) fixed that but read lime, 55 % saturation read grey - ~78 % of the
+  saturation with red -4 % / blue +4 % read pale and minty next to the standard tall rough. Now: the
+  standard rough's hue, then darker and more olive still (base `#516f44`/`#547247`: vivid greens read
+  brighter than the standard rough's `#588b3f` in the render because the creek cards stand taller in the light), plus a shared sparse,
+  patchy `Creek - brown dead grass` item (Rustic Grass_19, `#6e5a3e`, spacing 2.2, density noise 24) in
+  both palettes for brown touches (2026-09). That olive pass then read too dark against the fairway from a
+  golfer's view on 18 (bank luminance ~0.4x the ground beside it): the lush greens went x1.56 linear in
+  two steps (x1.3 still read "a little too dark"), hue kept (broad blades `#648854`, tall arching `#6b8e5b` -
+  shared with `reed` - fine blades `#719663`), and the shared brown tufts / canary heads x1.15 (`#756043`,
+  `#717654`); banks now ~0.8x the fairway beside them, p90 at the ground's (2026-09-26). Tune the creek
+  palettes only; `rough_tall` is the reference.
+- The creek zone type is added to a course on first use (a course seeded before it existed).
+- Sections (one creek, several looks): draw a **hand-drawn `creek_bank` vegetation zone** (web Draw:
+  vegetation zone, type Creek bank, the variant = the palette) over a stretch. The banks of every creek
+  inside it get that palette (an unmarked creek or water is planted there only; a section's variant must be a
+  palette with items - `creek_bank` Default is empty on Vreta, so a Default section plants nothing), blending into the creek's own
+  over 2 m with +-1.5 m of noise; later sections on top. It is an instruction, not a planting: the zones
+  export skips hand-drawn creek_bank zones (`gspro.py cmd_zones`, it says so in its report). This keeps
+  the creek one feature, so its dig and R.A.M. spline are untouched.
+- Vreta 18 (creek 573fe06b, 2026-09 photos from the app, `bun run photos-pull`): the stretch that splits
+  the fairways, around the brick bridge (Unity x < ~1040), is clean grass = `lush`; from the bridge east
+  along the right of 18 to the green it is a willow/birch thicket in the ditch = section `98207ef6`,
+  `thicket`. `thicket` (upper bank) = the lush items; `thicket_wet` = its own `Creek thicket - willow *`
+  items (the NM grey willow prefabs, NOT the hole-10 `Shrub thicket` items: scale 1.0-1.6, spacing
+  1.9-2.8, tint `#6f8aa0` - hole 10's lavender `#869acd` at scale ~0.9 read small, sparse and grey-blue
+  here) over the lush base grass and brown tufts.
+  Seen towards the sun they read almost white: NM's `Tree_Leaves_Specular` draws both leaf faces with
+  the front normal (`_BackFaceMirrorNormal` 0), so back faces light as if facing the sun, and the
+  willow material is glossy (`_SmoothnessPower` 1). The items carry `"material": {"_BackFaceMirrorNormal":
+  1, "_SmoothnessPower": 0.1, "_SpecularPower": 0.05, "_Smooothness": 0.1}` (the last is the LOD cross
+  shader's, sic): apply draws course-local copies (`<course>/Grass/Prefabs/<item>.prefab` + material
+  copies), the NM assets stay untouched. Measure backlit shots (mean luminance / share of pixels > 0.6
+  over the bushes), and force a VSP rebuild (`golfmap.grass.refresh` or apply) before judging a
+  material change - VSP keeps its own material copies.
+  Species/height (2026-09): willow x4, maple bush 01/02, hazel 01/00/04-cluster (all NM, same material
+  block) and a sparse birch sapling (the `Looks/birch/darker` prefab, its own tints), scale 0.5-1.7 plus
+  height-wave noise. Blend by measurement against the rough in the same shot (linear luminance, mean and
+  p90): the first willows were ~4x darker than the rough; sun-side highlights must not exceed the rough's
+  p90 (lime read) - tint `#a9b8b6` (the leaf texture is yellow-green, so a blue-grey tint renders neutral
+  green). The thicket has its own grass items (`Creek thicket - grass *`, lush tints x1.4 linear): under
+  the bushes' shade the shared lush grass read too dark, and the lush palette elsewhere stays as approved.
+  Height: the thicket grasses scale 0.55-1.3 with height waves 0.65-1.4 (`noiseScaleScale` 10), plus two
+  "giant" items (Rustic 11 / Dune Grass 04 at scale 1.25-1.7, ~1.9-2.6 m, patchy density noise 14) for
+  stands 50-100 % taller. Cattails of its own in the wet mix (Dry Cattails 05/01, scale 0.6-1.8,
+  ~1.1-3.2 m). Broadleaf: CESimgolf `Cottonwood-Giant-Canopy PREFAB` as a bush - NM leaf shader, so the
+  same material block and tints work; ~11 m canopy -> scale 0.2-0.32 (2-3.5 m); its CollisionObject1
+  sphere has no renderer (VSP colliders are off). Untinted it read yellow-lime: tint `#9a9ea4`. The path to the wooden footbridge stops at the ditch in
+  the app, so the thicket closes the crossing; extend the path over the creek to keep it clear.
 
 ## Later: variety
 

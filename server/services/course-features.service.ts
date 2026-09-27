@@ -8,6 +8,8 @@ import { resolveSurfaceStack } from '../../shared/render/resolved-surface-stack'
 import { ROUGHS_LAYER, isRoughsLayerType, stackKey, type FeatureLayer } from '../../shared/render/stack-key';
 import { PATH_SURFACE_ATTRIBUTE, PATH_SURFACES, isPathSurface } from '../../shared/features/path-surface';
 import { centerlineError, centerlineGeometry } from '../../shared/features/centerline';
+import { bankVegProblem, takesBankVeg } from '../../shared/features/creek-vegetation';
+import { ZONE_BLENDS, ZONE_BLEND_ATTRIBUTE, ZONE_EXTRA_PALETTES_ATTRIBUTE, parseZonePalettes } from '../../shared/features/zone-layers';
 import { KERB_FILLETS_ATTRIBUTE, ROAD_JUNCTIONS_SOURCE, junctionFillets, kerbFilletsOn } from '../../shared/features/road-junctions';
 import type { FeatureCollection } from 'geojson';
 
@@ -316,7 +318,11 @@ function assertValidAttributes(attributes: unknown): void {
  * default, so a zone drawn before the panel existed still rasterizes; only
  * `zoneType` (the key into the course's zone-type table) is required.
  * `zoneVariant` (a variant key of that type) is optional: absent or `''`
- * means the type's Default item mix.
+ * means the type's Default item mix. `blend` absent means `replace`: a
+ * drawn zone takes its weight of the ground from the generated zones under
+ * it; `mix` plants over them instead (drawn zones always add up, D-VZ14). `extraPalettes` absent means none: more type/variant
+ * mixes the zone plants on its footprint, each at the zone's weight times
+ * its own weight (default 1). Both are shared/features/zone-layers.ts.
  */
 export const VEGETATION_ZONE_DEFAULTS = { weight: 1, feather: 2, noise: 0 } as const;
 
@@ -327,7 +333,9 @@ export const VEGETATION_ZONE_DEFAULTS = { weight: 1, feather: 2, noise: 0 } as c
  * a zone with no type is a polygon nothing can rasterize. `zoneVariant`, when
  * present, is a string (`''` = Default); like `zoneType` it is not checked
  * against the zone-type table — the pipeline falls back to Default for a key
- * the type does not have.
+ * the type does not have. `blend`, when present, is one of ZONE_BLENDS;
+ * `extraPalettes`, when present, is a string parseZonePalettes accepts (its
+ * types and variants are not checked against the table either).
  */
 function assertValidVegetationZoneAttributes(attributes: FeatureAttributes | null | undefined): void {
     const zoneType = attributes?.zoneType;
@@ -337,6 +345,17 @@ function assertValidVegetationZoneAttributes(attributes: FeatureAttributes | nul
     const zoneVariant = attributes?.zoneVariant;
     if (zoneVariant !== undefined && typeof zoneVariant !== 'string') {
         throw new InvalidFeatureError('attributes.zoneVariant must be a string (a variant key, or empty for Default)');
+    }
+    const blend = attributes?.[ZONE_BLEND_ATTRIBUTE];
+    if (blend !== undefined && !(ZONE_BLENDS as readonly unknown[]).includes(blend)) {
+        throw new InvalidFeatureError(`attributes.${ZONE_BLEND_ATTRIBUTE} must be one of ${ZONE_BLENDS.join(', ')}`);
+    }
+    const extras = attributes?.[ZONE_EXTRA_PALETTES_ATTRIBUTE];
+    if (extras !== undefined) {
+        const parsed = typeof extras === 'string' ? parseZonePalettes(extras) : { error: 'not a string' };
+        if ('error' in parsed) {
+            throw new InvalidFeatureError(`attributes.${ZONE_EXTRA_PALETTES_ATTRIBUTE}: ${parsed.error} (comma-separated <zoneType>[/<variant>][=<weight 0..1>])`);
+        }
     }
     const ranges: Record<string, [number, number]> = {
         weight: [0, 1],
@@ -367,6 +386,16 @@ function assertValidPathAttributes(attributes: FeatureAttributes | null | undefi
     if (fillets !== undefined && typeof fillets !== 'boolean') {
         throw new InvalidFeatureError(`attributes.${KERB_FILLETS_ATTRIBUTE} must be true or false`);
     }
+}
+
+/**
+ * `water_creek` / `water` attributes: the bank vegetation keys, when present,
+ * are valid (shared/features/creek-vegetation.ts) — the palette the banks are
+ * planted with, its water cover and bank cap. Every other key is free.
+ */
+function assertValidBankVegAttributes(attributes: FeatureAttributes | null | undefined): void {
+    const problem = bankVegProblem(attributes);
+    if (problem) throw new InvalidFeatureError(problem);
 }
 
 function serializeAttributes(attributes: FeatureAttributes | null | undefined): string | null {
@@ -732,6 +761,7 @@ export class CourseFeaturesService {
         assertValidAttributes(input.attributes);
         if (input.type === 'vegetation_zone') assertValidVegetationZoneAttributes(input.attributes);
         if (input.type === 'path') assertValidPathAttributes(input.attributes);
+        if (takesBankVeg(input.type)) assertValidBankVegAttributes(input.attributes);
 
         const id = crypto.randomUUID();
         const holeId = input.holeId ?? null;
@@ -843,6 +873,7 @@ export class CourseFeaturesService {
             assertValidVegetationZoneAttributes(input.attributes);
         }
         if (nextType === 'path' && input.attributes !== undefined) assertValidPathAttributes(input.attributes);
+        if (takesBankVeg(nextType) && input.attributes !== undefined) assertValidBankVegAttributes(input.attributes);
         if (movingGroups) {
             dbInput.hole_id = nextHoleId;
             dbInput.layer = nextLayer;

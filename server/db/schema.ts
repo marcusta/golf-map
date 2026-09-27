@@ -27,6 +27,8 @@ export interface Database {
     course_zone_types: CourseZoneTypesTable;
     tapscore_published_scores: TapscorePublishedScoresTable;
     site_photos: SitePhotosTable;
+    course_feature_history: CourseFeatureHistoryTable;
+    terrain_edit_history: TerrainEditHistoryTable;
 }
 
 // --- Auth ---
@@ -379,6 +381,28 @@ export interface TerrainEditsTable {
     updated_at: Generated<string>;
 }
 
+// --- Edit history (migration 025, written by triggers; FeatureHistoryService reads it) ---
+
+/** A course feature's state before one change: `update`/`delete` hold the old row (no `geojson`), `restack` only `sort_order`/`version`/`updated_at`. */
+export interface CourseFeatureHistoryTable {
+    history_id: Generated<number>;
+    feature_id: string;
+    course_id: string;
+    op: 'update' | 'restack' | 'delete';
+    changed_at: Generated<string>; // UTC 'YYYY-MM-DD HH:MM:SS.SSS'
+    row_json: string;
+}
+
+/** A terrain edit's state before an update or delete (the old row as JSON). */
+export interface TerrainEditHistoryTable {
+    history_id: Generated<number>;
+    edit_id: string;
+    site_id: string;
+    op: 'update' | 'delete';
+    changed_at: Generated<string>;
+    row_json: string;
+}
+
 // --- Course zone types (the legend `vegetation_zone` features point at) ---
 
 export interface CourseZoneTypesTable {
@@ -441,6 +465,7 @@ export interface SitePhotosTable {
     refine_method: string | null; // 'skyline' | 'manual'
     refine_residual_deg: number | null;
     refined_at: string | null;
+    edited_at: string | null; // tags/note/hole edited on this box; the pull keeps them
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

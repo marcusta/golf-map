@@ -12,6 +12,7 @@ Bunker Studio, ce.simgolf's method, the lip-tool plan, Vreta findings. Read both
 | `conventions/bunker-channels.json` | Vertex-paint conventions (`opcd-default`, `ce-simgolf`): colour per ring/edge and which material channel fills each paint channel. Also read by `unity/Editor/GolfMap/GolfMapBunkerChannels.cs`; copy to `Assets/GolfMap/<Course>/` after an edit. |
 | `tools/fbx_sync.py` (+ `fbx_sync_test.py`) | Add-on + headless: export only changed meshes to the FBX folder (OPCD names/settings, fingerprints in `<folder>/.golfmap-fbx-sync.json`). Unity counterpart: `golfmap.meshes.sync`. |
 | `tools/bunker_paint_report.py` | Headless report: which convention each bunker/blend is painted with. Same rings and scores as Unity's **Check paint**. |
+| `tools/build_props.py` + `tools/props_kit.py` | Headless: course props (buildings, shelters, cars, flags ...) from a spec (`docs/gspro/<course>/*-props.json`) into FBX + generated textures + a `golfmap-props-v1` manifest. Unity counterpart: `golfmap.props.place` (`GolfMapProps.cs`). |
 
 ## Environment
 

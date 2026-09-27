@@ -1,0 +1,150 @@
+import { test, expect } from 'bun:test';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { Database as SqliteDatabase } from 'bun:sqlite';
+import { sql } from 'kysely';
+import { createTestDb } from '../testing/db';
+import { seedCourse, TEST_COURSE_ID, TEST_HOLE_1_ID } from '../db/seeds/course';
+import { CourseFeaturesService } from './course-features.service';
+import { FeatureHistoryService, SNAPSHOT_DIR } from './feature-history.service';
+import type { FeatureGeometry } from './geo';
+
+function square(cx = 0, cy = 0, half = 5): FeatureGeometry {
+    return {
+        crs: 'EPSG:3006',
+        rings: [{ points: [
+            { x: cx - half, y: cy - half }, { x: cx + half, y: cy - half },
+            { x: cx + half, y: cy + half }, { x: cx - half, y: cy + half },
+        ] }],
+    };
+}
+
+const BEFORE = '2000-06-01 00:00:00';
+const SEED_GREEN = `${TEST_COURSE_ID}-feature-green-1`;
+
+/**
+ * A course with a fairway and semi rough on hole 1 and a course-level bunker,
+ * all made "long ago" (before BEFORE), then edited now through the real
+ * service: the fairway reshaped, the bunker deleted, a new fairway drawn.
+ */
+async function editedCourse() {
+    const ctx = await createTestDb(seedCourse);
+    const features = new CourseFeaturesService(ctx.db);
+    const fairway = await features.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'fairway', geometry: square(0, 0) });
+    const semi = await features.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'semi_rough', geometry: square(20, 0) });
+    const bunker = await features.create({ courseId: TEST_COURSE_ID, type: 'bunker', geometry: square(40, 0) });
+    // Everything so far happened long ago: the rows and the history the setup's creates wrote (stacking shifts).
+    await ctx.db.updateTable('course_features').set({ created_at: '2000-01-01 00:00:00', updated_at: '2000-01-01 00:00:00' })
+        .where('course_id', '=', TEST_COURSE_ID).execute();
+    await ctx.db.updateTable('course_feature_history').set({ changed_at: '2000-01-01 00:00:00.000' }).execute();
+
+    const reshaped = await features.update(fairway.id, fairway.version, { geometry: square(0, 0, 8) });
+    await features.remove(bunker.id, bunker.version);
+    const added = await features.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'fairway', geometry: square(60, 0) });
+    return { ...ctx, features, history: new FeatureHistoryService(ctx.db), fairway, reshaped, semi, bunker, added };
+}
+
+test('the state at a past time undoes edits, restores deleted features and drops new ones', async () => {
+    const t = await editedCourse();
+
+    const { state, unknown } = await t.history.stateAt(TEST_COURSE_ID, BEFORE);
+
+    expect([...state.keys()].sort()).toEqual([SEED_GREEN, t.fairway.id, t.semi.id, t.bunker.id].sort());
+    expect(JSON.parse(String(state.get(t.fairway.id)!.geometry_json))).toEqual(JSON.parse(JSON.stringify(square(0, 0))));
+    expect(state.get(t.bunker.id)!.type).toBe('bunker');
+    expect(unknown).toEqual([]);
+});
+
+test('the changes since then are numbered: added, edited, removed - not the features a new one pushed up', async () => {
+    const t = await editedCourse();
+    const { state } = await t.history.stateAt(TEST_COURSE_ID, BEFORE);
+
+    const changes = await t.history.changes(TEST_COURSE_ID, state, await t.history.current(TEST_COURSE_ID));
+
+    expect(changes.map(c => [c.n, c.kind, c.id, c.type, c.hole])).toEqual([
+        [1, 'added', t.added.id, 'fairway', 1],
+        [2, 'edited', t.fairway.id, 'fairway', 1],
+        [3, 'removed', t.bunker.id, 'bunker', null],
+    ]);
+});
+
+test('a reorder is one restack: the feature that moved, not everything it passed', async () => {
+    const t = await editedCourse();
+    const third = await t.features.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'semi_rough', geometry: square(80, 0) });
+    const before = await t.history.current(TEST_COURSE_ID);
+    const group = [...before.values()].filter(r => r.hole_id === TEST_HOLE_1_ID)
+        .sort((a, b) => a.sort_order - b.sort_order).map(r => r.id);
+
+    // Drag the top feature to the bottom.
+    await t.features.reorder(TEST_COURSE_ID, TEST_HOLE_1_ID, [group[group.length - 1], ...group.slice(0, -1)]);
+    const changes = await t.history.changes(TEST_COURSE_ID, before, await t.history.current(TEST_COURSE_ID));
+
+    expect(changes.map(c => [c.kind, c.id])).toEqual([['restacked', group[group.length - 1]]]);
+    expect(changes[0].detail).toBe(`rank ${group.length} -> 1 of ${group.length}`);
+    expect(third.id).toBeTruthy();
+});
+
+test('an edit from before the history existed is reported, not silently kept', async () => {
+    const t = await editedCourse();
+    // A change the triggers never saw: only the timestamp moves (as for rows edited before migration 025).
+    await t.db.updateTable('course_features').set({ updated_at: '2001-01-01 00:00:00' }).where('id', '=', t.semi.id).execute();
+
+    const { unknown } = await t.history.stateAt(TEST_COURSE_ID, BEFORE);
+
+    expect(unknown).toEqual([t.semi.id]);
+});
+
+test('a variant database holds the chosen mix for the course and leaves everything else as it was', async () => {
+    const t = await editedCourse();
+    const { state: before } = await t.history.stateAt(TEST_COURSE_ID, BEFORE);
+    const now = await t.history.current(TEST_COURSE_ID);
+    const others = await t.db.selectFrom('course_features').select(({ fn }) => fn.countAll<number>().as('n'))
+        .where('course_id', '!=', TEST_COURSE_ID).executeTakeFirstOrThrow();
+
+    // Only the reshaped fairway applied: the bunker is back, the new fairway is not there.
+    const rows = FeatureHistoryService.mix(before, now, new Set([t.fairway.id]));
+    const out = path.join(await mkdtemp(path.join(os.tmpdir(), 'bisect-')), 'variant.sqlite');
+    await t.history.writeVariantDb(TEST_COURSE_ID, rows, out);
+
+    const copy = new SqliteDatabase(out, { readonly: true });
+    const got = copy.query('SELECT id, geometry_json FROM course_features WHERE course_id = ? ORDER BY id').all(TEST_COURSE_ID) as { id: string; geometry_json: string }[];
+    const otherCount = (copy.query('SELECT COUNT(*) AS n FROM course_features WHERE course_id != ?').get(TEST_COURSE_ID) as { n: number }).n;
+    const triggers = copy.query("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'course_features_history%'").all();
+    copy.close();
+
+    expect(got.map(r => r.id).sort()).toEqual([SEED_GREEN, t.fairway.id, t.semi.id, t.bunker.id].sort());
+    expect(got.find(r => r.id === t.fairway.id)!.geometry_json).toBe(String(now.get(t.fairway.id)!.geometry_json));
+    expect(otherCount).toBe(Number(others.n));
+    expect(triggers).toEqual([]);
+    // The app database is untouched.
+    expect((await t.history.current(TEST_COURSE_ID)).has(t.added.id)).toBe(true);
+});
+
+test('an export snapshot keeps the SVG and the features, and reads back as the state it was taken from', async () => {
+    const t = await editedCourse();
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const svg = path.join(dir, 'linkan.svg');
+    await writeFile(svg, '<svg/>');
+
+    const folder = await t.history.snapshot(TEST_COURSE_ID, dir, svg, new Date(2026, 8, 26, 18, 32, 4));
+    const listed = await FeatureHistoryService.listSnapshots(dir);
+    const state = await FeatureHistoryService.readSnapshot(folder);
+
+    expect(path.relative(dir, folder)).toBe(path.join(SNAPSHOT_DIR, '2026-09-26_18-32-04'));
+    expect((await readdir(folder)).sort()).toEqual(['features.json', 'linkan.svg']);
+    expect(listed.map(s => [s.name, s.features, s.svg])).toEqual([['2026-09-26_18-32-04', 4, 'linkan.svg']]);
+    expect(await t.history.changes(TEST_COURSE_ID, state, await t.history.current(TEST_COURSE_ID))).toEqual([]);
+});
+
+test('terrain edits keep their earlier versions too', async () => {
+    const t = await editedCourse();
+    await sql`INSERT INTO sites (id, name, version) VALUES ('s1', 'Site', 1)`.execute(t.db);
+    await sql`INSERT INTO terrain_edits (id, site_id, op, params_json, rings_json, enabled, version) VALUES ('e1', 's1', 'plane', '{}', '[]', 1, 1)`.execute(t.db);
+    await t.db.updateTable('terrain_edits').set({ params_json: '{"featherM":2}' }).where('id', '=', 'e1').execute();
+    await t.db.deleteFrom('terrain_edits').where('id', '=', 'e1').execute();
+
+    const rows = await t.db.selectFrom('terrain_edit_history').select(['op', 'row_json']).orderBy('history_id').execute();
+
+    expect(rows.map(r => [r.op, JSON.parse(r.row_json).params_json])).toEqual([['update', '{}'], ['delete', '{"featherM":2}']]);
+});

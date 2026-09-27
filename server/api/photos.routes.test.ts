@@ -341,6 +341,22 @@ describe('photo pull round trip (serve app to builder DB)', () => {
         expect((await v.get('p3')).pulledAt).not.toBeNull();
     });
 
+    test('tags, note and hole edited on the builder survive a later pull of the same photo', async () => {
+        const { vps, builder, pull } = await pair();
+        const b = builder.ctx.photosService;
+        await createPhoto(vps.app, photoInput('p1', SITE, { tags: ['look'], hole: 3 }));
+        await upload(vps.app, 'p1', 'original', 'O1');
+        await pull();
+        const pulled = await b.get('p1');
+        await b.update('p1', pulled.version, { tags: ['creek', 'vegetation'], note: 'bank', hole: 4 });
+
+        // The late preview re-lists p1 on the VPS with its own tags and hole.
+        await upload(vps.app, 'p1', 'preview', 'P1');
+        const r = await pull();
+        expect(r).toMatchObject({ filesDownloaded: 1 });
+        expect(await b.get('p1')).toMatchObject({ tags: ['creek', 'vegetation'], note: 'bank', hole: 4, previewSha256: sha256('P1') });
+    });
+
     test('an original deleted by retention is not fetched; the preview still is', async () => {
         let clock = new Date('2026-10-02T12:00:00Z');
         const { vps, builder, pull } = await pair(() => clock);

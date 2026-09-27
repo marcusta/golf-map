@@ -39,6 +39,9 @@ import type { MapPointerEvent, MapService } from '../map/map.service';
 import type { AnchorPoint } from '../geo/bezier';
 import { DrawState, MIN_RING_POINTS } from '../draw/draw-state';
 import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../geo/transform';
+import {
+    CREEK_DIG_PRESETS, DIG_ATTRIBUTES, DIG_GENERATOR_KINDS, WATER_DIG_PRESETS, type DigGeneratorKind,
+} from '../../../shared/features/dig-presets';
 
 /** Interaction-claim id for the terrain-edit tool (also its registry id). */
 export const TERRAIN_EDIT_TOOL_ID = 'terrain-edit';
@@ -81,17 +84,75 @@ export function paramsSummary(edit: TerrainEdit): string {
         parts.push(`Unity sculpt, ${((edit.params.changedM2 ?? 0) / 10000).toFixed(2)} ha, +${edit.params.maxRaiseM ?? 0} / ${edit.params.maxLowerM ?? 0} m`);
     }
     if (edit.op !== 'dig' && edit.op !== 'delta') parts.push(`feather ${edit.params.featherM} m`);
-    // Generated edits (building pads) say so: a regeneration replaces them, a
-    // hand-drawn edit it never touches.
-    if (edit.origin) parts.push(edit.origin);
     return parts.join(' · ');
 }
+
+/** What a generated dig was dug from, by origin. */
+const DIG_NOUNS: Record<DigGeneratorKind, string> = { 'water-digs': 'Pond', 'bunker-digs': 'Bunker', 'creek-digs': 'Creek' };
+
+/** A group of rows in the panel's edit list. */
+export interface EditGroup {
+    key: string;
+    label: string;
+    edits: TerrainEdit[];
+}
+
+/** The list's groups, in panel order ('away': digs of features not on this course). */
+const GROUPS: Array<{ key: string; label: string }> = [
+    { key: 'hand', label: 'Your edits' },
+    { key: 'water-digs', label: 'Ponds' },
+    { key: 'bunker-digs', label: 'Bunkers' },
+    { key: 'creek-digs', label: 'Creeks' },
+    { key: 'building-pads', label: 'Building pads' },
+    { key: 'road-grades', label: 'Road grades' },
+    { key: 'sculpt', label: 'Unity sculpt' },
+    { key: 'away', label: 'Not on this course' },
+    { key: 'other', label: 'Other' },
+];
+
+/**
+ * Which form an edit opens: 'params' for a hand-drawn plane/smooth edit (its
+ * own op and params, saved on the edit), 'dig' for a generated pond, bunker
+ * or creek dig (its settings live on the feature it was dug from, so a
+ * re-run keeps them), null for the rest (building pads, road grades, Unity
+ * sculpt: change their source and regenerate).
+ */
+export type EditFormKind = 'params' | 'dig';
+
+/** The course feature a generated dig was dug from, or null. */
+export function digFeatureId(edit: TerrainEdit): string | null {
+    if (!edit.origin || !(DIG_GENERATOR_KINDS as readonly string[]).includes(edit.origin)) return null;
+    return edit.originRef?.startsWith('feature:') ? edit.originRef.slice('feature:'.length) : null;
+}
+
+/** A dig feature's settings; a missing one is its preset's (or the default preset's). */
+export interface DigSettings {
+    preset?: string;
+    depthM?: number;
+    bankSlopeDeg?: number;
+    /** Bunkers only: the face towards the green. */
+    faceSlopeDeg?: number;
+}
+
+/** A hand-drawn edit's form values (radiusM is smooth's, flat is plane's). */
+export interface HandEditParams {
+    op: 'plane' | 'smooth';
+    featherM: number;
+    radiusM: number;
+    flat: boolean;
+}
+
+type Attributes = Record<string, string | number | boolean>;
 
 /** Everything the renderer needs to draw one overlay state. */
 export interface TerrainEditView {
     edits: TerrainEdit[];
     /** In-progress draft ring (EPSG:3006), empty when idle. */
     draft: AnchorPoint[];
+    /** The edit to draw highlighted: the hovered row, else the open form's. */
+    highlightId: string | null;
+    /** Each edit's name (editName), for its map label. */
+    labels: Record<string, string>;
 }
 
 /**
@@ -136,12 +197,40 @@ export class TerrainEditToolService {
     readonly radiusM = new Signal(DEFAULT_RADIUS_M);
     readonly flat = new Signal(false);
 
-    /** Renderable overlay state (persisted edits + the live draft). */
-    readonly view = new Computed<TerrainEditView>(() => ({
-        edits: this.edits.get(),
-        draft: this.state.draft.get(),
-    }));
+    /** The edit whose form is open in the panel. */
+    readonly editingId = new Signal<string | null>(null);
+    /** The edit-list row under the pointer (its outline is highlighted). */
+    readonly hoveredId = new Signal<string | null>(null);
 
+    /** Renderable overlay state (persisted edits + the live draft). */
+    readonly view = new Computed<TerrainEditView>(() => {
+        const edits = this.edits.get();
+        return {
+            edits,
+            draft: this.state.draft.get(),
+            highlightId: this.hoveredId.get() ?? this.editingId.get(),
+            labels: Object.fromEntries(edits.map(e => [e.id, this.editName(e)])),
+        };
+    });
+
+    /** The edit list for the panel, grouped by kind (GROUPS order), empty groups left out. */
+    readonly groups = new Computed<EditGroup[]>(() => {
+        const byKey = new Map<string, TerrainEdit[]>();
+        for (const edit of this.edits.get()) {
+            const key = this.groupKey(edit);
+            byKey.set(key, [...(byKey.get(key) ?? []), edit]);
+        }
+        return GROUPS.filter(g => byKey.has(g.key)).map(g => ({
+            ...g,
+            // Your edits in the order you drew them; generated ones by hole, then name.
+            edits: g.key === 'hand' ? byKey.get(g.key)! : [...byKey.get(g.key)!].sort((a, b) =>
+                (this.holeNumber(a) ?? Infinity) - (this.holeNumber(b) ?? Infinity)
+                || this.editName(a).localeCompare(this.editName(b))),
+        }));
+    });
+
+    /** The tool context while active, as a signal so the list's names follow features and holes. */
+    private readonly ctxSignal = new Signal<ToolContext | null>(null);
     private ctx: ToolContext | null = null;
     private renderer: TerrainEditRenderer | null = null;
     /** True while a render flush is queued (microtask coalescing). */
@@ -168,29 +257,128 @@ export class TerrainEditToolService {
     readonly generating = new Signal<TerrainGeneratorKind | null>(null);
 
     async generate(kind: TerrainGeneratorKind): Promise<boolean> {
+        const result = await this.runGenerator(kind);
+        if (!result) return false;
+        const skipped = result.skipped.length > 0 ? ` (${result.skipped.length} feature(s) skipped)` : '';
+        this.notice.set(`${GENERATOR_LABELS[kind]}: ${result.imported} edit(s) generated${skipped}. Apply to terrain to bake them.`);
+        return true;
+    }
+
+    /** Runs a generator and reloads the list; null when busy or failed (the notice says why). */
+    private async runGenerator(kind: TerrainGeneratorKind): Promise<{ imported: number; skipped: string[] } | null> {
         const ctx = this.ctx;
-        if (!ctx || this.generating.peek() || this.applying.peek()) return false;
-        const label = GENERATOR_LABELS[kind];
+        if (!ctx || this.generating.peek() || this.applying.peek()) return null;
         this.generating.set(kind);
         this.notice.set(null);
         try {
             const result = await this.generatorsApi.generate({ courseId: ctx.courseId, kind });
             await this.reload();
-            const skipped = result.skipped.length > 0 ? ` (${result.skipped.length} feature(s) skipped)` : '';
-            this.notice.set(`${label}: ${result.imported} edit(s) generated${skipped}. Apply to terrain to bake them.`);
-            return true;
+            return result;
         } catch (e) {
-            this.notice.set(`${label} failed: ${message(e)}`);
-            return false;
+            this.notice.set(`${GENERATOR_LABELS[kind]} failed: ${message(e)}`);
+            return null;
         } finally {
             this.generating.set(null);
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Changing an edit: the panel's form for one row (`editingId`). A
+    // hand-drawn edit saves its params on itself; a generated dig saves on its
+    // feature and re-runs its generator, so the next run keeps the change.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    formKind(edit: TerrainEdit): EditFormKind | null {
+        if (!edit.origin) return edit.op === 'plane' || edit.op === 'smooth' ? 'params' : null;
+        return digFeatureId(edit) ? 'dig' : null;
+    }
+
+    /** A generated dig's settings from its feature's attributes (null: the feature isn't loaded). */
+    digSettings(edit: TerrainEdit): DigSettings | null {
+        const attrs = this.featureAttributes(edit);
+        if (attrs === undefined) return null;
+        const num = (key: string) => (typeof attrs?.[key] === 'number' ? attrs[key] as number : undefined);
+        const settings: DigSettings = {};
+        if (typeof attrs?.digPreset === 'string') settings.preset = attrs.digPreset;
+        if (num('digDepthM') !== undefined) settings.depthM = num('digDepthM');
+        if (num('digBankSlopeDeg') !== undefined) settings.bankSlopeDeg = num('digBankSlopeDeg');
+        if (num('digFaceSlopeDeg') !== undefined) settings.faceSlopeDeg = num('digFaceSlopeDeg');
+        return settings;
+    }
+
+    /** Saves a generated dig's settings on its feature and re-digs that kind. */
+    async saveDigSettings(id: string, settings: DigSettings): Promise<boolean> {
+        const edit = this.edits.peek().find(e => e.id === id);
+        if (!edit) return false;
+        const attrs = this.featureAttributes(edit);
+        if (attrs === undefined) {
+            this.notice.set('The feature this dig was made from is not loaded on this course — regenerate to drop the dig.');
+            return false;
+        }
+        const next: Attributes = { ...(attrs ?? {}) };
+        for (const key of DIG_ATTRIBUTES) if (key !== 'dig') delete next[key];
+        if (settings.preset) next.digPreset = settings.preset;
+        if (settings.depthM !== undefined) next.digDepthM = settings.depthM;
+        if (settings.bankSlopeDeg !== undefined) next.digBankSlopeDeg = settings.bankSlopeDeg;
+        if (settings.faceSlopeDeg !== undefined) next.digFaceSlopeDeg = settings.faceSlopeDeg;
+        return this.redig(edit, next, 'Saved on the feature');
+    }
+
+    /** Saves a hand-drawn edit's op and params in place. */
+    async saveParams(id: string, form: HandEditParams): Promise<boolean> {
+        const edit = this.edits.peek().find(e => e.id === id);
+        if (!edit) return false;
+        const params = form.op === 'plane'
+            ? { featherM: form.featherM, ...(form.flat ? { flat: true } : {}) }
+            : { featherM: form.featherM, radiusM: form.radiusM };
+        this.saving.set(true);
+        try {
+            const updated = await this.editsApi.update({ id, version: edit.version, op: form.op, params });
+            this.edits.update(list => list.map(e => (e.id === id ? updated : e)));
+            this.notice.set('Saved. Apply to terrain to bake it.');
+            return true;
+        } catch (e) {
+            await this.reload(); // resync (order per setEnabled)
+            this.notice.set(`Saving the edit failed: ${message(e)}`);
+            return false;
+        } finally {
+            this.saving.set(false);
+        }
+    }
+
+    /** The attributes of the feature a dig came from; undefined when that feature isn't loaded. */
+    private featureAttributes(edit: TerrainEdit): Attributes | null | undefined {
+        const featureId = digFeatureId(edit);
+        const feature = featureId ? this.ctx?.features.store.items.peek().find(f => f.id === featureId) : undefined;
+        return feature ? (feature.attributes as Attributes | null) : undefined;
+    }
+
+    /** Writes a dig's feature attributes, then re-runs its generator. */
+    private async redig(edit: TerrainEdit, attributes: Attributes, done: string): Promise<boolean> {
+        const features = this.ctx?.features;
+        const featureId = digFeatureId(edit);
+        if (!features || !featureId) return false;
+        this.saving.set(true);
+        try {
+            if (await features.update(featureId, { attributes }) === undefined) {
+                this.notice.set('Saving the feature failed.');
+                return false;
+            }
+        } finally {
+            this.saving.set(false);
+        }
+        const kind = edit.origin as DigGeneratorKind;
+        const result = await this.runGenerator(kind);
+        if (!result) return false;
+        this.notice.set(`${done}; ${GENERATOR_LABELS[kind].toLowerCase()} regenerated (${result.imported}). Apply to terrain to bake it.`);
+        return true;
     }
 
     // ── EditorTool lifecycle (called via terrain-edit-tool.ts) ─────────────
 
     activate(ctx: ToolContext, renderer: TerrainEditRenderer): void {
         this.ctx = ctx;
+        this.ctxSignal.set(ctx);
         this.renderer = renderer;
         this.notice.set(null);
 
@@ -233,7 +421,9 @@ export class TerrainEditToolService {
     deactivate(): void {
         this.state.disarm();
         this.saving.set(false);
+        this.hoveredId.set(null);
         this.ctx = null;
+        this.ctxSignal.set(null);
         this.renderer = null;
     }
 
@@ -245,6 +435,74 @@ export class TerrainEditToolService {
             return true;
         }
         return false;
+    }
+
+    // ── Naming and finding edits ────────────────────────────────────────────
+
+    /**
+     * What an edit is, for its row and map label: a dig by its feature
+     * ("Bunker · hole 3", "Pond · hole 5 · Deep Water"), the rest by kind.
+     */
+    editName(edit: TerrainEdit): string {
+        if (!edit.origin) return `${capitalize(edit.op)} (drawn)`;
+        if (edit.origin in DIG_NOUNS) {
+            const noun = DIG_NOUNS[edit.origin as DigGeneratorKind];
+            const feature = this.featureOf(edit);
+            if (!feature) return `${noun} · not on this course`;
+            const parts = [noun];
+            const hole = this.holeNumber(edit);
+            if (hole !== null) parts.push(`hole ${hole}`);
+            const preset = feature.attributes?.digPreset;
+            const table: Record<string, { label: string }> | null =
+                edit.origin === 'water-digs' ? WATER_DIG_PRESETS : edit.origin === 'creek-digs' ? CREEK_DIG_PRESETS : null;
+            if (table && typeof preset === 'string' && preset in table) parts.push(table[preset].label);
+            return parts.join(' · ');
+        }
+        if (edit.origin === 'building-pads') return 'Building pad';
+        if (edit.origin === 'road-grades') return edit.params.widthM !== undefined ? `Road grade · ${edit.params.widthM} m wide` : 'Road grade';
+        if (edit.origin.startsWith('unity-sculpt')) {
+            const terrain = edit.origin.slice('unity-sculpt'.length).replace(/^-/, '');
+            return terrain ? `Unity sculpt (${terrain})` : 'Unity sculpt';
+        }
+        return `${capitalize(edit.op)} · ${edit.origin}`;
+    }
+
+    /** Fits the map to an edit's outline. */
+    zoomTo(id: string): void {
+        const edit = this.edits.peek().find(e => e.id === id);
+        const ctx = this.ctx;
+        if (!edit || !ctx) return;
+        let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+        for (const ring of edit.rings) {
+            for (const p of ring) {
+                const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
+                w = Math.min(w, lon); e = Math.max(e, lon);
+                s = Math.min(s, lat); n = Math.max(n, lat);
+            }
+        }
+        if (Number.isFinite(w)) ctx.map.fitBounds([w, s, e, n], { maxZoom: 19 });
+    }
+
+    private groupKey(edit: TerrainEdit): string {
+        if (!edit.origin) return 'hand';
+        if (edit.origin in DIG_NOUNS) return this.featureOf(edit) ? edit.origin : 'away';
+        if (edit.origin === 'building-pads' || edit.origin === 'road-grades') return edit.origin;
+        if (edit.origin.startsWith('unity-sculpt')) return 'sculpt';
+        return 'other';
+    }
+
+    /** The (loaded) course feature a generated dig came from. */
+    private featureOf(edit: TerrainEdit): { holeId?: string | null; attributes: Attributes | null } | undefined {
+        const featureId = digFeatureId(edit);
+        if (!featureId) return undefined;
+        return this.ctxSignal.get()?.features.store.items.get().find(f => f.id === featureId) as
+            { holeId?: string | null; attributes: Attributes | null } | undefined;
+    }
+
+    private holeNumber(edit: TerrainEdit): number | null {
+        const holeId = this.featureOf(edit)?.holeId;
+        if (!holeId) return null;
+        return this.ctxSignal.get()?.courseDetail.holes.get().find(h => h.id === holeId)?.number ?? null;
     }
 
     // ── Site scoping ────────────────────────────────────────────────────────
@@ -340,10 +598,19 @@ export class TerrainEditToolService {
         }
     }
 
-    /** Delete an edit permanently. */
+    /**
+     * Delete an edit permanently. A generated dig is marked `dig: false` on
+     * its feature instead and re-dug, so the next run leaves it out too.
+     */
     async remove(id: string): Promise<void> {
         const edit = this.edits.peek().find(e => e.id === id);
         if (!edit) return;
+        if (this.editingId.peek() === id) this.editingId.set(null);
+        const attrs = this.featureAttributes(edit);
+        if (attrs !== undefined) {
+            await this.redig(edit, { ...(attrs ?? {}), dig: false }, 'Marked dig: false on the feature, so it stays out');
+            return;
+        }
         try {
             await this.editsApi.remove({ id, version: edit.version });
             this.edits.update(list => list.filter(e => e.id !== id));
@@ -471,6 +738,10 @@ export class TerrainEditToolService {
             renderer.render(ctx.map, this.view.peek());
         });
     }
+}
+
+function capitalize(text: string): string {
+    return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function message(e: unknown): string {

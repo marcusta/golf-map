@@ -49,16 +49,25 @@ def _rect(x0, y0, x1, y1):
                        {"x": E0 + x1, "y": N0 + y1}, {"x": E0 + x0, "y": N0 + y1}]}
 
 
-def _zone(zone_type, rings, weight=None, feather=0.0, noise=0.0, zone_id=None, hole=None, order=0, variant=None):
+def _zone(zone_type, rings, weight=None, feather=0.0, noise=0.0, zone_id=None, hole=None, order=0, variant=None,
+          blend=None, extras=(), generated=False):
+    """extras: (zoneType, variant, weight) per extra palette, stored as the
+    `extraPalettes` string (shared/features/zone-layers.ts)."""
     attrs = {"zoneType": zone_type, "feather": feather, "noise": noise}
     if weight is not None:
         attrs["weight"] = weight
     if variant is not None:
         attrs["zoneVariant"] = variant
+    if blend is not None:
+        attrs["blend"] = blend
+    if extras:
+        attrs["extraPalettes"] = ", ".join(t + (f"/{v}" if v else "") + (f"={w:g}" if w != 1 else "") for t, v, w in extras)
     return gspro.ZoneSpec(id=zone_id or f"z-{zone_type}-{order}", zone_type=zone_type,
                           weight=1.0 if weight is None else weight, feather=feather, noise=noise,
                           geometry={"crs": "EPSG:3006", "curveType": "bezier", "rings": rings},
-                          variant=variant or ""), attrs, hole, order
+                          variant=variant or "", blend=blend or gspro.ZONE_BLEND_REPLACE,
+                          extras=[gspro.ZonePalette(t, v, w) for t, v, w in extras],
+                          generated=generated), attrs, hole, order
 
 
 def _make_db(path, zones, types=TYPES, with_table=True, extra_features=(), with_variants=True):
@@ -159,12 +168,12 @@ def test_a_feather_is_a_ramp_centred_on_the_drawn_edge():
 
 
 def test_a_later_zone_of_another_type_claims_first_and_the_sum_never_exceeds_one():
-    """Tall rough at weight 1 drawn first, shrubs at 0.6 drawn over part of it:
+    """Among generated zones: tall rough at weight 1 first, shrubs at 0.6 over part of it:
     in the overlap the shrubs hold 0.6 and the rough keeps 0.4; where only the
     rough is, it stays 1."""
     channels, _ = _render([
-        _zone("rough_tall", [_rect(20, 20, 120, 120)], order=0),
-        _zone("shrub", [_rect(80, 80, 180, 180)], weight=0.6, order=1),
+        _zone("rough_tall", [_rect(20, 20, 120, 120)], generated=True, order=0),
+        _zone("shrub", [_rect(80, 80, 180, 180)], generated=True, weight=0.6, order=1),
     ])
     rough, shrub = channels["rough_tall"], channels["shrub"]
     assert _at(shrub, 100, 100) == pytest.approx(0.6) and _at(rough, 100, 100) == pytest.approx(0.4)
@@ -173,10 +182,10 @@ def test_a_later_zone_of_another_type_claims_first_and_the_sum_never_exceeds_one
     assert (rough + shrub).max() <= 1.0 + 1e-6
 
 
-def test_the_first_drawn_zone_keeps_nothing_where_the_later_one_is_full_weight():
+def test_the_first_generated_zone_keeps_nothing_where_the_later_one_is_full_weight():
     channels, _ = _render([
-        _zone("rough_tall", [_rect(20, 20, 120, 120)], order=0),
-        _zone("shrub", [_rect(80, 80, 180, 180)], order=1),
+        _zone("rough_tall", [_rect(20, 20, 120, 120)], generated=True, order=0),
+        _zone("shrub", [_rect(80, 80, 180, 180)], generated=True, order=1),
     ])
     assert _at(channels["shrub"], 100, 100) == pytest.approx(1.0)
     assert _at(channels["rough_tall"], 100, 100) == 0.0
@@ -184,8 +193,8 @@ def test_the_first_drawn_zone_keeps_nothing_where_the_later_one_is_full_weight()
 
 def test_zones_of_the_same_type_combine_as_a_maximum():
     channels, _ = _render([
-        _zone("shrub", [_rect(20, 20, 120, 120)], weight=0.8, order=0),
-        _zone("shrub", [_rect(80, 80, 180, 180)], weight=0.3, order=1),
+        _zone("shrub", [_rect(20, 20, 120, 120)], generated=True, weight=0.8, order=0),
+        _zone("shrub", [_rect(80, 80, 180, 180)], generated=True, weight=0.3, order=1),
     ])
     shrub = channels["shrub"]
     assert _at(shrub, 100, 100) == pytest.approx(0.8)
@@ -196,8 +205,8 @@ def test_a_ramp_over_another_type_crossfades_with_a_constant_total():
     """A feathered shrub zone over full-weight rough: across the feather the
     rough gives up exactly what the shrubs take."""
     channels, _ = _render([
-        _zone("rough_tall", [_rect(0, 0, 200, 200)], order=0),
-        _zone("shrub", [_rect(50, 50, 150, 150)], feather=20.0, order=1),
+        _zone("rough_tall", [_rect(0, 0, 200, 200)], generated=True, order=0),
+        _zone("shrub", [_rect(50, 50, 150, 150)], generated=True, feather=20.0, order=1),
     ])
     total = channels["rough_tall"] + channels["shrub"]
     assert np.allclose(total, 1.0, atol=1e-5)
@@ -239,8 +248,8 @@ def test_a_variant_zone_lands_in_its_own_slot_under_the_same_budget():
     """Default rough drawn first, its Dry variant at 0.6 over part of it: two
     slots, and the later one claims first exactly as another type would."""
     channels, _ = _render([
-        _zone("rough_tall", [_rect(20, 20, 120, 120)], order=0),
-        _zone("rough_tall", [_rect(80, 80, 180, 180)], weight=0.6, order=1, variant="dry"),
+        _zone("rough_tall", [_rect(20, 20, 120, 120)], generated=True, order=0),
+        _zone("rough_tall", [_rect(80, 80, 180, 180)], generated=True, weight=0.6, order=1, variant="dry"),
     ])
     assert set(channels) == {"rough_tall", "rough_tall/dry"}
     default, dry = channels["rough_tall"], channels["rough_tall/dry"]
@@ -248,6 +257,76 @@ def test_a_variant_zone_lands_in_its_own_slot_under_the_same_budget():
     assert _at(default, 40, 40) == pytest.approx(1.0) and _at(dry, 40, 40) == 0.0
     assert _at(dry, 160, 160) == pytest.approx(0.6) and _at(default, 160, 160) == 0.0
     assert (default + dry).max() <= 1.0 + 1e-6
+
+
+def test_a_mix_zone_grows_over_the_zone_below_without_taking_its_share():
+    """A pond's palette over the whole pond, reeds mixed over part of it:
+    in the overlap both are at full weight; outside it the pond is alone."""
+    channels, _ = _render([
+        _zone("meadow", [_rect(20, 20, 180, 180)], order=0),
+        _zone("shrub", [_rect(80, 80, 140, 140)], weight=0.7, order=1, blend="mix"),
+    ])
+    meadow, shrub = channels["meadow"], channels["shrub"]
+    assert _at(meadow, 100, 100) == pytest.approx(1.0) and _at(shrub, 100, 100) == pytest.approx(0.7)
+    assert _at(meadow, 40, 40) == pytest.approx(1.0) and _at(shrub, 40, 40) == 0.0
+
+
+def test_a_feathered_mix_zone_fades_in_over_the_zone_below_which_stays_whole():
+    channels, _ = _render([
+        _zone("rough_tall", [_rect(0, 0, 200, 200)], order=0),
+        _zone("shrub", [_rect(50, 50, 150, 150)], feather=20.0, order=1, blend="mix"),
+    ])
+    assert np.allclose(channels["rough_tall"], 1.0)
+    row = channels["shrub"][SIZE - 1 - 100]
+    assert 0.6 < row[147] < 0.9 and 0.1 < row[153] < 0.45  # the same ramp a replace zone gets
+
+
+def test_a_replace_zone_above_a_mix_zone_still_cuts_it():
+    channels, _ = _render([
+        _zone("rough_tall", [_rect(0, 0, 200, 200)], generated=True, order=0),
+        _zone("shrub", [_rect(20, 20, 180, 180)], generated=True, order=1, blend="mix"),
+        _zone("meadow", [_rect(80, 80, 120, 120)], generated=True, order=2),
+    ])
+    assert _at(channels["meadow"], 100, 100) == pytest.approx(1.0)
+    assert _at(channels["shrub"], 100, 100) == 0.0 and _at(channels["rough_tall"], 100, 100) == 0.0
+    assert _at(channels["shrub"], 40, 40) == pytest.approx(1.0) and _at(channels["rough_tall"], 40, 40) == pytest.approx(1.0)
+
+
+def test_a_zone_plants_its_extra_palettes_on_its_own_footprint_at_their_weight():
+    """Tall rough with rocks (shrub here) at 0.4 and the Dry variant at full
+    weight, all in one zone at weight 0.5 with a feather: every palette
+    follows the zone's ramp, scaled by its factor."""
+    channels, _ = _render([
+        _zone("rough_tall", [_rect(50, 50, 150, 150)], weight=0.5, feather=20.0,
+              extras=[("shrub", "", 0.4), ("rough_tall", "dry", 1.0)]),
+    ])
+    rough, shrub, dry = channels["rough_tall"], channels["shrub"], channels["rough_tall/dry"]
+    assert _at(rough, 100, 100) == pytest.approx(0.5)
+    assert _at(shrub, 100, 100) == pytest.approx(0.2) and _at(dry, 100, 100) == pytest.approx(0.5)
+    assert np.allclose(shrub, rough * 0.4, atol=1e-6) and np.allclose(dry, rough, atol=1e-6)
+
+
+def test_extra_palettes_do_not_take_ground_from_the_zones_below_but_the_primary_does():
+    channels, _ = _render([
+        _zone("meadow", [_rect(0, 0, 200, 200)], order=0, generated=True),
+        _zone("rough_tall", [_rect(50, 50, 150, 150)], weight=0.6, order=1, extras=[("shrub", "", 1.0)]),
+    ])
+    assert _at(channels["rough_tall"], 100, 100) == pytest.approx(0.6)
+    assert _at(channels["shrub"], 100, 100) == pytest.approx(0.6)
+    assert _at(channels["meadow"], 100, 100) == pytest.approx(0.4)  # only the primary's 0.6 came out of it
+
+
+def test_an_item_in_a_mix_zone_and_the_zone_below_sums_its_densities():
+    items = gspro.zone_items(_types([
+        ("pond", [_item("Sedge", 0.5)], []),
+        ("reeds", [_item("Sedge", 0.3), _item("Reed")], []),
+    ]))
+    channels, _ = _render([
+        _zone("pond", [_rect(0, 0, 200, 200)], order=0),
+        _zone("reeds", [_rect(50, 50, 150, 150)], order=1, blend="mix"),
+    ])
+    sedge = gspro.zone_item_density(items[0], channels, SIZE)
+    assert _at(sedge, 100, 100) == pytest.approx(0.8) and _at(sedge, 20, 20) == pytest.approx(0.5)
 
 
 def _types(rows):
@@ -347,7 +426,8 @@ def test_command_writes_one_channel_per_item_and_the_unity_zones_v2_json(tmp_pat
     # The overlap: Dry (drawn later) claims 0.5, the Default keeps 0.5. Tall grass is bound by
     # both, so its ONE channel carries the sum 0.5 × 1.0 + 0.5 × 0.4 = 0.7; Straw only Dry's 0.5.
     px = _px(im0, 100, 100)
-    assert _near(px[TALL], 0.7) and _near(px[STRAW], 0.5) and px[CLOVER] == 0 and px[HAZEL] == 0
+    # Two drawn zones add up: Default rough 1 + Dry 0.5 x 0.4 (clipped), and Dry's straw.
+    assert px[TALL] == 255 and _near(px[STRAW], 0.5) and px[CLOVER] == 0 and px[HAZEL] == 0
     # Only Dry: Tall grass 0.5 × 0.4, Straw 0.5.
     px = _px(im0, 160, 160)
     assert _near(px[TALL], 0.2) and _near(px[STRAW], 0.5) and px[CLOVER] == 0 and px[HAZEL] == 0
@@ -359,7 +439,8 @@ def test_command_writes_one_channel_per_item_and_the_unity_zones_v2_json(tmp_pat
     assert list(zones) == ["z-rough_tall-0", "z-rough_tall-1", "z-meadow-0"]  # editor stack (D28): hole 1, then course-level on top
     assert zones["z-rough_tall-0"]["variant"] == "" and zones["z-meadow-0"]["variant"] == ""
     dry = zones["z-rough_tall-1"]
-    assert list(dry) == ["id", "zoneType", "variant", "weight", "feather", "noise", "rings"]
+    assert list(dry) == ["id", "zoneType", "variant", "weight", "feather", "noise", "blend", "extraPalettes", "rings"]
+    assert dry["blend"] == "replace" and dry["extraPalettes"] == []
     assert dry["zoneType"] == "rough_tall" and dry["variant"] == "dry"
     assert dry["weight"] == 0.5 and dry["feather"] == 2.0 and dry["noise"] == 0.0
     nodes = {(n["x"], n["z"]) for n in dry["rings"][0]["nodes"]}
@@ -476,6 +557,34 @@ def test_unknown_zone_types_are_skipped_with_a_warning_and_other_feature_types_i
     assert "2 skipped (unknown zone type)" in report
 
 
+def test_blend_and_extra_palettes_are_read_checked_and_exported(tmp_path, capsys):
+    out, doc = _run(tmp_path, [
+        _zone("meadow", [_rect(20, 20, 180, 180)], order=0,
+              extras=[("rough_tall", "dry", 0.5), ("nope", "", 1.0), ("shrub", "gone", 1.0)]),
+        _zone("shrub", [_rect(80, 80, 140, 140)], order=1, blend="mix"),
+    ])
+    meadow, shrub = doc["zones"]
+    assert meadow["blend"] == "replace" and shrub["blend"] == "mix"
+    assert meadow["extraPalettes"] == [{"zoneType": "rough_tall", "variant": "dry", "weight": 0.5},
+                                       {"zoneType": "shrub", "variant": "", "weight": 1.0}]
+    report = capsys.readouterr().out
+    assert "1 extra palette(s) with zone type 'nope' not in the course's table; skipped" in report
+    assert "1 zone(s) of zone type 'shrub' with variant 'gone' not in its variants; using its Default mix" in report
+    assert "1 zone(s) mix over the zones below them, 2 extra palette(s) on zone footprints" in report
+    straw = next(m for m in doc["masks"] if "Straw" in m["channels"])
+    png = np.asarray(Image.open(out.with_name(straw["file"])))[..., straw["channels"].index("Straw")]
+    assert png[SIZE - 1 - 100, 100] == 128  # Dry's Straw at 1.0 x the extra's 0.5
+
+
+def test_extra_palettes_parse_the_shared_string_format_and_skip_what_does_not(capsys):
+    assert gspro._zone_extra_palettes(" shrub/rocks=0.4, fern ,, meadow=0 ", "z") == [
+        gspro.ZonePalette("shrub", "rocks", 0.4), gspro.ZonePalette("fern", "", 1.0), gspro.ZonePalette("meadow", "", 0.0)]
+    assert gspro._zone_extra_palettes("Fern, shrub=2, fern", "z") == [gspro.ZonePalette("fern", "", 1.0)]
+    assert gspro._zone_extra_palettes(None, "z") == [] and gspro._zone_extra_palettes(["fern"], "z") == []
+    report = capsys.readouterr().out
+    assert "zone z: extra palette 'Fern' is not" in report and "zone z: extra palette 'shrub=2' is not" in report
+
+
 def test_attribute_defaults_and_clamping(tmp_path):
     db = tmp_path / "app.sqlite"
     spec, attrs, hole, order = _zone("shrub", [_rect(20, 20, 80, 80)])
@@ -526,3 +635,272 @@ def test_cli(tmp_path):
     assert doc["masks"][0]["file"] == "vreta-inner-zones-0.png" and doc["masks"][0]["resolution"] == 100
     assert Image.open(tmp_path / "vreta-inner-zones-0.png").size == (100, 100)
     assert (tmp_path / "vreta-inner-zones-1.png").exists()
+
+
+def test_hand_drawn_creek_bank_zones_near_water_are_creek_sections_the_rest_plant(tmp_path, capsys):
+    """A hand-drawn creek_bank zone within a creek's bank reach (4.5 m) + 10 m
+    of it picks that creek's bank palette (creek_bank_zones.py plants it) and
+    is left out of the masks; one away from any creek or water plants its
+    palette like any zone. Generated creek-bank zones always plant."""
+    types = TYPES + [("creek_bank", "Creek bank", "#5f8a4a", 1, 1, 4, [_item("Creek grass")], [])]
+    db = tmp_path / "app.sqlite"
+    _make_db(db, [_zone("shrub", [_rect(20, 20, 80, 80)], order=0)], types=types)
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE course_features ADD COLUMN generated INTEGER NOT NULL DEFAULT 0")
+    geom = lambda r: json.dumps({"crs": "EPSG:3006", "curveType": "bezier", "rings": [r]})
+    attrs = json.dumps({"zoneType": "creek_bank", "feather": 0, "noise": 0})
+    # A creek along x = 190..195; `near` stops 10 m short of it, `far` is 100 m away.
+    conn.execute("INSERT INTO course_features VALUES ('creek', ?, NULL, 'water_creek', ?, 0, NULL, 0)",
+                 (COURSE, geom(_rect(190, 0, 195, 200))))
+    conn.execute("INSERT INTO course_features VALUES ('near', ?, NULL, 'vegetation_zone', ?, 1, ?, 0)",
+                 (COURSE, geom(_rect(100, 100, 180, 180)), attrs))
+    conn.execute("INSERT INTO course_features VALUES ('far', ?, NULL, 'vegetation_zone', ?, 2, ?, 0)",
+                 (COURSE, geom(_rect(20, 120, 90, 190)), attrs))
+    conn.execute("INSERT INTO course_features VALUES ('gen', ?, NULL, 'vegetation_zone', ?, 3, ?, 1)",
+                 (COURSE, geom(_rect(100, 20, 180, 80)), attrs))
+    conn.commit()
+    conn.close()
+    out = tmp_path / "zones.json"
+    gspro.cmd_zones(None, db, "Zonbana", _sidecar(tmp_path / "inner.tif.json"), out, extent=EXTENT, resolution=SIZE)
+    doc = json.loads(out.read_text())
+    assert sorted(z["id"] for z in doc["zones"]) == ["far", "gen", "z-shrub-0"]
+    assert "1 creek section(s) (hand-drawn creek_bank zones near a creek or water) not rasterized" in capsys.readouterr().out
+    creek = next(m for m in doc["masks"] if "Creek grass" in m["channels"])
+    png = np.asarray(Image.open(out.with_name(creek["file"])))[..., creek["channels"].index("Creek grass")]
+    assert png[SIZE - 1 - 150, 50] == 255 and png[SIZE - 1 - 140, 140] == 0
+
+
+# --- zones-patch -------------------------------------------------------------
+
+def test_a_window_render_is_exactly_that_part_of_the_full_render():
+    zones = [z for z, *_ in [
+        _zone("rough_tall", [_rect(0, 0, 200, 200)], feather=6.0, noise=2.0, order=0, generated=True),
+        _zone("shrub", [_rect(40, 40, 130, 120)], feather=10.0, order=1, extras=[("fern", "", 0.5)]),
+        _zone("meadow", [_rect(90, 60, 170, 150)], weight=0.7, feather=4.0, noise=3.0, order=2, blend="mix"),
+    ]]
+    full, _ = gspro.render_zone_masks(zones, EXTENT, SIZE, seed=3, exclude=(E0 + 150, N0 + 0, E0 + 200, N0 + 30))
+    window = (37, 121, 55, 181)
+    part, _ = gspro.render_zone_masks(zones, EXTENT, SIZE, seed=3, exclude=(E0 + 150, N0 + 0, E0 + 200, N0 + 30),
+                                      window=window)
+    y0, y1, x0, x1 = window
+    assert set(part) == set(full)
+    for slot in full:
+        assert np.array_equal(part[slot], full[slot][y0:y1, x0:x1]), slot
+
+
+def _set_zone(db, zone_id, attrs=None, rings=None, delete=False):
+    conn = sqlite3.connect(db)
+    if delete:
+        conn.execute("DELETE FROM course_features WHERE id = ?", (zone_id,))
+    if attrs is not None:
+        conn.execute("UPDATE course_features SET attributes_json = ? WHERE id = ?", (json.dumps(attrs), zone_id))
+    if rings is not None:
+        conn.execute("UPDATE course_features SET geometry_json = ? WHERE id = ?",
+                     (json.dumps({"crs": "EPSG:3006", "curveType": "bezier", "rings": rings}), zone_id))
+    conn.commit()
+    conn.close()
+
+
+def _masks(out, doc):
+    return [np.asarray(Image.open(out.with_name(m["file"]))) for m in doc["masks"]]
+
+
+BASE_ZONES = [
+    _zone("rough_tall", [_rect(0, 0, 200, 200)], feather=4.0, noise=2.0, zone_id="base", order=0),
+    _zone("shrub", [_rect(20, 20, 70, 70)], feather=6.0, zone_id="a", order=1),
+    _zone("meadow", [_rect(120, 120, 180, 180)], feather=2.0, zone_id="b", order=2),
+    _zone("rough_tall", [_rect(130, 20, 180, 60)], variant="dry", zone_id="c", order=3),
+]
+
+
+def test_a_patch_of_the_edited_zones_gives_exactly_the_full_export(tmp_path, capsys):
+    out, doc = _run(tmp_path, BASE_ZONES, seed=5)
+    db = tmp_path / "app.sqlite"
+    # a moves (the old spot must clear), b now mixes and plants ferns too, c is deleted,
+    # d is new; `base` is untouched and not selected.
+    _set_zone(db, "a", rings=[_rect(40, 30, 95, 85)])
+    _set_zone(db, "b", attrs={"zoneType": "meadow", "feather": 2.0, "noise": 0.0, "blend": "mix", "extraPalettes": "shrub=0.5"})
+    _set_zone(db, "c", delete=True)
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO course_features VALUES (?, ?, NULL, 'vegetation_zone', ?, 9, ?)",
+                 ("d", COURSE, json.dumps({"crs": "EPSG:3006", "curveType": "bezier", "rings": [_rect(10, 150, 40, 190)]}),
+                  json.dumps({"zoneType": "shrub", "feather": 3.0, "noise": 1.0})))
+    conn.commit()
+    conn.close()
+    before_json = json.loads(out.read_text())
+
+    record = gspro.cmd_zones_patch(db, "Zonbana", out, ["a", "b", "d"], tmp_path / "patch.json")
+    patched = _masks(out, doc)
+    patched_doc = json.loads(out.read_text())
+    assert record["changed"] and record["removed"] == ["c"] and record["zones"] == ["a", "b", "d"]
+    assert json.loads((tmp_path / "patch.json").read_text()) == record
+    assert "Patched zones.json: 3 zone(s), 1 removed" in capsys.readouterr().out
+
+    fresh_dir = tmp_path / "fresh"
+    fresh_dir.mkdir()
+    sidecar = _sidecar(tmp_path / "inner.tif.json")
+    gspro.cmd_zones(None, db, "Zonbana", sidecar, fresh_dir / "zones.json", extent=EXTENT, resolution=SIZE, seed=5)
+    fresh_doc = json.loads((fresh_dir / "zones.json").read_text())
+    for a, b in zip(patched, _masks(fresh_dir / "zones.json", fresh_doc)):
+        assert np.array_equal(a, b)
+    # The rows follow the course: a and b updated, c gone, d added, base kept as exported.
+    assert patched_doc["zones"] == fresh_doc["zones"]
+    assert patched_doc["zones"][0] == before_json["zones"][0]
+    # The region (plot-local metres) covers a's old and new spot, b, c's old spot and d.
+    r = record["region"]
+    assert r["x0"] <= 7 and r["z0"] <= 17 and r["x1"] >= 181 and r["z1"] >= 191
+
+
+def test_a_patch_that_changes_nothing_rewrites_nothing(tmp_path):
+    out, doc = _run(tmp_path, BASE_ZONES)
+    files = [out] + [out.with_name(m["file"]) for m in doc["masks"]]
+    stamps = [f.stat().st_mtime_ns for f in files]
+    record = gspro.cmd_zones_patch(tmp_path / "app.sqlite", "Zonbana", out, ["a"])
+    assert record["changed"] is False and record["textures"] == [] and record["window"] is not None
+    assert [f.stat().st_mtime_ns for f in files] == stamps
+
+
+def test_a_square_the_zones_do_not_reach_needs_no_layout_check(tmp_path, capsys):
+    """The outer terrain's export is often older than the zone types (planting
+    refreshes the inner one): zones inside the excluded inner square, or off
+    the square, patch nothing there instead of failing on the old layout."""
+    inner = (E0 + 10, N0 + 10, E0 + 100, N0 + 100)
+    out, _ = _run(tmp_path, BASE_ZONES, exclude=inner)
+    conn = sqlite3.connect(tmp_path / "app.sqlite")
+    conn.execute("UPDATE course_zone_types SET items_json = ? WHERE key = 'shrub'", (json.dumps([_item("Hazel bush", 0.5)]),))
+    conn.commit()
+    conn.close()
+    record = gspro.cmd_zones_patch(tmp_path / "app.sqlite", "Zonbana", out, ["a"], exclude=inner)
+    assert record["changed"] is False and record["window"] is None
+    assert "Nothing to patch" in capsys.readouterr().out
+    with pytest.raises(gspro.ZonesLayoutChanged):   # b is outside the inner square
+        gspro.cmd_zones_patch(tmp_path / "app.sqlite", "Zonbana", out, ["b"], exclude=inner)
+
+
+def test_a_patch_only_rewrites_the_textures_whose_items_changed(tmp_path):
+    out, doc = _run(tmp_path, BASE_ZONES)
+    meadow_png = out.with_name(doc["masks"][1]["file"])
+    stamp = meadow_png.stat().st_mtime_ns
+    _set_zone(tmp_path / "app.sqlite", "a", attrs={"zoneType": "shrub", "feather": 6.0, "noise": 0.0, "weight": 0.5})
+    record = gspro.cmd_zones_patch(tmp_path / "app.sqlite", "Zonbana", out, ["a"])
+    assert record["textures"] == [doc["masks"][0]["file"]]  # Hazel bush lives in texture 0; meadow's untouched
+    assert meadow_png.stat().st_mtime_ns == stamp
+
+
+def test_a_patch_stops_when_the_item_bindings_changed(tmp_path, capsys):
+    out, _ = _run(tmp_path, BASE_ZONES)
+    conn = sqlite3.connect(tmp_path / "app.sqlite")
+    conn.execute("UPDATE course_zone_types SET items_json = ? WHERE key = 'shrub'",
+                 (json.dumps([_item("Hazel bush", 0.5, 0.2)]),))
+    conn.commit()
+    conn.close()
+    with pytest.raises(gspro.ZonesLayoutChanged) as e:
+        gspro.cmd_zones_patch(tmp_path / "app.sqlite", "Zonbana", out, ["a"])
+    assert e.value.code == gspro.ZONES_LAYOUT_CHANGED_EXIT
+    assert "item bindings changed" in capsys.readouterr().err
+
+
+def test_a_patch_on_the_outer_square_leaves_the_inner_square_out(tmp_path):
+    inner = (E0 + 50, N0 + 50, E0 + 150, N0 + 150)
+    out, doc = _run(tmp_path, BASE_ZONES, exclude=inner)
+    _set_zone(tmp_path / "app.sqlite", "a", rings=[_rect(30, 30, 120, 120)])
+    gspro.cmd_zones_patch(tmp_path / "app.sqlite", "Zonbana", out, ["a"], exclude=inner)
+    hazel = _masks(out, doc)[0][..., 3]
+    assert hazel[SIZE - 1 - 40, 40] > 0 and hazel[SIZE - 1 - 100, 100] == 0
+
+
+def test_zones_patch_cli(tmp_path):
+    out, _ = _run(tmp_path, BASE_ZONES)
+    _set_zone(tmp_path / "app.sqlite", "b", delete=True)
+    code = gspro.main(["zones-patch", "--db", str(tmp_path / "app.sqlite"), "--course", "Zonbana",
+                       "--zones-json", str(out), "--ids", "b", "--result", str(tmp_path / "r.json")])
+    record = json.loads((tmp_path / "r.json").read_text())
+    assert code == 0 and record["format"] == "unity-zones-patch-v1" and record["removed"] == ["b"]
+    assert record["textures"] == ["zones-1.png"]  # drawn zones take nothing from each other: the rough stays
+
+
+# --- drawn over generated (D-VZ14) --------------------------------------------
+
+def test_drawn_zones_add_up_whatever_their_order():
+    """Two drawn replace zones of different palettes over each other: both at
+    full weight in the overlap, and swapping their order changes nothing."""
+    a = _zone("shrub", [_rect(20, 20, 120, 120)], order=0)
+    b = _zone("meadow", [_rect(80, 80, 180, 180)], weight=0.6, order=1)
+    one, _ = _render([a, b])
+    two, _ = _render([b, a])
+    assert _at(one["shrub"], 100, 100) == pytest.approx(1.0) and _at(one["meadow"], 100, 100) == pytest.approx(0.6)
+    for slot in one:
+        assert np.array_equal(one[slot], two[slot])
+
+
+def test_a_drawn_replace_zone_takes_its_ground_from_the_generated_fill_even_below_it_in_the_stack():
+    channels, _ = _render([
+        _zone("shrub", [_rect(50, 50, 150, 150)], weight=0.7, order=0),                     # drawn, lower in the stack
+        _zone("rough_tall", [_rect(0, 0, 200, 200)], order=1, generated=True),              # generated, on top
+    ])
+    assert _at(channels["shrub"], 100, 100) == pytest.approx(0.7)
+    assert _at(channels["rough_tall"], 100, 100) == pytest.approx(0.3)
+    assert _at(channels["rough_tall"], 20, 20) == pytest.approx(1.0)
+
+
+def test_a_drawn_mix_zone_adds_to_the_generated_fill():
+    channels, _ = _render([
+        _zone("rough_tall", [_rect(0, 0, 200, 200)], order=1, generated=True),
+        _zone("shrub", [_rect(50, 50, 150, 150)], order=0, blend="mix"),
+    ])
+    assert _at(channels["shrub"], 100, 100) == pytest.approx(1.0)
+    assert _at(channels["rough_tall"], 100, 100) == pytest.approx(1.0)
+
+
+def test_overlapping_drawn_zones_take_the_generated_ground_once_not_twice():
+    """Two drawn replace zones at 0.5 over the same spot claim 0.5 of the
+    generated fill between them (the larger of the two), not all of it."""
+    channels, _ = _render([
+        _zone("rough_tall", [_rect(0, 0, 200, 200)], generated=True),
+        _zone("shrub", [_rect(50, 50, 150, 150)], weight=0.5, order=1),
+        _zone("meadow", [_rect(50, 50, 150, 150)], weight=0.5, order=2),
+    ])
+    assert _at(channels["rough_tall"], 100, 100) == pytest.approx(0.5)
+    assert _at(channels["shrub"], 100, 100) == pytest.approx(0.5) and _at(channels["meadow"], 100, 100) == pytest.approx(0.5)
+
+
+def test_a_generator_rerun_is_matched_by_content_and_only_what_changed_is_patched(tmp_path, capsys):
+    """A re-run generator replaces its zones with new ids. The ones that come
+    back the same are renamed in the zones JSON and patch nothing; the one
+    whose palette changed (a creek section picked another one) is patched in
+    with the selected zone, and the masks equal a full export."""
+    out, doc = _run(tmp_path, BASE_ZONES)
+    db = tmp_path / "app.sqlite"
+    conn = sqlite3.connect(db)
+    # "Regenerate" b and c: delete them, insert copies under new ids, c with another variant.
+    for old, new, attrs in [
+        ("b", "b2", {"zoneType": "meadow", "feather": 2.0, "noise": 0.0}),
+        ("c", "c2", {"zoneType": "rough_tall", "zoneVariant": "lush", "feather": 0.0, "noise": 0.0}),
+    ]:
+        geometry, order = conn.execute("SELECT geometry_json, sort_order FROM course_features WHERE id = ?", (old,)).fetchone()
+        conn.execute("DELETE FROM course_features WHERE id = ?", (old,))
+        conn.execute("INSERT INTO course_features VALUES (?, ?, NULL, 'vegetation_zone', ?, ?, ?)",
+                     (new, COURSE, geometry, order, json.dumps(attrs)))
+    conn.commit()
+    conn.close()
+    stamps = {m["file"]: out.with_name(m["file"]).stat().st_mtime_ns for m in doc["masks"]}
+
+    record = gspro.cmd_zones_patch(db, "Zonbana", out, ["a"])
+    assert record["renamed"] == 1 and record["removed"] == ["c"] and record["zones"] == ["a", "c2"]
+    assert record["textures"] == ["zones-0.png"]    # c's rough -> lush; b (meadow, texture 1) came back the same
+    assert out.with_name("zones-1.png").stat().st_mtime_ns == stamps["zones-1.png"]
+    assert "1 zone(s) unchanged under a new id" in capsys.readouterr().out
+    patched_doc = json.loads(out.read_text())
+    assert [z["id"] for z in patched_doc["zones"]] == ["base", "a", "b2", "c2"]
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    gspro.cmd_zones(None, db, "Zonbana", _sidecar(tmp_path / "inner.tif.json"), fresh / "zones.json", extent=EXTENT, resolution=SIZE)
+    fresh_doc = json.loads((fresh / "zones.json").read_text())
+    for a, b in zip(_masks(out, doc), _masks(fresh / "zones.json", fresh_doc)):
+        assert np.array_equal(a, b)
+    assert patched_doc["zones"] == fresh_doc["zones"]
+
+    # Nothing changed since: the next patch finds nothing, and names no ghosts.
+    again = gspro.cmd_zones_patch(db, "Zonbana", out, ["a"])
+    assert again["changed"] is False and again["removed"] == [] and again["renamed"] == 0

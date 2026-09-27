@@ -53,7 +53,11 @@ Operations (D-TE3, two only in v1):
   ``reference: stream`` is a creek's water surface, falling downstream
   (creeks.surface_profile along the edit's ``centerline``, else the line
   down its polygon); each cell digs below the surface at its nearest
-  station, with the same bank taper as ``level``.
+  station. The outline is the water's edge: inside it everything goes
+  below the surface, the bank steepened (up to 60°) where the creek is too
+  narrow for ``bankSlopeDeg`` to reach ``depthM`` by its line; outside it
+  the bank above the water comes down to the surface at the outline over
+  ``rimM`` (the one dig that changes cells outside its polygon).
 - ``delta`` — heights ADDED from a raster (``raster``: a float32 EPSG:3006
   GeoTIFF of metres, bilinear at each cell centre, 0 outside it): a Unity
   sculpt layer (golfpipe/sculpt.py). No feather — the layer carries its own
@@ -114,6 +118,11 @@ DEFAULT_DIG_RIM_M = 2.0
 # Water level from the in-polygon rim: a low percentile, so bank cells a
 # generously drawn outline takes in don't lift it.
 DIG_LEVEL_PERCENTILE = 25.0
+# A creek's bank is aimed at this many times its depth by its line, so the
+# toe's rounding still leaves the full depth there; never steeper than
+# STREAM_MAX_BANK_DEG (a creek a cell or two wide stays shallower).
+STREAM_THALWEG_REACH = 2.0
+STREAM_MAX_BANK_DEG = 60.0
 # A plane fit over fewer valid cells than this is meaningless noise — skip.
 MIN_PLANE_CELLS = 16
 OUTLIER_SIGMA = 2.0
@@ -478,6 +487,9 @@ def _apply_one(
         weight = np.clip(distances / edit.feather_m, 0.0, 1.0)
     else:
         weight = mask_win.astype(np.float64)
+    if edit.op == "dig":
+        # A creek's bank is shaped outside its outline (digs never fill).
+        weight = np.where(~mask_win & (target < cur_win), 1.0, weight)
     # Nodata cells (and cells the op could not produce a value for) get zero
     # weight, and their target is pinned to the original so w=0 cells come
     # back bit-identical (no 0·nan poisoning).
@@ -692,16 +704,14 @@ def _dig_target(
         slope = np.degrees(np.arctan(np.tan(np.radians(slope)) / wobble))
         shelf = shelf * wobble
 
-    if edit.reference in ("level", "stream"):
-        if edit.reference == "level":
-            rim = inside & (d <= edit.rim_m)
-            if not rim.any():
-                rim = inside
-            level = float(np.percentile(cur_win[rim], DIG_LEVEL_PERCENTILE))
-        else:
-            level = _stream_levels(cur_win, valid_win, mask_win, transform, r0, c0, xs, ys, d, edit, label, log)
-            if level is None:
-                return None
+    if edit.reference == "stream":
+        return _stream_target(cur_win, valid_win, mask_win, transform, r0, c0, rows, cols, xs, ys, d, cell,
+                              slope, shelf, edit, label, log)
+    if edit.reference == "level":
+        rim = inside & (d <= edit.rim_m)
+        if not rim.any():
+            rim = inside
+        level = float(np.percentile(cur_win[rim], DIG_LEVEL_PERCENTILE))
         # An outline drawn a little generously takes in bank above the water:
         # those cells come down to the level over the rim band instead of being
         # cut to it at the outline (a wall at the shore).
@@ -732,27 +742,87 @@ def _dig_target(
     return target
 
 
-def _stream_levels(
+def _stream_target(
     cur_win: np.ndarray,
     valid_win: np.ndarray,
     mask_win: np.ndarray,
     transform: "rasterio.Affine",
     r0: int,
     c0: int,
+    rows: np.ndarray,
+    cols: np.ndarray,
     xs: np.ndarray,
     ys: np.ndarray,
     d: np.ndarray,
+    cell: float,
+    slope: np.ndarray,
+    shelf: np.ndarray,
     edit: DemEdit,
     label: str,
     log,
 ) -> np.ndarray | None:
-    """Per in-mask cell (in `xs`/`ys` order): the creek's water surface at
-    its nearest station (creeks.surface_profile over the pre-edit heights),
-    along the edit's centerline, else the line down its polygon."""
+    """A creek bed below its water surface (creeks.surface_profile over the
+    pre-edit heights, along the edit's centerline, else the line down its
+    polygon; each cell at its nearest station). The outline is the water's
+    edge: inside it everything is dug below the surface, the bank steepened
+    where the creek is too narrow for `bankSlopeDeg` to reach `depthM` by its
+    line; outside it the bank above the water comes down to the surface at
+    the outline over `rimM` (a smoothstep, only ever lowering)."""
+    import shapely
     from scipy.spatial import cKDTree
+
+    from golfpipe.creeks import surface_profile
+
+    line, width = _stream_line(mask_win, d, edit, label, log)
+    if line is None:
+        return None
+    win_transform = transform * rasterio.Affine.translation(c0, r0)
+    profile = surface_profile(cur_win, win_transform, np.asarray(line), width, valid=valid_win)
+    if profile is None:
+        log(f"warning: {label}: the creek line crosses no valid cells — skipped")
+        return None
+    stations = cKDTree(np.column_stack([profile.x, profile.y]))
+    target = cur_win.copy()
+
+    # Inside: the local half-width is the way in from the outline plus the
+    # way on to the line; a bank aimed at STREAM_THALWEG_REACH × the depth by
+    # the line leaves the full depth there after the toe's rounding.
+    level = profile.z[stations.query(np.column_stack([xs, ys]))[1]]
+    to_line = shapely.distance(shapely.LineString(line), shapely.points(xs, ys))
+    din = d[rows, cols]
+    half = np.maximum(din + to_line, cell)
+    tan = np.maximum(np.tan(np.radians(slope)), STREAM_THALWEG_REACH * edit.depth_m / half)
+    tan = np.minimum(tan, np.tan(np.radians(STREAM_MAX_BANK_DEG)))
+    drop = dig_drop(din, edit.depth_m, np.degrees(np.arctan(tan)), shelf, edit.shelf_depth_m)
+    target[rows, cols] = np.minimum(cur_win[rows, cols], level - drop)
+
+    # Outside: the bank down to the water's edge.
+    cell_y, cell_x = abs(transform.e), abs(transform.a)
+    dout = np.maximum(distance_transform_edt(~mask_win, sampling=(cell_y, cell_x)) - cell / 2.0, 0.0)
+    band = ~mask_win & valid_win & (dout <= edit.rim_m)
+    brows, bcols = np.nonzero(band)
+    if len(brows):
+        bx, by = rasterio.transform.xy(transform, brows + r0, bcols + c0)
+        blevel = profile.z[stations.query(np.column_stack([bx, by]))[1]]
+        t = np.clip(dout[brows, bcols] / edit.rim_m, 0.0, 1.0)
+        rise = t * t * (3 - 2 * t)
+        ground = cur_win[brows, bcols]
+        target[brows, bcols] = np.where(ground > blevel, blevel + (ground - blevel) * rise, ground)
+    return target
+
+
+def _stream_line(
+    mask_win: np.ndarray,
+    d: np.ndarray,
+    edit: DemEdit,
+    label: str,
+    log,
+) -> tuple[list[list[float]] | None, float]:
+    """The creek's line and width: the edit's centerline, else the line down
+    its polygon."""
     from shapely.geometry import shape
 
-    from golfpipe.creeks import ribbon_centerline, surface_profile
+    from golfpipe.creeks import ribbon_centerline
 
     line = edit.centerline
     width = edit.width_m
@@ -760,18 +830,12 @@ def _stream_levels(
         found = ribbon_centerline(shape(edit.geometry))
         if found is None:
             log(f"warning: {label}: no line down this creek polygon — skipped")
-            return None
+            return None, 0.0
         line = [list(p) for p in found[0].coords]
         width = width or found[1]
     if not width:
         width = 2.0 * float(d[mask_win].max())
-    win_transform = transform * rasterio.Affine.translation(c0, r0)
-    profile = surface_profile(cur_win, win_transform, np.asarray(line), width, valid=valid_win)
-    if profile is None:
-        log(f"warning: {label}: the creek line crosses no valid cells — skipped")
-        return None
-    _, station = cKDTree(np.column_stack([profile.x, profile.y])).query(np.column_stack([xs, ys]))
-    return profile.z[station]
+    return line, width
 
 
 def _delta_target(

@@ -62,6 +62,18 @@ export function isRulesType(type: string): boolean {
     return (RULES_TYPES as readonly string[]).includes(type);
 }
 
+/**
+ * The vegetation zones — Unity planting input, not playing surfaces. Drawn
+ * and edited in Vegetation mode (the draw engine in its `vegetation` scope)
+ * and hidden everywhere else: off the map, out of hit tests, the type picker
+ * and the stack.
+ */
+export const VEGETATION_TYPES: readonly FeatureType[] = ['vegetation_zone'];
+
+export function isVegetationType(type: string): boolean {
+    return (VEGETATION_TYPES as readonly string[]).includes(type);
+}
+
 /** Reverse of {@link DIGIT_FEATURE_TYPES}: feature type → its digit badge, if any. */
 export function digitForFeatureType(type: FeatureType): string | undefined {
     for (const [digit, mapped] of Object.entries(DIGIT_FEATURE_TYPES)) {

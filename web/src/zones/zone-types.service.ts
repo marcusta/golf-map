@@ -20,6 +20,8 @@
 import { Signal, Computed } from '@basics/core/client/core';
 import { api } from '../api';
 import type { CourseZoneType, ZoneTypeItem, ZoneTypeVariant, ZoneTypesApi } from '../../../shared/api/zone-types.gen';
+import { CREEK_BANK_ZONE_TYPE, isWetBankVariant } from '../../../shared/features/creek-vegetation';
+import { zoneBlendOf, type ZoneBlend } from '../../../shared/features/zone-layers';
 
 export type { CourseZoneType, ZoneTypeItem, ZoneTypeVariant };
 
@@ -39,6 +41,8 @@ export const NEW_VARIANT_NAME = 'New variant';
 /**
  * The `vegetation_zone` attribute keys, as stored on the feature.
  * `zoneVariant` is a variant key of the zone's type; '' is the Default mix.
+ * `blend` and `extraPalettes` (the attribute string, '' = none) say how the
+ * zone adds up with others (shared/features/zone-layers.ts).
  */
 export interface ZoneAttributes {
     zoneType: string;
@@ -46,6 +50,8 @@ export interface ZoneAttributes {
     weight: number;
     feather: number;
     noise: number;
+    blend: ZoneBlend;
+    extraPalettes: string;
 }
 
 /** The zone-type key a feature's attributes name ('' when it has none). */
@@ -168,6 +174,32 @@ export class ZoneTypesService {
     }
 
     /**
+     * The variants a zone picks from: all of them, except a creek_bank
+     * `<palette>_wet` (the water half of `<palette>`, which the generator
+     * splits in itself; picked alone it puts the water mix up the whole bank).
+     */
+    pickableVariantsOf(key: string): ZoneTypeVariant[] {
+        const variants = this.variantsOf(key);
+        return key === CREEK_BANK_ZONE_TYPE ? variants.filter(v => !isWetBankVariant(v.key)) : variants;
+    }
+
+    /** True when the type's Default mix binds items (a zone on it plants something). */
+    hasDefaultItems(key: string): boolean {
+        return (this.byKey.get().get(key)?.items.length ?? 0) > 0;
+    }
+
+    /**
+     * The variant a zone of this type starts on (drawn, or retyped): Default,
+     * unless Default binds nothing and the type has variants - then the first
+     * pickable one, so a new zone plants something (Vreta's creek_bank has
+     * only palettes).
+     */
+    startVariantOf(key: string): string {
+        if (this.hasDefaultItems(key)) return '';
+        return this.pickableVariantsOf(key)[0]?.key ?? '';
+    }
+
+    /**
      * A zone feature's attributes with the defaults filled in. The generated
      * client types `attributes` as an opaque object (the codegen cannot carry
      * an index signature), so the read goes through one place instead of a
@@ -182,21 +214,26 @@ export class ZoneTypesService {
             weight: typeof raw.weight === 'number' ? raw.weight : defaults.weight,
             feather: typeof raw.feather === 'number' ? raw.feather : defaults.feather,
             noise: typeof raw.noise === 'number' ? raw.noise : defaults.noise,
+            blend: zoneBlendOf(raw),
+            extraPalettes: typeof raw.extraPalettes === 'string' ? raw.extraPalettes : defaults.extraPalettes,
         };
     }
 
     /**
      * Attributes for a zone the user just drew: the table's first zone type
      * (its Default mix) at full weight with the default feather and no edge
-     * noise.
+     * noise, replacing what is below it, with no extra palettes.
      */
     defaultAttributes(): ZoneAttributes {
+        const zoneType = this.items.peek()[0]?.key ?? FALLBACK_ZONE_TYPE_KEY;
         return {
-            zoneType: this.items.peek()[0]?.key ?? FALLBACK_ZONE_TYPE_KEY,
-            zoneVariant: '',
+            zoneType,
+            zoneVariant: this.startVariantOf(zoneType),
             weight: ZONE_WEIGHT_DEFAULT,
             feather: ZONE_FEATHER_DEFAULT_M,
             noise: ZONE_NOISE_DEFAULT_M,
+            blend: 'replace',
+            extraPalettes: '',
         };
     }
 

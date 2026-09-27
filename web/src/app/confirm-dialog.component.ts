@@ -152,6 +152,7 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
 
             & .confirm-dialog__detail {
                 margin: ${s('sm')} 0 0;
+                white-space: pre-line;
                 color: ${t('color-text-secondary')};
                 font-size: 0.82rem;
                 line-height: 1.45;
@@ -297,6 +298,9 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
             & .confirm-dialog__review-box strong {
                 font-size: 0.86rem;
                 line-height: 1.45;
+                white-space: pre-line;
+                max-height: 50vh;
+                overflow-y: auto;
             }
 
             & .confirm-dialog__sheet-actions {

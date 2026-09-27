@@ -6,7 +6,7 @@ Bun + Hono + Kysely + SQLite on `@basics/core`. Source of truth: course data, ga
 
 - `api/*.api.ts` — feature API descriptors: each exports `create<Feature>Api(svc)` → `{ method, path, schema, middleware, fn }`. `mount()` (from `@basics/core`) handles validation, coercion, error mapping.
 - `services/*.service.ts` (+ `.service.test.ts`) — Kysely-backed logic, one per feature. `geo.ts` = geodesy helpers.
-- `db/` — `schema.ts` (16-table Kysely schema), `migrations/NNN_*.ts` (numbered), `seeds/`, `import.ts`, `create-user.ts`, `import-terrain-edits.ts` (generated edits — `golfpipe building-pads` — into a site's `terrain_edits` under one `origin`, replacing that origin's previous generation only; the `water-digs` / `bunker-digs` generators write `dig` edits straight from the course's features, `terrain-generators.service.ts`).
+- `db/` — `schema.ts` (16-table Kysely schema), `migrations/NNN_*.ts` (numbered), `seeds/`, `import.ts`, `create-user.ts`, `import-terrain-edits.ts` (generated edits — `golfpipe building-pads` — into a site's `terrain_edits` under one `origin`, replacing that origin's previous generation only; the `water-digs` / `bunker-digs` / `creek-digs` generators write `dig` edits straight from the course's features, `terrain-generators.service.ts`). On a site shared by several courses a generator run replaces only its own course's edits: `replaceByOrigin(…, { courseId })` keeps rows whose `originRef` is `feature:<id>` of another course on the site (digs, road grades of a course's own paths); building pads and grades of fetched centerlines are site-wide and replaced whole.
 - `main.ts` — app entry (`createApp()` from `@basics/core`).
 
 ## Commands (cwd `server/`)
@@ -30,6 +30,10 @@ bun run import          # import v1 export into app.sqlite
 - Optimistic locking via `version` columns; `VersionConflictError` → 409.
 - Tile/asset paths: `assets.service.ts` `resolveTilePath` → `data/tiles/{courseId}/{layer}/{z}/{x}/{y}.<ext>` (`ortho`→jpg, `terrain`→png). Tile routes unauthenticated.
 - DBs (WAL): `app.sqlite`, `sessions.sqlite`, `obs.sqlite` (observability bulkhead) — all in `../data/`.
+
+## Edit history
+
+Migration 025 keeps the state BEFORE every change of a course feature (`course_feature_history`: `update` and `delete` hold the old row without `geojson`, `restack` only `sort_order`/`version`/`updated_at`) and of a terrain edit (`terrain_edit_history`), by SQLite triggers, so every write path is covered (editor, reorders, generator bulk replaces, scripts). Nothing reads it in the app; `FeatureHistoryService` (`stateAt`, `changes`, `mix`, `writeVariantDb`, export `snapshot`s) serves `scripts/gspro-bisect.ts`. A full GSPro SVG export also keeps `<export dir>/export-history/<local time>/` (the SVG + `features.json`). Timestamps are UTC. A new feature shifts every one above it: that is a `restack` row per feature, and `changes` reports only features whose order among their group really moved.
 
 ## Sites
 
@@ -110,8 +114,12 @@ per-feature fields live in `attributes_json`: `zoneType` (required, the key
 into the course's zone-type table), `zoneVariant` (optional string, a variant
 key of that type; absent or `''` = the type's Default mix; like `zoneType` not
 checked against the table), `weight` (0..1, default 1), `feather` (m,
-default 2) and `noise` (m, default 0). The numeric keys may be absent and then
-mean their defaults; a zone with no `zoneType` (or a non-string `zoneVariant`)
+default 2) and `noise` (m, default 0), plus `blend` (`replace` | `mix`,
+default replace) and `extraPalettes` (a string of comma-separated
+`<type>[/<variant>][=<weight>]`, since attributes are flat scalars;
+`shared/features/zone-layers.ts`, D-VZ12). The numeric keys may be absent and then
+mean their defaults; a zone with no `zoneType` (or a non-string `zoneVariant`,
+another `blend`, an `extraPalettes` that does not parse)
 is rejected on create, on an attributes update and in the generated-features
 import (the lidar `lidar-lowveg` proposals, D-VZ7, arrive through that route
 with the same property names).
@@ -149,6 +157,7 @@ locking — a short course-level legend, unlike the feature stack. The API
 - Folder: `courses.gspro_export_dir` (migration 016); NULL = Downloads (`GSPRO_EXPORT_DIR` overrides). Vreta: `D:\gspro_courses\vreta-opcd`.
 - Two squares (`terrain-square.ts`): **inner** = map area, whole-metre edges, side a multiple of 10 m, fixed at map-build time (`manifest.terrain.inner.square3006`); **outer** = 5 km centred on it. Every export passes `--square-3006`, never `--bbox`, so files overlay exactly.
 - Jobs: `start`/`job`/`current`, one running per course (409 otherwise); outer fetches run for minutes.
+- `vegetation` (Vegetation mode's Plant vegetation, `plantVegetation`): runs the vegetation generator strategies in `vegetation-generators.ts` (`VEGETATION_GENERATORS`, in zone-stack order: each is a pipeline script + the generated `source` it replaces + the zone types it adds + the inputs it needs), exports the terrain's zones, then `golfmap.zones.import` + `golfmap.grass.apply` in the Unity editor whose active course exports to the folder (not open = reported, not an error). `scripts/grass-zones.ts` is the same handler without the Unity step.
 - Kinds and files (`<course>-…`): `svg`; inner ortho `-<collection>-8192.jpg` + `-terrain.jpg` (linear-light darkened twin) + `-meshes.jpg` (tinted, softened), and `-clean-8192.jpg` variants when the request removes buildings / paints forest floor (the panel's separate cleaned export); outer ortho; DEM `-<inner|outer>-dem-<side>m.tif/.raw/.tif.json` (export inner first: outer sidecar needs it); hillshade; trees `-trees.json` (unity-trees-v1); zones `-zones.json` + `-zones-<n>.png`; buildings. Trees/zones/buildings need that terrain's DEM sidecar in the folder (409).
 - `dataDir` is made absolute in `createServices`: pipeline processes run with cwd `pipeline/`, so a relative `./data/...` path (`bun run dev` from the root) named nothing there.
 - Inner DEM = `dem-edited.tif` else `dem.tif`; outer DEM/lidar/trees are fetched once into `data/sources/<siteId>/outer-*` from Laserdata Skog lidar (`--skip-forbidden`; some tiles 403).

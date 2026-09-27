@@ -11,6 +11,7 @@ import { HoleInfoPanelComponent } from './hole-info-panel.component';
 import { HoleSidebarComponent } from './hole-sidebar.component';
 import { ContextDockComponent } from '../draw/feature-dock.component';
 import { CommandBarComponent } from '../app/command-bar.component';
+import { PhotoBrowserComponent } from '../photos/photo-browser.component';
 
 const tpl = template(`
     <div class="course-detail" bind="root" data-testid="course-detail">
@@ -121,6 +122,9 @@ export class CourseDetailComponent extends Component {
         this.spawn(GsproExportPanelComponent, this.ref(frag, 'editorCanvas'));
         // The course's vegetation zone-type table — same ⋯ menu, same dock.
         this.spawn(ZoneTypesPanelComponent, this.ref(frag, 'editorCanvas'));
+        // Photos sub-mode surfaces over the map (catalog, photo card, viewer);
+        // each shows only while the Photos tool is active.
+        this.spawn(PhotoBrowserComponent, this.ref(frag, 'editorCanvas'));
 
         // Right contextual dock — permanent across all Create sub-modes; its
         // body follows the active sub-mode (draw selection + stack, or the

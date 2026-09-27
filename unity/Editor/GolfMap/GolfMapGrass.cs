@@ -28,6 +28,20 @@
 // greyscale copy); every material must be on a shader name GSPro's VSP resolves
 // (GolfMapTreePlanter.VspKnowsShader), and "healthy"/"dry", when given, go to the
 // shader controller's leaf colours (NM tree controller: HealtyColor/DryColor).
+//
+// "material": {"<shader float>": value, ...} on a prefab item draws a course-local
+// copy of the prefab (<course>/Grass/Prefabs/<item>.prefab) whose materials are
+// copies with those floats set, so a pack's material can be fixed for one use
+// without touching the asset (other items share it). NM's foliage shaders draw
+// both faces with the front face's normal by default: looking towards the sun you
+// see back faces lit as if they faced it, with a grazing-angle sheen on a glossy
+// leaf - willows read almost white from one side. {"_BackFaceMirrorNormal": 1,
+// "_SmoothnessPower": 0.25, "_SpecularPower": 0.1} fixes that (Vreta's creek
+// thicket). The copy's path depends only on the item name, so changing the
+// overrides rewrites its materials in place (from the source's each time) and VSP
+// keeps drawing the same prefab. An item whose prefab changes (first overrides,
+// or a new "prefab") is replaced: re-run golfmap.zones.import so it gets its mask
+// rules again, then apply.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -62,6 +76,7 @@ namespace GolfMap.Editor
             public float lodFactor = 5f;       // grass grows on near-vertical banks; VSP's 30-40 default leaves them bare
             public float randomDarkening = 0.2f, rootAmbient = 0.4f, alphaCutoff = 0.3f;
             public float whitePoint = 0.92f;       // greyscale level the bright blades are lifted to
+            public Dictionary<string, float> material = new Dictionary<string, float>();   // prefab items: shader floats on local copies
         }
 
         public sealed class Palette
@@ -101,7 +116,7 @@ namespace GolfMap.Editor
                 {
                     var d = new Item();
                     var prefab = i.String("prefab");
-                    palette.items.Add(new Item
+                    var item = new Item
                     {
                         name = i.String("name"),
                         source = i.String("source"),
@@ -120,7 +135,14 @@ namespace GolfMap.Editor
                         randomDarkening = F(i, "randomDarkening", d.randomDarkening), rootAmbient = F(i, "rootAmbient", d.rootAmbient),
                         alphaCutoff = F(i, "alphaCutoff", d.alphaCutoff), whitePoint = F(i, "whitePoint", d.whitePoint),
                         lodFactor = F(i, "lodFactor", F(p, "lodFactor", d.lodFactor)),
-                    });
+                    };
+                    var overrides = i.Object("material");
+                    if (overrides != null)
+                    {
+                        if (prefab == null) throw new BridgeError("Palette '" + palette.key + "', item '" + item.name + "': \"material\" is for prefab items.");
+                        foreach (var k in overrides.keys) item.material[k] = (float)overrides.Number(k);
+                    }
+                    palette.items.Add(item);
                 }
                 if (string.IsNullOrEmpty(palette.key)) throw new BridgeError("A palette in " + path + " has no key.");
                 if (palette.items.Any(i => string.IsNullOrEmpty(i.name) || string.IsNullOrEmpty(i.source) == string.IsNullOrEmpty(i.prefab)))
@@ -135,13 +157,12 @@ namespace GolfMap.Editor
         // ---- greyscale textures --------------------------------------------
 
         // "<course>/Grass/Textures/<source name>_grey.png", rebuilt when missing, older than the source, or forced.
-        public static Texture2D GreyTexture(GolfMapCourse course, Item item, bool force, List<string> log)
+        public static Texture2D GreyTexture(string courseFolder, Item item, bool force, List<string> log)
         {
             var source = AssetDatabase.LoadAssetAtPath<Texture2D>(item.source);
             if (!source) throw new BridgeError("No texture at " + item.source + " (item '" + item.name + "').");
-            var folder = GolfMapCourses.Folder(course) + "Grass/Textures/";
-            Directory.CreateDirectory(folder);
-            var path = folder + Path.GetFileNameWithoutExtension(item.source) + "_grey" + Mathf.RoundToInt(item.whitePoint * 100) + ".png";
+            Directory.CreateDirectory(courseFolder + "Grass/Textures/");
+            var path = GreyTexturePath(courseFolder, item.source, item.whitePoint);
             bool stale = !File.Exists(path) || File.GetLastWriteTimeUtc(item.source) > File.GetLastWriteTimeUtc(path);
             if (force || stale)
             {
@@ -152,6 +173,11 @@ namespace GolfMap.Editor
             if (ImportSettings((TextureImporter)AssetImporter.GetAtPath(path), item.alphaCutoff))
                 log.Add("import settings " + path);
             return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+        }
+
+        public static string GreyTexturePath(string courseFolder, string source, float whitePoint)
+        {
+            return courseFolder + "Grass/Textures/" + Path.GetFileNameWithoutExtension(source) + "_grey" + Mathf.RoundToInt(whitePoint * 100) + ".png";
         }
 
         // Cut-out grass loses thin blades with distance: a smaller mip level averages a stem with
@@ -238,14 +264,14 @@ namespace GolfMap.Editor
                 : GolfMapTreePlanter.RoleTerrain(scene, course.innerTerrainName, course.innerTerrainData, "inner");
         }
 
-        static VegetationPackagePro EnsurePackage(GolfMapCourse course, VegetationSystemPro system, string name, string role, List<string> log)
+        static VegetationPackagePro EnsurePackage(string courseFolder, VegetationSystemPro system, string name, string role, List<string> log)
         {
             var package = system.VegetationPackageProList.FirstOrDefault(p => p && p.PackageName == name);
             if (package) return package;
             package = ScriptableObject.CreateInstance<VegetationPackagePro>();
             package.PackageName = name;
             package.BiomeType = BiomeType.Default;
-            var folder = GolfMapCourses.Folder(course) + "Grass/";
+            var folder = courseFolder + "Grass/";
             Directory.CreateDirectory(folder);
             AssetDatabase.CreateAsset(package, AssetDatabase.GenerateUniqueAssetPath(folder + "LowerVegetation-" + role + ".asset"));
             system.AddVegetationPackage(package);
@@ -277,6 +303,49 @@ namespace GolfMap.Editor
                         throw new BridgeError(spec.prefab + " / " + r.name + " (" + m.name + ") uses '" + m.shader.name + "', which GSPro's VSP does not know; it would stop the whole package loading.");
                 }
             return prefab;
+        }
+
+        // The prefab item's course-local copy with its "material" overrides (see the header).
+        static GameObject LocalPrefab(string courseFolder, Item spec, GameObject source, List<string> log)
+        {
+            var grass = courseFolder + "Grass";
+            if (!AssetDatabase.IsValidFolder(grass)) AssetDatabase.CreateFolder(courseFolder.TrimEnd('/'), "Grass");
+            var dir = grass + "/Prefabs";
+            if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder(grass, "Prefabs");
+            var safe = new string(spec.name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c).ToArray());
+            var path = dir + "/" + safe + ".prefab";
+            var local = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (!local)
+            {
+                if (!AssetDatabase.CopyAsset(spec.prefab, path)) throw new BridgeError("Could not copy " + spec.prefab + " to " + path + ".");
+                local = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                log.Add("copied " + spec.prefab + " to " + path);
+            }
+            var from = source.GetComponentsInChildren<Renderer>(true);
+            var to = local.GetComponentsInChildren<Renderer>(true);
+            if (from.Length != to.Length) throw new BridgeError(path + " no longer matches " + spec.prefab + "; delete it and apply again.");
+            for (int r = 0; r < from.Length; r++)
+            {
+                var mats = from[r].sharedMaterials.Select(m =>
+                {
+                    if (!m) return m;
+                    var copyPath = dir + "/" + safe + " - " + m.name + ".mat";
+                    var copy = AssetDatabase.LoadAssetAtPath<Material>(copyPath);
+                    if (!copy)
+                    {
+                        if (!AssetDatabase.CopyAsset(AssetDatabase.GetAssetPath(m), copyPath)) throw new BridgeError("Could not copy material " + m.name + ".");
+                        copy = AssetDatabase.LoadAssetAtPath<Material>(copyPath);
+                    }
+                    else EditorUtility.CopySerialized(m, copy);   // from the source each time: removed overrides go back
+                    foreach (var kv in spec.material)
+                        if (copy.HasProperty(kv.Key)) copy.SetFloat(kv.Key, kv.Value);
+                    EditorUtility.SetDirty(copy);
+                    return copy;
+                }).ToArray();
+                to[r].sharedMaterials = mats;
+            }
+            EditorUtility.SetDirty(local);
+            return local;
         }
 
         static void Configure(VegetationPackagePro package, VegetationItemInfoPro item, Item spec, Palette palette, Texture2D texture, bool spawn)
@@ -339,6 +408,9 @@ namespace GolfMap.Editor
         static object Apply(BridgeArgs a)
         {
             var course = GolfMapCourses.Require();
+            // Before any asset work: an asset copy or import can leave `course` a stale reference
+            // with no asset path (see GolfMapTerrainSculpt).
+            var courseFolder = GolfMapCourses.Folder(course);
             var role = a.String("terrain", "inner");
             if (role != "inner" && role != "outer") throw new BridgeError("terrain must be inner or outer.");
             var palettes = Load(course);
@@ -352,16 +424,22 @@ namespace GolfMap.Editor
             var items = new List<object>();
             foreach (var palette in palettes)
             {
-                var package = EnsurePackage(course, system, palette.package, role, log);
+                var package = EnsurePackage(courseFolder, system, palette.package, role, log);
                 if (GolfMapTreePlanter.IsImportedCatalogue(package)) throw new BridgeError("Palette package '" + palette.package + "' is the planter's tree catalogue.");
                 foreach (var spec in palette.items)
                 {
-                    var texture = spec.prefab == null ? GreyTexture(course, spec, a.Bool("rebuildTextures", false), log) : null;
+                    var texture = spec.prefab == null ? GreyTexture(courseFolder, spec, a.Bool("rebuildTextures", false), log) : null;
                     var prefab = spec.prefab != null ? LoadPrefab(spec) : null;
+                    if (prefab != null && spec.material.Count > 0) prefab = LocalPrefab(courseFolder, spec, prefab, log);
                     var item = package.VegetationInfoList.FirstOrDefault(i => i.Name == spec.name);
-                    // VSP builds the item's model from the prefab it was added with; a swap needs a new item.
+                    // VSP builds the item's model from the prefab it was added with: a new prefab
+                    // replaces the item (its mask rules go with it until the next zones import).
                     if (item != null && prefab != null && item.VegetationPrefab != prefab)
-                        throw new BridgeError("Item '" + spec.name + "' already uses another prefab; give the new prefab its own item name.");
+                    {
+                        package.VegetationInfoList.Remove(item);
+                        item = null;
+                        log.Add("replaced item '" + spec.name + "' (new prefab): re-run golfmap.zones.import, then apply");
+                    }
                     if (item == null)
                     {
                         if (prefab != null) package.AddVegetationItem(prefab, VegetationType.Plant, false);
@@ -374,7 +452,7 @@ namespace GolfMap.Editor
                     items.Add(new Dictionary<string, object>
                     {
                         { "palette", palette.key }, { "item", item.Name }, { "id", item.VegetationItemID },
-                        { "texture", texture ? AssetDatabase.GetAssetPath(texture) : spec.prefab }, { "spawning", item.EnableRuntimeSpawn },
+                        { "texture", texture ? AssetDatabase.GetAssetPath(texture) : AssetDatabase.GetAssetPath(prefab) }, { "spawning", item.EnableRuntimeSpawn },
                         { "includeRules", item.TextureMaskIncludeRuleList.Count }, { "densityRules", item.TextureMaskDensityRuleList.Count },
                     });
                 }

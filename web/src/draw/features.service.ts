@@ -10,7 +10,7 @@ import { sweref99tmToWgs84 } from '../geo/transform';
 import type { MapService } from '../map/map.service';
 import {
     DRAW_FILL_OPACITY, NICE_FILL_OPACITY, typeColorExpression, featureFillColorExpression, SELECTION_COLOR,
-    OUTLINE_ONLY_TYPES, OUTLINE_ONLY_LINE_WIDTH, OUTLINE_ONLY_CASING_WIDTH, OUTLINE_ONLY_CASING_COLOR, RULES_TYPES,
+    OUTLINE_ONLY_TYPES, OUTLINE_ONLY_LINE_WIDTH, OUTLINE_ONLY_CASING_WIDTH, OUTLINE_ONLY_CASING_COLOR, RULES_TYPES, VEGETATION_TYPES,
 } from './feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { ZoneTypesService, zoneTypeKeyOf, zoneVariantKeyOf } from '../zones/zone-types.service';
@@ -40,7 +40,7 @@ export function sameScope(a: StackScope, b: StackScope): boolean {
 }
 
 /** `<select>` value for the Roughs scope (hole ids are UUIDs, '' is course-level). */
-const ROUGHS_SCOPE_KEY = '__roughs';
+export const ROUGHS_SCOPE_KEY = '__roughs';
 
 /** A scope as one string — a `<select>` value, or a Signal that compares by value. */
 export function scopeKey(scope: StackScope): string {
@@ -167,9 +167,20 @@ export class FeaturesService {
     /**
      * Feature TYPES the active editor mode keeps off the map and out of hit
      * tests, apart from the user's own `hiddenTypes` (Draw hides the rules
-     * lines, which Furniture owns). Set by the tool for its active span.
+     * lines, which Furniture owns). Set by the tool for its active span;
+     * outside it (`resetModeView`) the vegetation zones are hidden, since
+     * only Vegetation mode shows them.
      */
-    readonly modeHiddenTypes = new Signal<ReadonlySet<string>>(new Set());
+    readonly modeHiddenTypes = new Signal<ReadonlySet<string>>(new Set(VEGETATION_TYPES));
+    /**
+     * Feature TYPES the active editor mode shows only as a backdrop: outline,
+     * no fill, read-only, out of hit tests and the stack panel. Vegetation
+     * mode puts every course feature here so the zones stand out while the
+     * fairway and green edges stay readable; of those it still selects the
+     * creeks and water, for their bank vegetation (`scopeSelectsType`). Set
+     * by the tool for its active span.
+     */
+    readonly modeBackdropTypes = new Signal<ReadonlySet<string>>(new Set());
     /**
      * The Roughs layer (`layer: 'roughs'`) toggled off in the editor (stack
      * panel toggle). Editor-only view state: it takes effect only while the
@@ -204,6 +215,14 @@ export class FeaturesService {
      * they are drawn and edited); nice mode otherwise hides every stroke but OOB.
      */
     readonly rulesOutlines = new Signal(false);
+
+    /** The view every tool's span ends on: nice rendering, zones hidden, no backdrop. */
+    resetModeView(): void {
+        this.niceRendering.set(true);
+        this.modeHiddenTypes.set(new Set(VEGETATION_TYPES));
+        this.modeBackdropTypes.set(new Set());
+        this.rulesOutlines.set(false);
+    }
     readonly loading = new Signal(false);
     readonly error = new Signal<RequestError | null>(null);
     /** True while a create/update/remove is in flight (autosave indicator). */
@@ -247,18 +266,26 @@ export class FeaturesService {
     });
 
     /**
-     * `selected` when it is hand-drawn, null when it is generated (read-only):
-     * every geometry-editing affordance (vertex handles, edge insertion,
-     * offset/simplify previews, context-menu vertex delete) keys off THIS.
+     * `selected` when it is hand-drawn, null when it is generated (read-only)
+     * or a backdrop type of the active mode (Vegetation selects a creek only to
+     * set its bank vegetation: its shape is Draw's): every geometry-editing
+     * affordance (vertex handles, edge insertion, offset/simplify previews,
+     * context-menu vertex delete) keys off THIS.
      */
     readonly editableSelected = new Computed<CourseFeature | null>(() => {
         const f = this.selected.get();
-        return f && !isGeneratedFeature(f) ? f : null;
+        return f && this.isEditableHere(f, this.modeBackdropTypes.get()) ? f : null;
     });
 
-    /** `selectedFeatures` minus generated (read-only) rows — move/duplicate/retype/rehole targets. */
-    readonly editableSelectedFeatures = new Computed<CourseFeature[]>(() =>
-        this.selectedFeatures.get().filter(f => !isGeneratedFeature(f)));
+    /** `selectedFeatures` minus read-only rows (see `editableSelected`) — move/duplicate/retype/rehole/delete targets. */
+    readonly editableSelectedFeatures = new Computed<CourseFeature[]>(() => {
+        const backdrop = this.modeBackdropTypes.get();
+        return this.selectedFeatures.get().filter(f => this.isEditableHere(f, backdrop));
+    });
+
+    private isEditableHere(f: CourseFeature, backdrop: ReadonlySet<string>): boolean {
+        return !isGeneratedFeature(f) && !backdrop.has(f.type);
+    }
 
     /**
      * Generated (pipeline bulk-replace) features, identity-stable: the same array
@@ -523,28 +550,7 @@ export class FeaturesService {
         // draws its own live ones (`junctionFeatures`).
         this.store.set(items.filter(f => f.source !== ROAD_JUNCTIONS_SOURCE));
         this.loadedCourseId = courseId;
-        this.hideNewZoneSources(items);
     }
-
-    /**
-     * Generated vegetation zones (tall-grass, lidar-woodland, lidar-lowveg)
-     * are Unity planting input, not something to draw or place furniture
-     * over, and a course's tall grass alone outweighs every drawn surface.
-     * Each such source starts hidden the first time it shows up; the stack
-     * panel's group eye shows it, and a reload keeps that choice.
-     */
-    private hideNewZoneSources(items: readonly CourseFeature[]): void {
-        const fresh = new Set<string>();
-        for (const f of items) {
-            if (f.type === 'vegetation_zone' && isGeneratedFeature(f) && f.source && !this.seenZoneSources.has(f.source)) {
-                fresh.add(f.source);
-            }
-        }
-        if (fresh.size === 0) return;
-        for (const source of fresh) this.seenZoneSources.add(source);
-        this.hiddenSources.set(new Set([...this.hiddenSources.peek(), ...fresh]));
-    }
-    private readonly seenZoneSources = new Set<string>();
 
     /** Re-fetch the loaded course (store re-sync after a failed save). */
     async reload(): Promise<void> {
@@ -830,7 +836,7 @@ export class FeaturesService {
         this.overlayMap = map;
         // Per-feature "dragging" state hides originals while the draw
         // tool renders their ghost (paint-only — no source/layout work).
-        const draggingHide = (visible: number): unknown =>
+        const draggingHide = (visible: unknown): unknown =>
             ['case', ['boolean', ['feature-state', 'dragging'], false], 0, visible];
         const disposeData = effect(() => {
             const ready = map.ready.get();
@@ -854,8 +860,13 @@ export class FeaturesService {
                 // effect finishes adding layers; `added` is deliberately not
                 // reactive, so that missed pass cannot be our only initial
                 // configuration path.
-                const fillOpacity = draggingHide(nice ? NICE_FILL_OPACITY : DRAW_FILL_OPACITY);
-                const boundaryOpacity = draggingHide(nice ? 0 : 1);
+                const backdrop = this.modeBackdropTypes.peek();
+                const ownFill = nice ? NICE_FILL_OPACITY : DRAW_FILL_OPACITY;
+                const generatedFill = backdrop.size > 0 ? backdropCase(backdrop, 0, ownFill) : ownFill;
+                const generatedBoundary = backdrop.size > 0 ? backdropCase(backdrop, BACKDROP_OUTLINE_OPACITY, nice ? 0 : 1) : nice ? 0 : 1;
+                const fillOpacity = draggingHide(generatedFill);
+                const boundaryOpacity = draggingHide(generatedBoundary);
+                const rulesOpacity = draggingHide(nice ? 0 : 1);
                 map.addOverlayLayer(FEATURES_OVERLAY_ID, data, [
                     {
                         id: 'features-fill',
@@ -898,7 +909,7 @@ export class FeaturesService {
                         paint: {
                             'line-color': typeColorExpression('outline') as never,
                             'line-width': 1.5,
-                            'line-opacity': boundaryOpacity as never,
+                            'line-opacity': rulesOpacity as never,
                         },
                     },
                     {
@@ -952,7 +963,7 @@ export class FeaturesService {
                         layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
                         paint: {
                             'fill-color': featureFillColorExpression('draw') as never,
-                            'fill-opacity': nice ? NICE_FILL_OPACITY : DRAW_FILL_OPACITY,
+                            'fill-opacity': generatedFill as never,
                         },
                     },
                     {
@@ -962,7 +973,7 @@ export class FeaturesService {
                         paint: {
                             'line-color': typeColorExpression('outline') as never,
                             'line-width': 1.5,
-                            'line-opacity': nice ? 0 : 1,
+                            'line-opacity': generatedBoundary as never,
                         },
                     },
                     ...exportExcludedLayers('features-generated', this.exportExcludedIds.peek()),
@@ -1019,11 +1030,22 @@ export class FeaturesService {
             const ready = map.ready.get();
             const nice = this.niceRendering.get();
             const rulesOutlines = this.rulesOutlines.get();
+            const backdrop = this.modeBackdropTypes.get();
             if (!ready || !added) return;
             const rawMap = map.map.get();
             if (!rawMap) return;
 
-            if (nice) {
+            if (backdrop.size > 0) {
+                // A mode's backdrop types (Vegetation: the course) keep only
+                // a faint outline; its own types keep Draw's palette.
+                const fill = backdropCase(backdrop, 0, nice ? NICE_FILL_OPACITY : DRAW_FILL_OPACITY);
+                const outline = backdropCase(backdrop, BACKDROP_OUTLINE_OPACITY, nice ? 0 : 1);
+                rawMap.setPaintProperty('features-fill', 'fill-opacity', draggingHide(fill) as never);
+                rawMap.setPaintProperty('features-outline', 'line-opacity', draggingHide(outline) as never);
+                rawMap.setPaintProperty('features-rules-outline', 'line-opacity', draggingHide(nice && !rulesOutlines ? 0 : 1) as never);
+                rawMap.setPaintProperty('features-generated-fill', 'fill-opacity', fill as never);
+                rawMap.setPaintProperty('features-generated-outline', 'line-opacity', outline as never);
+            } else if (nice) {
                 rawMap.setPaintProperty('features-fill', 'fill-opacity', draggingHide(NICE_FILL_OPACITY) as never);
                 rawMap.setPaintProperty('features-outline', 'line-opacity', draggingHide(0) as never);
                 rawMap.setPaintProperty('features-rules-outline', 'line-opacity', draggingHide(rulesOutlines ? 1 : 0) as never);
@@ -1075,6 +1097,14 @@ export class FeaturesService {
 }
 
 /** features-selected layer filter for a selection set. */
+/** Line opacity of a mode's backdrop types (see `FeaturesService.modeBackdropTypes`). */
+const BACKDROP_OUTLINE_OPACITY = 0.7;
+
+/** Paint value: `inBackdrop` for the backdrop types, `own` for every other. */
+function backdropCase(backdrop: ReadonlySet<string>, inBackdrop: number, own: number): unknown {
+    return ['case', ['in', ['get', 'type'], ['literal', [...backdrop]]], inBackdrop, own];
+}
+
 function selectionFilter(ids: ReadonlySet<string>): FilterSpecification {
     return ['in', ['get', 'id'], ['literal', [...ids]]] as unknown as FilterSpecification;
 }

@@ -175,21 +175,14 @@ draw with the same few materials, so material settings belong to the species, no
 prefab. A look is a named set of copies of those materials plus a generated copy of each
 shape pointing at them (VSP draws a prefab with that prefab's materials, so each copy is its
 own VSP item; meshes and textures stay shared), under `<course>/Looks/<species>/<look>/`.
-The `original` look is the source prefabs untouched. In the panel: start looks for a species,
-open one to tune its materials with Unity's own material editor embedded (so every shader
-property, and switching between the NM shaders, is available), **Duplicate as** to branch a
-new look from it, and weight the looks against each other. Save records each look's material
-values in `palette.json` (`species.<label>.looks[].materials.<source material guid>`: shader,
-floats, colours, vectors, textures by guid, keywords); **Apply JSON** writes them back onto the
-copies and **Regenerate** recreates missing copies, which is how a palette rebuilds its looks
-in another project. Never edit the generated prefabs; stay on GSPro-safe shader names (the
-Plant check covers look copies too).
-
-**Lab.** *Show in Lab* stands one plain instance per look and shape at the Scene view pivot
-(rows = looks, columns = shapes by height) under a `GolfMap Lab (not saved)` object that is
-never saved or built. They draw with the very material assets being tuned, so edits show as
-the slider moves. Planted trees read NM colours from VSP's cache: *Apply to course* re-syncs
-it once you are happy; billboards still need a rebake at the next Plant.
+The `original` look is the source prefabs untouched. Looks are created, tuned, weighted and
+shown in the Lab in [Vegetation Palettes](#vegetation-palettes-palette-editor); the panel lists
+each species' looks with their weights and preview counts and opens it there (**Tune**). Save
+records each look's material values in `palette.json` (`species.<label>.looks[].materials.<source
+material guid>`: shader, floats, colours, vectors, textures by guid, keywords); **Regenerate**
+recreates missing copies and writes the recorded values onto them, which is how a palette
+rebuilds its looks in another project. Never edit the generated prefabs; stay on GSPro-safe
+shader names (the Plant check covers look copies too).
 
 Matching (`GolfMapBiomeMatcher`, mirrored by `tree-matching.mjs`; `biome-parity-fixtures.mjs
 <trees> <out.tsv> [palette]` + `BiomeParityCheck.cs` prove the two agree): an asset without a
@@ -271,6 +264,14 @@ among them, which the palette's pines need). Colour belongs in the item's
 shader-controller settings (what `Refresh vegetation from materials` syncs), not in a
 renamed copy of an NM or CTI shader.
 
+Forst's own CTI shaders are named `CTI/LOD Leaves 301` etc., which neither GSPro build
+matches. `prepare-cti-trial.py` copies them under the stock `CTI/LOD Leaves`/`Bark`/`Bark
+Array` names, and `golfmap.cti.status|apply|restore` swaps them onto the palette oaks and
+birches reversibly, with a backup under `GolfMapSpelunk/cti-trial/`. `prepare-cti-maps.py`
+tunes the look with texture copies (NM tint baked in, leaf reflection zeroed). See
+[tree rendering fixes](../docs/tree-rendering-fixes.md) for the IL evidence, the result so
+far and how restore handles the open editor.
+
 `prepare-oak-nm-shader.py` moved the four `PF_Oak_* Terrain` prefabs off
 `GolfMap/CTI Oak {Bark,Leaves} Tinted` onto NM's `Tree {Bark,Leaves} Metalic`, the way the
 birches went earlier — decoding the CTI-packed normals (X in alpha, Y in green) and packing
@@ -344,6 +345,69 @@ screen; the rest of the material state (maps, smoothness, normals) is cached per
 item re-syncs those colours from the prefabs, then calls `RefreshVegetationSystem` + `ClearCache`
 on every GolfMap system in the scene. It compares each storage package before and after and aborts
 without saving if any instance moved. Billboards still need rebaking.
+
+## Vegetation Palettes (palette editor)
+
+`GolfMap > Vegetation Palettes` (`GolfMapVegPaletteWindow.cs`; model `GolfMapVegPalette.cs`,
+scene side `GolfMapVegLive.cs`, shared working copy + bridge commands `GolfMapVegSession.cs`)
+tunes the course's lower vegetation (`grass-palette.json`: texture grass and mesh bushes) and
+its tree looks (`palette.json`) in one window, with the result live in the Scene view.
+
+**One list, one set of settings.** The left pane lists every grass palette with its items and
+every tree species with its looks: thumbnail (grass: the greyscale texture VSP draws, tinted),
+healthy/dry chips, a dot for unsaved edits, `×n` for an item several palettes list, `!` for an
+item VSP does not have yet. An item listed in several palettes is one VSP item, so it is one
+entry here: an edit changes it in every palette (Save writes all the file's copies); only its
+binding weight (`maxDensity`) is per palette. Every entry has the same kinds of settings -
+healthy/dry tint, bark, size, spacing, noise, shading, LOD, material floats - so a selection can
+mix palettes, bushes and tree looks. Click selects, Ctrl-click adds, Shift-click adds a range,
+clicking a palette or species takes all of it; arrows move, F (or double-click) goes there.
+
+**Adjust together** grades the whole selection relative to where it stood when the first slider
+moved: brightness, saturation, hue and warmth (linear light, on the healthy/dry/bark tints you
+tick), height, width, density (instances per m²: spacing scales by 1/sqrt) and size spread (the
+min..max scale range around its middle). Drag back to 0 to undo one slider; **Keep** makes the
+result the new start, **Reset** goes back. Below it, every setting of the selection: a mixed
+value shows a dash, setting it sets all. **Copy / Paste** copies one item's settings onto the
+selection by kind (colours, size, placement, shading, rendering, material).
+
+**Live.** Every change is pushed as the slider moves, without apply or replant:
+
+| Setting | How the scene follows |
+|---|---|
+| tints, darkening, root ambient, alpha cutoff, tint area scale | VSP shader-controller values + `RefreshMaterials` (instant) |
+| width/height, scale, spacing, density, noise, slope, distance falloff | the item's cells cleared and respawned (`ClearCache` per item; throttled while dragging) |
+| LOD factor, shadows | read at draw time |
+| tree look colours and material floats | the look's material assets (the Lab draws them), then the planted trees' catalogue items: NM/CTI/SpeedTree controller values + VSP's material copies |
+| bush material floats | VSP's material copies (and the course-local prefab copy when there is one) |
+| texture white point, a bush's first material override | **Rebuild VSP** (save + `golfmap.grass.apply`, zones import + apply again when items were added/replaced) |
+| binding weight, look weight | file only: re-bind + export zones / the next Plant |
+
+Outer tree billboards keep their baked colours until a Plant with rebake. Nothing is written
+until **Save** (minimal diffs: untouched numbers keep their text); **Revert** puts the saved values
+back into the scene; Ctrl+Z undoes edits and the scene follows. **A/B** flips the scene between the
+edits and the saved values. **Solo** hides every other lower-vegetation item while judging a few
+(`EnableRuntimeSpawn`, put back on unsolo, close, scene save and script reload). **Go to** frames
+the Scene view where the selection grows most (grass: the imported zone masks, densest first;
+trees: planted instances) - click again for the next spot; **Views** saves Scene view positions
+per course to come back to after each change. A file changed on disk (by hand, an agent, the Trees
+Inspector) is reloaded and the scene follows it while nothing is pending in the window.
+
+**Tree looks.** A species that plants with its pack's own materials is read-only: **Create a
+tunable look** copies its materials and prefabs (`GolfMapLooks.Generate`; the source stays as
+`original` at weight 0, so the next Plant uses the copy). **Duplicate** branches a look, **Remove
+look** drops it from the palette (the last one returns the species to its source materials),
+**Show in Lab** stands one plain instance per look and shape at the Scene view pivot (rows =
+looks, columns = shapes by height) under `GolfMap Lab (not saved)`, never saved or built. Values
+are read from the materials a look's prefabs really draw with: while a trial re-points them
+outside the look folder (the CTI swap), the window says so - edits then change those materials in
+place and Save does not record them in `palette.json`.
+
+Bridge (the same working copy as an open window): `golfmap.vegpalette.list` (entries, values,
+unsaved, `vspDiffers` where VSP disagrees with the file), `.adjust {select, brightness, ..., set,
+save}`, `.save`, `.revert`, `.spots {select, goto}`, `.look {action, species, ...}`, `.rebuild`,
+`.show {select}` (open the window on a selection). Selection patterns: a palette key or glob
+(`creek_bank/*`: its items), an item name or glob, `tree:<species>[/<look>]`, `trees`, `grass`, `all`.
 
 ## Vegetation Zones
 
@@ -644,22 +708,30 @@ scene's course meshes in step with the FBX folder the Blender export writes into
 [`blender/tools/fbx_sync.py`](../blender/README.md#fbx-sync) ("Export changed FBX"), which only rewrites the FBX
 of meshes that changed, so Unity only reimports those.
 
-- **An FBX overwritten in place needs nothing.** The scene object references the mesh inside the FBX by the
-  file's GUID and the mesh name, so the reimport swaps the geometry under the existing object; its collider,
-  materials and `MeshChannelMaterialsStore` stay. Don't delete and re-drag the meshes.
-- **A new FBX** (no scene object shows it anywhere in the scene) is instantiated under the course's mesh parent the
-  way OPCD's `GSP > Add OPCD Meshes` does, given a `MeshCollider`, then OPCD's `GameObject > Set Default Materials`
-  runs on the new objects (materials, channel store, physics material).
-- **An FBX that is gone:** objects under the parent whose mesh reference is missing are listed as `stale`; the
-  menu asks before deleting them, the bridge deletes with `prune=true`.
-- **Vertex paint** renders from mesh copies, so a painted object whose FBX is newer than its copy re-runs
-  `golfmap.paint.apply`; so do new objects when the course has a `paint.json` (`paint=false` skips it).
-- `<course>/meshes-sync.json` remembers each FBX's size and time, so the next sync lists which ones were
-  updated in place. `followUps` names the steps that depend on the meshes (terrain conform, surfaces export,
-  Stix grass on new roughs).
+It does what deleting and re-adding the meshes by hand does, but only for the meshes that changed:
 
-Folder and parent come from the course asset (`meshFolder`, default `fbx` under Assets; `meshParent`, default
-`Meshes`); the bridge takes `folder`/`parent` overrides. `Preview sync` / `dryRun=true` shows the plan. Undo
+- **Changed FBX** (size or time differs from the last sync, `<course>/meshes-sync.json`): the scene object is
+  deleted and added again in the same place. Unity's in-place update of an overwritten FBX is not relied on;
+  it left old geometry in the scene. After OPCD's own Batch Export every mesh counts as changed.
+- **New FBX:** instantiated under the course's mesh parent the way OPCD's `GSP > Add OPCD Meshes` does. Added and
+  replaced objects get a `MeshCollider`, then OPCD's `GameObject > Set Default Materials` runs on them (materials,
+  channel store, physics material).
+- **FBX that is gone:** objects under the parent that show no current FBX (including painted copies of a deleted
+  FBX, which keep rendering) are `stale`. The menu asks before deleting them; the bridge deletes with `prune=true`.
+- **Leftovers:** an FBX that the Blender FBX sync's record (`<folder>/.golfmap-fbx-sync.json`) doesn't list is left
+  over from an older `.blend`. It is never added and is reported with its scene objects; delete it from Blender
+  (**Delete FBX of removed meshes**), then sync again. A record older than any FBX (OPCD's Batch Export bypasses
+  it) is ignored.
+- **Excluded:** FBX whose name starts with a prefix in the course's `meshExclude` (default `Gap_Issue`, OPCD's
+  gap-check markers) are never added, even when OPCD's Batch Export writes them; objects showing one are stale.
+- **Vertex paint** is applied again after any add or replace (`paint=false` skips it).
+- **First sync** (no record yet): nothing is replaced; the scene is taken as current and recorded. `GolfMap >
+  Meshes > Rebuild all from FBX folder` (`replaceAll=true`) replaces every mesh.
+- The parent and objects with children are never treated as course meshes. A parent that renders a mesh itself
+  (e.g. made by dragging an FBX in and renaming it) is reported under `warnings`: it draws twice there.
+
+Folder, parent and exclusions come from the course asset (`meshFolder`, default `fbx` under Assets; `meshParent`,
+default `Meshes`; `meshExclude`, default `Gap_Issue`); the bridge takes `folder`/`parent`/`exclude` overrides. `Preview sync` / `dryRun=true` shows the plan. Undo
 covers the scene changes; the scene is marked dirty, not saved.
 
 ## Creeks (R.A.M.)
@@ -674,18 +746,86 @@ covers the scene changes; the scene is marked dirty, not saved.
   with the creek's width in `w`. golf-map digs the bed below that same surface (**Dig creeks**), so the water
   only shows once the heightmap and the Blender meshes are rebuilt with the digs.
 - **Profile**: each creek names a profile asset (default *Small Stream Profile*; a feature's `ramProfile`
-  attribute picks another), applied the way R.A.M.'s own profile picker does it (`ResetToProfile`).
-- **Re-import** refills each spline's points in place. Hand edits to the points are not kept. Creeks no
-  longer exported are removed.
+  attribute picks another), applied the way R.A.M.'s own profile picker does it (`ResetToProfile`). It gives the
+  mesh's shape; the look comes from `water`.
+- **Water** (`water=lake`, the default): the creeks wear the lakes' water, not the profile's bright, foamy
+  material. That is `<course>/Creeks/Creek water (lake).mat`, a copy of OPCD's `OPCD-WaterPlane_AquasLite` made
+  on first use and then kept, so tune it there. Each creek's renderer anchors to the nearest lake plane's
+  reflection probe (its box only covers the lake), so it reflects what that lake reflects. AQUAS samples its
+  waves in world XZ, so the ripples drift one way and do not follow the flow. `water=profile` puts R.A.M.'s
+  material back. `GolfMap > Creeks > Water like the lakes / Water from the R.A.M. profile` (bridge
+  `golfmap.creeks.water water=lake|profile`) switches the look without refitting the creeks.
+- **Fitted to the scene** (unless `fit=false`): the export gives the line, the course meshes under it
+  (`Spline_*`, the terrain where there are none) give the height and width, so the water sits in the bed
+  the scene actually has:
+  - *height*: `aboveBedM` (0.15) over the lowest ground across the creek. Each point takes the highest bed along
+    the stretch it stands for. The water is not forced to fall, because a bump would hold it up above its banks.
+  - *crossings*: bed that stands 0.3 m above lower bed on both sides within 20 m (a path over a culvert, or an
+    undug hump), ramps included. The water runs under it at the level either side, hidden. The report
+    lists each one, since an undug stretch shows as dry bed.
+  - *width*: at every metre, each side runs out to where the ground rises `buryM` (0.05) above the water,
+    then `bankM` (2 m) further, stopping short of where the ground drops back under the water. The point is
+    moved across to centre the water between its two sides, so the edges sit inside the banks with no gap
+    under them.
+  - *ends*: both ends run on along the line into the bank the same way.
+  - A side or end that never meets a bank (flat ground, a creek into a pond or another creek) keeps the
+    export's width or end. It is counted as `open`, and the report's `check` list gives its plot x, z. Where the
+    ground beside a creek is not below the water, dig the creek deeper in golf-map.
+- **Refit after a remodel**: the fit reads the scene, so rebuild the scene first, then run both steps again. The
+  order: edit the creeks → **Dig creeks** → Apply to terrain → **Inner heightmap → Unity** → Blender meshes +
+  `golfmap.meshes.sync` → **Export creeks** (the lines, `bun run gspro:export -- <course> creeks`) →
+  **Import creeks**. A stale export shows as `groundAboveExportSurfaceM` far from 0 (its heights were measured
+  against another heightmap zero). Its lines are what matter, and the fit replaces its heights.
+- **Re-import** refills each spline's points in place and resets its transform. Hand edits to the points,
+  and a spline object moved by hand, are not kept. Creeks no longer exported are removed.
+- `trace=<creek id or part>` adds that creek's stations to the result (bed, water, banks, crossings), for
+  working out a bad fit.
 - R.A.M. is in Assembly-CSharp, so its types are found by name (the offline compile check can't see them).
 - Skip OPCD's **Add Water Plane** for creeks: its one flat plane per mesh, at the lowest rim vertex, would sit
   under the bed upstream.
 
-The report (`GolfMapSpelunk/<Course>_creeks.txt`) gives each creek's surface against the ground under it (the
-highest collider straight down). On Vreta, before any digs, the median is 4–38 cm under the creek meshes. A
-creek far off means the scene's heightmap is not the one the export measured. Known gap: where creeks meet,
+The report (`GolfMapSpelunk/<Course>_creeks.txt`) gives each creek's exported surface against the ground
+under it (the highest collider straight down) and its fit: widths, how far the surface moved, the ends'
+reach into the bank, open sides, the largest climb, crossings and the places to check. The exported surface
+comes from the raw DEM and lands at or under the dug bed (Vreta after the 2026-09-26 remodel: median
+0–24 cm under it), which is why the splines are fitted to the scene. Known gap: where creeks meet,
 the end heights can differ by ~10 cm (each creek's profile is its own), and the splines are not joined
 (R.A.M.'s beginning/ending spline connections).
+
+## Water planes (lakes)
+
+`GolfMap > Waterplanes > Build for selected mesh` builds the AQUAS water surface over one mesh at a time the way
+OPCD's Blender **Add Water Plane** does (`opcd_blender_tools/operators/water.py`), from the meshes already in the
+scene, so no Blender round trip. Click the mesh in the Scene view (a lake's `Water_Base`, or any other mesh to put
+water on), run it, and the new plane is selected so its Y is at hand in the Inspector. A message in the Scene view
+and the Console says what it built or why not. Select a plane (or its probe) and run it again to rebuild it from its
+mesh. `GolfMap > Waterplanes > Build for all lakes` does every `*_Water_Base_Lake_-_Mesh` at once. Both are
+`GolfMapWaterplanes.cs`, bridge `golfmap.waterplanes.build [dryRun] [selected] [only] [outsetM=2] [belowM=0.05]
+[liftM=0.3] [replaceExisting] [prune]`:
+
+- **Geometry**: the lake's `Spline_*_Water_Base_Lake_-_Mesh` (or the selected mesh), welded, every vertex put at one level = the lowest
+  vertex on its edge (islands included) − `belowM`, then a flat ring `outsetM` wide around every edge so the plane
+  runs in under the banks and blends. All red vertex colour, normals up, no UVs (the shader samples its waves in
+  world XZ). Saved to `<course>/WaterPlanes/<key>_WaterPlane.asset`. On Vreta's `others_49` it gives the same
+  21 502 vertices as OPCD's plane, 1 cm higher.
+- **Object**: `<key>_WaterPlane` (e.g. `Spline_others_49_WaterPlane`; another mesh's name without `_-_Mesh`,
+  e.g. `Spline_hole_17_12_Bunker_WaterPlane`) under **Waterplanes**, its transform `liftM`
+  above the level, as the hand-made plane was raised. A MeshCollider, then OPCD's **Set Default Materials**, which
+  keys on `_WaterPlane` in the name: material `OPCD-WaterPlane_AquasLite`, physic material `GSPwater` (what makes it
+  a hazard in GSPro), and a child **Default Reflection Probe** at the plane's centre (realtime, refresh on awake,
+  1024, HDR, box projection, box 15×100×15 m) that the renderer uses as its anchor override. The whole plane
+  reflects that one cubemap.
+- **Rebuild** refills the same mesh asset. The object, its material and its probe stay, and the probe moves to
+  the new centre. A lift changed by hand (the object's local y) is kept unless `liftM` is given.
+- **Covered lakes**: a lake that another water plane already covers (e.g. an OPCD FBX plane) is skipped.
+  `replaceExisting=true` builds it anyway and switches the other plane off (it is not deleted).
+- `dryRun` lists every lake with its level, surface, edge heights (`rimM`) and `rimBelowSurface`, the share of the
+  edge below the water. There the plane shows over the bank unless the outset runs in under higher ground. It
+  also lists the existing planes and what they cover. `prune` deletes planes built here whose lake is gone.
+- **Creeks**: one level per plane is only right for still water. A `Water_Base_Creek` is built only when named in
+  `only`, with a warning; use the R.A.M. creeks for water that falls.
+- Water planes are named `Spline_*` but are not ground: terrain conform, surfaces export, the creek fit, vertex
+  paint and the VSP tree planter leave them out (`GolfMapWaterplanes.IsWaterPlane`).
 
 ## Not built yet
 
@@ -694,3 +834,69 @@ the end heights can differ by ~10 cm (each creek's profile is its own), and the 
   version. Written for C# 6 so it compiles on the Unity 2018.2 base project; newer APIs
   (terrain layers, prefab roots, render pipeline, package listing) are behind version
   defines with 2018.2 fallbacks.
+
+## Course props
+
+`GolfMapProps.cs` places what `blender/tools/build_props.py` built into `<course>/Props/` (see
+[blender/README.md](../blender/README.md#course-props-buildings-shelters-flags-cars-)):
+
+- `golfmap.props.place` (GolfMap > Props > Place props from manifest): Standard materials from the manifest
+  (albedo, normal map, metallic/occlusion/smoothness mask, cutout for netting) remapped onto the FBX by name, then
+  every instance under `GolfMap Props/<Category>s/<asset>#<index>` at its EPSG:3006 position (inner DEM sidecar
+  frame) on the highest collider below (course meshes, else terrain), rotated to its `yawDeg`. Buildings and
+  structures get MeshColliders, small props box colliders or none; Unity-prefab assets keep their own. A realtime
+  reflection probe (on awake) covers the area. Replaces what the last place made (`only=<ids>` just those).
+  `dryRun=true` returns ground heights and the plan. Report: `GolfMapSpelunk/<Course>_props.txt`. Warns when a
+  building's footprint spans more than 1 m of ground (a pad or a plinth to check).
+- Placed objects carry no custom component (GSPro would load it as a missing script); they are found by name.
+- `golfmap.props.measure` (`folder` or `paths`): prefab sizes, LODs and colliders, for sizing prefab assets in a spec.
+- Prefab assets (`prefab` instead of Blender parts, e.g. the vehicle pack's cars, the CE golf cart, a pack's hedge):
+  `axis` = the prefab's forward axis (`x` default, `z` for most vehicle packs; `yawDeg` is its compass bearing),
+  `recolor: [{material, color, as}]` = copies of named materials with another `_Color` under
+  `<Props>/Materials/Recolor/`, swapped in on that asset's instances (grey/silver cars from a white body). The prefab's
+  own root scale is kept (packs modelled in cm scale the root); `collider: box` adds one box to a prefab without
+  colliders. Import pack subsets by dependency (prefab + what it references, with `.meta`), never over existing GUIDs.
+- Manifest materials can be `fade` (translucent Standard, e.g. ball-stop netting) or `cutout`.
+- `golfmap.props.clear` deletes `GolfMap Props`.
+
+## Stone walls
+
+`GolfMapWalls.cs` builds stone faces on steep banks, and `GolfMapWallGround.cs` reshapes the ground under them: the
+raised tees of Vreta's 13th, whose downhill sides are dry-stone walls from foot to top edge. The lidar smooths such a
+wall into a 45-60 deg bank and OPCD's ~1.2 m mesh grid into ~35 deg; no placement of stones on that bank reads as a
+wall, so the meshes are reshaped first (ce.simgolf's rockwork in Blender, done in Unity: subdivide, pull steep, paint
+the stone in).
+
+- Spec `golfmap-walls-v1`, `<course>/stone-walls.json`, generated by `docs/gspro/<course>/stone-walls.gen.py --out
+  <course folder>`: each wall as paired EPSG:3006 stations along its bank, the foot (`toe`) and the top edge (`lip`),
+  traced on rays from the plateau's centre over the edited DEM; `stoneSets` (named lists of stones), `styles` (named
+  presets), `defaults`, per-wall overrides (defaults, then the wall's style, then the wall); `boulders`, single big
+  stones placed whole.
+- Ground (`ground: true`): inside the vertex paint (`golfmap.paint.apply`, so also after every `golfmap.meshes.sync`),
+  every course mesh the bank crosses is copied from its FBX mesh, subdivided there to `subdivideM`, raised (never
+  lowered) to a terrace: the foot up to `baseInM` in, a face at `faceDeg`, then the plateau's height (measured on the
+  original meshes just past the lip) out to `beyondM` past the lip, tapered over `taperM` at the ends. On rough meshes
+  the face is painted `groundChannel` (blue), and the mesh gets a copy of its material (`<course>/Walls/<name>
+  (stone).mat`) whose blue channel is `stoneMaterial`'s `stoneMaterialChannel` (OPCD's Mossy Rock): stone between the
+  stones and no Stix grass. The copy goes into `PaintedMeshes/` like any painted mesh, the MeshCollider takes it (the
+  ball meets the new ground), `restore.json` keeps the original mesh and material, `golfmap.paint.restore` puts both
+  back. OPCD's theme window resets the material: run the paint again.
+- Styles:
+  - `wall` (a dry-stone wall, stenmur): courses up the face (`baseCourseM`, `courseM` high, beds jittered
+    `bedJitterM`), each a run of wall stones `lengthRatio` x the course height long, their flattest side out, set
+    `faceProudM` (+- `faceJitterM`) proud of the face's plane, beds along the batter, turned `spinDeg` at most; the top
+    course cut to end `capM` over the plateau. Wall stones: `props_kit` `boulder` with `exponent` 2.5-3.6 (blocks with
+    rounded edges), `flats` (face +y, beds +-z) and small `lumps`; which side is the face is read off the mesh.
+  - `rose` (a stenröse, a heap of rounded stones): courses `courseStepM` apart so they nest, front stones on the face
+    (`followBank`) standing `proudFrac` of their depth out, leaning `leanDeg` back, packed `gapM`, tops capped `capM`;
+    `maxFill` stones behind where no ground reshaping lifted the plateau. Round `boulder`s.
+- Stones: Blender-built (`props_kit` `boulder`: the kit's lichen granite, moss or ivy on faces pointing up) in the
+  spec's `stonesFolder` (`<course>/Walls/Stones/`, from `docs/gspro/<course>/wall-stones.json` through
+  `build_props.py`); materials and FBX import from that folder's manifest (`GolfMapProps.PrepareModels`). A stone may
+  also be a `prefab`. The packs' photoscanned rocks (NatureManufacture Meadow) read as rubble.
+- `golfmap.walls.build` (GolfMap > Walls > Build stone walls): runs the paint first when a wall has ground, then the
+  stones, fitted to the course meshes (terrain where there are none), under `GolfMap Walls/<id>/<model>#<n>`,
+  MeshColliders on Blender stones, no custom components. Rebuilds replace (`only=<ids>`); a wall's seed + `variant`
+  gives the same stones every time, so hand edits to single stones are lost on a rebuild. `profile=<wall id>` shows
+  the bank as the meshes have it, `dryRun=true` the plan. Report: `GolfMapSpelunk/<Course>_walls.txt`.
+- `golfmap.walls.clear` (`only=<ids>`) deletes the stones (the ground stays: drop `ground` and paint again).

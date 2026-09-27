@@ -87,7 +87,7 @@ test('serve mode offers only the read-only editor tools', () => {
 
 test('every builder-only tool is flagged as such (registry stays in sync)', () => {
     const flagged = EDITOR_TOOLS.filter(t => t.builderOnly).map(t => t.id).sort();
-    expect(flagged).toEqual(['clean', 'draw', 'furniture', 'sam', 'terrain-edit']);
+    expect(flagged).toEqual(['clean', 'draw', 'furniture', 'sam', 'terrain-edit', 'vegetation']);
 });
 
 test('builder routes are the map-build wizard and site setup, prefix-matched', () => {

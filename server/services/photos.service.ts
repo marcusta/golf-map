@@ -357,7 +357,11 @@ export class PhotosService {
         return this.get(input.id);
     }
 
-    /** Edits tags, note or hole under optimistic locking. File arrivals never bump `version`. */
+    /**
+     * Edits tags, note or hole under optimistic locking. File arrivals never
+     * bump `version`. Stamps `edited_at`, so a later builder pull keeps these
+     * local edits (`upsertPulled`).
+     */
     async update(id: string, version: number, patch: UpdatePhotoPatch): Promise<Photo> {
         const row = await this.byId(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Photo ${id} not found`);
@@ -374,6 +378,7 @@ export class PhotosService {
             .where('id', '=', id)
             .set({
                 ...set,
+                edited_at: this.nowIso(),
                 version: version + 1,
                 updated_at: sql`(datetime('now'))`,
                 // Re-list the edit for the builder pull once the original has arrived.
@@ -556,17 +561,19 @@ export class PhotosService {
 
     /**
      * Inserts or updates a row pulled from the VPS. Sensor and file metadata
-     * come from the VPS; the local refined-pose fields are never touched.
+     * come from the VPS; the local refined-pose fields are never touched, and
+     * tags, note and hole are kept once they were edited here (`edited_at`).
      * Returns what happened, or `'no-site'` when the site does not exist here.
      */
     async upsertPulled(remote: Photo): Promise<'inserted' | 'updated' | 'unchanged' | 'no-site'> {
         const site = await this.db.selectFrom('sites').select('id').where('id', '=', remote.siteId).executeTakeFirst();
         if (!site) return 'no-site';
 
+        const local = await this.byId(remote.id).executeTakeFirst();
+        const remoteEditable = { hole: remote.hole, tags_json: JSON.stringify(remote.tags), note: remote.note };
         const fields = {
             site_id: remote.siteId,
             course_id: remote.courseId,
-            hole: remote.hole,
             captured_at: remote.capturedAt,
             lat: remote.lat,
             lon: remote.lon,
@@ -588,24 +595,24 @@ export class PhotosService {
             eye_height_m: remote.eyeHeightM,
             device_model: remote.deviceModel,
             lens: remote.lens,
-            tags_json: JSON.stringify(remote.tags),
-            note: remote.note,
         };
 
-        const local = await this.byId(remote.id).executeTakeFirst();
         if (!local) {
             await this.db
                 .insertInto('site_photos')
-                .values({ id: remote.id, ...fields, pulled_at: this.nowIso(), version: 1 })
+                .values({ id: remote.id, ...fields, ...remoteEditable, pulled_at: this.nowIso(), version: 1 })
                 .execute();
             return 'inserted';
         }
-        const changed = (Object.keys(fields) as Array<keyof typeof fields>).some((k) => local[k] !== fields[k]);
+        // Tags, note and hole edited here win over the VPS copy.
+        const update: typeof fields & Partial<typeof remoteEditable> =
+            local.edited_at === null ? { ...fields, ...remoteEditable } : fields;
+        const changed = (Object.keys(update) as Array<keyof typeof update>).some((k) => local[k] !== update[k]);
         if (!changed) return 'unchanged';
         await this.db
             .updateTable('site_photos')
             .where('id', '=', remote.id)
-            .set({ ...fields, version: local.version + 1, updated_at: sql`(datetime('now'))` })
+            .set({ ...update, version: local.version + 1, updated_at: sql`(datetime('now'))` })
             .execute();
         return 'updated';
     }

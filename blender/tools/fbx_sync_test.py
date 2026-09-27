@@ -15,15 +15,18 @@ import tempfile
 
 import bpy
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import fbx_sync  # noqa: E402
+# Load this folder's fbx_sync.py by path: an installed copy of the add-on is already imported as "fbx_sync".
+import importlib.util  # noqa: E402
+_spec = importlib.util.spec_from_file_location("fbx_sync_under_test", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbx_sync.py"))
+fbx_sync = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fbx_sync)
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 compare = argv[argv.index("--compare") + 1] if "--compare" in argv else None
 ctx = bpy.context
 folder = tempfile.mkdtemp(prefix="fbx_sync_test_")
 
-meshes = sorted((o for o in ctx.visible_objects if o.type == "MESH"), key=lambda o: len(o.data.vertices))
+meshes = sorted((o for o in ctx.visible_objects if o.type == "MESH" and not o.name.startswith("Gap_Issue")), key=lambda o: len(o.data.vertices))
 keep = meshes[:5]
 for o in ctx.visible_objects:
     if o not in keep:
@@ -51,8 +54,16 @@ try:
 except RuntimeError:
     check("refuses without a manifest", True)
 
+gap = bpy.data.objects.new("Gap_Issue_0__fbx_sync_test", keep[0].data.copy())
+ctx.scene.collection.objects.link(gap)
+old_gap = os.path.join(folder, "Gap_Issue_9__from_an_earlier_export.fbx")
+open(old_gap, "wb").close()
+
 r = run(export_all=True)
 check("export all writes every visible mesh", sorted(r["export"]) == sorted(names) and len(mtimes()) == 5)
+check("Gap_Issue mesh skipped, its old FBX deleted",
+      r["excluded"] == 1 and not any(f.startswith("Gap_Issue") for f in os.listdir(folder))
+      and not any(n.startswith("Gap_Issue") for n in fbx_sync.load_manifest(folder)))
 if compare:
     for n in names:
         ours, theirs = os.path.getsize(os.path.join(folder, n + ".fbx")), os.path.getsize(os.path.join(compare, n + ".fbx"))
@@ -83,7 +94,11 @@ new = fbx_sync.file_name(keep[3])
 r = run(dry_run=True)
 check("rename: dry run lists the new file and the orphan, writes nothing",
       r["export"] == {new: "no FBX"} and old in r["orphans"] and not os.path.exists(os.path.join(folder, new + ".fbx")))
-r = run(delete_orphans=True)
+r = run(delete_orphans=False)
+check("rename, orphans kept: new file exported, old one stays",
+      os.path.exists(os.path.join(folder, new + ".fbx")) and os.path.exists(os.path.join(folder, old + ".fbx")))
+os.remove(os.path.join(folder, new + ".fbx"))
+r = run()
 check("rename: new file exported, orphan deleted",
       os.path.exists(os.path.join(folder, new + ".fbx")) and not os.path.exists(os.path.join(folder, old + ".fbx")))
 check("manifest dropped the orphan", old not in fbx_sync.load_manifest(folder))

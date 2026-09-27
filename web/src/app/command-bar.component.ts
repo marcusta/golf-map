@@ -12,13 +12,15 @@ import { FeaturesService } from '../draw/features.service';
 import { HelpModalService } from '../editor/help-modal.component';
 import { DrawToolService, DRAW_TOOL_ID } from '../draw/draw-tool.service';
 import { drawTool } from '../draw/draw-tool';
-import { FEATURE_TYPES, FEATURE_STYLES, digitForFeatureType, isRulesType, type FeatureType } from '../draw/feature-palette';
+import { FEATURE_TYPES, FEATURE_STYLES, digitForFeatureType, isRulesType, isVegetationType, type FeatureType } from '../draw/feature-palette';
 import { EditorModeService } from '../editor/editor-mode.service';
 import { ServerModeService, visibleEditorTools } from './server-mode.service';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
 import { GeojsonImportService } from '../import/geojson-import.service';
 import { GsproExportService } from '../export/gspro-export.service';
-import { ZoneTypesService } from '../zones/zone-types.service';
+import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
+import { VEGETATION_TOOL_ID } from '../zones/vegetation-tool';
+import { PlantVegetationService } from '../zones/plant-vegetation.service';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
 import { TilesetService } from '../map/tileset.service';
 import { MapService } from '../map/map.service';
@@ -71,12 +73,15 @@ const zone3Tpl = template(`
     <span bind="subHost" class="cmdbar__slot"></span>
     <span bind="featWrap" class="cmdbar__feat-wrap">
         <span bind="featHost" class="cmdbar__slot"></span>
+        <span bind="zoneHost" class="cmdbar__slot"></span>
         <span bind="drawTarget" class="cmdbar__target" data-testid="draw-target"></span>
         <button bind="newPoly" type="button" class="cmdbar__new"></button>
         <button bind="newPath" type="button" class="cmdbar__path"></button>
         <input bind="pathWidth" type="number" class="cmdbar__path-width" min="0.5" step="0.5" aria-label="Path width (m)" data-testid="path-width-input">
         <select bind="pathSurface" class="cmdbar__path-width cmdbar__path-surface" aria-label="Path surface" data-testid="path-surface-default"></select>
         <button bind="boxSelect" type="button" class="cmdbar__box"></button>
+        <button bind="plantBtn" type="button" class="cmdbar__plant" data-testid="plant-vegetation-btn"></button>
+        <button bind="updateZonesBtn" type="button" class="cmdbar__plant" data-testid="update-zones-btn"></button>
         <span class="cmdbar__divider cmdbar__divider--sm"></span>
         <button bind="undoBtn" type="button" class="cmdbar__hist" aria-label="Undo">${icon('undo', 16)}</button>
         <button bind="redoBtn" type="button" class="cmdbar__hist" aria-label="Redo">${icon('redo', 16)}</button>
@@ -186,6 +191,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 gap: ${s('sm')};
                 &.show { display: flex; }
             }
+            /* A Draw control Vegetation mode has no use for (and vice versa). */
+            & [data-off="true"] { display: none !important; }
 
             /* Dropdown chip trigger (guide §06): swatch/icon + label + chevron. */
             & .cmdbar__chip {
@@ -275,6 +282,16 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 & .cmdbar__new-icon { transform: rotate(45deg); }
             }
             & .cmdbar__box { ${iconBtn()} }
+            /* Vegetation mode's one-click planting (generate, export, into Unity). */
+            & .cmdbar__plant {
+                ${iconBtn()}
+                width: auto;
+                gap: 6px;
+                padding: 0 10px;
+                font-size: 0.8rem;
+                white-space: nowrap;
+                &[aria-busy="true"] { cursor: progress; opacity: 0.75; }
+            }
 
             /* New-path toggles like new-polygon; its width field only shows
                while a path is being drawn. */
@@ -514,6 +531,26 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 & select { ${input()} flex: 1; min-width: 0; }
             }
         }
+        /* Zone-type picker: footer link to the table editor, empty-table note. */
+        .cmd-zt-edit {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 4px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            font: inherit;
+            color: ${t('color-text-primary')};
+            cursor: pointer;
+            &:hover { background: color-mix(in srgb, ${t('color-text-primary')} 6%, transparent); }
+        }
+        .cmd-zt-empty {
+            grid-column: 1 / -1;
+            padding: 6px 4px;
+            font-size: 0.8rem;
+            color: ${t('color-text-secondary')};
+        }
 
         /* Accent (Publish) menu item — clay text + a small clay swatch. */
         .menu-item.cmd-menu-accent {
@@ -541,6 +578,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private mapSvc = this.inject(MapService);
     private publishVps = this.inject(PublishClientService);
     private confirm = this.inject(ConfirmService);
+    private plant = this.inject(PlantVegetationService);
     private helpModal = this.inject(HelpModalService);
     private serverMode = this.inject(ServerModeService);
     private auth = this.inject(AuthService);
@@ -696,7 +734,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
 
     private buildZone3(host: HTMLElement): void {
         const frag = this.wire(zone3Tpl, {
-            featWrap: { className: () => (this.isDrawSubmode() ? 'cmdbar__feat-wrap show' : 'cmdbar__feat-wrap') },
+            featWrap: { className: () => (this.isFeatureEditSubmode() ? 'cmdbar__feat-wrap show' : 'cmdbar__feat-wrap') },
+            featHost: { 'data-off': () => String(this.isVegetationSubmode()) },
+            zoneHost: { 'data-off': () => String(!this.isVegetationSubmode()) },
             drawTarget: {
                 textContent: () => `→ ${this.holeLabel(this.tool.drawHoleId.get())}`,
                 title: 'New shapes are added to this hole / scope',
@@ -716,8 +756,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 innerHTML: `<span class="cmdbar__new-icon">${icon('plus', 16)}</span>`,
                 title: () => (this.tool.state.isDrawing.get()
                     ? 'Drawing — click to stop and return to Select (Esc)'
-                    : 'New polygon (N)'),
-                'aria-label': () => (this.tool.state.isDrawing.get() ? 'Stop drawing' : 'New polygon'),
+                    : this.isVegetationSubmode() ? 'New zone (N)' : 'New polygon (N)'),
+                'aria-label': () => (this.tool.state.isDrawing.get() ? 'Stop drawing'
+                    : this.isVegetationSubmode() ? 'New zone' : 'New polygon'),
                 'aria-pressed': () => this.tool.state.isDrawing.get(),
                 'data-testid': 'new-polygon-btn',
                 onclick: () => {
@@ -733,6 +774,33 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 'data-testid': 'box-select-btn',
                 onclick: () => this.tool.state.toggleBoxSelect(),
             },
+            // Vegetation mode: plant everything the zones and marked creeks
+            // describe, right through to the open Unity project.
+            plantBtn: {
+                'data-off': () => String(!this.isVegetationSubmode()),
+                innerHTML: () => `${icon('sprout', 16)}<span>${this.plant.runningKind.get() === 'vegetation' ? 'Planting…' : 'Plant vegetation'}</span>`,
+                title: "Plant vegetation: regenerate the tall rough and the creek and pond banks from the course as drawn, export the zones, and import them into the course's open Unity project",
+                'aria-busy': () => String(this.plant.running.get()),
+                onclick: () => {
+                    const course = this.svc.course.peek();
+                    if (course && !this.plant.running.peek()) void this.confirmPlantVegetation(course.id);
+                },
+            },
+            // Vegetation mode with zones selected: just their area, straight into Unity.
+            updateZonesBtn: {
+                'data-off': () => String(!this.isVegetationSubmode() || this.selectedZoneIds().length === 0),
+                innerHTML: () => {
+                    const n = this.selectedZoneIds().length;
+                    return `${icon('upload', 16)}<span>${this.plant.runningKind.get() === 'vegetation-update' ? 'Updating…' : n > 1 ? `Update ${n} zones in Unity` : 'Update in Unity'}</span>`;
+                },
+                title: "Update in Unity: re-rasterize only the area of the selected zones (as drawn now and as last exported) and respawn it in the course's open Unity project. The generators do not run; use Plant vegetation after changing the zone types' items",
+                'aria-busy': () => String(this.plant.running.get()),
+                onclick: () => {
+                    const course = this.svc.course.peek();
+                    const ids = this.selectedZoneIds();
+                    if (course && ids.length > 0 && !this.plant.running.peek()) void this.updateZonesInUnity(course.id, ids);
+                },
+            },
             newPath: {
                 innerHTML: icon('route', 16),
                 title: () => (this.pathArmed()
@@ -741,6 +809,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 'aria-label': () => (this.pathArmed() ? 'Stop drawing the path' : 'New path'),
                 'aria-pressed': () => this.pathArmed(),
                 'data-testid': 'new-path-btn',
+                'data-off': () => String(this.isVegetationSubmode()),
                 onclick: () => {
                     if (this.pathArmed()) this.tool.state.disarm();
                     else this.tool.armPath();
@@ -806,6 +875,26 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             panel: (h, ctx) => this.buildFeaturePanel(h, ctx.track, ctx.close),
         });
 
+        // Zone-type dropdown (Vegetation mode, in the feature type's place).
+        this.spawn(PopoverComponent, this.ref(frag, 'zoneHost'), {
+            ariaLabel: 'Zone type',
+            triggerClassName: 'cmdbar__chip',
+            panelClassName: 'cmdbar__ft-panel',
+            trigger: (h, ctx) => {
+                h.dataset.testid = 'zone-type-trigger';
+                h.innerHTML = `<span class="cmdbar__chip-sw" data-k="sw"></span><span data-k="name"></span><span class="cmdbar__chip-chev">${icon('chevron-down', 16)}</span>`;
+                const swEl = h.querySelector<HTMLElement>('[data-k="sw"]')!;
+                const nameEl = h.querySelector<HTMLElement>('[data-k="name"]')!;
+                ctx.track(effect(() => {
+                    const key = this.triggerZoneType();
+                    swEl.style.background = this.zoneTypesSvc.colorFor(key) || FEATURE_STYLES.vegetation_zone.fill;
+                    swEl.style.border = `1px solid ${FEATURE_STYLES.vegetation_zone.outline}`;
+                    nameEl.textContent = key ? this.zoneTypesSvc.labelFor(key) : 'Zone type';
+                }));
+            },
+            panel: (h, ctx) => this.buildZoneTypePanel(h, ctx.track, ctx.close),
+        });
+
         host.appendChild(frag);
     }
 
@@ -822,14 +911,26 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     }
 
     /**
-     * The draw tool is the active sub-mode (or none is armed yet → treat as
-     * draw). Never in serve mode: the draw tool isn't registered there, so the
-     * "nothing armed yet" fallback must not reveal the drawing controls.
+     * A draw-engine sub-mode is active — Draw or Vegetation (or none is armed
+     * yet → treat as Draw). Never in serve mode: neither tool is registered
+     * there, so the "nothing armed yet" fallback must not reveal the drawing
+     * controls.
      */
-    private isDrawSubmode(): boolean {
+    private isFeatureEditSubmode(): boolean {
         if (!this.serverMode.isBuilder()) return false;
         const active = this.mode.activeTool();
-        return active ? active.id === DRAW_TOOL_ID : true;
+        return active ? active.id === DRAW_TOOL_ID || active.id === VEGETATION_TOOL_ID : true;
+    }
+
+    private isVegetationSubmode(): boolean {
+        return this.mode.activeToolId.get() === VEGETATION_TOOL_ID;
+    }
+
+    /** Zone type shown on the zone-type trigger (selected single zone → the next zone's type). */
+    private triggerZoneType(): string {
+        const selected = this.features.selectedIds.get().size === 1 ? this.features.selected.get() : null;
+        if (selected && isVegetationType(selected.type)) return zoneTypeKeyOf(selected.attributes);
+        return this.tool.drawZoneType.get() || (this.zoneTypesSvc.items.get()[0]?.key ?? '');
     }
 
     /** Feature type shown on the dropdown trigger swatch (selected single → drawType). */
@@ -875,8 +976,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         const follow = host.querySelector<HTMLInputElement>('[data-k="follow"]')!;
         const defaultRow = host.querySelector<HTMLElement>('[data-k="defaultRow"]')!;
         const defaultSel = host.querySelector<HTMLSelectElement>('[data-k="defaultSel"]')!;
-        // The rules lines (penalties, OOB) are Furniture's, not Draw's.
-        const drawTypes = FEATURE_TYPES.filter(type => !isRulesType(type));
+        // The rules lines (penalties, OOB) are Furniture's, the zones Vegetation's.
+        const drawTypes = FEATURE_TYPES.filter(type => !isRulesType(type) && !isVegetationType(type));
         for (const type of drawTypes) {
             const opt = document.createElement('option');
             opt.value = type;
@@ -943,6 +1044,54 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             row.appendChild(eye);
             grid.appendChild(row);
         }
+    }
+
+    /**
+     * Vegetation mode's type picker: the course's zone types. A pick sets
+     * the next zone's type, or retypes the selected zones
+     * (`DrawToolService.chooseZoneType`). The footer opens the zone-type
+     * table editor.
+     */
+    private buildZoneTypePanel(host: HTMLElement, track: (d: () => void) => void, close: () => void): void {
+        host.innerHTML = `<div class="cmdbar__ft-title">Zone type</div><div class="cmdbar__ft-grid" data-k="grid"></div>`
+            + `<div class="cmd-ft-policy"><button type="button" class="cmd-zt-edit" data-k="edit" data-testid="zone-types-edit-btn">`
+            + `${icon('layers', 16)}<span>Edit zone types…</span></button></div>`;
+        const grid = host.querySelector<HTMLElement>('[data-k="grid"]')!;
+        const edit = host.querySelector<HTMLButtonElement>('[data-k="edit"]')!;
+        edit.onclick = () => {
+            const course = this.svc.course.peek();
+            close();
+            if (course) void this.zoneTypesSvc.openFor(course.id);
+        };
+        track(effect(() => {
+            const types = this.zoneTypesSvc.items.get();
+            grid.textContent = '';
+            if (types.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'cmd-zt-empty';
+                empty.textContent = 'No zone types yet — add them with Edit zone types.';
+                grid.appendChild(empty);
+                return;
+            }
+            for (const zoneType of types) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'cmd-ft';
+                btn.title = zoneType.name;
+                btn.dataset.zoneType = zoneType.key;
+                btn.innerHTML = `<span class="cmd-ft__sw"></span><span class="cmd-ft__name"></span>`;
+                const sw = btn.querySelector<HTMLElement>('.cmd-ft__sw')!;
+                sw.style.background = zoneType.color;
+                sw.style.borderColor = FEATURE_STYLES.vegetation_zone.outline;
+                btn.querySelector<HTMLElement>('.cmd-ft__name')!.textContent = zoneType.name;
+                btn.onclick = () => {
+                    this.tool.chooseZoneType(zoneType.key);
+                    close();
+                };
+                track(effect(() => btn.setAttribute('aria-selected', String(this.triggerZoneType() === zoneType.key))));
+                grid.appendChild(btn);
+            }
+        }));
     }
 
     // ── Zone 1: (i) info popover ──────────────────────────────────────────
@@ -1063,21 +1212,6 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 if (course) void this.gsproExportSvc.openFor(course.id, course.name);
             };
             host.appendChild(gsproBtn);
-
-            // Vegetation zone types — the course's zone legend (colours, mask
-            // channels, VSPro item bindings) that every vegetation_zone
-            // feature points into.
-            const zoneTypesBtn = document.createElement('button');
-            zoneTypesBtn.type = 'button';
-            zoneTypesBtn.className = 'menu-item';
-            zoneTypesBtn.dataset.testid = 'course-zone-types-btn';
-            zoneTypesBtn.innerHTML = `<span class="menu-item__icon">${icon('layers', 16)}</span><span class="menu-item__label">Vegetation zone types</span>`;
-            zoneTypesBtn.onclick = () => {
-                const course = this.svc.course.peek();
-                close();
-                if (course) void this.zoneTypesSvc.openFor(course.id);
-            };
-            host.appendChild(zoneTypesBtn);
 
             const divider = document.createElement('div');
             divider.className = 'menu-divider';
@@ -1327,6 +1461,80 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 tone: 'warning',
             });
         }
+    }
+
+    /** The vegetation zones in the selection (the ids "Update in Unity" sends). */
+    private selectedZoneIds(): string[] {
+        return this.features.selectedFeatures.get().filter(f => f.type === 'vegetation_zone').map(f => f.id);
+    }
+
+    /** No confirm first: it only redoes what the selected zones already say, in their area. */
+    private async updateZonesInUnity(courseId: string, zoneIds: string[]): Promise<void> {
+        let job: Awaited<ReturnType<PlantVegetationService['update']>>;
+        try {
+            job = await this.plant.update(courseId, zoneIds);
+        } catch (e) {
+            await this.confirm.confirm({
+                title: 'Could not update the zones',
+                body: e instanceof Error ? e.message : String(e),
+                confirmLabel: 'OK', cancelLabel: 'Close', tone: 'warning',
+            });
+            return;
+        }
+        const report = job.result?.report ?? [];
+        const ok = job.status === 'succeeded';
+        const intoUnity = report.some(l => l.startsWith('Unity ('));
+        await this.confirm.confirm({
+            title: ok ? (intoUnity ? 'Zones updated in Unity' : 'Nothing to update') : 'Could not update the zones',
+            body: ok
+                ? (intoUnity ? 'Save the scene in Unity to keep it.' : 'The masks already match these zones.')
+                : job.error ?? 'The job failed.',
+            detail: report.join('\n'),
+            confirmLabel: ok ? 'Done' : 'OK', cancelLabel: 'Close',
+            tone: ok && !report.some(l => l.includes(': skipped - ')) ? 'primary' : 'warning',
+            layout: report.length > 3 ? 'review' : 'default',
+        });
+    }
+
+    /**
+     * Confirm, run the planting job (PlantVegetationService), reload the
+     * features so the regenerated zones show, and put the job's report up:
+     * what each generator planted, the zones export, and what Unity did.
+     */
+    private async confirmPlantVegetation(courseId: string): Promise<void> {
+        const ok = await this.confirm.confirm({
+            title: 'Plant vegetation?',
+            body: "Regenerates the tall rough and the creek and pond banks from the course as drawn now (your zones, the creeks and ponds with bank vegetation), exports the zones and imports them into the course's open Unity project.",
+            detail: 'Takes a minute or two. Generated zones are replaced; the zones you drew are kept. Save the scene in Unity afterwards.',
+            confirmLabel: 'Plant vegetation',
+            cancelLabel: 'Cancel',
+            tone: 'primary',
+        });
+        if (!ok) return;
+        let job: Awaited<ReturnType<PlantVegetationService['plant']>>;
+        try {
+            job = await this.plant.plant(courseId);
+        } catch (e) {
+            await this.confirm.confirm({
+                title: 'Could not plant vegetation',
+                body: e instanceof Error ? e.message : String(e),
+                confirmLabel: 'OK', cancelLabel: 'Close', tone: 'warning',
+            });
+            return;
+        }
+        await this.features.reloadOrLoad(courseId);
+        const report = job.result?.report ?? [];
+        const intoUnity = report.some(l => l.startsWith('Unity ('));
+        await this.confirm.confirm({
+            title: job.status === 'succeeded' ? (intoUnity ? 'Vegetation planted in Unity' : 'Vegetation zones exported') : 'Could not plant vegetation',
+            body: job.status === 'succeeded'
+                ? (intoUnity ? 'Save the scene in Unity to keep it.' : 'Unity did not take them - see below.')
+                : job.error ?? 'The job failed.',
+            detail: report.join('\n'),
+            confirmLabel: 'Done', cancelLabel: 'Close',
+            tone: job.status === 'succeeded' && !report.some(l => /warning|not planted|Not in Unity/.test(l)) ? 'primary' : 'warning',
+            layout: report.length > 3 ? 'review' : 'default',
+        });
     }
 
     private async reloadTilesKeepingCamera(courseId: string): Promise<void> {

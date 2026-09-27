@@ -421,7 +421,15 @@ seeded perimeter `variation`.
   cell dug below its nearest station. The line is the edit's `centerline`, or
   the medial axis of the creek polygon when it has none (a Hydrografi ribbon).
   `gspro.py creeks` puts the R.A.M. water on the same profile, read from the
-  raw DEM.
+  raw DEM. The outline is the water's edge. Inside it everything is dug below
+  the surface; where the creek is too narrow for `bankSlopeDeg` to reach
+  `depthM` by its line (most Hydrografi creeks, ~2 m wide on the 0.5 m DEM)
+  the bank steepens, up to 60°. Outside it, bank above the water comes down
+  to the surface at the outline over `rimM` (a smoothstep, only lowering).
+  On Vreta this takes the water depth along the creek lines from a median of
+  2 cm (the rim taper inside the outline used up the whole channel, and half
+  the stations had ground above the water) to the preset's 0.35 m at every
+  station; the banks outside drop a median 8 cm.
 
 A narrow pond or bunker never reaches full depth: the banks meet first.
 
@@ -436,7 +444,16 @@ these, and `dig: false` skips it. **Dig creeks** does the same for `water_creek`
 features (origin `creek-digs`, `digPreset` from Shoreline's creek set:
 `maintained_drain` (default: 18°, 0.35 m), `meadow_brook`, `estate_stream`,
 `pool_riffle`, `rocky_runnel`, `eroded_gully`). It sends a drawn centerline's
-line and width; a polygon creek's line is found by the pipeline. On Vreta the digs change about 112 000 cells. The shorelines move
+line and width; a polygon creek's line is found by the pipeline. **Edits on
+this site** groups the edits by kind (yours, ponds, bunkers, creeks, pads,
+roads, Unity sculpt; digs of features on another course apart), names each
+after its feature and hole ("Bunker · hole 3"), highlights a hovered row's
+outline on the map and zooms there on a click. The pencil on a generated
+dig's row edits these attributes on
+its feature (preset, depth, bank/entry slope, bunker face) and re-runs that
+generator; deleting the row sets `dig: false` on the feature, so a re-run
+leaves it out. Hand-drawn plane/smooth edits change their own op and params
+there. On Vreta the digs change about 112 000 cells. The shorelines move
 at most 4 cm, every bunker ends at least 0.45 m below its surroundings, and
 11 of 21 ponds are too narrow for Natural Pond's 11° banks to reach 1 m.
 
@@ -865,6 +882,22 @@ would only spawn where both are non-zero.
   zone claims its weight first, an earlier zone of another slot keeps only
   what is left, same-slot zones combine as a maximum, nothing is ever scaled
   up, so the slots never sum above 1.
+- **Drawn over generated** (D-VZ14). The overlap rule above holds among the
+  generated zones (`course_features.generated`). Drawn zones are applied first,
+  in any order: each paints its palettes (the same palette twice: the
+  maximum), so overlapping drawn zones all grow, and a drawn replace zone's
+  weight (the largest where several overlap) is taken from the budget the
+  generated zones then share. A drawn zone's hole or stack position changes
+  nothing.
+- **Mix and extra palettes** (D-VZ12). A zone with `blend: "mix"` raises its
+  slot the same way but takes nothing out of the budget: the zones below it
+  keep their share and both palettes grow there; a replace zone above still
+  cuts it. `extraPalettes` (`"shrub/rocks=0.4, fern"`, comma-separated
+  `<type>[/<variant>][=<weight 0..1>]`, the format of
+  `shared/features/zone-layers.ts`) are mix layers on the zone's own
+  footprint at `weight × factor`. An extra whose type is not in the table is
+  skipped with a warning, an unknown variant falls back to Default. The JSON
+  rows carry `blend` and `extraPalettes` (`[{zoneType, variant, weight}]`).
 - **Items.** Every non-blank `item` name the table binds, in order of first
   appearance walking the types in sort order (Default items, then each
   variant's), gets a channel — even with no zone on this terrain (an

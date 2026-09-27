@@ -621,12 +621,67 @@ def test_dig_stream_digs_a_creek_bed_below_its_falling_surface():
     for edit in edits:   # derived from the polygon, and drawn uphill as a line
         out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None)
         assert np.all(out <= dem + 1e-6)
-        assert np.array_equal(out[~rect_mask(4, 76, 38, 43)], dem[~rect_mask(4, 76, 38, 43)])
+        beyond_bank = ~rect_mask(3, 77, 37, 44)   # past rimM (1 m) from the outline
+        assert np.array_equal(out[beyond_bank], dem[beyond_bank])
         bed = out[40, 8:72].astype(float)
         assert np.all(np.diff(bed) <= 1e-6)                          # the bed only falls downstream
         # The middle of the bed is ~the surface minus the depth.
         surface = dem[40, 8:72].astype(float)
         assert np.median(surface - bed) == pytest.approx(0.4, abs=0.08)
+
+
+def test_dig_stream_gives_a_narrow_creek_its_full_depth_below_the_water_and_a_bank_outside_it():
+    # Vreta's creeks: ~2 m wide Hydrografi ribbons on the 0.5 m export DEM.
+    # Lidar sees the two middle cells at the water surface, the outer two
+    # 15 cm up the bank, the grass beside them 30 cm up. Falls 2 % eastwards.
+    res, size = 0.5, 80
+    transform = from_origin(ORIGIN_X, ORIGIN_Y, res, res)
+    cols = np.arange(size)
+    surface = 20.0 - 0.02 * (cols + 0.5) * res
+    dem = np.tile(surface + 0.3, (size, 1))
+    dem[38:42, :] = surface + 0.15
+    dem[39:41, :] = surface
+    dem = dem.astype(np.float32)
+    e0, e1, n0, n1 = ORIGIN_X + 4 * res, ORIGIN_X + 76 * res, ORIGIN_Y - 42 * res, ORIGIN_Y - 38 * res
+    ring = [[e0, n0], [e1, n0], [e1, n1], [e0, n1], [e0, n0]]
+    inside = np.zeros((size, size), bool)
+    inside[38:42, 4:76] = True
+    maintained_drain = dict(feather_m=0.0, depth_m=0.35, bank_slope_deg=18.0, reference="stream", rim_m=1.0)
+    edits = [
+        edit_3006("dig", ring, **maintained_drain),                          # a polygon: line found down it
+        edit_3006("dig", ring, **maintained_drain, width_m=2.0,
+                  centerline=[[e0, ORIGIN_Y - 20.0], [e1, ORIGIN_Y - 20.0]]),  # a drawn line
+    ]
+    mid = slice(12, 68)   # away from the creek's ends
+    for edit in edits:
+        out = apply_edits(dem, transform, NODATA, [edit], log=lambda *_: None).astype(float)
+        assert np.all(out <= dem + 1e-6)                                     # digs, never fills
+        # Depth under the water plane: the preset's 0.35 m along the line.
+        depth = surface[mid] - out[39:41, mid]
+        assert np.mean(depth >= 0.9 * 0.35) >= 0.9
+        # No ground inside the outline pokes through the water.
+        assert np.all(out[38:42, mid] <= surface[mid] + 0.01)
+        # The bank beside it slopes down to the water edge over rimM (1 m,
+        # two cells) and is never cut below the water ...
+        for row in (37, 42):
+            assert np.all(out[row, mid] < dem[row, mid] - 0.1)
+            assert np.all(out[row, mid] >= surface[mid] - 1e-6)
+        assert np.all(out[36, mid] < dem[36, mid])
+        assert np.all(out[37, mid] < out[36, mid])
+        # ... and the ground further out is left alone.
+        assert np.array_equal(out[:34], dem[:34].astype(float))
+        assert np.array_equal(out[46:], dem[46:].astype(float))
+
+
+def test_dig_stream_keeps_the_preset_bank_where_the_creek_is_wide_enough():
+    # 8 m wide, flat at the surface: the 18° bank runs from the edge as preset.
+    dem = np.full((SIZE, SIZE), 10.0, dtype=np.float32)
+    edit = edit_3006("dig", rect_3006(4, 76, 36, 44), feather_m=0.0, depth_m=0.35,
+                     bank_slope_deg=18.0, reference="stream", rim_m=1.0)
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None)
+    tan18 = np.tan(np.radians(18.0))
+    assert 10.0 - float(out[40, 40]) == pytest.approx(0.35, abs=0.01)
+    assert 10.0 - float(out[36, 40]) == pytest.approx(0.5 * tan18, abs=0.02)   # 0.5 m in
 
 
 def test_load_edits_reads_a_creek_dig_line_and_width(tmp_path: Path):

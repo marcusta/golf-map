@@ -1,6 +1,9 @@
 # Plan: reference photos from the course for Unity look matching
 
 **Status:** RP1, RP2 and RP3 built 2026-09-24, not yet verified on a device. The pull cursor is the decimal `upload_seq` (see §5.2).
+RP4 partly built 2026-09-26: the Photos sub-mode in Create (catalog list with thumbnails, map markers
+with view wedges, filters by hole / picked position / tags, tag + note + hole editing). The feature
+overlay projected into the photo and the manual heading nudge are not built yet.
 **Date:** 2026-09-24
 **Scope:** `ios` (capture mode, offline queue, upload), `server` (photo store on the VPS,
 pull endpoints, builder pull CLI, pose refinement, `unity-photos-v1` export), `web`
@@ -222,6 +225,9 @@ streams the body to disk, like the ingest route, and caps it at 20 MB.
 2. Downloads the original and the preview, checks both hashes, inserts or updates the
    row.
 3. Sends the ack, then saves the cursor.
+
+Tags, note and hole edited on the builder (the web Photos sub-mode) stamp `edited_at`
+(migration `024`); a later pull of the same photo keeps them instead of the VPS copy.
 
 The builder server runs the same pull every `PHOTOS_PULL_INTERVAL_MIN` minutes when that
 variable and `PUBLISH_URL` are set. On Windows the builder runs in WSL2, and this

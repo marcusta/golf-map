@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Vector2 } from 'three';
-import { waterGeometry } from '../src/map/water-geometry';
+import { SHORE_MAX_M, waterGeometry } from '../src/map/water-geometry';
 
 const ring = (points: number[][]) => points.map(([x, y]) => new Vector2(x, y));
 function area(positions: ReturnType<typeof waterGeometry>['attributes']['position']): number {
@@ -31,6 +31,30 @@ describe('water triangulation', () => {
     test('keeps a concave creek bend without filling its notch', () => {
         const geometry = waterGeometry([ring([[0, 0], [30, 0], [30, 3], [3, 3], [3, 30], [0, 30]])]);
         expect(area(geometry.getAttribute('position'))).toBeCloseTo(171, 4);
+        geometry.dispose();
+    });
+    test('shore is the nearest-edge distance over every ring, capped at SHORE_MAX_M', () => {
+        const rings = [
+            ring([[0, 0], [180, 0], [180, 12], [120, 70], [0, 70]]),
+            ring([[60, 30], [60, 40], [75, 40], [75, 30]]),
+        ];
+        const geometry = waterGeometry(rings);
+        const positions = geometry.getAttribute('position');
+        const shores = geometry.getAttribute('shore');
+        let capped = 0;
+        for (let i = 0; i < positions.count; i++) {
+            const px = positions.getX(i), py = positions.getY(i);
+            let best = Infinity;
+            for (const r of rings) for (let j = 0; j < r.length; j++) {
+                const a = r[j], b = r[(j + 1) % r.length];
+                const dx = b.x - a.x, dy = b.y - a.y;
+                const t = Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / (dx * dx + dy * dy)));
+                best = Math.min(best, Math.hypot(px - a.x - t * dx, py - a.y - t * dy));
+            }
+            if (best >= SHORE_MAX_M) capped++;
+            expect(shores.getX(i)).toBeCloseTo(Math.min(best, SHORE_MAX_M), 3);
+        }
+        expect(capped).toBeGreaterThan(0); // the cap was exercised, not just short distances
         geometry.dispose();
     });
     test('terminates for equal longest edges', () => {

@@ -79,6 +79,12 @@ import {
     type CourseTerrain, type TerrainSquare,
 } from './terrain-square';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
+import { FeatureHistoryService } from './feature-history.service';
+import { CourseFeaturesService } from './course-features.service';
+import { ZoneTypesService } from './zone-types.service';
+import { CREEK_BANKS, generateVegetation, type VegetationOptions } from './vegetation-generators';
+import { CREEK_BANK_ZONE_TYPE } from '../../shared/features/creek-vegetation';
+import { BUILDINGS_SURVEY, ROAD_CENTERLINES } from './terrain-generators.service';
 
 export type { CourseTerrain, TerrainSquare } from './terrain-square';
 
@@ -108,7 +114,7 @@ export interface GsproExportResult {
 }
 
 /** What an export job produces. */
-export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'creeks' | 'gkd';
+export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd';
 
 /** A request to start one export; which fields matter depends on `kind`. */
 export interface GsproExportRequest {
@@ -117,7 +123,7 @@ export interface GsproExportRequest {
     source?: string;
     /** `outer-ortho`: the Lantmäteriet collection to fetch, e.g. `orto-l2-2025`. */
     collection?: string;
-    /** `dem`, `hillshade`, `trees`, `buildings`, `zones`: which terrain. */
+    /** `dem`, `hillshade`, `trees`, `buildings`, `zones`, `vegetation`: which terrain. */
     terrain?: TerrainKind;
     /** `ortho`, `outer-ortho`: light multiplier for the terrain texture twin. */
     darken?: number;
@@ -137,12 +143,19 @@ export interface GsproExportRequest {
     excludeFeatureIds?: string[];
     /** `svg`: variant name — the file becomes `<course>-<variant>.svg` so the full SVG is not overwritten. */
     variant?: string;
+    /** `vegetation-update`: the vegetation_zone features to update in Unity. */
+    zoneIds?: string[];
 }
+
+/** Feature types the SVG draws as another OPCD surface than the pipeline's default (`gspro.py svg --map`): canopy as pine straw. */
+export const SVG_TYPE_MAP: Record<string, string> = { trees: 'pinestraw' };
 
 /** What `export` (the SVG) takes besides the course. */
 export interface SvgExportOptions {
     excludeFeatureIds?: string[];
     variant?: string;
+    /** Read the features from this database instead of the app's (a bisect variant, FeatureHistoryService.writeVariantDb). */
+    dbPath?: string;
 }
 
 /** Where the building removal finds its roofs: either file may be missing, not both. */
@@ -376,6 +389,17 @@ export function zonesExportFileName(courseName: string, kind: TerrainKind): stri
     return `${courseSlug(courseName)}-${kind}-zones.json`;
 }
 
+/** `Vreta`, inner -> `vreta-inner-surfaces.json`: the surface map the Unity bridge's `golfmap.surfaces.export` writes into the export folder. */
+export function surfacesExportFileName(courseName: string, kind: TerrainKind): string {
+    return `${courseSlug(courseName)}-${kind}-surfaces.json`;
+}
+
+/** The VSP package the grass palettes plant into (grass-palette.json's default `package`). */
+export const LOWER_VEGETATION_PACKAGE = 'GolfMap lower vegetation';
+
+/** `gspro.py zones-patch`'s exit code when the item bindings moved since the export (ZONES_LAYOUT_CHANGED_EXIT). */
+export const ZONES_LAYOUT_CHANGED_EXIT = 3;
+
 /** `Vreta` -> `vreta-inner-creeks.json` (unity-creeks-v1, R.A.M. splines; inner terrain only). */
 export function creeksExportFileName(courseName: string): string {
     return `${courseSlug(courseName)}-inner-creeks.json`;
@@ -437,6 +461,7 @@ export class GsproExportService {
     private readonly dataDir: string;
     private readonly pipelineDir: string;
     private readonly runner: ExportRunner;
+    private readonly history: FeatureHistoryService;
     /** Every job started in this process, by id (finished ones pruned per course as new ones start). */
     private readonly jobs = new Map<string, GsproExportJob>();
     /** The running job's completion, per course — what `start` refuses on and `whenIdle` awaits. */
@@ -454,6 +479,7 @@ export class GsproExportService {
             ?? DEFAULT_PIPELINE_DIR;
         const python = deps.python ?? process.env.MAP_PIPELINE_PYTHON ?? venvPython(this.pipelineDir);
         this.runner = deps.runner ?? defaultRunner(python);
+        this.history = new FeatureHistoryService(deps.db);
     }
 
     /** Where this course exports to, and what the default is. */
@@ -544,10 +570,19 @@ export class GsproExportService {
             '--square-3006', terrainArg(inner),
             '--course', courseId,
             '--out', out,
-            '--map', 'trees=pinestraw',
+            ...Object.entries(SVG_TYPE_MAP).flatMap(([type, surface]) => ['--map', `${type}=${surface}`]),
         ];
+        if (opts.dbPath) args.push('--db', opts.dbPath);
         const ids = [...new Set(opts.excludeFeatureIds ?? [])];
-        if (ids.length === 0) return this.run('GSPro SVG', args, out);
+        if (ids.length === 0) {
+            const result = await this.run('GSPro SVG', args, out);
+            // A full export of the course as it is: keep it, so a later broken build can be bisected against it.
+            if (!opts.variant && !opts.dbPath) {
+                const kept = await this.history.snapshot(courseId, path.dirname(out), out);
+                result.report.push(`kept as ${path.relative(path.dirname(out), kept)}`);
+            }
+            return result;
+        }
         // A file, not arguments: a variant can leave out thousands of canopy trees.
         const work = await mkdtemp(path.join(os.tmpdir(), 'gspro-svg-'));
         try {
@@ -919,6 +954,182 @@ export class GsproExportService {
     }
 
     /**
+     * Plant the course's lower vegetation, start to finish: run the vegetation
+     * generators (vegetation-generators.ts: tall rough, creek banks, ...) so
+     * their zones follow the course as it is now, export the terrain's zones,
+     * and, when the course's Unity project is open, import them into VSP and
+     * apply the grass palettes (`golfmap.zones.import`, `golfmap.grass.apply`).
+     * Unity not open is reported, not an error: the zones are exported for the
+     * next import. The scene is left for the operator to save. `dryRun` only
+     * writes the generators' GeoJSON (the CLI's --dry-run).
+     */
+    async plantVegetation(courseId: string, kind: TerrainKind,
+                          opts: Omit<VegetationOptions, 'workDir'> & { dbPath?: string; exportZones?: boolean; unity?: boolean } = {}): Promise<GsproExportResult> {
+        const dir = await this.exportDir(courseId);
+        const generated = await this.runGenerators(courseId, kind, opts);
+        const report = [...generated.report];
+        if (opts.dryRun || opts.exportZones === false) return { path: dir, report };
+
+        const exported = await this.exportZones(courseId, kind);
+        report.push(...exported.report);
+        if (opts.unity === false) return { path: exported.path, report };
+
+        const { editor, seen } = await editorForExportDir(this.unityBridge, dir);
+        if (!editor) {
+            report.push(`Not in Unity yet: no open Unity editor imports from ${dir}`
+                + (seen.length ? ` (open: ${seen.join('; ')})` : ' (none is open)')
+                + " - open the course's Unity project and plant again, or run golfmap.zones.import and golfmap.grass.apply there");
+            return { path: exported.path, report };
+        }
+        try {
+            // Import binds each item's mask and include rules; apply makes and styles the items and
+            // turns spawning on for those with rules. An item apply only now added (a new species in a
+            // palette) had no rules at the import: a second round binds it and lets it spawn.
+            for (let round = 1; round <= 2; round++) {
+                const imported = await editor.run('golfmap.zones.import', { terrain: kind, package: LOWER_VEGETATION_PACKAGE }, 600);
+                report.push(`Unity (${editor.projectName}): imported ${path.basename(exported.path)} into '${LOWER_VEGETATION_PACKAGE}'`
+                    + (imported?.status ? ` - ${firstLine(String(imported.status))}` : ''));
+                const applied = await editor.run('golfmap.grass.apply', { terrain: kind }, 600);
+                const items = Array.isArray(applied?.items) ? applied.items.length : 0;
+                report.push(`Unity (${editor.projectName}): grass palettes applied (${items} items on ${applied?.system ?? "the terrain's system"})`);
+                const log = (applied?.log ?? []) as string[];
+                for (const line of log) report.push(`  ${line}`);
+                if (!log.some(l => /^(added|replaced) item /.test(l))) break;
+            }
+        } catch (e) {
+            throw new ConflictError(`The zones were generated and exported, but Unity (${editor.projectName}) could not take them: ${firstLine((e as Error).message)}`);
+        }
+        report.push('Save the scene in Unity to keep it.');
+        return { path: exported.path, report };
+    }
+
+    /** The vegetation generators over the course as it is now (all, or `opts.from` on), with the inputs they find. */
+    private async runGenerators(courseId: string, kind: TerrainKind,
+                                opts: Omit<VegetationOptions, 'workDir'> & { dbPath?: string }): Promise<{ report: string[] }> {
+        const course = await this.courses.get(courseId);
+        const dir = await this.exportDir(courseId);
+        const sources = course.siteId ? this.sourcesDir(course.siteId) : null;
+        const found = async (file: string | null) => file && await statOrNull(file) ? file : null;
+        const inputs = {
+            surfaces: await found(path.join(dir, surfacesExportFileName(course.name, kind))),
+            buildings: await found(sources && path.join(sources, BUILDINGS_SURVEY)),
+            roads: await found(sources && path.join(sources, ROAD_CENTERLINES)),
+        };
+        const work = await mkdtemp(path.join(os.tmpdir(), 'vegetation-'));
+        try {
+            return await generateVegetation({
+                features: new CourseFeaturesService(this.db), zoneTypes: new ZoneTypesService(this.db),
+                pipelineDir: this.pipelineDir, dbPath: opts.dbPath,
+                run: (what, args, out) => this.run(what, args, out),
+            }, courseId, inputs, { ...opts, workDir: work });
+        } finally {
+            if (!opts.dryRun) await rm(work, { recursive: true, force: true });
+        }
+    }
+
+    /**
+     * Update some zones in Unity without planting everything (the Vegetation
+     * mode's "Update in Unity" on the selected zones): for each terrain that
+     * has a zones export, `gspro.py zones-patch` re-rasterizes only the window
+     * those zones cover, now and in that export (and any zone the export has
+     * that the course no longer has), into the exported masks, and the open
+     * Unity project takes just the changed textures and respawns just that
+     * window (`golfmap.zones.patch`). The generators do not run. It needs a
+     * planting first (the masks and their import), and Unity open up front,
+     * since masks patched without Unity would leave the scene behind the
+     * export with nothing to say so. When the zone types' item bindings
+     * changed since a terrain's export (and the zones reach that terrain),
+     * its channels may have moved and only a full export can follow: that
+     * terrain is skipped with a line in the report (the outer, which Plant
+     * vegetation does not refresh, often is), and when every terrain is, the
+     * job fails asking for Plant vegetation. The pipeline refuses before
+     * writing anything, so a skipped terrain is left as it was.
+     *
+     * A hand-drawn creek_bank zone near water is a creek section: it picks the
+     * palette the creek-bank generator plants on those banks, and plants
+     * nothing itself. With one in the selection that generator runs first
+     * (only it: it is the last in the stack), and the patch finds the zones
+     * it changed by content (the rest come back under new ids, unchanged).
+     */
+    async updateZones(courseId: string, zoneIds: string[]): Promise<GsproExportResult> {
+        if (zoneIds.length === 0) throw new ConflictError('Select the vegetation zones to update');
+        const course = await this.courses.get(courseId);
+        const dir = await this.exportDir(courseId);
+        const kinds: TerrainKind[] = [];
+        for (const kind of ['inner', 'outer'] as const) {
+            if (await statOrNull(path.join(dir, zonesExportFileName(course.name, kind)))) kinds.push(kind);
+        }
+        if (kinds.length === 0) throw new ConflictError(`No vegetation zones export in ${dir} yet: plant vegetation once first`);
+        const { editor, seen } = await editorForExportDir(this.unityBridge, dir);
+        if (!editor) {
+            throw new ConflictError(`Open the course's Unity project first: no open Unity editor imports from ${dir}`
+                + (seen.length ? ` (open: ${seen.join('; ')})` : ''));
+        }
+
+        const report: string[] = [];
+        const drawn = await this.db.selectFrom('course_features').select('attributes_json')
+            .where('course_id', '=', courseId).where('id', 'in', zoneIds)
+            .where('type', '=', 'vegetation_zone').where('generated', '=', 0)
+            .execute();
+        const zoneTypeOf = (json: string | null) => {
+            try { return (JSON.parse(json ?? '{}') as { zoneType?: unknown }).zoneType; } catch { return undefined; }
+        };
+        if (drawn.some(r => zoneTypeOf(r.attributes_json) === CREEK_BANK_ZONE_TYPE)) {
+            const regenerated = await this.runGenerators(courseId, 'inner', { from: CREEK_BANKS.source });
+            report.push(...regenerated.report);
+        }
+        const patches: { kind: TerrainKind; record: string }[] = [];
+        const stale: TerrainKind[] = [];
+        for (const kind of kinds) {
+            const zonesJson = path.join(dir, zonesExportFileName(course.name, kind));
+            const record = zonesJson.replace(/\.json$/, '-patch.json');
+            const args = [
+                path.join(this.pipelineDir, 'gspro.py'), 'zones-patch',
+                '--course', courseId,
+                '--zones-json', zonesJson,
+                '--ids', zoneIds.join(','),
+                '--result', record,
+            ];
+            if (kind === 'outer') {
+                const terrain = await this.resolveTerrain(courseId, 'update the outer vegetation zones of');
+                args.push('--exclude-square', terrainArg(terrain.inner));
+            }
+            const { code, stdout, stderr } = await this.runner(args, this.pipelineDir);
+            if (code === ZONES_LAYOUT_CHANGED_EXIT) {
+                // Planting refreshes the inner export only, so an outer one is often older than the
+                // bindings: the other terrain still updates, and the report says what was left.
+                stale.push(kind);
+                report.push(`${kind}: skipped - ${path.basename(zonesJson)} is older than the zone types' item bindings, so its channels may have moved; `
+                    + `export the ${kind} vegetation zones (or plant) to bring it in step`);
+                continue;
+            }
+            if (code !== 0) throw failure(`Updating the ${kind} zones`, code, stdout, stderr);
+            report.push(...reportLines(stdout).map(line => `${kind}: ${line}`));
+            const patched = JSON.parse(await readFile(record, 'utf8')) as { changed?: boolean };
+            if (patched.changed) patches.push({ kind, record });
+        }
+        if (stale.length === kinds.length) {
+            throw new ConflictError(`The zone types' item bindings changed since the last planting, so the ${stale.join(' and ')} masks' channels may have moved: `
+                + 'use Plant vegetation this time');
+        }
+        if (patches.length === 0) {
+            report.push('Nothing changed in the masks, so nothing to take into Unity');
+            return { path: dir, report };
+        }
+        for (const p of patches) {
+            try {
+                const result = await editor.run('golfmap.zones.patch', { terrain: p.kind, patch: p.record, package: LOWER_VEGETATION_PACKAGE }, 300);
+                report.push(`Unity (${editor.projectName}): ${firstLine(String(result?.status ?? `${p.kind} zones patched`))}`);
+            } catch (e) {
+                throw new ConflictError(`The ${p.kind} masks are updated in ${dir}, but Unity (${editor.projectName}) could not take them: `
+                    + `${firstLine((e as Error).message)}. Plant vegetation to bring Unity in step`);
+            }
+        }
+        report.push('Save the scene in Unity to keep it.');
+        return { path: dir, report };
+    }
+
+    /**
      * The course's creeks as NatureManufacture R.A.M. splines for the inner
      * terrain (`<dir>/<course>-inner-creeks.json`, unity-creeks-v1, what
      * GolfMap › Creeks imports): each `water_creek` feature's line (drawn, or
@@ -1055,6 +1266,8 @@ export class GsproExportService {
             case 'trees': return this.exportTrees(courseId, r.terrain!);
             case 'buildings': return this.exportBuildings(courseId, r.terrain!);
             case 'zones': return this.exportZones(courseId, r.terrain!);
+            case 'vegetation': return this.plantVegetation(courseId, r.terrain!);
+            case 'vegetation-update': return this.updateZones(courseId, r.zoneIds!);
             case 'creeks': return this.exportCreeks(courseId);
             case 'gkd': return this.exportGkd(courseId);
         }
@@ -1416,10 +1629,16 @@ export function describeRequest(r: GsproExportRequest): string {
         case 'trees': need(r.terrain, 'a terrain'); return `${r.terrain} trees`;
         case 'buildings': need(r.terrain, 'a terrain'); return `${r.terrain} buildings`;
         case 'zones': need(r.terrain, 'a terrain'); return `${r.terrain} vegetation zones`;
+        case 'vegetation': need(r.terrain, 'a terrain'); return `${r.terrain} vegetation, planted into Unity`;
+        case 'vegetation-update': need(r.zoneIds?.length, 'the zones to update'); return `${r.zoneIds!.length} vegetation zone(s) updated in Unity`;
         case 'creeks': return 'creeks (R.A.M. splines)';
         case 'gkd': return 'GreenKeeper course file';
         default: throw new ConflictError(`Unknown export kind '${String((r as { kind: unknown }).kind)}'`);
     }
+}
+
+function firstLine(text: string): string {
+    return text.split('\n')[0] ?? '';
 }
 
 export function reportLines(stdout: string): string[] {

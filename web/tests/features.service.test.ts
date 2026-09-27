@@ -124,24 +124,29 @@ function feature(id: string, type = 'bunker', version = 1, opts: { holeId?: stri
 }
 
 describe('load', () => {
-    test('generated vegetation zones start hidden; a shown source stays shown across reloads', async () => {
-        const zone = (id: string, source: string, generated: boolean): CourseFeature => ({
+    test('vegetation zones, drawn and generated, show only while a mode lifts them (Vegetation)', async () => {
+        const zone = (id: string, source: string | null, generated: boolean): CourseFeature => ({
             ...feature(id, 'vegetation_zone'), source, generated, attributes: { zoneType: 'rough_tall' },
         });
         const { api } = fakeApi([
-            zone('g1', 'tall-grass', true), zone('w1', 'lidar-woodland', true),
-            zone('h1', 'hand', false), { ...feature('t1', 'trees'), source: 'lidar-canopy', generated: true },
+            zone('g1', 'tall-grass', true), zone('h1', null, false), feature('b1', 'bunker'),
+            { ...feature('t1', 'trees'), source: 'lidar-canopy', generated: true },
         ]);
         const svc = new FeaturesService(api);
         await svc.load('c1');
 
-        // Only the generated zone sources: hand-drawn zones and generated trees stay visible.
-        expect([...svc.hiddenSources.get()].sort()).toEqual(['lidar-woodland', 'tall-grass']);
+        // Default view: the zones are off the map and out of hit tests, by type — no source eyes flipped.
+        expect(svc.geojson.get().features.map(f => f.id)).toEqual(['b1']);
         expect(svc.generatedGeojson.get().features.map(f => f.id)).toEqual(['t1']);
+        expect(svc.isHidden(svc.store.items.get().find(f => f.id === 'h1')!)).toBe(true);
+        expect(svc.hiddenSources.get().size).toBe(0);
 
-        svc.toggleSourceVisibility('tall-grass');
-        await svc.reload();
-        expect([...svc.hiddenSources.get()]).toEqual(['lidar-woodland']);
+        svc.modeHiddenTypes.set(new Set());
+        expect(svc.geojson.get().features.map(f => f.id)).toEqual(['h1', 'b1']);
+        expect(svc.generatedGeojson.get().features.map(f => f.id).sort()).toEqual(['g1', 't1']);
+
+        svc.resetModeView();
+        expect(svc.geojson.get().features.map(f => f.id)).toEqual(['b1']);
     });
 
     test('mode-hidden types leave the map and hit tests but not the user\'s own eye toggles', async () => {
@@ -395,6 +400,41 @@ describe('nice rendering', () => {
         expect(svc.niceRendering.peek()).toBe(true);
         expect(oobLine.paint?.['line-opacity']).toEqual(['case', ['boolean', ['feature-state', 'dragging'], false], 0, 1]);
         expect(oobLine.paint?.['line-width']).toBe(2);
+
+        dispose();
+    });
+
+    test('a mode backdrop keeps only a faint outline of its types; the mode\'s own types keep Draw\'s paint', () => {
+        const { api } = fakeApi();
+        const svc = new FeaturesService(api);
+        const paint = new Map<string, unknown>();
+        const rawMap = {
+            setPaintProperty(layer: string, property: string, value: unknown) { paint.set(`${layer}/${property}`, value); },
+            setFilter: () => {},
+            getSource: () => ({ type: 'geojson' }),
+        };
+        const map = {
+            ready: new Signal(true),
+            map: new Signal(rawMap),
+            addOverlayLayer: () => {},
+            updateOverlayData: () => {},
+            removeOverlayLayer: () => {},
+        };
+        const dispose = svc.attachOverlay(map as never);
+        const dragging = (v: unknown) => ['case', ['boolean', ['feature-state', 'dragging'], false], 0, v];
+        const backdrop = (inBackdrop: number, own: number) =>
+            ['case', ['in', ['get', 'type'], ['literal', ['green', 'fairway']]], inBackdrop, own];
+
+        svc.niceRendering.set(false);
+        svc.modeBackdropTypes.set(new Set(['green', 'fairway']));
+        expect(paint.get('features-fill/fill-opacity')).toEqual(dragging(backdrop(0, 0.86)));
+        expect(paint.get('features-outline/line-opacity')).toEqual(dragging(backdrop(0.7, 1)));
+        expect(paint.get('features-generated-fill/fill-opacity')).toEqual(backdrop(0, 0.86));
+        expect(paint.get('features-generated-outline/line-opacity')).toEqual(backdrop(0.7, 1));
+
+        svc.resetModeView();
+        expect(paint.get('features-fill/fill-opacity')).toEqual(dragging(0.4));
+        expect(paint.get('features-generated-fill/fill-opacity')).toBe(0.4);
 
         dispose();
     });
@@ -922,7 +962,9 @@ describe('vegetation zones (docs/feature-vegetation-zones.md)', () => {
         await svc.load('c1');
 
         const created = await svc.create({ type: 'vegetation_zone', geometry: squareGeometry() });
-        expect(created!.attributes).toEqual({ zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0 });
+        expect(created!.attributes).toEqual({
+            zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0, blend: 'replace', extraPalettes: '',
+        });
     });
 
     test('an empty zone-type table still names a zone type (the fallback key)', async () => {
@@ -978,6 +1020,7 @@ describe('vegetation zones (docs/feature-vegetation-zones.md)', () => {
         await svc.load('c1');
         await svc.create({ type: 'vegetation_zone', geometry: squareGeometry() });
         await svc.create({ type: 'bunker', geometry: squareGeometry() });
+        svc.modeHiddenTypes.set(new Set()); // as in Vegetation mode
 
         const [zone, bunker] = svc.geojson.get().features;
         expect(zone.properties!.zoneType).toBe('shrub');
@@ -1016,6 +1059,7 @@ describe('vegetation zones (docs/feature-vegetation-zones.md)', () => {
             attributes: { zoneType: 'shrub', zoneVariant: 'dense', weight: 1, feather: 2, noise: 0 },
         });
         await svc.create({ type: 'vegetation_zone', geometry: squareGeometry() });
+        svc.modeHiddenTypes.set(new Set()); // as in Vegetation mode
 
         const [withVariant, byDefault] = svc.geojson.get().features;
         expect(withVariant.properties!.zoneVariant).toBe('dense');

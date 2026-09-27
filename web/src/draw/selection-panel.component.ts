@@ -2,7 +2,7 @@ import { Component, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, primaryBtn, field, panelTitle } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
-import { FeaturesService, fillScopeOptions, scopeFromKey, scopeKey, scopeOf } from './features.service';
+import { COURSE_SCOPE, FeaturesService, ROUGHS_SCOPE_KEY, fillScopeOptions, scopeFromKey, scopeKey, scopeOf } from './features.service';
 import { isRoughsLayerType } from '../../../shared/render/stack-key';
 import { DrawToolService, OFFSET_PRESETS } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
@@ -13,19 +13,29 @@ import {
     PATH_SURFACE_ATTRIBUTE, PATH_SURFACE_LABELS, PATH_SURFACES, pathSurfaceOf, type PathSurface,
 } from '../../../shared/features/path-surface';
 import { KERB_FILLETS_ATTRIBUTE, kerbFilletsOn } from '../../../shared/features/road-junctions';
+import {
+    BANK_VEG_ATTRIBUTE, BANK_VEG_COVER_ATTRIBUTE, BANK_VEG_DEFAULT, CREEK_BANK_ZONE_TYPE, bankVegCoverOf, bankVegOf, isWetBankVariant,
+    takesBankVeg, bankVegNumberOf, BANK_VEG_MAX_ATTRIBUTE, BANK_VEG_WET_ATTRIBUTE, DEFAULT_BANK_VEG_MAX_M, DEFAULT_BANK_VEG_WET_M,
+    BANK_VEG_WET_SUFFIX,
+} from '../../../shared/features/creek-vegetation';
+import { formatZonePalettes, zoneExtraPalettesOf, type ZoneBlend, type ZonePalette } from '../../../shared/features/zone-layers';
 
 /** The surface picker's value for a selection whose paths disagree. */
 const MIXED_SURFACE = '__mixed';
+/** The bank palette picker's value for creeks that disagree. */
+const MIXED_PALETTE = '__mixed';
 
 const tpl = template(`
     <div class="sel-panel" bind="root" data-testid="selection-panel">
         <h4 class="section-title">Selection</h4>
         <div bind="selInfo" class="sel-info"></div>
         <div bind="generatedBadge" class="generated-badge" data-testid="selection-generated-badge"></div>
-        <label bind="moveField" class="move-field">Move selected to
+        <label bind="moveField" class="move-field"><span bind="moveLabel"></span>
             <select bind="moveSelect" data-testid="draw-move-hole"></select>
+            <span bind="moveHint" class="move-hint" data-testid="move-hole-hint">Only to find it again: the hole does not change what grows.</span>
         </label>
         <div bind="curveHint" class="curve-hint"></div>
+        <div bind="backdropHint" class="curve-hint" data-testid="backdrop-hint">Shape is edited in Draw; here only its bank vegetation.</div>
         <button bind="cornerBtn" type="button" class="op-btn corner-btn"></button>
         <div bind="vertexOps" class="vertex-ops">
             <button bind="insertBetweenBtn" type="button" class="op-btn">Insert between (I)</button>
@@ -68,6 +78,17 @@ const tpl = template(`
             <label class="zone-field">Edge noise (m)
                 <input bind="zoneNoise" type="number" min="0" step="0.25" data-testid="zone-noise" />
             </label>
+            <label class="zone-field" title="Zones you draw always add up with each other, whatever their hole or order. This says what the zone does to the generated vegetation (tall rough, creek banks, lidar) under it: Replace takes its weight of that ground, Add grows on top of it (rocks in tall rough).">Generated vegetation under it
+                <select bind="zoneBlend" data-testid="zone-blend-select">
+                    <option value="replace">Replace it</option>
+                    <option value="mix">Add to it</option>
+                </select>
+            </label>
+            <div class="zone-extras" title="More palettes this zone plants on the same ground, each at the zone's weight times its own">
+                <span class="zone-extras-title">Also plants</span>
+                <div bind="zoneExtras" class="zone-extras-list" data-testid="zone-extra-palettes"></div>
+                <button bind="zoneExtraAddBtn" type="button" class="op-btn show" data-testid="zone-extra-add">Add palette</button>
+            </div>
             <button bind="zoneTypesBtn" type="button" class="op-btn show">Edit zone types…</button>
         </div>
         <div bind="pathSection" class="zone-section" data-testid="path-surface-section">
@@ -81,6 +102,21 @@ const tpl = template(`
             <label bind="pathKerbsField" class="path-kerbs-field" title="Round the kerb corners where this road meets another (both roads need it on)">
                 <input bind="pathKerbs" type="checkbox" data-testid="path-kerbs" />
                 Round kerbs at junctions
+            </label>
+        </div>
+        <div bind="creekSection" class="zone-section" data-testid="creek-bank-section">
+            <h4 bind="creekTitle" class="section-title"></h4>
+            <label class="zone-field">Palette
+                <select bind="creekPalette" data-testid="creek-bank-palette"></select>
+            </label>
+            <label bind="creekCoverField" class="zone-field creek-cover-field" title="Share of the water surface the grass covers; the rest stays open water">Water cover (%)
+                <input bind="creekCover" type="number" min="0" max="100" step="5" data-testid="creek-bank-cover" />
+            </label>
+            <label bind="creekMaxField" class="zone-field creek-cover-field" title="How far up the bank the vegetation reaches at most, metres from the water (it stops earlier where the bank flattens)">Up the bank (m)
+                <input bind="creekMax" type="number" min="0.5" max="30" step="0.5" data-testid="creek-bank-max" />
+            </label>
+            <label bind="creekWetField" class="zone-field creek-cover-field" title="How far up the bank the palette's water plants (reeds, cattails) reach, metres from the water; above that the palette's bank grass">Water plants up the bank (m)
+                <input bind="creekWet" type="number" min="0" max="10" step="0.1" data-testid="creek-bank-wet" />
             </label>
         </div>
         <button bind="surroundBtn" type="button" class="op-btn surround-btn"></button>
@@ -246,7 +282,45 @@ export class SelectionPanelComponent extends Component {
             & .zone-field {
                 ${field()}
             }
-            & .zone-variant-field, & .path-width-field {
+            & .move-hint {
+                display: none;
+                font-size: 0.72rem;
+                font-weight: 400;
+                font-style: italic;
+                color: ${t('color-text-secondary')};
+                &.show { display: block; }
+            }
+            & .zone-extras {
+                display: flex;
+                flex-direction: column;
+                gap: ${s('xs')};
+            }
+            & .zone-extras-title {
+                font-size: 0.8rem;
+                font-weight: 600;
+                color: ${t('color-text-secondary')};
+            }
+            & .zone-extras-list {
+                display: flex;
+                flex-direction: column;
+                gap: ${s('xs')};
+                &:empty { display: none; }
+            }
+            & .zone-extra {
+                ${field()}
+                flex-direction: row;
+                flex-wrap: wrap;
+                align-items: center;
+                & select { flex: 1 1 6rem; min-width: 0; }
+                & input { width: 4rem; }
+                & .zone-extra-remove {
+                    padding: ${s('xs')} ${s('sm')};
+                    font-size: 0.9rem;
+                    line-height: 1;
+                    ${btn(t('radius-sm'))}
+                }
+            }
+            & .zone-variant-field, & .path-width-field, & .creek-cover-field {
                 display: none;
                 &.show { display: flex; }
             }
@@ -260,6 +334,7 @@ export class SelectionPanelComponent extends Component {
             }
 
             & .delete-btn {
+                &.hidden { display: none; }
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.75rem;
                 ${btn(t('radius-sm'))}
@@ -296,6 +371,16 @@ export class SelectionPanelComponent extends Component {
             },
             moveField: {
                 className: () => this.editingAllowed() ? 'move-field' : 'move-field hidden',
+            },
+            // Vegetation zones are filed under a hole to find them again; the
+            // hole plays no part in how zones add up (D-VZ14), so say so -
+            // and do not call it a move next to the stack panel's own filter.
+            moveLabel: { textContent: () => this.zonesOnlySelection() ? 'Hole (folder)' : 'Move selected to' },
+            moveHint: { className: () => this.zonesOnlySelection() ? 'move-hint show' : 'move-hint' },
+            // Vegetation mode selects creeks and water (read-only there) for
+            // their bank vegetation: say where their shape is edited.
+            backdropHint: {
+                className: () => this.backdropSelected() ? 'curve-hint show' : 'curve-hint',
             },
             curveHint: {
                 className: () => this.features.editableSelected.get()?.geometry.curveType === 'bspline'
@@ -388,6 +473,53 @@ export class SelectionPanelComponent extends Component {
                 const n = this.pathSelection().length;
                 return n > 1 ? `Path surface (${n} paths)` : 'Path surface';
             },
+            // Creek bank vegetation (shared/features/creek-vegetation.ts):
+            // which creek_bank palette plants the banks, and how much of the
+            // water it covers — every selected creek and water at once.
+            creekSection: {
+                className: () => this.creekSelection().length > 0 ? 'zone-section show' : 'zone-section',
+            },
+            creekTitle: () => {
+                const n = this.creekSelection().length;
+                return n > 1 ? `Bank vegetation (${n} ${this.creekSelection().every(f => f.type === 'water_creek') ? 'creeks' : 'waters'})` : 'Bank vegetation';
+            },
+            creekCoverField: {
+                className: () => this.creekSelection().some(f => bankVegOf(f.attributes))
+                    ? 'zone-field creek-cover-field show' : 'zone-field creek-cover-field',
+            },
+            creekCover: {
+                value: () => {
+                    const covers = new Set(this.creekSelection().map(f => bankVegCoverOf(f.attributes)));
+                    return covers.size === 1 ? String(Math.round([...covers][0]! * 100)) : '';
+                },
+                onchange: (e: Event) => {
+                    const pct = Number((e.target as HTMLInputElement).value);
+                    if (Number.isFinite(pct)) this.saveCreeks({ [BANK_VEG_COVER_ATTRIBUTE]: Math.min(100, Math.max(0, pct)) / 100 });
+                },
+            },
+            creekMaxField: {
+                className: () => this.creekSelection().some(f => bankVegOf(f.attributes))
+                    ? 'zone-field creek-cover-field show' : 'zone-field creek-cover-field',
+            },
+            creekMax: {
+                value: () => this.sharedCreekNumber(BANK_VEG_MAX_ATTRIBUTE, DEFAULT_BANK_VEG_MAX_M),
+                onchange: (e: Event) => {
+                    const m = Number((e.target as HTMLInputElement).value);
+                    if (Number.isFinite(m)) this.saveCreeks({ [BANK_VEG_MAX_ATTRIBUTE]: Math.min(30, Math.max(0.5, m)) });
+                },
+            },
+            // Only where a selected creek's palette has a water mix (`<palette>_wet`) to reach up the bank.
+            creekWetField: {
+                className: () => this.creekSelection().some(f => this.hasWetMix(bankVegOf(f.attributes)))
+                    ? 'zone-field creek-cover-field show' : 'zone-field creek-cover-field',
+            },
+            creekWet: {
+                value: () => this.sharedCreekNumber(BANK_VEG_WET_ATTRIBUTE, DEFAULT_BANK_VEG_WET_M),
+                onchange: (e: Event) => {
+                    const m = Number((e.target as HTMLInputElement).value);
+                    if (Number.isFinite(m)) this.saveCreeks({ [BANK_VEG_WET_ATTRIBUTE]: Math.min(10, Math.max(0, m)) });
+                },
+            },
             zoneWeight: {
                 value: () => String(this.zoneAttributes().weight),
                 onchange: (e: Event) => this.saveZone({ weight: numberOf(e, 1) }),
@@ -399,6 +531,22 @@ export class SelectionPanelComponent extends Component {
             zoneNoise: {
                 value: () => String(this.zoneAttributes().noise),
                 onchange: (e: Event) => this.saveZone({ noise: numberOf(e, 0) }),
+            },
+            zoneBlend: {
+                value: () => this.zoneAttributes().blend,
+                onchange: (e: Event) => this.saveZone({ blend: (e.target as HTMLSelectElement).value as ZoneBlend }),
+            },
+            zoneExtraAddBtn: {
+                onclick: () => {
+                    const extras = this.zoneExtras();
+                    const { zoneType } = this.zoneAttributes();
+                    // Start on a type the zone does not plant yet, so the new row is not a no-op.
+                    const used = new Set([zoneType, ...extras.map(e => e.zoneType)]);
+                    const types = this.zoneTypes.items.peek();
+                    const next = (types.find(z => !used.has(z.key)) ?? types[0])?.key;
+                    if (!next) return;
+                    this.saveZoneExtras([...extras, { zoneType: next, zoneVariant: this.zoneTypes.startVariantOf(next), weight: 1 }]);
+                },
             },
             zoneTypesBtn: {
                 onclick: () => {
@@ -431,6 +579,7 @@ export class SelectionPanelComponent extends Component {
             },
             deleteBtn: {
                 onclick: () => void this.tool.deleteSelected(),
+                className: () => this.backdropSelected() ? 'delete-btn hidden' : 'delete-btn',
                 textContent: () => {
                     const count = this.features.selectedIds.get().size;
                     return count > 1 ? `Delete ${count} features` : 'Delete feature';
@@ -483,6 +632,37 @@ export class SelectionPanelComponent extends Component {
             surfaceSelect.value = current;
         }));
 
+        // Creek palette picker: None, the creek_bank type's Default mix when it
+        // has items, then its variants (not the `_wet` halves); Mixed only while the creeks disagree,
+        // and an explicit option for a palette the type no longer has.
+        const paletteSelect = this.ref(frag, 'creekPalette') as HTMLSelectElement;
+        paletteSelect.addEventListener('change', () => {
+            if (paletteSelect.value !== MIXED_PALETTE) this.saveCreeks({ [BANK_VEG_ATTRIBUTE]: paletteSelect.value || null });
+        });
+        this.track(effect(() => {
+            const creeks = this.creekSelection();
+            const values = new Set(creeks.map(f => bankVegOf(f.attributes) ?? ''));
+            const current = values.size > 1 ? MIXED_PALETTE : values.values().next().value ?? '';
+            const type = this.zoneTypes.items.get().find(z => z.key === CREEK_BANK_ZONE_TYPE);
+            const options: [string, string][] = [];
+            if (current === MIXED_PALETTE) options.push([MIXED_PALETTE, 'Mixed']);
+            options.push(['', 'None']);
+            if (type && type.items.length > 0) options.push([BANK_VEG_DEFAULT, 'Default']);
+            // `<palette>_wet` variants are the lower half of a palette, not a choice of their own.
+            for (const v of type?.variants ?? []) if (!isWetBankVariant(v.key)) options.push([v.key, v.name]);
+            for (const value of values) {
+                if (value && !options.some(([key]) => key === value)) options.push([value, `${value} (no such palette)`]);
+            }
+            paletteSelect.textContent = '';
+            for (const [value, label] of options) {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                paletteSelect.appendChild(option);
+            }
+            paletteSelect.value = current;
+        }));
+
         // Kerb rounding: on/off for every selected centerline road; mixed
         // selections show the box indeterminate until clicked.
         const kerbs = this.ref(frag, 'pathKerbs') as HTMLInputElement;
@@ -503,8 +683,8 @@ export class SelectionPanelComponent extends Component {
         // an explicit option of its own, so saving weight never silently
         // retypes it.
         const zoneSelect = this.ref(frag, 'zoneType') as HTMLSelectElement;
-        // A variant key belongs to its type: a new type starts on its Default.
-        zoneSelect.addEventListener('change', () => this.saveZone({ zoneType: zoneSelect.value, zoneVariant: '' }));
+        // A variant key belongs to its type: a new type starts on its start variant (Default, unless that is empty).
+        zoneSelect.addEventListener('change', () => this.saveZone({ zoneType: zoneSelect.value, zoneVariant: this.zoneTypes.startVariantOf(zoneSelect.value) }));
         this.track(effect(() => {
             const types = this.zoneTypes.items.get();
             const current = this.zoneAttributes().zoneType;
@@ -525,24 +705,29 @@ export class SelectionPanelComponent extends Component {
             zoneSelect.value = current;
         }));
 
-        // Variant picker: "Default" plus the selected zone's type's variants;
-        // hidden while that type has none. A zone naming a variant its type no
-        // longer has keeps an explicit option (the export falls back to
-        // Default for it), mirroring the zone-type picker.
+        // Variant picker: "Default" plus the selected zone's type's pickable
+        // variants (not a creek_bank `_wet` half); hidden while that type has
+        // none. Default says so when it binds nothing. A zone naming a variant
+        // its type no longer has keeps an explicit option (the export falls
+        // back to Default for it), mirroring the zone-type picker; one on a
+        // `_wet` half keeps it too.
         const variantField = this.ref(frag, 'zoneVariantField');
         const variantSelect = this.ref(frag, 'zoneVariant') as HTMLSelectElement;
         variantSelect.addEventListener('change', () => this.saveZone({ zoneVariant: variantSelect.value }));
         this.track(effect(() => {
             const { zoneType, zoneVariant } = this.zoneAttributes();
-            const variants = this.zoneTypes.variantsOf(zoneType);
-            const orphan = zoneVariant !== '' && !variants.some(v => v.key === zoneVariant);
-            variantField.className = variants.length > 0 || orphan
+            const all = this.zoneTypes.variantsOf(zoneType);
+            const variants = this.zoneTypes.pickableVariantsOf(zoneType);
+            const hiddenCurrent = all.find(v => v.key === zoneVariant && !variants.includes(v));
+            const orphan = zoneVariant !== '' && !all.some(v => v.key === zoneVariant);
+            variantField.className = variants.length > 0 || orphan || hiddenCurrent
                 ? 'zone-field zone-variant-field show'
                 : 'zone-field zone-variant-field';
             variantSelect.textContent = '';
             const options: [string, string][] = [
-                ['', 'Default'],
+                ['', this.zoneTypes.hasDefaultItems(zoneType) ? 'Default' : 'Default (no items: plants nothing)'],
                 ...variants.map(v => [v.key, v.name] as [string, string]),
+                ...(hiddenCurrent ? [[hiddenCurrent.key, `${hiddenCurrent.name} (water half only)`] as [string, string]] : []),
                 ...(orphan ? [[zoneVariant, `${zoneVariant} (no such variant)`] as [string, string]] : []),
             ];
             for (const [value, label] of options) {
@@ -552,6 +737,17 @@ export class SelectionPanelComponent extends Component {
                 variantSelect.appendChild(option);
             }
             variantSelect.value = zoneVariant;
+        }));
+
+        // The zone's extra palettes: one row each (type, variant, weight,
+        // remove), rebuilt from the attribute string whenever it or the
+        // table changes. Every edit writes the whole list back.
+        const extrasList = this.ref(frag, 'zoneExtras');
+        this.track(effect(() => {
+            const extras = this.zoneExtras();
+            this.zoneTypes.items.get();
+            extrasList.textContent = '';
+            extras.forEach((extra, index) => extrasList.appendChild(untrack(() => this.zoneExtraRow(extras, extra, index))));
         }));
 
         this.moveSelect = this.ref(frag, 'moveSelect') as HTMLSelectElement;
@@ -578,10 +774,23 @@ export class SelectionPanelComponent extends Component {
             fillScopeOptions(this.moveSelect, holes, {
                 roughsDisabled: !selected.every(f => isRoughsLayerType(f.type)),
             });
+            if (this.zonesOnlySelection()) {
+                // A zone's "hole" is a folder: no stack words, no Roughs.
+                for (const option of [...this.moveSelect.options]) {
+                    if (option.value === scopeKey(COURSE_SCOPE)) option.textContent = 'No hole (course level)';
+                    else if (option.value === ROUGHS_SCOPE_KEY) option.remove();
+                }
+            }
             this.moveSelect.value = value;
         }));
 
         return frag;
+    }
+
+    /** True when the selection is vegetation zones only. */
+    private zonesOnlySelection(): boolean {
+        const selected = this.features.selectedFeatures.get();
+        return selected.length > 0 && selected.every(f => f.type === 'vegetation_zone');
     }
 
     /** The single selected feature when it is generated (read-only), else null. */
@@ -613,6 +822,74 @@ export class SelectionPanelComponent extends Component {
     /** The selected zone's attributes (type, variant, weight, feather, noise), with the defaults filled in. */
     private zoneAttributes(): ZoneAttributes {
         return this.zoneTypes.attributesOf(this.zoneSelection()?.attributes);
+    }
+
+    /** The selected zone's extra palettes, parsed from its attribute string. */
+    private zoneExtras(): ZonePalette[] {
+        return zoneExtraPalettesOf({ extraPalettes: this.zoneAttributes().extraPalettes });
+    }
+
+    private saveZoneExtras(extras: ZonePalette[]): void {
+        this.saveZone({ extraPalettes: formatZonePalettes(extras) });
+    }
+
+    /** One extra-palette row: type and variant pickers like the zone's own, its weight, and remove. */
+    private zoneExtraRow(extras: ZonePalette[], extra: ZonePalette, index: number): HTMLElement {
+        const replace = (patch: Partial<ZonePalette>) =>
+            this.saveZoneExtras(extras.map((e, i) => i === index ? { ...e, ...patch } : e));
+        const row = document.createElement('div');
+        row.className = 'zone-extra';
+        row.dataset.testid = 'zone-extra-palette';
+
+        const typeSelect = document.createElement('select');
+        typeSelect.dataset.testid = 'zone-extra-type';
+        const types = this.zoneTypes.items.peek();
+        const typeOptions: [string, string][] = types.map(z => [z.key, z.name]);
+        if (!types.some(z => z.key === extra.zoneType)) typeOptions.push([extra.zoneType, `${extra.zoneType} (no such zone type)`]);
+        fillOptions(typeSelect, typeOptions, extra.zoneType);
+        typeSelect.addEventListener('change', () =>
+            replace({ zoneType: typeSelect.value, zoneVariant: this.zoneTypes.startVariantOf(typeSelect.value) }));
+
+        const variantSelect = document.createElement('select');
+        variantSelect.dataset.testid = 'zone-extra-variant';
+        const all = this.zoneTypes.variantsOf(extra.zoneType);
+        const variants = this.zoneTypes.pickableVariantsOf(extra.zoneType);
+        const variantOptions: [string, string][] = [
+            ['', this.zoneTypes.hasDefaultItems(extra.zoneType) ? 'Default' : 'Default (no items)'],
+            ...variants.map(v => [v.key, v.name] as [string, string]),
+        ];
+        if (extra.zoneVariant && !variants.some(v => v.key === extra.zoneVariant)) {
+            const hidden = all.find(v => v.key === extra.zoneVariant);
+            variantOptions.push([extra.zoneVariant, hidden ? `${hidden.name} (water half only)` : `${extra.zoneVariant} (no such variant)`]);
+        }
+        fillOptions(variantSelect, variantOptions, extra.zoneVariant);
+        variantSelect.style.display = variantOptions.length > 1 ? '' : 'none';
+        variantSelect.addEventListener('change', () => replace({ zoneVariant: variantSelect.value }));
+
+        const weight = document.createElement('input');
+        weight.type = 'number';
+        weight.min = '0';
+        weight.max = '1';
+        weight.step = '0.05';
+        weight.title = "Weight, times the zone's own";
+        weight.dataset.testid = 'zone-extra-weight';
+        weight.value = String(extra.weight);
+        weight.addEventListener('change', () => {
+            const value = Number(weight.value);
+            replace({ weight: Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : extra.weight });
+        });
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'zone-extra-remove';
+        remove.textContent = '×';
+        remove.title = 'Remove this palette';
+        remove.setAttribute('aria-label', 'Remove this palette');
+        remove.dataset.testid = 'zone-extra-remove';
+        remove.addEventListener('click', () => this.saveZoneExtras(extras.filter((_, i) => i !== index)));
+
+        row.append(typeSelect, variantSelect, weight, remove);
+        return row;
     }
 
     /**
@@ -677,14 +954,68 @@ export class SelectionPanelComponent extends Component {
         }
     }
 
-    /** False while any selected row is generated: hides move/duplicate. */
+    /**
+     * The creeks and water (`takesBankVeg`) in the selection, hand-drawn or
+     * imported. Not `editableSelectedFeatures`: Vegetation mode selects them
+     * read-only (backdrop), for this section only.
+     */
+    private creekSelection(): CourseFeature[] {
+        return this.features.selectedFeatures.get().filter(f => takesBankVeg(f.type) && !isGeneratedFeature(f));
+    }
+
+    /** The selected creeks' shared value of a numeric bank setting ('' while they differ). */
+    private sharedCreekNumber(key: string, fallback: number): string {
+        const values = new Set(this.creekSelection().map(f => bankVegNumberOf(f.attributes, key, fallback)));
+        return values.size === 1 ? String([...values][0]) : '';
+    }
+
+    /** Whether a palette key has a water mix: the creek_bank type binds `<palette>_wet`. */
+    private hasWetMix(palette: string | null): boolean {
+        if (!palette) return false;
+        return this.zoneTypes.variantsOf(CREEK_BANK_ZONE_TYPE).some(v => v.key === `${palette}${BANK_VEG_WET_SUFFIX}`);
+    }
+
+    /** True while the selection holds a backdrop feature of the active mode (Vegetation: a creek or water). */
+    private backdropSelected(): boolean {
+        const backdrop = this.features.modeBackdropTypes.get();
+        return this.features.selectedFeatures.get().some(f => backdrop.has(f.type));
+    }
+
+    /**
+     * Set bank vegetation keys on every selected creek (`null` removes a key).
+     * `attributes` replaces the whole object server-side, so each creek's
+     * other keys (dig settings, R.A.M. profile) go along unchanged.
+     */
+    private saveCreeks(patch: Record<string, string | number | null>): void {
+        for (const f of this.creekSelection()) {
+            const attributes: Record<string, number | string | boolean> = { ...(f.attributes ?? {}) };
+            for (const [key, value] of Object.entries(patch)) {
+                if (value === null) delete attributes[key];
+                else attributes[key] = value;
+            }
+            if (JSON.stringify(attributes) === JSON.stringify(f.attributes ?? {})) continue;
+            void this.features.update(f.id, { attributes: Object.keys(attributes).length > 0 ? attributes : null });
+        }
+    }
+
+    /** False while any selected row is read-only (generated, or a backdrop of the mode): hides move/duplicate. */
     private editingAllowed(): boolean {
         const items = this.features.selectedFeatures.get();
-        return items.length > 0 && items.every(f => !isGeneratedFeature(f));
+        return items.length > 0 && this.features.editableSelectedFeatures.get().length === items.length;
     }
 }
 
 /** A number input's value, falling back when it was cleared or unparsable. */
+function fillOptions(select: HTMLSelectElement, options: [string, string][], value: string): void {
+    for (const [key, label] of options) {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = label;
+        select.appendChild(option);
+    }
+    select.value = value;
+}
+
 function numberOf(e: Event, fallback: number): number {
     const value = Number((e.target as HTMLInputElement).value);
     return Number.isFinite(value) ? value : fallback;
