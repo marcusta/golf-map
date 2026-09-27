@@ -68,6 +68,8 @@ namespace GolfMap.Editor
             public float width = 1, height = 1, minScale = 0.8f, maxScale = 1.2f;
             public float sampleDistance = 0.6f, density = 1f;
             public float noiseDensityScale = 8f;   // 0 = no density noise
+            public float noiseCutoff = 0f, noiseCutoffScale = 14f; // 0 = off; shared noise leaves openings between clumps
+            public float verticalOffset = 0f; // local metres, scaled with the instance; negative buries a canopy
             public float noiseScaleMin = 0.8f, noiseScaleMax = 1.2f, noiseScaleScale = 12f;   // height waves
             public float maxSteepness = 75f;
             // Multiplies the grass patch mesh's LOD distances. VSP draws texture grass with
@@ -129,6 +131,9 @@ namespace GolfMap.Editor
                         minScale = F(i, "minScale", d.minScale), maxScale = F(i, "maxScale", d.maxScale),
                         sampleDistance = F(i, "sampleDistance", d.sampleDistance), density = F(i, "density", d.density),
                         noiseDensityScale = F(i, "noiseDensityScale", d.noiseDensityScale),
+                        noiseCutoff = Mathf.Clamp01(F(i, "noiseCutoff", d.noiseCutoff)),
+                        noiseCutoffScale = Mathf.Max(1f, F(i, "noiseCutoffScale", d.noiseCutoffScale)),
+                        verticalOffset = F(i, "verticalOffset", d.verticalOffset),
                         noiseScaleMin = F(i, "noiseScaleMin", d.noiseScaleMin), noiseScaleMax = F(i, "noiseScaleMax", d.noiseScaleMax),
                         noiseScaleScale = F(i, "noiseScaleScale", d.noiseScaleScale),
                         maxSteepness = F(i, "maxSteepness", d.maxSteepness),
@@ -369,7 +374,12 @@ namespace GolfMap.Editor
             item.ScaleMultiplier = new Vector3(spec.width, spec.height, spec.width);
             item.MinScale = spec.minScale;
             item.MaxScale = spec.maxScale;
-            item.UseNoiseCutoff = false;
+            item.Offset = new Vector3(0, spec.verticalOffset, 0);
+            item.UseNoiseCutoff = spec.noiseCutoff > 0;
+            item.NoiseCutoffValue = spec.noiseCutoff;
+            item.NoiseCutoffScale = spec.noiseCutoffScale;
+            item.NoiseCutoffInverse = false;
+            item.NoiseCutoffOffset = Vector2.zero;
             item.UseNoiseDensity = spec.noiseDensityScale > 0;
             item.NoiseDensityScale = spec.noiseDensityScale;
             item.UseNoiseScaleRule = spec.noiseScaleScale > 0;

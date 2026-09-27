@@ -151,6 +151,9 @@ namespace GolfMap.Editor
             R("sampleDistance", "Spacing (m)", "Placement", 0.1f, 12, GolfMapVegRefresh.Respawn, "Distance between spawn samples: smaller = thicker. Halving it gives four times as many."),
             R("density", "Density", "Placement", 0, 1, GolfMapVegRefresh.Respawn, "Share of samples that spawn."),
             R("noiseDensityScale", "Patchiness", "Placement", 0, 60, GolfMapVegRefresh.Respawn, "Density noise scale: patches instead of an even carpet. 0 = even."),
+            R("noiseCutoff", "Clump cutoff", "Placement", 0, 1, GolfMapVegRefresh.Respawn, "Leaves open stretches between clumps. Higher values leave more open ground; 0 = off."),
+            R("noiseCutoffScale", "Clump size", "Placement", 1, 60, GolfMapVegRefresh.Respawn, "Noise scale for the clump openings. Matching values align openings across species."),
+            R("verticalOffset", "Vertical offset", "Placement", -15, 5, GolfMapVegRefresh.Respawn, "Local metres, multiplied by instance scale. Negative values bury the base of a canopy."),
             R("maxSteepness", "Max slope (deg)", "Placement", 0, 90, GolfMapVegRefresh.Respawn, "Steepest ground it grows on.", 1),
             R("maxDensity", "Binding weight", "Placement", 0, 1, GolfMapVegRefresh.File, "Share of the zone this palette gives the item. Baked into the zone masks by golf-map: re-bind + export zones + import to see it."),
             R("randomDarkening", "Random darkening", "Shading", 0, 1, GolfMapVegRefresh.Material, "Darkens random blades: depth in the sward."),
@@ -325,6 +328,9 @@ namespace GolfMap.Editor
             e.values.Add(F("sampleDistance", "sampleDistance", spec.sampleDistance));
             e.values.Add(F("density", "density", spec.density));
             e.values.Add(F("noiseDensityScale", "noiseDensityScale", spec.noiseDensityScale));
+            e.values.Add(F("noiseCutoff", "noiseCutoff", spec.noiseCutoff));
+            e.values.Add(F("noiseCutoffScale", "noiseCutoffScale", spec.noiseCutoffScale));
+            e.values.Add(F("verticalOffset", "verticalOffset", spec.verticalOffset));
             e.values.Add(F("maxSteepness", "maxSteepness", spec.maxSteepness));
             e.values.Add(F("lodFactor", "lodFactor", spec.lodFactor));
             if (!bush)

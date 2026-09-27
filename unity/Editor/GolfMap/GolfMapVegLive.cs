@@ -129,6 +129,9 @@ namespace GolfMap.Editor
                 f("maxScale", e.Get("maxScale", 1), item.MaxScale);
                 f("sampleDistance", e.Get("sampleDistance", 1), item.SampleDistance);
                 f("density", e.Get("density", 1), item.Density);
+                f("verticalOffset", e.Get("verticalOffset", 0), item.Offset.y);
+                f("noiseCutoff", e.Get("noiseCutoff", 0), item.UseNoiseCutoff ? item.NoiseCutoffValue : 0);
+                if (e.Get("noiseCutoff", 0) > 0) f("noiseCutoffScale", e.Get("noiseCutoffScale", 14), item.NoiseCutoffScale);
                 f("maxSteepness", e.Get("maxSteepness", 1), item.MaxSteepness);
                 f("lodFactor", e.Get("lodFactor", 1), item.LODFactor);
             }
@@ -311,6 +314,9 @@ namespace GolfMap.Editor
                         case "sampleDistance": item.SampleDistance = Mathf.Max(0.05f, v.f); respawn = true; break;
                         case "density": item.Density = v.f; respawn = true; break;
                         case "noiseDensityScale": item.UseNoiseDensity = v.f > 0; item.NoiseDensityScale = v.f; respawn = true; break;
+                        case "noiseCutoff": item.UseNoiseCutoff = v.f > 0; item.NoiseCutoffValue = Mathf.Clamp01(v.f); item.NoiseCutoffInverse = false; item.NoiseCutoffOffset = Vector2.zero; respawn = true; break;
+                        case "noiseCutoffScale": item.NoiseCutoffScale = Mathf.Max(1f, v.f); respawn = true; break;
+                        case "verticalOffset": item.Offset = new Vector3(0, v.f, 0); respawn = true; break;
                         case "maxSteepness": item.MaxSteepness = v.f; respawn = true; break;
                         case "lodFactor": item.LODFactor = v.f; break;
                         case "shadows": item.DisableShadows = v.f < 0.5f; break;

@@ -373,6 +373,13 @@ selection by kind (colours, size, placement, shading, rendering, material).
 
 **Live.** Every change is pushed as the slider moves, without apply or replant:
 
+Lower vegetation also supports `noiseCutoff` (0 disables it) and `noiseCutoffScale`
+to leave open stretches between shrub groups. Equal clump settings align the
+openings across species. `verticalOffset` lowers a canopy into the bank when
+negative; it is in prefab-local metres and scales with the instance (for example,
+−1.5 at 0.2 scale lowers it 0.3 m before additional scale variation). These values
+are saved in `grass-palette.json` and survive Apply/Rebuild.
+
 | Setting | How the scene follows |
 |---|---|
 | tints, darkening, root ambient, alpha cutoff, tint area scale | VSP shader-controller values + `RefreshMaterials` (instant) |

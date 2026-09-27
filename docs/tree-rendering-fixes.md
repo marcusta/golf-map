@@ -266,3 +266,16 @@ shader experiments. They introduced unsupported names, and GSPro's VSP runtime
 has no fallback for those names. The confirmed oak fix uses a stock supported
 shader instead. Older experiment comments are historical hypotheses, not proof
 that the current material's problem is albedo or translucency.
+
+## Creek thicket visual trial (2026-09-27)
+
+The user-requested [ditch trial](gspro/vreta/ditch-thicket-trial-20260927.md)
+uses course-local NM `Tree_Leaves_Specular` bush copies with specular 0,
+reduced AO and `_BackFaceMirrorNormal=0`, plus cooler tints. The cottonwood
+canopy needed particularly cool multipliers (`#6579b7` / `#7689b2`) to remove
+its strong yellow cast in the ground-level comparison. Saved and rebuilt in
+Unity; screenshots reviewed from both bank directions and approved by Marcus.
+GSPro/GreenKeeper remains unchecked. This is a combined visual trial, not an isolated
+proof that the normal toggle alone caused the previous contrast, and does not
+replace other species' confirmed material settings. Backups and exact values
+are recorded in the linked note.
