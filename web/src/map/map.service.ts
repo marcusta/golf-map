@@ -1,7 +1,7 @@
 import maplibregl from 'maplibre-gl';
 import { loadSmoothedTerrain } from './terrain-smoothing-protocol';
 import { TERRAIN_SMOOTHING_PROTOCOL } from './terrain-smoothing';
-import type { LayerSpecification, MapMouseEvent } from 'maplibre-gl';
+import type { GeoJSONSourceDiff, GeoJSONFeatureDiff, GeoJSONFeatureId, LayerSpecification, MapMouseEvent } from 'maplibre-gl';
 import type { GeoJSON, FeatureCollection } from 'geojson';
 import { WaterLayer, WATER_LAYER_ID } from './water-layer';
 import { MapPerformanceControl } from './map-performance-control';
@@ -57,6 +57,93 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 
 /** A LayerSpecification minus `source` — overlay helpers bind the source themselves. */
 export type OverlayLayerSpec = DistributiveOmit<LayerSpecification, 'source'>;
+
+/**
+ * One queued overlay update. `set` replaces the source data. `diff` is a
+ * maplibre GeoJSONSourceDiff plus `data`, the full collection the diff
+ * produces, kept so a later fold into a `set` (or a source without
+ * updateData) can still send the right state.
+ */
+type PendingOverlayUpdate =
+    | { kind: 'set'; data: GeoJSON }
+    | { kind: 'diff'; diff: GeoJSONSourceDiff; data: GeoJSON };
+
+/**
+ * Compose two GeoJSONSourceDiffs into one with the effect of applying
+ * `prev` then `next`. maplibre applies a diff as remove, then add, then
+ * update; the result keeps those three lists disjoint so that order cannot
+ * change the outcome:
+ *
+ * - remove: drops any earlier add or update of the id.
+ * - add: replaces the whole feature, so it drops any earlier remove or
+ *   update of the id.
+ * - update of an id added earlier: folds into the added feature.
+ * - update of an id updated earlier: one update, later values win.
+ *
+ * Added features must carry `feature.id`. A diff with `removeAll` is
+ * never composed: updateOverlayDiff queues its `data` as a full set.
+ */
+export function composeSourceDiffs(prev: GeoJSONSourceDiff, next: GeoJSONSourceDiff): GeoJSONSourceDiff {
+    const remove = new Set<GeoJSONFeatureId>(prev.remove ?? []);
+    const add = new Map<GeoJSONFeatureId, GeoJSON.Feature>();
+    for (const f of prev.add ?? []) add.set(f.id!, f);
+    const update = new Map<GeoJSONFeatureId, GeoJSONFeatureDiff>();
+    for (const u of prev.update ?? []) update.set(u.id, u);
+
+    for (const id of next.remove ?? []) {
+        add.delete(id);
+        update.delete(id);
+        remove.add(id);
+    }
+    for (const f of next.add ?? []) {
+        remove.delete(f.id!);
+        update.delete(f.id!);
+        add.set(f.id!, f);
+    }
+    for (const u of next.update ?? []) {
+        const added = add.get(u.id);
+        if (added) {
+            add.set(u.id, applyFeatureDiff(added, u));
+            continue;
+        }
+        const earlier = update.get(u.id);
+        update.set(u.id, earlier ? mergeFeatureDiffs(earlier, u) : u);
+    }
+    const out: GeoJSONSourceDiff = {};
+    if (remove.size) out.remove = [...remove];
+    if (add.size) out.add = [...add.values()];
+    if (update.size) out.update = [...update.values()];
+    return out;
+}
+
+function applyFeatureDiff(f: GeoJSON.Feature, u: GeoJSONFeatureDiff): GeoJSON.Feature {
+    let properties: Record<string, unknown> = u.removeAllProperties ? {} : { ...(f.properties ?? {}) };
+    for (const key of u.removeProperties ?? []) delete properties[key];
+    for (const { key, value } of u.addOrUpdateProperties ?? []) properties[key] = value;
+    return { ...f, geometry: u.newGeometry ?? f.geometry, properties };
+}
+
+function mergeFeatureDiffs(a: GeoJSONFeatureDiff, b: GeoJSONFeatureDiff): GeoJSONFeatureDiff {
+    if (b.removeAllProperties) return { ...b, newGeometry: b.newGeometry ?? a.newGeometry };
+    const removed = new Set(a.removeProperties ?? []);
+    const set = new Map<string, unknown>();
+    for (const { key, value } of a.addOrUpdateProperties ?? []) set.set(key, value);
+    for (const key of b.removeProperties ?? []) {
+        set.delete(key);
+        removed.add(key);
+    }
+    for (const { key, value } of b.addOrUpdateProperties ?? []) {
+        removed.delete(key);
+        set.set(key, value);
+    }
+    const out: GeoJSONFeatureDiff = { id: b.id };
+    const newGeometry = b.newGeometry ?? a.newGeometry;
+    if (newGeometry) out.newGeometry = newGeometry;
+    if (a.removeAllProperties) out.removeAllProperties = true;
+    if (removed.size) out.removeProperties = [...removed];
+    if (set.size) out.addOrUpdateProperties = [...set].map(([key, value]) => ({ key, value }));
+    return out;
+}
 
 /**
  * Layer types maplibre 5.x renders into the terrain RTT tiles
@@ -172,9 +259,9 @@ export class MapService {
     private overlayChangedSinceMoveStart = false;
     /** Overlays that must stay above later-added overlays (tool previews). */
     private onTopOverlays = new Set<string>();
-    /** Latest queued (not yet sent) overlay data per source (see updateOverlayData). */
-    private pendingOverlayData = new Map<string, GeoJSON>();
-    /** Overlay sources with a `setData` currently awaiting worker completion. */
+    /** Latest queued (not yet sent) overlay update per source (see updateOverlayData). */
+    private pendingOverlayData = new Map<string, PendingOverlayUpdate>();
+    /** Overlay sources with a `setData`/`updateData` currently awaiting worker completion. */
     private overlayDataInFlight = new Set<string>();
     private tiles: { manifest: TileManifest } | null = null;
     /** Poll handle for a deferred `init` awaiting a live-document container. */
@@ -678,10 +765,14 @@ export class MapService {
         id: string,
         data: GeoJSON,
         layers: OverlayLayerSpec[],
-        opts: { beforeId?: string; keepOnTop?: boolean; waterSurface?: boolean } = {},
+        opts: { beforeId?: string; keepOnTop?: boolean; waterSurface?: boolean; promoteId?: string } = {},
     ): void {
         const map = this.requireMap();
-        map.addSource(id, { type: 'geojson', data });
+        // `promoteId` names a property used as the feature id. String ids
+        // need it: vector tiles carry only numeric ids, so without it a
+        // string `feature.id` cannot reach feature-state, and updateData
+        // looks features up by the promoted property.
+        map.addSource(id, opts.promoteId ? { type: 'geojson', data, promoteId: opts.promoteId } : { type: 'geojson', data });
         // `keepOnTop` overlays (tool previews — draft outline, vertex/handle
         // markers) stay above overlays added LATER: on a cold load the draw
         // preview can beat the features fill to the style, which would
@@ -785,16 +876,58 @@ export class MapService {
      * Updates are SERIALIZED per source with a latest-wins queue: maplibre
      * 5.x has a worker race when `setData` calls overlap in flight (fixed
      * upstream only in 6.0, maplibre-gl-js#7734) that intermittently leaves
-     * a source's tiles stale/partially rendered until the next camera move —
-     * seen in the field as the draw tool's draft line vanishing during a
-     * fast pan/zoom and a just-committed feature's fill not appearing until
-     * the map is nudged. Awaiting each `setData` before sending the next
-     * (dropping superseded intermediates) removes the overlap entirely.
+     * a source's tiles stale/partially rendered until the next camera move.
+     * It showed in the field as the draw tool's draft line vanishing during
+     * a fast pan/zoom, and a just-committed feature's fill not appearing
+     * until the map is nudged. Awaiting each send before the next (dropping
+     * superseded intermediates) removes the overlap entirely.
+     *
+     * With `diff`, the update goes through `updateOverlayDiff`: `diff` must
+     * turn the data of this source's previous update into `data`.
      */
-    updateOverlayData(id: string, data: GeoJSON): void {
+    updateOverlayData(id: string, data: GeoJSON, diff?: GeoJSONSourceDiff): void {
+        if (diff) {
+            this.updateOverlayDiff(id, diff, data);
+            return;
+        }
         this.requireMap();
         if (id === this.waterSourceId && data.type === 'FeatureCollection') this.setWaterFeatures(data);
-        this.pendingOverlayData.set(id, data);
+        this.enqueueOverlayUpdate(id, { kind: 'set', data });
+    }
+
+    /**
+     * Send a per-feature change through maplibre's `GeoJSONSource.updateData`.
+     * The worker re-indexes only the changed features and reloads only the
+     * tiles they touch, instead of re-parsing the whole collection.
+     *
+     * `diff` turns the data of the source's previous update into `data`, the
+     * full resulting collection. The source must have unique feature ids
+     * (`feature.id`, or the `promoteId` property).
+     *
+     * Same latest-wins queue as `updateOverlayData`:
+     * - a diff queued behind a pending diff composes with it;
+     * - a diff queued behind a pending full set folds into it (the set's
+     *   data becomes `data`);
+     * - a later full set replaces any pending diff.
+     *
+     * maplibre's worker moves an updated feature to the end of its list, so
+     * features with equal sort keys can change draw order. Callers that rely
+     * on source order between ties must send a full set instead.
+     */
+    updateOverlayDiff(id: string, diff: GeoJSONSourceDiff, data: GeoJSON): void {
+        this.requireMap();
+        if (id === this.waterSourceId && data.type === 'FeatureCollection') this.setWaterFeatures(data);
+        const pending = this.pendingOverlayData.get(id);
+        let next: PendingOverlayUpdate;
+        if (diff.removeAll) next = { kind: 'set', data };
+        else if (!pending) next = { kind: 'diff', diff, data };
+        else if (pending.kind === 'set') next = { kind: 'set', data };
+        else next = { kind: 'diff', diff: composeSourceDiffs(pending.diff, diff), data };
+        this.enqueueOverlayUpdate(id, next);
+    }
+
+    private enqueueOverlayUpdate(id: string, update: PendingOverlayUpdate): void {
+        this.pendingOverlayData.set(id, update);
         if (!this.overlayDataInFlight.has(id)) void this.pumpOverlayData(id);
     }
 
@@ -802,14 +935,18 @@ export class MapService {
         this.overlayDataInFlight.add(id);
         try {
             while (this.pendingOverlayData.has(id)) {
-                const data = this.pendingOverlayData.get(id)!;
+                const update = this.pendingOverlayData.get(id)!;
                 this.pendingOverlayData.delete(id);
                 const map = this.map.peek();
                 if (!map || !this.ready.peek()) return;
-                const source = map.getSource(id);
+                const source = map.getSource(id) as maplibregl.GeoJSONSource | undefined;
                 if (!source || source.type !== 'geojson') return;
                 if (this.gestureActive && this.drapedOverlays.has(id)) this.overlayChangedSinceMoveStart = true;
-                await (source as maplibregl.GeoJSONSource).setData(data, true);
+                if (update.kind === 'diff' && typeof source.updateData === 'function') {
+                    await source.updateData(update.diff, true);
+                } else {
+                    await source.setData(update.data, true);
+                }
             }
         } catch {
             // A destroyed map / removed source mid-await aborts the update;

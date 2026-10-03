@@ -1,7 +1,8 @@
 import { test, expect, describe, afterEach } from 'bun:test';
 import { di } from '@basics/core/client/core';
-import type { FeatureCollection } from 'geojson';
-import { MapService } from '../src/map/map.service';
+import type { Feature, FeatureCollection } from 'geojson';
+import type { GeoJSONSourceDiff } from 'maplibre-gl';
+import { MapService, composeSourceDiffs } from '../src/map/map.service';
 
 // The overlay data queue in MapService (updateOverlayData / pumpOverlayData,
 // plus the first-load hold in addOverlayLayer) serializes GeoJSON setData per
@@ -18,16 +19,27 @@ function fc(tag: string): FeatureCollection {
 }
 const tagOf = (data: unknown): string => (data as { tag: string }).tag;
 
-interface SetDataCall { source: string; tag: string; resolve: () => void; reject: (e: Error) => void }
+interface SetDataCall {
+    source: string;
+    /** Collection tag for setData, 'diff' for updateData. */
+    tag: string;
+    diff?: GeoJSONSourceDiff;
+    resolve: () => void;
+    reject: (e: Error) => void;
+}
 
 /**
  * Fake maplibregl.Map covering what addOverlayLayer / updateOverlayData /
  * removeOverlayLayer / destroy touch. Each geojson source records its
- * setData calls with a manual resolver.
+ * setData and updateData calls with a manual resolver.
  */
 function fakeOverlayMap() {
     const calls: SetDataCall[] = [];
-    const sources = new Map<string, { type: 'geojson'; setData: (data: unknown, wait?: boolean) => Promise<void> }>();
+    const sources = new Map<string, {
+        type: 'geojson';
+        setData: (data: unknown, wait?: boolean) => Promise<void>;
+        updateData: (diff: GeoJSONSourceDiff, wait?: boolean) => Promise<void>;
+    }>();
     const layers = new Map<string, unknown>();
     const listeners = new Map<string, Set<(e: unknown) => void>>();
     const map = {
@@ -36,6 +48,9 @@ function fakeOverlayMap() {
                 type: 'geojson',
                 setData: (data: unknown) => new Promise<void>((resolve, reject) => {
                     calls.push({ source: id, tag: tagOf(data), resolve, reject });
+                }),
+                updateData: (diff: GeoJSONSourceDiff) => new Promise<void>((resolve, reject) => {
+                    calls.push({ source: id, tag: 'diff', diff, resolve, reject });
                 }),
             });
         },
@@ -249,5 +264,124 @@ describe('addOverlayLayer first-load hold', () => {
     test('a hold released with nothing queued sends nothing', async () => {
         const { calls } = await readyService(['a']);
         expect(calls).toHaveLength(0);
+    });
+});
+
+/** A tagged point feature with a string id. */
+function pt(id: string, tag = id): Feature {
+    return { type: 'Feature', id, properties: { id, tag }, geometry: { type: 'Point', coordinates: [0, 0] } };
+}
+
+describe('updateOverlayDiff on the latest-wins queue', () => {
+    test('a diff on an idle source goes out as one updateData call', async () => {
+        const { svc, calls } = await readyService(['a']);
+        const diff: GeoJSONSourceDiff = { update: [{ id: 'f1', newGeometry: { type: 'Point', coordinates: [1, 1] } }] };
+        svc.updateOverlayDiff('a', diff, fc('a1'));
+        await flush();
+        expect(calls.map(c => c.tag)).toEqual(['diff']);
+        expect(calls[0]!.diff).toBe(diff);
+    });
+
+    test('updateOverlayData with a diff argument routes to updateData', async () => {
+        const { svc, calls } = await readyService(['a']);
+        svc.updateOverlayData('a', fc('a1'), { remove: ['f1'] });
+        await flush();
+        expect(calls.map(c => c.tag)).toEqual(['diff']);
+        expect(calls[0]!.diff).toEqual({ remove: ['f1'] });
+    });
+
+    test('two diffs queued behind an in-flight send coalesce into one updateData', async () => {
+        const { svc, calls } = await readyService(['a']);
+        svc.updateOverlayData('a', fc('a1'));
+        await flush();
+        const g1 = { type: 'Point' as const, coordinates: [1, 1] };
+        const g2 = { type: 'Point' as const, coordinates: [2, 2] };
+        svc.updateOverlayDiff('a', { update: [{ id: 'f1', newGeometry: g1 }] }, fc('a2'));
+        svc.updateOverlayDiff('a', {
+            update: [{ id: 'f1', newGeometry: g2 }, { id: 'f2', addOrUpdateProperties: [{ key: 'type', value: 'green' }] }],
+        }, fc('a3'));
+        calls[0]!.resolve();
+        await flush();
+        expect(calls.map(c => c.tag)).toEqual(['a1', 'diff']);
+        expect(calls[1]!.diff).toEqual({
+            update: [
+                { id: 'f1', newGeometry: g2 },
+                { id: 'f2', addOrUpdateProperties: [{ key: 'type', value: 'green' }] },
+            ],
+        });
+    });
+
+    test('a full set queued after diffs supersedes them', async () => {
+        const { svc, calls } = await readyService(['a']);
+        svc.updateOverlayData('a', fc('a1'));
+        await flush();
+        svc.updateOverlayDiff('a', { remove: ['f1'] }, fc('a2'));
+        svc.updateOverlayDiff('a', { remove: ['f2'] }, fc('a3'));
+        svc.updateOverlayData('a', fc('a4'));
+        calls[0]!.resolve();
+        await flush();
+        expect(calls.map(c => c.tag)).toEqual(['a1', 'a4']);
+    });
+
+    test('a diff queued after a pending full set folds into that set', async () => {
+        const { svc, calls } = await readyService(['a']);
+        svc.updateOverlayData('a', fc('a1'));
+        await flush();
+        svc.updateOverlayData('a', fc('a2'));
+        svc.updateOverlayDiff('a', { remove: ['f1'] }, fc('a3'));
+        calls[0]!.resolve();
+        await flush();
+        // One setData carrying the diff's resulting collection, no updateData.
+        expect(calls.map(c => c.tag)).toEqual(['a1', 'a3']);
+    });
+
+    test('a diff during the first-load hold waits for the source to load', async () => {
+        const fake = fakeOverlayMap();
+        const svc = new MapService();
+        svc.map.set(fake.map as never);
+        svc.ready.set(true);
+        const timers = captureTimeouts(3000);
+        try {
+            svc.addOverlayLayer('a', fc('a-initial'), [{ id: 'a-fill', type: 'fill' } as never]);
+        } finally {
+            timers.restore();
+        }
+        svc.updateOverlayDiff('a', { remove: ['f1'] }, fc('a1'));
+        await flush();
+        expect(fake.calls).toHaveLength(0);
+        fake.emit('sourcedata', { sourceId: 'a', isSourceLoaded: true });
+        await flush();
+        expect(fake.calls.map(c => c.tag)).toEqual(['diff']);
+    });
+});
+
+describe('composeSourceDiffs', () => {
+    test('remove then add of one id squashes to the add', () => {
+        const f = pt('f1', 'new');
+        expect(composeSourceDiffs({ remove: ['f1'] }, { add: [f] })).toEqual({ add: [f] });
+    });
+
+    test('add then remove of one id leaves only the remove', () => {
+        expect(composeSourceDiffs({ add: [pt('f1')] }, { remove: ['f1'] })).toEqual({ remove: ['f1'] });
+    });
+
+    test('an update after an add folds into the added feature', () => {
+        const out = composeSourceDiffs(
+            { add: [pt('f1')] },
+            { update: [{ id: 'f1', newGeometry: { type: 'Point', coordinates: [5, 5] }, addOrUpdateProperties: [{ key: 'tag', value: 'x' }] }] },
+        );
+        expect(out.update).toBeUndefined();
+        expect(out.add).toHaveLength(1);
+        expect(out.add![0]!.geometry).toEqual({ type: 'Point', coordinates: [5, 5] });
+        expect(out.add![0]!.properties).toEqual({ id: 'f1', tag: 'x' });
+    });
+
+    test('two updates keep the earlier geometry when the later one only changes properties', () => {
+        const g = { type: 'Point' as const, coordinates: [1, 1] };
+        const out = composeSourceDiffs(
+            { update: [{ id: 'f1', newGeometry: g }] },
+            { update: [{ id: 'f1', addOrUpdateProperties: [{ key: 'type', value: 'tee' }] }] },
+        );
+        expect(out).toEqual({ update: [{ id: 'f1', newGeometry: g, addOrUpdateProperties: [{ key: 'type', value: 'tee' }] }] });
     });
 });

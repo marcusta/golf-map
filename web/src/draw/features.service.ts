@@ -4,9 +4,9 @@ import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
 import type { CourseFeature, CourseFeaturesApi } from '../../../shared/api/course-features.gen';
 import type { FeatureCollection, Feature, Polygon } from 'geojson';
-import type { FilterSpecification } from 'maplibre-gl';
+import type { FilterSpecification, GeoJSONSourceDiff, GeoJSONFeatureDiff } from 'maplibre-gl';
 import { flattenRing, type FeatureGeometry } from '../geo/bezier';
-import { sweref99tmToWgs84 } from '../geo/transform';
+import { ringWgs84 } from '../geo/wgs84-cache';
 import type { MapService } from '../map/map.service';
 import { DRAW_FILL_OPACITY, NICE_FILL_OPACITY, typeColorExpression, SELECTION_COLOR } from './feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
@@ -34,21 +34,28 @@ export const FEATURES_OVERLAY_ID = 'features';
  */
 export const GENERATED_OVERLAY_ID = 'features-generated';
 
-// Flattened + reprojected rings are cached per geometry OBJECT — geometry
+/**
+ * Largest per-feature change set `attachOverlay` sends as a
+ * GeoJSONSource.updateData diff. Bigger changes (load, bulk import, hole
+ * renumber) go as one setData: the worker re-tiles everything either way.
+ */
+export const OVERLAY_DIFF_MAX_FEATURES = 50;
+
+// Flattened + reprojected rings are cached per geometry OBJECT. Geometry
 // is replaced wholesale on every edit, so identity keying is exact and the
-// WeakMap lets dropped geometries collect.
+// WeakMap lets dropped geometries collect. Below that, ringWgs84 caches each
+// reprojected point on its flattened tuple, so an edited geometry reprojects
+// only the points of the segments that changed.
 const wgs84RingsCache = new WeakMap<object, number[][][]>();
 
-/** Geometry (EPSG:3006 bezier rings) → closed WGS84 GeoJSON rings. */
+/** Geometry (EPSG:3006 bezier rings) -> closed WGS84 GeoJSON rings. */
 export function geometryToWgs84Rings(geometry: FeatureGeometry): number[][][] {
     const cached = wgs84RingsCache.get(geometry);
     if (cached) return cached;
     const rings = geometry.rings.map(ring => {
-        const flat = flattenRing(ring, FLATTEN_TOLERANCE_M, geometry.curveType);
-        const coords = flat.map(([x, y]) => {
-            const { lat, lon } = sweref99tmToWgs84(x, y);
-            return [lon, lat];
-        });
+        // GeoJSON positions are mutable by type; these tuples are shared
+        // with the point cache and nothing downstream writes to them.
+        const coords = ringWgs84(flattenRing(ring, FLATTEN_TOLERANCE_M, geometry.curveType)) as unknown as number[][];
         if (coords.length > 0) coords.push(coords[0]); // explicit ring closure
         return coords;
     });
@@ -178,11 +185,16 @@ export class FeaturesService {
      * computed drives fill, outline and selection layers consistently.
      *
      * Deliberately NOT selection-dependent: this collection is ~20 MB of
-     * flattened rings for a full course and every change re-sends it to
-     * the MapLibre worker for a full re-tile (~250 ms) — selection
-     * highlighting is a per-layer FILTER (see attachOverlay) and per-frame
-     * drag feedback is a ghost overlay (see DrawToolService) so neither
-     * touches this collection.
+     * flattened rings for a full course, and a full send costs the MapLibre
+     * worker a full re-tile (~250 ms). Selection highlighting is
+     * feature-state (see attachOverlay) and per-frame drag feedback is a
+     * ghost overlay (see DrawToolService), so neither touches this
+     * collection.
+     *
+     * Each rebuild also records how it differs from the collection it
+     * replaces (`geojsonDiffs`), so attachOverlay can send a small edit as
+     * a per-feature updateData diff. Rows whose render signature did not
+     * change keep their Feature object from the previous build.
      *
      * Identity-stable: when the visible rows render identically to the last
      * build (same ids, geometry objects, type, holeId, sortOrder, stackKey,
@@ -198,11 +210,43 @@ export class FeaturesService {
         const signature = visible.map(f => this.renderSignature(f));
         const memo = this.geojsonMemo;
         if (memo && sameSignatures(memo.signature, signature)) return memo.data;
-        const data: FeatureCollection = { type: 'FeatureCollection', features: visible.map(f => this.toGeojsonFeature(f)) };
-        this.geojsonMemo = { signature, data };
+        const comparable = !!memo && memo.hidden === hidden && memo.hiddenIds === hiddenIds
+            && memo.loadGeneration === this.loadGeneration;
+        // Previous Feature per id while its render signature is unchanged.
+        const reuse = comparable ? memo.featureById : null;
+        const featureById = new Map<string, { sig: RenderSignature; feature: Feature }>();
+        const features = visible.map((f, i) => {
+            const sig = signature[i]!;
+            const prev = reuse?.get(f.id);
+            const feature = prev && sameSignature(prev.sig, sig) ? prev.feature : this.toGeojsonFeature(f);
+            featureById.set(f.id, { sig, feature });
+            return feature;
+        });
+        const data: FeatureCollection = { type: 'FeatureCollection', features };
+        if (comparable) {
+            const diff = overlayDiff(memo.featureById, featureById, signature);
+            if (diff) this.geojsonDiffs.set(data, { from: memo.data, diff });
+        }
+        this.geojsonMemo = { signature, data, featureById, hidden, hiddenIds, loadGeneration: this.loadGeneration };
         return data;
     });
-    private geojsonMemo: { signature: RenderSignature[]; data: FeatureCollection } | null = null;
+    private geojsonMemo: {
+        signature: RenderSignature[];
+        data: FeatureCollection;
+        featureById: Map<string, { sig: RenderSignature; feature: Feature }>;
+        hidden: ReadonlySet<string>;
+        hiddenIds: ReadonlySet<string>;
+        loadGeneration: number;
+    } | null = null;
+    /**
+     * For a `geojson` collection: the collection it was built from and the
+     * updateData diff between them. Absent when the change is not safe or
+     * not worth sending as a diff (see `overlayDiff`), or after a load or a
+     * visibility toggle.
+     */
+    private geojsonDiffs = new WeakMap<FeatureCollection, { from: FeatureCollection; diff: GeoJSONSourceDiff }>();
+    /** Bumped by every store replacement from the server (load, reload). */
+    private loadGeneration = 0;
 
     /** Everything `toGeojsonFeature` reads from a row (geometry by identity). */
     private renderSignature(f: CourseFeature): RenderSignature {
@@ -316,6 +360,7 @@ export class FeaturesService {
         const items = await request(this.loading, this.error, () =>
             this.featuresApi.listByCourse({ courseId }));
         if (!items) return; // failed — error signal set, cache untouched
+        this.loadGeneration++;
         this.store.set(items);
         this.loadedCourseId = courseId;
     }
@@ -845,9 +890,15 @@ export class FeaturesService {
      * sync with `geojson`, and re-adds after map re-creation (`ready`
      * false → true). Returns a disposer (give it to a component `track`).
      *
-     * Selection is a features-selected layer FILTER (cheap layer re-layout,
-     * ~40 ms) rather than a `selected` geojson property (full ~20 MB source
-     * re-send, ~250 ms) — see the `geojson` doc comment.
+     * Selection is a `selected` feature-state read by the features-selected
+     * line paint. Selecting touches neither the source data nor any layer
+     * filter, so it costs no worker message and no bucket re-layout.
+     *
+     * Data updates: when `geojson` records a diff from the collection last
+     * sent (see `geojsonDiffs`) and Draw mode is on, the change goes out as
+     * a GeoJSONSource.updateData diff, which re-tiles only the changed
+     * features. Nice mode, the first send, visibility toggles and loads
+     * send the full collection with setData.
      */
     attachOverlay(map: MapService): () => void {
         let added = false;
@@ -859,10 +910,39 @@ export class FeaturesService {
         let lastRawSent: FeatureCollection | null = null;
         let lastNiceSent = false;
         this.overlayMap = map;
+        // Ids that currently carry the `selected` feature-state on the map.
+        let selectionState = new Set<string>();
+        // Move the `selected` state from `selectionState` to `ids`. Each id
+        // is set on both sources: a feature lives in exactly one of them,
+        // and state on an id a source does not have is inert. Map fakes in
+        // unit tests may lack the feature-state methods, hence the `?.`.
+        const applySelection = (ids: ReadonlySet<string>): void => {
+            const raw = map.map.peek();
+            if (!raw) return;
+            for (const id of selectionState) {
+                if (ids.has(id)) continue;
+                raw.removeFeatureState?.({ source: FEATURES_OVERLAY_ID, id }, 'selected');
+                raw.removeFeatureState?.({ source: GENERATED_OVERLAY_ID, id }, 'selected');
+            }
+            for (const id of ids) {
+                if (selectionState.has(id)) continue;
+                raw.setFeatureState?.({ source: FEATURES_OVERLAY_ID, id }, { selected: true });
+                raw.setFeatureState?.({ source: GENERATED_OVERLAY_ID, id }, { selected: true });
+            }
+            selectionState = new Set(ids);
+        };
         // Per-feature "dragging" state hides originals while the draw
         // tool renders their ghost (paint-only — no source/layout work).
         const draggingHide = (visible: number): unknown =>
             ['case', ['boolean', ['feature-state', 'dragging'], false], 0, visible];
+        // Selection outline: drawn only for features whose `selected`
+        // state is set, and hidden while the feature is dragging.
+        const selectedOpacity = [
+            'case',
+            ['boolean', ['feature-state', 'dragging'], false], 0,
+            ['boolean', ['feature-state', 'selected'], false], 1,
+            0,
+        ];
         const disposeData = effect(() => {
             const ready = map.ready.get();
             const nice = this.niceRendering.get();
@@ -880,6 +960,8 @@ export class FeaturesService {
             const data = !added || featuresChanged
                 ? (nice ? resolveSurfaceStack(rawData) : rawData)
                 : null;
+            const previousRaw = lastRawSent;
+            const previousNice = lastNiceSent;
             lastRawSent = rawData;
             lastNiceSent = nice;
             if (!added) {
@@ -931,14 +1013,13 @@ export class FeaturesService {
                     {
                         id: 'features-selected',
                         type: 'line',
-                        filter: selectionFilter(this.selectedIds.peek()),
                         paint: {
                             'line-color': SELECTION_COLOR,
                             'line-width': 2.5,
-                            'line-opacity': draggingHide(1) as never,
+                            'line-opacity': selectedOpacity as never,
                         },
                     },
-                ], { waterSurface: true });
+                ], { waterSurface: true, promoteId: 'id' });
                 // Generated features: own source, slotted just under the
                 // hand-drawn selection highlight (above hand-drawn fills, so
                 // canopy reads as the topmost surface, like drawn trees).
@@ -965,17 +1046,27 @@ export class FeaturesService {
                     {
                         id: 'features-generated-selected',
                         type: 'line',
-                        filter: selectionFilter(this.selectedIds.peek()),
                         paint: {
                             'line-color': SELECTION_COLOR,
                             'line-width': 2.5,
+                            'line-opacity': selectedOpacity as never,
                         },
                     },
-                ], { beforeId: 'features-selected' });
+                ], { beforeId: 'features-selected', promoteId: 'id' });
                 lastGeneratedSent = generated;
                 added = true;
+                // Fresh sources carry no feature-state: re-apply the selection.
+                selectionState = new Set();
+                applySelection(this.selectedIds.peek());
             } else {
-                if (data) map.updateOverlayData(FEATURES_OVERLAY_ID, data);
+                if (data) {
+                    // A diff applies only to the exact collection the map
+                    // holds, and only in Draw mode (nice mode sends the
+                    // resolved surface stack, not `geojson` itself).
+                    const step = !nice && !previousNice ? this.geojsonDiffs.get(rawData) : undefined;
+                    if (step && step.from === previousRaw) map.updateOverlayData(FEATURES_OVERLAY_ID, data, step.diff);
+                    else map.updateOverlayData(FEATURES_OVERLAY_ID, data);
+                }
                 // Identity check: `generatedGeojson` hands back the same
                 // object while the generated set is unchanged, so hand-drawn
                 // edits never re-send the ~60k-vertex canopy collection.
@@ -988,9 +1079,7 @@ export class FeaturesService {
         const disposeSelection = effect(() => {
             const ids = this.selectedIds.get();
             if (!map.ready.get() || !added) return;
-            const raw = map.map.get();
-            raw?.setFilter('features-selected', selectionFilter(ids));
-            raw?.setFilter('features-generated-selected', selectionFilter(ids));
+            applySelection(ids);
         });
         const disposeTint = effect(() => {
             // Nice mode uses the proven MapLibre fill path as a baseline:
@@ -1118,9 +1207,76 @@ function sameSignatures(a: readonly RenderSignature[], b: readonly RenderSignatu
     return true;
 }
 
-/** features-selected layer filter for a selection set. */
-function selectionFilter(ids: ReadonlySet<string>): FilterSpecification {
-    return ['in', ['get', 'id'], ['literal', [...ids]]] as unknown as FilterSpecification;
+function sameSignature(x: RenderSignature, y: RenderSignature): boolean {
+    for (let k = 0; k < x.length; k++) if (x[k] !== y[k]) return false;
+    return true;
+}
+
+/** RenderSignature slot of the geometry; every slot after it is a property. */
+const SIG_GEOMETRY = 1;
+/** RenderSignature slot of the D24 stackKey. */
+const STACK_KEY_SLOT = 5;
+
+/**
+ * The updateData diff from the `prev` build of `geojson` to the `next` one,
+ * or null when a full setData is required:
+ *
+ * - more than OVERLAY_DIFF_MAX_FEATURES features changed;
+ * - an added or changed feature shares its stackKey with another visible
+ *   feature. maplibre's worker moves an updated feature to the end of its
+ *   feature list, and the fill/line buckets sort by sort key with a stable
+ *   sort, so equal keys draw in source order. A unique key makes the
+ *   worker's order irrelevant. Equal keys occur when a local create
+ *   leaves its neighbours' sortOrder stale until the next load.
+ *
+ * Removals never change the order of the remaining features.
+ */
+function overlayDiff(
+    prev: ReadonlyMap<string, { sig: RenderSignature; feature: Feature }>,
+    next: ReadonlyMap<string, { sig: RenderSignature; feature: Feature }>,
+    signature: readonly RenderSignature[],
+): GeoJSONSourceDiff | null {
+    const remove: string[] = [];
+    const add: Feature[] = [];
+    const update: GeoJSONFeatureDiff[] = [];
+    let changed = 0;
+    for (const id of prev.keys()) {
+        if (next.has(id)) continue;
+        remove.push(id);
+        if (++changed > OVERLAY_DIFF_MAX_FEATURES) return null;
+    }
+    const touchedKeys: number[] = [];
+    for (const [id, { sig, feature }] of next) {
+        const before = prev.get(id);
+        if (before && before.feature === feature) continue;
+        if (++changed > OVERLAY_DIFF_MAX_FEATURES) return null;
+        touchedKeys.push(sig[STACK_KEY_SLOT]);
+        if (!before) {
+            add.push(feature);
+            continue;
+        }
+        const entry: GeoJSONFeatureDiff = { id };
+        if (before.sig[SIG_GEOMETRY] !== sig[SIG_GEOMETRY]) entry.newGeometry = feature.geometry;
+        let propsChanged = false;
+        for (let k = SIG_GEOMETRY + 1; k < sig.length; k++) if (before.sig[k] !== sig[k]) propsChanged = true;
+        if (propsChanged) {
+            entry.addOrUpdateProperties = Object.entries(feature.properties ?? {}).map(([key, value]) => ({ key, value }));
+        }
+        update.push(entry);
+    }
+    if (changed === 0) return null;
+    if (touchedKeys.length > 0) {
+        const touched = new Set(touchedKeys);
+        if (touched.size !== touchedKeys.length) return null;
+        let seen = 0;
+        for (const sig of signature) if (touched.has(sig[STACK_KEY_SLOT])) seen++;
+        if (seen !== touchedKeys.length) return null;
+    }
+    const diff: GeoJSONSourceDiff = {};
+    if (remove.length) diff.remove = remove;
+    if (add.length) diff.add = add;
+    if (update.length) diff.update = update;
+    return diff;
 }
 
 const RULES_OUTLINE_TYPES = ['penalty_yellow', 'penalty_red', 'oob'];

@@ -30,6 +30,7 @@ function fakeMap() {
             sources[id] = {
                 type: 'geojson',
                 setData: () => new Promise<void>(resolve => setDataCalls.push({ id, resolve })),
+                updateData: () => new Promise<void>(resolve => setDataCalls.push({ id, resolve })),
             };
         },
         getSource: (id: string) => sources[id],
@@ -109,6 +110,17 @@ describe('gesture-end drape repair', () => {
 
         // The flag cleared: the next quiet pan repairs nothing.
         internals.onGestureStart();
+        internals.onGestureEnd();
+        await tick(REPAIR_WAIT);
+        expect(f.terrain.tileManager.freeRttCalls).toBe(1);
+    });
+
+    test('an updateData diff during a pan counts as a change', async () => {
+        const { svc, f, internals } = await setup();
+        internals.onGestureStart();
+        svc.updateOverlayDiff('shapes', { remove: ['f1'] }, EMPTY as never);
+        expect(f.setDataCalls.map(c => c.id)).toEqual(['shapes']);
+        await settle(f);
         internals.onGestureEnd();
         await tick(REPAIR_WAIT);
         expect(f.terrain.tileManager.freeRttCalls).toBe(1);
