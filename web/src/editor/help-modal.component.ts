@@ -4,7 +4,10 @@ import { s, panelTitle } from '../css';
 import { MapService } from '../map/map.service';
 import { EDITOR_TOOLS } from './tools/index';
 import type { EditorTool, HelpSection } from './tool';
+import { editorHelp } from './editor-keys';
+import { ServerModeService, visibleEditorTools } from '../app/server-mode.service';
 import { icon } from '../ui/icons';
+import { ShortcutService, LAYER } from './shortcut.service';
 
 /** Open/close state for the contextual help modal — trivial enough not to warrant a Signal-per-tool split. */
 export class HelpModalService {
@@ -35,12 +38,15 @@ const tpl = template(`
  * dock headers; content is per-tool — whichever `EditorTool` currently holds
  * `MapService.interactionMode` supplies its `help` sections (editor/tool.ts).
  *
- * Spawned once by `EditorToolbarComponent`, BEFORE the toolbar registers its
- * own Escape listener (see toolbar's onMount) — window keydown listeners
- * fire in registration order, so this component's Escape handler always
- * runs first. It `stopImmediatePropagation`s while open, so closing help
- * never also falls through to the toolbar's ESC (which would deactivate the
- * active tool or cancel an in-progress draw).
+ * Spawned once by `EditorToolbarComponent`. Keys arrive through the
+ * ShortcutService stack (editor/shortcut.service.ts) at the modal level:
+ * below open popovers, above the tool chain. Escape while open closes the
+ * modal and is consumed there, so it never also cancels a draft or switches
+ * tool. `?` toggles the modal; the dispatcher already keeps it away from
+ * text inputs.
+ *
+ * Below the tool's own sections the modal lists the editor-wide keys
+ * (editorHelp, editor-keys.ts) that work in every sub-mode.
  */
 export class HelpModalComponent extends Component {
     static styles = `
@@ -144,16 +150,13 @@ export class HelpModalComponent extends Component {
                 font-size: 0.82rem;
                 color: ${t('color-text-secondary')};
             }
-
-            & .help-empty {
-                font-size: 0.85rem;
-                color: ${t('color-text-secondary')};
-            }
         }
     `;
 
     private svc = this.inject(HelpModalService);
     private mapSvc = this.inject(MapService);
+    private shortcuts = this.inject(ShortcutService);
+    private serverMode = this.inject(ServerModeService);
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -169,38 +172,32 @@ export class HelpModalComponent extends Component {
 
         const body = this.ref(frag, 'body');
         this.track(effect(() => {
-            const sections = this.activeTool()?.help ?? [];
+            const sections = [
+                ...(this.activeTool()?.help ?? []),
+                ...editorHelp(visibleEditorTools(this.serverMode.mode.get())),
+            ];
             body.textContent = '';
-            if (sections.length === 0) {
-                const empty = document.createElement('div');
-                empty.className = 'help-empty';
-                empty.textContent = 'No shortcuts for this tool.';
-                body.appendChild(empty);
-                return;
-            }
             for (const section of sections) body.appendChild(this.renderSection(section));
         }));
 
-        const onKeyDown = (e: KeyboardEvent) => {
-            const target = e.target as HTMLElement | null;
-            if (
-                target instanceof HTMLInputElement ||
-                target instanceof HTMLSelectElement ||
-                target instanceof HTMLTextAreaElement
-            ) return;
-
-            if (e.key === 'Escape') {
-                if (!this.svc.open.peek()) return;
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                this.svc.hide();
-            } else if (e.key === '?') {
-                e.preventDefault();
-                this.svc.toggle();
-            }
-        };
-        window.addEventListener('keydown', onKeyDown);
-        this.track(() => window.removeEventListener('keydown', onKeyDown));
+        this.track(this.shortcuts.push({
+            id: 'help-modal',
+            level: LAYER.modal,
+            onKey: (e: KeyboardEvent) => {
+                if (e.key === 'Escape') {
+                    if (!this.svc.open.peek()) return false;
+                    e.preventDefault();
+                    this.svc.hide();
+                    return true;
+                }
+                if (e.key === '?' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                    e.preventDefault();
+                    this.svc.toggle();
+                    return true;
+                }
+                return false;
+            },
+        }));
 
         return frag;
     }

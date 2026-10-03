@@ -28,7 +28,11 @@
 // 4. `onEscape()` — optional. While the tool is active, ESC first asks the
 //    tool: return `true` to consume the keypress (e.g. cancel an
 //    in-progress polygon, drop a selection); return `false` to let the
-//    toolbar deactivate the tool.
+//    toolbar return to Draw (or deactivate, when Draw is not offered).
+// 5. `isBusy()` — optional, default false. True while the tool holds work a
+//    sub-mode switch would throw away (an open draft, a live drag). The
+//    editor-wide sub-mode keys (D, M, F, A, T; editor/editor-keys.ts) do
+//    nothing while it returns true.
 //
 // ## Panels
 //
@@ -44,8 +48,9 @@
 // the contextual help modal (editor/help-modal.component.ts) while the tool
 // is active — opened by `?` (guarded against input targets) or the small
 // `?` buttons in the dock headers. Static data, not a Component: the modal
-// reads whichever tool currently holds `MapService.interactionMode`. A tool
-// with no `help` (or none active) falls back to a generic empty state.
+// reads whichever tool currently holds `MapService.interactionMode`. The
+// editor-wide keys (editor/editor-keys.ts) follow in their own section, so a
+// tool with no `help` shows only those.
 //
 // ## Overlays
 //
@@ -124,4 +129,6 @@ export interface EditorTool {
     deactivate(): void;
     /** ESC while active: return true to consume, false to deactivate. */
     onEscape?(): boolean;
+    /** True while a sub-mode key must not switch away (see header doc). */
+    isBusy?(): boolean;
 }

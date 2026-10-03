@@ -123,82 +123,8 @@ export class FurnitureToolService {
             });
         }));
         ctx.track(this.attachOverlay(ctx));
-        ctx.track(this.attachHoleFraming(ctx));
-    }
-
-    // ── Per-hole camera framing ───────────────────────────────────────────────
-
-    /**
-     * Ease the camera to the selected hole's furniture whenever the ?hole=
-     * selection changes. Gated on a "frame key" (hole id + a loaded flag) so
-     * it fires on selection — and once more when a late furniture load
-     * arrives for an already-selected hole — but NOT on every tee/aim edit
-     * (moving a marker keeps the key stable, so the camera stays put).
-     */
-    private attachHoleFraming(ctx: ToolContext): () => void {
-        // Key on the selected hole's ACTUAL framable furniture, not the
-        // `loading` flag: `loading` flips false a microtask before the
-        // tee/aim/green signals are populated (furniture.service.load), so a
-        // key built from `loading` can fire while `holeBounds` is still empty
-        // — the effect then bails and never re-fires, leaving the camera at
-        // course bounds (the load-order race). Reading the furniture signals
-        // here makes the key recompute once this hole's furniture lands; it
-        // stays equal to the hole id across later marker edits, so those don't
-        // re-frame.
-        const frameKey = new Computed<string | null>(() => {
-            const hole = this.selectedHole.get();
-            if (!hole) return null;
-            this.svc.tees.items.get();
-            this.svc.aims.items.get();
-            this.svc.greens.get();
-            this.svc.pins.items.get();
-            return this.holeBounds(hole.id) ? hole.id : null;
-        });
-        return effect(() => {
-            const holeId = frameKey.get();
-            if (holeId === null || !ctx.map.ready.get()) return;
-            untrack(() => {
-                const bounds = this.holeBounds(holeId);
-                if (bounds) ctx.map.fitBounds(bounds);
-            });
-        });
-    }
-
-    /**
-     * WGS84 bbox `[west, south, east, north]` enclosing all of a hole's
-     * furniture (tees, aim points, green center/front/back, pins), or null
-     * when the hole has no placed furniture yet.
-     */
-    private holeBounds(holeId: string): [number, number, number, number] | null {
-        const pts: Array<{ lat: number; lon: number }> = [];
-        for (const t of this.svc.tees.items.peek()) {
-            const pos = t.holeId === holeId ? finiteWgs84Point(t.lat, t.lon) : null;
-            if (pos) pts.push(pos);
-        }
-        for (const a of this.svc.aims.items.peek()) {
-            const pos = a.holeId === holeId ? finiteWgs84Point(a.lat, a.lon) : null;
-            if (pos) pts.push(pos);
-        }
-        const green = this.svc.greenForHole(holeId);
-        if (green) {
-            for (const point of ['center', 'front', 'back'] as const) {
-                const pos = this.svc.greenPointPos(green, point);
-                if (pos) pts.push(pos);
-            }
-            for (const p of this.svc.pins.items.peek()) {
-                const pos = p.greenId === green.id ? finiteWgs84Point(p.lat, p.lon) : null;
-                if (pos) pts.push(pos);
-            }
-        }
-        if (pts.length === 0) return null;
-        let w = pts[0]!.lon, e = pts[0]!.lon, s = pts[0]!.lat, n = pts[0]!.lat;
-        for (const p of pts) {
-            if (p.lon < w) w = p.lon;
-            if (p.lon > e) e = p.lon;
-            if (p.lat < s) s = p.lat;
-            if (p.lat > n) n = p.lat;
-        }
-        return [w, s, e, n];
+        // Hole framing is canvas-level now (editor/hole-framing.ts, attached
+        // by EditorCanvasComponent behind EditorModeService.followHole).
     }
 
     activate(ctx: ToolContext): void {

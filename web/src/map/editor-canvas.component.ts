@@ -8,8 +8,12 @@ import { ElevationService } from './elevation.service';
 import { CanopyService } from './canopy.service';
 import { EditorToolbarComponent } from '../editor/toolbar.component';
 import { MapBuildClientService } from '../map-build/map-build.service';
-import { ServerModeService } from '../app/server-mode.service';
+import { ServerModeService, visibleEditorTools } from '../app/server-mode.service';
 import { FeaturesService } from '../draw/features.service';
+import { ShortcutService, LAYER } from '../editor/shortcut.service';
+import { EditorModeService } from '../editor/editor-mode.service';
+import { attachEditorChrome } from '../editor/editor-chrome';
+import { FurnitureService } from '../furniture/furniture.service';
 
 const vintageTpl = template(`<button bind="row" type="button" class="vintage-btn"></button>`);
 
@@ -385,6 +389,7 @@ export class EditorCanvasComponent extends Component {
     private mapBuild = this.inject(MapBuildClientService);
     private serverMode = this.inject(ServerModeService);
     private router = this.inject(Router);
+    private shortcuts = this.inject(ShortcutService);
     // courseId is the second path segment on every route hosting this canvas
     // (/course/:courseId for the builder, /planner/:courseId for the planner).
     private params = this.router.params<{ courseId: string }>('/:host/:courseId');
@@ -545,13 +550,26 @@ export class EditorCanvasComponent extends Component {
 
     onMount(): void {
         // Escape closes the layers popover and the pinned attribution credit.
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key !== 'Escape') return;
-            if (this.layersOpen.peek()) this.layersOpen.set(false);
-            if (this.attributionOpen.peek()) this.attributionOpen.set(false);
-        };
-        window.addEventListener('keydown', onKeyDown);
-        this.track(() => window.removeEventListener('keydown', onKeyDown));
+        // A popover-level layer (editor/shortcut.service.ts): when it closes
+        // something it consumes the key, so the same Esc never also reaches
+        // the help modal or the tool chain.
+        this.track(this.shortcuts.push({
+            id: 'canvas-popovers',
+            level: LAYER.popover,
+            onKey: (e: KeyboardEvent) => {
+                if (e.key !== 'Escape') return false;
+                const layers = this.layersOpen.peek();
+                const attribution = this.attributionOpen.peek();
+                if (!layers && !attribution) return false;
+                this.layersOpen.set(false);
+                this.attributionOpen.set(false);
+                return true;
+            },
+        }));
+
+        // Create (/course) only: editor-wide keys and hole framing. The
+        // planner hosts this canvas too and frames holes itself.
+        if (this.router.route.peek().startsWith('/course')) this.attachEditorChrome();
 
         // Resolve the course's tile manifest (cached per courseId).
         this.track(effect(() => {
@@ -625,6 +643,20 @@ export class EditorCanvasComponent extends Component {
             this.elevation.configure(null);
             this.canopy.configure(null);
         });
+    }
+
+    /**
+     * Editor-wide keyboard routes and the follow-hole camera, bound to this
+     * canvas mount (editor/editor-chrome.ts).
+     */
+    private attachEditorChrome(): void {
+        this.track(attachEditorChrome({
+            shortcuts: this.shortcuts,
+            mode: this.inject(EditorModeService),
+            map: this.mapSvc,
+            furniture: this.inject(FurnitureService),
+            offered: () => visibleEditorTools(this.serverMode.mode.peek()),
+        }));
     }
 
     /** Collections known to be tiled this session — the flat active vintage

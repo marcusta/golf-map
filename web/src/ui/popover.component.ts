@@ -1,11 +1,15 @@
 import { Component, Signal, template, type PropsOf } from '@basics/core/client/core';
 import { s, menuPanel, menuItem, menuDivider } from '../css';
+import { ShortcutService, LAYER } from '../editor/shortcut.service';
 
 // ============================================================
 // Reusable anchored popover/menu primitive for the command-bar redesign
 // (dropdowns, the (i) metadata popover, the ⋯ actions menu). Renders a
 // trigger button + a floating panel anchored below it; opens on trigger
 // click, closes on outside click / Escape / a programmatic `close()`.
+// While open it is the top layer of the ShortcutService stack
+// (editor/shortcut.service.ts): Escape closes it and is consumed there, and
+// ArrowUp/ArrowDown/Home/End move focus between its `.menu-item` rows.
 //
 // Content (both trigger and panel) follows the same shape as the base
 // Component's own slot props (string | Component ctor | render fn) so it
@@ -133,6 +137,9 @@ export class PopoverComponent extends Component<PopoverProps> {
     `;
 
     readonly open = new Signal(false);
+    private shortcuts = this.inject(ShortcutService);
+    /** Disposer of this popover's shortcut layer; set only while open. */
+    private popLayer: (() => void) | null = null;
     private rootEl!: HTMLElement;
     private panelEl!: HTMLElement;
     private panelRendered = false;
@@ -188,18 +195,11 @@ export class PopoverComponent extends Component<PopoverProps> {
         document.addEventListener('click', onDocClick);
         this.track(() => document.removeEventListener('click', onDocClick));
 
-        // Escape: only consumes the event (stopping it from also closing a
-        // help modal or deactivating an editor tool) when THIS popover is
-        // actually open.
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key !== 'Escape' || !this.open.peek()) return;
-            e.stopPropagation();
-            this.close();
-        };
-        window.addEventListener('keydown', onKeyDown);
-        this.track(() => window.removeEventListener('keydown', onKeyDown));
-
-        this.track(() => openPopovers.delete(this));
+        this.track(() => {
+            openPopovers.delete(this);
+            this.popLayer?.();
+            this.popLayer = null;
+        });
     }
 
     toggle(): void {
@@ -213,13 +213,43 @@ export class PopoverComponent extends Component<PopoverProps> {
         }
         openPopovers.add(this);
         this.renderPanel();
+        this.popLayer ??= this.shortcuts.push({
+            id: 'popover',
+            level: LAYER.popover,
+            onKey: e => this.onKey(e),
+        });
         this.open.set(true);
     }
 
     close(): void {
         if (!this.open.peek()) return;
         openPopovers.delete(this);
+        this.popLayer?.();
+        this.popLayer = null;
         this.open.set(false);
+    }
+
+    /** Shortcut layer while open: Escape closes, arrows walk the menu rows. */
+    private onKey(e: KeyboardEvent): boolean {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            this.close();
+            return true;
+        }
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return false;
+        if (e.metaKey || e.ctrlKey || e.altKey) return false;
+        const items = [...this.panelEl.querySelectorAll<HTMLElement>('.menu-item')]
+            .filter(item => !(item as HTMLButtonElement).disabled && !item.closest('.hide, .hidden, [hidden]'));
+        if (items.length === 0) return false;
+        const current = items.indexOf(document.activeElement as HTMLElement);
+        let next: number;
+        if (e.key === 'Home') next = 0;
+        else if (e.key === 'End') next = items.length - 1;
+        else if (current < 0) next = e.key === 'ArrowDown' ? 0 : items.length - 1;
+        else next = (current + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        e.preventDefault();
+        items[next]!.focus();
+        return true;
     }
 
     private renderContent(content: PopoverContent, host: HTMLElement): void {
