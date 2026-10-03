@@ -11,6 +11,7 @@ import { ConfirmService } from './confirm-dialog.component';
 import { ToastComponent } from './toast.component';
 import { FeaturesService } from '../draw/features.service';
 import { HelpModalService } from '../editor/help-modal.component';
+import { SUB_MODE_KEYS } from '../editor/editor-keys';
 import { DrawToolService, DRAW_TOOL_ID } from '../draw/draw-tool.service';
 import { drawTool } from '../draw/draw-tool';
 import { FEATURE_TYPES, FEATURE_STYLES, digitForFeatureType, type FeatureType } from '../draw/feature-palette';
@@ -33,16 +34,12 @@ export const SAVED_MS = 1500;
 
 /**
  * Sub-mode key hints, keyed by editor tool id (review items 21 and 29).
- * Display only: the shortcut service under src/editor owns the bindings.
- * Unify with its table once that lands, so the two cannot drift.
+ * Display only; derived from the shortcut layer's table so the two cannot
+ * drift.
  */
-export const SUBMODE_KEY_HINTS: Readonly<Record<string, string>> = {
-    draw: 'D',
-    measure: 'M',
-    furniture: 'F',
-    analysis: 'A',
-    'terrain-edit': 'T',
-};
+export const SUBMODE_KEY_HINTS: Readonly<Record<string, string>> = Object.fromEntries(
+    Object.entries(SUB_MODE_KEYS).map(([key, toolId]) => [toolId, key.toUpperCase()]),
+);
 
 const tpl = template(`
     <header class="cmdbar" bind="root">

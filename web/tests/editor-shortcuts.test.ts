@@ -12,6 +12,8 @@ import { FurnitureService } from '../src/furniture/furniture.service';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { ServerModeService, visibleEditorTools, type ServerMode } from '../src/app/server-mode.service';
 import { PopoverComponent } from '../src/ui/popover.component';
+import { HoleSidebarComponent } from '../src/course-detail/hole-sidebar.component';
+import { Component, template } from '@basics/core/client/core';
 import { measureTool } from '../src/measure/measure-tool';
 import { MEASURE_TOOL_ID } from '../src/measure/measure-tool.service';
 import { DRAW_TOOL_ID } from '../src/draw/draw-tool.service';
@@ -355,6 +357,27 @@ test('Cmd/Ctrl+\\ collapses both docks, then expands both', () => {
     localStorage.setItem(HOLE_DOCK_KEY, '1');
     press('\\', { metaKey: true });
     expect(h.mode.dockRequest.peek()).toEqual({ collapsed: true });
+});
+
+class EmptyFooter extends Component {
+    render(): DocumentFragment { return this.wire(template('<div></div>'), {}); }
+}
+
+test('the hole dock collapses and expands live on Cmd+\\', () => {
+    const h = mountBuilder();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const dock = new HoleSidebarComponent({ footer: EmptyFooter });
+    dock.mount(host);
+    disposers.push(() => dock.destroy());
+    const root = host.querySelector('.hole-dock')!;
+    expect(root.classList.contains('is-collapsed')).toBe(false);
+
+    press('\\', { metaKey: true });
+    expect(root.classList.contains('is-collapsed')).toBe(true);
+    press('\\', { metaKey: true });
+    expect(root.classList.contains('is-collapsed')).toBe(false);
+    expect(h.mode.dockRequest.peek()).toEqual({ collapsed: false });
 });
 
 test('draw keys still reach the draw tool', () => {
