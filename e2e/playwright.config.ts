@@ -44,7 +44,8 @@ export default defineConfig({
     workers: 1,
     forbidOnly: !!process.env.CI,
     retries: 0,
-    reporter: [['list']],
+    // JSON results feed `bun run e2e:durations` (e2e/durations.ts).
+    reporter: [['list'], ['json', { outputFile: path.join(__dirname, 'results', 'results.json') }]],
     timeout: 60_000,
     expect: { timeout: 15_000 },
 

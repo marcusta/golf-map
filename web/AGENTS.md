@@ -53,3 +53,9 @@ Contents (`src/vegetation/vegetation-stems.ts`): 400 x 400 m ground with a gener
 - Add an asset type to the lineup: append to `lineupEntries()` in `vegetation-stems.ts` (species/variant pair, or a height under 4 m for a shrub); `tests/vegetation-stems.test.ts` counts the entries.
 - Regenerate the tree textures: `bun scripts/gen-tree-textures.ts` (writes `public/trees/`; `--only <name>` for one atlas). The impostor atlas is baked at runtime from those textures.
 - The map layer accepts `?treeLod=<fullM>[,<halfM>]` on the planner URL in dev builds to pull the LOD bands in; `e2e/tests/30-individual-trees.spec.ts` uses it on SwiftShader. `e2e/tests/31-vegetation-scene.spec.ts` cycles the presets and writes screenshots to `docs/validation/vegetation/`.
+
+## E2E
+
+`bun run e2e` (repo root) boots an isolated API and web server on 3100/5273 and runs `e2e/tests/`; set `E2E_API_PORT=3200 E2E_WEB_PORT=5474` when those are busy. `bun run e2e:create` runs the Create-mode specs only (01, 07, 08, 09, 17, 19, 24, 25, 28, 32) through the same config, so the setup project and ports are unchanged.
+
+Every run also writes the Playwright json report to `e2e/results/results.json` (gitignored). `bun run e2e:durations` reads it and prints spec file, status, test title and duration in ms, slowest first, plus the total.

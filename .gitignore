@@ -7,6 +7,7 @@ uploads
 # E2E harness (Playwright) — isolated seeded DBs, storageState, reports
 e2e/.tmp
 e2e/test-results
+e2e/results
 e2e/playwright-report
 # Playwright also drops its output at the repo root when run from here
 /test-results
