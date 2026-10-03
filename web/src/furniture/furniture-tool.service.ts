@@ -1,5 +1,6 @@
 import { Signal, Computed, effect, untrack, di, Router } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
+import type { Feature, FeatureCollection } from 'geojson';
 import type { ToolContext } from '../editor/tool';
 import { bindDrag, type DragBinding } from '../editor/drag-binding';
 import { flatProjector } from '../editor/screen-point';
@@ -8,11 +9,14 @@ import type { MapPointerEvent } from '../map/map.service';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import type { Hole } from '../../../shared/api/holes.gen';
-import type { Tee } from '../../../shared/api/tees.gen';
-import type { Pin } from '../../../shared/api/pins.gen';
-import type { AimPoint } from '../../../shared/api/aim-points.gen';
 import { FurnitureService, FURNITURE_TOOL_ID, defaultTeeName, finiteWgs84Point, greenPointFields, type GreenPoint, type Selection } from './furniture.service';
-import { FURNITURE_OVERLAY_ID, buildFurnitureGeojson, furnitureLayers } from './furniture-overlay';
+import {
+    FURNITURE_DRAG_OVERLAY_ID,
+    FURNITURE_OVERLAY_ID,
+    buildFurnitureGeojson,
+    furnitureDragLayers,
+    furnitureLayers,
+} from './furniture-overlay';
 
 /** Screen-px radius for click-to-select and mousedown-to-drag hit testing. */
 const MARKER_HIT_PX = 14;
@@ -37,6 +41,16 @@ interface DragTarget {
     hit: MarkerHit;
     startScreen: { x: number; y: number };
     moved: boolean;
+}
+
+const EMPTY_COLLECTION: FeatureCollection = { type: 'FeatureCollection', features: [] };
+
+/** True when `f` is the main-overlay feature that renders `hit`. */
+function featureIsHit(f: Feature, hit: MarkerHit): boolean {
+    const p = f.properties;
+    if (!p) return false;
+    if (hit.kind === 'green') return p.role === `green-${hit.point}` && p.holeId === hit.holeId;
+    return p.role === hit.kind && p.id === hit.id;
 }
 
 /** A hit as a Selection (they share shape). */
@@ -67,6 +81,14 @@ export class FurnitureToolService {
     private drag: DragTarget | null = null;
     /** Raw mousedown/up binding (editor/drag-binding.ts); null while inactive. */
     private dragBinding: DragBinding | null = null;
+    /**
+     * Pointer position of the marker under drag, or null. Only the drag
+     * overlay reads it: the main overlay and the stores keep the pre-drag
+     * data until mouseup, so a move re-sends one feature, not all of them.
+     */
+    private readonly dragPos = new Signal<{ lng: number; lat: number } | null>(null);
+    /** Last collection sent to the main overlay; the drag overlay copies its marker from here. */
+    private lastMain: FeatureCollection = EMPTY_COLLECTION;
 
     /** ?hole= carries the hole NUMBER; resolve to the Hole for the selected course. */
     private readonly selectedHoleNumber = this.router.query('hole');
@@ -126,6 +148,7 @@ export class FurnitureToolService {
             });
         }));
         ctx.track(this.attachOverlay(ctx));
+        ctx.track(ownedOverlay(ctx.map, FURNITURE_DRAG_OVERLAY_ID, () => this.dragGeojson(), furnitureDragLayers));
         // Hole framing is canvas-level now (editor/hole-framing.ts, attached
         // by EditorCanvasComponent behind EditorModeService.followHole).
     }
@@ -184,7 +207,7 @@ export class FurnitureToolService {
                 const origin = this.svc.lineOriginTee(holeId);
                 if (origin) lineOriginByHole.set(holeId, origin.id);
             }
-            return buildFurnitureGeojson({
+            return this.lastMain = buildFurnitureGeojson({
                 tees: this.svc.tees.items.get(),
                 pins: this.svc.pins.items.get(),
                 greens: this.svc.greens.get(),
@@ -195,6 +218,24 @@ export class FurnitureToolService {
                 lineOriginByHole,
             });
         }, furnitureLayers);
+    }
+
+    /**
+     * The drag overlay's data: the dragged marker's main-overlay feature
+     * (same properties, so the same style and selection ring) at the
+     * pointer. Empty when no drag is moving. The aim line is not redrawn
+     * during the drag; it follows on mouseup with the main rebuild.
+     */
+    private dragGeojson(): FeatureCollection {
+        const pos = this.dragPos.get();
+        const hit = this.drag?.hit;
+        if (!pos || !hit) return EMPTY_COLLECTION;
+        const source = this.lastMain.features.find(f => featureIsHit(f, hit));
+        if (!source) return EMPTY_COLLECTION;
+        return {
+            type: 'FeatureCollection',
+            features: [{ ...source, geometry: { type: 'Point', coordinates: [pos.lng, pos.lat] } }],
+        };
     }
 
     // ── Event handling ──────────────────────────────────────────────────────
@@ -235,8 +276,9 @@ export class FurnitureToolService {
         if (!drag) return;
         if (!drag.moved && this.pxDist(drag.startScreen, e.point) < DRAG_MOVE_THRESHOLD_PX) return;
         drag.moved = true;
-        // Local patch for instant feedback; persistence happens on mouseup.
-        this.patchLocal(drag.hit, e.lngLat.lat, e.lngLat.lng);
+        // Feedback through the drag overlay only. The stores and the main
+        // overlay change once, on mouseup.
+        this.dragPos.set({ lng: e.lngLat.lng, lat: e.lngLat.lat });
     }
 
     /**
@@ -260,19 +302,28 @@ export class FurnitureToolService {
     private onMouseUp(): void {
         const drag = this.drag;
         if (!drag) return;
-        this.endDrag();
+        const pos = this.dragPos.peek();
 
         // Swallow the click MapLibre synthesizes right after this mouseup.
         this.dragBinding?.suppressNextClick();
 
-        if (!drag.moved) return;
-        const pos = this.currentPos(drag.hit);
-        if (!pos) return;
-        const hit = drag.hit;
-        if (hit.kind === 'tee') void this.svc.moveTee(hit.id, pos.lat, pos.lon);
-        else if (hit.kind === 'pin') void this.svc.movePin(hit.id, pos.lat, pos.lon);
-        else if (hit.kind === 'aim') void this.svc.moveAim(hit.id, pos.lat, pos.lon);
-        else void this.svc.setGreenPoint(hit.holeId, hit.point, pos.lat, pos.lon);
+        if (drag.moved && pos) {
+            // The stores take the dropped position before the drag overlay
+            // clears, so the main overlay's one rebuild is queued first.
+            // moveTee/movePin/moveAim patch the store synchronously before
+            // their first await; setGreenPoint awaits elevation first, so
+            // the green patch happens here.
+            const { lat, lng: lon } = pos;
+            const hit = drag.hit;
+            if (hit.kind === 'tee') void this.svc.moveTee(hit.id, lat, lon);
+            else if (hit.kind === 'pin') void this.svc.movePin(hit.id, lat, lon);
+            else if (hit.kind === 'aim') void this.svc.moveAim(hit.id, lat, lon);
+            else {
+                this.patchGreenLocal(hit.holeId, hit.point, lat, lon);
+                void this.svc.setGreenPoint(hit.holeId, hit.point, lat, lon);
+            }
+        }
+        this.endDrag();
     }
 
     private onKeyDown(e: KeyboardEvent): void {
@@ -460,43 +511,17 @@ export class FurnitureToolService {
         return best;
     }
 
-    private currentPos(hit: MarkerHit): { lat: number; lon: number } | null {
-        if (hit.kind === 'green') {
-            const g = this.svc.greenForHole(hit.holeId);
-            return g ? this.svc.greenPointPos(g, hit.point) : null;
-        }
-        const row = this.rowOf(hit.kind, hit.id);
-        return row ? { lat: row.lat, lon: row.lon } : null;
+    /** Local green-point patch for the drop (setGreenPoint persists it). */
+    private patchGreenLocal(holeId: string, point: GreenPoint, lat: number, lon: number): void {
+        const fields = greenPointFields(point, lat, lon);
+        this.svc.greens.set(this.svc.greens.peek().map(x => x.holeId === holeId ? { ...x, ...fields } : x));
     }
 
-    private rowOf(kind: 'tee' | 'pin' | 'aim', id: string): Tee | Pin | AimPoint | undefined {
-        if (kind === 'tee') return this.svc.tees.items.peek().find(t => t.id === id);
-        if (kind === 'pin') return this.svc.pins.items.peek().find(p => p.id === id);
-        return this.svc.aims.items.peek().find(a => a.id === id);
-    }
-
-    private patchLocal(hit: MarkerHit, lat: number, lon: number): void {
-        if (hit.kind === 'tee') {
-            const r = this.svc.tees.items.peek().find(t => t.id === hit.id);
-            if (r) this.svc.tees.patch({ ...r, lat, lon });
-        } else if (hit.kind === 'pin') {
-            const r = this.svc.pins.items.peek().find(p => p.id === hit.id);
-            if (r) this.svc.pins.patch({ ...r, lat, lon });
-        } else if (hit.kind === 'aim') {
-            const r = this.svc.aims.items.peek().find(a => a.id === hit.id);
-            if (r) this.svc.aims.patch({ ...r, lat, lon });
-        } else {
-            const g = this.svc.greenForHole(hit.holeId);
-            if (g) {
-                const fields = greenPointFields(hit.point, lat, lon);
-                this.svc.greens.set(this.svc.greens.peek().map(x => x.holeId === g.holeId ? { ...x, ...fields } : x));
-            }
-        }
-    }
-
+    /** Ends a drag. A drag cut short (deactivate) drops its unsaved position. */
     private endDrag(): void {
         if (!this.drag) return;
         this.drag = null;
+        this.dragPos.set(null);
         this.dragBinding?.release();
     }
 

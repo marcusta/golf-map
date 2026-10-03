@@ -20,6 +20,13 @@ import {
 /** Overlay/source id for the persistent furniture rendering. */
 export const FURNITURE_OVERLAY_ID = FURNITURE_TOOL_ID;
 
+/**
+ * Overlay/source id for the marker under an in-progress drag. It holds one
+ * feature (or none) so a pointer move re-sends a single point instead of
+ * the full furniture collection.
+ */
+export const FURNITURE_DRAG_OVERLAY_ID = `${FURNITURE_TOOL_ID}-drag`;
+
 export const SELECTION_COLOR = ACCENT_COLOR; // '#BF6A3E' — --data-cat-1 / accent
 
 /**
@@ -200,13 +207,23 @@ function point(coordinates: Position, properties: Record<string, unknown>): Feat
 const role = (value: string): FilterSpecification =>
     ['==', ['get', 'role'], value] as FilterSpecification;
 
-/** Layer specs for the furniture overlay (ids prefixed with the overlay id). */
-export function furnitureLayers(): OverlayLayerSpec[] {
+/**
+ * Layer specs for the drag overlay: the marker layers of `furnitureLayers`
+ * under the drag overlay's id prefix. The draped aim-line layer is left
+ * out, so a per-move update never touches the terrain render-to-texture
+ * stack.
+ */
+export function furnitureDragLayers(): OverlayLayerSpec[] {
+    return furnitureLayers(FURNITURE_DRAG_OVERLAY_ID).filter(l => l.type !== 'line');
+}
+
+/** Layer specs for the furniture overlay (ids prefixed with `prefix`). */
+export function furnitureLayers(prefix: string = FURNITURE_OVERLAY_ID): OverlayLayerSpec[] {
     return [
         // Ordered aim polyline (below the markers). The selected hole's line
         // reads brighter + thicker.
         {
-            id: `${FURNITURE_OVERLAY_ID}-aim-line`,
+            id: `${prefix}-aim-line`,
             type: 'line',
             filter: role('aim-line'),
             // Guide §03 shot/aim lines: --map-shot-line, 3px, rounded ends.
@@ -224,7 +241,7 @@ export function furnitureLayers(): OverlayLayerSpec[] {
         // Soft halo behind every marker on the selected hole (slight highlight).
         // First real marker layer → sits under the dots/labels/rings.
         {
-            id: `${FURNITURE_OVERLAY_ID}-hole-highlight`,
+            id: `${prefix}-hole-highlight`,
             type: 'circle',
             filter: ['all',
                 ['in', ['get', 'role'], ['literal', ['tee', 'pin', 'aim', 'green-center', 'green-front', 'green-back']]],
@@ -241,7 +258,7 @@ export function furnitureLayers(): OverlayLayerSpec[] {
         },
         // Green point selection ring (under the dots; same halo as tee/pin/aim).
         {
-            id: `${FURNITURE_OVERLAY_ID}-green-sel`,
+            id: `${prefix}-green-sel`,
             type: 'circle',
             filter: ['all',
                 ['in', ['get', 'role'], ['literal', ['green-center', 'green-front', 'green-back']]],
@@ -253,25 +270,25 @@ export function furnitureLayers(): OverlayLayerSpec[] {
         // fill): back = dark outline green, front = light draw green,
         // center = moss, all ringed in overlay-text bone.
         {
-            id: `${FURNITURE_OVERLAY_ID}-green-back`,
+            id: `${prefix}-green-back`,
             type: 'circle',
             filter: role('green-back'),
             paint: { 'circle-radius': 4, 'circle-color': '#3F7A55' /* --map-green-outline */, 'circle-stroke-color': OVERLAY_TEXT, 'circle-stroke-width': 1 },
         },
         {
-            id: `${FURNITURE_OVERLAY_ID}-green-front`,
+            id: `${prefix}-green-front`,
             type: 'circle',
             filter: role('green-front'),
             paint: { 'circle-radius': 4, 'circle-color': '#97D79B' /* --map-green-draw */, 'circle-stroke-color': OVERLAY_TEXT, 'circle-stroke-width': 1 },
         },
         {
-            id: `${FURNITURE_OVERLAY_ID}-green-center`,
+            id: `${prefix}-green-center`,
             type: 'circle',
             filter: role('green-center'),
             paint: { 'circle-radius': 5, 'circle-color': CAT.moss /* '#5C6B4A' — --data-cat-4 */, 'circle-stroke-color': OVERLAY_TEXT, 'circle-stroke-width': 1.5 },
         },
         {
-            id: `${FURNITURE_OVERLAY_ID}-green-labels`,
+            id: `${prefix}-green-labels`,
             type: 'symbol',
             filter: ['in', ['get', 'role'], ['literal', ['green-center', 'green-front', 'green-back']]] as FilterSpecification,
             layout: {
@@ -289,13 +306,13 @@ export function furnitureLayers(): OverlayLayerSpec[] {
         },
         // Aim diamonds (rotated square) + selection ring.
         {
-            id: `${FURNITURE_OVERLAY_ID}-aim-sel`,
+            id: `${prefix}-aim-sel`,
             type: 'circle',
             filter: ['all', role('aim'), ['==', ['get', 'selected'], true]] as FilterSpecification,
             paint: { 'circle-radius': 11, 'circle-color': 'transparent', 'circle-stroke-color': SELECTION_COLOR, 'circle-stroke-width': 2.5 },
         },
         {
-            id: `${FURNITURE_OVERLAY_ID}-aim`,
+            id: `${prefix}-aim`,
             type: 'symbol',
             filter: role('aim'),
             layout: {
@@ -311,13 +328,13 @@ export function furnitureLayers(): OverlayLayerSpec[] {
         },
         // Tees: coloured circle + selection ring + letter label.
         {
-            id: `${FURNITURE_OVERLAY_ID}-tee-sel`,
+            id: `${prefix}-tee-sel`,
             type: 'circle',
             filter: ['all', role('tee'), ['==', ['get', 'selected'], true]] as FilterSpecification,
             paint: { 'circle-radius': 11, 'circle-color': 'transparent', 'circle-stroke-color': SELECTION_COLOR, 'circle-stroke-width': 2.5 },
         },
         {
-            id: `${FURNITURE_OVERLAY_ID}-tee`,
+            id: `${prefix}-tee`,
             type: 'circle',
             filter: role('tee'),
             paint: {
@@ -330,7 +347,7 @@ export function furnitureLayers(): OverlayLayerSpec[] {
             },
         },
         {
-            id: `${FURNITURE_OVERLAY_ID}-tee-label`,
+            id: `${prefix}-tee-label`,
             type: 'symbol',
             filter: role('tee'),
             layout: {
@@ -344,19 +361,19 @@ export function furnitureLayers(): OverlayLayerSpec[] {
         },
         // Pins: selection ring, active ring, dot, name label.
         {
-            id: `${FURNITURE_OVERLAY_ID}-pin-sel`,
+            id: `${prefix}-pin-sel`,
             type: 'circle',
             filter: ['all', role('pin'), ['==', ['get', 'selected'], true]] as FilterSpecification,
             paint: { 'circle-radius': 11, 'circle-color': 'transparent', 'circle-stroke-color': SELECTION_COLOR, 'circle-stroke-width': 2.5 },
         },
         {
-            id: `${FURNITURE_OVERLAY_ID}-pin-active`,
+            id: `${prefix}-pin-active`,
             type: 'circle',
             filter: ['all', role('pin'), ['==', ['get', 'active'], true]] as FilterSpecification,
             paint: { 'circle-radius': 9, 'circle-color': 'transparent', 'circle-stroke-color': STATUS_BAD /* '#B24A32' — --data-bad, flag red */, 'circle-stroke-width': 2 },
         },
         {
-            id: `${FURNITURE_OVERLAY_ID}-pin`,
+            id: `${prefix}-pin`,
             type: 'circle',
             filter: role('pin'),
             paint: {
