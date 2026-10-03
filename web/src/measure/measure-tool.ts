@@ -10,6 +10,8 @@ const HELP: HelpSection[] = [
         shortcuts: [
             { keys: 'Click', desc: 'Place a point (A, B, … extending the path)' },
             { keys: 'Double-click / click near A', desc: 'End the path' },
+            { keys: 'Enter', desc: 'End the path' },
+            { keys: 'Backspace / Cmd+Z', desc: 'Remove the last point' },
             { keys: 'Esc', desc: 'Clear the path' },
         ],
     },
@@ -33,4 +35,5 @@ export const measureTool: EditorTool = {
     activate: ctx => di.get(MeasureToolService).activate(ctx),
     deactivate: () => di.get(MeasureToolService).deactivate(),
     onEscape: () => di.get(MeasureToolService).onEscape(),
+    isBusy: () => di.get(MeasureToolService).isBusy(),
 };

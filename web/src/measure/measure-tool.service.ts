@@ -67,6 +67,10 @@ export interface ProfileSample {
  *  - Double-click, or a click within CLOSE_PATH_PX of the start point, ENDS
  *    the path (keeps it visible). The next click starts a fresh path.
  *  - Escape clears the path; a second Escape (empty path) deactivates the tool.
+ *  - Keys (match the draw tool): Backspace or Cmd/Ctrl+Z removes the last
+ *    point while measuring, Enter finishes the path. A dashed rubber-band
+ *    segment runs from the last point to the pointer while a path is open,
+ *    and is hidden while a mouse button is held (map pan or drag).
  *
  * Elevation is sampled asynchronously per point through the injected sampler
  * (null → shown as '—' and excluded from elevation stats). Distances are
@@ -92,13 +96,23 @@ export class MeasureToolService {
         return { min: Math.min(...values), max: Math.max(...values) };
     });
 
+    /** Pointer position while a path is open; null when idle or a button is held. */
+    readonly cursor = new Signal<{ lng: number; lat: number } | null>(null);
+
     private elevation: MeasureElevationSampler = NULL_ELEVATION;
     private ctx: ToolContext | null = null;
     /** Monotonic token so stale async elevation/profile results are dropped. */
     private seq = 0;
+    /**
+     * Per-segment sample requests keyed by the segment's endpoints. Holds the
+     * promise, so concurrent refreshes share one request. Dropped on clear()
+     * and on a sampler swap; a rejected request is evicted.
+     */
+    private segmentCache = new Map<string, Promise<Array<{ elevation: number | null }>>>();
 
     /** Bind the live elevation sampler (ElevationService) — called in attach. */
     useElevation(sampler: MeasureElevationSampler): void {
+        if (sampler !== this.elevation) this.segmentCache.clear();
         this.elevation = sampler;
     }
 
@@ -114,6 +128,7 @@ export class MeasureToolService {
         this.useElevation(ctx.elevation);
 
         ctx.track(ctx.map.onClick(e => this.onClick(e)));
+        ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));
 
         const onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
         window.addEventListener('keydown', onKeyDown);
@@ -143,6 +158,12 @@ export class MeasureToolService {
 
     deactivate(): void {
         this.ctx = null;
+        this.cursor.set(null);
+    }
+
+    /** True while a path is open (placed points, not yet ended). */
+    isBusy(): boolean {
+        return this.state.count.peek() > 0 && !this.state.ended.peek();
     }
 
     /** ESC: clear a visible path → (unconsumed) deactivate. */
@@ -159,6 +180,8 @@ export class MeasureToolService {
     /** Clear the path + profile (Escape / panel button). */
     clear(): void {
         this.seq++; // invalidate any in-flight elevation/profile work
+        this.segmentCache.clear();
+        this.cursor.set(null);
         this.state.clear();
         this.profile.set([]);
         this.profileLoading.set(false);
@@ -170,6 +193,32 @@ export class MeasureToolService {
         return this.ctx?.map.interactionMode.peek() === MEASURE_TOOL_ID;
     }
 
+    private onMouseMove(e: MapPointerEvent): void {
+        if (!this.isMyClaim()) return;
+        // A held button means a pan or drag: no rubber band while it lasts.
+        if (e.originalEvent.buttons !== 0 || !this.isBusy()) {
+            if (this.cursor.peek()) this.cursor.set(null);
+            return;
+        }
+        this.cursor.set({ lng: e.lngLat.lng, lat: e.lngLat.lat });
+    }
+
+    /** Remove the last point of an open path. Returns false when nothing to undo. */
+    undoPoint(): boolean {
+        if (!this.isBusy()) return false;
+        this.state.points.update(pts => pts.slice(0, -1));
+        if (this.state.count.peek() === 0) this.cursor.set(null);
+        return true;
+    }
+
+    /** Finish an open path (Enter). Needs two points. */
+    finish(): boolean {
+        if (!this.isBusy() || this.state.count.peek() < 2) return false;
+        this.state.end();
+        this.cursor.set(null);
+        return true;
+    }
+
     private onClick(e: MapPointerEvent): void {
         if (!this.isMyClaim()) return;
 
@@ -179,6 +228,7 @@ export class MeasureToolService {
         if (points.length >= 2 && !this.state.ended.peek()) {
             if (this.screenDist(points[0], e.point) < CLOSE_PATH_PX) {
                 this.state.end();
+                this.cursor.set(null);
                 return;
             }
         }
@@ -224,6 +274,7 @@ export class MeasureToolService {
             this.state.points.update(pts => pts.slice(0, -1));
         }
         this.state.end();
+        this.cursor.set(null);
     }
 
     private onKeyDown(e: KeyboardEvent): void {
@@ -234,7 +285,17 @@ export class MeasureToolService {
             target instanceof HTMLSelectElement ||
             target instanceof HTMLTextAreaElement
         ) return;
-        // Escape is handled by the toolbar via onEscape(); nothing else here.
+        // Escape is handled by the toolbar via onEscape(). Backspace, Cmd/Ctrl+Z
+        // and Enter are not editor-wide keys (editor-keys.ts), so they reach
+        // this listener.
+        const meta = e.metaKey || e.ctrlKey;
+        if (e.key === 'Backspace' && !meta && !e.altKey) {
+            if (this.undoPoint()) e.preventDefault();
+        } else if (meta && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+            if (this.undoPoint()) e.preventDefault();
+        } else if (e.key === 'Enter' && !meta) {
+            if (this.finish()) e.preventDefault();
+        }
     }
 
     // ── Elevation profile (sparkline source) ────────────────────────────────
@@ -247,6 +308,7 @@ export class MeasureToolService {
     private async refreshProfile(): Promise<void> {
         const points = this.state.points.peek();
         if (points.length < 2) {
+            this.seq++; // a shorter path must not be overwritten by an older, longer one
             this.profile.set([]);
             this.profileLoading.set(false);
             return;
@@ -254,30 +316,52 @@ export class MeasureToolService {
         const token = ++this.seq;
         this.profileLoading.set(true);
 
+        // Every segment is requested at once; unchanged segments hit the cache.
+        const segments = points.slice(1).map((b, i) => {
+            const a = points[i];
+            return { segLen: Math.hypot(b.e - a.e, b.n - a.n), line: this.segmentLine(a, b) };
+        });
+        let lines: Array<Array<{ elevation: number | null }>>;
+        try {
+            lines = await Promise.all(segments.map(seg => seg.line));
+        } catch {
+            if (token === this.seq) this.profileLoading.set(false);
+            return;
+        }
+        if (token !== this.seq) return; // superseded, drop
+
         const samples: ProfileSample[] = [];
         let cumulative = 0;
-        for (let i = 1; i < points.length; i++) {
-            const a = points[i - 1];
-            const b = points[i];
-            const segLen = Math.hypot(b.e - a.e, b.n - a.n);
-            const line = await this.elevation.sampleLine(
+        segments.forEach((seg, i) => {
+            const line = lines[i];
+            // Skip the first sample of every segment after the first to avoid
+            // duplicating the shared vertex.
+            const start = i === 0 ? 0 : 1;
+            for (let k = start; k < line.length; k++) {
+                const t = k / (line.length - 1);
+                samples.push({ distance: cumulative + seg.segLen * t, elevation: line[k].elevation });
+            }
+            cumulative += seg.segLen;
+        });
+        this.profile.set(samples);
+        this.profileLoading.set(false);
+    }
+
+    /** Cached sampleLine request for one segment, keyed by its endpoints. */
+    private segmentLine(a: MeasurePoint, b: MeasurePoint): Promise<Array<{ elevation: number | null }>> {
+        const key = `${a.lng},${a.lat}|${b.lng},${b.lat}`;
+        let hit = this.segmentCache.get(key);
+        if (!hit) {
+            const cache = this.segmentCache;
+            hit = this.elevation.sampleLine(
                 { lng: a.lng, lat: a.lat },
                 { lng: b.lng, lat: b.lat },
                 PROFILE_SAMPLES_PER_SEGMENT,
             );
-            if (token !== this.seq) return; // superseded — drop
-            // Skip the first sample of every segment after the first to avoid
-            // duplicating the shared vertex.
-            const start = i === 1 ? 0 : 1;
-            for (let k = start; k < line.length; k++) {
-                const t = k / (line.length - 1);
-                samples.push({ distance: cumulative + segLen * t, elevation: line[k].elevation });
-            }
-            cumulative += segLen;
+            hit.catch(() => { if (cache.get(key) === hit) cache.delete(key); });
+            cache.set(key, hit);
         }
-        if (token !== this.seq) return;
-        this.profile.set(samples);
-        this.profileLoading.set(false);
+        return hit;
     }
 
     // ── Overlay ─────────────────────────────────────────────────────────────
@@ -329,6 +413,16 @@ export class MeasureToolService {
             });
         }
 
+        // Rubber band: last point to the pointer while the path is open.
+        const cursor = this.cursor.get();
+        if (cursor && points.length > 0 && !this.state.ended.get()) {
+            features.push({
+                type: 'Feature',
+                properties: { role: 'cursor' },
+                geometry: { type: 'LineString', coordinates: [toLngLat(points[points.length - 1]), [cursor.lng, cursor.lat]] },
+            });
+        }
+
         points.forEach((p, i) => {
             const role = i === 0 ? 'first' : i === points.length - 1 ? 'last' : 'mid';
             features.push({
@@ -371,6 +465,12 @@ function measureLayers(): OverlayLayerSpec[] {
             type: 'line',
             filter: role('main-line'),
             paint: { 'line-color': COLOR_LINE, 'line-width': 3 },
+        },
+        {
+            id: 'measure-cursor',
+            type: 'line',
+            filter: role('cursor'),
+            paint: { 'line-color': COLOR_LINE, 'line-width': 2, 'line-dasharray': [2, 2], 'line-opacity': 0.8 },
         },
         {
             id: 'measure-drop',

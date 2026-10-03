@@ -282,13 +282,15 @@ test('sub-mode letters skip tools the server mode hides', () => {
 test('sub-mode letters are ignored while the active tool reports busy', () => {
     const h = mountBuilder();
     h.mode.activate(measureTool);
+    // The registry object is shared across test files: restore, never delete.
+    const original = measureTool.isBusy;
     measureTool.isBusy = () => true;
     try {
         const event = press('d');
         expect(h.mode.activeToolId.peek()).toBe(MEASURE_TOOL_ID);
         expect(event.defaultPrevented).toBe(false);
     } finally {
-        delete measureTool.isBusy;
+        measureTool.isBusy = original;
     }
     press('d');
     expect(h.mode.activeToolId.peek()).toBe(DRAW_TOOL_ID);

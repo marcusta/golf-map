@@ -37,7 +37,7 @@ const tpl = template(`
         </div>
         <div class="measure-panel__hints">
             <div>Click to place points — <b>A</b>, <b>B</b>, then extend the path.</div>
-            <div>Double-click or click near <b>A</b> to end · <b>Esc</b> clears.</div>
+            <div>Double-click, click near <b>A</b> or <b>Enter</b> to end · <b>Backspace</b> removes the last point · <b>Esc</b> clears.</div>
             <div>plays-like (simple) = horizontal + elevation Δ (full model: Phase 5).</div>
         </div>
     </div>
