@@ -1,7 +1,6 @@
 import { Signal, Computed, batch } from '@basics/core/client/core';
 import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
-import type { AssetsApi, CourseAsset } from '../../../shared/api/assets.gen';
 import type { CoursesApi } from '../../../shared/api/courses.gen';
 
 /** WGS84 bounding box, as stored in the tile manifest. */
@@ -126,9 +125,9 @@ export function deriveTileVersion(generatedAt: string): string {
 }
 
 /**
- * Resolves a course's tile configuration from the API: the course's
- * `tile_manifest` asset (assets.by-course) carries bounds, layer zoom
- * ranges, elevation range, and generatedAt in its metaJson.
+ * Resolves a course's tile configuration from the API. The course GET
+ * returns its site's `tile_manifest` metaJson as `tileManifestJson`, which
+ * carries bounds, layer zoom ranges, elevation range, and generatedAt.
  *
  * A course without a tile manifest is a normal state (imported courses that
  * haven't been through the tile pipeline yet): `load()` succeeds and
@@ -166,10 +165,7 @@ export class TilesetService {
 
     private loadedCourseId: string | null = null;
 
-    constructor(
-        private assetsApi: AssetsApi = api.assets,
-        private coursesApi: CoursesApi = api.courses,
-    ) {}
+    constructor(private coursesApi: CoursesApi = api.courses) {}
 
     /**
      * Force a refetch of a course's manifest, bypassing the per-courseId cache.
@@ -194,24 +190,19 @@ export class TilesetService {
     }
 
     /**
-     * Resolve a course's map: course → site → tile_manifest asset. A course with
-     * no site (`siteId == null`) has no map — `hasTiles` stays false and the
-     * editor shows the empty "Set map area" state. Cached per courseId.
+     * Resolve a course's map with one request: the course GET resolves
+     * course -> site -> tile_manifest on the server and returns the manifest
+     * as `tileManifestJson`. A course with no site (`siteId == null`) has no
+     * map: `hasTiles` stays false and the editor shows the empty "Set map
+     * area" state. Cached per courseId.
      */
     async load(courseId: string): Promise<void> {
         if (this.loadedCourseId === courseId) return;
         const course = await request(this.loading, this.error, () => this.coursesApi.get({ id: courseId }));
-        if (!course) return; // request failed — error set, cache untouched
+        if (!course) return; // request failed: error set, cache untouched
         const siteId = course.siteId;
-
-        let manifestAsset: CourseAsset | undefined;
-        if (siteId) {
-            const assets = await request(this.loading, this.error, () => this.assetsApi.listBySite({ siteId }));
-            if (!assets) return;
-            manifestAsset = assets.find(a => a.kind === 'tile_manifest');
-        }
         batch(() => {
-            this.manifest.set(parseTileManifest(manifestAsset?.metaJson));
+            this.manifest.set(parseTileManifest(course.tileManifestJson));
             this.courseId.set(courseId);
             this.mapKey.set(siteId ?? null);
         });

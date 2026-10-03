@@ -5,8 +5,7 @@ import {
     parseTileManifest,
     deriveTileVersion,
 } from '../src/map/tileset.service';
-import type { AssetsApi, CourseAsset } from '../../shared/api/assets.gen';
-import type { CoursesApi, Course } from '../../shared/api/courses.gen';
+import type { CoursesApi, CourseDetail } from '../../shared/api/courses.gen';
 
 afterEach(() => _reset());
 
@@ -21,49 +20,33 @@ const MANIFEST_JSON = JSON.stringify({
     attribution: '© Lantmäteriet, CC BY 4.0',
 });
 
-function asset(siteId: string, kind: CourseAsset['kind'], metaJson: string | null): CourseAsset {
-    return {
-        id: `a-${kind}`,
-        courseId: 'owner',
-        siteId,
-        kind,
-        filename: `tiles/${siteId}/manifest.json`,
-        metaJson,
-        version: 1,
-        createdAt: '2026-07-04T00:00:00Z',
-        updatedAt: '2026-07-04T00:00:00Z',
-    };
-}
-
-function courseStub(id: string, siteId: string | null): Course {
+function courseStub(id: string, siteId: string | null, tileManifestJson: string | null): CourseDetail {
     return {
         id, name: 'c', status: 'draft', revision: 0, crs: 'EPSG:3006',
         georeferenceJson: null, homeLat: null, homeLon: null, notes: null,
-        siteId, version: 1, createdAt: '', updatedAt: '',
+        siteId, version: 1, createdAt: '', updatedAt: '', tileManifestJson,
     };
 }
 
+interface FakeCourse { siteId: string | null; tileManifestJson: string | null }
+
 /**
- * Fakes the course → site → assets resolution TilesetService now performs.
- * `courses` maps courseId → siteId; `assetsBySite` maps siteId → assets.
- * `courseCalls` counts course fetches (the per-courseId cache key).
+ * Fakes the course GET, which returns the site's tile manifest inline.
+ * `courses` maps courseId -> { siteId, tileManifestJson }. The fake has no
+ * other method, so any second request kind throws. `courseCalls` counts
+ * course fetches (the per-courseId cache key).
  */
-function fakeApis(courses: Record<string, string | null>, assetsBySite: Record<string, CourseAsset[]>) {
-    const reject = () => Promise.reject(new Error('not under test'));
+function fakeApi(courses: Record<string, FakeCourse>) {
     let courseCalls = 0;
     const coursesApi = {
         get: async ({ id }: { id: string }) => {
             courseCalls++;
-            if (!(id in courses)) throw new Error('no course');
-            return courseStub(id, courses[id]);
+            const c = courses[id];
+            if (!c) throw new Error('no course');
+            return courseStub(id, c.siteId, c.tileManifestJson);
         },
     } as unknown as CoursesApi;
-    const assetsApi = {
-        listBySite: async ({ siteId }: { siteId: string }) => assetsBySite[siteId] ?? [],
-        listByCourse: reject,
-        get: reject, register: reject, update: reject, remove: reject,
-    } as unknown as AssetsApi;
-    return { coursesApi, assetsApi, courseCalls: () => courseCalls };
+    return { coursesApi, courseCalls: () => courseCalls };
 }
 
 // ── parseTileManifest ─────────────────────────────────────────────────────
@@ -125,14 +108,13 @@ test('deriveTileVersion differs for different timestamps', () => {
 
 // ── TilesetService ────────────────────────────────────────────────────────
 
-test('load resolves manifest, bounds, hasTiles, tileVersion and mapKey (via site)', async () => {
-    const { assetsApi, coursesApi } = fakeApis(
-        { c1: 's1' },
-        { s1: [asset('s1', 'ortho_cog', null), asset('s1', 'tile_manifest', MANIFEST_JSON)] },
-    );
-    const svc = new TilesetService(assetsApi, coursesApi);
+test('load resolves manifest, bounds, hasTiles, tileVersion and mapKey from one course request', async () => {
+    const { coursesApi, courseCalls } = fakeApi({ c1: { siteId: 's1', tileManifestJson: MANIFEST_JSON } });
+    const svc = new TilesetService(coursesApi);
 
     await svc.load('c1');
+
+    expect(courseCalls()).toBe(1);
 
     expect(svc.hasTiles.get()).toBe(true);
     expect(svc.courseId.get()).toBe('c1');
@@ -144,8 +126,8 @@ test('load resolves manifest, bounds, hasTiles, tileVersion and mapKey (via site
 });
 
 test('course with no site loads gracefully with hasTiles false and null mapKey', async () => {
-    const { assetsApi, coursesApi } = fakeApis({ c2: null }, {});
-    const svc = new TilesetService(assetsApi, coursesApi);
+    const { coursesApi } = fakeApi({ c2: { siteId: null, tileManifestJson: null } });
+    const svc = new TilesetService(coursesApi);
 
     await svc.load('c2');
 
@@ -157,8 +139,8 @@ test('course with no site loads gracefully with hasTiles false and null mapKey',
 });
 
 test('site without tile_manifest loads gracefully with hasTiles false', async () => {
-    const { assetsApi, coursesApi } = fakeApis({ c2: 's2' }, { s2: [asset('s2', 'svg_source', null)] });
-    const svc = new TilesetService(assetsApi, coursesApi);
+    const { coursesApi } = fakeApi({ c2: { siteId: 's2', tileManifestJson: null } });
+    const svc = new TilesetService(coursesApi);
 
     await svc.load('c2');
 
@@ -168,9 +150,9 @@ test('site without tile_manifest loads gracefully with hasTiles false', async ()
     expect(svc.error.get()).toBeNull();
 });
 
-test('manifest asset with malformed metaJson is treated as no tiles', async () => {
-    const { assetsApi, coursesApi } = fakeApis({ c3: 's3' }, { s3: [asset('s3', 'tile_manifest', '{broken')] });
-    const svc = new TilesetService(assetsApi, coursesApi);
+test('malformed tileManifestJson is treated as no tiles', async () => {
+    const { coursesApi } = fakeApi({ c3: { siteId: 's3', tileManifestJson: '{broken' } });
+    const svc = new TilesetService(coursesApi);
 
     await svc.load('c3');
 
@@ -180,11 +162,11 @@ test('manifest asset with malformed metaJson is treated as no tiles', async () =
 });
 
 test('load is cached per courseId; a new id refetches and replaces signals', async () => {
-    const { assetsApi, coursesApi, courseCalls } = fakeApis(
-        { c1: 's1', c2: 's2' },
-        { s1: [asset('s1', 'tile_manifest', MANIFEST_JSON)], s2: [] },
-    );
-    const svc = new TilesetService(assetsApi, coursesApi);
+    const { coursesApi, courseCalls } = fakeApi({
+        c1: { siteId: 's1', tileManifestJson: MANIFEST_JSON },
+        c2: { siteId: 's2', tileManifestJson: null },
+    });
+    const svc = new TilesetService(coursesApi);
 
     await svc.load('c1');
     await svc.load('c1');
@@ -203,16 +185,16 @@ test('load is cached per courseId; a new id refetches and replaces signals', asy
 test('refreshTiles re-fetches and propagates the server-bumped tileVersion', async () => {
     // A Clean-tool bake bumps the manifest generatedAt server-side; refreshTiles
     // must pick it up so `?v=` (tileVersion) tracks the new tiles.
-    const manifestAsset = asset('s1', 'tile_manifest', MANIFEST_JSON);
-    const { assetsApi, coursesApi, courseCalls } = fakeApis({ c1: 's1' }, { s1: [manifestAsset] });
-    const svc = new TilesetService(assetsApi, coursesApi);
+    const course: FakeCourse = { siteId: 's1', tileManifestJson: MANIFEST_JSON };
+    const { coursesApi, courseCalls } = fakeApi({ c1: course });
+    const svc = new TilesetService(coursesApi);
 
     await svc.load('c1');
     expect(svc.tileVersion.get()).toBe('20260704T082859Z');
     expect(courseCalls()).toBe(1);
 
     // Server bakes a patch → generatedAt bumped (ms precision).
-    manifestAsset.metaJson = JSON.stringify({
+    course.tileManifestJson = JSON.stringify({
         ...JSON.parse(MANIFEST_JSON),
         generatedAt: '2026-07-04T09:00:00.123Z',
     });
@@ -228,16 +210,10 @@ test('load failure sets error, keeps courseId unset, and is not cached', async (
     const coursesApi = {
         get: async ({ id }: { id: string }) => {
             if (fail) throw new Error('boom');
-            return courseStub(id, 's1');
+            return courseStub(id, 's1', MANIFEST_JSON);
         },
     } as unknown as CoursesApi;
-    const assetsApi = {
-        listBySite: async () => [asset('s1', 'tile_manifest', MANIFEST_JSON)],
-        listByCourse: () => Promise.reject(new Error('x')),
-        get: () => Promise.reject(new Error('x')), register: () => Promise.reject(new Error('x')),
-        update: () => Promise.reject(new Error('x')), remove: () => Promise.reject(new Error('x')),
-    } as unknown as AssetsApi;
-    const svc = new TilesetService(assetsApi, coursesApi);
+    const svc = new TilesetService(coursesApi);
 
     await svc.load('c1');
     expect(svc.error.get()).not.toBeNull();

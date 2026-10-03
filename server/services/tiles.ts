@@ -145,12 +145,21 @@ export function createTileRoutes(assetsService: AssetsService, tileKeyLookup?: T
         }
 
         // Prefer the first candidate that exists (ortho: .webp, else legacy .jpg).
-        const filePath = candidates.find((p) => existsSync(p) && statSync(p).isFile());
-        if (!filePath) {
+        // Bun.file().exists() is async and returns false for a directory.
+        let filePath: string | undefined;
+        let file: ReturnType<typeof Bun.file> | undefined;
+        for (const candidate of candidates) {
+            const f = Bun.file(candidate);
+            if (await f.exists()) {
+                filePath = candidate;
+                file = f;
+                break;
+            }
+        }
+        if (!filePath || !file) {
             return c.json({ error: 'Not found' }, 404);
         }
 
-        const file = Bun.file(filePath);
         const ext = filePath.slice(filePath.lastIndexOf('.'));
         const contentType = CONTENT_TYPE_BY_EXT[ext] ?? 'application/octet-stream';
 

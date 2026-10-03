@@ -240,6 +240,19 @@ test('GET ortho falls back to .jpg when no .webp exists', async () => {
     expect(await res.text()).toBe('jpeg-bytes');
 });
 
+test('GET treats a directory at a candidate path as missing and falls through to the next candidate', async () => {
+    const { app } = await setup();
+    fs.mkdirSync(path.join(dataDir, 'tiles', TEST_COURSE_ID, 'ortho', '14', '100', '200.webp'), { recursive: true });
+
+    expect((await app.request(`/tiles/${TEST_COURSE_ID}/ortho/14/100/200.jpg`)).status).toBe(404);
+
+    writeFakeTile(TEST_COURSE_ID, 'ortho', 14, 100, 200, 'jpg', 'jpeg-bytes');
+    const res = await app.request(`/tiles/${TEST_COURSE_ID}/ortho/14/100/200.jpg`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(await res.text()).toBe('jpeg-bytes');
+});
+
 test('GET ortho serves .webp when only .webp exists', async () => {
     const { app } = await setup();
     writeFakeTile(TEST_COURSE_ID, 'ortho', 14, 100, 200, 'webp', 'webp-bytes');

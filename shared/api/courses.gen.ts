@@ -6,6 +6,23 @@ export interface Page {
     total: number;
 }
 
+export interface CourseDetail {
+    tileManifestJson: null | string;
+    id: string;
+    name: string;
+    status: string;
+    revision: number;
+    crs: string;
+    georeferenceJson: null | string;
+    homeLat: null | number;
+    homeLon: null | number;
+    notes: null | string;
+    siteId: null | string;
+    version: number;
+    createdAt: string;
+    updatedAt: string;
+}
+
 export interface Course {
     id: string;
     name: string;
@@ -47,7 +64,7 @@ export interface RoutingHole {
 
 export interface CoursesApi {
     list(input: { offset: number; limit: number }): Promise<Page>;
-    get(input: { id: string }): Promise<Course>;
+    get(input: { id: string }): Promise<CourseDetail>;
     create(input: { crs?: string; georeferenceJson?: string; homeLat?: number; homeLon?: number; notes?: string; siteId?: string; name: string }): Promise<Course>;
     update(input: { crs?: string; name?: string; georeferenceJson?: string; homeLat?: number; homeLon?: number; notes?: string; siteId?: null | string; id: string; version: number }): Promise<Course>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
