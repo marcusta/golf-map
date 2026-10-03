@@ -364,30 +364,37 @@ export class SelectionPanelComponent extends Component {
         });
 
         // Move-target options + current selection scope. This is explicit
-        // repair UI for "I drew that on the wrong hole" mistakes.
+        // repair UI for "I drew that on the wrong hole" mistakes. Options are
+        // built once per hole list; a selection change or an edit of the
+        // selected feature only moves the value (and the "Mixed holes" entry).
+        const mixed = document.createElement('option');
+        mixed.value = '__mixed';
+        mixed.textContent = 'Mixed holes';
         this.track(effect(() => {
             const holes = this.courseDetail.holes.get();
+            untrack(() => {
+                this.moveSelect.textContent = '';
+                const courseLevel = document.createElement('option');
+                courseLevel.value = '';
+                courseLevel.textContent = 'Course level';
+                this.moveSelect.appendChild(courseLevel);
+                for (const hole of holes) {
+                    const option = document.createElement('option');
+                    option.value = hole.id;
+                    option.textContent = `Hole ${hole.number} (par ${hole.par})`;
+                    this.moveSelect.appendChild(option);
+                }
+            });
+        }));
+        this.track(effect(() => {
+            this.courseDetail.holes.get(); // re-apply after an options rebuild
             const selected = this.features.selectedFeatures.get();
             const selectedHoleIds = new Set(selected.map(f => f.holeId ?? ''));
+            const isMixed = selectedHoleIds.size > 1;
             const value = selectedHoleIds.size === 1 ? [...selectedHoleIds][0]! : '__mixed';
-            this.moveSelect.textContent = '';
-            if (selectedHoleIds.size > 1) {
-                const mixed = document.createElement('option');
-                mixed.value = '__mixed';
-                mixed.textContent = 'Mixed holes';
-                this.moveSelect.appendChild(mixed);
-            }
-            const courseLevel = document.createElement('option');
-            courseLevel.value = '';
-            courseLevel.textContent = 'Course level';
-            this.moveSelect.appendChild(courseLevel);
-            for (const hole of holes) {
-                const option = document.createElement('option');
-                option.value = hole.id;
-                option.textContent = `Hole ${hole.number} (par ${hole.par})`;
-                this.moveSelect.appendChild(option);
-            }
-            this.moveSelect.value = value;
+            if (isMixed && mixed.parentNode !== this.moveSelect) this.moveSelect.prepend(mixed);
+            if (!isMixed && mixed.parentNode === this.moveSelect) mixed.remove();
+            if (this.moveSelect.value !== value) this.moveSelect.value = value;
         }));
 
         return frag;

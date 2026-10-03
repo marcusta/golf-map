@@ -147,6 +147,14 @@ export class ContextDockComponent extends Component<ContextDockProps> {
                 flex-direction: column;
             }
 
+            /* Kept-mounted Draw panels: same column flow as the body. */
+            & .ctx-dock__draw {
+                flex: 1;
+                min-height: 0;
+                display: flex;
+                flex-direction: column;
+            }
+
             /* Quiet dock footer (draw only): tertiary, minimal height. */
             & .ctx-dock__footer {
                 display: none;
@@ -155,6 +163,9 @@ export class ContextDockComponent extends Component<ContextDockProps> {
                 border-top: 1px solid ${t('color-border-default')};
                 font-size: 0.7rem;
                 color: ${t('color-text-tertiary')};
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
                 &.show { display: block; }
                 &.error { color: ${t('color-status-negative')}; }
             }
@@ -213,9 +224,17 @@ export class ContextDockComponent extends Component<ContextDockProps> {
     /** Current draw stack panel (draw sub-mode only) — publishes the rail badge count. */
     private stackPanel = new Signal<FeatureStackPanelComponent | null>(null);
     private selectionPanel: SelectionPanelComponent | null = null;
+    /**
+     * Holds the Draw panels. Built on the first Draw activation and kept for
+     * the dock's life: a sub-mode switch hides it instead of destroying 2000
+     * stack rows and rebuilding them on the way back.
+     */
+    private drawHost: HTMLElement | null = null;
     private toolPanel: Component | null = null;
     private mountedToolId: string | null = null;
     private body!: HTMLElement;
+    /** Footer text + error flag, written by one effect so the DOM sees changes only. */
+    private status = new Signal<{ text: string; error: boolean }>({ text: '', error: false });
 
     /**
      * Active tool, with a fallback for the window where nothing is armed —
@@ -247,10 +266,10 @@ export class ContextDockComponent extends Component<ContextDockProps> {
             footer: {
                 className: () => {
                     if (this.props.content || this.activeTool().id !== DRAW_TOOL_ID) return 'ctx-dock__footer';
-                    return this.statusIsError() ? 'ctx-dock__footer show error' : 'ctx-dock__footer show';
+                    return this.status.get().error ? 'ctx-dock__footer show error' : 'ctx-dock__footer show';
                 },
                 textContent: () => !this.props.content && this.activeTool().id === DRAW_TOOL_ID
-                    ? this.statusText() : '',
+                    ? this.status.get().text : '',
             },
             rail: {
                 onclick: () => this.setCollapsed(false),
@@ -278,21 +297,38 @@ export class ContextDockComponent extends Component<ContextDockProps> {
         // Swap the dock body to the active sub-mode's content. Depends only on
         // the active tool id, so it re-runs on sub-mode switches — not on
         // selection changes (SelectionPanel toggles its own visibility).
+        // Draw's panels stay mounted (hidden) across switches; other tools'
+        // panels mount and unmount with the tool.
         this.track(effect(() => {
             const tool = this.activeTool();
             untrack(() => {
                 if (this.mountedToolId === tool.id) return;
                 this.mountedToolId = tool.id;
-                this.clearBody();
-                if (tool.id === DRAW_TOOL_ID) {
-                    this.selectionPanel = this.spawn(SelectionPanelComponent, this.body);
-                    this.stackPanel.set(this.spawn(FeatureStackPanelComponent, this.body));
-                } else if (tool.panel) {
+                this.toolPanel?.destroy();
+                this.toolPanel = null;
+                const isDraw = tool.id === DRAW_TOOL_ID;
+                if (isDraw && !this.drawHost) {
+                    this.drawHost = document.createElement('div');
+                    this.drawHost.className = 'ctx-dock__draw';
+                    this.body.appendChild(this.drawHost);
+                    this.selectionPanel = this.spawn(SelectionPanelComponent, this.drawHost);
+                    this.stackPanel.set(this.spawn(FeatureStackPanelComponent, this.drawHost));
+                }
+                if (this.drawHost) this.drawHost.style.display = isDraw ? '' : 'none';
+                if (!isDraw && tool.panel) {
                     const PanelCtor = tool.panel;
                     this.toolPanel = new PanelCtor();
                     this.toolPanel.mount(this.body);
                 }
             });
+        }));
+
+        // Footer status: one effect, published only when text or tone changes.
+        this.track(effect(() => {
+            if (this.activeTool().id !== DRAW_TOOL_ID) return;
+            const next = this.statusNow();
+            const prev = this.status.peek();
+            if (prev.text !== next.text || prev.error !== next.error) this.status.set(next);
         }));
 
         // Auto-expand when a selection appears while collapsed (draw only).
@@ -311,8 +347,9 @@ export class ContextDockComponent extends Component<ContextDockProps> {
     private clearBody(): void {
         this.selectionPanel?.destroy();
         this.selectionPanel = null;
-        this.stackPanel.get()?.destroy();
+        this.stackPanel.peek()?.destroy();
         this.stackPanel.set(null);
+        this.drawHost = null;
         this.toolPanel?.destroy();
         this.toolPanel = null;
         if (this.body) this.body.textContent = '';
@@ -330,27 +367,21 @@ export class ContextDockComponent extends Component<ContextDockProps> {
     }
 
     // ── Draw status footer (moved from the old draw panel) ────────────────
-    private statusText(): string {
-        if (this.features.saving.get()) return 'Saving…';
+    private statusNow(): { text: string; error: boolean } {
+        if (this.features.saving.get()) return { text: 'Saving…', error: false };
         const saveError = this.features.saveError.get();
-        if (saveError) return `Save failed: ${saveError.message}`;
+        if (saveError) return { text: `Save failed: ${saveError.message}`, error: true };
         const historyNotice = this.tool.history.notice.get();
-        if (historyNotice) return historyNotice;
+        if (historyNotice) return { text: historyNotice, error: true };
         const actionNotice = this.tool.actionNotice.get();
-        if (actionNotice) return actionNotice;
-        if (this.features.loading.get()) return 'Loading features…';
+        if (actionNotice) return { text: actionNotice, error: true };
+        // Transient tool notice (e.g. the delete undo hint): quiet, one line.
+        const notice = this.tool.notice.get();
+        if (notice) return { text: notice.text, error: false };
+        if (this.features.loading.get()) return { text: 'Loading features…', error: false };
         const error = this.features.error.get();
-        if (error) return `Load failed: ${error.message}`;
+        if (error) return { text: `Load failed: ${error.message}`, error: true };
         const count = this.features.store.items.get().length;
-        return `${count} feature${count === 1 ? '' : 's'} · autosaves on close & edit`;
-    }
-
-    private statusIsError(): boolean {
-        return !!(
-            this.features.saveError.get()
-            || this.features.error.get()
-            || this.tool.history.notice.get()
-            || this.tool.actionNotice.get()
-        );
+        return { text: `${count} feature${count === 1 ? '' : 's'} · autosaves on close & edit`, error: false };
     }
 }

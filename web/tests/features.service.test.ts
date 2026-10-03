@@ -2,7 +2,7 @@ import { test, expect, describe, afterEach } from 'bun:test';
 import { di, Signal } from '@basics/core/client/core';
 import { ApiError } from '@basics/core/client/api-error';
 import { _reset } from '@basics/core/client/error-report';
-import { FeaturesService, geometryToWgs84Rings, shiftBlock, moveBlockToEdge, OVERLAY_DIFF_MAX_FEATURES } from '../src/draw/features.service';
+import { FeaturesService, geometryToWgs84Rings, shiftBlock, moveBlockToEdge, OVERLAY_DIFF_MAX_FEATURES, hiddenTypesKey } from '../src/draw/features.service';
 import type { GeoJSONSourceDiff } from 'maplibre-gl';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 import { withBatchEndpoints, recordRequests } from './fake-feature-api';
@@ -11,7 +11,7 @@ import { wgs84ToSweref99tm } from '../src/geo/transform';
 import type { FeatureGeometry } from '../src/geo/bezier';
 import type { Hole } from '../../shared/api/holes.gen';
 
-afterEach(() => { _reset(); di.reset(); });
+afterEach(() => { _reset(); di.reset(); localStorage.clear(); });
 
 /** Registers a CourseDetailService with the given holes' numbers for stackKey (D24) tests. */
 function withHoleNumbers(holes: Array<{ id: string; number: number }>): void {
@@ -1209,5 +1209,166 @@ describe('selection via feature-state (review item 9)', () => {
             expect(layer.paint?.['line-opacity']).toEqual(expected);
         }
         dispose();
+    });
+});
+
+describe('visibility keys (review item 27)', () => {
+    test('toggleTypeHidden persists per course and load() restores it', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.toggleTypeHidden('bunker');
+        expect([...svc.hiddenTypes.get()]).toEqual(['bunker']);
+        expect(JSON.parse(localStorage.getItem(hiddenTypesKey('c1'))!)).toEqual(['bunker']);
+
+        const fresh = new FeaturesService(api);
+        await fresh.load('c1');
+        expect([...fresh.hiddenTypes.get()]).toEqual(['bunker']);
+        await fresh.load('c2');
+        expect(fresh.hiddenTypes.get().size).toBe(0);
+
+        svc.toggleTypeHidden('bunker');
+        expect(localStorage.getItem(hiddenTypesKey('c1'))).toBeNull();
+    });
+
+    test('hiding a type drops its features from the selection', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.setSelection(['a', 'b']);
+        svc.toggleTypeHidden('bunker');
+        expect([...svc.selectedIds.get()]).toEqual(['b']);
+    });
+
+    test('soloType hides every other type; the second call restores the previous set', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green'), feature('c', 'custom-type')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.toggleTypeHidden('green');
+
+        svc.soloType('bunker');
+        const hidden = svc.hiddenTypes.get();
+        expect(hidden.has('bunker')).toBe(false);
+        expect(hidden.has('green')).toBe(true);
+        expect(hidden.has('custom-type')).toBe(true); // store-only types count too
+        expect(hidden.has('water')).toBe(true); // palette types without features too
+
+        svc.soloType('bunker');
+        expect([...svc.hiddenTypes.get()]).toEqual(['green']);
+    });
+
+    test('soloType on another type while soloed switches the solo', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.soloType('bunker');
+        svc.soloType('green');
+        expect(svc.hiddenTypes.get().has('green')).toBe(false);
+        expect(svc.hiddenTypes.get().has('bunker')).toBe(true);
+    });
+
+    test('hideSelected hides the selection and clears it; showAll clears every toggle', async () => {
+        const { api } = fakeApi([feature('a'), feature('b'), feature('c')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.setSelection(['a', 'b']);
+        svc.hideSelected();
+        expect([...svc.hiddenIds.get()].sort()).toEqual(['a', 'b']);
+        expect(svc.selectedIds.get().size).toBe(0);
+
+        svc.toggleTypeHidden('green');
+        svc.toggleSourceVisibility('lidar');
+        svc.showAll();
+        expect(svc.hiddenIds.get().size).toBe(0);
+        expect(svc.hiddenTypes.get().size).toBe(0);
+        expect(svc.hiddenSources.get().size).toBe(0);
+        expect(localStorage.getItem(hiddenTypesKey('c1'))).toBeNull();
+    });
+
+    test('hideSelected with nothing selected changes nothing', async () => {
+        const { api } = fakeApi([feature('a')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        const before = svc.hiddenIds.get();
+        svc.hideSelected();
+        expect(svc.hiddenIds.get()).toBe(before);
+    });
+});
+
+describe('save status (pendingSaves, clearSaveError, reload)', () => {
+    test('pendingSaves counts a debounced patch and an in-flight request, then returns to 0', async () => {
+        const { api } = fakeApi([feature('a')]);
+        let release!: () => void;
+        const gate = new Promise<void>(r => { release = r; });
+        const update = api.update;
+        api.update = async input => { await gate; return update(input); };
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.geometryDebounceMs = 10_000;
+        expect(svc.pendingSaves.get()).toBe(0);
+
+        const g = squareGeometry(15);
+        svc.patchLocal('a', g);
+        const save = svc.update('a', { geometry: g });
+        expect(svc.pendingSaves.get()).toBe(1); // waiting out the debounce
+
+        const flushed = svc.flush();
+        await Bun.sleep(0);
+        expect(svc.pendingSaves.get()).toBeGreaterThan(0); // request in flight
+        release();
+        await Promise.all([save, flushed]);
+        expect(svc.pendingSaves.get()).toBe(0);
+    });
+
+    test('pendingSaves covers create and remove requests', async () => {
+        const { api } = fakeApi([feature('a')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        const removing = svc.removeFeature('a');
+        expect(svc.pendingSaves.get()).toBe(1);
+        await removing;
+        expect(svc.pendingSaves.get()).toBe(0);
+    });
+
+    test('a failed save keeps saveError through the automatic re-sync; reload() clears it', async () => {
+        const { api, rows } = fakeApi([feature('a', 'bunker', 1)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        rows.get('a')!.version = 2;
+
+        await svc.update('a', { type: 'green' });
+        await Bun.sleep(0);
+        expect(svc.saveError.get()?.code).toBe('conflict');
+        expect(svc.store.items.get()[0].version).toBe(2); // re-synced
+
+        await svc.reload();
+        expect(svc.saveError.get()).toBeNull();
+    });
+
+    test('reload() keeps saveError when the re-fetch fails', async () => {
+        const { api, rows } = fakeApi([feature('a', 'bunker', 1)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        rows.get('a')!.version = 2;
+        await svc.update('a', { type: 'green' });
+        await Bun.sleep(0);
+
+        api.listByCourse = () => Promise.reject(new ApiError(500, 'down'));
+        await svc.reload();
+        expect(svc.saveError.get()?.code).toBe('conflict');
+    });
+
+    test('clearSaveError dismisses the failure without a re-fetch', async () => {
+        const { api, rows, calls } = fakeApi([feature('a', 'bunker', 1)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        rows.get('a')!.version = 2;
+        await svc.update('a', { type: 'green' });
+        await Bun.sleep(0);
+        const lists = calls.list;
+
+        svc.clearSaveError();
+        expect(svc.saveError.get()).toBeNull();
+        expect(calls.list).toBe(lists);
     });
 });

@@ -8,7 +8,7 @@ import type { FilterSpecification, GeoJSONSourceDiff, GeoJSONFeatureDiff } from 
 import { flattenRing, type FeatureGeometry } from '../geo/bezier';
 import { ringWgs84 } from '../geo/wgs84-cache';
 import type { MapService } from '../map/map.service';
-import { DRAW_FILL_OPACITY, NICE_FILL_OPACITY, typeColorExpression, SELECTION_COLOR } from './feature-palette';
+import { DRAW_FILL_OPACITY, NICE_FILL_OPACITY, FEATURE_TYPES, typeColorExpression, SELECTION_COLOR } from './feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { resolveSurfaceStack } from '../../../shared/render/resolved-surface-stack';
 import { isGeneratedFeature } from './generated-features';
@@ -87,14 +87,16 @@ export class FeaturesService {
      */
     readonly selectedIds = new Signal<ReadonlySet<string>>(new Set());
     /**
-     * Feature TYPES hidden from the overlay + hit tests (panel eye
-     * toggles). Purely client-side view state — never persisted.
+     * Feature TYPES hidden from the overlay + hit tests (type eye toggles,
+     * Shift+digit, solo). Client-side view state, persisted per course in
+     * localStorage (`hiddenTypesKey`) and restored by `load()`. Change it
+     * through the methods below so the stored copy stays in step.
      */
     readonly hiddenTypes = new Signal<ReadonlySet<string>>(new Set());
     /**
      * Individual feature IDS hidden from the overlay + hit tests (stack
-     * panel eye toggles, Inkscape/Photoshop-style). Same lifecycle rules
-     * as `hiddenTypes`: client-side view state, never persisted.
+     * panel eye toggles, Inkscape/Photoshop-style; `hideSelected`).
+     * Client-side view state, never persisted.
      */
     readonly hiddenIds = new Signal<ReadonlySet<string>>(new Set());
     /**
@@ -112,11 +114,40 @@ export class FeaturesService {
     /** True while a create/update/remove is in flight (autosave indicator). */
     readonly saving = new Signal(false);
     readonly saveError = new Signal<RequestError | null>(null);
+    /**
+     * Saves not yet landed: per-feature patches waiting out the geometry
+     * debounce or queued behind an in-flight request, single updates in
+     * flight, and create / updateMany / removeMany / reorder requests in
+     * flight. Zero means everything the user did has reached the server
+     * (or failed, see `saveError`). Unlike `saving`, it counts the debounce
+     * window and overlapping requests.
+     */
+    readonly pendingSaves = new Signal(0);
 
     /** Hole numbers for the D24 `stackKey` groupRank — set before `geojson`/`stackTopDown` (both Computed eagerly on construction). */
     private courseDetail = di.get(CourseDetailService);
 
     private loadedCourseId: string | null = null;
+    // Memo fields of the identity-stable Computeds below. Declared first:
+    // a Computed runs in its field initializer.
+    private lastFeatureIds: string[] | null = null;
+    private lastSelectedFeatures: CourseFeature[] = [];
+
+    /**
+     * Ids of the stored features in store order. Identity-stable: the same
+     * array comes back while membership and order are unchanged, so a
+     * geometry or type edit does not re-run anything that only cares which
+     * rows exist. Per-row data is read through `store.item(id)`.
+     */
+    readonly featureIds = new Computed<readonly string[]>(() => {
+        const items = this.store.items.get();
+        const prev = this.lastFeatureIds;
+        if (prev && prev.length === items.length && items.every((f, i) => f.id === prev[i])) return prev;
+        this.lastFeatureIds = items.map(f => f.id);
+        return this.lastFeatureIds;
+    });
+    /** `featureIds` as a set (membership tests before `store.item`, which throws on a miss). */
+    readonly featureIdSet = new Computed<ReadonlySet<string>>(() => new Set(this.featureIds.get()));
 
     /**
      * The selected feature when EXACTLY ONE is selected, else null.
@@ -127,7 +158,7 @@ export class FeaturesService {
         const ids = this.selectedIds.get();
         if (ids.size !== 1) return null;
         const [id] = ids;
-        return this.store.items.get().find(f => f.id === id) ?? null;
+        return this.featureIdSet.get().has(id!) ? this.store.item(id!).get() : null;
     });
 
     /**
@@ -140,11 +171,23 @@ export class FeaturesService {
     readonly hasOdblFeatures = new Computed<boolean>(() =>
         this.store.items.get().some(f => f.license === 'ODbL'));
 
-    /** All currently selected features (store order). */
+    /**
+     * All currently selected features (store order). Reads only the
+     * selected rows' entity signals, so an edit to an unselected feature
+     * does not re-run it. Identity-stable: the same array comes back while
+     * the selected rows are unchanged.
+     */
     readonly selectedFeatures = new Computed<CourseFeature[]>(() => {
         const ids = this.selectedIds.get();
-        if (ids.size === 0) return [];
-        return this.store.items.get().filter(f => ids.has(f.id));
+        const prev = this.lastSelectedFeatures;
+        if (ids.size === 0) return prev.length === 0 ? prev : (this.lastSelectedFeatures = []);
+        const next: CourseFeature[] = [];
+        for (const id of this.featureIds.get()) {
+            if (ids.has(id)) next.push(this.store.item(id).get());
+        }
+        if (next.length === prev.length && next.every((f, i) => f === prev[i])) return prev;
+        this.lastSelectedFeatures = next;
+        return next;
     });
 
     /**
@@ -351,7 +394,11 @@ export class FeaturesService {
             .sort((a, b) => a.sortOrder - b.sortOrder);
     }
 
-    /** Load all features for a course. Cached per courseId. */
+    /**
+     * Load all features for a course. Cached per courseId. Restores the
+     * course's stored `hiddenTypes` in the same batch as the rows, so the
+     * overlay builds once.
+     */
     async load(courseId: string): Promise<void> {
         if (this.loadedCourseId === courseId) return;
         // Land queued saves for the previous course before its rows go.
@@ -361,17 +408,40 @@ export class FeaturesService {
             this.featuresApi.listByCourse({ courseId }));
         if (!items) return; // failed — error signal set, cache untouched
         this.loadGeneration++;
-        this.store.set(items);
         this.loadedCourseId = courseId;
+        this.soloMemory = null;
+        batched(() => {
+            this.hiddenTypes.set(readHiddenTypes(courseId));
+            this.store.set(items);
+        });
     }
 
-    /** Re-fetch the loaded course (store re-sync after a failed save). */
+    /**
+     * Re-fetch the loaded course and clear `saveError` once the re-fetch
+     * worked (the save-pill Retry). Queued patches are dropped.
+     */
     async reload(): Promise<void> {
+        const courseId = this.loadedCourseId;
+        if (!courseId) return;
+        await this.resync();
+        if (this.loadedCourseId === courseId && !this.error.peek()) this.saveError.set(null);
+    }
+
+    /**
+     * Re-fetch the loaded course after a failed save. Leaves `saveError`
+     * set: the failure stays visible until the user retries or dismisses it.
+     */
+    private async resync(): Promise<void> {
         const courseId = this.loadedCourseId;
         if (!courseId) return;
         this.dropQueues();
         this.loadedCourseId = null;
         await this.load(courseId);
+    }
+
+    /** Dismiss a save failure without re-fetching (save pill). */
+    clearSaveError(): void {
+        this.saveError.set(null);
     }
 
     /**
@@ -412,17 +482,81 @@ export class FeaturesService {
      */
     toggleTypeVisibility(type: string): void {
         const next = new Set(this.hiddenTypes.peek());
-        if (next.has(type)) {
-            next.delete(type);
-        } else {
-            next.add(type);
-            const keep = new Set([...this.selectedIds.peek()].filter(id => {
-                const f = this.store.items.peek().find(item => item.id === id);
-                return f !== undefined && f.type !== type;
-            }));
-            if (keep.size !== this.selectedIds.peek().size) this.selectedIds.set(keep);
+        if (next.has(type)) next.delete(type);
+        else next.add(type);
+        this.setHiddenTypes(next);
+    }
+
+    /** Shift+digit: toggle the type bound to that digit. Same as `toggleTypeVisibility`. */
+    toggleTypeHidden(type: string): void {
+        this.toggleTypeVisibility(type);
+    }
+
+    /**
+     * Alt-click on a type's eye: show only `type` and hide every other
+     * type. The same call on the soloed type restores the hidden set from
+     * before the solo (or shows all types when there is no such set, e.g.
+     * after a page reload restored a solo state).
+     */
+    soloType(type: string): void {
+        const current = this.hiddenTypes.peek();
+        const others = new Set(this.knownTypes().filter(t => t !== type));
+        if (sameSet(current, others)) {
+            const memory = this.soloMemory;
+            this.soloMemory = null;
+            this.setHiddenTypes(memory && memory.type === type ? memory.previous : new Set());
+            return;
         }
-        this.hiddenTypes.set(next);
+        this.soloMemory = { type, previous: current };
+        this.setHiddenTypes(others);
+    }
+
+    /** H: hide the selected features (adds them to `hiddenIds`) and clear the selection. */
+    hideSelected(): void {
+        const ids = this.selectedIds.peek();
+        if (ids.size === 0) return;
+        batched(() => {
+            this.hiddenIds.set(new Set([...this.hiddenIds.peek(), ...ids]));
+            this.selectedIds.set(new Set());
+        });
+    }
+
+    /** Shift+H: clear every visibility toggle (types, single features, generated sources). */
+    showAll(): void {
+        this.soloMemory = null;
+        batched(() => {
+            if (this.hiddenTypes.peek().size > 0) this.setHiddenTypes(new Set());
+            if (this.hiddenIds.peek().size > 0) this.hiddenIds.set(new Set());
+            if (this.hiddenSources.peek().size > 0) this.hiddenSources.set(new Set());
+        });
+    }
+
+    /** Hidden set before the last `soloType`, for the second Alt-click. */
+    private soloMemory: { type: string; previous: ReadonlySet<string> } | null = null;
+
+    /** Palette types plus any other type present in the store. */
+    private knownTypes(): string[] {
+        const types = new Set<string>(FEATURE_TYPES);
+        for (const f of this.store.items.peek()) types.add(f.type);
+        return [...types];
+    }
+
+    /**
+     * Replace `hiddenTypes`, drop newly hidden features from the selection
+     * (invisible features must not remain silently editable) and store the
+     * set for the loaded course.
+     */
+    private setHiddenTypes(next: ReadonlySet<string>): void {
+        batched(() => {
+            const selection = this.selectedIds.peek();
+            if (selection.size > 0 && next.size > 0) {
+                const ids = this.featureIdSet.peek();
+                const keep = new Set([...selection].filter(id => ids.has(id) && !next.has(this.store.item(id).peek().type)));
+                if (keep.size !== selection.size) this.selectedIds.set(keep);
+            }
+            this.hiddenTypes.set(next);
+        });
+        if (this.loadedCourseId) writeHiddenTypes(this.loadedCourseId, next);
     }
 
     /**
@@ -514,8 +648,8 @@ export class FeaturesService {
      * the correct optimistic-locking version.
      */
     patchLocal(id: string, geometry: FeatureGeometry): void {
-        const current = this.store.items.peek().find(f => f.id === id);
-        if (!current) return;
+        if (!this.featureIdSet.peek().has(id)) return;
+        const current = this.store.item(id).peek();
         this.store.patch({ ...current, geometry });
     }
 
@@ -534,7 +668,7 @@ export class FeaturesService {
     update(id: string, patch: FeaturePatch): Promise<CourseFeature | undefined> {
         if (!this.store.items.peek().some(f => f.id === id)) {
             this.saveError.set({ message: `Feature ${id} not found`, code: 'unknown' });
-            void this.reload();
+            void this.resync();
             return Promise.resolve(undefined);
         }
         const q = this.queueFor(id);
@@ -543,6 +677,7 @@ export class FeaturesService {
             Object.assign(pending.patch, definedFields(patch));
             pending.base = this.baseOf(id)!;
             pending.waiters.push(resolve);
+            this.recountPending();
             if (pending.timer) clearTimeout(pending.timer);
             pending.timer = null;
             const geometryOnly = Object.keys(pending.patch).every(k => k === 'geometry');
@@ -599,7 +734,7 @@ export class FeaturesService {
                     : await request(this.saving, this.saveError, () => this.featuresApi.updateMany({ items: body }));
                 if (server === undefined) {
                     this.dropQueues();
-                    void this.reload();
+                    void this.resync();
                     return undefined;
                 }
                 const patches = new Map(live.map(i => [i.id, i.patch]));
@@ -653,7 +788,7 @@ export class FeaturesService {
                     : await request(this.saving, this.saveError, () => this.featuresApi.removeMany({ items }));
                 if (result === undefined) {
                     this.dropQueues();
-                    void this.reload();
+                    void this.resync();
                     return false;
                 }
                 return true;
@@ -700,11 +835,25 @@ export class FeaturesService {
      */
     private readonly removedVersions = new Map<string, number>();
 
+    /** Single `update` requests in flight (sent by `kick`). */
+    private sendingUpdates = 0;
+
     private track<T>(work: Promise<T>): Promise<T> {
         this.inflight.add(work);
-        const done = () => { this.inflight.delete(work); };
+        this.recountPending();
+        const done = () => {
+            this.inflight.delete(work);
+            this.recountPending();
+        };
         work.then(done, done);
         return work;
+    }
+
+    /** Recompute `pendingSaves` from the queues and in-flight sets. */
+    private recountPending(): void {
+        let n = this.inflight.size + this.sendingUpdates;
+        for (const q of this.queues.values()) if (q.pending) n++;
+        this.pendingSaves.set(n);
     }
 
     private queueFor(id: string): SaveQueue {
@@ -727,7 +876,13 @@ export class FeaturesService {
         const pending = q.pending;
         q.pending = null;
         const release = this.claim([id]);
-        void this.sendUpdate(id, pending).finally(release);
+        this.sendingUpdates++;
+        this.recountPending();
+        void this.sendUpdate(id, pending).finally(() => {
+            this.sendingUpdates--;
+            release();
+            this.recountPending();
+        });
     }
 
     private async sendUpdate(id: string, pending: PendingPatch): Promise<void> {
@@ -741,7 +896,7 @@ export class FeaturesService {
         if (server === undefined) {
             this.dropQueues();
             for (const w of pending.waiters) w(undefined);
-            void this.reload();
+            void this.resync();
             return;
         }
         const merged = this.mergeReply(server, pending.base, pending.patch);
@@ -822,6 +977,7 @@ export class FeaturesService {
         if (pending.timer) clearTimeout(pending.timer);
         q.pending = null;
         for (const w of pending.waiters) w(undefined);
+        this.recountPending();
     }
 
     /** Drop every unsent patch (a failed save re-syncs the store from the server). */
@@ -875,10 +1031,10 @@ export class FeaturesService {
             const row = this.store.items.peek().find(f => f.id === id);
             if (row) this.store.patch({ ...row, sortOrder: index });
         });
-        const result = await request(this.saving, this.saveError, () =>
-            this.featuresApi.reorder({ courseId, holeId, orderedIds: nextOrder }));
+        const result = await this.track(request(this.saving, this.saveError, () =>
+            this.featuresApi.reorder({ courseId, holeId, orderedIds: nextOrder })));
         if (result === undefined) {
-            await this.reload();
+            await this.resync();
             return false;
         }
         return true;
@@ -1173,6 +1329,36 @@ function definedFields(patch: FeaturePatch): FeaturePatch {
     if (patch.type !== undefined) out.type = patch.type;
     if (patch.holeId !== undefined) out.holeId = patch.holeId;
     return out;
+}
+
+/** localStorage key for one course's hidden feature types. */
+export function hiddenTypesKey(courseId: string): string {
+    return `golf-map.hiddenTypes.${courseId}`;
+}
+
+function readHiddenTypes(courseId: string): ReadonlySet<string> {
+    try {
+        const raw = localStorage.getItem(hiddenTypesKey(courseId));
+        const parsed: unknown = raw ? JSON.parse(raw) : [];
+        return new Set(Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : []);
+    } catch {
+        return new Set();
+    }
+}
+
+function writeHiddenTypes(courseId: string, types: ReadonlySet<string>): void {
+    try {
+        if (types.size === 0) localStorage.removeItem(hiddenTypesKey(courseId));
+        else localStorage.setItem(hiddenTypesKey(courseId), JSON.stringify([...types]));
+    } catch {
+        // Storage blocked or full: visibility still works for this session.
+    }
+}
+
+function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+    if (a.size !== b.size) return false;
+    for (const x of a) if (!b.has(x)) return false;
+    return true;
 }
 
 let batchDepth = 0;
