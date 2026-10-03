@@ -1,13 +1,14 @@
-import { Component, Computed, Router, template, effect, untrack } from '@basics/core/client/core';
+import { Component, Computed, Router, Signal, template, effect, untrack } from '@basics/core/client/core';
 import { AuthService } from '@basics/core/client/auth';
 // Only the literal `href` needs the deploy prefix — router.navigate() adds it.
 import { BASE_PATH } from '@basics/core/client/base';
 import { t } from '../theme';
-import { s, statusTag, iconBtn, input, metric, panelTitle, selectedRow } from '../css';
+import { s, statusTag, iconBtn, input, metric, panelTitle, selectedRow, keyHint, primaryBtn } from '../css';
 import { icon } from '../ui/icons';
 import { PopoverComponent, type PopoverContent } from '../ui/popover.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { ConfirmService } from './confirm-dialog.component';
+import { ToastComponent } from './toast.component';
 import { FeaturesService } from '../draw/features.service';
 import { HelpModalService } from '../editor/help-modal.component';
 import { DrawToolService, DRAW_TOOL_ID } from '../draw/draw-tool.service';
@@ -24,6 +25,25 @@ import { PublishClientService, PUBLISH_STEP_LABELS, type PublishState } from './
 
 type CommandBarMode = 'create' | 'plan';
 
+/** Autosave pill state (review item 26). */
+export type SaveState = 'idle' | 'saving' | 'saved' | 'failed';
+
+/** How long the pill reads "Saved" before it drops back to idle. */
+export const SAVED_MS = 1500;
+
+/**
+ * Sub-mode key hints, keyed by editor tool id (review items 21 and 29).
+ * Display only: the shortcut service under src/editor owns the bindings.
+ * Unify with its table once that lands, so the two cannot drift.
+ */
+export const SUBMODE_KEY_HINTS: Readonly<Record<string, string>> = {
+    draw: 'D',
+    measure: 'M',
+    furniture: 'F',
+    analysis: 'A',
+    'terrain-edit': 'T',
+};
+
 const tpl = template(`
     <header class="cmdbar" bind="root">
         <span class="cmdbar__identity">
@@ -39,10 +59,12 @@ const tpl = template(`
         <span bind="zone3Divider" class="cmdbar__divider"></span>
         <div bind="zone3Host" class="cmdbar__zone3"></div>
         <div class="cmdbar__right">
+            <span bind="saveHost" class="cmdbar__save-slot"></span>
             <span bind="actionsHost" class="cmdbar__slot"></span>
             <span class="cmdbar__divider cmdbar__divider--sm"></span>
             <span bind="avatarHost" class="cmdbar__slot"></span>
         </div>
+        <span bind="toastHost"></span>
     </header>
 `);
 
@@ -68,7 +90,10 @@ const zone3Tpl = template(`
     <span bind="subHost" class="cmdbar__slot"></span>
     <span bind="featWrap" class="cmdbar__feat-wrap">
         <span bind="featHost" class="cmdbar__slot"></span>
-        <span bind="drawTarget" class="cmdbar__target" data-testid="draw-target"></span>
+        <span bind="drawTarget" class="cmdbar__target" data-testid="draw-target">
+            <span bind="targetHole" class="cmdbar__target-hole"></span>
+            <span bind="targetChain" class="cmdbar__target-chain" data-testid="draw-target-chain"></span>
+        </span>
         <button bind="newPoly" type="button" class="cmdbar__new"></button>
         <button bind="boxSelect" type="button" class="cmdbar__box"></button>
         <span class="cmdbar__divider cmdbar__divider--sm"></span>
@@ -204,21 +229,76 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 & .cmdbar__chip-dot { width: 8px; height: 8px; flex: none; border-radius: 999px; }
             }
 
-            /* Read-only draw-target chip: quiet surface, no hover/press —
-               shows where new shapes land ("→ Hole 1"). */
+            /* Read-only draw-target chip: quiet surface, no hover/press.
+               Line 1 is where new shapes land ("→ Hole 1"), line 2 the
+               type policy the next chained shape follows. */
             & .cmdbar__target {
                 display: inline-flex;
-                align-items: center;
+                flex-direction: column;
+                justify-content: center;
                 max-width: 160px;
-                padding: 6px 10px;
+                padding: ${s('xs')} ${s('sm')};
                 border: 1px solid ${t('color-border-subtle')};
                 border-radius: 9px;
                 background: ${t('color-surface-sunken')};
                 font-size: 0.8rem;
+                line-height: 1.2;
                 color: ${t('color-text-secondary')};
                 white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
+                & > span { overflow: hidden; text-overflow: ellipsis; }
+                & .cmdbar__target-chain {
+                    font-size: 0.7rem;
+                    color: ${t('color-text-tertiary')};
+                }
+            }
+
+            /* Autosave pill (item 26). The slot has a fixed width so the
+               right-hand group never shifts between states; the pill sits
+               flush right inside it. Only the failed state is clickable. */
+            & .cmdbar__save-slot {
+                display: inline-flex;
+                align-items: center;
+                justify-content: flex-end;
+                width: 132px;
+                flex: none;
+                &:empty { display: none; }
+            }
+            & .cmdbar__save {
+                display: inline-flex;
+                align-items: center;
+                gap: ${s('xs')};
+                padding: ${s('xs')} ${s('sm')};
+                border: 1px solid transparent;
+                border-radius: 999px;
+                font-size: 0.78rem;
+                white-space: nowrap;
+                color: ${t('color-text-tertiary')};
+                & .cmdbar__save-dot {
+                    width: 7px;
+                    height: 7px;
+                    flex: none;
+                    border-radius: 999px;
+                    background: ${t('color-border-strong')};
+                }
+                & .cmdbar__save-code {
+                    font-family: var(--font-mono);
+                    font-size: 0.72rem;
+                    &:empty { display: none; }
+                }
+                &:not([data-state="failed"]) { pointer-events: none; cursor: default; }
+                &[data-state="saving"] .cmdbar__save-dot {
+                    background: ${t('color-status-caution')};
+                    animation: cmdbar-save-pulse 1s ease-in-out infinite;
+                }
+                &[data-state="saved"] .cmdbar__save-dot { background: ${t('color-status-positive')}; }
+                &[data-state="failed"] {
+                    border-color: color-mix(in srgb, ${t('color-status-negative')} 40%, transparent);
+                    background: color-mix(in srgb, ${t('color-status-negative')} 10%, transparent);
+                    color: ${t('color-status-negative')};
+                    font-weight: 600;
+                    &:hover { background: color-mix(in srgb, ${t('color-status-negative')} 16%, transparent); }
+                    & .cmdbar__save-dot { background: ${t('color-status-negative')}; }
+                }
             }
 
             /* Undo/redo history buttons — ghost icon buttons that dim when
@@ -372,6 +452,30 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             color: ${t('color-status-positive')};
         }
 
+        @keyframes cmdbar-save-pulse { 50% { opacity: 0.35; } }
+
+        /* Failed-save details: message, code, Retry. */
+        .cmdbar__save-panel { width: 260px; }
+        .cmd-save {
+            display: flex;
+            flex-direction: column;
+            gap: ${s('sm')};
+            padding: ${s('sm')};
+            font-size: 0.8rem;
+            color: ${t('color-text-primary')};
+        }
+        .cmd-save__title { font-weight: 600; color: ${t('color-status-negative')}; }
+        .cmd-save__msg { color: ${t('color-text-secondary')}; }
+        .cmd-save__code {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: ${t('color-text-tertiary')};
+        }
+        .cmd-save__retry { ${primaryBtn()} align-self: flex-end; padding: ${s('xs')} ${s('md')}; font-size: 0.8rem; }
+
+        /* Sub-mode key hint (D, M, F, A, T): right-aligned, before the check. */
+        .menu-item .cmd-key { ${keyHint()} color: ${t('color-text-tertiary')}; }
+
         .cmdbar__ft-panel { width: 336px; padding: 12px; }
         .cmdbar__ft-title { ${panelTitle()} margin: 2px 4px 10px; }
         .cmdbar__ft-grid {
@@ -417,18 +521,12 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 border: 1px solid rgba(0, 0, 0, 0.25);
             }
             & .cmd-ft__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-            /* Digit hotkey badge (1–9, 0) for the keyboard-armable types. */
+            /* Digit key hint (1-9, 0) for the keyboard-armable types,
+               right-aligned after the name (the name is flex: 1). */
             & .cmd-ft__digit {
+                ${keyHint()}
                 flex: none;
-                min-width: 16px;
-                padding: 1px 4px;
-                border-radius: 4px;
-                border: 1px solid ${t('color-border-subtle')};
-                background: color-mix(in srgb, ${t('color-text-primary')} 5%, transparent);
-                font-size: 0.7rem;
-                font-variant-numeric: tabular-nums;
-                text-align: center;
-                color: ${t('color-text-secondary')};
+                color: ${t('color-text-tertiary')};
             }
         }
         /* Per-type visibility toggle: appears on row hover (always when the
@@ -582,6 +680,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                     }
                 });
             }));
+
+            this.buildSaveState(this.ref(frag, 'saveHost'), this.ref(frag, 'toastHost'));
         }
 
         // Zone 4: actions + avatar. Every entry in the actions menu authors
@@ -667,9 +767,12 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         const frag = this.wire(zone3Tpl, {
             featWrap: { className: () => (this.isDrawSubmode() ? 'cmdbar__feat-wrap show' : 'cmdbar__feat-wrap') },
             drawTarget: {
-                textContent: () => `→ ${this.holeLabel(this.tool.drawHoleId.get())}`,
-                title: 'New shapes are added to this hole / scope',
+                title: () => (this.tool.typeFollowsLast.get()
+                    ? 'New shapes are added to this hole / scope. The next shape keeps the last-used type.'
+                    : `New shapes are added to this hole / scope. Each new shape starts as ${FEATURE_STYLES[this.tool.defaultDrawType.get()].label}.`),
             },
+            targetHole: () => `→ ${this.holeLabel(this.tool.drawHoleId.get())}`,
+            targetChain: () => this.chainLabel(),
             undoBtn: {
                 onclick: () => this.tool.undo(),
                 disabled: () => !this.tool.history.canUndo.get(),
@@ -745,6 +848,13 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         host.appendChild(frag);
     }
 
+    /** Draw-target chip line 2: the new-shape type policy (DrawToolService). */
+    private chainLabel(): string {
+        return this.tool.typeFollowsLast.get()
+            ? 'Next: same type'
+            : `Next: ${FEATURE_STYLES[this.tool.defaultDrawType.get()].label}`;
+    }
+
     /** Human label for the draw target hole (null = course level). */
     private holeLabel(holeId: string | null): string {
         if (holeId === null) return 'Course level';
@@ -781,9 +891,12 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             btn.setAttribute('role', 'menuitemradio');
             btn.dataset.testid = `tool-btn-${editorTool.id}`;
             btn.dataset.toolId = editorTool.id;
+            const key = SUBMODE_KEY_HINTS[editorTool.id];
             btn.innerHTML = `<span class="menu-item__icon">${icon(editorTool.icon, 16)}</span>`
                 + `<span class="menu-item__label">${editorTool.label}</span>`
+                + (key ? `<span class="cmd-key" aria-hidden="true" data-testid="submode-key">${key}</span>` : '')
                 + `<span class="menu-item__check">${icon('check', 16)}</span>`;
+            if (key) btn.setAttribute('aria-keyshortcuts', key);
             btn.onclick = () => {
                 if (this.mode.activeToolId.peek() !== editorTool.id) this.mode.activate(editorTool);
                 close();
@@ -829,7 +942,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             btn.className = 'cmd-ft';
             btn.title = style.label;
             const digit = digitForFeatureType(type);
-            const badge = digit ? `<span class="cmd-ft__digit" aria-hidden="true">${digit}</span>` : '';
+            const badge = digit ? `<span class="cmd-ft__digit" aria-hidden="true" data-testid="ft-key">${digit}</span>` : '';
+            btn.dataset.type = type;
+            if (digit) btn.setAttribute('aria-keyshortcuts', digit);
             btn.innerHTML = `<span class="cmd-ft__sw"></span><span class="cmd-ft__name">${style.label}</span>${badge}`;
             const sw = btn.querySelector<HTMLElement>('.cmd-ft__sw')!;
             sw.style.background = style.fill;
@@ -872,6 +987,123 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             row.appendChild(eye);
             grid.appendChild(row);
         }
+    }
+
+    // ── Zone 4: autosave pill + failure toast (Create) ────────────────────
+
+    /** Current pill state; exposed for tests through `data-state`. */
+    private readonly saveState = new Signal<SaveState>('idle');
+    private savedTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /**
+     * Derive the pill state from FeaturesService `saving` / `saveError`.
+     * `saving` turns true only once a request is sent, so a geometry patch
+     * inside its 150 ms debounce still reads idle. A failed save makes the
+     * service reload, which reverts the edit; the toast says so once per
+     * transition into failed.
+     */
+    private buildSaveState(host: HTMLElement, toastHost: HTMLElement): void {
+        const toast = this.spawn(ToastComponent, toastHost);
+        const clearSaved = () => {
+            if (this.savedTimer) clearTimeout(this.savedTimer);
+            this.savedTimer = null;
+        };
+        this.track(clearSaved);
+
+        const popover = this.spawn(PopoverComponent, host, {
+            align: 'right',
+            ariaLabel: 'Save status',
+            triggerClassName: 'cmdbar__save',
+            panelClassName: 'cmdbar__save-panel',
+            trigger: (h, ctx) => {
+                h.dataset.testid = 'save-pill';
+                h.innerHTML = '<span class="cmdbar__save-dot"></span><span data-k="label"></span>'
+                    + '<span class="cmdbar__save-code" data-k="code"></span>';
+                const label = h.querySelector<HTMLElement>('[data-k="label"]')!;
+                const code = h.querySelector<HTMLElement>('[data-k="code"]')!;
+                ctx.track(effect(() => {
+                    const state = this.saveState.get();
+                    const err = this.features.saveError.get();
+                    h.dataset.state = state;
+                    h.tabIndex = state === 'failed' ? 0 : -1;
+                    h.setAttribute('aria-disabled', String(state !== 'failed'));
+                    label.textContent = state === 'saving' ? 'Saving'
+                        : state === 'saved' ? 'Saved'
+                        : state === 'failed' ? 'Not saved' : '';
+                    code.textContent = state === 'failed' && err ? err.code : '';
+                    h.title = state === 'failed' ? 'Save failed. Click for details.'
+                        : state === 'idle' ? 'All changes saved' : '';
+                }));
+            },
+            panel: (h, ctx) => this.buildSavePanel(h, ctx.track, ctx.close),
+        });
+
+        this.track(effect(() => {
+            const saving = this.features.saving.get();
+            const err = this.features.saveError.get();
+            untrack(() => {
+                const prev = this.saveState.peek();
+                let next: SaveState;
+                if (err) next = 'failed';
+                else if (saving) next = 'saving';
+                else if (prev === 'saving') next = 'saved';
+                else if (prev === 'failed') next = 'idle';
+                else next = prev;
+                if (next === prev) return;
+                clearSaved();
+                if (next === 'saved') {
+                    this.savedTimer = setTimeout(() => {
+                        this.savedTimer = null;
+                        if (this.saveState.peek() === 'saved') this.saveState.set('idle');
+                    }, SAVED_MS);
+                }
+                if (next === 'failed') {
+                    toast.show({ text: 'Save failed. Latest edit was reverted.', code: err!.code, tone: 'negative' });
+                } else {
+                    popover.close();
+                }
+                this.saveState.set(next);
+            });
+        }));
+    }
+
+    private buildSavePanel(host: HTMLElement, track: (d: () => void) => void, close: () => void): void {
+        host.innerHTML = '<div class="cmd-save">'
+            + '<div class="cmd-save__title">Save failed</div>'
+            + '<div class="cmd-save__msg" data-k="msg"></div>'
+            + '<div class="cmd-save__code" data-k="code"></div>'
+            + '<div class="cmd-save__msg">The latest edit was reverted to the server copy. Retry re-syncs features from the server.</div>'
+            + '<button type="button" class="cmd-save__retry" data-testid="save-retry">Retry</button>'
+            + '</div>';
+        const msg = host.querySelector<HTMLElement>('[data-k="msg"]')!;
+        const code = host.querySelector<HTMLElement>('[data-k="code"]')!;
+        const retry = host.querySelector<HTMLButtonElement>('[data-testid="save-retry"]')!;
+        track(effect(() => {
+            const err = this.features.saveError.get();
+            msg.textContent = err?.message ?? '';
+            code.textContent = err ? `code ${err.code}` : '';
+        }));
+        retry.onclick = async () => {
+            retry.disabled = true;
+            try {
+                await this.retrySave();
+            } finally {
+                retry.disabled = false;
+            }
+            if (this.saveState.peek() !== 'failed') close();
+        };
+    }
+
+    /**
+     * Retry after a failed save: land anything still queued, re-sync the
+     * store from the server, and clear the failure once the re-sync worked.
+     * The failed patch itself is gone (the service dropped it on reload), so
+     * there is nothing to resend.
+     */
+    private async retrySave(): Promise<void> {
+        await this.features.flush();
+        await this.features.reload();
+        if (!this.features.error.peek()) this.features.saveError.set(null);
     }
 
     // ── Zone 1: (i) info popover ──────────────────────────────────────────
