@@ -9,8 +9,8 @@ import {
     setSymmetricHandles,
     toggleVertexCorner,
 } from '../src/draw/draw-state';
-import { cubicBezierPoint, flattenRing, type AnchorPoint, type FeatureGeometry, type PathRing, type Point } from '../src/geo/bezier';
-import { bsplineRingToBezier } from '../src/geo/bspline';
+import { flattenRing, type AnchorPoint, type FeatureGeometry, type PathRing } from '../src/geo/bezier';
+import { flattenRing as sharedFlattenRing } from '../../shared/geo/bezier';
 import { flatRing, resetFlatCacheStats, segmentCacheStats } from '../src/geo/flat-cache';
 
 // Review item 8: drag edits share untouched rings and points with their
@@ -18,29 +18,9 @@ import { flatRing, resetFlatCacheStats, segmentCacheStats } from '../src/geo/fla
 // controls are unchanged. These pin the identity contract and that cached
 // flattening returns exactly the uncached math.
 
-/** The pre-cache flattenRing, verbatim (server parity reference). */
+/** The uncached flattening the server runs (shared/geo/bezier.ts). */
 function referenceFlatten(ring: PathRing, tol: number, curveType?: 'bezier' | 'bspline'): Array<[number, number]> {
-    if (curveType === 'bspline') ring = bsplineRingToBezier(ring);
-    const pts = ring.points;
-    if (pts.length === 0) return [];
-    if (pts.length === 1) return [[pts[0].x, pts[0].y]];
-    const out: Array<[number, number]> = [];
-    const n = pts.length;
-    const dist = (a: Point, b: Point) => Math.hypot(b.x - a.x, b.y - a.y);
-    for (let i = 0; i < n; i++) {
-        const a = pts[i];
-        const b = pts[(i + 1) % n];
-        out.push([a.x, a.y]);
-        const p0 = { x: a.x, y: a.y };
-        const p1 = a.hOut ?? { x: a.x, y: a.y };
-        const p2 = b.hIn ?? { x: b.x, y: b.y };
-        const p3 = { x: b.x, y: b.y };
-        if (!a.hOut && !b.hIn) continue;
-        const len = dist(p0, p1) + dist(p1, p2) + dist(p2, p3);
-        const segs = Math.max(1, Math.min(256, Math.ceil(len / tol)));
-        for (let s = 1; s < segs; s++) out.push(cubicBezierPoint(p0, p1, p2, p3, s / segs));
-    }
-    return out;
+    return sharedFlattenRing(ring, tol, curveType);
 }
 
 /** n-anchor circle with tangent handles. */

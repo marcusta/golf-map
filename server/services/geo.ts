@@ -1,4 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox';
+import { flattenRing as sharedFlattenRing } from '../../shared/geo/bezier';
 
 // ============================================================================
 // Feature geometry types (Bezier/B-spline paths in projected CRS)
@@ -105,80 +106,22 @@ export function bsplineRingToBezier(ring: PathRing): PathRing {
 }
 
 // ============================================================================
-// Bezier flattening
+// Bezier flattening: shared/geo/bezier.ts (same code the web editor runs, so
+// server-materialized GeoJSON and stats match the editor's outlines).
 // ============================================================================
 
 /**
- * Flattens a closed PathRing (anchor points with optional cubic bezier
- * handles) into a polyline of plain [x, y] points in the ring's own
- * coordinate space. The returned polyline is NOT explicitly closed (the
- * caller decides whether to repeat the first point).
- *
- * Segments where neither endpoint has an outgoing/incoming handle are
- * treated as straight lines (no subdivision needed). Segments with handles
- * are subdivided into N pieces, where N is derived from the control-polygon
- * length divided by the tolerance (a cheap, standard adaptive heuristic —
- * the control polygon length is always >= the curve's true length, so this
- * slightly over-subdivides rather than under-subdivides).
- *
- * When `curveType` is 'bspline' the ring's points are B-spline CONTROL
- * points: the ring is first converted to its exact bezier equivalent
- * (corner triplication + closed wrap), then flattened identically.
+ * Flattens a closed PathRing into a polyline of [x, y] points in the ring's
+ * own coordinate space, NOT explicitly closed. Curved segments subdivide
+ * adaptively by chord error; see shared/geo/bezier.ts for the tolerance
+ * semantics. 'bspline' rings are flattened as their exact bezier equivalent.
  */
 export function flattenRing(
     ring: PathRing,
     toleranceMeters: number,
     curveType?: CurveType,
 ): Array<[number, number]> {
-    if (curveType === 'bspline') ring = bsplineRingToBezier(ring);
-    const pts = ring.points;
-    if (pts.length === 0) return [];
-    if (pts.length === 1) return [[pts[0].x, pts[0].y]];
-
-    const out: Array<[number, number]> = [];
-    const n = pts.length;
-
-    for (let i = 0; i < n; i++) {
-        const a = pts[i];
-        const b = pts[(i + 1) % n];
-
-        out.push([a.x, a.y]);
-
-        const p0: Point = { x: a.x, y: a.y };
-        const p1: Point = a.hOut ?? { x: a.x, y: a.y };
-        const p2: Point = b.hIn ?? { x: b.x, y: b.y };
-        const p3: Point = { x: b.x, y: b.y };
-
-        const isStraight = !a.hOut && !b.hIn;
-        if (isStraight) continue;
-
-        const controlLength =
-            dist(p0, p1) + dist(p1, p2) + dist(p2, p3);
-        const segments = Math.max(1, Math.min(256, Math.ceil(controlLength / toleranceMeters)));
-
-        for (let s = 1; s < segments; s++) {
-            const t = s / segments;
-            out.push(cubicBezierPoint(p0, p1, p2, p3, t));
-        }
-    }
-
-    return out;
-}
-
-function dist(a: Point, b: Point): number {
-    return Math.hypot(b.x - a.x, b.y - a.y);
-}
-
-function cubicBezierPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number): [number, number] {
-    const mt = 1 - t;
-    const a = mt * mt * mt;
-    const b = 3 * mt * mt * t;
-    const c = 3 * mt * t * t;
-    const d = t * t * t;
-    return [
-        a * p0.x + b * p1.x + c * p2.x + d * p3.x,
-        a * p0.y + b * p1.y + c * p2.y + d * p3.y,
-    ];
+    return sharedFlattenRing(ring, toleranceMeters, curveType);
 }
 
 // ============================================================================

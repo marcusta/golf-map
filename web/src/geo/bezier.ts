@@ -7,9 +7,10 @@
 // point, both ABSOLUTE coordinates). Segment i runs anchor[i] → anchor
 // [(i+1) % n] as the cubic (a, a.hOut ?? a, b.hIn ?? b, b).
 //
-// `flattenRing` is a verbatim port of the server's flattening (same
-// tolerance heuristic, same subdivision caps) so client-rendered shapes
-// match the server-materialized GeoJSON exactly. The rest is editor math:
+// Segment flattening lives in shared/geo/bezier.ts and is the same code the
+// server runs, so client-rendered shapes match the server-materialized
+// GeoJSON exactly. `flattenRing` here adds the per-segment cache
+// (geo/flat-cache.ts) on top of it. The rest is editor math:
 // hit-testing, bboxes, nearest-point queries for vertex insertion, and a
 // de Casteljau split that inserts an anchor WITHOUT changing the curve.
 //
@@ -20,6 +21,9 @@
 
 import { bsplineRingToBezier } from './bspline';
 import { cachedSegment, flatGeometry, flatRing } from './flat-cache';
+import { cubicBezierPoint, flattenOpenPath, flattenSegment } from '../../../shared/geo/bezier';
+
+export { cubicBezierPoint, flattenOpenPath, flattenSegment };
 
 export interface Point {
     x: number;
@@ -57,22 +61,6 @@ export interface FeatureGeometry {
     rings: PathRing[];
 }
 
-function dist(a: Point, b: Point): number {
-    return Math.hypot(b.x - a.x, b.y - a.y);
-}
-
-export function cubicBezierPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number): [number, number] {
-    const mt = 1 - t;
-    const a = mt * mt * mt;
-    const b = 3 * mt * mt * t;
-    const c = 3 * mt * t * t;
-    const d = t * t * t;
-    return [
-        a * p0.x + b * p1.x + c * p2.x + d * p3.x,
-        a * p0.y + b * p1.y + c * p2.y + d * p3.y,
-    ];
-}
-
 /** The cubic control points for segment `i` (anchor i → anchor (i+1) % n). */
 export function segmentControls(ring: PathRing, i: number): [Point, Point, Point, Point] {
     const a = ring.points[i];
@@ -86,16 +74,15 @@ export function segmentControls(ring: PathRing, i: number): [Point, Point, Point
 }
 
 /**
- * Flattens a closed PathRing into a polyline of [x, y] points — port of the
- * server's flattenRing (identical output for identical input). The polyline
- * is NOT explicitly closed. Straight segments (no handles on either end)
- * contribute only their start anchor; curved segments are subdivided into
- * ceil(controlPolygonLength / tolerance) pieces (clamped to [1, 256]).
+ * Flattens a closed PathRing into a polyline of [x, y] points. Identical
+ * output to the shared (server) flattenRing for identical input. The
+ * polyline is NOT explicitly closed. Straight segments (no handles on
+ * either end) contribute only their start anchor; curved segments are
+ * subdivided adaptively by chord error (shared/geo/bezier.ts).
  *
  * When `curveType` is 'bspline' the ring's points are B-spline CONTROL
  * points: the ring is first converted to its exact bezier equivalent
- * (corner triplication + closed wrap), then flattened identically —
- * matching the server's flattenRing.
+ * (corner triplication + closed wrap), then flattened identically.
  *
  * Each segment's points come from the per-segment cache in
  * geo/flat-cache.ts (keyed on the segment's AnchorPoint, verified against
@@ -142,34 +129,6 @@ function concatSegments(segs: Array<Array<[number, number]>>, total: number): Ar
 }
 
 /**
- * Flattened points of one cubic segment p0 → p3, start anchor first, end
- * anchor excluded (the slice flattenRing emits per segment). A straight
- * segment yields only its start anchor. Same arithmetic, in the same
- * order, as the server's flattenRing loop body.
- */
-export function flattenSegment(
-    straight: boolean,
-    ax: number, ay: number,
-    p1x: number, p1y: number,
-    p2x: number, p2y: number,
-    bx: number, by: number,
-    toleranceMeters: number,
-): Array<[number, number]> {
-    const out: Array<[number, number]> = [[ax, ay]];
-    if (straight) return out;
-    const p0: Point = { x: ax, y: ay };
-    const p1: Point = { x: p1x, y: p1y };
-    const p2: Point = { x: p2x, y: p2y };
-    const p3: Point = { x: bx, y: by };
-    const controlLength = dist(p0, p1) + dist(p1, p2) + dist(p2, p3);
-    const segments = Math.max(1, Math.min(256, Math.ceil(controlLength / toleranceMeters)));
-    for (let s = 1; s < segments; s++) {
-        out.push(cubicBezierPoint(p0, p1, p2, p3, s / segments));
-    }
-    return out;
-}
-
-/**
  * flattenRing for a b-spline control ring. Computes each bezier segment of
  * the exact conversion (geo/bspline.ts, same arithmetic) without building
  * the converted ring, so the segment cache can key on the ORIGINAL control
@@ -208,36 +167,6 @@ function flattenBsplineRing(ring: PathRing, toleranceMeters: number): Array<[num
         total += seg.length;
     }
     return concatSegments(segs, total);
-}
-
-/**
- * Flattens an OPEN path (a drawing draft): same subdivision as flattenRing
- * but without the closing segment from last anchor back to the first, and
- * the final anchor is included.
- */
-export function flattenOpenPath(points: AnchorPoint[], toleranceMeters: number): Array<[number, number]> {
-    if (points.length === 0) return [];
-    const out: Array<[number, number]> = [];
-    for (let i = 0; i < points.length - 1; i++) {
-        const a = points[i];
-        const b = points[i + 1];
-        out.push([a.x, a.y]);
-
-        const p0: Point = { x: a.x, y: a.y };
-        const p1: Point = a.hOut ?? p0;
-        const p2: Point = b.hIn ?? { x: b.x, y: b.y };
-        const p3: Point = { x: b.x, y: b.y };
-        if (!a.hOut && !b.hIn) continue;
-
-        const controlLength = dist(p0, p1) + dist(p1, p2) + dist(p2, p3);
-        const segments = Math.max(1, Math.min(256, Math.ceil(controlLength / toleranceMeters)));
-        for (let s = 1; s < segments; s++) {
-            out.push(cubicBezierPoint(p0, p1, p2, p3, s / segments));
-        }
-    }
-    const last = points[points.length - 1];
-    out.push([last.x, last.y]);
-    return out;
 }
 
 /**

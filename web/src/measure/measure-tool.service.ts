@@ -16,8 +16,25 @@ export const MEASURE_OVERLAY_ID = 'measure';
 
 /** Screen-px radius: clicking within this of the start point ends the path. */
 const CLOSE_PATH_PX = 12;
-/** Elevation samples per segment for the profile sparkline. */
+/** Maximum elevation samples per segment for the profile sparkline. */
 export const PROFILE_SAMPLES_PER_SEGMENT = 50;
+/**
+ * Minimum spacing between profile samples, meters. The terrain DEM is read
+ * at z17 (about 0.6 m per pixel at Swedish latitudes), so samples closer
+ * than this repeat the same bilinear neighbourhood.
+ */
+export const PROFILE_SAMPLE_SPACING_M = 1;
+
+/**
+ * Profile samples for a segment of `segLen` meters, endpoints included:
+ * one per PROFILE_SAMPLE_SPACING_M, clamped to [2, PROFILE_SAMPLES_PER_SEGMENT].
+ * A function of the endpoints only, so the endpoint-keyed sample cache
+ * stays valid.
+ */
+export function profileSampleCount(segLen: number): number {
+    const n = Math.ceil(segLen / PROFILE_SAMPLE_SPACING_M) + 1;
+    return Math.max(2, Math.min(PROFILE_SAMPLES_PER_SEGMENT, n));
+}
 
 /** Point labels A, B, C, … (wraps past Z, which never happens for a path). */
 export function pointLabel(index: number): string {
@@ -302,7 +319,7 @@ export class MeasureToolService {
 
     /**
      * Rebuild the elevation profile across the whole path via the sampler's
-     * sampleLine (PROFILE_SAMPLES_PER_SEGMENT per segment). Cumulative
+     * sampleLine (profileSampleCount(segLen) per segment). Cumulative
      * distance uses the EPSG:3006 segment lengths already on the points.
      */
     private async refreshProfile(): Promise<void> {
@@ -319,7 +336,8 @@ export class MeasureToolService {
         // Every segment is requested at once; unchanged segments hit the cache.
         const segments = points.slice(1).map((b, i) => {
             const a = points[i];
-            return { segLen: Math.hypot(b.e - a.e, b.n - a.n), line: this.segmentLine(a, b) };
+            const segLen = Math.hypot(b.e - a.e, b.n - a.n);
+            return { segLen, line: this.segmentLine(a, b, profileSampleCount(segLen)) };
         });
         let lines: Array<Array<{ elevation: number | null }>>;
         try {
@@ -347,8 +365,11 @@ export class MeasureToolService {
         this.profileLoading.set(false);
     }
 
-    /** Cached sampleLine request for one segment, keyed by its endpoints. */
-    private segmentLine(a: MeasurePoint, b: MeasurePoint): Promise<Array<{ elevation: number | null }>> {
+    /**
+     * Cached sampleLine request for one segment, keyed by its endpoints.
+     * `n` is derived from the endpoints, so the key needs nothing else.
+     */
+    private segmentLine(a: MeasurePoint, b: MeasurePoint, n: number): Promise<Array<{ elevation: number | null }>> {
         const key = `${a.lng},${a.lat}|${b.lng},${b.lat}`;
         let hit = this.segmentCache.get(key);
         if (!hit) {
@@ -356,7 +377,7 @@ export class MeasureToolService {
             hit = this.elevation.sampleLine(
                 { lng: a.lng, lat: a.lat },
                 { lng: b.lng, lat: b.lat },
-                PROFILE_SAMPLES_PER_SEGMENT,
+                n,
             );
             hit.catch(() => { if (cache.get(key) === hit) cache.delete(key); });
             cache.set(key, hit);
