@@ -6,6 +6,7 @@ import { FeaturesService, geometryToWgs84Rings, shiftBlock, moveBlockToEdge, OVE
 import type { GeoJSONSourceDiff } from 'maplibre-gl';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 import { withBatchEndpoints, recordRequests } from './fake-feature-api';
+import { surfaceStackStats } from '../../shared/render/resolved-surface-stack';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { wgs84ToSweref99tm } from '../src/geo/transform';
 import type { FeatureGeometry } from '../src/geo/bezier';
@@ -1143,6 +1144,66 @@ describe('overlay updateData diffs (review item 2b)', () => {
         expect(featureSends().at(-1)!.diff).toBeUndefined();
         svc.patchLocal('f2', squareGeometry(10, base.x + 50, base.y));
         expect(featureSends().at(-1)!.diff).toBeDefined();
+        dispose();
+    });
+});
+
+describe('nice-mode surface stack resolve on tool switches (review item 10)', () => {
+    /**
+     * n disjoint features (50 m apart), loaded, overlay attached in Draw
+     * mode. DrawToolService flips `niceRendering` false on activate and
+     * true on deactivate; the tests drive the flag the same way.
+     */
+    async function drawSession(n: number) {
+        const initial = Array.from({ length: n }, (_, i) => ({
+            ...feature(`f${i}`, 'bunker', 1, { sortOrder: i }),
+            geometry: squareGeometry(10, base.x + i * 50, base.y),
+        }));
+        const svc = new FeaturesService(fakeApi(initial).api);
+        await svc.load('c1');
+        svc.niceRendering.set(false);
+        const rec = recordingMap();
+        const dispose = svc.attachOverlay(rec.map as never);
+        return { svc, ...rec, dispose };
+    }
+    const work = () => ({ resolves: surfaceStackStats.resolves, clips: surfaceStackStats.clips });
+
+    test('switching tools back and forth with no edit resolves the stack once in total', async () => {
+        const { svc, dispose } = await drawSession(6);
+        const start = work();
+        svc.niceRendering.set(true); // Draw -> Measure
+        const afterFirst = work();
+        expect(afterFirst.resolves - start.resolves).toBe(1);
+        svc.niceRendering.set(false); // Measure -> Draw
+        svc.niceRendering.set(true); // Draw -> Measure
+        svc.niceRendering.set(false);
+        svc.niceRendering.set(true);
+        expect(work()).toEqual(afterFirst);
+        dispose();
+    });
+
+    test('an edit followed by a switch resolves once and re-clips only the edited surface', async () => {
+        const { svc, dispose } = await drawSession(6);
+        svc.niceRendering.set(true);
+        svc.niceRendering.set(false); // back in Draw, per-surface memo primed
+        svc.patchLocal('f3', squareGeometry(10, base.x + 3 * 50 + 2, base.y));
+        const before = work();
+        svc.niceRendering.set(true);
+        const after = work();
+        expect(after.resolves - before.resolves).toBe(1);
+        expect(after.clips - before.clips).toBe(1);
+        dispose();
+    });
+
+    test('a visibility toggle in nice mode re-sends without re-clipping', async () => {
+        const { svc, featureSends, dispose } = await drawSession(6);
+        svc.niceRendering.set(true);
+        const sends = featureSends().length;
+        const before = work();
+        svc.hiddenIds.set(new Set(['f5']));
+        svc.hiddenIds.set(new Set());
+        expect(featureSends()).toHaveLength(sends + 2);
+        expect(work().clips).toBe(before.clips);
         dispose();
     });
 });
