@@ -12,8 +12,9 @@ import type { FeatureGeometry } from '../src/geo/bezier';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 // House rule: hover hit-testing is off while a mouse button is held (pan or
-// drag). The hover scan projects every vertex of the selected shape through
-// the map's flat transform, so counting calls to that transform counts scans.
+// drag). The hover scan projects the selected shape's vertices through the
+// map's flat transform, once per camera state (screen-cache.ts), so counting
+// calls to that transform counts cache builds.
 
 let cleanups: Array<() => void> = [];
 
@@ -66,12 +67,19 @@ async function setup() {
     await features.load('c1');
 
     const moveHandlers: Array<(e: MapPointerEvent) => void> = [];
+    const glHandlers = new Map<string, Set<() => void>>();
     let projections = 0;
     const glMap = {
         // Counts one vertex or handle projection of the hover scan.
         transform: { locationToScreenPoint: () => { projections++; return { x: -1e6, y: -1e6 }; } },
         project: () => { projections++; return { x: -1e6, y: -1e6 }; },
-        on() {}, off() {}, once() {}, getCanvas: () => ({ style: {} }),
+        on(type: string, h: () => void) {
+            let set = glHandlers.get(type);
+            if (!set) glHandlers.set(type, set = new Set());
+            set.add(h);
+        },
+        off(type: string, h: () => void) { glHandlers.get(type)?.delete(h); },
+        once() {}, getCanvas: () => ({ style: {} }),
         dragPan: { enable() {}, disable() {} }, boxZoom: { enable() {}, disable() {} }, doubleClickZoom: { enable() {}, disable() {} },
         setPaintProperty() {}, setFilter() {}, getSource: () => ({ type: 'geojson' }),
     };
@@ -116,27 +124,57 @@ async function setup() {
         for (const h of moveHandlers) h(e);
         frame();
     };
-    return { move, projections: () => projections, handlerCount: () => moveHandlers.length };
+    // A camera change: MapLibre fires `move` on the gl map.
+    const cameraMove = (): void => {
+        for (const h of glHandlers.get('move') ?? []) h();
+    };
+    return {
+        move, cameraMove, features,
+        projections: () => projections, handlerCount: () => moveHandlers.length,
+    };
 }
 
-test('hover scan: zero hit-tests per move while a button is held, at least one per move when not', async () => {
+test('hover scan: zero hit-tests per move while a button is held, cached between camera moves when not', async () => {
     const t = await setup();
     expect(t.handlerCount()).toBeGreaterThan(0);
+    const verts = 12;
 
-    // Button up: every move scans the selected shape's vertices.
-    for (let i = 0; i < 10; i++) {
-        const before = t.projections();
+    // Button up, camera still: the first move projects every vertex once,
+    // later moves hit the cache and project nothing.
+    let before = t.projections();
+    t.move(0, 0);
+    expect(t.projections() - before).toBe(verts);
+    for (let i = 1; i < 10; i++) {
+        before = t.projections();
         t.move(i, 0);
-        expect(t.projections() - before).toBeGreaterThanOrEqual(1);
+        expect(t.projections() - before).toBe(0);
     }
 
-    // Button down (pan): no projections at all.
+    // Button down (pan): no projections at all, even across camera moves.
     const heldBefore = t.projections();
-    for (let i = 10; i < 60; i++) t.move(i, 1);
+    for (let i = 10; i < 60; i++) {
+        t.cameraMove();
+        t.move(i, 1);
+    }
     expect(t.projections() - heldBefore).toBe(0);
 
-    // Release: the scan resumes.
-    const upBefore = t.projections();
+    // Release after the pan moved the camera: the scan projects again once.
+    before = t.projections();
     t.move(60, 0);
-    expect(t.projections() - upBefore).toBeGreaterThanOrEqual(1);
+    expect(t.projections() - before).toBe(verts);
+    before = t.projections();
+    t.move(61, 0);
+    expect(t.projections() - before).toBe(0);
+
+    // A `move` event alone invalidates: the next buttonless move projects.
+    t.cameraMove();
+    before = t.projections();
+    t.move(62, 0);
+    expect(t.projections() - before).toBe(verts);
+
+    // A new geometry identity (another feature selected) projects too.
+    t.features.select('f8');
+    before = t.projections();
+    t.move(63, 0);
+    expect(t.projections() - before).toBe(verts);
 });
