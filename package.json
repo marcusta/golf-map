@@ -19,7 +19,7 @@
         "e2e:headed": "playwright test --config e2e/playwright.config.ts --headed",
         "e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
         "e2e:reordered": "bun e2e/reorder-specs.ts && E2E_TEST_DIR=e2e/.tests-reordered playwright test --config e2e/playwright.config.ts",
-        "test:scripts": "bun ../mackans-client-fw/tools/assert-not-linked.ts && bun test ./scripts/",
+        "test:scripts": "([ ! -f ../mackans-client-fw/tools/assert-not-linked.ts ] || bun ../mackans-client-fw/tools/assert-not-linked.ts) && bun test ./scripts/",
         "fw:update": "bun ../mackans-client-fw/tools/update.ts",
         "fw:check": "bun ../mackans-client-fw/tools/assert-not-linked.ts"
     },

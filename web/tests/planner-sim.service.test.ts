@@ -77,7 +77,7 @@ function seedCourse(holes: Hole[]): void {
     features.store.set(holes.map((h, i): CourseFeature => ({
         id: `green-feat-${i}`, courseId: 'c1', holeId: h.id, type: 'green',
         geometry: square(15, GREEN_XY.x, GREEN_XY.y),
-        geojson: null, sortOrder: 0, source: null, sourceRef: null, license: null, version: 1,
+        sortOrder: 0, source: null, sourceRef: null, license: null, version: 1,
     })));
     di.set(FeaturesService, features);
 

@@ -33,7 +33,7 @@ function fakeApi() {
         geojsonByCourse: reject,
         create: async input => {
             n += 1;
-            return { id: `f${n}`, version: 1, geojson: null, ...input } as CourseFeature;
+            return { id: `f${n}`, version: 1, ...input } as CourseFeature;
         },
         update: reject,
         remove: async () => ({}) as never,

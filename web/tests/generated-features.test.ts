@@ -34,7 +34,7 @@ function polygon(n: number, r: number, cx: number, cy: number): FeatureGeometry 
 function feature(id: string, opts: Partial<CourseFeature> = {}): CourseFeature {
     return {
         id, courseId: 'c1', holeId: null, type: 'bunker',
-        geometry: polygon(4, 10, base.x, base.y), geojson: null, sortOrder: 0,
+        geometry: polygon(4, 10, base.x, base.y), sortOrder: 0,
         source: null, sourceRef: null, license: null, attributes: null, version: 1,
         ...opts,
     };

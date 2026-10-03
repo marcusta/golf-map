@@ -7,7 +7,7 @@
         "check:server": "tsc -p tsconfig.server.json --noEmit",
         "check:test": "tsc -p tsconfig.test.json --noEmit",
         "generate": "BASICS_API_IN_DIR=api BASICS_API_OUT_DIR=../shared/api bun node_modules/@basics/core/generate-api.ts",
-        "test": "bun ../../mackans-client-fw/tools/assert-not-linked.ts && bun test",
+        "test": "([ ! -f ../../mackans-client-fw/tools/assert-not-linked.ts ] || bun ../../mackans-client-fw/tools/assert-not-linked.ts) && bun test",
         "test:server": "bun test .",
         "create-user": "DB_PATH=../data/app.sqlite bun db/create-user.ts",
         "import": "DB_PATH=../data/app.sqlite bun db/import.ts",

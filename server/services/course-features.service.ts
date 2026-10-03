@@ -92,7 +92,6 @@ export interface CourseFeature {
     holeId: string | null;
     type: string;
     geometry: FeatureGeometry;
-    geojson: GeoJsonPolygon | null;
     sortOrder: number;
     /** Import provenance (T49): producer id (e.g. 'osm'), null = hand-drawn. */
     source: string | null;
@@ -144,7 +143,27 @@ export interface CourseFeatureFeatureCollection {
 
 // --- Row mapping ---
 
-type FeatureRow = Selectable<CourseFeaturesTable>;
+/**
+ * Every column except the materialized `geojson`, which only
+ * `geojsonByCourse` reads (review item 1: it was ~25 MB of a 33 MB list).
+ */
+type FeatureRow = Omit<Selectable<CourseFeaturesTable>, 'geojson'>;
+
+const FEATURE_COLUMNS = [
+    'id',
+    'course_id',
+    'hole_id',
+    'type',
+    'geometry_json',
+    'sort_order',
+    'source',
+    'source_ref',
+    'license',
+    'attributes_json',
+    'version',
+    'created_at',
+    'updated_at',
+] as const;
 
 function toCourseFeature(row: FeatureRow): CourseFeature {
     return {
@@ -153,7 +172,6 @@ function toCourseFeature(row: FeatureRow): CourseFeature {
         holeId: row.hole_id,
         type: row.type,
         geometry: JSON.parse(row.geometry_json) as FeatureGeometry,
-        geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
         sortOrder: row.sort_order,
         source: row.source,
         sourceRef: row.source_ref,
@@ -400,7 +418,6 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
         holeId: row.hole_id,
         type: row.type,
         geometry,
-        geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
         sortOrder: row.sort_order,
         source: row.source,
         sourceRef: row.source_ref,
@@ -418,7 +435,7 @@ export class CourseFeaturesService {
     private byCourse(courseId: string) {
         return this.db
             .selectFrom('course_features')
-            .selectAll()
+            .select(FEATURE_COLUMNS)
             .where('course_id', '=', courseId)
             .orderBy('sort_order');
     }
@@ -426,7 +443,7 @@ export class CourseFeaturesService {
     private byHole(holeId: string) {
         return this.db
             .selectFrom('course_features')
-            .selectAll()
+            .select(FEATURE_COLUMNS)
             .where('hole_id', '=', holeId)
             .orderBy('sort_order');
     }
@@ -442,7 +459,7 @@ export class CourseFeaturesService {
     }
 
     private byId(id: string) {
-        return this.db.selectFrom('course_features').selectAll().where('id', '=', id);
+        return this.db.selectFrom('course_features').select(FEATURE_COLUMNS).where('id', '=', id);
     }
 
     // --- Queries (write) ---
@@ -533,7 +550,11 @@ export class CourseFeaturesService {
         for (const row of rows) {
             const feature = toCourseFeatureSafe(row as unknown as FeatureRow);
             if (!feature) continue;
-            const geojson = feature.geojson ?? toGeoJson(feature.geometry);
+            // Prefer the stored WGS84 polygon; the CourseFeature API type
+            // omits it (review item 1), so read it off the row.
+            const geojson = row.geojson
+                ? (JSON.parse(row.geojson) as GeoJsonPolygon)
+                : toGeoJson(feature.geometry);
             const groupRank = row.hole_number ?? 0;
             const stackKey = groupRank * 4096 + feature.sortOrder;
             features.push({
@@ -633,7 +654,6 @@ export class CourseFeaturesService {
             holeId,
             type: input.type,
             geometry: input.geometry,
-            geojson,
             sortOrder,
             source,
             sourceRef,

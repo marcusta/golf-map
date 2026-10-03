@@ -52,7 +52,6 @@ function greenFeature(): CourseFeature {
                 ],
             }],
         },
-        geojson: null,
         sortOrder: 0,
         source: null,
         sourceRef: null,

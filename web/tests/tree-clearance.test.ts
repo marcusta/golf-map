@@ -27,7 +27,6 @@ function feature(
             crs: 'EPSG:3006',
             rings: [{ points: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }] }],
         },
-        geojson: null,
         sortOrder: 0,
         source: attributes ? 'lidar-canopy' : null,
         sourceRef: null,

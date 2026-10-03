@@ -7,7 +7,6 @@ export interface CourseFeature {
     holeId: null | string;
     type: string;
     geometry: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] };
-    geojson: null | GeoJsonPolygon;
     sortOrder: number;
     source: null | string;
     sourceRef: null | string;
@@ -22,11 +21,6 @@ export interface CourseFeatureFeatureCollection {
     attribution?: string;
 }
 
-export interface GeoJsonPolygon {
-    type: 'Polygon';
-    coordinates: number[][][];
-}
-
 export interface FeatureAttributes {
 
 }
@@ -36,6 +30,11 @@ export interface CourseFeatureGeoJsonFeature {
     id: string;
     properties: { courseId: string; holeId: null | string; type: string; sortOrder: number; stackKey: number; source: null | string; sourceRef: null | string; license: null | string; attributes: null | FeatureAttributes };
     geometry: GeoJsonPolygon | GeoJsonMultiPolygon;
+}
+
+export interface GeoJsonPolygon {
+    type: 'Polygon';
+    coordinates: number[][][];
 }
 
 export interface GeoJsonMultiPolygon {

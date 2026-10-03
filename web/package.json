@@ -8,7 +8,7 @@
         "demo": "bun run demo/serve.ts",
         "check:client": "tsc --noEmit",
         "check:test": "tsc -p tsconfig.test.json --noEmit",
-        "test": "bun ../../mackans-client-fw/tools/assert-not-linked.ts && bun test"
+        "test": "([ ! -f ../../mackans-client-fw/tools/assert-not-linked.ts ] || bun ../../mackans-client-fw/tools/assert-not-linked.ts) && bun test"
     },
     "dependencies": {
         "@basics/core": "file:../vendor/basics-core-1.1.0.tgz",

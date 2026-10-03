@@ -38,9 +38,30 @@ describe('CourseFeaturesService.create', () => {
         expect(feature.courseId).toBe(TEST_COURSE_ID);
         expect(feature.holeId).toBe(TEST_HOLE_1_ID);
         expect(feature.version).toBe(1);
-        expect(feature.geojson).not.toBeNull();
-        expect(feature.geojson!.type).toBe('Polygon');
-        expect(feature.geojson!.coordinates[0].length).toBeGreaterThan(3);
+        expect('geojson' in feature).toBe(false);
+
+        // The derived polygon is stored and served by the geojson route only.
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        const served = fc.features.find((f) => f.id === feature.id)!;
+        expect(served.geometry.type).toBe('Polygon');
+        expect((served.geometry.coordinates as number[][][])[0].length).toBeGreaterThan(3);
+        const stored = await db.selectFrom('course_features').select('geojson').where('id', '=', feature.id).executeTakeFirstOrThrow();
+        expect(stored.geojson).not.toBeNull();
+        expect(JSON.parse(stored.geojson!)).toEqual(served.geometry);
+    });
+
+    test('list, findById and update responses carry no geojson key', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const created = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'green', geometry: squareGeometry() });
+
+        const list = await svc.listByCourse(TEST_COURSE_ID);
+        expect(list.length).toBeGreaterThan(0);
+        for (const f of list) expect(Object.keys(f)).not.toContain('geojson');
+        for (const f of await svc.listByHole(TEST_HOLE_1_ID)) expect(Object.keys(f)).not.toContain('geojson');
+        expect(Object.keys(await svc.findById(created.id))).not.toContain('geojson');
+        const updated = await svc.update(created.id, created.version, { type: 'fairway' });
+        expect(Object.keys(updated)).not.toContain('geojson');
     });
 
     test('allows a null holeId (course-wide feature)', async () => {
@@ -297,14 +318,17 @@ describe('CourseFeaturesService.update', () => {
             type: 'green',
             geometry: squareGeometry(0, 0, 5),
         });
-        const originalGeojson = created.geojson;
+        const servedGeometry = async () =>
+            (await svc.geojsonByCourse(TEST_COURSE_ID)).features.find((f) => f.id === created.id)!.geometry;
+        const originalGeojson = await servedGeometry();
 
-        const updated = await svc.update(created.id, created.version, {
+        await svc.update(created.id, created.version, {
             geometry: squareGeometry(500, 500, 30),
         });
 
-        expect(updated.geojson).not.toEqual(originalGeojson);
-        expect(updated.geojson!.type).toBe('Polygon');
+        const updatedGeojson = await servedGeometry();
+        expect(updatedGeojson).not.toEqual(originalGeojson);
+        expect(updatedGeojson.type).toBe('Polygon');
     });
 
     test('moving to another hole inserts into that hole stack and shifts higher features', async () => {
@@ -810,8 +834,10 @@ describe('CourseFeaturesService.replaceGenerated', () => {
             // Straight-edge ring: 4 corners, closing point dropped, no handles.
             expect(f.geometry.rings[0].points).toHaveLength(4);
             expect(f.geometry.rings[0].points.every((p) => p.hIn === undefined && p.hOut === undefined)).toBe(true);
-            expect(f.geojson!.type).toBe('Polygon');
         }
+        const served = (await svc.geojsonByCourse(TEST_COURSE_ID)).features.filter((f) => f.properties.source === 'lidar-canopy');
+        expect(served).toHaveLength(3);
+        for (const f of served) expect(f.geometry.type).toBe('Polygon');
         // Input order preserved via sort_order; unique within the course group.
         const orders = all.filter((f) => f.holeId === null).map((f) => f.sortOrder);
         expect(new Set(orders).size).toBe(orders.length);
@@ -851,8 +877,11 @@ describe('CourseFeaturesService.replaceGenerated', () => {
         expect(f.geometry.rings).toHaveLength(2);
         expect(f.geometry.rings[1].points).toHaveLength(4);
         expect(f.geometry.rings[1].points.map((p) => [p.x, p.y])).toEqual(hole.slice(0, 4));
-        expect(f.geojson!.coordinates).toHaveLength(2);
-        expect(f.geojson!.coordinates[1]).toHaveLength(5);
+        const served = (await svc.geojsonByCourse(TEST_COURSE_ID)).features.find((g) => g.id === f.id)!;
+        expect(served.geometry.type).toBe('Polygon');
+        const coords = served.geometry.coordinates as number[][][];
+        expect(coords).toHaveLength(2);
+        expect(coords[1]).toHaveLength(5);
     });
 
     test('accepts an EPSG:3006 crs member in either GeoJSON form and rejects any other', async () => {

@@ -99,7 +99,6 @@ function rectFeature(id: string, type: string, minX: number, maxX: number, minY:
                 ],
             }],
         },
-        geojson: null,
         sortOrder: 0,
         source: null,
         sourceRef: null,
@@ -588,7 +587,7 @@ describe('autoGatesForPlan', () => {
                     ],
                 }],
             },
-            geojson: null, sortOrder: 0, source: null, sourceRef: null, license: null, version: 1,
+            sortOrder: 0, source: null, sourceRef: null, license: null, version: 1,
         };
         const lm = buildLieMap([bunker]);
         const gates = autoGatesForPlan(plan.legs, lm.hazardRings());
