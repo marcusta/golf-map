@@ -22,6 +22,10 @@
 //          source, drag paints (live local preview by cloning tile pixels
 //          on the preview surface — clean-stamp.ts, the client mirror of
 //          golfpipe/stamp.py), each finished stroke queues directly.
+//          The live stroke paints dabs incrementally (IncrementalStampStroke)
+//          at most once per animation frame into the surface's persistent
+//          canvas, which the map reads through a CanvasSource
+//          (stamp-canvas-view.ts). No PNG encode, no overlay re-add per move.
 //          Aligned ON: the source offset persists across strokes; OFF:
 //          every stroke restarts from the picked source. Single clicks
 //          stamp one dab; Shift-click extends a straight line from the
@@ -80,7 +84,8 @@ import {
     mercatorToLngLat,
     planBounds3857,
 } from './clean-mask';
-import { renderStampStroke, type PxPoint } from './clean-stamp';
+import { IncrementalStampStroke, renderStampStroke, type PxPoint, type PxRect } from './clean-stamp';
+import { canvasStampView, type StampSurfaceView, type StampViewFactory } from './stamp-canvas-view';
 
 /** Interaction-claim id for the Clean tool (also its registry id). */
 export const CLEAN_TOOL_ID = 'clean';
@@ -124,8 +129,28 @@ export interface CleanImaging {
     /** Compose the ortho crop from tiles → flat RGBA pixels (size×size×4) —
      * the clone-stamp preview surface. */
     composeCropPixels(tiles: CropTile[], size: number): Promise<Uint8ClampedArray>;
-    /** Flat RGBA pixels → PNG data URL for the image overlay. */
-    pixelsToPngDataUrl(pixels: Uint8ClampedArray, size: number): Promise<string>;
+}
+
+/** Animation-frame seam: the live stroke paints at most once per frame. */
+export interface FrameScheduler {
+    request(cb: () => void): number;
+    cancel(handle: number): void;
+}
+
+export const browserFrames: FrameScheduler = {
+    request: cb => (typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame(() => cb())
+        : (setTimeout(cb, 16) as unknown as number)),
+    cancel: handle => {
+        if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle);
+        else clearTimeout(handle);
+    },
+};
+
+/** Live-stroke seams: the surface view (canvas source) and the frame clock. */
+export interface CleanLiveSeams {
+    views?: StampViewFactory;
+    frames?: FrameScheduler;
 }
 
 /** Real canvas implementation of the imaging seam. */
@@ -152,16 +177,6 @@ export const browserCleanImaging: CleanImaging = {
     async composeCropPixels(tiles, size) {
         const canvas = await composeCropCanvas(tiles, size);
         return canvas.getContext('2d')!.getImageData(0, 0, size, size).data;
-    },
-
-    async pixelsToPngDataUrl(pixels, size) {
-        const canvas = new OffscreenCanvas(size, size);
-        const ctx = canvas.getContext('2d')!;
-        const img = ctx.createImageData(size, size);
-        img.data.set(pixels);
-        ctx.putImageData(img, 0, 0);
-        const base64 = await canvasToBase64(canvas, 'image/png');
-        return `data:image/png;base64,${base64}`;
     },
 };
 
@@ -206,8 +221,8 @@ interface PendingStampEdit {
 type PendingEdit = PendingMaskEdit | PendingStampEdit;
 
 /** One clone-stamp preview surface: a tile-composed crop the pending strokes
- * of that area render onto (shown as an image overlay below the feature
- * fills, exactly like the inpaint preview). */
+ * of that area render onto (shown below the feature fills, like the inpaint
+ * preview, through a canvas-backed view). */
 interface StampSurface {
     id: string;
     plan: CropPlan;
@@ -215,13 +230,21 @@ interface StampSurface {
     base: Uint8ClampedArray;
     /** base + every pending stroke of this surface (+ the live stroke). */
     work: Uint8ClampedArray;
+    /** Map view, created on the first draw. */
+    view: StampSurfaceView | null;
 }
 
 interface ActiveStroke {
     surface: StampSurface;
     /** Surface content BEFORE this stroke — the render/cancel baseline. */
     workBase: Uint8ClampedArray;
-    pathPx: PxPoint[];
+    /** Incremental painter: base = workBase, out = surface.work. Holds the
+     * stroke's surface-px path. */
+    live: IncrementalStampStroke;
+    /** Points added since the last paint. */
+    dirty: boolean;
+    /** Source-ring center waiting for the next frame. */
+    ringMerc: { x: number; y: number } | null;
     pathSweref: Array<{ x: number; y: number }>;
     pathMerc: Array<{ x: number; y: number }>;
     offsetM: { dx: number; dy: number };
@@ -297,6 +320,17 @@ export class CleanToolService {
     private stroke: ActiveStroke | null = null;
     private strokeInit: Promise<boolean> | null = null;
     private sourceOverlayLive = false;
+    /**
+     * Monotonic stroke token. beginStroke and cancelStroke bump it; an async
+     * step (surface compose, the init await in endStroke) that resumes under
+     * an older value drops its result, so a slow earlier step never
+     * overwrites or commits over a later one.
+     */
+    private strokeSeq = 0;
+    /** Pending animation-frame handle for the live stroke paint. */
+    private frame: number | null = null;
+    private readonly views: StampViewFactory;
+    private readonly frames: FrameScheduler;
 
     constructor(
         private client: CleanClient = new CleanClient(),
@@ -305,7 +339,11 @@ export class CleanToolService {
         private patchesApi: OrthoPatchesApi = api.orthoPatches,
         private confirmFn: (message: string) => boolean =
             message => (typeof confirm === 'function' ? confirm(message) : true),
-    ) {}
+        live: CleanLiveSeams = {},
+    ) {
+        this.views = live.views ?? canvasStampView;
+        this.frames = live.frames ?? browserFrames;
+    }
 
     // ── EditorTool lifecycle ────────────────────────────────────────────────
 
@@ -358,7 +396,7 @@ export class CleanToolService {
         for (const edit of this.pending) {
             if (edit.kind === 'mask') ctx?.map.removeOverlayLayer(edit.overlayId);
         }
-        for (const surface of this.surfaces) ctx?.map.removeOverlayLayer(surface.id);
+        for (const surface of this.surfaces) surface.view?.remove();
         this.surfaces = [];
         this.preview = null;
         this.phase.set('idle');
@@ -662,6 +700,7 @@ export class CleanToolService {
      * when no source is picked or the spot is outside the tiled area.
      */
     async beginStroke(lngLat: { lng: number; lat: number }): Promise<boolean> {
+        const token = ++this.strokeSeq;
         const gate = this.stampGate();
         if (!gate) return false;
         if (!this.source) {
@@ -683,34 +722,53 @@ export class CleanToolService {
         }
 
         const surface = await this.surfaceFor(destMerc, offsetMerc, gate.zoom, gate);
+        // A cancel or a newer stroke started while the crop composed.
+        if (token !== this.strokeSeq) return false;
         if (!surface) return false;
 
         const start = mercatorToCropPixel(surface.plan, destMerc.x, destMerc.y);
         const mpp = mercatorMetersPerPixel(surface.plan.zoom, surface.plan.tileSize);
         const radiusPx = (this.stampSizeM.peek() / 2) / groundMetersPerPixel(surface.plan.zoom, lngLat.lat);
+        const brush = {
+            sizeM: this.stampSizeM.peek(),
+            opacity: this.stampOpacity.peek(),
+            flow: this.stampFlow.peek(),
+            hardness: this.stampHardness.peek(),
+        };
+        const toneMatch = this.stampToneMatch.peek();
+        // Screen y grows south; mercator y grows north.
+        const offsetPx = { dx: offsetMerc.dx / mpp, dy: -offsetMerc.dy / mpp };
+        const workBase = surface.work.slice();
+        const live = new IncrementalStampStroke(workBase, surface.work, surface.plan.size, {
+            offsetPx,
+            radiusPx,
+            opacity: brush.opacity,
+            flow: brush.flow,
+            hardness: brush.hardness,
+            toneMatch,
+        });
+        live.add({ x: start.px, y: start.py });
         this.stroke = {
             surface,
-            workBase: surface.work.slice(),
-            pathPx: [{ x: start.px, y: start.py }],
+            workBase,
+            live,
+            dirty: true,
+            ringMerc: null,
             pathSweref: [destSweref],
             pathMerc: [destMerc],
             offsetM,
             offsetMerc,
-            // Screen y grows south; mercator y grows north.
-            offsetPx: { dx: offsetMerc.dx / mpp, dy: -offsetMerc.dy / mpp },
+            offsetPx,
             radiusPx,
             lastLngLat: lngLat,
-            brush: {
-                sizeM: this.stampSizeM.peek(),
-                opacity: this.stampOpacity.peek(),
-                flow: this.stampFlow.peek(),
-                hardness: this.stampHardness.peek(),
-            },
-            toneMatch: this.stampToneMatch.peek(),
+            brush,
+            toneMatch,
             aligned: this.stampAligned.peek(),
         };
         this.notice.set(null);
-        this.renderLiveStroke();
+        // The first dab shows right away (a click is feedback); moves after
+        // it coalesce to one paint per frame.
+        this.paintLiveStroke();
         return true;
     }
 
@@ -719,18 +777,51 @@ export class CleanToolService {
     extendStroke(lngLat: { lng: number; lat: number }): void {
         const stroke = this.stroke;
         if (!stroke) return;
-        if (stroke.pathPx.length >= STAMP_MAX_PATH_POINTS) return;
+        const points = stroke.live.points;
+        if (points.length >= STAMP_MAX_PATH_POINTS) return;
         const merc = lngLatToMercator(lngLat);
         const px = mercatorToCropPixel(stroke.surface.plan, merc.x, merc.y);
-        const last = stroke.pathPx[stroke.pathPx.length - 1];
+        const last = points[points.length - 1];
         if (Math.hypot(px.px - last.x, px.py - last.y) < STAMP_SAMPLE_PX) return;
-        stroke.pathPx.push({ x: px.px, y: px.py });
+        stroke.live.add({ x: px.px, y: px.py });
         stroke.pathSweref.push(lngLatToSweref99tm(lngLat));
         stroke.pathMerc.push(merc);
         stroke.lastLngLat = lngLat;
-        this.renderLiveStroke();
+        stroke.dirty = true;
         // The source ring follows the brush at the stroke's offset.
-        this.updateSourceOverlay({ x: merc.x + stroke.offsetMerc.dx, y: merc.y + stroke.offsetMerc.dy });
+        stroke.ringMerc = { x: merc.x + stroke.offsetMerc.dx, y: merc.y + stroke.offsetMerc.dy };
+        this.scheduleFrame();
+    }
+
+    /** Ask for one paint on the next animation frame (no-op if pending). */
+    private scheduleFrame(): void {
+        if (this.frame !== null) return;
+        this.frame = this.frames.request(() => {
+            this.frame = null;
+            this.paintLiveStroke();
+        });
+    }
+
+    private cancelFrame(): void {
+        if (this.frame === null) return;
+        this.frames.cancel(this.frame);
+        this.frame = null;
+    }
+
+    /** Paint the dabs added since the last paint and push the changed
+     * rectangle to the surface view; move the source ring. */
+    private paintLiveStroke(): void {
+        const stroke = this.stroke;
+        if (!stroke) return;
+        if (stroke.dirty) {
+            stroke.dirty = false;
+            const rect = stroke.live.flush();
+            if (rect) this.drawSurface(stroke.surface, rect);
+        }
+        if (stroke.ringMerc) {
+            this.updateSourceOverlay(stroke.ringMerc);
+            stroke.ringMerc = null;
+        }
     }
 
     /**
@@ -742,12 +833,20 @@ export class CleanToolService {
     async endStroke(): Promise<boolean> {
         if (this.strokeInit) {
             const init = this.strokeInit;
+            const token = this.strokeSeq;
             this.strokeInit = null;
             if (!(await init)) return false;
+            // Cancelled or superseded while the init was in flight.
+            if (token !== this.strokeSeq) return false;
         }
         const stroke = this.stroke;
         if (!stroke) return false;
+        // Paint whatever the pending frame would have, synchronously: the
+        // committed surface must carry the whole stroke.
+        this.cancelFrame();
+        this.paintLiveStroke();
         this.stroke = null;
+        const pathPx = stroke.live.points.slice();
 
         const rM = stroke.brush.sizeM / 2;
         const lat = stroke.lastLngLat.lat;
@@ -776,15 +875,15 @@ export class CleanToolService {
                 north: Math.max(...sy) + rM,
             },
             surfaceId: stroke.surface.id,
-            pathPx: stroke.pathPx,
+            pathPx,
             offsetPx: stroke.offsetPx,
             radiusPx: stroke.radiusPx,
         };
         this.pending.push(edit);
         this.pendingCount.set(this.pending.length);
         this.lastDab = stroke.lastLngLat;
-        // Commit the stroke's render (work already carries it via the live
-        // render) and rest the source ring per the aligned semantics.
+        // surface.work already carries the stroke (the live painter writes
+        // it in place). Rest the source ring per the aligned semantics.
         const rest = stroke.aligned
             ? { x: lngLatToMercator(stroke.lastLngLat).x + stroke.offsetMerc.dx, y: lngLatToMercator(stroke.lastLngLat).y + stroke.offsetMerc.dy }
             : this.source?.merc;
@@ -808,12 +907,15 @@ export class CleanToolService {
 
     /** Cancel the live stroke (ESC / teardown): restore the surface. */
     private cancelStroke(): void {
+        // Invalidate any in-flight beginStroke / endStroke await.
+        this.strokeSeq++;
         this.strokeInit = null;
+        this.cancelFrame();
         const stroke = this.stroke;
         if (!stroke) return;
         this.stroke = null;
         stroke.surface.work = stroke.workBase;
-        void this.updateSurfaceOverlay(stroke.surface);
+        this.drawSurface(stroke.surface, null);
         this.releasePan();
         if (this.source) this.updateSourceOverlay(this.source.merc);
     }
@@ -856,50 +958,28 @@ export class CleanToolService {
             plan,
             base: base.slice(),
             work: base,
+            view: null,
         };
         this.surfaces.push(surface);
         return surface;
     }
 
-    /** Re-render the live stroke onto its surface from the pre-stroke state. */
-    private renderLiveStroke(): void {
-        const stroke = this.stroke;
-        if (!stroke) return;
-        const work = stroke.workBase.slice();
-        renderStampStroke(work, stroke.surface.plan.size, {
-            path: stroke.pathPx,
-            offsetPx: stroke.offsetPx,
-            radiusPx: stroke.radiusPx,
-            opacity: stroke.brush.opacity,
-            flow: stroke.brush.flow,
-            hardness: stroke.brush.hardness,
-            toneMatch: stroke.toneMatch,
-        });
-        stroke.surface.work = work;
-        void this.updateSurfaceOverlay(stroke.surface);
-    }
-
-    private async updateSurfaceOverlay(surface: StampSurface): Promise<void> {
+    /** Push `surface.work` to the surface's map view (created on first
+     * use, then updated in place). `rect` null copies the whole surface. */
+    private drawSurface(surface: StampSurface, rect: PxRect | null): void {
         const ctx = this.ctx;
         if (!ctx) return;
-        try {
-            const url = await this.imaging.pixelsToPngDataUrl(surface.work, surface.plan.size);
+        if (!surface.view) {
             const corner = (px: number, py: number): [number, number] => {
                 const p = cropPixelToLngLat(surface.plan, px, py);
                 return [p.lng, p.lat];
             };
             const size = surface.plan.size;
-            ctx.map.removeOverlayLayer(surface.id);
-            ctx.map.addImageOverlay(
-                surface.id,
-                url,
-                [corner(0, 0), corner(size, 0), corner(size, size), corner(0, size)],
-                // Below the feature fills, like the inpaint preview.
-                { beforeId: 'features-fill' },
-            );
-        } catch {
-            // Map mid-teardown — the preview is decorative until bake.
+            surface.view = this.views(ctx.map, surface.id, size,
+                [corner(0, 0), corner(size, 0), corner(size, size), corner(0, size)]);
+            rect = null;
         }
+        surface.view.draw(surface.work, rect);
     }
 
     /** The clone-source ring marker (follows the brush during a stroke). */
@@ -1181,7 +1261,7 @@ export class CleanToolService {
         for (const edit of this.pending) {
             if (edit.kind === 'mask') this.ctx?.map.removeOverlayLayer(edit.overlayId);
         }
-        for (const surface of this.surfaces) this.ctx?.map.removeOverlayLayer(surface.id);
+        for (const surface of this.surfaces) surface.view?.remove();
         this.surfaces = [];
     }
 
@@ -1193,7 +1273,7 @@ export class CleanToolService {
         const strokes = this.pending.filter(
             (e): e is PendingStampEdit => e.kind === 'stamp' && e.surfaceId === surfaceId);
         if (strokes.length === 0) {
-            this.ctx?.map.removeOverlayLayer(surface.id);
+            surface.view?.remove();
             this.surfaces = this.surfaces.filter(s => s !== surface);
             return;
         }
@@ -1210,7 +1290,7 @@ export class CleanToolService {
             });
         }
         surface.work = work;
-        void this.updateSurfaceOverlay(surface);
+        this.drawSurface(surface, null);
     }
 
     /** Revert v1: drop the last BAKED entry (server re-replays + retiles the

@@ -91,6 +91,8 @@ async function harness(opts: SidecarOpts & {
     mapReady?: boolean;
     confirmAnswer?: boolean;
     failApply?: boolean;
+    /** Raw MapLibre stand-in behind MapService.map (stamp surface views). */
+    rawMap?: unknown;
 } = {}): Promise<Harness> {
     const sidecar: SidecarOpts = {
         online: opts.online ?? true,
@@ -137,7 +139,6 @@ async function harness(opts: SidecarOpts & {
             px.fill(128);
             return px;
         },
-        pixelsToPngDataUrl: async () => 'data:image/png;base64,SURFACE',
     };
 
     const applyCalls: Harness['applyCalls'] = [];
@@ -195,7 +196,7 @@ async function harness(opts: SidecarOpts & {
         map: {
             interactionMode,
             ready: mapReady,
-            map: new Signal(null),
+            map: new Signal(opts.rawMap ?? null),
             onClick: (h: Harness['clickHandlers'][number]) => {
                 clickHandlers.push(h);
                 return () => {};
@@ -240,6 +241,34 @@ async function harness(opts: SidecarOpts & {
         applyCalls, revertCalls, refreshes, orthoRefreshes, photoStates, reloads,
         imageOverlays, removedOverlays, confirms, sidecar, mapReady,
     };
+}
+
+/** Minimal raw MapLibre stand-in for the stamp surface's CanvasSource view. */
+function fakeRawMap() {
+    const sources = new Map<string, { spec: { type: string }; _playing: boolean; play(): void; pause(): void }>();
+    const layers = new Map<string, { id: string; beforeId?: string }>();
+    const raw = {
+        sources, layers,
+        added: [] as string[], removed: [] as string[],
+        uploads: 0,
+        on: () => {}, off: () => {},
+        dragPan: { enable: () => {}, disable: () => {} },
+        getSource: (id: string) => sources.get(id),
+        getLayer: (id: string) => (id === 'features-fill' ? { id } : layers.get(id)),
+        addSource: (id: string, spec: { type: string }) => {
+            raw.added.push(id);
+            sources.set(id, {
+                spec, _playing: false,
+                play() { this._playing = true; },
+                pause() { if (this._playing) raw.uploads++; this._playing = false; },
+            });
+        },
+        addLayer: (layer: { id: string }, beforeId?: string) => { layers.set(layer.id, { id: layer.id, beforeId }); },
+        removeLayer: (id: string) => { layers.delete(id); },
+        removeSource: (id: string) => { raw.removed.push(id); sources.delete(id); },
+        triggerRepaint: () => {},
+    };
+    return raw;
 }
 
 // ─── health gating ──────────────────────────────────────────────────────────
@@ -584,7 +613,8 @@ describe('stamp mode', () => {
     });
 
     test('a stroke composes ONE surface from sim tiles and paints it below the feature fills', async () => {
-        const h = await stampHarness();
+        const raw = fakeRawMap();
+        const h = await stampHarness({ rawMap: raw, mapReady: true });
         h.svc.pickSource(SOURCE);
         await h.svc.beginStroke(CLICK);
         h.svc.extendStroke({ lng: CLICK.lng + 0.00004, lat: CLICK.lat });
@@ -595,9 +625,12 @@ describe('stamp mode', () => {
         for (const url of h.pixelCropCalls[0].urls) {
             expect(url).toMatch(/^\/tiles\/site-1\/ortho-sim\/20\//);
         }
-        const surface = h.imageOverlays.find(o => o.id.startsWith('clean-stamp-'))!;
-        expect(surface.url).toBe('data:image/png;base64,SURFACE');
-        expect(surface.beforeId).toBe('features-fill');
+        // One canvas source + raster layer, added once, below the fills.
+        const surfaceId = raw.added.find(id => id.startsWith('clean-stamp-'))!;
+        expect(raw.added).toEqual([surfaceId]);
+        expect(raw.sources.get(surfaceId)!.spec.type).toBe('canvas');
+        expect(raw.layers.get(surfaceId)!.beforeId).toBe('features-fill');
+        expect(h.imageOverlays.filter(o => o.id.startsWith('clean-stamp-'))).toHaveLength(0);
 
         // A second stroke in the same area re-uses the surface (one compose).
         await h.svc.beginStroke({ lng: CLICK.lng + 0.00002, lat: CLICK.lat });
@@ -692,7 +725,8 @@ describe('stamp mode', () => {
     });
 
     test('discardLastPending peels the newest stroke; the surface re-renders or disappears', async () => {
-        const h = await stampHarness();
+        const raw = fakeRawMap();
+        const h = await stampHarness({ rawMap: raw, mapReady: true });
         h.svc.pickSource(SOURCE);
         await h.svc.beginStroke(CLICK);
         await h.svc.endStroke();
@@ -702,13 +736,18 @@ describe('stamp mode', () => {
 
         expect(h.svc.discardLastPending()).toBe(true);
         expect(h.svc.pendingCount.get()).toBe(1);
-        const surfaceId = h.imageOverlays.find(o => o.id.startsWith('clean-stamp-'))!.id;
-        expect(h.removedOverlays.filter(id => id === surfaceId).length).toBeGreaterThan(0); // re-render path
+        const surfaceId = raw.added[0];
+        // Re-render path: the canvas updates in place, the source stays.
+        const uploads = raw.uploads;
+        expect(raw.removed).toEqual([]);
+        expect(raw.sources.has(surfaceId)).toBe(true);
+        expect(uploads).toBeGreaterThan(0);
 
-        // Dropping the last stroke removes the surface overlay entirely.
+        // Dropping the last stroke removes the surface source entirely.
         expect(h.svc.discardLastPending()).toBe(true);
         expect(h.svc.pendingCount.get()).toBe(0);
-        expect(h.removedOverlays[h.removedOverlays.length - 1]).toBe(surfaceId);
+        expect(raw.removed).toEqual([surfaceId]);
+        expect(raw.sources.has(surfaceId)).toBe(false);
     });
 
     test('escape cancels a live stroke without queueing it', async () => {
