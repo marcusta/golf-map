@@ -4,6 +4,9 @@ import type { ToolContext } from '../src/editor/tool';
 import type { MapService } from '../src/map/map.service';
 import type { TerrainEdit, TerrainEditsApi } from '../../shared/api/terrain-edits.gen';
 import type { MapBuildApi, MapBuildJob } from '../../shared/api/map-build.gen';
+import type { Course } from '../../shared/api/courses.gen';
+import { deriveTileVersion, type TileManifest } from '../src/map/tileset.service';
+import type { FeatureCollection } from 'geojson';
 import { lngLatToSweref99tm } from '../src/geo/transform';
 import {
     TerrainEditToolService,
@@ -14,6 +17,11 @@ import {
     type TerrainEditRenderer,
     type TerrainEditView,
 } from '../src/terrain-edit/terrain-edit-tool.service';
+import {
+    TerrainEditOverlayRenderer,
+    TERRAIN_EDIT_DRAFT_OVERLAY_ID,
+    terrainEditProjectionCount,
+} from '../src/terrain-edit/terrain-edit-render';
 
 // T55b — terrain-edit tool. The pointer/overlay wiring needs a live
 // MaplibreMap, so these tests drive the service's seams (closeDraft, the
@@ -157,6 +165,12 @@ function fakeRenderer(): FakeRenderer {
     return r;
 }
 
+interface MoveEvent {
+    lngLat: { lng: number; lat: number };
+    point: { x: number; y: number };
+    originalEvent: { buttons: number };
+}
+
 interface Harness {
     svc: TerrainEditToolService;
     api: FakeApi;
@@ -167,7 +181,18 @@ interface Harness {
     /** courseIds passed to tileset.reload (post-apply cache-bust). */
     reloads: string[];
     clickHandlers: Array<(e: { lngLat: { lng: number; lat: number }; point: { x: number; y: number } }) => void>;
+    moveHandlers: Array<(e: MoveEvent) => void>;
     disposers: Array<() => void>;
+    /** Course rows returned by the fake coursesApi.get (post-apply manifest). */
+    course: { tileManifestJson: string | null; siteId: string | null };
+    courseGets: string[];
+    /** setRasterTileUrl calls on the fake MapService. */
+    tileUrls: Array<{ sourceId: string; template: string }>;
+    displayedVersion: Signal<string | null>;
+    elevationConfigs: unknown[];
+    jumps: number;
+    /** Overlay data by id, as the real renderer pushes it. */
+    overlays: Map<string, FeatureCollection>;
     /** Run the activation-span disposers + deactivate (EditorModeService order). */
     deactivate(): void;
 }
@@ -176,32 +201,67 @@ async function harness(opts: {
     listResult?: TerrainEdit[];
     siteId?: string | null;
     mapKey?: string | null;
+    /** Live tile manifest (TilesetService.manifest). */
+    manifest?: TileManifest | null;
+    /** Non-null stands in for a live MaplibreMap. */
+    rawMap?: object | null;
+    renderer?: TerrainEditRenderer;
 } = {}): Promise<Harness> {
     const api = fakeApi(opts.listResult ?? []);
     const mapBuild = fakeMapBuild();
     const renderer = fakeRenderer();
-    const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */);
+    const course: Harness['course'] = { tileManifestJson: null, siteId: 'site-1' };
+    const courseGets: string[] = [];
+    const coursesApi = {
+        async get(input: { id: string }) {
+            courseGets.push(input.id);
+            return { id: input.id, ...course } as unknown as Course;
+        },
+    };
+    const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */, coursesApi);
 
     const ready = new Signal(true);
     const interactionMode = new Signal<string>(TERRAIN_EDIT_TOOL_ID);
     const reloads: string[] = [];
     const clickHandlers: Harness['clickHandlers'] = [];
+    const moveHandlers: Harness['moveHandlers'] = [];
     const disposers: Array<() => void> = [];
+    const tileUrls: Harness['tileUrls'] = [];
+    const displayedVersion = new Signal<string | null>(null);
+    const elevationConfigs: unknown[] = [];
+    let jumps = 0;
+    const overlays = new Map<string, FeatureCollection>();
+    const rawMap = opts.rawMap === undefined
+        ? null
+        : opts.rawMap && { ...opts.rawMap, getCanvas: () => ({ style: {} }), project: () => ({ x: 1e4, y: 1e4 }), jumpTo: () => { jumps++; }, getCenter: () => ({ lng: 0, lat: 0 }), getZoom: () => 17, getBearing: () => 0, getPitch: () => 0 };
 
     const siteId = opts.siteId === undefined ? 'site-1' : opts.siteId;
     const ctx: ToolContext = {
         map: {
             interactionMode,
             ready,
-            map: new Signal(null),
+            map: new Signal(rawMap),
+            displayedVersion,
             onClick: (h: Harness['clickHandlers'][number]) => {
                 clickHandlers.push(h);
                 return () => {};
             },
+            onMouseMove: (h: Harness['moveHandlers'][number]) => {
+                moveHandlers.push(h);
+                return () => {
+                    const i = moveHandlers.indexOf(h);
+                    if (i >= 0) moveHandlers.splice(i, 1);
+                };
+            },
+            setRasterTileUrl: (sourceId: string, template: string) => { tileUrls.push({ sourceId, template }); },
+            addOverlayLayer: (id: string, data: FeatureCollection) => { overlays.set(id, data); },
+            updateOverlayData: (id: string, data: FeatureCollection) => { overlays.set(id, data); },
+            removeOverlayLayer: (id: string) => { overlays.delete(id); },
         } as unknown as MapService,
-        elevation: null as never,
+        elevation: { configure: (c: unknown) => { elevationConfigs.push(c); } } as never,
         tileset: {
             mapKey: new Signal(opts.mapKey === undefined ? null : opts.mapKey),
+            manifest: new Signal(opts.manifest ?? null),
             reload: async (id: string) => { reloads.push(id); },
         } as never,
         courseDetail: {
@@ -214,7 +274,7 @@ async function harness(opts: {
             cleanups.push(d);
         },
     };
-    svc.activate(ctx, renderer);
+    svc.activate(ctx, opts.renderer ?? renderer);
     await tick(); // settle the initial list load + render flush
 
     return {
@@ -226,7 +286,15 @@ async function harness(opts: {
         interactionMode,
         reloads,
         clickHandlers,
+        moveHandlers,
         disposers,
+        course,
+        courseGets,
+        tileUrls,
+        displayedVersion,
+        elevationConfigs,
+        get jumps() { return jumps; },
+        overlays,
         deactivate() {
             for (const d of disposers) d();
             disposers.length = 0;
@@ -557,5 +625,316 @@ describe('applyToTerrain', () => {
         await h.svc.applyToTerrain();
         expect(seen).toEqual(['Apply terrain edits']); // STEP_LABELS mapping
         expect(h.svc.applyStep.get()).toBeNull(); // cleared once terminal
+    });
+});
+
+// ─── Item 17: abortable poll, in-place terrain refresh ──────────────────────
+
+function makeManifest(overrides: Partial<TileManifest> = {}): TileManifest {
+    return {
+        bounds: { west: 15.55, south: 58.39, east: 15.58, north: 58.41 },
+        layers: {
+            ortho: { minzoom: 14, maxzoom: 20 },
+            terrain: { minzoom: 12, maxzoom: 17 },
+            hillshade: { minzoom: 12, maxzoom: 18 },
+        },
+        elevation: { min: 150, max: 190 },
+        generatedAt: '2026-10-01T10:00:00.000Z',
+        ...overrides,
+    };
+}
+
+describe('applyToTerrain abort', () => {
+    test('deactivate stops the poll: no further status calls, no refresh, no notice', async () => {
+        const h = await harness();
+        h.mapBuild.reTerrainResult = makeJob({ status: 'running', step: 'tile-terrain' });
+        h.mapBuild.status = async input => {
+            h.mapBuild.calls.status.push(input);
+            return makeJob({ status: 'running', step: 'tile-terrain' });
+        };
+
+        const result = h.svc.applyToTerrain();
+        for (let i = 0; i < 5; i++) await tick();
+        const polled = h.mapBuild.calls.status.length;
+        expect(polled).toBeGreaterThan(0);
+
+        h.deactivate();
+        expect(await result).toBe(false);
+        for (let i = 0; i < 5; i++) await tick();
+
+        console.log(`[terrain-edit] status calls before deactivate ${polled}, after ${h.mapBuild.calls.status.length - polled}`);
+        expect(h.mapBuild.calls.status).toHaveLength(polled);
+        expect(h.courseGets).toEqual([]);
+        expect(h.reloads).toEqual([]);
+        expect(h.svc.notice.get()).toBeNull();
+        expect(h.svc.applying.get()).toBe(false);
+    });
+
+    test('an in-flight status request is abandoned at once', async () => {
+        const h = await harness();
+        h.mapBuild.reTerrainResult = makeJob({ status: 'running' });
+        h.mapBuild.status = input => {
+            h.mapBuild.calls.status.push(input);
+            return new Promise<MapBuildJob>(() => {}); // never settles
+        };
+
+        const result = h.svc.applyToTerrain();
+        for (let i = 0; i < 3; i++) await tick();
+        expect(h.mapBuild.calls.status).toHaveLength(1);
+
+        h.svc.abortApply(); // the canvas-unmount path (descriptor attach disposer)
+        expect(await result).toBe(false);
+        expect(h.svc.applying.get()).toBe(false);
+        expect(h.svc.canApply.get()).toBe(true);
+    });
+
+    test('a pending sleep between polls is cancelled too', async () => {
+        const h = await harness();
+        // Real interval: the abort must not wait it out.
+        const svc = new TerrainEditToolService(h.api, h.mapBuild, 60_000, { get: async () => { throw new Error('unused'); } });
+        h.mapBuild.reTerrainResult = makeJob({ status: 'running' });
+        svc.activate({
+            map: { interactionMode: h.interactionMode, ready: h.ready, map: new Signal(null), onClick: () => () => {}, onMouseMove: () => () => {} },
+            tileset: { mapKey: new Signal(null), manifest: new Signal(null), reload: async () => {} },
+            courseDetail: { course: new Signal({ id: 'course-1', siteId: 'site-1' }) },
+            courseId: 'course-1',
+            track: (d: () => void) => { cleanups.push(d); },
+        } as never, fakeRenderer());
+
+        const t0 = performance.now();
+        const result = svc.applyToTerrain();
+        await tick();
+        svc.deactivate();
+        expect(await result).toBe(false);
+        expect(performance.now() - t0).toBeLessThan(1000);
+        expect(h.mapBuild.calls.status).toHaveLength(0);
+    });
+});
+
+describe('applyToTerrain refresh', () => {
+    test('same layout: terrain + hillshade sources get the new ?v= in place, no map re-init', async () => {
+        const prev = makeManifest();
+        const h = await harness({ manifest: prev, mapKey: 'site-1', rawMap: {} });
+        const next = makeManifest({ generatedAt: '2026-10-03T08:30:00.000Z' });
+        h.course.tileManifestJson = JSON.stringify(next);
+
+        expect(await h.svc.applyToTerrain()).toBe(true);
+
+        const version = deriveTileVersion(next.generatedAt);
+        expect(h.tileUrls.map(u => u.sourceId).sort()).toEqual(['course-hillshade-dem', 'course-terrain']);
+        for (const u of h.tileUrls) expect(u.template).toContain(`v=${version}`);
+        expect(h.tileUrls.find(u => u.sourceId === 'course-hillshade-dem')!.template).toContain('hillshade');
+        // displayedVersion matches the reloaded manifest, so the canvas skips its re-init.
+        expect(h.displayedVersion.get()).toBe(version);
+        expect(h.elevationConfigs).toEqual([{ mapKey: 'site-1', zoom: 17, version }]);
+        expect(h.reloads).toEqual(['course-1']);
+        expect(h.jumps).toBe(0); // camera untouched
+    });
+
+    test('changed zoom range falls back to the full reload with the camera restored', async () => {
+        const h = await harness({ manifest: makeManifest(), mapKey: 'site-1', rawMap: {} });
+        h.course.tileManifestJson = JSON.stringify(makeManifest({
+            generatedAt: '2026-10-03T08:30:00.000Z',
+            layers: { ortho: { minzoom: 14, maxzoom: 20 }, terrain: { minzoom: 12, maxzoom: 18 } },
+        }));
+
+        expect(await h.svc.applyToTerrain()).toBe(true);
+        expect(h.tileUrls).toEqual([]);
+        expect(h.displayedVersion.get()).toBeNull();
+        expect(h.reloads).toEqual(['course-1']);
+        expect(h.jumps).toBe(1);
+    });
+
+    test('no live map falls back to the full reload', async () => {
+        const h = await harness({ manifest: makeManifest(), mapKey: 'site-1', rawMap: null });
+        h.course.tileManifestJson = JSON.stringify(makeManifest({ generatedAt: '2026-10-03T08:30:00.000Z' }));
+        expect(await h.svc.applyToTerrain()).toBe(true);
+        expect(h.tileUrls).toEqual([]);
+        expect(h.reloads).toEqual(['course-1']);
+    });
+});
+
+// ─── Item 19: draft keys, busy flag, rubber band ────────────────────────────
+
+function key(k: string, mods: { meta?: boolean; ctrl?: boolean; shift?: boolean } = {}, target?: EventTarget): KeyboardEvent {
+    const e = new KeyboardEvent('keydown', {
+        key: k,
+        metaKey: !!mods.meta,
+        ctrlKey: !!mods.ctrl,
+        shiftKey: !!mods.shift,
+        bubbles: true,
+        cancelable: true,
+    });
+    (target ?? window).dispatchEvent(e);
+    return e;
+}
+
+function move(h: Harness, lng: number, lat: number, buttons = 0): void {
+    for (const m of h.moveHandlers) m({ lngLat: { lng, lat }, point: { x: 0, y: 0 }, originalEvent: { buttons } });
+}
+
+describe('draft keys', () => {
+    test('Backspace and Cmd/Ctrl+Z remove the last point; Cmd+Shift+Z and Ctrl+Y put it back', async () => {
+        const h = await harness();
+        click(h, P1.lng, P1.lat);
+        click(h, P2.lng, P2.lat);
+        click(h, P3.lng, P3.lat);
+
+        expect(key('Backspace').defaultPrevented).toBe(true);
+        expect(h.svc.state.draft.get()).toHaveLength(2);
+        expect(key('z', { meta: true }).defaultPrevented).toBe(true);
+        expect(h.svc.state.draft.get()).toHaveLength(1);
+        key('z', { meta: true, shift: true });
+        expect(h.svc.state.draft.get()).toHaveLength(2);
+        key('y', { ctrl: true });
+        expect(h.svc.state.draft.get()).toHaveLength(3);
+        key('z', { ctrl: true });
+        expect(h.svc.state.draft.get()).toHaveLength(2);
+    });
+
+    test('removing the only point leaves the tool armed with an empty draft', async () => {
+        const h = await harness();
+        click(h, P1.lng, P1.lat);
+        key('Backspace');
+        expect(h.svc.state.draft.get()).toHaveLength(0);
+        expect(h.svc.state.isDrawing.get()).toBe(true);
+        click(h, P2.lng, P2.lat);
+        expect(h.svc.state.draft.get()).toHaveLength(1);
+    });
+
+    test('Enter closes and saves a ring of 3+ points; with fewer it is not consumed', async () => {
+        const h = await harness();
+        click(h, P1.lng, P1.lat);
+        click(h, P2.lng, P2.lat);
+        expect(key('Enter').defaultPrevented).toBe(false);
+        expect(h.api.calls.create).toHaveLength(0);
+
+        click(h, P3.lng, P3.lat);
+        expect(key('Enter').defaultPrevented).toBe(true);
+        await tick();
+        expect(h.api.calls.create).toHaveLength(1);
+        expect(h.svc.state.draft.get()).toHaveLength(0);
+    });
+
+    test('nothing is consumed with an empty draft, in a text field, or without the claim', async () => {
+        const h = await harness();
+        expect(key('Backspace').defaultPrevented).toBe(false);
+        expect(key('z', { meta: true }).defaultPrevented).toBe(false);
+
+        click(h, P1.lng, P1.lat);
+        click(h, P2.lng, P2.lat);
+        const input = document.createElement('input');
+        document.body.appendChild(input);
+        cleanups.push(() => input.remove());
+        expect(key('Backspace', {}, input).defaultPrevented).toBe(false);
+        expect(h.svc.state.draft.get()).toHaveLength(2);
+
+        h.interactionMode.set('draw');
+        expect(key('Backspace').defaultPrevented).toBe(false);
+        expect(h.svc.state.draft.get()).toHaveLength(2);
+    });
+
+    test('editor-wide letters are left alone while drafting', async () => {
+        const h = await harness();
+        click(h, P1.lng, P1.lat);
+        for (const k of ['d', 'm', 'f', 'a', 't', ',', '.', 'h', '?']) {
+            expect(key(k).defaultPrevented).toBe(false);
+        }
+        expect(key('F', { shift: true }).defaultPrevented).toBe(false);
+        expect(key('\\', { meta: true }).defaultPrevented).toBe(false);
+        expect(h.svc.state.draft.get()).toHaveLength(1);
+    });
+
+    test('the key listener goes away with the activation', async () => {
+        const h = await harness();
+        click(h, P1.lng, P1.lat);
+        click(h, P2.lng, P2.lat);
+        h.deactivate();
+        expect(key('Backspace').defaultPrevented).toBe(false);
+    });
+});
+
+describe('isBusy', () => {
+    test('true only while a draft ring has points', async () => {
+        const h = await harness();
+        expect(h.svc.isBusy()).toBe(false);
+        click(h, P1.lng, P1.lat);
+        expect(h.svc.isBusy()).toBe(true);
+        h.svc.onEscape();
+        expect(h.svc.isBusy()).toBe(false);
+        click(h, P1.lng, P1.lat);
+        click(h, P2.lng, P2.lat);
+        click(h, P3.lng, P3.lat);
+        await h.svc.closeDraft();
+        expect(h.svc.isBusy()).toBe(false);
+    });
+});
+
+describe('rubber band', () => {
+    test('tracks the pointer while drafting; off with a button held, after Esc and after close', async () => {
+        const h = await harness();
+        move(h, P2.lng, P2.lat);
+        expect(h.svc.cursor.get()).toBeNull(); // no draft yet
+
+        click(h, P1.lng, P1.lat);
+        move(h, P2.lng, P2.lat);
+        const p2 = lngLatToSweref99tm(P2);
+        expect(h.svc.cursor.get()!.x).toBeCloseTo(p2.x, 6);
+
+        move(h, P3.lng, P3.lat, 1); // pan drag
+        expect(h.svc.cursor.get()).toBeNull();
+        move(h, P3.lng, P3.lat);
+        expect(h.svc.cursor.get()).not.toBeNull();
+
+        h.svc.onEscape();
+        expect(h.svc.cursor.get()).toBeNull();
+
+        click(h, P1.lng, P1.lat);
+        click(h, P2.lng, P2.lat);
+        click(h, P3.lng, P3.lat);
+        move(h, P2.lng, P2.lat);
+        expect(h.svc.cursor.get()).not.toBeNull();
+        await h.svc.closeDraft();
+        expect(h.svc.cursor.get()).toBeNull();
+    });
+
+    test('with the real renderer the draft-cursor segment is drawn while drafting and gone after finish', async () => {
+        const created: number[] = [];
+        const renderer = new TerrainEditOverlayRenderer(() => {
+            created.push(1);
+            return { setLngLat() { return this; }, remove() { return this; } };
+        });
+        const h = await harness({ rawMap: {}, renderer });
+        const roles = () => (h.overlays.get(TERRAIN_EDIT_DRAFT_OVERLAY_ID)?.features ?? [])
+            .map(f => (f.properties as { role: string }).role);
+
+        click(h, P1.lng, P1.lat);
+        click(h, P2.lng, P2.lat);
+        click(h, P3.lng, P3.lat);
+        move(h, P2.lng, P2.lat);
+        await tick();
+        expect(roles()).toContain('draft-cursor');
+
+        key('Enter');
+        await tick();
+        await tick();
+        expect(roles()).toEqual([]);
+        expect(h.svc.edits.get()).toHaveLength(1);
+        expect(created).toHaveLength(1);
+    });
+
+    test('projection count per click through the service is one', async () => {
+        const renderer = new TerrainEditOverlayRenderer(() => ({ setLngLat() { return this; }, remove() { return this; } }));
+        const edits = Array.from({ length: 10 }, (_, i) => makeEdit({ id: `e${i}` }));
+        const h = await harness({ rawMap: {}, renderer, listResult: edits });
+        const clicks = [P1, P2, P3, P1, P2, P3];
+        const perClick: number[] = [];
+        for (const p of clicks) {
+            const before = terrainEditProjectionCount();
+            click(h, p.lng + perClick.length * 1e-5, p.lat);
+            await tick();
+            perClick.push(terrainEditProjectionCount() - before);
+        }
+        expect(perClick).toEqual([1, 1, 1, 1, 1, 1]);
     });
 });

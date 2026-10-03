@@ -21,13 +21,17 @@
 import { Signal, Computed, effect, untrack } from '@basics/core/client/core';
 import { canvasCursor } from '../editor/canvas-cursor';
 import { screenDistSweref } from '../editor/screen-point';
+import { isTypingTarget } from '../editor/shortcut.service';
 import { api } from '../api';
 import type { TerrainEdit, TerrainEditsApi } from '../../../shared/api/terrain-edits.gen';
 import type { MapBuildApi, MapBuildJob } from '../../../shared/api/map-build.gen';
+import type { CoursesApi } from '../../../shared/api/courses.gen';
 import { STEP_LABELS } from '../map-build/map-build.service';
 import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent, MapService } from '../map/map.service';
-import type { AnchorPoint } from '../geo/bezier';
+import { deriveTileVersion, parseTileManifest, type TileManifest } from '../map/tileset.service';
+import { buildEditorStyle, HILLSHADE_SOURCE_ID, TERRAIN_SOURCE_ID } from '../map/map-style';
+import type { AnchorPoint, Point } from '../geo/bezier';
 import { DrawState, MIN_RING_POINTS } from '../draw/draw-state';
 import { lngLatToSweref99tm } from '../geo/transform';
 
@@ -64,6 +68,11 @@ export interface TerrainEditView {
     edits: TerrainEdit[];
     /** In-progress draft ring (EPSG:3006), empty when idle. */
     draft: AnchorPoint[];
+    /**
+     * Pointer position (EPSG:3006) for the rubber band from the last draft
+     * point. Null while no draft is open or while a mouse button is held.
+     */
+    cursor: Point | null;
 }
 
 /**
@@ -108,10 +117,14 @@ export class TerrainEditToolService {
     readonly radiusM = new Signal(DEFAULT_RADIUS_M);
     readonly flat = new Signal(false);
 
-    /** Renderable overlay state (persisted edits + the live draft). */
+    /** Pointer position for the rubber band (see TerrainEditView.cursor). */
+    readonly cursor = new Signal<Point | null>(null);
+
+    /** Renderable overlay state (persisted edits, the live draft, the pointer). */
     readonly view = new Computed<TerrainEditView>(() => ({
         edits: this.edits.get(),
         draft: this.state.draft.get(),
+        cursor: this.cursor.get(),
     }));
 
     private ctx: ToolContext | null = null;
@@ -120,12 +133,16 @@ export class TerrainEditToolService {
     private renderScheduled = false;
     /** Monotonic token so a stale list response never clobbers a newer one. */
     private loadSeq = 0;
+    /** Aborts the running re-terrain poll (deactivate, canvas unmount). */
+    private applyAbort: AbortController | null = null;
 
     constructor(
         private editsApi: TerrainEditsApi = api.terrainEdits,
         private mapBuildApi: MapBuildApi = api.mapBuild,
         /** Poll interval override for tests (real timers). */
         private pollMs: number = POLL_MS,
+        /** Course GET for the post-apply manifest (new tile version). */
+        private coursesApi: Pick<CoursesApi, 'get'> = api.courses,
     ) {}
 
     // ── EditorTool lifecycle (called via terrain-edit-tool.ts) ─────────────
@@ -136,6 +153,14 @@ export class TerrainEditToolService {
         this.notice.set(null);
 
         ctx.track(ctx.map.onClick(e => this.onClick(e)));
+        ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));
+
+        // Draft keys (draw-tool key map). A bubbling window listener: the
+        // ShortcutService dispatcher sees keys first and stops propagation
+        // for the ones its layers consume (Esc chain, editor-wide keys).
+        const onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
+        window.addEventListener('keydown', onKeyDown);
+        ctx.track(() => window.removeEventListener('keydown', onKeyDown));
 
         // Overlay rendering, coalesced onto a microtask: closing a draft
         // writes draft AND edits back-to-back, and @basics/core signals are
@@ -164,10 +189,29 @@ export class TerrainEditToolService {
     }
 
     deactivate(): void {
+        this.abortApply();
         this.state.disarm();
+        this.cursor.set(null);
         this.saving.set(false);
         this.ctx = null;
         this.renderer = null;
+    }
+
+    /**
+     * Stop polling a running re-terrain job. The server job keeps running;
+     * only this client stops waiting for it and skips the tile refresh.
+     */
+    abortApply(): void {
+        this.applyAbort?.abort();
+        this.applyAbort = null;
+    }
+
+    /**
+     * True while a draft ring has points: the editor-wide sub-mode letters
+     * fall through instead of switching tools and discarding the outline.
+     */
+    isBusy(): boolean {
+        return this.state.draft.peek().length > 0;
     }
 
     /** ESC: cancel an in-progress draft (stay active) → deactivate. */
@@ -175,6 +219,7 @@ export class TerrainEditToolService {
         if (this.state.draft.peek().length > 0) {
             this.state.disarm();
             this.state.arm(); // stay in draw mode for the next outline
+            this.cursor.set(null);
             return true;
         }
         return false;
@@ -229,6 +274,7 @@ export class TerrainEditToolService {
     async closeDraft(): Promise<TerrainEdit | undefined> {
         const ring = this.state.closeDraft();
         if (!ring) return undefined;
+        this.cursor.set(null);
         const siteId = this.siteId();
         if (!siteId) {
             this.notice.set('This course has no site/map yet — set a map area first.');
@@ -302,28 +348,34 @@ export class TerrainEditToolService {
 
     /**
      * Start the fast re-terrain job and poll it to completion (map-build
-     * polling contract). Applying with zero ENABLED edits is deliberate — it
+     * polling contract). Applying with zero ENABLED edits is deliberate: it
      * re-tiles from the raw DEM, i.e. reverts previous applies. On success
-     * the tile manifest changed (`generatedAt` → new `?v=`), so the tileset
-     * is reloaded to re-init the map — tiles carry year-long immutable cache
-     * headers and same-URL refetches would serve stale bytes (clean-tool
-     * precedent).
+     * the tile manifest has a new `generatedAt`, so new `?v=` URLs; tiles
+     * carry year-long immutable cache headers, so the same URL would serve
+     * stale bytes. See refreshTerrain for how the map picks them up.
+     *
+     * Deactivating the tool or unmounting the canvas aborts the poll
+     * (abortApply): no further status requests, no tile refresh, no notice.
      */
     async applyToTerrain(): Promise<boolean> {
         const ctx = this.ctx;
         if (!ctx || this.applying.peek()) return false;
+        const abort = new AbortController();
+        this.applyAbort = abort;
+        const signal = abort.signal;
         this.applying.set(true);
         this.notice.set(null);
         try {
-            let job: MapBuildJob = await this.mapBuildApi.reTerrain({ courseId: ctx.courseId });
+            let job: MapBuildJob = await abortable(this.mapBuildApi.reTerrain({ courseId: ctx.courseId }), signal);
             this.applyStep.set(stepLabel(job));
             while (job.status === 'pending' || job.status === 'running') {
-                await sleep(this.pollMs);
+                await sleep(this.pollMs, signal);
                 try {
-                    job = await this.mapBuildApi.status({ jobId: job.id });
+                    job = await abortable(this.mapBuildApi.status({ jobId: job.id }), signal);
                     this.applyStep.set(stepLabel(job));
-                } catch {
-                    // Transient poll failure — keep polling; a persistent one
+                } catch (e) {
+                    if (signal.aborted) throw e;
+                    // Transient poll failure: keep polling; a persistent one
                     // surfaces via the job row (or the reTerrain error path).
                 }
             }
@@ -331,26 +383,64 @@ export class TerrainEditToolService {
                 this.notice.set(`Applying to terrain failed: ${job.error ?? 'unknown error'}`);
                 return false;
             }
-            await this.reloadTiles();
+            await this.refreshTerrain(ctx, signal);
+            if (signal.aborted) return false;
             this.notice.set('Terrain re-tiled with the current edits.');
             return true;
         } catch (e) {
+            if (signal.aborted) return false;
             this.notice.set(`Applying to terrain failed: ${message(e)}`);
             return false;
         } finally {
+            if (this.applyAbort === abort) this.applyAbort = null;
             this.applying.set(false);
             this.applyStep.set(null);
         }
     }
 
     /**
-     * Reload the tile manifest so the editor canvas re-inits the map against
-     * the new `?v=`, keeping the camera where the user was working
-     * (clean-tool reloadTiles pattern).
+     * Show the re-tiled terrain. A re-terrain job changes only the terrain
+     * and hillshade tiles, so when the live map's layer set still matches the
+     * new manifest, the terrain and hillshade sources are pointed at the new
+     * `?v=` in place: no map re-init, no camera move, ortho and overlays
+     * untouched. `displayedVersion` is set before the tileset reloads so the
+     * editor canvas sees the live map already showing that version and skips
+     * its re-init (the Clean-tool refreshOrthoTiles contract). The elevation
+     * sampler is re-pointed at the new tiles, since the canvas only does that
+     * on re-init.
+     *
+     * Falls back to the full re-init (tileset reload, camera restored) when
+     * there is no live map or the manifest's layer set or zoom ranges changed.
      */
-    private async reloadTiles(): Promise<void> {
-        const ctx = this.ctx;
-        if (!ctx) return;
+    private async refreshTerrain(ctx: ToolContext, signal: AbortSignal): Promise<void> {
+        const course = await abortable(this.coursesApi.get({ id: ctx.courseId }), signal);
+        const manifest = parseTileManifest(course.tileManifestJson);
+        const mapKey = course.siteId ?? null;
+        const prev = ctx.tileset.manifest.peek();
+        const live = ctx.map.ready.peek() && ctx.map.map.peek() !== null;
+        if (!manifest || !mapKey || !prev || !live
+            || mapKey !== ctx.tileset.mapKey.peek()
+            || !sameTerrainLayout(prev, manifest)) {
+            await this.reloadTiles(ctx);
+            return;
+        }
+        const version = deriveTileVersion(manifest.generatedAt);
+        const { sources } = buildEditorStyle(mapKey, manifest, version);
+        for (const id of [TERRAIN_SOURCE_ID, HILLSHADE_SOURCE_ID]) {
+            const tiles = (sources[id] as { tiles?: string[] } | undefined)?.tiles;
+            if (tiles?.[0]) ctx.map.setRasterTileUrl(id, tiles[0]);
+        }
+        ctx.map.displayedVersion.set(version);
+        ctx.elevation?.configure({ mapKey, zoom: manifest.layers.terrain.maxzoom, version });
+        await ctx.tileset.reload(ctx.courseId);
+    }
+
+    /**
+     * Full re-init fallback: reload the tile manifest so the editor canvas
+     * re-inits the map against the new `?v=`, keeping the camera where the
+     * user was working (clean-tool reloadTiles pattern).
+     */
+    private async reloadTiles(ctx: ToolContext): Promise<void> {
         const map = ctx.map.map.peek();
         const camera = map
             ? { center: map.getCenter(), zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() }
@@ -381,6 +471,65 @@ export class TerrainEditToolService {
         this.state.addPoint(lngLatToSweref99tm(e.lngLat));
     }
 
+    /**
+     * Rubber band: track the pointer while a draft is open. Off while any
+     * mouse button is held (a pan drag), and untracked with an empty draft so
+     * plain hovering never re-renders the overlay.
+     */
+    private onMouseMove(e: MapPointerEvent): void {
+        if (this.ctx?.map.interactionMode.peek() !== TERRAIN_EDIT_TOOL_ID) return;
+        if (this.state.draft.peek().length === 0 || e.originalEvent.buttons !== 0) {
+            if (this.cursor.peek() !== null) this.cursor.set(null);
+            return;
+        }
+        const p = lngLatToSweref99tm(e.lngLat);
+        const prev = this.cursor.peek();
+        if (prev && prev.x === p.x && prev.y === p.y) return;
+        this.cursor.set({ x: p.x, y: p.y });
+    }
+
+    /**
+     * Draft keys, matching the draw tool while a ring is open: Backspace and
+     * Cmd/Ctrl+Z remove the last point, Cmd/Ctrl+Shift+Z and Cmd/Ctrl+Y put it
+     * back, Enter closes and saves the ring. Esc stays with onEscape. With no
+     * open draft nothing is consumed.
+     */
+    onKeyDown(e: KeyboardEvent): void {
+        if (this.ctx?.map.interactionMode.peek() !== TERRAIN_EDIT_TOOL_ID) return;
+        if (isTypingTarget(e.target)) return;
+        if (this.state.draft.peek().length === 0) return;
+        const meta = e.metaKey || e.ctrlKey;
+        const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+        if (meta && !e.altKey && key === 'z') {
+            e.preventDefault();
+            if (e.shiftKey) this.state.redoPoint();
+            else this.undoPoint();
+        } else if (meta && !e.altKey && key === 'y') {
+            e.preventDefault();
+            this.state.redoPoint();
+        } else if (!meta && !e.altKey && key === 'Backspace') {
+            e.preventDefault();
+            this.undoPoint();
+        } else if (!meta && !e.altKey && key === 'Enter') {
+            if (!this.state.canClose.peek()) return;
+            e.preventDefault();
+            void this.closeDraft();
+        }
+    }
+
+    /**
+     * Drop the last draft point. Undoing the only point clears the draft but
+     * keeps the tool armed (DrawState.undoPoint would disarm it; this tool is
+     * always drawing).
+     */
+    private undoPoint(): void {
+        if (this.state.undoPoint() === 'cancelled') {
+            this.state.arm();
+            this.cursor.set(null);
+        }
+    }
+
     /** Flat screen-pixel distance from an EPSG:3006 point to a screen position. */
     private screenDistTo(p: AnchorPoint, screen: { x: number; y: number }): number {
         const map = this.ctx?.map.map.peek();
@@ -407,8 +556,55 @@ function message(e: unknown): string {
     return e instanceof Error ? e.message : String(e);
 }
 
-function sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+function abortError(): Error {
+    return new DOMException('The re-terrain poll was aborted', 'AbortError');
+}
+
+/** setTimeout as a promise; rejects (and clears the timer) on abort. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(abortError());
+    return new Promise((resolve, reject) => {
+        const onAbort = () => {
+            clearTimeout(timer);
+            reject(abortError());
+        };
+        const timer = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
+/**
+ * Settle with `p`, or reject as soon as `signal` aborts. The generated API
+ * clients take no AbortSignal, so an in-flight request still completes on
+ * the wire; the caller just stops waiting for it.
+ */
+function abortable<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) return Promise.reject(abortError());
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(abortError());
+        signal.addEventListener('abort', onAbort, { once: true });
+        p.then(
+            v => { signal.removeEventListener('abort', onAbort); resolve(v); },
+            e => { signal.removeEventListener('abort', onAbort); reject(e); },
+        );
+    });
+}
+
+/**
+ * True when `next` builds the same terrain and hillshade sources as `prev`
+ * apart from the tile URL version: same bounds, same zoom ranges, and the
+ * same hillshade kind (baked raster vs client-side raster-dem). setTiles can
+ * only swap URLs, not change any of these.
+ */
+function sameTerrainLayout(prev: TileManifest, next: TileManifest): boolean {
+    const zooms = (l: { minzoom: number; maxzoom: number } | undefined) => (l ? `${l.minzoom}-${l.maxzoom}` : '');
+    const b = (m: TileManifest) => `${m.bounds.west},${m.bounds.south},${m.bounds.east},${m.bounds.north}`;
+    return b(prev) === b(next)
+        && zooms(prev.layers.terrain) === zooms(next.layers.terrain)
+        && zooms(prev.layers.hillshade) === zooms(next.layers.hillshade);
 }
 
 /** Progress-line label for a job's current step ("Tile terrain…"). */

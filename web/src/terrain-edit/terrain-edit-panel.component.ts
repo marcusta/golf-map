@@ -42,7 +42,8 @@ const tpl = template(`
         <div bind="applyLine" class="busy-line" data-testid="terrain-edit-apply-progress"></div>
         <div class="tedit-panel__hints">
             <div><b>Click</b> to outline the area (parking lot, road, house pad…).</div>
-            <div><b>Click the first point</b> to save the edit; <b>Esc</b> discards the outline.</div>
+            <div><b>Click the first point</b> or press <b>Enter</b> to save the edit; <b>Esc</b> discards the outline.</div>
+            <div><b>Backspace</b> or <b>⌘Z</b> removes the last point.</div>
             <div>Edits replay onto the DEM at build time — the raw lidar DEM stays pristine.</div>
         </div>
     </div>
