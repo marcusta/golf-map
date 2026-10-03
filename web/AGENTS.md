@@ -38,6 +38,15 @@ Prefer the `preview_*` tools to verify UI changes over asking the user to check.
 
 Testing: integration-first, no mocks, units only for hard algorithms. See root [TESTING.md](../TESTING.md).
 
+## Dev loop: what hot-swaps
+
+Vite HMR stops only at a module that calls the literal `import.meta.hot.accept(` (an alias of `import.meta.hot` is not detected). Without one, an edit reloads the page and MapLibre rebuilds the map and refetches tiles.
+
+- `src/draw/draw-tool.service.ts` self-accepts. An edit swaps the prototype of the live `DrawToolService` to the new class and registers it under the new class key too (`hotSwapDrawTool`). The instance keeps its identity because the docks and the command bar hold it in fields. If Draw is active, `EditorModeService.restartTool` deactivates it with the old code, releases and re-takes the claim, and activates it with the new code. Feature selection, undo history, draw type and the type preferences survive; an open draft is dropped. `attach` does not re-run; an edit there applies on the next canvas mount.
+- The swap is refused and the page reloads when the new class declares an instance field the live object lacks, or when a stateful import changed identity (`DRAW_TOOL_HOT_DEPS`: draw-state, history, screen-cache, the confirm dialog, features.service, editor/tool.ts). A dependency edit reaches this module only through those imports, so it reloads.
+- Everything else reloads the page as before, including `map/map.service.ts`, `draw/features.service.ts`, `draw/draw-tool.ts`, the panels and the other tool services. `map.service.ts` reaches draw-tool.service.ts only through type imports, so it is never part of the swap.
+- Module-local helper classes in draw-tool.service.ts (`FrameBatch`, `FrameSignal`) are swapped only for instances created after the edit; the live instance keeps its existing ones.
+
 ## Map performance measurement
 
 The map's top-right `FPS` control has a water shader toggle, live map renders per second, and a 10-second benchmark. Benchmarking requests continuous renders in both water modes and retains the last on/off results. Keep the same camera and loaded course data between runs. Moving the camera, hiding the tab, changing water mode, or closing the panel cancels a run. Average FPS and p95 frame intervals measure map render cadence, not GPU execution time. The live rate includes idle time; a still map can report zero. The water toggle lasts for the map service session and defaults to on after a reload.

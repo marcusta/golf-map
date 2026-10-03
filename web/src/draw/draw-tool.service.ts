@@ -1,7 +1,7 @@
 import { Signal, Computed, effect, untrack, batch, di } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent, FilterSpecification } from 'maplibre-gl';
 import type { Feature, FeatureCollection, Position } from 'geojson';
-import type { ToolContext } from '../editor/tool';
+import { toolHotRestart, type ToolContext } from '../editor/tool';
 import { bindDrag, type DragBinding } from '../editor/drag-binding';
 import { screenDistSweref } from '../editor/screen-point';
 import { ownedOverlay } from '../editor/owned-overlay';
@@ -2530,4 +2530,86 @@ function previewLayers(): OverlayLayerSpec[] {
             },
         },
     ];
+}
+
+// ─── Hot module replacement (dev only) ────────────────────────────────────
+//
+// An edit to this file swaps the code of the live DrawToolService in place
+// instead of remounting the app (which rebuilds the MapLibre map). The live
+// instance keeps its identity because the docks and the command bar hold it
+// in fields (selection-panel, feature-stack-panel, feature-dock,
+// command-bar); a fresh instance would leave them driving a detached one.
+
+/**
+ * Value imports whose identity the live instance depends on: classes it holds
+ * instances of, DI keys, and module-level state. If a hot update re-executes
+ * this module with any of them changed, the edit was in a dependency and the
+ * live instance would keep running the old code. The accept handler then
+ * refuses the swap and the update propagates to the app root (remount).
+ */
+export const DRAW_TOOL_HOT_DEPS: readonly unknown[] = [
+    DrawState,
+    TraceGesture,
+    EditHistory,
+    ScreenPointCache,
+    ConfirmService,
+    geometryToWgs84Rings, // stands for features.service.ts
+    toolHotRestart, // editor/tool.ts
+];
+
+/**
+ * Move the live DrawToolService onto the class `Next` from a re-executed
+ * module. If Draw is the active tool, `restart` (EditorModeService.restartTool
+ * through the editor/tool.ts seam) deactivates it with the old code, the
+ * prototype changes, and it activates again with the new code under a fresh
+ * claim. Feature selection survives the restart; an open draft does not
+ * (deactivate disarms it). Undo history, draw type and the other signals stay
+ * on the instance. `attach` does not re-run, so an edit to `attach` applies
+ * on the next canvas mount.
+ *
+ * Returns false and changes nothing when `Next` declares an instance field
+ * the live instance lacks: field initializers cannot run on an existing
+ * object.
+ */
+export function hotSwapDrawTool(
+    live: DrawToolService,
+    Next: new () => DrawToolService,
+    restart: ((toolId: string, between: () => void) => boolean) | null = toolHotRestart.run,
+): boolean {
+    const fresh = new Next();
+    if (Object.keys(fresh).some(key => !Object.hasOwn(live, key))) return false;
+    const features = (live as unknown as { features: FeaturesService | null }).features;
+    const selected = features?.selectedIds.peek() ?? new Set<string>();
+    const swap = (): void => {
+        Object.setPrototypeOf(live, Next.prototype);
+        di.set(Next, live);
+    };
+    const restarted = restart ? restart(DRAW_TOOL_ID, swap) : (swap(), false);
+    if (restarted && selected.size > 0) features?.setSelection(selected);
+    return true;
+}
+
+// Vite marks a module self-accepting only on the literal
+// `import.meta.hot.accept(` call; an alias of `import.meta.hot` is not seen
+// and the edit would fall through to a page reload.
+if (import.meta.hot) {
+    const hot = import.meta.hot;
+    import.meta.hot.accept(next => {
+        const mod = next as typeof import('./draw-tool.service') | undefined;
+        if (!mod) return;
+        const deps = mod.DRAW_TOOL_HOT_DEPS;
+        const depsKept = deps.length === DRAW_TOOL_HOT_DEPS.length
+            && deps.every((dep, i) => dep === DRAW_TOOL_HOT_DEPS[i]);
+        if (!depsKept) {
+            hot.invalidate('draw-tool.service: a stateful dependency changed');
+            return;
+        }
+        // Old-module class key: every importer that was not re-executed
+        // resolves the service through it.
+        if (!mod.hotSwapDrawTool(di.get(DrawToolService), mod.DrawToolService)) {
+            hot.invalidate('draw-tool.service: DrawToolService instance fields changed');
+            return;
+        }
+        console.info('[hmr] draw-tool.service: swapped DrawToolService in place');
+    });
 }

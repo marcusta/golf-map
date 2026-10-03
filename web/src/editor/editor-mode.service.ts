@@ -8,7 +8,7 @@ import { DIGIT_FEATURE_TYPES } from '../draw/feature-palette';
 import { FurnitureService } from '../furniture/furniture.service';
 import type { Hole } from '../../../shared/api/holes.gen';
 import { holeFurnitureBounds } from './hole-framing';
-import type { EditorTool, ToolContext } from './tool';
+import { toolHotRestart, type EditorTool, type ToolContext } from './tool';
 import { EDITOR_TOOLS } from './tools/index';
 
 /** localStorage key for the Create-mode "follow hole" camera toggle. */
@@ -58,6 +58,12 @@ export class EditorModeService {
     private holeQuery = this.router.query('hole');
     private _furniture?: FurnitureService;
     private get furniture(): FurnitureService { return (this._furniture ??= di.get(FurnitureService)); }
+
+    constructor() {
+        // HMR seam (editor/tool.ts): the most recently constructed instance
+        // is the one the live editor uses.
+        toolHotRestart.run = (toolId, between) => this.restartTool(toolId, between);
+    }
 
     /**
      * Create-mode camera follows the selected hole (review item 22). Persisted
@@ -227,6 +233,25 @@ export class EditorModeService {
         for (const dispose of active.disposers) dispose();
         active.tool.deactivate();
         active.release(); // stale-safe no-op when displaced
+    }
+
+    /**
+     * Deactivate the tool `toolId` if it is the active one, call `between`,
+     * then activate the same registry entry again (fresh claim and activation
+     * context). Returns true when the tool was active. Used by a tool
+     * service's hot update (editor/tool.ts `toolHotRestart`); `between` swaps
+     * the service code while nothing of the old activation is live.
+     */
+    restartTool(toolId: string, between: () => void): boolean {
+        const tool = this.active?.tool;
+        if (!tool || tool.id !== toolId) {
+            between();
+            return false;
+        }
+        this.deactivate();
+        between();
+        this.activate(tool);
+        return true;
     }
 
     /**

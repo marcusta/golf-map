@@ -132,3 +132,16 @@ export interface EditorTool {
     /** True while a sub-mode key must not switch away (see header doc). */
     isBusy?(): boolean;
 }
+
+/**
+ * Dev-only seam for hot module replacement of a tool service.
+ * EditorModeService installs `run` when it is constructed; a tool service
+ * module that accepts its own hot update calls it (draw/draw-tool.service.ts).
+ * When `toolId` is the active tool, `run` deactivates it (activation
+ * disposers, `deactivate`, claim release), calls `between`, then activates it
+ * again with a fresh activation context and returns true. Otherwise it only
+ * calls `between` and returns false. This module holds no other runtime code,
+ * so the tool service can import it without an import cycle through the
+ * tool registry.
+ */
+export const toolHotRestart: { run: ((toolId: string, between: () => void) => boolean) | null } = { run: null };
