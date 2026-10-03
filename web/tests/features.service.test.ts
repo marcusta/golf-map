@@ -62,7 +62,6 @@ function fakeApi(initial: CourseFeature[] = []) {
                 holeId: input.holeId ?? null,
                 type: input.type,
                 geometry: structuredClone(input.geometry),
-                geojson: null,
                 sortOrder: 0,
                 source: input.source ?? null,
                 sourceRef: input.sourceRef ?? null,
@@ -108,7 +107,7 @@ function fakeApi(initial: CourseFeature[] = []) {
 function feature(id: string, type = 'bunker', version = 1, opts: { holeId?: string | null; sortOrder?: number } = {}): CourseFeature {
     return {
         id, courseId: 'c1', holeId: opts.holeId ?? null, type,
-        geometry: squareGeometry(), geojson: null, sortOrder: opts.sortOrder ?? 0,
+        geometry: squareGeometry(), sortOrder: opts.sortOrder ?? 0,
         source: null, sourceRef: null, license: null, attributes: null, version,
     };
 }
@@ -234,6 +233,116 @@ describe('update (optimistic locking)', () => {
         expect(stored.rings[0].points[0].hOut).toEqual({ x: base.x - 5, y: base.y - 15 });
         expect(stored.rings[0].points[1].hIn).toEqual({ x: base.x + 5, y: base.y - 15 });
         expect(svc.store.items.get()[0].geometry.rings[0].points[0].hOut).toEqual({ x: base.x - 5, y: base.y - 15 });
+    });
+});
+
+/**
+ * Counting stand-in for MapService: records every hand-drawn overlay push
+ * (addOverlayLayer counts as the initial send, updateOverlayData as re-sends).
+ */
+function countingMap() {
+    const pushes: string[] = [];
+    const map = {
+        ready: new Signal(true),
+        map: new Signal({ setPaintProperty() {}, setFilter() {}, getSource: () => ({ type: 'geojson' }) }),
+        addOverlayLayer: () => {},
+        updateOverlayData: (id: string) => { pushes.push(id); },
+        removeOverlayLayer: () => {},
+    };
+    return { map, featurePushes: () => pushes.filter(id => id === 'features').length };
+}
+
+describe('update: overlay push count (review item 2a)', () => {
+    test('drag commit (patchLocal + update with the same geometry) pushes the overlay exactly once', async () => {
+        const { api, rows } = fakeApi([feature('a'), feature('b')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        const { map, featurePushes } = countingMap();
+        const dispose = svc.attachOverlay(map as never);
+        expect(featurePushes()).toBe(0);
+
+        const moved = squareGeometry(10, base.x + 20, base.y);
+        svc.patchLocal('a', moved);
+        const result = await svc.update('a', { geometry: moved });
+
+        expect(featurePushes()).toBe(1);
+        expect(result?.version).toBe(2);
+        // Local geometry object kept (flatten-cache hit), server has the same shape.
+        expect(svc.store.items.peek().find(f => f.id === 'a')!.geometry).toBe(moved);
+        expect(rows.get('a')!.geometry).toEqual(moved);
+        dispose();
+    });
+
+    test('a type change pushes the overlay exactly once', async () => {
+        const { api } = fakeApi([feature('a'), feature('b')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        const { map, featurePushes } = countingMap();
+        const dispose = svc.attachOverlay(map as never);
+        const geometryBefore = svc.store.items.peek()[0].geometry;
+
+        await svc.update('a', { type: 'green' });
+
+        expect(featurePushes()).toBe(1);
+        expect(svc.geojson.get().features.find(f => f.id === 'a')!.properties!.type).toBe('green');
+        expect(svc.store.items.peek()[0].geometry).toBe(geometryBefore);
+        dispose();
+    });
+
+    test('version comes from the server reply and the next save uses it', async () => {
+        const { api, rows } = fakeApi([feature('a', 'bunker', 7)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        const g1 = squareGeometry(12);
+        svc.patchLocal('a', g1);
+        await svc.update('a', { geometry: g1 });
+        expect(svc.store.items.peek()[0].version).toBe(8);
+
+        const g2 = squareGeometry(14);
+        svc.patchLocal('a', g2);
+        const second = await svc.update('a', { geometry: g2 });
+        expect(second?.version).toBe(9);
+        expect(rows.get('a')!.version).toBe(9);
+        expect(svc.saveError.get()).toBeNull();
+    });
+
+    test('a newer local patch landing while the save is in flight is not clobbered by the reply', async () => {
+        const { api } = fakeApi([feature('a')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        const g1 = squareGeometry(12);
+        svc.patchLocal('a', g1);
+        const pending = svc.update('a', { geometry: g1 });
+        const g2 = squareGeometry(16);
+        svc.patchLocal('a', g2); // next drag frame before the reply
+        await pending;
+
+        const row = svc.store.items.peek()[0];
+        expect(row.geometry).toBe(g2);
+        expect(row.version).toBe(2);
+    });
+
+    test('version conflict still sets saveError and reloads server truth', async () => {
+        const { api, rows, calls } = fakeApi([feature('a', 'bunker', 1)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        rows.get('a')!.version = 5;
+        rows.get('a')!.type = 'water';
+
+        const g = squareGeometry(30);
+        svc.patchLocal('a', g);
+        const result = await svc.update('a', { geometry: g });
+
+        expect(result).toBeUndefined();
+        expect(svc.saveError.get()?.code).toBe('conflict');
+        await Bun.sleep(0);
+        expect(calls.list).toBe(2);
+        const row = svc.store.items.get()[0];
+        expect(row.version).toBe(5);
+        expect(row.type).toBe('water');
+        expect(row.geometry.rings[0].points[0].x).toBeCloseTo(base.x - 10, 6); // local patch dropped
     });
 });
 

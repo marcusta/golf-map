@@ -183,15 +183,31 @@ export class FeaturesService {
      * highlighting is a per-layer FILTER (see attachOverlay) and per-frame
      * drag feedback is a ghost overlay (see DrawToolService) so neither
      * touches this collection.
+     *
+     * Identity-stable: when the visible rows render identically to the last
+     * build (same ids, geometry objects, type, holeId, sortOrder, stackKey,
+     * source), the PREVIOUS collection object comes back. A row change that
+     * does not affect rendering (e.g. a save reply bumping `version`)
+     * therefore never re-sends the source — `attachOverlay` keys on identity.
      */
     readonly geojson = new Computed<FeatureCollection>(() => {
         const hidden = this.hiddenTypes.get();
         const hiddenIds = this.hiddenIds.get();
-        const features: Feature[] = this.store.items.get()
-            .filter(f => !isGeneratedFeature(f) && !hidden.has(f.type) && !hiddenIds.has(f.id))
-            .map(f => this.toGeojsonFeature(f));
-        return { type: 'FeatureCollection', features };
+        const visible = this.store.items.get()
+            .filter(f => !isGeneratedFeature(f) && !hidden.has(f.type) && !hiddenIds.has(f.id));
+        const signature = visible.map(f => this.renderSignature(f));
+        const memo = this.geojsonMemo;
+        if (memo && sameSignatures(memo.signature, signature)) return memo.data;
+        const data: FeatureCollection = { type: 'FeatureCollection', features: visible.map(f => this.toGeojsonFeature(f)) };
+        this.geojsonMemo = { signature, data };
+        return data;
     });
+    private geojsonMemo: { signature: RenderSignature[]; data: FeatureCollection } | null = null;
+
+    /** Everything `toGeojsonFeature` reads from a row (geometry by identity). */
+    private renderSignature(f: CourseFeature): RenderSignature {
+        return [f.id, f.geometry, f.type, f.holeId, f.sortOrder, this.stackKeyFor(f), f.source];
+    }
 
     /**
      * GENERATED features as their own WGS84 FeatureCollection (see
@@ -446,10 +462,32 @@ export class FeaturesService {
         id: string,
         patch: { geometry?: FeatureGeometry; type?: string; holeId?: string | null },
     ): Promise<CourseFeature | undefined> {
-        const result = await request(this.saving, this.saveError, () =>
-            this.store.mutate(id, version => this.featuresApi.update({ id, version: version!, ...patch })));
-        if (result === undefined) void this.reload();
-        return result;
+        const sent = this.store.items.peek().find(f => f.id === id);
+        if (!sent) {
+            this.saveError.set({ message: `Feature ${id} not found`, code: 'unknown' });
+            void this.reload();
+            return undefined;
+        }
+        const server = await request(this.saving, this.saveError, () =>
+            this.featuresApi.update({ id, version: sent.version, ...patch }));
+        if (server === undefined) {
+            void this.reload();
+            return undefined;
+        }
+        // Not `store.mutate`: the server row carries a freshly parsed
+        // geometry object, which would miss the flatten cache and re-send the
+        // whole hand-drawn source to the worker a second time (the local
+        // patch already sent it). The server stores exactly what we sent, so
+        // keep a LOCAL geometry object: the one sent, unless a newer local
+        // patch replaced it while the request was in flight.
+        const current = this.store.items.peek().find(f => f.id === id);
+        if (!current) return server; // removed while in flight
+        const geometry = patch.geometry === undefined || current.geometry !== sent.geometry
+            ? current.geometry
+            : patch.geometry;
+        const merged: CourseFeature = { ...server, geometry };
+        this.store.patch(merged);
+        return merged;
     }
 
     /** Delete a feature (uses the store's current version). Deselects it. */
@@ -539,6 +577,12 @@ export class FeaturesService {
     attachOverlay(map: MapService): () => void {
         let added = false;
         let lastGeneratedSent: FeatureCollection | null = null;
+        // Last hand-drawn collection + paint mode handed to the map. The
+        // effect re-runs on every store change (selection-independent, but
+        // e.g. a generated-row delete or a version bump); `geojson` is
+        // identity-stable, so an unchanged pair means nothing visible moved.
+        let lastRawSent: FeatureCollection | null = null;
+        let lastNiceSent = false;
         this.overlayMap = map;
         // Per-feature "dragging" state hides originals while the draw
         // tool renders their ghost (paint-only — no source/layout work).
@@ -548,15 +592,21 @@ export class FeaturesService {
             const ready = map.ready.get();
             const nice = this.niceRendering.get();
             const rawData = this.geojson.get();
-            const data = nice ? resolveSurfaceStack(rawData) : rawData;
             // Generated trees overlay the surface stack (no occlusion
             // resolution needed — they are never differenced against it).
             const generated = this.generatedGeojson.get();
             if (!ready) {
                 added = false; // overlay died with the map
                 lastGeneratedSent = null;
+                lastRawSent = null;
                 return;
             }
+            const featuresChanged = rawData !== lastRawSent || nice !== lastNiceSent;
+            const data = !added || featuresChanged
+                ? (nice ? resolveSurfaceStack(rawData) : rawData)
+                : null;
+            lastRawSent = rawData;
+            lastNiceSent = nice;
             if (!added) {
                 // Set the correct paint at layer creation too. On a cold map
                 // load, the tint effect can observe `ready` before this
@@ -565,7 +615,7 @@ export class FeaturesService {
                 // configuration path.
                 const fillOpacity = draggingHide(nice ? NICE_FILL_OPACITY : DRAW_FILL_OPACITY);
                 const boundaryOpacity = draggingHide(nice ? 0 : 1);
-                map.addOverlayLayer(FEATURES_OVERLAY_ID, data, [
+                map.addOverlayLayer(FEATURES_OVERLAY_ID, data!, [
                     {
                         id: 'features-fill',
                         type: 'fill',
@@ -650,7 +700,7 @@ export class FeaturesService {
                 lastGeneratedSent = generated;
                 added = true;
             } else {
-                map.updateOverlayData(FEATURES_OVERLAY_ID, data);
+                if (data) map.updateOverlayData(FEATURES_OVERLAY_ID, data);
                 // Identity check: `generatedGeojson` hands back the same
                 // object while the generated set is unchanged, so hand-drawn
                 // edits never re-send the ~60k-vertex canopy collection.
@@ -722,6 +772,18 @@ export class FeaturesService {
             else map.removeFeatureState({ source: FEATURES_OVERLAY_ID, id }, 'dragging');
         }
     }
+}
+
+/** Per-feature render inputs: id, geometry (by identity), type, holeId, sortOrder, stackKey, source. */
+type RenderSignature = readonly [string, object, string, string | null, number, number, string | null];
+
+function sameSignatures(a: readonly RenderSignature[], b: readonly RenderSignature[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const x = a[i]!, y = b[i]!;
+        for (let k = 0; k < x.length; k++) if (x[k] !== y[k]) return false;
+    }
+    return true;
 }
 
 /** features-selected layer filter for a selection set. */
