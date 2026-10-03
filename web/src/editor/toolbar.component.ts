@@ -23,7 +23,7 @@ const tpl = template(`
  * one-time `attach` hook, auto-activates Draw so the command bar never shows an
  * empty sub-mode, hosts the contextual help modal (help-modal.component.ts,
  * D27), deactivates the active tool when displaced, and handles ESC (help modal
- * first if open, then tool.onEscape, then deactivation).
+ * first if open, then tool.onEscape, then back to Draw).
  *
  * Spawned by EditorCanvasComponent; one instance == one courseId (the canvas
  * is recreated per navigation). Tools never talk to this component —
@@ -91,12 +91,22 @@ export class EditorToolbarComponent extends Component {
             if (activeId && mode !== activeId) untrack(() => this.mode.deactivate());
         }));
 
-        // ESC: offer to the active tool first; deactivate if unconsumed.
+        // ESC: offer to the active tool first. Unconsumed, it returns to the
+        // default tool (Draw, when offered): from another tool it re-arms
+        // Draw, and on Draw itself it does nothing. Deactivating Draw would
+        // leave no tool armed, so every key and map click goes dead while
+        // the command bar's sub-mode trigger still reads "Draw". Without a
+        // default (serve mode) ESC deactivates as before.
+        const defaultTool = tools.includes(drawTool) ? drawTool : null;
         const onKeyDown = (e: KeyboardEvent) => {
             if (e.key !== 'Escape') return;
             const active = this.mode.peekActiveTool();
             if (!active) return;
             if (active.onEscape?.()) return;
+            if (defaultTool) {
+                if (active !== defaultTool) this.mode.activate(defaultTool);
+                return;
+            }
             this.mode.deactivate();
         };
         window.addEventListener('keydown', onKeyDown);

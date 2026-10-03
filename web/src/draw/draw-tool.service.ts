@@ -16,7 +16,7 @@ import {
     type FeatureGeometry,
     type Point,
 } from '../geo/bezier';
-import { bsplineRingToBezierWithMap } from '../geo/bspline';
+import { bsplineBezierCached } from '../geo/flat-cache';
 import { fitClosedBspline } from '../geo/spline-fit';
 import {
     DrawState,
@@ -447,10 +447,19 @@ export class DrawToolService {
     /** One-line guard/action feedback for the panel (cleared on next op). */
     readonly actionNotice = new Signal<string | null>(null);
 
-    /** Live cursor position while drawing (rubber-band preview). */
-    private cursor = new Signal<{ lng: number; lat: number } | null>(null);
+    /**
+     * Runs the preview frame flush. rAF in the browser; tests swap in a
+     * manual scheduler to drive frames synchronously.
+     */
+    frameScheduler: FrameScheduler = defaultFrameScheduler;
+    private readonly frames = new FrameBatch(cb => this.frameScheduler(cb));
+    /**
+     * Live cursor position while drawing (rubber-band preview), EPSG:3006.
+     * Null while the draft is empty: a lone cursor point draws nothing.
+     */
+    private cursor = new FrameSignal<Point | null>(null, this.frames);
     /** Active marquee rectangle (reactive — drives the preview overlay). */
-    private marquee = new Signal<Marquee | null>(null);
+    private marquee = new FrameSignal<Marquee | null>(null, this.frames);
     /**
      * Live copies of the feature(s) being dragged, rendered as fill +
      * outline in the (small) preview overlay while the originals are
@@ -459,7 +468,7 @@ export class DrawToolService {
      * store, the derived course FeatureCollection and the main overlay
      * source are untouched until the mouseup commit.
      */
-    private dragGhost = new Signal<GhostFeature[] | null>(null);
+    private dragGhost = new FrameSignal<GhostFeature[] | null>(null, this.frames);
     /**
      * Space held down (reactive — drives the cursor + the momentary box-select
      * override). While true, a left-drag rubber-bands features even off a
@@ -480,7 +489,7 @@ export class DrawToolService {
      * `traceGesture.points` but only updates when a sample is KEPT, so the
      * preview re-renders at trace-sample granularity, not every mousemove.
      */
-    private trace = new Signal<Point[] | null>(null);
+    private trace = new FrameSignal<Point[] | null>(null, this.frames);
     /** Armed repeat-stamp template, or null when stamp mode is inactive. */
     private stampMode: StampTemplate | null = null;
     private suppressClick = false;
@@ -803,17 +812,27 @@ export class DrawToolService {
                 // Refresh the stroke preview only when the spacing gate
                 // keeps the sample (≥ TRACE_SAMPLE_PX apart on screen).
                 if (trace.sample(e.point, lngLatToSweref99tm(e.lngLat))) {
-                    this.trace.set([...trace.points]);
+                    this.trace.setLater(() => [...trace.points]);
                 }
                 return;
             }
-            this.cursor.set(e.lngLat);
+            // Empty draft: the rubber band has nothing to attach to, so the
+            // cursor is not tracked (no preview rebuild, no worker push).
+            if (this.state.draft.peek().length === 0) {
+                if (this.cursor.peek() !== null) this.cursor.set(null);
+                return;
+            }
+            const p = lngLatToSweref99tm(e.lngLat);
+            const prev = this.cursor.peek();
+            if (prev && prev.x === p.x && prev.y === p.y) return;
+            this.cursor.setLater(() => p);
             return;
         }
 
         const marquee = this.marquee.peek();
         if (marquee) {
-            this.marquee.set({ ...marquee, current: lngLatToSweref99tm(e.lngLat) });
+            const current = lngLatToSweref99tm(e.lngLat);
+            this.marquee.setLater(() => ({ ...marquee, current }));
             return;
         }
 
@@ -827,10 +846,11 @@ export class DrawToolService {
             const p = lngLatToSweref99tm(e.lngLat);
             stamp.dx = p.x - stamp.refEpsg.x;
             stamp.dy = p.y - stamp.refEpsg.y;
-            this.dragGhost.set(stamp.sources.map(s => ({
+            const { dx, dy } = stamp;
+            this.dragGhost.setLater(() => stamp.sources.map(s => ({
                 id: s.id,
                 type: s.type,
-                geometry: translateGeometry(s.geometry, stamp.dx, stamp.dy),
+                geometry: translateGeometry(s.geometry, dx, dy),
             })));
             return;
         }
@@ -845,10 +865,11 @@ export class DrawToolService {
             const p = lngLatToSweref99tm(e.lngLat);
             move.dx = p.x - move.startEpsg.x;
             move.dy = p.y - move.startEpsg.y;
-            this.dragGhost.set(move.features.map(f => ({
+            const { dx, dy } = move;
+            this.dragGhost.setLater(() => move.features.map(f => ({
                 id: f.id,
                 type: f.type,
-                geometry: translateGeometry(f.geometry, move.dx, move.dy),
+                geometry: translateGeometry(f.geometry, dx, dy),
             })));
             return;
         }
@@ -882,7 +903,7 @@ export class DrawToolService {
             geometry = setSymmetricHandles(drag.startGeometry, drag.ringIdx, drag.idx, p);
         }
         drag.currentGeometry = geometry;
-        this.dragGhost.set([{ id: drag.featureId, type: drag.featureType, geometry }]);
+        this.dragGhost.setLater(() => [{ id: drag.featureId, type: drag.featureType, geometry }]);
     }
 
     private bindRawHandlers(map: MaplibreMap, ctx: ToolContext): void {
@@ -1935,8 +1956,8 @@ export class DrawToolService {
             const ring = feature.geometry.rings[r];
             // For splines, hit-test the ACTUAL curve (bezier equivalent),
             // not the control polygon.
-            const converted = isSpline ? bsplineRingToBezierWithMap(ring) : null;
-            const hit = nearestOnRing(converted ? converted.ring : ring, p);
+            const converted = isSpline ? bsplineBezierCached(ring) : null;
+            const hit = nearestOnRing(converted ? converted.ring : ring, p, tol);
             if (!hit || hit.dist > tol) continue;
             // Too close to an existing vertex (control point for splines)
             // → treat as a missed vertex grab, not an insertion.
@@ -2005,9 +2026,9 @@ export class DrawToolService {
             const draft = this.state.draft.get();
             const cursor = this.cursor.get();
             // Preview controls: placed points + the cursor as a provisional
-            // smooth control (rubber-band).
+            // smooth control (rubber-band). No placed points, no rubber band.
             const controls: AnchorPoint[] = [...draft];
-            if (cursor) controls.push(lngLatToSweref99tm(cursor));
+            if (cursor && draft.length > 0) controls.push(cursor);
 
             // In-progress b-spline drawing shows the open control path only,
             // Inkscape-style: no closed-curve extrapolation and no fill until
@@ -2147,6 +2168,83 @@ export class DrawToolService {
 }
 
 /** Preview overlay layer specs (ids prefixed with the overlay id). */
+/** Runs `cb` once before the next paint. */
+export type FrameScheduler = (cb: () => void) => void;
+
+/** requestAnimationFrame when the page has it, else a microtask (headless tests). */
+export const defaultFrameScheduler: FrameScheduler = cb => {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => cb());
+    else queueMicrotask(cb);
+};
+
+/**
+ * Collects FrameSignal writes and applies them together, once per frame,
+ * inside one `batch` so the preview effect runs once per frame.
+ */
+class FrameBatch {
+    private dirty = new Set<FrameSignal<unknown>>();
+    private scheduled = false;
+
+    constructor(private readonly schedule: FrameScheduler) {}
+
+    request(sig: FrameSignal<unknown>): void {
+        this.dirty.add(sig);
+        if (this.scheduled) return;
+        this.scheduled = true;
+        this.schedule(() => this.flush());
+    }
+
+    private flush(): void {
+        this.scheduled = false;
+        const dirty = [...this.dirty];
+        this.dirty.clear();
+        batch(() => { for (const sig of dirty) sig.flush(); });
+    }
+}
+
+/**
+ * A Signal with a frame-coalesced write path for pointer-move updates.
+ * `setLater(compute)` keeps only the latest pending value and computes it at
+ * the next frame flush; `set` writes now and drops any pending value, so a
+ * mouseup or Esc that clears the state is never overwritten by a stale
+ * frame. `peek` sees the pending value without writing it.
+ */
+class FrameSignal<T> {
+    private readonly sig: Signal<T>;
+    private pending: { compute: () => T; value?: { v: T } } | null = null;
+
+    constructor(initial: T, private readonly frames: FrameBatch) {
+        this.sig = new Signal(initial);
+    }
+
+    get(): T { return this.sig.get(); }
+
+    peek(): T {
+        const pending = this.pending;
+        if (!pending) return this.sig.peek();
+        pending.value ??= { v: pending.compute() };
+        return pending.value.v;
+    }
+
+    set(next: T): void {
+        this.pending = null;
+        this.sig.set(next);
+    }
+
+    setLater(compute: () => T): void {
+        this.pending = { compute };
+        this.frames.request(this as FrameSignal<unknown>);
+    }
+
+    /** Apply the pending value, if any (frame flush). */
+    flush(): void {
+        const pending = this.pending;
+        if (!pending) return;
+        this.pending = null;
+        this.sig.set(pending.value ? pending.value.v : pending.compute());
+    }
+}
+
 function previewLayers(): OverlayLayerSpec[] {
     const role = (value: string): FilterSpecification =>
         ['==', ['get', 'role'], value] as FilterSpecification;

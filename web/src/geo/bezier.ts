@@ -19,6 +19,7 @@
 // selection and analysis work identically on spline features.
 
 import { bsplineRingToBezier } from './bspline';
+import { flatGeometry, flatRing } from './flat-cache';
 
 export interface Point {
     x: number;
@@ -170,7 +171,7 @@ export function flattenOpenPath(points: AnchorPoint[], toleranceMeters: number):
  * treated as implicitly closed. Points exactly on an edge may land on
  * either side — fine for click hit-testing.
  */
-export function pointInRing(p: Point, ring: Array<[number, number]>): boolean {
+export function pointInRing(p: Point, ring: ReadonlyArray<readonly [number, number]>): boolean {
     let inside = false;
     const n = ring.length;
     for (let i = 0, j = n - 1; i < n; j = i++) {
@@ -189,22 +190,21 @@ export interface Bbox {
     maxY: number;
 }
 
-/** Bbox of a ring's flattened outline (tolerance 0.25 m). Null for empty rings. */
+/**
+ * Bbox of a ring's flattened outline (tolerance 0.25 m). Null for empty rings.
+ * Cached on the ring object (geo/flat-cache.ts); the result is shared, so
+ * callers must not mutate it.
+ */
 export function ringBbox(ring: PathRing, toleranceMeters = 0.25, curveType?: CurveType): Bbox | null {
-    const flat = flattenRing(ring, toleranceMeters, curveType);
-    if (flat.length === 0) return null;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const [x, y] of flat) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-    }
-    return { minX, minY, maxX, maxY };
+    return flatRing(ring, toleranceMeters, curveType).bbox;
+}
+
+function bboxContains(b: Bbox | null, p: Point): boolean {
+    return !!b && p.x >= b.minX && p.x <= b.maxX && p.y >= b.minY && p.y <= b.maxY;
 }
 
 /** Signed area (shoelace) of a flattened ring. Positive = CCW. */
-export function signedArea(poly: Array<[number, number]>): number {
+export function signedArea(poly: ReadonlyArray<readonly [number, number]>): number {
     let sum = 0;
     for (let i = 0; i < poly.length; i++) {
         const [x1, y1] = poly[i];
@@ -230,8 +230,14 @@ export interface NearestOnRing {
  * insertion. Coarse-samples each cubic segment, then refines the best
  * parameter by local ternary search. Accuracy is well under editor click
  * tolerance (sub-centimeter for golf-feature-sized segments).
+ *
+ * With `maxDist`, a segment whose control-point bbox expanded by `maxDist`
+ * does not contain `p` is skipped without sampling: a cubic lies inside the
+ * convex hull of its controls, so every point on it is farther than
+ * `maxDist`. The result then equals the unbounded result whenever that
+ * result is within `maxDist`, and is null otherwise.
  */
-export function nearestOnRing(ring: PathRing, p: Point): NearestOnRing | null {
+export function nearestOnRing(ring: PathRing, p: Point, maxDist?: number): NearestOnRing | null {
     const n = ring.points.length;
     if (n < 2) return null;
 
@@ -239,6 +245,13 @@ export function nearestOnRing(ring: PathRing, p: Point): NearestOnRing | null {
 
     for (let i = 0; i < n; i++) {
         const [p0, p1, p2, p3] = segmentControls(ring, i);
+        if (maxDist !== undefined) {
+            const minX = Math.min(p0.x, p1.x, p2.x, p3.x) - maxDist;
+            const maxX = Math.max(p0.x, p1.x, p2.x, p3.x) + maxDist;
+            const minY = Math.min(p0.y, p1.y, p2.y, p3.y) - maxDist;
+            const maxY = Math.max(p0.y, p1.y, p2.y, p3.y) + maxDist;
+            if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY) continue;
+        }
         // Coarse scan
         const STEPS = 32;
         let bestT = 0;
@@ -271,6 +284,7 @@ export function nearestOnRing(ring: PathRing, p: Point): NearestOnRing | null {
         }
     }
 
+    if (best && maxDist !== undefined && best.dist > maxDist) return null;
     return best;
 }
 
@@ -312,15 +326,19 @@ export function splitSegment(ring: PathRing, segIdx: number, t: number): PathRin
 
 /**
  * Feature hit-test in ring space: true when `p` is inside the outer ring
- * (rings[0]) and NOT inside any hole ring (rings[1..]).
+ * (rings[0]) and NOT inside any hole ring (rings[1..]). Flattened rings and
+ * bboxes come from the identity-keyed cache (geo/flat-cache.ts); a point
+ * outside a ring's bbox skips that ring's ray cast.
  */
 export function pointInGeometry(p: Point, geometry: FeatureGeometry, toleranceMeters = 0.25): boolean {
     if (geometry.rings.length === 0) return false;
-    const outer = flattenRing(geometry.rings[0], toleranceMeters, geometry.curveType);
-    if (outer.length < 3 || !pointInRing(p, outer)) return false;
-    for (let i = 1; i < geometry.rings.length; i++) {
-        const hole = flattenRing(geometry.rings[i], toleranceMeters, geometry.curveType);
-        if (hole.length >= 3 && pointInRing(p, hole)) return false;
+    const flat = flatGeometry(geometry, toleranceMeters);
+    const outer = flat.rings[0];
+    if (!bboxContains(outer.bbox, p)) return false;
+    if (outer.pts.length < 3 || !pointInRing(p, outer.pts)) return false;
+    for (let i = 1; i < flat.rings.length; i++) {
+        const hole = flat.rings[i];
+        if (hole.pts.length >= 3 && bboxContains(hole.bbox, p) && pointInRing(p, hole.pts)) return false;
     }
     return true;
 }
@@ -328,5 +346,5 @@ export function pointInGeometry(p: Point, geometry: FeatureGeometry, toleranceMe
 /** |Area| of a geometry's outer ring — used to pick the topmost (smallest) hit. */
 export function outerRingArea(geometry: FeatureGeometry, toleranceMeters = 0.25): number {
     if (geometry.rings.length === 0) return 0;
-    return Math.abs(signedArea(flattenRing(geometry.rings[0], toleranceMeters, geometry.curveType)));
+    return Math.abs(signedArea(flatGeometry(geometry, toleranceMeters).rings[0].pts));
 }
