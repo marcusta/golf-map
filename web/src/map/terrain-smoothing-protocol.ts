@@ -1,96 +1,108 @@
 import type { AddProtocolAction } from 'maplibre-gl';
-import { smoothElevations, smoothingSigmaPixels, TERRAIN_SMOOTHING_PROTOCOL } from './terrain-smoothing';
+import { parseTerrainTilePath, smoothingSigmaPixels, TERRAIN_SMOOTHING_PROTOCOL } from './terrain-smoothing';
+import { abortError, MIN_SMOOTHING_SIGMA, SmoothedTerrainRenderer } from './terrain-smoothing-loader';
 
-const SIZE = 256;
-// Completed decodes only: aborting one tile must not cancel another tile's fetch.
-// URLs include the dataset version. Cap retained elevations at 16 MiB.
-const decoded = new Map<string, Float32Array>();
+export type TerrainWorkerRequest = { type: 'render'; id: number; href: string } | { type: 'abort'; id: number };
+export type TerrainWorkerReply =
+    | { id: number; bitmap: ImageBitmap }
+    | { id: number; pixels: ArrayBuffer }
+    | { id: number; error: string }
+    | { id: number; unsupported: true };
 
-async function readTile(url: string, signal: AbortSignal): Promise<Float32Array | null> {
-    signal.throwIfAborted();
-    const cached = decoded.get(url);
-    if (cached) {
-        decoded.delete(url);
-        decoded.set(url, cached);
-        return cached;
+interface Pending { href: string; signal: AbortSignal; resolve: (bitmap: ImageBitmap) => void; reject: (error: unknown) => void }
+
+/**
+ * Main-thread side of the terrain worker: a request id map and nothing else.
+ * One worker, not a pool: a z17 tile costs a few ms of worker CPU, and one
+ * worker keeps one decode cache, so a neighbour decoded for one tile serves
+ * the next tile instead of being fetched and decoded again in a second worker.
+ */
+class TerrainWorkerClient {
+    private worker: Worker | null = null;
+    private nextId = 1;
+    private readonly pending = new Map<number, Pending>();
+    /** Set when no worker can run (no Worker, script failed, or no OffscreenCanvas in workers). */
+    private fallback: SmoothedTerrainRenderer | null = null;
+
+    render(href: string, signal: AbortSignal): Promise<ImageBitmap> {
+        if (signal.aborted) return Promise.reject(abortError());
+        if (this.fallback || !this.start()) return this.renderHere(href, signal);
+        return new Promise<ImageBitmap>((resolve, reject) => {
+            const id = this.nextId++;
+            this.pending.set(id, { href, signal, resolve, reject });
+            signal.addEventListener('abort', () => {
+                if (!this.pending.delete(id)) return;
+                this.worker?.postMessage({ type: 'abort', id } satisfies TerrainWorkerRequest);
+                reject(abortError());
+            }, { once: true });
+            this.worker!.postMessage({ type: 'render', id, href } satisfies TerrainWorkerRequest);
+        });
     }
-    const response = await fetch(url, { signal });
-    if (response.status === 404) return null;
-    if (!response.ok) throw new Error(`Terrain tile: HTTP ${response.status}`);
-    const bitmap = await createImageBitmap(await response.blob(), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-    try {
-        signal.throwIfAborted();
-        if (bitmap.width !== SIZE || bitmap.height !== SIZE) throw new Error('Expected 256px terrain tile');
-        const ctx = new OffscreenCanvas(SIZE, SIZE).getContext('2d', { willReadFrequently: true })!;
-        ctx.drawImage(bitmap, 0, 0);
-        const pixels = ctx.getImageData(0, 0, SIZE, SIZE).data;
-        const heights = new Float32Array(SIZE * SIZE);
-        for (let i = 0; i < heights.length; i++) {
-            heights[i] = -10000 + (pixels[i * 4] * 65536 + pixels[i * 4 + 1] * 256 + pixels[i * 4 + 2]) * 0.1;
+
+    private start(): boolean {
+        if (this.worker) return true;
+        if (typeof Worker === 'undefined') return false;
+        try {
+            this.worker = new Worker(new URL('./terrain-smoothing.worker.ts', import.meta.url), { type: 'module' });
+        } catch {
+            return false;
         }
-        decoded.set(url, heights);
-        while (decoded.size > 64) decoded.delete(decoded.keys().next().value!);
-        return heights;
-    } finally {
-        bitmap.close();
+        this.worker.onmessage = (event: MessageEvent<TerrainWorkerReply>) => this.onReply(event.data);
+        this.worker.onerror = () => this.useFallback();
+        return true;
+    }
+
+    private onReply(message: TerrainWorkerReply): void {
+        const request = this.pending.get(message.id);
+        if (!request) {
+            if ('bitmap' in message) message.bitmap.close();
+            return;
+        }
+        if ('unsupported' in message) {
+            this.useFallback();
+            return;
+        }
+        this.pending.delete(message.id);
+        if ('bitmap' in message) request.resolve(message.bitmap);
+        else if ('pixels' in message) createImageBitmap(new ImageData(new Uint8ClampedArray(message.pixels), 256, 256)).then(request.resolve, request.reject);
+        else request.reject(new Error(message.error));
+    }
+
+    /** Moves every pending request onto the main thread for the rest of the session. */
+    private useFallback(): void {
+        this.fallback ??= new SmoothedTerrainRenderer();
+        this.worker?.terminate();
+        this.worker = null;
+        const requests = [...this.pending.values()];
+        this.pending.clear();
+        for (const request of requests) this.renderHere(request.href, request.signal).then(request.resolve, request.reject);
+    }
+
+    private async renderHere(href: string, signal: AbortSignal): Promise<ImageBitmap> {
+        this.fallback ??= new SmoothedTerrainRenderer();
+        const pixels = await this.fallback.render(href, signal);
+        if (!pixels) throw new Error('Terrain tile below smoothing threshold');
+        return createImageBitmap(new ImageData(pixels, 256, 256));
     }
 }
 
-/** MapLibre alone uses this protocol; ElevationService keeps the original URL. */
+let client: TerrainWorkerClient | null = null;
+
+/**
+ * MapLibre alone uses this protocol; ElevationService keeps the original URL.
+ * Returns an ImageBitmap: MapLibre transfers it to its own worker as is, so
+ * the smoothed tile is never PNG-encoded and decoded again.
+ */
 export const loadSmoothedTerrain: AddProtocolAction = async (request, controller) => {
     const signal = controller.signal;
     const url = new URL(request.url.slice(`${TERRAIN_SMOOTHING_PROTOCOL}://`.length), document.baseURI);
-    const match = /^(.*\/terrain\/)(\d+)\/(\d+)\/(\d+)\.png$/.exec(url.pathname);
-    if (!match) throw new Error('Invalid display terrain URL');
-    const [, prefix, zoom, column, row] = match;
-    const z = Number(zoom), x = Number(column), y = Number(row);
-    // Below this threshold the Gaussian changes less than Terrain-RGB precision.
-    const sigma = smoothingSigmaPixels(z, y);
-    if (sigma < 0.3) {
+    const tile = parseTerrainTilePath(url.pathname);
+    if (!tile) throw new Error('Invalid display terrain URL');
+    if (smoothingSigmaPixels(tile.z, tile.y) < MIN_SMOOTHING_SIGMA) {
         const response = await fetch(url, { signal });
         if (!response.ok) throw new Error(`Terrain tile: HTTP ${response.status}`);
         return { data: await response.arrayBuffer() };
     }
-    const radius = Math.ceil(3 * sigma);
-    if (radius > SIZE) throw new Error('Display terrain zoom exceeds smoothing support');
-    const centre = await readTile(url.href, signal);
-    if (!centre) throw new Error('Terrain tile not found');
-    const tiles = new Map<string, Float32Array>([['0,0', centre]]);
-    await Promise.all(Array.from({ length: 9 }, async (_, i) => {
-        const dx = i % 3 - 1, dy = Math.floor(i / 3) - 1;
-        if (dx === 0 && dy === 0) return;
-        if (y + dy < 0 || y + dy >= 2 ** z) return;
-        const neighbour = new URL(url);
-        neighbour.pathname = `${prefix}${z}/${(x + dx + 2 ** z) % 2 ** z}/${y + dy}.png`;
-        const heights = await readTile(neighbour.href, signal);
-        if (heights) tiles.set(`${dx},${dy}`, heights);
-    }));
-    signal.throwIfAborted();
-    const width = SIZE + 2 * radius;
-    const grid = new Float32Array(width * width);
-    for (let py = 0; py < width; py++) {
-        for (let px = 0; px < width; px++) {
-            const gx = px - radius, gy = py - radius;
-            const dx = Math.floor(gx / SIZE), dy = Math.floor(gy / SIZE);
-            const tile = tiles.get(`${dx},${dy}`);
-            grid[py * width + px] = tile
-                ? tile[((gy + SIZE) % SIZE) * SIZE + (gx + SIZE) % SIZE]
-                : centre[Math.max(0, Math.min(SIZE - 1, gy)) * SIZE + Math.max(0, Math.min(SIZE - 1, gx))];
-        }
-    }
-    const heights = smoothElevations(grid, SIZE, sigma);
-    const canvas = new OffscreenCanvas(SIZE, SIZE);
-    const ctx = canvas.getContext('2d')!;
-    const pixels = ctx.createImageData(SIZE, SIZE);
-    for (let i = 0; i < heights.length; i++) {
-        const value = Math.max(0, Math.min(16777215, Math.round((heights[i] + 10000) * 10)));
-        pixels.data[i * 4] = value >> 16;
-        pixels.data[i * 4 + 1] = (value >> 8) & 255;
-        pixels.data[i * 4 + 2] = value & 255;
-        pixels.data[i * 4 + 3] = 255;
-    }
-    ctx.putImageData(pixels, 0, 0);
-    const blob = await canvas.convertToBlob({ type: 'image/png' });
-    signal.throwIfAborted();
-    return { data: await blob.arrayBuffer() };
+    client ??= new TerrainWorkerClient();
+    return { data: await client.render(url.href, signal) };
 };
