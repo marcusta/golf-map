@@ -35,7 +35,7 @@ import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
 import { effect, untrack } from '@basics/core/client/core';
 import type { ToolContext } from './tool';
 
-export interface DragBindingSpec {
+interface DragBindingSpec {
     /** Tool id; `onDown` runs only while `interactionMode` equals it. */
     toolId: string;
     /** Gated left press. Call `claim()` to take the gesture. */

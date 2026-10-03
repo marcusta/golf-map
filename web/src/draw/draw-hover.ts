@@ -39,7 +39,7 @@ export interface DrawHoverHost {
 }
 
 /** Where an edge press inserts: a bezier split or a b-spline control. */
-export type EdgeInsertion =
+type EdgeInsertion =
     | { kind: 'anchor'; ringIdx: number; segIdx: number; t: number }
     | { kind: 'control'; ringIdx: number; afterIdx: number; point: Point };
 

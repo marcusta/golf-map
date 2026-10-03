@@ -49,6 +49,10 @@ Vite HMR stops only at a module that calls the literal `import.meta.hot.accept(`
 - The modules reach the service's private state through a host object. The service caches it in a module-level `WeakMap`, so each re-execution of draw-tool.service.ts builds a fresh host whose shape matches the new code. Listeners bound in `activate` hold the old host until `restartTool` deactivates and re-activates.
 - `FrameBatch` and `FrameSignal` (`draw/draw-frame.ts`) are swapped only for instances created after the edit; the live instance keeps its existing ones.
 
+## Unused code checks
+
+`tsconfig.json` sets `noUnusedLocals` and `noUnusedParameters`, so `bun run check:client` fails on unused locals, imports and parameters. Prefix a parameter with `_` when an interface or callback fixes the signature. `tsconfig.test.json` does not set these flags. `src/reports/diagrams.ts` has no importer in `src`. It is the vendored ATDD report engine, referenced by the atdd skill for the visual test report. Keep it and do not delete it as dead code.
+
 ## Map performance measurement
 
 The map's top-right `FPS` control has a water shader toggle, live map renders per second, and a 10-second benchmark. Benchmarking requests continuous renders in both water modes and retains the last on/off results. Keep the same camera and loaded course data between runs. Moving the camera, hiding the tab, changing water mode, or closing the panel cancels a run. Average FPS and p95 frame intervals measure map render cadence, not GPU execution time. The live rate includes idle time; a still map can report zero. The water toggle lasts for the map service session and defaults to on after a reload.

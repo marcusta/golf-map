@@ -51,7 +51,7 @@ export function digitForFeatureType(type: FeatureType): string | undefined {
     return undefined;
 }
 
-export interface FeatureStyle {
+interface FeatureStyle {
     /** Human label for pickers. */
     label: string;
     /** Fill color (semi-transparent fill is applied via fill-opacity). */

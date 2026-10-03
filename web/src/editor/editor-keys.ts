@@ -25,7 +25,7 @@ export const SUB_MODE_KEYS: Readonly<Record<string, string>> = {
 };
 
 /** What the layer drives. EditorModeService satisfies it. */
-export interface EditorKeyActions {
+interface EditorKeyActions {
     activeToolBusy(): boolean;
     selectSubMode(toolId: string, offered: readonly EditorTool[]): boolean;
     stepHole(delta: number): boolean;

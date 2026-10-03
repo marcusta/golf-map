@@ -29,7 +29,7 @@ import { batched, type FeaturesService } from './features.service';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 
 /** Everything undo/redo restores about a feature. */
-export interface FeatureSnapshot {
+interface FeatureSnapshot {
     geometry: FeatureGeometry;
     type: string;
     holeId: string | null;
@@ -40,7 +40,7 @@ export interface FeatureSnapshot {
  * created the feature; `after: null` = the op deleted it; both set = an
  * update (geometry and/or type/holeId).
  */
-export interface FeatureDiff {
+interface FeatureDiff {
     featureId: string;
     before: FeatureSnapshot | null;
     after: FeatureSnapshot | null;

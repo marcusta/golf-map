@@ -6,7 +6,7 @@ import type { MapService } from '../map/map.service';
 import { editorKeyLayer } from './editor-keys';
 import { attachHoleFraming } from './hole-framing';
 
-export interface EditorChromeDeps {
+interface EditorChromeDeps {
     shortcuts: ShortcutService;
     mode: EditorModeService;
     map: Pick<MapService, 'ready' | 'fitBounds'>;

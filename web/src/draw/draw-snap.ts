@@ -49,14 +49,14 @@ const CULL_SLACK_PX = 4;
 /** Factor on the world-space cull radius for perspective change across it. */
 const CULL_FACTOR = 1.25;
 
-export type SnapKind = 'anchor' | 'edge';
+type SnapKind = 'anchor' | 'edge';
 
 export interface SnapFeature {
     readonly id: string;
     readonly geometry: FeatureGeometry;
 }
 
-export interface SnapQuery {
+interface SnapQuery {
     /** Pointer position in screen pixels. */
     screen: ScreenXY;
     /** Pointer position in EPSG:3006 (the event's lngLat). */
@@ -68,7 +68,7 @@ export interface SnapQuery {
     radiusPx?: number;
 }
 
-export interface SnapResult {
+interface SnapResult {
     kind: SnapKind;
     /** Snapped position in EPSG:3006. An anchor snap is the anchor's own x/y. */
     point: Point;
@@ -198,14 +198,14 @@ export function resolveSnap(
 }
 
 /** What `snapPointer` reads from the draw tool. */
-export interface DrawSnapHost {
+interface DrawSnapHost {
     readonly features: FeaturesService | null;
     readonly map: MaplibreMap | null;
     readonly screenPoints: ScreenPointCache;
 }
 
 /** The pointer fields snapping reads (MapPointerEvent and MapMouseEvent both fit). */
-export interface SnapPointerEvent {
+interface SnapPointerEvent {
     point: ScreenXY;
     originalEvent: { metaKey: boolean; ctrlKey: boolean };
 }

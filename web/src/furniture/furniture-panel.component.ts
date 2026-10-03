@@ -1,6 +1,6 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, primaryBtn, field, metric } from '../css';
+import { s, btn, field, metric } from '../css';
 import { sectionTitle } from '../editor/panel-recipes.css';
 import { FurnitureService, TEE_COLORS, PIN_DIFFICULTIES, type PlacementKind, type GreenPoint } from './furniture.service';
 import { FurnitureToolService } from './furniture-tool.service';

@@ -5,7 +5,7 @@ import { BASE_PATH } from '@basics/core/client/base';
 import { t } from '../theme';
 import { s, statusTag, iconBtn, input, metric, panelTitle, selectedRow, keyHint, primaryBtn, ghostBtn } from '../css';
 import { icon } from '../ui/icons';
-import { PopoverComponent, type PopoverContent } from '../ui/popover.component';
+import { PopoverComponent } from '../ui/popover.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { ConfirmService } from './confirm-dialog.component';
 import { ToastComponent } from './toast.component';

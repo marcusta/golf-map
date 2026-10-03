@@ -26,7 +26,7 @@ export function isEditableFeature(f: SourceCarrier): boolean {
 }
 
 /** Short provenance word for a source id (`lidar-canopy` -> `lidar`). */
-export function generatedSourceLabel(source: string): string {
+function generatedSourceLabel(source: string): string {
     const head = source.split(/[-_/]/)[0] ?? source;
     return head.length > 0 ? head : source;
 }

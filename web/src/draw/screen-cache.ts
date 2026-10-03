@@ -39,7 +39,7 @@ function lngLatOf(p: Point): LngLatEntry {
     return entry;
 }
 
-export interface ScreenPoints {
+interface ScreenPoints {
     /** Anchor screen xy, all rings back to back: [x0, y0, x1, y1, ...]. */
     readonly anchors: Float64Array;
     /**
@@ -63,7 +63,7 @@ export interface ScreenHit {
     idx: number;
 }
 
-export function projectGeometry(map: MaplibreMap, geometry: FeatureGeometry): ScreenPoints {
+function projectGeometry(map: MaplibreMap, geometry: FeatureGeometry): ScreenPoints {
     const project = flatProjector(map);
     const rings = geometry.rings;
     const ringStart = new Int32Array(rings.length + 1);

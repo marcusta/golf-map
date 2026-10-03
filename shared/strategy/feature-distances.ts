@@ -36,7 +36,7 @@
 // bearing). The same reference bearing is reused as the wind-projection
 // bearing for hazard rows (there is no other bearing to project onto).
 
-import { hazardsAlongLine, type CarryOverHazard } from './carry';
+import { hazardsAlongLine } from './carry';
 import { type ClubSpec, clubAdvice } from './club';
 import { type FlatRing } from './corridor';
 import { segmentStats, type StrategyPoint } from './plays-like';

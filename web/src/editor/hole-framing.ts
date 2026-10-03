@@ -13,7 +13,7 @@ import { finiteWgs84Point, type FurnitureService } from '../furniture/furniture.
 // plain fitBounds on that box.
 
 /** WGS84 `[west, south, east, north]`. */
-export type HoleBounds = [number, number, number, number];
+type HoleBounds = [number, number, number, number];
 
 /**
  * Bbox enclosing all of a hole's placed furniture, or null when the hole
@@ -51,7 +51,7 @@ export function holeFurnitureBounds(furniture: FurnitureService, holeId: string)
     return [w, s, e, n];
 }
 
-export interface HoleFramingDeps {
+interface HoleFramingDeps {
     map: Pick<MapService, 'ready' | 'fitBounds'>;
     furniture: FurnitureService;
     selectedHole: Computed<Hole | null> | Signal<Hole | null>;

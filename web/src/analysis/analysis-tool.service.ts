@@ -84,7 +84,6 @@ export class AnalysisToolService {
     readonly probe = new Signal<SlopeProbe | null>(null);
 
     private ctx: ToolContext | null = null;
-    private renderer: AnalysisRenderer | null = null;
     private fetchSeq = 0;
     /** Derived slope/stats cache — recomputed only when the grid object changes. */
     private derivedCache: { grid: SampleGrid; slope: SlopeGrid; stats: AnalysisStats } | null = null;
@@ -120,7 +119,6 @@ export class AnalysisToolService {
 
     activate(ctx: ToolContext, renderer: AnalysisRenderer): void {
         this.ctx = ctx;
-        this.renderer = renderer;
 
         ctx.track(ctx.map.onClick(e => this.onClick(e)));
 
@@ -154,7 +152,6 @@ export class AnalysisToolService {
     deactivate(): void {
         this.clear();
         this.ctx = null;
-        this.renderer = null;
     }
 
     /** ESC: clear the current overlay first; unconsumed ESC deactivates the tool. */

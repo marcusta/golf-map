@@ -35,7 +35,7 @@
 import { adjustedCarryM } from './wind';
 import { type ClubSpec } from './club';
 import { pointInRing, type FlatRing } from './corridor';
-import { bearingToUnitVector, type Vec2 } from './ellipse';
+import type { Vec2 } from './ellipse';
 import { lieFromFeatureType, type Lie } from './lie';
 import {
     LAY_BACK_OF_PINCH_BUFFER_M,

@@ -12,7 +12,7 @@ import { bsplineRingToBezier } from '../geo/bspline';
  *            vertices are editable.
  * 'draw'   — clicks place anchor points of a new polygon draft.
  */
-export type DrawMode = 'select' | 'draw';
+type DrawMode = 'select' | 'draw';
 
 /** Minimum anchors for a closeable ring (matches server validation). */
 export const MIN_RING_POINTS = 3;
@@ -843,7 +843,7 @@ export function mergedSurroundGeometries(
 
 // ─── Marquee-selection hit math ────────────────────────────────────────────
 
-export interface Rect {
+interface Rect {
     minX: number;
     minY: number;
     maxX: number;
@@ -869,7 +869,7 @@ function rectsIntersect(a: Rect, b: Rect): boolean {
     return !(a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY);
 }
 
-export type MarqueeMode = 'contain' | 'intersect';
+type MarqueeMode = 'contain' | 'intersect';
 
 /**
  * Feature ids hit by a marquee rectangle (EPSG:3006 meters), evaluated

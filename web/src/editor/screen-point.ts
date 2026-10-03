@@ -16,7 +16,7 @@ import { sweref99tmToWgs84 } from '../geo/transform';
 export interface ScreenXY { x: number; y: number }
 
 /** Projects (lng, lat) to screen pixels with the flat transform. */
-export type Projector = (lng: number, lat: number) => ScreenXY;
+type Projector = (lng: number, lat: number) => ScreenXY;
 
 /**
  * A projector bound to the map's current camera. Bind once per hit-test

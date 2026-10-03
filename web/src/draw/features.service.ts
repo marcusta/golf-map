@@ -1295,10 +1295,10 @@ export class FeaturesService {
 }
 
 /** Fields `update` / `updateMany` can persist. */
-export type FeaturePatch = { geometry?: FeatureGeometry; type?: string; holeId?: string | null };
+type FeaturePatch = { geometry?: FeatureGeometry; type?: string; holeId?: string | null };
 
 /** Input for `create` / `createMany`. */
-export type CreateInput = { type: string; holeId?: string | null; geometry: FeatureGeometry };
+type CreateInput = { type: string; holeId?: string | null; geometry: FeatureGeometry };
 
 /** Unsent `update` patches for one feature, merged in call order. */
 interface PendingPatch {

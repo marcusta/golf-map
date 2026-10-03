@@ -74,7 +74,7 @@ export { NUDGE_PX, NUDGE_SHIFT_PX } from './draw-keys';
 export { defaultFrameScheduler, type FrameScheduler } from './draw-frame';
 
 /** Preview overlay (draft line, vertex + bezier-handle markers). */
-export const DRAW_OVERLAY_ID = 'draw';
+const DRAW_OVERLAY_ID = 'draw';
 
 /** Deletes of up to this many features skip the confirm dialog (undo restores them). */
 export const DELETE_CONFIRM_THRESHOLD = 10;
@@ -111,14 +111,14 @@ function storePref(key: string, value: string): void {
     }
 }
 /** Cmd/Ctrl+D clone offset in EPSG:3006 meters (prototype: 10 units). */
-export const DUPLICATE_OFFSET_M = 10;
+const DUPLICATE_OFFSET_M = 10;
 /** Expand/contract preset distances in meters (prototype table). */
 export const OFFSET_PRESETS = [0.5, 1, 2, 5] as const;
 /**
  * Freehand-trace fit tolerance in meters (T40): the fitted b-spline stays
  * within this of the traced stroke (control count adapts 8 → 20).
  */
-export const TRACE_TOLERANCE_M = 0.75;
+const TRACE_TOLERANCE_M = 0.75;
 
 /** One auto-surround source (or intermediate ring the chain walks from). */
 export interface SurroundSource {

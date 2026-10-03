@@ -49,7 +49,7 @@ const tpl = template(`
     </div>
 `);
 
-export type ContextDockProps = {
+type ContextDockProps = {
     /**
      * Static-content variant (Plan mode): one fixed header/rail label and one
      * panel hosted for the dock's whole life. Skips everything Create-specific

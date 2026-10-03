@@ -14,7 +14,7 @@ import { effect } from '@basics/core/client/core';
 import type { GeoJSON } from 'geojson';
 import type { MapService, OverlayLayerSpec } from '../map/map.service';
 
-export type OwnedOverlayOptions = NonNullable<Parameters<MapService['addOverlayLayer']>[3]>;
+type OwnedOverlayOptions = NonNullable<Parameters<MapService['addOverlayLayer']>[3]>;
 
 type OverlayHost = Pick<MapService, 'ready' | 'addOverlayLayer' | 'updateOverlayData' | 'removeOverlayLayer'>;
 

@@ -90,7 +90,7 @@ export interface ToolContext {
 }
 
 /** One row in a help-modal section: a key combo + what it does. */
-export interface HelpShortcut {
+interface HelpShortcut {
     keys: string;
     desc: string;
 }
