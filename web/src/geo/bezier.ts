@@ -19,7 +19,7 @@
 // selection and analysis work identically on spline features.
 
 import { bsplineRingToBezier } from './bspline';
-import { flatGeometry, flatRing } from './flat-cache';
+import { cachedSegment, flatGeometry, flatRing } from './flat-cache';
 
 export interface Point {
     x: number;
@@ -96,44 +96,118 @@ export function segmentControls(ring: PathRing, i: number): [Point, Point, Point
  * points: the ring is first converted to its exact bezier equivalent
  * (corner triplication + closed wrap), then flattened identically —
  * matching the server's flattenRing.
+ *
+ * Each segment's points come from the per-segment cache in
+ * geo/flat-cache.ts (keyed on the segment's AnchorPoint, verified against
+ * its control values). The returned array is fresh, but its [x, y] tuples
+ * are shared with other calls: callers must not mutate the tuples.
  */
 export function flattenRing(
     ring: PathRing,
     toleranceMeters: number,
     curveType?: CurveType,
 ): Array<[number, number]> {
-    if (curveType === 'bspline') ring = bsplineRingToBezier(ring);
+    if (curveType === 'bspline') return flattenBsplineRing(ring, toleranceMeters);
     const pts = ring.points;
     if (pts.length === 0) return [];
     if (pts.length === 1) return [[pts[0].x, pts[0].y]];
 
-    const out: Array<[number, number]> = [];
     const n = pts.length;
-
+    const segs: Array<Array<[number, number]>> = new Array(n);
+    let total = 0;
     for (let i = 0; i < n; i++) {
         const a = pts[i];
         const b = pts[(i + 1) % n];
+        const h1 = a.hOut ?? a;
+        const h2 = b.hIn ?? b;
+        const seg = cachedSegment(
+            false, a, 0, toleranceMeters, !a.hOut && !b.hIn,
+            a.x, a.y, h1.x, h1.y, h2.x, h2.y, b.x, b.y,
+        );
+        segs[i] = seg;
+        total += seg.length;
+    }
+    return concatSegments(segs, total);
+}
 
-        out.push([a.x, a.y]);
+/** Concatenate per-segment slices into one fresh array. */
+function concatSegments(segs: Array<Array<[number, number]>>, total: number): Array<[number, number]> {
+    const out: Array<[number, number]> = new Array(total);
+    let o = 0;
+    for (let i = 0; i < segs.length; i++) {
+        const seg = segs[i];
+        for (let k = 0; k < seg.length; k++) out[o++] = seg[k];
+    }
+    return out;
+}
 
-        const p0: Point = { x: a.x, y: a.y };
-        const p1: Point = a.hOut ?? { x: a.x, y: a.y };
-        const p2: Point = b.hIn ?? { x: b.x, y: b.y };
-        const p3: Point = { x: b.x, y: b.y };
+/**
+ * Flattened points of one cubic segment p0 → p3, start anchor first, end
+ * anchor excluded (the slice flattenRing emits per segment). A straight
+ * segment yields only its start anchor. Same arithmetic, in the same
+ * order, as the server's flattenRing loop body.
+ */
+export function flattenSegment(
+    straight: boolean,
+    ax: number, ay: number,
+    p1x: number, p1y: number,
+    p2x: number, p2y: number,
+    bx: number, by: number,
+    toleranceMeters: number,
+): Array<[number, number]> {
+    const out: Array<[number, number]> = [[ax, ay]];
+    if (straight) return out;
+    const p0: Point = { x: ax, y: ay };
+    const p1: Point = { x: p1x, y: p1y };
+    const p2: Point = { x: p2x, y: p2y };
+    const p3: Point = { x: bx, y: by };
+    const controlLength = dist(p0, p1) + dist(p1, p2) + dist(p2, p3);
+    const segments = Math.max(1, Math.min(256, Math.ceil(controlLength / toleranceMeters)));
+    for (let s = 1; s < segments; s++) {
+        out.push(cubicBezierPoint(p0, p1, p2, p3, s / segments));
+    }
+    return out;
+}
 
-        const isStraight = !a.hOut && !b.hIn;
-        if (isStraight) continue;
-
-        const controlLength = dist(p0, p1) + dist(p1, p2) + dist(p2, p3);
-        const segments = Math.max(1, Math.min(256, Math.ceil(controlLength / toleranceMeters)));
-
-        for (let s = 1; s < segments; s++) {
-            const t = s / segments;
-            out.push(cubicBezierPoint(p0, p1, p2, p3, t));
+/**
+ * flattenRing for a b-spline control ring. Computes each bezier segment of
+ * the exact conversion (geo/bspline.ts, same arithmetic) without building
+ * the converted ring, so the segment cache can key on the ORIGINAL control
+ * point: segment i is keyed on the control at expanded index i + 1, with
+ * its triplicate copy number as the slot for corner points.
+ */
+function flattenBsplineRing(ring: PathRing, toleranceMeters: number): Array<[number, number]> {
+    const points = ring.points;
+    const origIdx: number[] = [];
+    const copy: number[] = [];
+    for (let i = 0; i < points.length; i++) {
+        const copies = points[i].corner ? 3 : 1;
+        for (let c = 0; c < copies; c++) {
+            origIdx.push(i);
+            copy.push(c);
         }
     }
+    const n = origIdx.length;
+    if (n < 3) return flattenRing(bsplineRingToBezier(ring), toleranceMeters);
 
-    return out;
+    const segs: Array<Array<[number, number]>> = new Array(n);
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+        const c0 = points[origIdx[i]];
+        const c1 = points[origIdx[(i + 1) % n]];
+        const c2 = points[origIdx[(i + 2) % n]];
+        const c3 = points[origIdx[(i + 3) % n]];
+        const seg = cachedSegment(
+            true, c1, copy[(i + 1) % n], toleranceMeters, false,
+            (c0.x + 4 * c1.x + c2.x) / 6, (c0.y + 4 * c1.y + c2.y) / 6,
+            (2 * c1.x + c2.x) / 3, (2 * c1.y + c2.y) / 3,
+            (c1.x + 2 * c2.x) / 3, (c1.y + 2 * c2.y) / 3,
+            (c1.x + 4 * c2.x + c3.x) / 6, (c1.y + 4 * c2.y + c3.y) / 6,
+        );
+        segs[i] = seg;
+        total += seg.length;
+    }
+    return concatSegments(segs, total);
 }
 
 /**
@@ -293,13 +367,15 @@ export function nearestOnRing(ring: PathRing, p: Point, maxDist?: number): Neare
  * the curve (de Casteljau split). For a straight segment the new anchor is
  * a plain point on the line; for a curved segment the neighbors' handles
  * are re-derived and the new anchor gets hIn/hOut from the split.
- * Returns a NEW ring (input is not mutated).
+ * Returns a NEW ring (input is not mutated). Points other than the two
+ * segment ends keep their object identity (see draw-state structural
+ * sharing).
  */
 export function splitSegment(ring: PathRing, segIdx: number, t: number): PathRing {
     const n = ring.points.length;
-    const points = ring.points.map(pt => ({ ...pt }));
-    const a = points[segIdx];
-    const b = points[(segIdx + 1) % n];
+    const points = ring.points.slice();
+    const a = (points[segIdx] = { ...points[segIdx] });
+    const b = (points[(segIdx + 1) % n] = { ...points[(segIdx + 1) % n] });
 
     const straight = !a.hOut && !b.hIn;
     if (straight) {

@@ -650,7 +650,10 @@ export class MapService {
             if (!data.features.some(f => f.properties?.type === 'water' || f.properties?.type === 'water_creek')) return;
             layer = new WaterLayer();
             layer.enabled = this.waterEnabled;
-            map.addLayer(layer, map.getLayer(TREES_LAYER_ID) ? TREES_LAYER_ID : undefined);
+            // Bottom of the non-draped run: above every draped layer (one
+            // terrain RTT stack, see overlayLayerSlot) and below the trees
+            // and every circle/symbol overlay (vertex markers stay visible).
+            map.addLayer(layer, this.aboveDrapeSlot(map));
             this.waterLayer = layer;
         }
         layer.setData(data);
@@ -679,31 +682,26 @@ export class MapService {
     ): void {
         const map = this.requireMap();
         map.addSource(id, { type: 'geojson', data });
+        // `keepOnTop` overlays (tool previews — draft outline, vertex/handle
+        // markers) stay above overlays added LATER: on a cold load the draw
+        // preview can beat the features fill to the style, which would
+        // otherwise bury the markers under every shape.
+        if (opts.keepOnTop) this.onTopOverlays.add(id);
+        this.overlays.set(id, layers.map(l => l.id));
         // `beforeId` slots the overlay UNDER an existing layer (e.g. the vector
         // feature fills) for derived clouds that must not hide the course.
         // Unknown ids are ignored rather than thrown: style layer sets differ
         // between the editor and viewer styles, and a missing anchor should
-        // degrade to "on top", not break the tool.
-        const beforeId = opts.beforeId && map.getLayer(opts.beforeId) ? opts.beforeId : undefined;
+        // degrade to the default slot, not break the tool. See
+        // `overlayLayerSlot` for the draped/non-draped grouping.
         for (const layer of layers) {
-            map.addLayer({ ...layer, source: id } as LayerSpecification, beforeId);
+            const before = this.overlayLayerSlot(map, DRAPED_LAYER_TYPES.has(layer.type), !!opts.keepOnTop, opts.beforeId);
+            map.addLayer({ ...layer, source: id } as LayerSpecification, before);
         }
-        this.overlays.set(id, layers.map(l => l.id));
         if (layers.some(l => DRAPED_LAYER_TYPES.has(l.type))) this.drapedOverlays.add(id);
         if (opts.waterSurface && data.type === 'FeatureCollection') {
             this.waterSourceId = id;
             this.setWaterFeatures(data);
-        }
-        // `keepOnTop` overlays (tool previews — draft outline, vertex/handle
-        // markers) stay above overlays added LATER: layer z-order is add
-        // order, and on a cold load the draw preview can beat the features
-        // fill to the style, burying the markers under every shape.
-        if (opts.keepOnTop) this.onTopOverlays.add(id);
-        for (const topId of this.onTopOverlays) {
-            if (topId === id) continue;
-            for (const layerId of this.overlays.get(topId) ?? []) {
-                if (map.getLayer(layerId)) map.moveLayer(layerId);
-            }
         }
         // Hold updates until the source's INITIAL load settles — the other
         // half of the 5.x worker race (maplibre-gl-js#7734 is precisely
@@ -714,6 +712,53 @@ export class MapService {
             this.overlayDataInFlight.delete(id);
             if (this.pendingOverlayData.has(id)) void this.pumpOverlayData(id);
         });
+    }
+
+    /**
+     * The `beforeId` for a new overlay layer that keeps the style at ONE
+     * terrain render-to-texture stack. maplibre groups each contiguous run
+     * of draped layers (DRAPED_LAYER_TYPES) into a stack, and with two or
+     * more stacks it re-renders every draped tile every frame (see
+     * onOverlaySourceData). So every draped layer goes below every
+     * non-draped one (circle, symbol, custom):
+     *
+     * - draped: directly above the topmost draped layer, or below the
+     *   lowest draped layer of a keepOnTop overlay when the new layer is
+     *   not itself keepOnTop.
+     * - non-draped: the top of the map, or below the lowest non-draped
+     *   layer of a keepOnTop overlay when the new layer is not keepOnTop.
+     *
+     * An explicit `beforeId` wins when it names a layer of the same group.
+     * When it names a layer of the other group, the layer goes to the slot
+     * closest to it inside its own group: a draped layer to the top of the
+     * draped run, a non-draped layer to the bottom of the non-draped run.
+     * Undefined means "add on top".
+     */
+    private overlayLayerSlot(map: maplibregl.Map, draped: boolean, onTop: boolean, beforeId?: string): string | undefined {
+        const isDraped = (layerId: string): boolean => {
+            const layer = map.getLayer(layerId);
+            return !!layer && DRAPED_LAYER_TYPES.has(layer.type);
+        };
+        const explicit = beforeId && map.getLayer(beforeId) ? beforeId : undefined;
+        if (explicit && isDraped(explicit) === draped) return explicit;
+        const order = map.getLayersOrder();
+        if (explicit && !draped) return this.aboveDrapeSlot(map, order);
+        if (!onTop) {
+            const topIds = new Set<string>();
+            for (const topId of this.onTopOverlays) for (const layerId of this.overlays.get(topId) ?? []) topIds.add(layerId);
+            const firstTop = order.find(layerId => topIds.has(layerId) && isDraped(layerId) === draped);
+            if (firstTop !== undefined) return firstTop;
+        }
+        return draped ? this.aboveDrapeSlot(map, order) : undefined;
+    }
+
+    /** The layer directly above the topmost draped layer (undefined: none, add on top). */
+    private aboveDrapeSlot(map: maplibregl.Map, order = map.getLayersOrder()): string | undefined {
+        for (let i = order.length - 1; i >= 0; i--) {
+            const layer = map.getLayer(order[i]);
+            if (layer && DRAPED_LAYER_TYPES.has(layer.type)) return order[i + 1];
+        }
+        return order[0];
     }
 
     /** Resolves once `id`'s source reports loaded (3s fallback — never hangs the queue). */
@@ -905,8 +950,9 @@ export class MapService {
         map.addSource(id, { type: 'image', url, coordinates });
         // beforeId slots the raster below an existing layer (e.g. the Clean
         // preview goes under the vector feature fills so water/bunker tints
-        // stay visible across it). Silently topmost when that layer is absent.
-        const before = opts.beforeId && map.getLayer(opts.beforeId) ? opts.beforeId : undefined;
+        // stay visible across it). Without it the raster goes to the top of
+        // the draped run (overlayLayerSlot).
+        const before = this.overlayLayerSlot(map, true, false, opts.beforeId);
         map.addLayer({
             id,
             type: 'raster',

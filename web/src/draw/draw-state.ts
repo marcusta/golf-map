@@ -218,6 +218,13 @@ export class TraceGesture {
 // All operations return a NEW FeatureGeometry (identity change drives the
 // flatten caches + signals); inputs are never mutated. Ring/anchor indices
 // are trusted to be valid (callers derive them from hit tests).
+//
+// Single-vertex ops use structural sharing (`withRing`): the result has a
+// new top-level object, a new rings array and a new object for the one
+// touched ring, but untouched rings and untouched AnchorPoint objects keep
+// their identity. Readers may therefore cache on ring or point identity
+// (geo/flat-cache.ts), and nothing may mutate a geometry, ring or point in
+// place. Bulk ops still deep-copy through `cloneGeometry`.
 
 function cloneGeometry(geometry: FeatureGeometry): FeatureGeometry {
     return {
@@ -235,6 +242,33 @@ function cloneGeometry(geometry: FeatureGeometry): FeatureGeometry {
     };
 }
 
+/** New geometry with ring `ringIdx` replaced by `points`; other rings are shared. */
+function withRing(geometry: FeatureGeometry, ringIdx: number, points: AnchorPoint[]): FeatureGeometry {
+    const rings = geometry.rings.slice();
+    rings[ringIdx] = { points };
+    return {
+        crs: geometry.crs,
+        ...(geometry.curveType ? { curveType: geometry.curveType } : {}),
+        rings,
+    };
+}
+
+/** New geometry with one anchor replaced; every other point object is shared. */
+function withPoint(geometry: FeatureGeometry, ringIdx: number, idx: number, point: AnchorPoint): FeatureGeometry {
+    const points = geometry.rings[ringIdx].points.slice();
+    points[idx] = point;
+    return withRing(geometry, ringIdx, points);
+}
+
+/** Copy of an anchor without the listed fields (handle objects are shared; they are never mutated). */
+function pointWithout(p: AnchorPoint, ...drop: Array<'hIn' | 'hOut' | 'corner'>): AnchorPoint {
+    const out: AnchorPoint = { x: p.x, y: p.y };
+    if (p.hIn && !drop.includes('hIn')) out.hIn = p.hIn;
+    if (p.hOut && !drop.includes('hOut')) out.hOut = p.hOut;
+    if (p.corner && !drop.includes('corner')) out.corner = true;
+    return out;
+}
+
 /** Move an anchor to `to`, translating its handles with it. */
 export function moveAnchor(
     geometry: FeatureGeometry,
@@ -242,15 +276,14 @@ export function moveAnchor(
     idx: number,
     to: Point,
 ): FeatureGeometry {
-    const next = cloneGeometry(geometry);
-    const p = next.rings[ringIdx].points[idx];
+    const p = geometry.rings[ringIdx].points[idx];
     const dx = to.x - p.x;
     const dy = to.y - p.y;
-    p.x = to.x;
-    p.y = to.y;
-    if (p.hIn) p.hIn = { x: p.hIn.x + dx, y: p.hIn.y + dy };
-    if (p.hOut) p.hOut = { x: p.hOut.x + dx, y: p.hOut.y + dy };
-    return next;
+    const q: AnchorPoint = { x: to.x, y: to.y };
+    if (p.hIn) q.hIn = { x: p.hIn.x + dx, y: p.hIn.y + dy };
+    if (p.hOut) q.hOut = { x: p.hOut.x + dx, y: p.hOut.y + dy };
+    if (p.corner) q.corner = true;
+    return withPoint(geometry, ringIdx, idx, q);
 }
 
 /**
@@ -265,14 +298,14 @@ export function moveHandle(
     to: Point,
     symmetric = true,
 ): FeatureGeometry {
-    const next = cloneGeometry(geometry);
-    const p = next.rings[ringIdx].points[idx];
-    p[which] = { x: to.x, y: to.y };
+    const p = geometry.rings[ringIdx].points[idx];
+    const q = pointWithout(p);
+    q[which] = { x: to.x, y: to.y };
     if (symmetric) {
         const other = which === 'hIn' ? 'hOut' : 'hIn';
-        p[other] = { x: 2 * p.x - to.x, y: 2 * p.y - to.y };
+        q[other] = { x: 2 * p.x - to.x, y: 2 * p.y - to.y };
     }
-    return next;
+    return withPoint(geometry, ringIdx, idx, q);
 }
 
 /**
@@ -285,20 +318,17 @@ export function setSymmetricHandles(
     idx: number,
     hOut: Point,
 ): FeatureGeometry {
-    const next = cloneGeometry(geometry);
-    const p = next.rings[ringIdx].points[idx];
-    p.hOut = { x: hOut.x, y: hOut.y };
-    p.hIn = { x: 2 * p.x - hOut.x, y: 2 * p.y - hOut.y };
-    return next;
+    const p = geometry.rings[ringIdx].points[idx];
+    const q = pointWithout(p);
+    q.hOut = { x: hOut.x, y: hOut.y };
+    q.hIn = { x: 2 * p.x - hOut.x, y: 2 * p.y - hOut.y };
+    return withPoint(geometry, ringIdx, idx, q);
 }
 
 /** Remove an anchor's bezier handles (its segments become straight). */
 export function clearHandles(geometry: FeatureGeometry, ringIdx: number, idx: number): FeatureGeometry {
-    const next = cloneGeometry(geometry);
-    const p = next.rings[ringIdx].points[idx];
-    delete p.hIn;
-    delete p.hOut;
-    return next;
+    const p = geometry.rings[ringIdx].points[idx];
+    return withPoint(geometry, ringIdx, idx, pointWithout(p, 'hIn', 'hOut'));
 }
 
 /** True when the anchor has at least one bezier handle. */
@@ -316,9 +346,9 @@ export function deleteAnchor(
     idx: number,
 ): FeatureGeometry | null {
     if (geometry.rings[ringIdx].points.length <= MIN_RING_POINTS) return null;
-    const next = cloneGeometry(geometry);
-    next.rings[ringIdx].points.splice(idx, 1);
-    return next;
+    const points = geometry.rings[ringIdx].points.slice();
+    points.splice(idx, 1);
+    return withRing(geometry, ringIdx, points);
 }
 
 /**
@@ -332,9 +362,7 @@ export function insertAnchor(
     segIdx: number,
     t: number,
 ): FeatureGeometry {
-    const next = cloneGeometry(geometry);
-    next.rings[ringIdx] = splitSegment(next.rings[ringIdx], segIdx, t);
-    return next;
+    return withRing(geometry, ringIdx, splitSegment(geometry.rings[ringIdx], segIdx, t).points);
 }
 
 /**
@@ -349,9 +377,9 @@ export function insertControlPoint(
     afterIdx: number,
     p: Point,
 ): FeatureGeometry {
-    const next = cloneGeometry(geometry);
-    next.rings[ringIdx].points.splice(afterIdx + 1, 0, { x: p.x, y: p.y });
-    return next;
+    const points = geometry.rings[ringIdx].points.slice();
+    points.splice(afterIdx + 1, 0, { x: p.x, y: p.y });
+    return withRing(geometry, ringIdx, points);
 }
 
 /**
@@ -366,29 +394,27 @@ export function toggleVertexCorner(
     ringIdx: number,
     idx: number,
 ): FeatureGeometry {
-    const next = cloneGeometry(geometry);
-    const points = next.rings[ringIdx].points;
+    const points = geometry.rings[ringIdx].points;
     const p = points[idx];
 
     if (geometry.curveType === 'bspline') {
-        if (p.corner) delete p.corner;
-        else p.corner = true;
-        return next;
+        const q = pointWithout(p, 'corner');
+        if (!p.corner) q.corner = true;
+        return withPoint(geometry, ringIdx, idx, q);
     }
 
     if (hasHandles(p)) {
-        delete p.hIn;
-        delete p.hOut;
-        return next;
+        return withPoint(geometry, ringIdx, idx, pointWithout(p, 'hIn', 'hOut'));
     }
     const n = points.length;
     const prev = points[(idx - 1 + n) % n];
     const nextPt = points[(idx + 1) % n];
     const dx = (nextPt.x - prev.x) / 6;
     const dy = (nextPt.y - prev.y) / 6;
-    p.hOut = { x: p.x + dx, y: p.y + dy };
-    p.hIn = { x: p.x - dx, y: p.y - dy };
-    return next;
+    const q = pointWithout(p);
+    q.hOut = { x: p.x + dx, y: p.y + dy };
+    q.hIn = { x: p.x - dx, y: p.y - dy };
+    return withPoint(geometry, ringIdx, idx, q);
 }
 
 /** True when the vertex renders/behaves as a corner in its curve model. */

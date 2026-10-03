@@ -43,6 +43,7 @@ function fakeOverlayMap() {
         removeSource: (id: string) => { sources.delete(id); },
         addLayer: (layer: { id: string }) => { layers.set(layer.id, layer); },
         getLayer: (id: string) => layers.get(id),
+        getLayersOrder: () => [...layers.keys()],
         removeLayer: (id: string) => { layers.delete(id); },
         moveLayer: () => {},
         on(type: string, fn: (e: unknown) => void) {

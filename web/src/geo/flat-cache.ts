@@ -14,9 +14,18 @@
 // This cache is independent of FeaturesService's wgs84RingsCache (render
 // side, WGS84 coordinates); this one holds EPSG:3006 coordinates for
 // editor math.
+//
+// Below the ring level sits a per-segment cache (`cachedSegment`), used by
+// bezier.ts flattenRing. A drag edit (draw-state moveAnchor and friends)
+// shares every untouched AnchorPoint object with the drag-start geometry,
+// so the segment cache, keyed on the segment's start AnchorPoint, re-flattens
+// only the one or two segments touching the moved anchor. Each entry also
+// stores the segment's control values and is reused only when they match,
+// so a point object mutated in place costs a cache miss, never a stale
+// outline.
 
 import type { Bbox, CurveType, FeatureGeometry, PathRing } from './bezier';
-import { flattenRing } from './bezier';
+import { flattenRing, flattenSegment } from './bezier';
 import { bsplineRingToBezierWithMap, type BsplineBezier } from './bspline';
 
 export interface FlatRing {
@@ -45,20 +54,105 @@ const geometryCache = new WeakMap<FeatureGeometry, FlatCache>();
 const bsplineCache = new WeakMap<PathRing, BsplineBezier>();
 
 let stats = { hits: 0, misses: 0 };
+let segStats = { hits: 0, misses: 0 };
 
-/** Hit/miss counters (tests and benchmarks). */
+/** flatGeometry hit/miss counters (tests and benchmarks). */
 export function flatCacheStats(): { hits: number; misses: number } {
     return { ...stats };
 }
 
+/** Per-segment flatten hit/miss counters (tests and benchmarks). */
+export function segmentCacheStats(): { hits: number; misses: number } {
+    return { ...segStats };
+}
+
 export function resetFlatCacheStats(): void {
     stats = { hits: 0, misses: 0 };
+    segStats = { hits: 0, misses: 0 };
+}
+
+// ─── Per-segment flatten cache ────────────────────────────────────────────
+
+/** One flattened cubic segment: its start anchor plus interior samples. */
+interface SegEntry {
+    slot: number;
+    tol: number;
+    straight: boolean;
+    ax: number; ay: number;
+    p1x: number; p1y: number;
+    p2x: number; p2y: number;
+    bx: number; by: number;
+    pts: Array<[number, number]>;
+}
+
+/** Entries per key object; tolerances and b-spline corner copies share a key. */
+const MAX_ENTRIES_PER_KEY = 6;
+
+const bezierSegCache = new WeakMap<object, SegEntry[]>();
+const bsplineSegCache = new WeakMap<object, SegEntry[]>();
+
+/**
+ * Flattened points of one cubic segment (a, p1, p2, b), start anchor
+ * first, end anchor excluded: the slice flattenRing emits for that
+ * segment. `key` is the AnchorPoint the segment belongs to and `slot`
+ * separates several segments keyed on one object (b-spline corner copies).
+ * A miss flattens with bezier.ts flattenSegment.
+ *
+ * The returned array and its tuples are shared between calls; callers
+ * copy them into their own output and never mutate them.
+ */
+export function cachedSegment(
+    spline: boolean,
+    key: object,
+    slot: number,
+    tol: number,
+    straight: boolean,
+    ax: number, ay: number,
+    p1x: number, p1y: number,
+    p2x: number, p2y: number,
+    bx: number, by: number,
+): Array<[number, number]> {
+    const cache = spline ? bsplineSegCache : bezierSegCache;
+    let list = cache.get(key);
+    let reuse: SegEntry | undefined;
+    if (list) {
+        for (let i = 0; i < list.length; i++) {
+            const e = list[i];
+            if (e.slot !== slot || e.tol !== tol) continue;
+            if (
+                e.straight === straight &&
+                e.ax === ax && e.ay === ay && e.bx === bx && e.by === by &&
+                e.p1x === p1x && e.p1y === p1y && e.p2x === p2x && e.p2y === p2y
+            ) {
+                segStats.hits++;
+                return e.pts;
+            }
+            reuse = e;
+            break;
+        }
+    } else {
+        list = [];
+        cache.set(key, list);
+    }
+    segStats.misses++;
+    const pts = flattenSegment(straight, ax, ay, p1x, p1y, p2x, p2y, bx, by, tol);
+    if (reuse) {
+        reuse.straight = straight;
+        reuse.ax = ax; reuse.ay = ay; reuse.p1x = p1x; reuse.p1y = p1y;
+        reuse.p2x = p2x; reuse.p2y = p2y; reuse.bx = bx; reuse.by = by;
+        reuse.pts = pts;
+    } else {
+        if (list.length >= MAX_ENTRIES_PER_KEY) list.shift();
+        list.push({ slot, tol, straight, ax, ay, p1x, p1y, p2x, p2y, bx, by, pts });
+    }
+    return pts;
 }
 
 function bboxOf(pts: ReadonlyArray<readonly [number, number]>): Bbox | null {
     if (pts.length === 0) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const [x, y] of pts) {
+    for (let i = 0; i < pts.length; i++) {
+        const x = pts[i][0], y = pts[i][1];
         if (x < minX) minX = x;
         if (y < minY) minY = y;
         if (x > maxX) maxX = x;
