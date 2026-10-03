@@ -35,6 +35,8 @@ import {
     isCornerVertex,
     bakeBsplineToBezier,
     translateGeometry,
+    translateAnchors,
+    toggleVerticesCorner,
     offsetGeometry,
     mergedSurroundGeometries,
     simplifyGeometry,
@@ -73,6 +75,35 @@ const DRAG_MOVE_THRESHOLD_PX = 3;
 const MOVE_THRESHOLD_PX = 2;
 /** Marquee: below this the gesture counts as a click (prototype: 5 px). */
 const MARQUEE_MIN_PX = 5;
+/** Deletes of up to this many features skip the confirm dialog (undo restores them). */
+export const DELETE_CONFIRM_THRESHOLD = 10;
+/** How long the post-delete undo hint stays up (ms). */
+export const NOTICE_MS = 4000;
+/** Arrow-key nudge step in screen px (Shift: NUDGE_SHIFT_PX). */
+export const NUDGE_PX = 1;
+export const NUDGE_SHIFT_PX = 10;
+/** Repeats of the same arrow key within this window share one history entry. */
+export const NUDGE_COALESCE_MS = 300;
+
+/** Arrow key → screen direction as [right, up] unit steps. */
+const ARROW_DIRECTIONS: Record<string, readonly [number, number]> = {
+    ArrowRight: [1, 0],
+    ArrowLeft: [-1, 0],
+    ArrowUp: [0, 1],
+    ArrowDown: [0, -1],
+};
+
+/** Label of the undo modifier: "Cmd" on Apple platforms, else "Ctrl". */
+function undoModifierLabel(): string {
+    const nav = typeof navigator === 'undefined' ? null : navigator as Navigator & { userAgentData?: { platform?: string } };
+    const platform = nav?.userAgentData?.platform ?? nav?.platform ?? nav?.userAgent ?? '';
+    return /mac|iphone|ipad|ipod/i.test(platform) ? 'Cmd' : 'Ctrl';
+}
+
+/** Ground meters per screen pixel at `zoom` and latitude `lat` (web mercator, 512 px tiles). */
+function metersPerPixel(zoom: number, lat: number): number {
+    return (40075016.686 * Math.abs(Math.cos((lat * Math.PI) / 180))) / 2 ** (zoom + 8);
+}
 
 // New-shape type policy persistence (survives reloads; per browser).
 const TYPE_FOLLOWS_LAST_KEY = 'golfmap.draw.typeFollowsLast';
@@ -105,7 +136,11 @@ export const OFFSET_PRESETS = [0.5, 1, 2, 5] as const;
 export const TRACE_TOLERANCE_M = 0.75;
 
 interface DragTarget {
-    kind: 'anchor' | 'handle' | 'newHandles';
+    /**
+     * 'anchor' moves one anchor to the cursor; 'anchors' translates every
+     * vertex in `keys` by the grabbed anchor's displacement.
+     */
+    kind: 'anchor' | 'anchors' | 'handle' | 'newHandles';
     which?: 'hIn' | 'hOut';
     featureId: string;
     /** Feature type at drag start (ghost overlay palette color). */
@@ -117,6 +152,15 @@ interface DragTarget {
     startScreen: { x: number; y: number };
     /** Geometry before the drag — the history entry's `before` side. */
     startGeometry: FeatureGeometry;
+    /**
+     * Geometry the drag ops derive from. Equals `startGeometry` except
+     * after an edge press, where it carries the inserted vertex.
+     */
+    baseGeometry: FeatureGeometry;
+    /** True when the press inserted the vertex on an edge (24a). */
+    inserted: boolean;
+    /** Vertex keys moved together for kind 'anchors'. */
+    keys: string[];
     startVersion: number;
     moved: boolean;
     /**
@@ -205,6 +249,11 @@ export function buildMoveEntry(
     }));
 }
 
+/** Where an edge press inserts: a bezier split or a b-spline control. */
+type EdgeInsertion =
+    | { kind: 'anchor'; ringIdx: number; segIdx: number; t: number }
+    | { kind: 'control'; ringIdx: number; afterIdx: number; point: Point };
+
 /** Marquee rectangle drag ('features' on empty ground, 'vertices' via Shift). */
 interface Marquee {
     kind: 'features' | 'vertices';
@@ -224,14 +273,19 @@ interface Marquee {
  *   fully inside select; Alt during the drag = any-overlap mode); drag
  *   INSIDE a selected feature moves the whole selection (2 px threshold,
  *   one undo step). With exactly ONE feature selected its vertices are
- *   editable: drag to move, right-click to delete, click an edge to
- *   insert, 'C' toggles smooth↔corner, Shift+click toggles a vertex into
+ *   editable: drag to move (a selected vertex drags the whole vertex
+ *   selection), right-click to delete, press an edge to insert a vertex
+ *   (dragging places it; one undo step), 'C' toggles smooth↔corner on the
+ *   vertex selection or else the hovered vertex, arrows nudge the vertex
+ *   selection 1 px (Shift: 10 px; repeats within 300 ms share one undo
+ *   step), Shift+click toggles a vertex into
  *   the multi-vertex selection, Shift+drag marquee-selects vertices,
  *   Delete removes selected vertices (≥3 must remain), 'I' inserts a
  *   vertex between two selected ones with even redistribution. On BEZIER
  *   features additionally: alt-drag pulls out symmetric handles, alt-click
  *   straightens, handle dots bend segments. Delete/Backspace deletes the
- *   selected feature(s) (confirm). Cmd/Ctrl+D duplicates (+10 m offset).
+ *   selected feature(s): up to 10 at once without a dialog (sets `notice`),
+ *   more after a confirm. Cmd/Ctrl+D duplicates (+10 m offset).
  *   Alt+drag INSIDE the selection clones it in one gesture (a stationary
  *   Alt-click still cycles the hit stack); the drop arms repeat-stamp mode,
  *   where each empty-ground drag stamps another copy (one undo per stamp)
@@ -417,12 +471,35 @@ export class DrawToolService {
     readonly simplifyEpsilon = new Signal(0.5);
     /** One-line guard/action feedback for the panel (cleared on next op). */
     readonly actionNotice = new Signal<string | null>(null);
+    /**
+     * Short-lived hint after an edit that skipped its confirm dialog, e.g.
+     * "Deleted 3. Cmd+Z to undo.". `until` is the epoch ms at which it
+     * clears; the next committed edit, undo or redo clears it sooner. The
+     * dock footer renders it.
+     */
+    readonly notice = new Signal<{ text: string; until: number } | null>(null);
+    private noticeTimer: ReturnType<typeof setTimeout> | null = null;
+    /**
+     * Live arrow-key nudge run (24c). Repeats of `key` within
+     * NUDGE_COALESCE_MS extend `diff`, the after side of the history entry
+     * the first press recorded, as long as the feature still holds
+     * `geometry` (no other edit, undo or reload in between).
+     */
+    private nudge: {
+        key: string;
+        at: number;
+        featureId: string;
+        geometry: FeatureGeometry;
+        diff: HistoryEntry[number];
+    } | null = null;
 
     /**
      * Runs the preview frame flush. rAF in the browser; tests swap in a
      * manual scheduler to drive frames synchronously.
      */
     frameScheduler: FrameScheduler = defaultFrameScheduler;
+    /** Wall clock for the nudge coalescing window; tests swap it. */
+    clock: () => number = () => Date.now();
     /** Projected anchors and handles per (geometry, camera); see screen-cache.ts. */
     private readonly screenPoints = new ScreenPointCache();
     private readonly frames = new FrameBatch(cb => this.frameScheduler(cb));
@@ -551,6 +628,18 @@ export class DrawToolService {
         window.addEventListener('keydown', onKeyDown);
         ctx.track(() => window.removeEventListener('keydown', onKeyDown));
 
+        // Arrow nudge (24c) listens in the capture phase: MapLibre's keyboard
+        // handler on the map container pans on arrows before a bubbling
+        // window listener runs, so a consumed arrow stops propagation here.
+        const onArrowKey = (e: KeyboardEvent) => {
+            if (this.onArrowKey(e)) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        };
+        window.addEventListener('keydown', onArrowKey, true);
+        ctx.track(() => window.removeEventListener('keydown', onArrowKey, true));
+
         // Space-release ends the momentary box-select override. Bound
         // separately (keydown is routed through onKeyDown's claim/input
         // guards); the release must always fire so the flag never sticks.
@@ -666,6 +755,21 @@ export class DrawToolService {
     }
 
     /**
+     * True while work a sub-mode switch would discard is open: placed draft
+     * points, a freehand trace, or a live drag (vertex, move, stamp,
+     * marquee). An armed tool with an empty draft is not busy, so chain-draw
+     * does not block the sub-mode keys.
+     */
+    isBusy(): boolean {
+        return (this.state.isDrawing.peek() && this.state.draft.peek().length > 0)
+            || this.traceGesture !== null
+            || this.drag !== null
+            || this.moveDrag !== null
+            || this.stampDrag !== null
+            || this.marquee.peek() !== null;
+    }
+
+    /**
      * ESC chain: discard a mid-trace stroke (stays armed) → cancel drawing
      * → exit repeat-stamp mode → cancel marquee/armed preview → clear
      * vertex selection → drop feature selection → (unconsumed) deactivate.
@@ -758,16 +862,16 @@ export class DrawToolService {
 
         // Select mode. Edge click on the (single) selected feature inserts
         // a vertex — suspended in box-select mode (no geometry editing).
+        // Plain presses insert in onMouseDown; this path serves Shift+click,
+        // whose press starts a vertex marquee that decays to a click.
         const boxMode = this.state.boxSelect.peek() || this.spaceHeld.peek();
         const selected = this.features?.editableSelected.peek() ?? null;
         if (selected && !boxMode) {
             const insertion = this.edgeInsertionHit(selected, p, e.lngLat.lat);
             if (insertion) {
-                const geometry = insertion.kind === 'control'
-                    ? insertControlPoint(selected.geometry, insertion.ringIdx, insertion.afterIdx, insertion.point)
-                    : insertAnchor(selected.geometry, insertion.ringIdx, insertion.segIdx, insertion.t);
-                this.vertexSelection.set(new Set()); // indices shifted
-                this.commitGeometry(selected.id, geometry);
+                const inserted = this.applyInsertion(selected.geometry, insertion);
+                this.commitGeometry(selected.id, inserted.geometry);
+                this.selectInsertedVertex(insertion.ringIdx, inserted.idx);
                 return;
             }
         }
@@ -865,17 +969,23 @@ export class DrawToolService {
             this.features.setDragging([drag.featureId], true);
         }
 
-        // Derive from the drag-start geometry — all three ops set ABSOLUTE
+        // Derive from the drag's base geometry — every op sets ABSOLUTE
         // positions, so this is frame-order independent and needs no store
         // reads (the store is not patched until the mouseup commit).
         const p = lngLatToSweref99tm(e.lngLat);
+        const base = drag.baseGeometry;
         let geometry: FeatureGeometry;
         if (drag.kind === 'anchor') {
-            geometry = moveAnchor(drag.startGeometry, drag.ringIdx, drag.idx, p);
+            geometry = moveAnchor(base, drag.ringIdx, drag.idx, p);
+        } else if (drag.kind === 'anchors') {
+            // The grabbed anchor follows the cursor; the rest of the vertex
+            // selection keeps its offset to it.
+            const grabbed = base.rings[drag.ringIdx].points[drag.idx];
+            geometry = translateAnchors(base, drag.keys, p.x - grabbed.x, p.y - grabbed.y);
         } else if (drag.kind === 'handle') {
-            geometry = moveHandle(drag.startGeometry, drag.ringIdx, drag.idx, drag.which!, p);
+            geometry = moveHandle(base, drag.ringIdx, drag.idx, drag.which!, p);
         } else {
-            geometry = setSymmetricHandles(drag.startGeometry, drag.ringIdx, drag.idx, p);
+            geometry = setSymmetricHandles(base, drag.ringIdx, drag.idx, p);
         }
         drag.currentGeometry = geometry;
         this.dragGhost.setLater(() => [{ id: drag.featureId, type: drag.featureType, geometry }]);
@@ -952,13 +1062,17 @@ export class DrawToolService {
                 // falls back to a plain control-point drag there.
                 const isSpline = single.geometry.curveType === 'bspline';
                 const alt = e.originalEvent.altKey && !isSpline;
+                const key = vertexKey(hit.ringIdx, hit.idx);
+                const vertexSel = this.vertexSelection.peek();
                 // Plain grab of a vertex outside the multi-vertex selection
-                // drops that selection (prototype behavior).
-                if (hit.kind === 'anchor' && !this.vertexSelection.peek().has(vertexKey(hit.ringIdx, hit.idx))) {
-                    if (this.vertexSelection.peek().size > 0) this.vertexSelection.set(new Set());
+                // drops that selection (prototype behavior). A grab inside a
+                // selection of two or more moves all of them.
+                if (hit.kind === 'anchor' && !vertexSel.has(key) && vertexSel.size > 0) {
+                    this.vertexSelection.set(new Set());
                 }
+                const group = hit.kind === 'anchor' && !alt && vertexSel.has(key) && vertexSel.size > 1;
                 this.drag = {
-                    kind: hit.kind === 'handle' ? 'handle' : alt ? 'newHandles' : 'anchor',
+                    kind: hit.kind === 'handle' ? 'handle' : alt ? 'newHandles' : group ? 'anchors' : 'anchor',
                     which: hit.which,
                     featureId: single.id,
                     featureType: single.type,
@@ -968,11 +1082,49 @@ export class DrawToolService {
                     hadHandles: hasHandles(anchor),
                     startScreen: { x: e.point.x, y: e.point.y },
                     startGeometry: single.geometry,
+                    baseGeometry: single.geometry,
+                    inserted: false,
+                    keys: group ? [...vertexSel] : [],
                     startVersion: single.version,
                     moved: false,
                     currentGeometry: null,
                 };
                 return;
+            }
+
+            // 1a. Press on an edge (24a): insert a vertex there and grab it,
+            //     so press-drag places the new vertex in one gesture. The
+            //     store keeps the old shape until mouseup commits insert
+            //     (+ move) as one history entry.
+            if (!shift && !e.originalEvent.altKey) {
+                const p = lngLatToSweref99tm(e.lngLat);
+                const insertion = this.edgeInsertionHit(single, p, e.lngLat.lat);
+                if (insertion) {
+                    e.preventDefault();
+                    map.dragPan.disable();
+                    const inserted = this.applyInsertion(single.geometry, insertion);
+                    // Indices shift with the insert: drop index-keyed state.
+                    this.hoverVertex.set(null);
+                    if (this.vertexSelection.peek().size > 0) this.vertexSelection.set(new Set());
+                    this.drag = {
+                        kind: 'anchor',
+                        featureId: single.id,
+                        featureType: single.type,
+                        ringIdx: insertion.ringIdx,
+                        idx: inserted.idx,
+                        alt: false,
+                        hadHandles: false,
+                        startScreen: { x: e.point.x, y: e.point.y },
+                        startGeometry: single.geometry,
+                        baseGeometry: inserted.geometry,
+                        inserted: true,
+                        keys: [],
+                        startVersion: single.version,
+                        moved: false,
+                        currentGeometry: null,
+                    };
+                    return;
+                }
             }
         }
 
@@ -1194,7 +1346,7 @@ export class DrawToolService {
                 entry.map(diff => ({ id: diff.featureId, patch: { geometry: diff.after!.geometry } })),
                 { local: true },
             );
-            this.history.push(entry);
+            this.record(entry);
             return;
         }
 
@@ -1205,11 +1357,14 @@ export class DrawToolService {
         // Swallow the click MapLibre synthesizes right after this mouseup.
         this.suppressNextClick();
 
-        if (drag.moved) {
-            const geometry = drag.currentGeometry;
+        // A moved drag commits its last frame; an edge press without
+        // movement commits the bare insertion. Either is one history entry
+        // whose before side is the pre-press shape.
+        const geometry = drag.moved ? drag.currentGeometry : drag.inserted ? drag.baseGeometry : null;
+        if (geometry) {
             const feature = this.features.store.items.peek().find(f => f.id === drag.featureId);
-            if (feature && geometry) {
-                this.history.push([{
+            if (feature) {
+                this.record([{
                     featureId: drag.featureId,
                     before: { geometry: drag.startGeometry, type: feature.type, holeId: feature.holeId },
                     after: { geometry, type: feature.type, holeId: feature.holeId },
@@ -1217,6 +1372,7 @@ export class DrawToolService {
                 }]);
                 this.features.patchLocal(drag.featureId, geometry); // instant visual snap
                 void this.features.update(drag.featureId, { geometry });
+                if (drag.inserted) this.selectInsertedVertex(drag.ringIdx, drag.idx);
             }
             return;
         }
@@ -1325,7 +1481,8 @@ export class DrawToolService {
                 this.state.toggleBoxSelect();
             }
         } else if (e.key === 'c' || e.key === 'C') {
-            if (!meta && !this.state.isDrawing.peek() && this.hoverVertex.peek() && this.features?.editableSelected.peek()) {
+            const target = this.vertexSelection.peek().size > 0 || this.hoverVertex.peek();
+            if (!meta && !this.state.isDrawing.peek() && target && this.features?.editableSelected.peek()) {
                 e.preventDefault();
                 this.toggleHoveredVertexCorner();
             }
@@ -1346,11 +1503,74 @@ export class DrawToolService {
         }
     }
 
+    /** Arrow keys nudge the vertex selection. Returns true when consumed. */
+    private onArrowKey(e: KeyboardEvent): boolean {
+        if (!ARROW_DIRECTIONS[e.key]) return false;
+        if (!this.isMyClaim() || e.metaKey || e.ctrlKey || e.altKey) return false;
+        const target = e.target as HTMLElement | null;
+        if (
+            target instanceof HTMLInputElement ||
+            target instanceof HTMLSelectElement ||
+            target instanceof HTMLTextAreaElement
+        ) return false;
+        if (this.state.isDrawing.peek() || this.drag || this.moveDrag) return false;
+        return this.nudgeSelectedVertices(e.key, e.shiftKey ? NUDGE_SHIFT_PX : NUDGE_PX);
+    }
+
+    /**
+     * Move the vertex selection `px` screen pixels in the arrow `key`'s
+     * screen direction, converted to EPSG:3006 meters at the current zoom
+     * and bearing. Repeats of the same key within NUDGE_COALESCE_MS extend
+     * one history entry. Returns false when there is nothing to nudge.
+     */
+    nudgeSelectedVertices(key: string, px: number): boolean {
+        const dir = ARROW_DIRECTIONS[key];
+        const features = this.features;
+        const selected = features?.editableSelected.peek();
+        const keys = this.vertexSelection.peek();
+        if (!dir || !features || !selected || keys.size === 0) return false;
+        const first = parseVertexKey(keys.values().next().value!);
+        const anchor = selected.geometry.rings[first.ringIdx]?.points[first.idx];
+        if (!anchor) return false;
+
+        const zoom = this.ctx?.map.zoom.peek() ?? 18;
+        const meters = px * metersPerPixel(zoom, sweref99tmToWgs84(anchor.x, anchor.y).lat);
+        // Screen up points along the bearing; screen right 90° clockwise of it.
+        const bearing = ((this.ctx?.map.map.peek()?.getBearing?.() ?? 0) * Math.PI) / 180;
+        const [right, up] = dir;
+        const east = right * Math.cos(bearing) + up * Math.sin(bearing);
+        const north = up * Math.cos(bearing) - right * Math.sin(bearing);
+        const geometry = translateAnchors(selected.geometry, keys, east * meters, north * meters);
+
+        const now = this.clock();
+        const run = this.nudge;
+        if (run && run.key === key && now - run.at < NUDGE_COALESCE_MS
+            && run.featureId === selected.id && run.geometry === selected.geometry && run.diff.after) {
+            run.diff.after = { ...run.diff.after, geometry };
+            run.at = now;
+            run.geometry = geometry;
+        } else {
+            const diff = {
+                featureId: selected.id,
+                before: snapshotOf(selected),
+                after: { geometry, type: selected.type, holeId: selected.holeId },
+                beforeVersion: selected.version,
+            };
+            this.record([diff]); // ends any previous run
+            this.nudge = { key, at: now, featureId: selected.id, geometry, diff };
+        }
+        features.patchLocal(selected.id, geometry);
+        void features.update(selected.id, { geometry });
+        return true;
+    }
+
     // ── Actions ───────────────────────────────────────────────────────────
 
     /** Undo the last committed edit (Cmd/Ctrl+Z, panel button). */
     undo(): void {
         if (!this.features) return;
+        this.nudge = null;
+        this.clearNotice();
         this.clearTransientOpState();
         void this.history.undo(this.features);
     }
@@ -1358,6 +1578,8 @@ export class DrawToolService {
     /** Redo the last undone edit (Cmd/Ctrl+Shift+Z / Cmd/Ctrl+Y, panel). */
     redo(): void {
         if (!this.features) return;
+        this.nudge = null;
+        this.clearNotice();
         this.clearTransientOpState();
         void this.history.redo(this.features);
     }
@@ -1400,7 +1622,7 @@ export class DrawToolService {
             geometry: { crs: 'EPSG:3006', curveType: 'bspline', rings: [ring] },
         }).then(created => {
             if (created) {
-                this.history.push([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
+                this.record([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
             }
         });
     }
@@ -1423,11 +1645,21 @@ export class DrawToolService {
         return true;
     }
 
-    /** Toggle the hovered vertex smooth↔corner ('C' key / panel button). */
+    /**
+     * Toggle smooth↔corner ('C' key / panel button): every vertex of the
+     * vertex selection when there is one, else the hovered vertex. One
+     * history entry.
+     */
     toggleHoveredVertexCorner(): void {
         const selected = this.features?.editableSelected.peek();
+        if (!selected) return;
+        const keys = this.vertexSelection.peek();
+        if (keys.size > 0) {
+            this.commitGeometry(selected.id, toggleVerticesCorner(selected.geometry, keys));
+            return;
+        }
         const hover = this.hoverVertex.peek();
-        if (!selected || !hover) return;
+        if (!hover) return;
         if (!selected.geometry.rings[hover.ringIdx]?.points[hover.idx]) return;
         this.commitGeometry(selected.id, toggleVertexCorner(selected.geometry, hover.ringIdx, hover.idx));
     }
@@ -1464,24 +1696,33 @@ export class DrawToolService {
     }
 
     /**
-     * Delete the whole selection after confirmation (key or panel button).
-     * Bulk deletes are ONE history entry.
+     * Delete the whole selection (key or panel button) as ONE history
+     * entry. Up to DELETE_CONFIRM_THRESHOLD features go without a dialog
+     * and leave an undo hint in `notice`; larger deletes ask first.
      */
     async deleteSelected(): Promise<void> {
         const features = this.features;
         const items = features?.selectedFeatures.peek() ?? [];
         if (!features || items.length === 0) return;
-        const label = items.length === 1 ? `this ${items[0].type} feature` : `${items.length} features`;
+        if (items.length <= DELETE_CONFIRM_THRESHOLD) {
+            this.commitDelete(features, items);
+            this.showNotice(`Deleted ${items.length}. ${undoModifierLabel()}+Z to undo.`);
+            return;
+        }
         const ok = await this.confirm.confirm({
-            title: items.length === 1 ? 'Delete feature?' : `Delete ${items.length} features?`,
-            body: `Delete ${label} from the course map.`,
-            detail: items.length >= 5 ? 'Bulk deletes are saved as one history entry.' : '',
-            confirmLabel: items.length === 1 ? 'Delete feature' : 'Delete features',
+            title: `Delete ${items.length} features?`,
+            body: `Delete ${items.length} features from the course map.`,
+            detail: 'Bulk deletes are saved as one history entry.',
+            confirmLabel: 'Delete features',
             tone: 'danger',
-            layout: items.length >= 5 ? 'review' : 'default',
+            layout: 'review',
         });
         if (!ok) return;
-        this.history.push(items.map(f => ({
+        this.commitDelete(features, items);
+    }
+
+    private commitDelete(features: FeaturesService, items: CourseFeature[]): void {
+        this.record(items.map(f => ({
             featureId: f.id,
             before: snapshotOf(f),
             after: null,
@@ -1506,7 +1747,7 @@ export class DrawToolService {
                 geometry: translateGeometry(f.geometry, DUPLICATE_OFFSET_M, DUPLICATE_OFFSET_M),
             })));
             if (!created) return; // save failed — history dropped via saveError watcher
-            this.history.push(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
+            this.record(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
         })();
     }
 
@@ -1540,7 +1781,7 @@ export class DrawToolService {
         // One createMany request; it selects the new rings in the same batch.
         const created = await features.createMany(plan);
         if (!created) return; // save failed — history dropped via saveError watcher
-        this.history.push(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
+        this.record(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
     }
 
     /**
@@ -1682,7 +1923,7 @@ export class DrawToolService {
         const features = this.features;
         const items = (features?.editableSelectedFeatures.peek() ?? []).filter(f => f.type !== type);
         if (!features || items.length === 0) return;
-        this.history.push(items.map(f => ({
+        this.record(items.map(f => ({
             featureId: f.id,
             before: snapshotOf(f),
             after: { ...snapshotOf(f), type },
@@ -1696,7 +1937,7 @@ export class DrawToolService {
         const features = this.features;
         const items = (features?.editableSelectedFeatures.peek() ?? []).filter(f => f.holeId !== holeId);
         if (!features || items.length === 0) return;
-        this.history.push(items.map(f => ({
+        this.record(items.map(f => ({
             featureId: f.id,
             before: snapshotOf(f),
             after: { ...snapshotOf(f), holeId },
@@ -1714,7 +1955,7 @@ export class DrawToolService {
         if (!this.features) return;
         const current = this.features.store.items.peek().find(f => f.id === id);
         if (!current) return;
-        this.history.push([{
+        this.record([{
             featureId: id,
             before: snapshotOf(current),
             after: { geometry, type: current.type, holeId: current.holeId },
@@ -1722,6 +1963,31 @@ export class DrawToolService {
         }]);
         this.features.patchLocal(id, geometry); // instant visual feedback
         void this.features.update(id, { geometry });
+    }
+
+    /**
+     * Record one committed edit. Every history push goes through here: a new
+     * edit ends the current nudge run and clears the undo hint.
+     */
+    private record(entry: HistoryEntry): void {
+        this.nudge = null;
+        this.clearNotice();
+        this.history.push(entry);
+    }
+
+    private showNotice(text: string): void {
+        this.clearNotice();
+        this.notice.set({ text, until: Date.now() + NOTICE_MS });
+        this.noticeTimer = setTimeout(() => {
+            this.noticeTimer = null;
+            this.notice.set(null);
+        }, NOTICE_MS);
+    }
+
+    private clearNotice(): void {
+        if (this.noticeTimer) clearTimeout(this.noticeTimer);
+        this.noticeTimer = null;
+        if (this.notice.peek()) this.notice.set(null);
     }
 
     /** Selection-scoped transient state (vertex sel, previews, notices). */
@@ -1793,7 +2059,7 @@ export class DrawToolService {
             geometry: translateGeometry(s.geometry, dx, dy),
         })));
         if (!created) return null; // save failed
-        this.history.push(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
+        this.record(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
         return created;
     }
 
@@ -1868,13 +2134,9 @@ export class DrawToolService {
         feature: CourseFeature,
         p: Point,
         lat: number,
-    ):
-        | { kind: 'anchor'; ringIdx: number; segIdx: number; t: number }
-        | { kind: 'control'; ringIdx: number; afterIdx: number; point: Point }
-        | null {
+    ): EdgeInsertion | null {
         const zoom = this.ctx?.map.zoom.peek() ?? 18;
-        const metersPerPx = (40075016.686 * Math.abs(Math.cos((lat * Math.PI) / 180))) / 2 ** (zoom + 8);
-        const tol = EDGE_HIT_PX * metersPerPx;
+        const tol = EDGE_HIT_PX * metersPerPixel(zoom, lat);
         const isSpline = feature.geometry.curveType === 'bspline';
 
         for (let r = 0; r < feature.geometry.rings.length; r++) {
@@ -1901,6 +2163,29 @@ export class DrawToolService {
             return { kind: 'anchor', ringIdx: r, segIdx: hit.segIdx, t: hit.t };
         }
         return null;
+    }
+
+    /** Apply an edge insertion; returns the new geometry and the new vertex index. */
+    private applyInsertion(
+        geometry: FeatureGeometry,
+        insertion: EdgeInsertion,
+    ): { geometry: FeatureGeometry; idx: number } {
+        if (insertion.kind === 'control') {
+            return {
+                geometry: insertControlPoint(geometry, insertion.ringIdx, insertion.afterIdx, insertion.point),
+                idx: insertion.afterIdx + 1,
+            };
+        }
+        return {
+            geometry: insertAnchor(geometry, insertion.ringIdx, insertion.segIdx, insertion.t),
+            idx: insertion.segIdx + 1,
+        };
+    }
+
+    /** After an insert: the new vertex is the vertex selection and the 'C' target. */
+    private selectInsertedVertex(ringIdx: number, idx: number): void {
+        this.vertexSelection.set(new Set([vertexKey(ringIdx, idx)]));
+        this.hoverVertex.set({ ringIdx, idx });
     }
 
     /** Screen-pixel distance from an EPSG:3006 point to a screen position. */

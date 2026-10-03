@@ -452,6 +452,69 @@ export function translateGeometry(geometry: FeatureGeometry, dx: number, dy: num
     return next;
 }
 
+/**
+ * Translate the anchors named by `keys` (vertexKey strings) and their
+ * handles by (dx, dy) meters. Same sharing contract as the single-vertex
+ * ops: a new geometry and rings array, a new points array for each ring
+ * with a moved anchor, every other ring and point object reused. Keys that
+ * name no anchor are ignored.
+ */
+export function translateAnchors(
+    geometry: FeatureGeometry,
+    keys: Iterable<string>,
+    dx: number,
+    dy: number,
+): FeatureGeometry {
+    const rings = geometry.rings.slice();
+    const edited = new Set<number>();
+    for (const key of keys) {
+        const { ringIdx, idx } = parseVertexKey(key);
+        const ring = rings[ringIdx];
+        const p = ring?.points[idx];
+        if (!p) continue;
+        if (!edited.has(ringIdx)) {
+            rings[ringIdx] = { points: ring.points.slice() };
+            edited.add(ringIdx);
+        }
+        const q: AnchorPoint = { x: p.x + dx, y: p.y + dy };
+        if (p.hIn) q.hIn = { x: p.hIn.x + dx, y: p.hIn.y + dy };
+        if (p.hOut) q.hOut = { x: p.hOut.x + dx, y: p.hOut.y + dy };
+        if (p.corner) q.corner = true;
+        rings[ringIdx].points[idx] = q;
+    }
+    return {
+        crs: geometry.crs,
+        ...(geometry.curveType ? { curveType: geometry.curveType } : {}),
+        rings,
+    };
+}
+
+/**
+ * Toggle smooth/corner on every anchor named by `keys` (see
+ * `toggleVertexCorner`; each vertex flips independently). Bezier smoothing
+ * reads neighbours from the input geometry, so the result does not depend
+ * on key order.
+ */
+export function toggleVerticesCorner(geometry: FeatureGeometry, keys: Iterable<string>): FeatureGeometry {
+    const rings = geometry.rings.slice();
+    const edited = new Set<number>();
+    for (const key of keys) {
+        const { ringIdx, idx } = parseVertexKey(key);
+        if (!geometry.rings[ringIdx]?.points[idx]) continue;
+        const toggled = toggleVertexCorner(geometry, ringIdx, idx).rings[ringIdx].points[idx];
+        if (!edited.has(ringIdx)) {
+            rings[ringIdx] = { points: rings[ringIdx].points.slice() };
+            edited.add(ringIdx);
+        }
+        rings[ringIdx].points[idx] = toggled;
+    }
+    return {
+        crs: geometry.crs,
+        ...(geometry.curveType ? { curveType: geometry.curveType } : {}),
+        rings,
+    };
+}
+
 // ─── Vertex bulk operations ────────────────────────────────────────────────
 
 /** Stable key for a vertex of a multi-ring geometry ("ringIdx:idx"). */
