@@ -1,6 +1,9 @@
 import { Signal, Computed, effect, untrack, di, Router } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
 import type { ToolContext } from '../editor/tool';
+import { bindDrag, type DragBinding } from '../editor/drag-binding';
+import { flatProjector } from '../editor/screen-point';
+import { ownedOverlay } from '../editor/owned-overlay';
 import type { MapPointerEvent } from '../map/map.service';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
@@ -62,8 +65,8 @@ export class FurnitureToolService {
     private confirm = di.get(ConfirmService);
     private ctx: ToolContext | null = null;
     private drag: DragTarget | null = null;
-    private suppressClick = false;
-    private overlayAdded = false;
+    /** Raw mousedown/up binding (editor/drag-binding.ts); null while inactive. */
+    private dragBinding: DragBinding | null = null;
 
     /** ?hole= carries the hole NUMBER; resolve to the Hole for the selected course. */
     private readonly selectedHoleNumber = this.router.query('hole');
@@ -137,12 +140,11 @@ export class FurnitureToolService {
         ctx.track(() => window.removeEventListener('keydown', onKeyDown));
 
         // Raw handlers for marker drag (mousedown near marker → move → up).
-        ctx.track(effect(() => {
-            if (!ctx.map.ready.get()) return;
-            const map = ctx.map.map.get();
-            if (!map) return;
-            untrack(() => this.bindRawHandlers(map, ctx));
-        }));
+        this.dragBinding = bindDrag(ctx, {
+            toolId: FURNITURE_TOOL_ID,
+            onDown: (e, map) => this.onMouseDown(e, map),
+            onUp: () => this.onMouseUp(),
+        });
 
         // Move handler for the in-progress drag.
         ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));
@@ -152,7 +154,7 @@ export class FurnitureToolService {
         this.endDrag();
         this.svc.disarm();
         this.svc.select(null);
-        this.suppressClick = false;
+        this.dragBinding = null;
     }
 
     /** ESC: cancel placement → drop selection → (unconsumed) deactivate. */
@@ -172,8 +174,7 @@ export class FurnitureToolService {
     // ── Overlay ─────────────────────────────────────────────────────────────
 
     private attachOverlay(ctx: ToolContext): () => void {
-        const disposeEffect = effect(() => {
-            const ready = ctx.map.ready.get();
+        return ownedOverlay(ctx.map, FURNITURE_OVERLAY_ID, () => {
             const holeIds = this.courseDetail.holes.get().map(h => h.id);
             // Resolve each hole's aim-line origin tee reactively. Reads
             // activeTeeName (+ per-hole tees) so a "line from" change or any
@@ -183,7 +184,7 @@ export class FurnitureToolService {
                 const origin = this.svc.lineOriginTee(holeId);
                 if (origin) lineOriginByHole.set(holeId, origin.id);
             }
-            const data = buildFurnitureGeojson({
+            return buildFurnitureGeojson({
                 tees: this.svc.tees.items.get(),
                 pins: this.svc.pins.items.get(),
                 greens: this.svc.greens.get(),
@@ -193,24 +194,7 @@ export class FurnitureToolService {
                 highlightHoleId: this.selectedHole.get()?.id ?? null,
                 lineOriginByHole,
             });
-            if (!ready) {
-                this.overlayAdded = false; // overlay died with the map
-                return;
-            }
-            if (!this.overlayAdded) {
-                ctx.map.addOverlayLayer(FURNITURE_OVERLAY_ID, data, furnitureLayers());
-                this.overlayAdded = true;
-            } else {
-                ctx.map.updateOverlayData(FURNITURE_OVERLAY_ID, data);
-            }
-        });
-        return () => {
-            disposeEffect();
-            if (this.overlayAdded) {
-                ctx.map.removeOverlayLayer(FURNITURE_OVERLAY_ID);
-                this.overlayAdded = false;
-            }
-        };
+        }, furnitureLayers);
     }
 
     // ── Event handling ──────────────────────────────────────────────────────
@@ -221,7 +205,7 @@ export class FurnitureToolService {
 
     private onClick(e: MapPointerEvent): void {
         if (!this.isMyClaim()) return;
-        if (this.suppressClick) return;
+        if (this.dragBinding?.clickSuppressed) return;
 
         const kind = this.svc.placing.peek();
         if (kind !== null) {
@@ -255,29 +239,16 @@ export class FurnitureToolService {
         this.patchLocal(drag.hit, e.lngLat.lat, e.lngLat.lng);
     }
 
-    private bindRawHandlers(map: MaplibreMap, ctx: ToolContext): void {
-        const onMouseDown = (e: MapMouseEvent) => this.onMouseDown(e, map);
-        const onMouseUp = () => this.onMouseUp(map);
-        map.on('mousedown', onMouseDown);
-        map.on('mouseup', onMouseUp);
-        ctx.track(() => {
-            map.off('mousedown', onMouseDown);
-            map.off('mouseup', onMouseUp);
-        });
-    }
-
+    /**
+     * Left press under the furniture claim. Cmd/Ctrl-drag pans even from a
+     * marker: the drag binding filters that press before it gets here.
+     */
     private onMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
-        if (!this.isMyClaim()) return;
-        if (e.originalEvent.button !== 0) return;
-        // ⌘/Ctrl-drag pans even from a marker (draw-tool convention): return
-        // without grabbing so MapLibre's native dragPan takes the gesture.
-        if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
         if (this.svc.placing.peek() !== null) return;
 
         const hit = this.hitMarker(e.point);
         if (!hit) return;
-        e.preventDefault(); // stops the map's drag-pan for this gesture
-        map.dragPan.disable();
+        this.dragBinding?.claim(e, map);
         this.svc.select(hitToSelection(hit));
         this.drag = {
             hit,
@@ -286,14 +257,13 @@ export class FurnitureToolService {
         };
     }
 
-    private onMouseUp(map: MaplibreMap): void {
+    private onMouseUp(): void {
         const drag = this.drag;
         if (!drag) return;
-        this.endDrag(map);
+        this.endDrag();
 
         // Swallow the click MapLibre synthesizes right after this mouseup.
-        this.suppressClick = true;
-        setTimeout(() => { this.suppressClick = false; }, 0);
+        this.dragBinding?.suppressNextClick();
 
         if (!drag.moved) return;
         const pos = this.currentPos(drag.hit);
@@ -470,10 +440,11 @@ export class FurnitureToolService {
         if (!map) return null;
         let best: MarkerHit | null = null;
         let bestDist = radiusPx;
+        const project = flatProjector(map);
         const consider = (hit: MarkerHit, lat: number, lon: number) => {
             const pos = finiteWgs84Point(lat, lon);
             if (!pos) return;
-            const p = map.project([pos.lon, pos.lat]);
+            const p = project(pos.lon, pos.lat);
             const d = Math.hypot(p.x - screen.x, p.y - screen.y);
             if (d < bestDist) { bestDist = d; best = hit; }
         };
@@ -523,10 +494,10 @@ export class FurnitureToolService {
         }
     }
 
-    private endDrag(map?: MaplibreMap): void {
+    private endDrag(): void {
         if (!this.drag) return;
         this.drag = null;
-        (map ?? this.ctx?.map.map.peek())?.dragPan.enable();
+        this.dragBinding?.release();
     }
 
     private pxDist(a: { x: number; y: number }, b: { x: number; y: number }): number {

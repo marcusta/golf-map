@@ -1,6 +1,7 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, panelTitle } from '../css';
+import { s } from '../css';
+import { dockBody, sectionTitle, statusRow, smallBtn, busyAndNotice, hintsFooter } from '../editor/panel-recipes.css';
 import { CleanToolService, type CleanMode } from './clean-tool.service';
 
 const tpl = template(`
@@ -76,47 +77,15 @@ export class CleanPanelComponent extends Component {
     static styles = `
         .clean-panel {
             /* Flat dock body (feature-dock.component.ts hosting contract). */
-            display: flex;
-            flex-direction: column;
-            gap: var(--space-3);
-            padding: var(--space-3) var(--space-4) var(--space-4);
-            font-size: 0.8rem;
-            color: ${t('color-text-primary')};
+            ${dockBody()}
 
-            & .section-title {
-                margin: 0 0 ${s('xs')};
-                ${panelTitle()}
-            }
+            ${sectionTitle()}
 
-            & .status-row {
-                display: flex;
-                align-items: center;
-                gap: ${s('sm')};
-            }
-
-            & .status-dot {
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                background: ${t('color-text-secondary')};
-                flex: none;
-                &.online { background: var(--data-good); }
-                &.offline { background: var(--data-bad); }
-                &.degraded { background: var(--data-risk); }
-            }
-
-            & .status-text { flex: 1; }
+            ${statusRow()}
 
             & .small-btn {
                 display: inline-block;
-                font: inherit;
-                font-size: 0.72rem;
-                padding: 2px ${s('sm')};
-                border: 1px solid ${t('color-border-default')};
-                border-radius: ${t('radius-sm')};
-                background: transparent;
-                color: ${t('color-text-primary')};
-                cursor: pointer;
+                ${smallBtn()}
                 &.hidden { display: none; }
                 &:disabled { opacity: 0.45; cursor: default; }
             }
@@ -195,11 +164,6 @@ export class CleanPanelComponent extends Component {
                 &.show { display: block; }
             }
 
-            & .busy-line {
-                display: none;
-                color: ${t('color-text-secondary')};
-                &.show { display: block; }
-            }
 
             & .preview-section, & .pending-section {
                 display: none;
@@ -240,23 +204,9 @@ export class CleanPanelComponent extends Component {
 
             & .patch-count { color: ${t('color-text-secondary')}; }
 
-            & .notice {
-                display: none;
-                color: var(--data-bad);
-                line-height: 1.4;
-                &.show { display: block; }
-            }
+            ${busyAndNotice()}
 
-            & .clean-panel__hints {
-                padding-top: var(--space-3);
-                border-top: 1px solid ${t('color-border-default')};
-                display: flex;
-                flex-direction: column;
-                gap: ${s('xs')};
-                font-size: 0.72rem;
-                color: ${t('color-text-secondary')};
-                line-height: 1.4;
-            }
+            ${hintsFooter('clean-panel__hints')}
         }
     `;
 

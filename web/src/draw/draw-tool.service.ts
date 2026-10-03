@@ -2,6 +2,10 @@ import { Signal, Computed, effect, untrack, batch, di } from '@basics/core/clien
 import type { Map as MaplibreMap, MapMouseEvent, FilterSpecification } from 'maplibre-gl';
 import type { Feature, FeatureCollection, Position } from 'geojson';
 import type { ToolContext } from '../editor/tool';
+import { bindDrag, type DragBinding } from '../editor/drag-binding';
+import { screenDistSweref } from '../editor/screen-point';
+import { ownedOverlay } from '../editor/owned-overlay';
+import { canvasCursor } from '../editor/canvas-cursor';
 import type { MapPointerEvent, OverlayLayerSpec } from '../map/map.service';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { geometryToWgs84Rings, type FeaturesService } from './features.service';
@@ -542,8 +546,8 @@ export class DrawToolService {
     private trace = new FrameSignal<Point[] | null>(null, this.frames);
     /** Armed repeat-stamp template, or null when stamp mode is inactive. */
     private stampMode: StampTemplate | null = null;
-    private suppressClick = false;
-    private previewAdded = false;
+    /** Raw mousedown/up binding (editor/drag-binding.ts); null while inactive. */
+    private dragBinding: DragBinding | null = null;
 
     /**
      * Alt/Option+click cycle state (D27): repeated alt-clicks at the same
@@ -657,14 +661,15 @@ export class DrawToolService {
         ctx.track(() => window.removeEventListener('blur', onBlur));
 
         // Raw map handlers (mousedown/up for drags + marquee, dblclick to
-        // swallow duplicate draw points, contextmenu to delete vertices) —
-        // re-bound if the map is recreated while the tool is active.
-        ctx.track(effect(() => {
-            if (!ctx.map.ready.get()) return;
-            const map = ctx.map.map.get();
-            if (!map) return;
-            untrack(() => this.bindRawHandlers(map, ctx));
-        }));
+        // swallow duplicate draw points, contextmenu to delete vertices),
+        // re-bound if the map is recreated while the tool is active. The
+        // binding applies the left-button and Cmd/Ctrl pan-escape gates.
+        this.dragBinding = bindDrag(ctx, {
+            toolId: DRAW_TOOL_ID,
+            onDown: (e, map) => this.onMouseDown(e, map),
+            onUp: (e, map) => this.onMouseUp(e, map),
+            bindExtra: map => this.bindExtraHandlers(map),
+        });
 
         // Arming a draw exits repeat-stamp mode (T42): a fresh draw supersedes
         // repeat placement. `stampMode` is a plain field, so clearing it is not
@@ -692,46 +697,19 @@ export class DrawToolService {
 
         // Preview overlay: draft outline + vertex/bezier-handle markers +
         // marquee rectangle + offset/simplify dashed previews.
-        ctx.track(effect(() => {
-            const ready = ctx.map.ready.get();
-            const data = this.previewGeojson();
-            if (!ready) {
-                this.previewAdded = false;
-                return;
-            }
-            if (!this.previewAdded) {
-                ctx.map.addOverlayLayer(DRAW_OVERLAY_ID, data, previewLayers(), { keepOnTop: true });
-                this.previewAdded = true;
-            } else {
-                ctx.map.updateOverlayData(DRAW_OVERLAY_ID, data);
-            }
-        }));
-        ctx.track(() => {
-            if (this.previewAdded) {
-                ctx.map.removeOverlayLayer(DRAW_OVERLAY_ID);
-                this.previewAdded = false;
-            }
-        });
+        ctx.track(ownedOverlay(ctx.map, DRAW_OVERLAY_ID, () => this.previewGeojson(), previewLayers, { keepOnTop: true }));
 
         // Crosshair cursor while drawing. Shift gestures belong to the
         // tool in BOTH modes (Shift+click corner points while drawing,
         // Shift+click/drag vertex selection while editing), so MapLibre's
         // shift-drag box zoom is disabled for the whole activation span.
+        ctx.track(canvasCursor(ctx.map, () =>
+            this.state.isDrawing.get() || this.state.boxSelect.get() || this.spaceHeld.get() ? 'crosshair' : ''));
         ctx.track(effect(() => {
             if (!ctx.map.ready.get()) return;
-            const drawing = this.state.isDrawing.get();
-            const boxMode = this.state.boxSelect.get() || this.spaceHeld.get();
-            const map = ctx.map.map.get();
-            if (!map) return;
-            map.getCanvas().style.cursor = drawing || boxMode ? 'crosshair' : '';
-            map.boxZoom.disable();
+            ctx.map.map.get()?.boxZoom.disable();
         }));
-        ctx.track(() => {
-            const map = ctx.map.map.peek();
-            if (!map) return;
-            map.getCanvas().style.cursor = '';
-            map.boxZoom.enable();
-        });
+        ctx.track(() => ctx.map.map.peek()?.boxZoom.enable());
     }
 
     deactivate(): void {
@@ -750,7 +728,7 @@ export class DrawToolService {
         this.features?.niceRendering.set(true);
         // Send debounced geometry saves now rather than after the debounce.
         void this.features?.flush();
-        this.suppressClick = false;
+        this.dragBinding = null;
         this.ctx = null;
     }
 
@@ -791,7 +769,7 @@ export class DrawToolService {
         }
         if (this.marquee.peek()) {
             this.marquee.set(null);
-            this.ctx?.map.map.peek()?.dragPan.enable();
+            this.dragBinding?.release();
             return true;
         }
         if (this.offsetDistance.peek() !== null || this.simplifyActive.peek()) {
@@ -818,13 +796,13 @@ export class DrawToolService {
 
     private onClick(e: MapPointerEvent): void {
         if (!this.isMyClaim()) return;
-        if (this.suppressClick) return;
+        if (this.dragBinding?.clickSuppressed) return;
 
         const p = lngLatToSweref99tm(e.lngLat);
 
         if (this.state.isDrawing.peek()) {
             const draft = this.state.draft.peek();
-            if (draft.length >= 3 && this.screenDist(draft[0], e.point) < CLOSE_RING_PX) {
+            if (draft.length >= 3 && this.screenDistTo(draft[0], e.point) < CLOSE_RING_PX) {
                 this.closeDraft();
                 return;
             }
@@ -991,13 +969,10 @@ export class DrawToolService {
         this.dragGhost.setLater(() => [{ id: drag.featureId, type: drag.featureType, geometry }]);
     }
 
-    private bindRawHandlers(map: MaplibreMap, ctx: ToolContext): void {
-        const onMouseDown = (e: MapMouseEvent) => this.onMouseDown(e, map);
-        const onMouseUp = (e: MapMouseEvent) => this.onMouseUp(e, map);
+    /** dblclick, contextmenu and camera listeners; bound by the drag binding. */
+    private bindExtraHandlers(map: MaplibreMap): () => void {
         const onDblClick = (e: MapMouseEvent) => this.onDblClick(e);
         const onContextMenu = (e: MapMouseEvent) => this.onContextMenu(e, map);
-        map.on('mousedown', onMouseDown);
-        map.on('mouseup', onMouseUp);
         map.on('dblclick', onDblClick);
         map.on('contextmenu', onContextMenu);
         // Camera changes invalidate the projected vertex cache. The camera
@@ -1006,19 +981,21 @@ export class DrawToolService {
         const onCamera = () => this.screenPoints.invalidate();
         map.on('move', onCamera);
         map.on('resize', onCamera);
-        ctx.track(() => {
+        return () => {
             map.off('move', onCamera);
             map.off('resize', onCamera);
-            map.off('mousedown', onMouseDown);
-            map.off('mouseup', onMouseUp);
             map.off('dblclick', onDblClick);
             map.off('contextmenu', onContextMenu);
-        });
+        };
     }
 
+    /**
+     * Left press under the draw claim. The drag binding already returned on
+     * Cmd/Ctrl (the pan escape, editor/drag-binding.ts), so a Cmd/Ctrl press
+     * never reaches here: MapLibre's native dragPan pans, and a stationary
+     * Cmd/Ctrl-click still toggles selection in onClick.
+     */
     private onMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
-        if (!this.isMyClaim()) return;
-        if (e.originalEvent.button !== 0) return;
         if (this.state.mode.peek() === 'draw') {
             this.onDrawMouseDown(e, map);
             return;
@@ -1026,26 +1003,23 @@ export class DrawToolService {
         const features = this.features;
         if (!features) return;
 
-        const meta = e.originalEvent.metaKey || e.originalEvent.ctrlKey;
         const shift = e.originalEvent.shiftKey;
         const single = features.editableSelected.peek();
 
         // 0. Box-select (sticky 'B' toggle or Space held): a left-drag
         //    rubber-bands features regardless of what it lands on — even a
         //    shape that a plain drag would move, or the selected feature's
-        //    vertices. Meta still falls through so ⌘/Ctrl-click toggle-select
-        //    keeps working; a sub-threshold drag decays to a plain click in
+        //    vertices. A sub-threshold drag decays to a plain click in
         //    onMouseUp (selects the shape under the cursor).
-        if ((this.state.boxSelect.peek() || this.spaceHeld.peek()) && !meta) {
-            e.preventDefault();
-            map.dragPan.disable();
+        if (this.state.boxSelect.peek() || this.spaceHeld.peek()) {
+            this.dragBinding?.claim(e, map);
             const start = lngLatToSweref99tm(e.lngLat);
             this.marquee.set({ kind: 'features', start, current: start, startScreen: { x: e.point.x, y: e.point.y } });
             return;
         }
 
         // 1. Vertex/handle interactions on the single selected feature.
-        if (single && !meta) {
+        if (single) {
             const hit = this.hitVertexOrHandle(map, single, e.point);
             if (hit) {
                 if (shift && hit.kind === 'anchor') {
@@ -1055,8 +1029,7 @@ export class DrawToolService {
                     this.suppressNextClick();
                     return;
                 }
-                e.preventDefault(); // stops the map's drag-pan for this gesture
-                map.dragPan.disable();
+                this.dragBinding?.claim(e, map);
                 const anchor = single.geometry.rings[hit.ringIdx].points[hit.idx];
                 // Bezier handles don't exist on spline features: alt-drag
                 // falls back to a plain control-point drag there.
@@ -1100,8 +1073,7 @@ export class DrawToolService {
                 const p = lngLatToSweref99tm(e.lngLat);
                 const insertion = this.edgeInsertionHit(single, p, e.lngLat.lat);
                 if (insertion) {
-                    e.preventDefault();
-                    map.dragPan.disable();
+                    this.dragBinding?.claim(e, map);
                     const inserted = this.applyInsertion(single.geometry, insertion);
                     // Indices shift with the insert: drop index-keyed state.
                     this.hoverVertex.set(null);
@@ -1128,15 +1100,6 @@ export class DrawToolService {
             }
         }
 
-        // Cmd/Ctrl+press is a selection-toggle click — never a tool drag.
-        // Returning WITHOUT preventDefault/dragPan.disable deliberately leaves
-        // MapLibre's native dragPan engaged, so ⌘-drag PANS the map — the
-        // trackpad equivalent of the middle-button pan escape hatch in
-        // map.service.ts (MapLibre's pan accepts meta; only ctrl is reserved
-        // for rotate). A real drag exceeds clickTolerance and suppresses the
-        // click, so the selection toggle only fires on a stationary ⌘-click.
-        if (meta) return;
-
         const p = lngLatToSweref99tm(e.lngLat);
 
         // 1b. Alt+press inside the selection (not on a vertex/handle — those
@@ -1146,8 +1109,7 @@ export class DrawToolService {
         if (e.originalEvent.altKey && !shift) {
             const selectedFeatures = features.editableSelectedFeatures.peek();
             if (selectedFeatures.some(f => pointInGeometry(p, f.geometry))) {
-                e.preventDefault();
-                map.dragPan.disable();
+                this.dragBinding?.claim(e, map);
                 this.stampDrag = {
                     kind: 'duplicate',
                     refEpsg: p,
@@ -1167,8 +1129,7 @@ export class DrawToolService {
         //    (axis-aligned, only that feature's control/anchor points).
         if (shift) {
             if (single) {
-                e.preventDefault();
-                map.dragPan.disable();
+                this.dragBinding?.claim(e, map);
                 this.marquee.set({ kind: 'vertices', start: p, current: p, startScreen: { x: e.point.x, y: e.point.y } });
             }
             return;
@@ -1177,8 +1138,7 @@ export class DrawToolService {
         // 3. Drag inside a selected feature: move the whole selection.
         const selectedFeatures = features.editableSelectedFeatures.peek();
         if (selectedFeatures.some(f => pointInGeometry(p, f.geometry))) {
-            e.preventDefault();
-            map.dragPan.disable();
+            this.dragBinding?.claim(e, map);
             this.moveDrag = {
                 startEpsg: p,
                 startScreen: { x: e.point.x, y: e.point.y },
@@ -1201,8 +1161,7 @@ export class DrawToolService {
         //    (A drag starting inside an UNSELECTED feature stays with the
         //    map's default pan; plain clicks still select it.)
         if (!this.hitFeature(p)) {
-            e.preventDefault();
-            map.dragPan.disable();
+            this.dragBinding?.claim(e, map);
             if (this.stampMode) {
                 this.startStampDrag(p, { x: e.point.x, y: e.point.y });
             } else {
@@ -1220,17 +1179,14 @@ export class DrawToolService {
      * unchanged via onClick).
      *
      * Pan escape hatches while armed: middle-button (map.service) and
-     * ⌘/Ctrl-drag — returning without preventDefault keeps MapLibre's
-     * native dragPan engaged, exactly like the select-mode meta-pan below.
-     * And once click-placement has begun (non-empty draft) a left-drag
+     * Cmd/Ctrl-drag, which the drag binding filters before this runs. And
+     * once click-placement has begun (non-empty draft) a left-drag
      * keeps the native pan too: a trace always starts a FRESH shape, so
      * mid-draft panning behaves exactly as before.
      */
     private onDrawMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
-        if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
         if (this.state.draft.peek().length > 0) return;
-        e.preventDefault();
-        map.dragPan.disable();
+        this.dragBinding?.claim(e, map);
         this.traceGesture = new TraceGesture(
             { x: e.point.x, y: e.point.y },
             lngLatToSweref99tm(e.lngLat),
@@ -1269,7 +1225,7 @@ export class DrawToolService {
         if (trace) {
             this.traceGesture = null;
             this.trace.set(null);
-            map.dragPan.enable();
+            this.dragBinding?.release(map);
             // Sub-threshold press decays to a plain click: do NOT suppress
             // the click MapLibre synthesizes — onClick places the point
             // (Shift-corner / close-ring hit included) exactly as before.
@@ -1282,7 +1238,7 @@ export class DrawToolService {
         const stamp = this.stampDrag;
         if (stamp) {
             this.stampDrag = null;
-            map.dragPan.enable();
+            this.dragBinding?.release(map);
             this.dragGhost.set(null);
             // Sub-threshold duplicate-drag: decay to the Alt-cycle click. Do
             // NOT suppress the synthesized click — onClick's Alt path cycles
@@ -1311,7 +1267,7 @@ export class DrawToolService {
         const marquee = this.marquee.peek();
         if (marquee) {
             this.marquee.set(null);
-            map.dragPan.enable();
+            this.dragBinding?.release(map);
             if (this.pxDist(marquee.startScreen, e.point) < MARQUEE_MIN_PX) return; // a click — let onClick handle it
             this.suppressNextClick();
             const rect = rectFromCorners(marquee.start, lngLatToSweref99tm(e.lngLat));
@@ -1332,7 +1288,7 @@ export class DrawToolService {
         const move = this.moveDrag;
         if (move) {
             this.moveDrag = null;
-            map.dragPan.enable();
+            this.dragBinding?.release(map);
             if (!move.moved || !this.features) return; // plain click — let onClick handle it
             this.suppressNextClick();
             const features = this.features;
@@ -2000,8 +1956,7 @@ export class DrawToolService {
     }
 
     private suppressNextClick(): void {
-        this.suppressClick = true;
-        setTimeout(() => { this.suppressClick = false; }, 0);
+        this.dragBinding?.suppressNextClick();
     }
 
     private endDrag(map?: MaplibreMap): void {
@@ -2011,7 +1966,7 @@ export class DrawToolService {
             this.features?.setDragging([this.drag.featureId], false);
         }
         this.drag = null;
-        (map ?? this.ctx?.map.map.peek())?.dragPan.enable();
+        this.dragBinding?.release(map);
     }
 
     /** Abort an in-progress whole-selection move without committing. */
@@ -2023,7 +1978,7 @@ export class DrawToolService {
             this.dragGhost.set(null);
             this.features?.setDragging(move.features.map(f => f.id), false);
         }
-        this.ctx?.map.map.peek()?.dragPan.enable();
+        this.dragBinding?.release();
     }
 
     /** Discard an in-progress freehand trace (ESC / deactivate). */
@@ -2031,7 +1986,7 @@ export class DrawToolService {
         if (!this.traceGesture) return;
         this.traceGesture = null;
         this.trace.set(null);
-        this.ctx?.map.map.peek()?.dragPan.enable();
+        this.dragBinding?.release();
     }
 
     /** Abort an in-progress duplicate-drag / stamp-drag without committing. */
@@ -2039,7 +1994,7 @@ export class DrawToolService {
         if (!this.stampDrag) return;
         this.stampDrag = null;
         this.dragGhost.set(null);
-        this.ctx?.map.map.peek()?.dragPan.enable();
+        this.dragBinding?.release();
     }
 
     /**
@@ -2188,13 +2143,10 @@ export class DrawToolService {
         this.hoverVertex.set({ ringIdx, idx });
     }
 
-    /** Screen-pixel distance from an EPSG:3006 point to a screen position. */
-    private screenDist(p: Point, screen: { x: number; y: number }, map?: MaplibreMap): number {
-        const m = map ?? this.ctx?.map.map.peek();
-        if (!m) return Infinity;
-        const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
-        const projected = m.project([lon, lat]);
-        return Math.hypot(projected.x - screen.x, projected.y - screen.y);
+    /** Flat screen-pixel distance from an EPSG:3006 point to a screen position. */
+    private screenDistTo(p: Point, screen: { x: number; y: number }): number {
+        const m = this.ctx?.map.map.peek();
+        return m ? screenDistSweref(m, p, screen) : Infinity;
     }
 
     private pxDist(a: { x: number; y: number }, b: { x: number; y: number }): number {

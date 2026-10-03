@@ -1,6 +1,7 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, primaryBtn, field, metric, panelTitle } from '../css';
+import { s, btn, primaryBtn, field, metric } from '../css';
+import { sectionTitle } from '../editor/panel-recipes.css';
 import { FurnitureService, TEE_COLORS, PIN_DIFFICULTIES, type PlacementKind, type GreenPoint } from './furniture.service';
 import { FurnitureToolService } from './furniture-tool.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
@@ -97,10 +98,7 @@ export class FurniturePanelComponent extends Component {
                 gap: var(--space-2);
             }
 
-            & .section-title {
-                margin: 0;
-                ${panelTitle()}
-            }
+            ${sectionTitle('0')}
 
             & .place-grid {
                 display: grid;

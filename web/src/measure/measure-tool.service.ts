@@ -2,6 +2,9 @@ import { Signal, Computed, effect, untrack } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
 import type { Feature, FeatureCollection, Position } from 'geojson';
 import type { ToolContext } from '../editor/tool';
+import { canvasCursor } from '../editor/canvas-cursor';
+import { ownedOverlay } from '../editor/owned-overlay';
+import { screenDistLngLat } from '../editor/screen-point';
 import type { MapPointerEvent, OverlayLayerSpec } from '../map/map.service';
 import { lngLatToSweref99tm } from '../geo/transform';
 import { MeasureState, type MeasurePoint } from './measure-state';
@@ -91,10 +94,8 @@ export class MeasureToolService {
 
     private elevation: MeasureElevationSampler = NULL_ELEVATION;
     private ctx: ToolContext | null = null;
-    private overlayAdded = false;
     /** Monotonic token so stale async elevation/profile results are dropped. */
     private seq = 0;
-    private suppressClick = false;
 
     /** Bind the live elevation sampler (ElevationService) — called in attach. */
     useElevation(sampler: MeasureElevationSampler): void {
@@ -128,37 +129,10 @@ export class MeasureToolService {
 
         // Overlay: main line + point markers + last-segment helper triangle.
         // Re-added whenever the map becomes ready (overlays die with the map).
-        ctx.track(effect(() => {
-            const ready = ctx.map.ready.get();
-            const data = this.overlayGeojson();
-            if (!ready) {
-                this.overlayAdded = false;
-                return;
-            }
-            if (!this.overlayAdded) {
-                ctx.map.addOverlayLayer(MEASURE_OVERLAY_ID, data, measureLayers());
-                this.overlayAdded = true;
-            } else {
-                ctx.map.updateOverlayData(MEASURE_OVERLAY_ID, data);
-            }
-        }));
-        ctx.track(() => {
-            if (this.overlayAdded) {
-                ctx.map.removeOverlayLayer(MEASURE_OVERLAY_ID);
-                this.overlayAdded = false;
-            }
-        });
+        ctx.track(ownedOverlay(ctx.map, MEASURE_OVERLAY_ID, () => this.overlayGeojson(), measureLayers));
 
         // Crosshair cursor while measuring.
-        ctx.track(effect(() => {
-            if (!ctx.map.ready.get()) return;
-            const canvas = ctx.map.map.get()?.getCanvas();
-            if (canvas) canvas.style.cursor = 'crosshair';
-        }));
-        ctx.track(() => {
-            const canvas = ctx.map.map.get()?.getCanvas();
-            if (canvas) canvas.style.cursor = '';
-        });
+        ctx.track(canvasCursor(ctx.map, () => 'crosshair'));
 
         // Recompute the elevation profile whenever the path geometry changes.
         ctx.track(effect(() => {
@@ -168,7 +142,6 @@ export class MeasureToolService {
     }
 
     deactivate(): void {
-        this.suppressClick = false;
         this.ctx = null;
     }
 
@@ -199,7 +172,6 @@ export class MeasureToolService {
 
     private onClick(e: MapPointerEvent): void {
         if (!this.isMyClaim()) return;
-        if (this.suppressClick) return;
 
         // Click near the start point (while an active, un-ended path exists)
         // ends the path instead of extending it.
@@ -369,12 +341,10 @@ export class MeasureToolService {
         return { type: 'FeatureCollection', features };
     }
 
-    /** Screen-pixel distance from a placed point to a screen position. */
+    /** Flat screen-pixel distance from a placed point to a screen position. */
     private screenDist(p: MeasurePoint, screen: { x: number; y: number }): number {
         const map = this.ctx?.map.map.peek();
-        if (!map) return Infinity;
-        const projected = map.project([p.lng, p.lat]);
-        return Math.hypot(projected.x - screen.x, projected.y - screen.y);
+        return map ? screenDistLngLat(map, p, screen) : Infinity;
     }
 }
 

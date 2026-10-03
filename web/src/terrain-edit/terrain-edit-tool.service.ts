@@ -19,6 +19,8 @@
 // load under bun test — same split as the analysis tool).
 
 import { Signal, Computed, effect, untrack } from '@basics/core/client/core';
+import { canvasCursor } from '../editor/canvas-cursor';
+import { screenDistSweref } from '../editor/screen-point';
 import { api } from '../api';
 import type { TerrainEdit, TerrainEditsApi } from '../../../shared/api/terrain-edits.gen';
 import type { MapBuildApi, MapBuildJob } from '../../../shared/api/map-build.gen';
@@ -27,7 +29,7 @@ import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent, MapService } from '../map/map.service';
 import type { AnchorPoint } from '../geo/bezier';
 import { DrawState, MIN_RING_POINTS } from '../draw/draw-state';
-import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../geo/transform';
+import { lngLatToSweref99tm } from '../geo/transform';
 
 /** Interaction-claim id for the terrain-edit tool (also its registry id). */
 export const TERRAIN_EDIT_TOOL_ID = 'terrain-edit';
@@ -154,15 +156,7 @@ export class TerrainEditToolService {
         });
 
         // Crosshair while placing points.
-        ctx.track(effect(() => {
-            if (!ctx.map.ready.get()) return;
-            const canvas = ctx.map.map.get()?.getCanvas();
-            if (canvas) canvas.style.cursor = 'crosshair';
-        }));
-        ctx.track(() => {
-            const canvas = ctx.map.map.peek()?.getCanvas();
-            if (canvas) canvas.style.cursor = '';
-        });
+        ctx.track(canvasCursor(ctx.map, () => 'crosshair'));
 
         // The tool is always drawing — there is no select sub-mode here.
         this.state.arm();
@@ -380,20 +374,17 @@ export class TerrainEditToolService {
         // Interaction contract (map/interaction.ts): bail unless we hold the claim.
         if (this.ctx?.map.interactionMode.peek() !== TERRAIN_EDIT_TOOL_ID) return;
         const draft = this.state.draft.peek();
-        if (draft.length >= MIN_RING_POINTS && this.screenDist(draft[0], e.point) < CLOSE_RING_PX) {
+        if (draft.length >= MIN_RING_POINTS && this.screenDistTo(draft[0], e.point) < CLOSE_RING_PX) {
             void this.closeDraft();
             return;
         }
         this.state.addPoint(lngLatToSweref99tm(e.lngLat));
     }
 
-    /** Screen-pixel distance from an EPSG:3006 point to a screen position. */
-    private screenDist(p: AnchorPoint, screen: { x: number; y: number }): number {
+    /** Flat screen-pixel distance from an EPSG:3006 point to a screen position. */
+    private screenDistTo(p: AnchorPoint, screen: { x: number; y: number }): number {
         const map = this.ctx?.map.map.peek();
-        if (!map) return Infinity;
-        const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
-        const projected = map.project([lon, lat]);
-        return Math.hypot(projected.x - screen.x, projected.y - screen.y);
+        return map ? screenDistSweref(map, p, screen) : Infinity;
     }
 
     // ── Overlay flush (microtask-coalesced) ────────────────────────────────

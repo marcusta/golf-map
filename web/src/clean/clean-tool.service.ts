@@ -55,6 +55,7 @@ import { Signal, effect } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
 import type { GeoJSON } from 'geojson';
 import type { ToolContext } from '../editor/tool';
+import { bindDrag, type DragBinding } from '../editor/drag-binding';
 import type { MapPointerEvent } from '../map/map.service';
 import { tileUrlTemplate } from '../map/map-style';
 import { deriveTileVersion } from '../map/tileset.service';
@@ -62,7 +63,9 @@ import type { OrthoPatchesApi } from '../../../shared/api/ortho-patches.gen';
 import { api } from '../api';
 import { lngLatToSweref99tm } from '../geo/transform';
 import { SamClient, largestPolygon, SAM_CROP_SIZE } from '../sam/sam-client';
-import { planCrop, cropPixelToLngLat, cropPixelToSweref, fillTileUrl, type CropPlan } from '../sam/sam-crop';
+import { planCrop, cropPixelToLngLat, cropPixelToSweref, type CropPlan } from '../sam/sam-crop';
+import { canvasToBase64, composeCropCanvas, cropTiles, type CropTile } from '../imaging/crop-source';
+import { SidecarHealth, type SidecarStatus } from '../imaging/sidecar-health';
 import { CleanClient } from './clean-client';
 import {
     dilateMask,
@@ -104,7 +107,7 @@ const STAMP_MAX_PATH_POINTS = 1500;
 
 export type CleanMode = 'click' | 'ellipse' | 'stamp';
 export type CleanPhase = 'idle' | 'working' | 'preview' | 'applying';
-export type CleanHealth = 'checking' | 'online' | 'offline';
+export type CleanHealth = SidecarStatus;
 
 /**
  * Browser-only imaging seam: crop composition and PNG encoding need canvas,
@@ -114,54 +117,21 @@ export type CleanHealth = 'checking' | 'online' | 'offline';
 export interface CleanImaging {
     /** Compose the ortho crop from tiles → base64 PNG (lossless — unmasked
      * result pixels stay byte-identical through the sidecar round trip). */
-    composeCropPng(tiles: Array<{ url: string; dx: number; dy: number }>, size: number): Promise<string>;
+    composeCropPng(tiles: CropTile[], size: number): Promise<string>;
     /** Mask bitmap → base64 PNG (white = inpaint) — sent to the sidecar for
      * the preview AND to the server on bake (the mask-edit payload). */
     encodeMaskPng(mask: Uint8Array, size: number): Promise<string>;
     /** Compose the ortho crop from tiles → flat RGBA pixels (size×size×4) —
      * the clone-stamp preview surface. */
-    composeCropPixels(tiles: Array<{ url: string; dx: number; dy: number }>, size: number): Promise<Uint8ClampedArray>;
+    composeCropPixels(tiles: CropTile[], size: number): Promise<Uint8ClampedArray>;
     /** Flat RGBA pixels → PNG data URL for the image overlay. */
     pixelsToPngDataUrl(pixels: Uint8ClampedArray, size: number): Promise<string>;
-}
-
-async function blobToBase64(blob: Blob): Promise<string> {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-    });
-    return dataUrl.slice(dataUrl.indexOf(',') + 1);
-}
-
-async function composeCropCanvas(
-    tiles: Array<{ url: string; dx: number; dy: number }>,
-    size: number,
-): Promise<OffscreenCanvas> {
-    const canvas = new OffscreenCanvas(size, size);
-    const ctx = canvas.getContext('2d')!;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, size, size);
-    await Promise.all(tiles.map(async tile => {
-        try {
-            const res = await fetch(tile.url);
-            if (!res.ok) return; // out-of-coverage tile — keep background
-            const bitmap = await createImageBitmap(await res.blob());
-            ctx.drawImage(bitmap, tile.dx, tile.dy);
-            bitmap.close();
-        } catch {
-            // Network hiccup on one tile: clean what we have.
-        }
-    }));
-    return canvas;
 }
 
 /** Real canvas implementation of the imaging seam. */
 export const browserCleanImaging: CleanImaging = {
     async composeCropPng(tiles, size) {
-        const canvas = await composeCropCanvas(tiles, size);
-        return blobToBase64(await canvas.convertToBlob({ type: 'image/png' }));
+        return canvasToBase64(await composeCropCanvas(tiles, size), 'image/png');
     },
 
     async encodeMaskPng(mask, size) {
@@ -176,7 +146,7 @@ export const browserCleanImaging: CleanImaging = {
             img.data[i * 4 + 3] = 255;
         }
         ctx.putImageData(img, 0, 0);
-        return blobToBase64(await canvas.convertToBlob({ type: 'image/png' }));
+        return canvasToBase64(canvas, 'image/png');
     },
 
     async composeCropPixels(tiles, size) {
@@ -190,7 +160,7 @@ export const browserCleanImaging: CleanImaging = {
         const img = ctx.createImageData(size, size);
         img.data.set(pixels);
         ctx.putImageData(img, 0, 0);
-        const base64 = await blobToBase64(await canvas.convertToBlob({ type: 'image/png' }));
+        const base64 = await canvasToBase64(canvas, 'image/png');
         return `data:image/png;base64,${base64}`;
     },
 };
@@ -269,12 +239,14 @@ interface ActiveStroke {
  * (clean-panel.component.ts). See the module header for the flow.
  */
 export class CleanToolService {
+    /** Sidecar /health probe (imaging/sidecar-health.ts). */
+    readonly sidecar = new SidecarHealth(() => this.client.health());
     /** Sidecar process reachability (mask modes only — stamping is local). */
-    readonly health = new Signal<CleanHealth>('checking');
+    readonly health: Signal<CleanHealth> = this.sidecar.status;
     /** LaMa weights + torch ready on the sidecar (/health `inpaint`). */
-    readonly inpaintReady = new Signal(false);
+    readonly inpaintReady = this.sidecar.inpaintReady;
     /** Sidecar's reason when inpaint is unavailable. */
-    readonly healthDetail = new Signal<string | null>(null);
+    readonly healthDetail = this.sidecar.detail;
     /** Mode: click = SAM mask; ellipse = drag mask; stamp = clone brush. */
     readonly mode = new Signal<CleanMode>('click');
     readonly phase = new Signal<CleanPhase>('idle');
@@ -309,7 +281,8 @@ export class CleanToolService {
     private preview: PreviewState | null = null;
     private drag: { start: { lng: number; lat: number }; current: { lng: number; lat: number } } | null = null;
     private ellipseOverlayLive = false;
-    private rawDisposers: Array<() => void> = [];
+    /** Raw mousedown/up binding (editor/drag-binding.ts); null while inactive. */
+    private dragBinding: DragBinding | null = null;
 
     private pending: PendingEdit[] = [];
     private surfaces: StampSurface[] = [];
@@ -345,18 +318,19 @@ export class CleanToolService {
         ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));
 
         // Raw mousedown/mouseup (ellipse drags + stamp strokes) need the live
-        // map instance; rebind whenever a (re)created map turns ready. The
-        // photo state (sim vs pristine ortho source) is re-applied there too.
-        const rebind = effect(() => {
+        // map instance; the drag binding rebinds whenever a (re)created map
+        // turns ready.
+        this.dragBinding = bindDrag(ctx, {
+            toolId: CLEAN_TOOL_ID,
+            onDown: (e, map) => this.onRawMouseDown(e, map),
+            onUp: (_e, map) => this.onRawMouseUp(map),
+        });
+        // Re-apply the photo state (sim vs pristine ortho source) whenever
+        // a (re)created map turns ready.
+        ctx.track(effect(() => {
             if (!ctx.map.ready.get()) return;
-            const map = ctx.map.map.peek();
-            if (map) this.bindRawHandlers(map as MaplibreMap);
             this.applyPhotoState();
-        });
-        ctx.track(() => {
-            rebind();
-            this.disposeRawHandlers();
-        });
+        }));
 
         // [ / ] resize the stamp brush (ignored while typing in inputs).
         const onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
@@ -392,7 +366,7 @@ export class CleanToolService {
         // Always hand the map back showing the PRISTINE photo.
         const pristine = ctx?.tileset.tileVersion.peek();
         if (ctx && pristine) ctx.map.setOrthoPhotoState('ortho', pristine);
-        this.disposeRawHandlers();
+        this.dragBinding = null;
         this.ctx = null;
     }
 
@@ -422,12 +396,8 @@ export class CleanToolService {
     }
 
     /** Probe the sidecar's /health (activation + the panel's retry button). */
-    async checkHealth(): Promise<void> {
-        this.health.set('checking');
-        const h = await this.client.health();
-        this.health.set(h.online ? 'online' : 'offline');
-        this.inpaintReady.set(h.inpaintAvailable);
-        this.healthDetail.set(h.detail);
+    checkHealth(): Promise<void> {
+        return this.sidecar.check();
     }
 
     /** Refresh the baked-patch count + bake pre-flight from the server. */
@@ -523,28 +493,11 @@ export class CleanToolService {
 
     // ── Raw pointer plumbing (ellipse drags + stamp strokes) ────────────────
 
-    private bindRawHandlers(map: MaplibreMap): void {
-        this.disposeRawHandlers();
-        const onMouseDown = (e: MapMouseEvent) => this.onRawMouseDown(e, map);
-        const onMouseUp = () => this.onRawMouseUp(map);
-        map.on('mousedown', onMouseDown);
-        map.on('mouseup', onMouseUp);
-        this.rawDisposers.push(() => {
-            map.off('mousedown', onMouseDown);
-            map.off('mouseup', onMouseUp);
-        });
-    }
-
-    private disposeRawHandlers(): void {
-        for (const dispose of this.rawDisposers) dispose();
-        this.rawDisposers = [];
-    }
-
+    /**
+     * Left press under the clean claim. Cmd/Ctrl-drag stays the pan escape:
+     * the drag binding filters that press before it gets here.
+     */
     private onRawMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
-        if (this.ctx?.map.interactionMode.peek() !== CLEAN_TOOL_ID) return;
-        if (e.originalEvent.button !== 0) return;
-        // ⌘/Ctrl-drag stays the guaranteed pan escape hatch (draw-tool convention).
-        if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
         const mode = this.mode.peek();
         const p = { lng: e.lngLat.lng, lat: e.lngLat.lat };
 
@@ -560,16 +513,14 @@ export class CleanToolService {
                 return;
             }
             if (this.phase.peek() !== 'idle') return;
-            e.preventDefault();
-            map.dragPan.disable();
+            this.dragBinding?.claim(e, map);
             this.strokeInit = this.beginStroke(p);
             return;
         }
 
         if (mode !== 'ellipse') return;
         if (this.phase.peek() !== 'idle') return;
-        e.preventDefault();
-        map.dragPan.disable();
+        this.dragBinding?.claim(e, map);
         this.drag = { start: p, current: p };
     }
 
@@ -585,14 +536,14 @@ export class CleanToolService {
 
     private onRawMouseUp(map: MaplibreMap): void {
         if (this.strokeInit || this.stroke) {
-            map.dragPan.enable();
+            this.releasePan(map);
             void this.endStroke();
             return;
         }
         const drag = this.drag;
         if (!drag) return;
         this.drag = null;
-        map.dragPan.enable();
+        this.releasePan(map);
         this.removeEllipseOverlay();
         void this.finishEllipse(drag.start, drag.current);
     }
@@ -601,8 +552,11 @@ export class CleanToolService {
         if (!this.drag) return;
         this.drag = null;
         this.removeEllipseOverlay();
-        const map = this.ctx?.map.map.peek();
-        (map as MaplibreMap | null)?.dragPan.enable();
+        this.releasePan();
+    }
+
+    private releasePan(map?: MaplibreMap): void {
+        this.dragBinding?.release(map);
     }
 
     // ── Ellipse mode (SAM-free mask) ────────────────────────────────────────
@@ -860,8 +814,7 @@ export class CleanToolService {
         this.stroke = null;
         stroke.surface.work = stroke.workBase;
         void this.updateSurfaceOverlay(stroke.surface);
-        const map = this.ctx?.map.map.peek();
-        (map as MaplibreMap | null)?.dragPan.enable();
+        this.releasePan();
         if (this.source) this.updateSourceOverlay(this.source.merc);
     }
 
@@ -897,10 +850,7 @@ export class CleanToolService {
             return null;
         }
         const template = this.orthoTemplate(gate);
-        const base = await this.imaging.composeCropPixels(
-            plan.tiles.map(t => ({ url: fillTileUrl(template, plan.zoom, t.x, t.y), dx: t.dx, dy: t.dy })),
-            plan.size,
-        );
+        const base = await this.imaging.composeCropPixels(cropTiles(plan, template), plan.size);
         const surface: StampSurface = {
             id: `clean-stamp-${++this.overlaySeq}`,
             plan,
@@ -1041,10 +991,7 @@ export class CleanToolService {
         plan: CropPlan,
     ): Promise<string> {
         const template = this.orthoTemplate(gate);
-        return this.imaging.composeCropPng(
-            plan.tiles.map(t => ({ url: fillTileUrl(template, plan.zoom, t.x, t.y), dx: t.dx, dy: t.dy })),
-            plan.size,
-        );
+        return this.imaging.composeCropPng(cropTiles(plan, template), plan.size);
     }
 
     private async runInpaint(plan: CropPlan, cropBase64: string, mask: Uint8Array, tool: string): Promise<boolean> {

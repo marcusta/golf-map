@@ -1,6 +1,7 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, panelTitle, metric } from '../css';
+import { s, btn, metric } from '../css';
+import { dockBody, sectionTitle } from '../editor/panel-recipes.css';
 import { MeasureToolService } from './measure-tool.service';
 import type { SegmentStats } from './measure-state';
 import { pointLabel } from './measure-tool.service';
@@ -58,17 +59,9 @@ export class MeasurePanelComponent extends Component {
                space carries structure, so sections lean on gap rather than
                a hairline after every block; the one allowed divider sits
                above .actions, mirroring feature-stack-panel's reorder-ops. */
-            display: flex;
-            flex-direction: column;
-            gap: var(--space-3);
-            padding: var(--space-3) var(--space-4) var(--space-4);
-            font-size: 0.8rem;
-            color: ${t('color-text-primary')};
+            ${dockBody()}
 
-            & .section-title {
-                margin: 0;
-                ${panelTitle()}
-            }
+            ${sectionTitle('0')}
 
             & .instruction {
                 font-size: 0.8rem;
