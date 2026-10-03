@@ -427,6 +427,122 @@ describe('CourseFeaturesService.remove', () => {
     });
 });
 
+describe('CourseFeaturesService batch endpoints (createMany / updateMany / removeMany)', () => {
+    async function threeGreens(svc: CourseFeaturesService) {
+        return svc.createMany(TEST_COURSE_ID, [
+            { holeId: TEST_HOLE_1_ID, type: 'green', geometry: squareGeometry(0, 0) },
+            { holeId: TEST_HOLE_1_ID, type: 'bunker', geometry: squareGeometry(20, 0) },
+            { holeId: TEST_HOLE_1_ID, type: 'green', geometry: squareGeometry(40, 0) },
+        ]);
+    }
+
+    test('createMany inserts in input order with the same stack positions as sequential creates', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const before = await svc.listByHole(TEST_HOLE_1_ID);
+
+        const created = await threeGreens(svc);
+        expect(created.map((f) => f.type)).toEqual(['green', 'bunker', 'green']);
+        expect(created.every((f) => f.version === 1 && f.courseId === TEST_COURSE_ID)).toBe(true);
+
+        // Same result as three create() calls on a fresh DB.
+        const { db: db2 } = await createTestDb(seedCourse);
+        const svc2 = new CourseFeaturesService(db2);
+        for (const item of [
+            { type: 'green', geometry: squareGeometry(0, 0) },
+            { type: 'bunker', geometry: squareGeometry(20, 0) },
+            { type: 'green', geometry: squareGeometry(40, 0) },
+        ]) {
+            await svc2.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, ...item });
+        }
+        const types = (list: { type: string }[]) => list.map((f) => f.type);
+        expect(types(await svc.listByHole(TEST_HOLE_1_ID))).toEqual(types(await svc2.listByHole(TEST_HOLE_1_ID)));
+        expect((await svc.listByHole(TEST_HOLE_1_ID)).length).toBe(before.length + 3);
+    });
+
+    test('createMany with one invalid item writes nothing', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const before = (await svc.listByCourse(TEST_COURSE_ID)).length;
+
+        await expect(
+            svc.createMany(TEST_COURSE_ID, [
+                { holeId: TEST_HOLE_1_ID, type: 'green', geometry: squareGeometry() },
+                { holeId: TEST_HOLE_1_ID, type: 'lava', geometry: squareGeometry() },
+            ]),
+        ).rejects.toBeInstanceOf(InvalidFeatureError);
+        expect((await svc.listByCourse(TEST_COURSE_ID)).length).toBe(before);
+    });
+
+    test('updateMany updates every row and bumps each version once', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const [a, b, c] = await threeGreens(svc);
+
+        const updated = await svc.updateMany([
+            { id: a.id, version: a.version, geometry: squareGeometry(100, 100) },
+            { id: b.id, version: b.version, type: 'rough' },
+            { id: c.id, version: c.version, holeId: TEST_HOLE_2_ID },
+        ]);
+        expect(updated.map((f) => f.id)).toEqual([a.id, b.id, c.id]);
+        expect(updated.map((f) => f.version)).toEqual([2, 2, 2]);
+        expect(updated[0].geometry).toEqual(squareGeometry(100, 100));
+        expect(updated[1].type).toBe('rough');
+        expect(updated[2].holeId).toBe(TEST_HOLE_2_ID);
+        expect((await svc.findById(c.id)).holeId).toBe(TEST_HOLE_2_ID);
+    });
+
+    test('updateMany with one stale version throws VersionConflictError and rolls back every row', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const [a, b] = await threeGreens(svc);
+
+        await expect(
+            svc.updateMany([
+                { id: a.id, version: a.version, type: 'rough' },
+                { id: b.id, version: 99, type: 'rough' },
+            ]),
+        ).rejects.toBeInstanceOf(VersionConflictError);
+        const rowA = await svc.findById(a.id);
+        expect(rowA.type).toBe('green');
+        expect(rowA.version).toBe(1);
+    });
+
+    test('updateMany with a missing row conflicts', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await expect(svc.updateMany([{ id: 'nope', version: 1, type: 'rough' }])).rejects.toBeInstanceOf(
+            VersionConflictError,
+        );
+    });
+
+    test('removeMany deletes every row', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const created = await threeGreens(svc);
+
+        await svc.removeMany(created.map((f) => ({ id: f.id, version: f.version })));
+        const ids = new Set((await svc.listByCourse(TEST_COURSE_ID)).map((f) => f.id));
+        expect(created.some((f) => ids.has(f.id))).toBe(false);
+    });
+
+    test('removeMany with one stale version deletes nothing', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const [a, b, c] = await threeGreens(svc);
+
+        await expect(
+            svc.removeMany([
+                { id: a.id, version: a.version },
+                { id: b.id, version: 7 },
+                { id: c.id, version: c.version },
+            ]),
+        ).rejects.toBeInstanceOf(VersionConflictError);
+        const ids = new Set((await svc.listByCourse(TEST_COURSE_ID)).map((f) => f.id));
+        expect([a, b, c].every((f) => ids.has(f.id))).toBe(true);
+    });
+});
+
 describe('CourseFeaturesService.create — D26 insertion order', () => {
     // Builds the group's stack bottom -> top: [rough, fairway, bunker, water]
     // (acceptance scenario 4's fixture), returning the type sequence

@@ -4,6 +4,7 @@ import { ApiError } from '@basics/core/client/api-error';
 import { _reset } from '@basics/core/client/error-report';
 import { FeaturesService, geometryToWgs84Rings, shiftBlock, moveBlockToEdge } from '../src/draw/features.service';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
+import { withBatchEndpoints, recordRequests } from './fake-feature-api';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { wgs84ToSweref99tm } from '../src/geo/transform';
 import type { FeatureGeometry } from '../src/geo/bezier';
@@ -101,6 +102,7 @@ function fakeApi(initial: CourseFeature[] = []) {
             return { ok: true };
         },
     };
+    withBatchEndpoints(api, rows);
     return { api, rows, calls };
 }
 
@@ -804,5 +806,195 @@ describe('hasOdblFeatures (T49)', () => {
         const svc = new FeaturesService(api);
         await svc.load('c1');
         expect(svc.hasOdblFeatures.get()).toBe(false);
+    });
+});
+
+/** Five features on the fake server, the service loaded, overlay and requests counted. */
+async function countedService(n = 5) {
+    const initial = Array.from({ length: n }, (_, i) => feature(`f${i}`, 'bunker', 1, { sortOrder: i }));
+    const fake = fakeApi(initial);
+    const { api, log } = recordRequests(fake.api);
+    const svc = new FeaturesService(api);
+    await svc.load('c1');
+    log.length = 0;
+    const { map, featurePushes } = countingMap();
+    const dispose = svc.attachOverlay(map as never);
+    return { svc, rows: fake.rows, log, featurePushes, dispose };
+}
+
+describe('multi-feature ops: one push, one request (review item 3)', () => {
+    test('move of 5 (updateMany, local first) pushes once and sends one updateMany', async () => {
+        const { svc, rows, log, featurePushes, dispose } = await countedService();
+        const items = svc.store.items.peek().map(f => ({ id: f.id, patch: { geometry: squareGeometry(10, base.x + 40, base.y) } }));
+
+        const pending = svc.updateMany(items, { local: true });
+        expect(featurePushes()).toBe(1); // local patch lands before the request
+        const result = await pending;
+
+        expect(result).toHaveLength(5);
+        expect(featurePushes()).toBe(1);
+        expect(log).toEqual(['updateMany']);
+        for (const { id, patch } of items) {
+            const row = svc.store.items.peek().find(f => f.id === id)!;
+            expect(row.version).toBe(2);
+            expect(row.geometry).toBe(patch.geometry); // local object kept
+            expect(rows.get(id)!.geometry).toEqual(patch.geometry);
+        }
+        dispose();
+    });
+
+    test('delete of 5 (removeMany) pushes once and sends one removeMany', async () => {
+        const { svc, rows, log, featurePushes, dispose } = await countedService();
+        svc.setSelection(['f0', 'f1']);
+
+        const ok = await svc.removeMany(svc.store.items.peek().map(f => f.id));
+
+        expect(ok).toBe(true);
+        expect(featurePushes()).toBe(1);
+        expect(log).toEqual(['removeMany']);
+        expect(rows.size).toBe(0);
+        expect(svc.store.items.peek()).toHaveLength(0);
+        expect(svc.selectedIds.peek().size).toBe(0);
+        dispose();
+    });
+
+    test('retype of 3 pushes once and sends one updateMany', async () => {
+        const { svc, rows, log, featurePushes, dispose } = await countedService(3);
+        await svc.updateMany(['f0', 'f1', 'f2'].map(id => ({ id, patch: { type: 'green' } })), { local: true });
+        expect(featurePushes()).toBe(1);
+        expect(log).toEqual(['updateMany']);
+        expect([...rows.values()].map(r => r.type)).toEqual(['green', 'green', 'green']);
+        dispose();
+    });
+
+    test('createMany of 3 pushes once, sends one createMany, selects the new rows', async () => {
+        const { svc, log, featurePushes, dispose } = await countedService(1);
+        const created = await svc.createMany([0, 1, 2].map(i => ({
+            courseId: 'c1', holeId: null, type: 'bunker', geometry: squareGeometry(5, base.x + i * 30, base.y),
+        })));
+        expect(created).toHaveLength(3);
+        expect(featurePushes()).toBe(1);
+        expect(log).toEqual(['createMany']);
+        expect([...svc.selectedIds.peek()]).toEqual(created!.map(f => f.id));
+        dispose();
+    });
+
+    test('createMany with select: false leaves the selection alone', async () => {
+        const { svc, dispose } = await countedService(1);
+        svc.select('f0');
+        await svc.createMany([{ courseId: 'c1', holeId: null, type: 'bunker', geometry: squareGeometry(5) }], { select: false });
+        expect([...svc.selectedIds.peek()]).toEqual(['f0']);
+        dispose();
+    });
+
+    test('a conflict on one row rejects the whole batch: nothing written, server truth reloaded', async () => {
+        const { svc, rows, dispose } = await countedService(3);
+        rows.get('f1')!.version = 4; // another client saved f1
+        const result = await svc.updateMany(['f0', 'f1', 'f2'].map(id => ({ id, patch: { type: 'green' } })), { local: true });
+        expect(result).toBeUndefined();
+        expect(svc.saveError.get()?.code).toBe('conflict');
+        expect([...rows.values()].map(r => r.type)).toEqual(['bunker', 'bunker', 'bunker']);
+        await Bun.sleep(0);
+        expect(svc.store.items.peek().map(f => f.type)).toEqual(['bunker', 'bunker', 'bunker']);
+        dispose();
+    });
+});
+
+describe('per-feature save queue (review item 4)', () => {
+    test('3 quick geometry patches send at most 2 requests and the final geometry', async () => {
+        const { svc, rows, log, dispose } = await countedService(1);
+        const geoms = [12, 14, 16].map(h => squareGeometry(h));
+        const saves = geoms.map(g => { svc.patchLocal('f0', g); return svc.update('f0', { geometry: g }); });
+        expect(svc.store.items.peek()[0].geometry).toBe(geoms[2]); // patchLocal stays instant
+
+        const results = await Promise.all(saves);
+
+        expect(log.length).toBeLessThanOrEqual(2);
+        expect(rows.get('f0')!.geometry).toEqual(geoms[2]);
+        expect(svc.store.items.peek()[0].geometry).toBe(geoms[2]);
+        expect(results.every(r => r?.id === 'f0')).toBe(true);
+        expect(svc.saveError.get()).toBeNull();
+        dispose();
+    });
+
+    test('with no debounce, patches arriving during an in-flight save coalesce into one follow-up', async () => {
+        const { svc, rows, log, dispose } = await countedService(1);
+        svc.geometryDebounceMs = 0;
+        const geoms = [12, 14, 16].map(h => squareGeometry(h));
+        const saves = geoms.map(g => { svc.patchLocal('f0', g); return svc.update('f0', { geometry: g }); });
+        await Promise.all(saves);
+
+        expect(log).toEqual(['update', 'update']);
+        expect(rows.get('f0')!.version).toBe(3); // second request used the first reply's version
+        expect(rows.get('f0')!.geometry).toEqual(geoms[2]);
+        expect(svc.saveError.get()).toBeNull();
+        dispose();
+    });
+
+    test('rapid un-awaited commits of mixed kinds never 409', async () => {
+        const { svc, rows, dispose } = await countedService(3);
+        svc.geometryDebounceMs = 0;
+        const g = squareGeometry(20);
+        const all = [
+            svc.update('f0', { geometry: g }),
+            svc.update('f0', { type: 'green' }),
+            svc.updateMany(['f0', 'f1'].map(id => ({ id, patch: { holeId: 'h1' } })), { local: true }),
+            svc.update('f1', { geometry: g }),
+            svc.updateMany(['f0', 'f1', 'f2'].map(id => ({ id, patch: { type: 'fairway' } })), { local: true }),
+            svc.removeMany(['f2']),
+        ];
+        await Promise.all(all);
+        await svc.flush();
+
+        expect(svc.saveError.get()).toBeNull();
+        expect(rows.get('f0')).toMatchObject({ type: 'fairway', holeId: 'h1', geometry: g });
+        expect(rows.get('f1')).toMatchObject({ type: 'fairway', holeId: 'h1', geometry: g });
+        expect(rows.has('f2')).toBe(false);
+        for (const id of ['f0', 'f1']) {
+            expect(svc.store.items.peek().find(f => f.id === id)!.version).toBe(rows.get(id)!.version);
+        }
+        dispose();
+    });
+
+    test('a type patch goes immediately and carries a pending geometry with it', async () => {
+        const { svc, rows, log, dispose } = await countedService(1);
+        svc.geometryDebounceMs = 10_000;
+        const g = squareGeometry(18);
+        svc.patchLocal('f0', g);
+        const geomSave = svc.update('f0', { geometry: g });
+        const typeSave = svc.update('f0', { type: 'green' });
+        await Promise.all([geomSave, typeSave]);
+
+        expect(log).toEqual(['update']);
+        expect(rows.get('f0')).toMatchObject({ type: 'green', geometry: g, version: 2 });
+        dispose();
+    });
+
+    test('flush() sends a debounced patch at once and resolves when the queue is empty', async () => {
+        const { svc, rows, log, dispose } = await countedService(1);
+        svc.geometryDebounceMs = 10_000;
+        const g = squareGeometry(22);
+        svc.patchLocal('f0', g);
+        void svc.update('f0', { geometry: g });
+        expect(log).toEqual([]); // geometry patch waits out the debounce
+
+        await svc.flush();
+
+        expect(log).toEqual(['update']);
+        expect(rows.get('f0')).toMatchObject({ geometry: g, version: 2 });
+        dispose();
+    });
+
+    test('load() of another course flushes pending saves first', async () => {
+        const { svc, rows, dispose } = await countedService(1);
+        svc.geometryDebounceMs = 10_000;
+        const g = squareGeometry(24);
+        svc.patchLocal('f0', g);
+        void svc.update('f0', { geometry: g });
+
+        await svc.load('c2');
+
+        expect(rows.get('f0')!.geometry).toEqual(g);
+        dispose();
     });
 });

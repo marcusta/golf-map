@@ -4,7 +4,9 @@ import { _reset } from '@basics/core/client/error-report';
 import { EditHistory, MAX_HISTORY, snapshotOf, type HistoryEntry } from '../src/draw/history';
 import { buildMoveEntry } from '../src/draw/draw-tool.service';
 import { FeaturesService } from '../src/draw/features.service';
+import { Signal } from '@basics/core/client/core';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
+import { withBatchEndpoints, recordRequests } from './fake-feature-api';
 import type { FeatureGeometry } from '../src/geo/bezier';
 
 afterEach(() => _reset());
@@ -69,6 +71,7 @@ function fakeApi(initial: CourseFeature[] = []) {
             return { ok: true };
         },
     };
+    withBatchEndpoints(api, rows);
     return { api, rows };
 }
 
@@ -318,10 +321,7 @@ describe('whole-selection move commit (buildMoveEntry)', () => {
 
         // Commit exactly as DrawToolService.onMouseUp does.
         const entry = buildMoveEntry(moved, 15, 25);
-        for (const diff of entry) {
-            svc.patchLocal(diff.featureId, diff.after!.geometry);
-            await svc.update(diff.featureId, { geometry: diff.after!.geometry });
-        }
+        await svc.updateMany(entry.map(d => ({ id: d.featureId, patch: { geometry: d.after!.geometry } })), { local: true });
         history.push(entry);
 
         // Store AND server hold the translated geometry.
@@ -336,5 +336,85 @@ describe('whole-selection move commit (buildMoveEntry)', () => {
 
         expect(await history.redo(svc)).toBe(true);
         expect(rows.get('a')!.geometry.rings[0].points[0]).toMatchObject({ x: 5, y: 15 });
+    });
+});
+
+/** Counting stand-in for MapService: records every 'features' overlay push. */
+function countingMap() {
+    const pushes: string[] = [];
+    const map = {
+        ready: new Signal(true),
+        map: new Signal({ setPaintProperty() {}, setFilter() {}, getSource: () => ({ type: 'geojson' }) }),
+        addOverlayLayer: () => {},
+        updateOverlayData: (id: string) => { pushes.push(id); },
+        removeOverlayLayer: () => {},
+    };
+    return { map, featurePushes: () => pushes.filter(id => id === 'features').length };
+}
+
+async function countedService(n: number) {
+    const fake = fakeApi(Array.from({ length: n }, (_, i) => feature(`f${i}`, 'bunker', 1, squareGeometry(10, i * 50, 0))));
+    const { api, log } = recordRequests(fake.api);
+    const svc = new FeaturesService(api);
+    await svc.load('c1');
+    const { map, featurePushes } = countingMap();
+    const dispose = svc.attachOverlay(map as never);
+    const reset = () => { log.length = 0; const p = featurePushes(); return () => ({ pushes: featurePushes() - p, requests: [...log] }); };
+    return { svc, rows: fake.rows, reset, dispose };
+}
+
+describe('undo / redo cost: one overlay push, one request (review item 3)', () => {
+    test('undo and redo of a 5-feature move', async () => {
+        const { svc, rows, reset, dispose } = await countedService(5);
+        const history = new EditHistory();
+        const entry = buildMoveEntry(svc.store.items.peek(), 15, 25);
+        await svc.updateMany(entry.map(d => ({ id: d.featureId, patch: { geometry: d.after!.geometry } })), { local: true });
+        history.push(entry);
+
+        let since = reset();
+        expect(await history.undo(svc)).toBe(true);
+        expect(since()).toEqual({ pushes: 1, requests: ['updateMany'] });
+        expect(rows.get('f3')!.geometry.rings[0].points[0]).toMatchObject({ x: 140, y: -10 });
+
+        since = reset();
+        expect(await history.redo(svc)).toBe(true);
+        expect(since()).toEqual({ pushes: 1, requests: ['updateMany'] });
+        expect(rows.get('f3')!.geometry.rings[0].points[0]).toMatchObject({ x: 155, y: 15 });
+        dispose();
+    });
+
+    test('undo and redo of a 5-feature delete', async () => {
+        const { svc, rows, reset, dispose } = await countedService(5);
+        const history = new EditHistory();
+        const items = svc.store.items.peek();
+        history.push(items.map(f => ({ featureId: f.id, before: snapshotOf(f), after: null, beforeVersion: f.version })));
+        await svc.removeMany(items.map(f => f.id));
+
+        let since = reset();
+        expect(await history.undo(svc)).toBe(true);
+        expect(since()).toEqual({ pushes: 1, requests: ['createMany'] });
+        expect(rows.size).toBe(5);
+
+        since = reset();
+        expect(await history.redo(svc)).toBe(true);
+        expect(since()).toEqual({ pushes: 1, requests: ['removeMany'] });
+        expect(rows.size).toBe(0);
+        dispose();
+    });
+
+    test('undo right after an un-awaited commit does not 409', async () => {
+        const { svc, rows, dispose } = await countedService(3);
+        const history = new EditHistory();
+        const entry = buildMoveEntry(svc.store.items.peek(), 5, 5);
+        void svc.updateMany(entry.map(d => ({ id: d.featureId, patch: { geometry: d.after!.geometry } })), { local: true });
+        history.push(entry);
+
+        expect(await history.undo(svc)).toBe(true);
+        await svc.flush();
+
+        expect(svc.saveError.get()).toBeNull();
+        expect(rows.get('f0')!.geometry).toEqual(entry[0].before!.geometry);
+        expect(rows.get('f0')!.version).toBe(3);
+        dispose();
     });
 });

@@ -8,9 +8,9 @@
 // (mouseup/autosave).
 //
 // Because edits autosave to the server, undo/redo are themselves server
-// mutations replayed through the SAME FeaturesService funnels (update /
-// create / removeFeature) — the store is the single source of truth and
-// optimistic-lock versions are always read live from it (store.mutate), so
+// mutations replayed through the FeaturesService batch funnels (updateMany /
+// createMany / removeMany). The store is the single source of truth and
+// optimistic-lock versions are read from it when each request is sent, so
 // entries never go stale version-wise. `beforeVersion` is recorded for
 // diagnostics/tests, not for applying.
 //
@@ -25,7 +25,7 @@
 
 import { Signal, Computed } from '@basics/core/client/core';
 import type { FeatureGeometry } from '../geo/bezier';
-import type { FeaturesService } from './features.service';
+import { batched, type FeaturesService } from './features.service';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 
 /** Everything undo/redo restores about a feature. */
@@ -112,41 +112,50 @@ export class EditHistory {
     }
 
     /**
-     * Apply one entry in the given direction. Undo restores each diff's
-     * `before` state (reverse order); redo restores `after` (forward
-     * order). All server effects go through the FeaturesService funnels.
+     * Apply one entry in the given direction: undo restores each diff's
+     * `before` state, redo its `after`. Deletes and updates land in the
+     * store first, in one `batch()` (one overlay push), then go out as one
+     * `removeMany` and one `updateMany` request. Re-creations wait for the
+     * server (it assigns the ids) and go out as one `createMany`.
      */
     private async apply(features: FeaturesService, entry: HistoryEntry, direction: 'undo' | 'redo'): Promise<boolean> {
         this.applying = true;
         try {
             const diffs = direction === 'undo' ? [...entry].reverse() : entry;
+            const removes: string[] = [];
+            const updates: { id: string; patch: FeatureSnapshot }[] = [];
+            const creates: { diff: FeatureDiff; target: FeatureSnapshot }[] = [];
             for (const diff of diffs) {
                 const target = direction === 'undo' ? diff.before : diff.after;
-                if (target === null) {
-                    // Inverse is a delete (undo of create / redo of delete).
-                    const ok = await features.removeFeature(diff.featureId);
-                    if (!ok) return this.dropOnConflict();
-                } else if ((direction === 'undo' ? diff.after : diff.before) === null) {
-                    // Inverse is a create (undo of delete / redo of create):
-                    // the server assigns a fresh id — remap the old one.
-                    const created = await features.create({
-                        type: target.type,
-                        holeId: target.holeId,
-                        geometry: target.geometry,
-                    });
-                    if (!created) return this.dropOnConflict();
-                    // Rename across both stacks AND this in-flight entry
-                    // (it is off-stack while applying, re-pushed after).
-                    this.remapId(diff.featureId, created.id);
-                    diff.featureId = created.id;
-                } else {
-                    const updated = await features.update(diff.featureId, {
-                        geometry: target.geometry,
-                        type: target.type,
-                        holeId: target.holeId,
-                    });
-                    if (!updated) return this.dropOnConflict();
-                }
+                const source = direction === 'undo' ? diff.after : diff.before;
+                if (target === null) removes.push(diff.featureId); // undo of create / redo of delete
+                else if (source === null) creates.push({ diff, target }); // undo of delete / redo of create
+                else updates.push({ id: diff.featureId, patch: target });
+            }
+
+            const sent: { removed?: Promise<boolean>; updated?: Promise<unknown[] | undefined> } = {};
+            batched(() => {
+                if (removes.length > 0) sent.removed = features.removeMany(removes);
+                if (updates.length > 0) sent.updated = features.updateMany(updates, { local: true });
+            });
+            if (sent.removed && !(await sent.removed)) return this.dropOnConflict();
+            if (sent.updated && !(await sent.updated)) return this.dropOnConflict();
+
+            if (creates.length > 0) {
+                const created = await features.createMany(creates.map(c => ({
+                    type: c.target.type,
+                    holeId: c.target.holeId,
+                    geometry: c.target.geometry,
+                })));
+                if (!created) return this.dropOnConflict();
+                // The server assigns fresh ids: rename across both stacks AND
+                // this in-flight entry (it is off-stack while applying,
+                // re-pushed after).
+                creates.forEach((c, i) => {
+                    const newId = created[i]!.id;
+                    this.remapId(c.diff.featureId, newId);
+                    c.diff.featureId = newId;
+                });
             }
             return true;
         } finally {

@@ -77,6 +77,21 @@ const RemoveFeatureInput = Type.Object({
     version: Type.Number(),
 });
 
+// Batch inputs: one SQLite transaction per call. A version conflict on any
+// row rejects the whole batch (409) and writes nothing.
+const CreateManyFeaturesInput = Type.Object({
+    courseId: Type.String(),
+    items: Type.Array(Type.Omit(CreateFeatureInput, ['courseId'])),
+});
+
+const UpdateManyFeaturesInput = Type.Object({
+    items: Type.Array(UpdateFeatureInput),
+});
+
+const RemoveManyFeaturesInput = Type.Object({
+    items: Type.Array(RemoveFeatureInput),
+});
+
 const ReorderFeaturesInput = Type.Object({
     courseId: Type.String(),
     holeId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
@@ -145,6 +160,27 @@ export function createCourseFeaturesApi(svc: CourseFeaturesService) {
             path: '/features/remove',
             fn: (input: Static<typeof RemoveFeatureInput>) => svc.remove(input.id, input.version),
             schema: RemoveFeatureInput,
+            middleware: mw,
+        },
+        createMany: {
+            method: 'POST' as const,
+            path: '/features/create-many',
+            fn: (input: Static<typeof CreateManyFeaturesInput>) => svc.createMany(input.courseId, input.items),
+            schema: CreateManyFeaturesInput,
+            middleware: mw,
+        },
+        updateMany: {
+            method: 'POST' as const,
+            path: '/features/update-many',
+            fn: (input: Static<typeof UpdateManyFeaturesInput>) => svc.updateMany(input.items),
+            schema: UpdateManyFeaturesInput,
+            middleware: mw,
+        },
+        removeMany: {
+            method: 'POST' as const,
+            path: '/features/remove-many',
+            fn: (input: Static<typeof RemoveManyFeaturesInput>) => svc.removeMany(input.items),
+            schema: RemoveManyFeaturesInput,
             middleware: mw,
         },
         reorder: {

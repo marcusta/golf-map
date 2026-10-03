@@ -38,6 +38,11 @@ function fakeApi() {
         remove: async () => ({}) as never, // any non-undefined = success
         reorder: reject,
     };
+    api.createMany = async ({ courseId, items }) => {
+        const created: CourseFeature[] = [];
+        for (const item of items) created.push(await api.create({ courseId, ...item }));
+        return created;
+    };
     return api;
 }
 

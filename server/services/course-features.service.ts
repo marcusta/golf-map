@@ -427,6 +427,39 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
     };
 }
 
+export interface CreateFeatureInput {
+    courseId: string;
+    holeId?: string | null;
+    type: string;
+    geometry: FeatureGeometry;
+    /** Import provenance (T49), omitted for hand-drawn features. */
+    source?: string | null;
+    sourceRef?: string | null;
+    license?: string | null;
+    /** Flat scalar attributes; omitted/null for hand-drawn features. */
+    attributes?: FeatureAttributes | null;
+}
+
+export interface UpdateFeatureInput {
+    holeId?: string | null;
+    type?: string;
+    geometry?: FeatureGeometry;
+    /** `null` clears the attributes; omitted leaves them untouched. */
+    attributes?: FeatureAttributes | null;
+}
+
+function assertValidCreate(input: CreateFeatureInput): void {
+    assertValidType(input.type);
+    assertValidGeometry(input.geometry);
+    assertValidAttributes(input.attributes);
+}
+
+function assertValidUpdate(input: UpdateFeatureInput): void {
+    if (input.type !== undefined) assertValidType(input.type);
+    if (input.geometry !== undefined) assertValidGeometry(input.geometry);
+    if (input.attributes !== undefined) assertValidAttributes(input.attributes);
+}
+
 export class CourseFeaturesService {
     constructor(private db: Kysely<Database>) {}
 
@@ -458,8 +491,8 @@ export class CourseFeaturesService {
         return query.orderBy('sort_order');
     }
 
-    private byId(id: string) {
-        return this.db.selectFrom('course_features').select(FEATURE_COLUMNS).where('id', '=', id);
+    private byId(id: string, trx: Kysely<Database> = this.db) {
+        return trx.selectFrom('course_features').select(FEATURE_COLUMNS).where('id', '=', id);
     }
 
     // --- Queries (write) ---
@@ -592,22 +625,27 @@ export class CourseFeaturesService {
         return collection;
     }
 
-    async create(input: {
-        courseId: string;
-        holeId?: string | null;
-        type: string;
-        geometry: FeatureGeometry;
-        /** Import provenance (T49) — omitted for hand-drawn features. */
-        source?: string | null;
-        sourceRef?: string | null;
-        license?: string | null;
-        /** Flat scalar attributes; omitted/null for hand-drawn features. */
-        attributes?: FeatureAttributes | null;
-    }): Promise<CourseFeature> {
-        assertValidType(input.type);
-        assertValidGeometry(input.geometry);
-        assertValidAttributes(input.attributes);
+    async create(input: CreateFeatureInput): Promise<CourseFeature> {
+        assertValidCreate(input);
+        return this.db.transaction().execute((trx) => this.createIn(trx, input));
+    }
 
+    /**
+     * Creates every item in one transaction, in input order (each lands at
+     * its own D26 insertion position, as sequential create() calls would).
+     * Any invalid item rejects the whole batch before anything is written.
+     */
+    async createMany(courseId: string, items: Omit<CreateFeatureInput, 'courseId'>[]): Promise<CourseFeature[]> {
+        const inputs = items.map((item) => ({ ...item, courseId }));
+        for (const input of inputs) assertValidCreate(input);
+        return this.db.transaction().execute(async (trx) => {
+            const created: CourseFeature[] = [];
+            for (const input of inputs) created.push(await this.createIn(trx, input));
+            return created;
+        });
+    }
+
+    private async createIn(trx: Kysely<Database>, input: CreateFeatureInput): Promise<CourseFeature> {
         const id = crypto.randomUUID();
         const holeId = input.holeId ?? null;
         const source = input.source ?? null;
@@ -616,37 +654,33 @@ export class CourseFeaturesService {
         const attributes = input.attributes ?? null;
         const geojson = toGeoJson(input.geometry);
 
-        const sortOrder = await this.db.transaction().execute(async (trx) => {
-            const groupStack = await this.byGroup(input.courseId, holeId, trx).execute();
-            const pos = insertionPosition(groupStack, input.type);
+        const groupStack = await this.byGroup(input.courseId, holeId, trx).execute();
+        const sortOrder = insertionPosition(groupStack, input.type);
 
-            for (const row of groupStack) {
-                if (row.sort_order >= pos) {
-                    await this.updateById(row.id, trx)
-                        .set({ sort_order: row.sort_order + 1, updated_at: sql`(datetime('now'))` })
-                        .execute();
-                }
+        for (const row of groupStack) {
+            if (row.sort_order >= sortOrder) {
+                await this.updateById(row.id, trx)
+                    .set({ sort_order: row.sort_order + 1, updated_at: sql`(datetime('now'))` })
+                    .execute();
             }
+        }
 
-            await this.insertFeature(
-                {
-                    id,
-                    course_id: input.courseId,
-                    hole_id: holeId,
-                    type: input.type,
-                    geometry_json: JSON.stringify(input.geometry),
-                    geojson: JSON.stringify(geojson),
-                    sort_order: pos,
-                    source,
-                    source_ref: sourceRef,
-                    license,
-                    attributes_json: serializeAttributes(attributes),
-                },
-                trx,
-            ).execute();
-
-            return pos;
-        });
+        await this.insertFeature(
+            {
+                id,
+                course_id: input.courseId,
+                hole_id: holeId,
+                type: input.type,
+                geometry_json: JSON.stringify(input.geometry),
+                geojson: JSON.stringify(geojson),
+                sort_order: sortOrder,
+                source,
+                source_ref: sourceRef,
+                license,
+                attributes_json: serializeAttributes(attributes),
+            },
+            trx,
+        ).execute();
 
         return {
             id,
@@ -663,23 +697,33 @@ export class CourseFeaturesService {
         };
     }
 
-    async update(
+    async update(id: string, version: number, input: UpdateFeatureInput): Promise<CourseFeature> {
+        assertValidUpdate(input);
+        return this.db.transaction().execute((trx) => this.updateIn(trx, id, version, input));
+    }
+
+    /**
+     * Applies every update in one transaction, in input order. Each row is
+     * version-checked like update(); one stale version (or a missing row)
+     * throws VersionConflictError and rolls back the whole batch.
+     */
+    async updateMany(items: (UpdateFeatureInput & { id: string; version: number })[]): Promise<CourseFeature[]> {
+        for (const item of items) assertValidUpdate(item);
+        return this.db.transaction().execute(async (trx) => {
+            const updated: CourseFeature[] = [];
+            for (const item of items) updated.push(await this.updateIn(trx, item.id, item.version, item));
+            return updated;
+        });
+    }
+
+    private async updateIn(
+        trx: Kysely<Database>,
         id: string,
         version: number,
-        input: {
-            holeId?: string | null;
-            type?: string;
-            geometry?: FeatureGeometry;
-            /** `null` clears the attributes; omitted leaves them untouched. */
-            attributes?: FeatureAttributes | null;
-        },
+        input: UpdateFeatureInput,
     ): Promise<CourseFeature> {
-        const row = await this.byId(id).executeTakeFirst();
+        const row = await this.byId(id, trx).executeTakeFirst();
         if (!row || row.version !== version) throw new VersionConflictError('course_features', id);
-
-        if (input.type !== undefined) assertValidType(input.type);
-        if (input.geometry !== undefined) assertValidGeometry(input.geometry);
-        if (input.attributes !== undefined) assertValidAttributes(input.attributes);
 
         const dbInput: Record<string, unknown> = {};
         const movingGroups = input.holeId !== undefined && input.holeId !== row.hole_id;
@@ -694,45 +738,50 @@ export class CourseFeaturesService {
         if (input.attributes !== undefined) dbInput.attributes_json = serializeAttributes(input.attributes);
 
         if (movingGroups) {
-            await this.db.transaction().execute(async (trx) => {
-                const groupStack = await this.byGroup(row.course_id, nextHoleId, trx).execute();
-                const pos = insertionPosition(groupStack, nextType);
+            const groupStack = await this.byGroup(row.course_id, nextHoleId, trx).execute();
+            const pos = insertionPosition(groupStack, nextType);
 
-                for (const targetRow of groupStack) {
-                    if (targetRow.sort_order >= pos) {
-                        await this.updateById(targetRow.id, trx)
-                            .set({ sort_order: targetRow.sort_order + 1, updated_at: sql`(datetime('now'))` })
-                            .execute();
-                    }
+            for (const targetRow of groupStack) {
+                if (targetRow.sort_order >= pos) {
+                    await this.updateById(targetRow.id, trx)
+                        .set({ sort_order: targetRow.sort_order + 1, updated_at: sql`(datetime('now'))` })
+                        .execute();
                 }
-
-                await this.updateById(id, trx)
-                    .set({
-                        ...dbInput,
-                        sort_order: pos,
-                        version: version + 1,
-                        updated_at: sql`(datetime('now'))`,
-                    })
-                    .execute();
-            });
-        } else {
-            await this.updateById(id)
-                .set({
-                    ...dbInput,
-                    version: version + 1,
-                    updated_at: sql`(datetime('now'))`,
-                })
-                .execute();
+            }
+            dbInput.sort_order = pos;
         }
 
-        const updated = await this.byId(id).executeTakeFirstOrThrow();
+        await this.updateById(id, trx)
+            .set({
+                ...dbInput,
+                version: version + 1,
+                updated_at: sql`(datetime('now'))`,
+            })
+            .execute();
+
+        const updated = await this.byId(id, trx).executeTakeFirstOrThrow();
         return toCourseFeature(updated);
     }
 
     async remove(id: string, version: number): Promise<void> {
-        const row = await this.byId(id).executeTakeFirst();
+        await this.db.transaction().execute((trx) => this.removeIn(trx, id, version));
+    }
+
+    /**
+     * Deletes every listed row in one transaction. Each row is
+     * version-checked like remove(); one stale version (or a missing row)
+     * throws VersionConflictError and nothing is deleted.
+     */
+    async removeMany(items: { id: string; version: number }[]): Promise<void> {
+        await this.db.transaction().execute(async (trx) => {
+            for (const item of items) await this.removeIn(trx, item.id, item.version);
+        });
+    }
+
+    private async removeIn(trx: Kysely<Database>, id: string, version: number): Promise<void> {
+        const row = await this.byId(id, trx).executeTakeFirst();
         if (!row || row.version !== version) throw new VersionConflictError('course_features', id);
-        await this.deleteById(id).execute();
+        await this.deleteById(id, trx).execute();
     }
 
     /**

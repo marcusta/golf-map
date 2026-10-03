@@ -49,6 +49,9 @@ export interface CourseFeaturesApi {
     create(input: { holeId?: null | string; source?: string; sourceRef?: string; license?: string; attributes?: null | { [x: string]: string | number | boolean; }; courseId: string; geometry: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; type: string }): Promise<CourseFeature>;
     update(input: { geometry?: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; holeId?: null | string; type?: string; attributes?: null | { [x: string]: string | number | boolean; }; id: string; version: number }): Promise<CourseFeature>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
+    createMany(input: { courseId: string; items: ({ holeId?: null | string; source?: string; sourceRef?: string; license?: string; attributes?: null | { [x: string]: string | number | boolean; }; geometry: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; type: string })[] }): Promise<CourseFeature[]>;
+    updateMany(input: { items: ({ geometry?: { curveType?: 'bezier' | 'bspline'; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; holeId?: null | string; type?: string; attributes?: null | { [x: string]: string | number | boolean; }; id: string; version: number })[] }): Promise<CourseFeature[]>;
+    removeMany(input: { items: { id: string; version: number }[] }): Promise<{ ok: boolean }>;
     reorder(input: { holeId?: null | string; courseId: string; orderedIds: string[] }): Promise<{ ok: boolean }>;
 }
 
@@ -83,6 +86,15 @@ export function createCourseFeaturesClient(baseUrl: string): CourseFeaturesApi {
         },
         async remove(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/features/remove`, body: input });
+        },
+        async createMany(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/features/create-many`, body: input });
+        },
+        async updateMany(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/features/update-many`, body: input });
+        },
+        async removeMany(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/features/remove-many`, body: input });
         },
         async reorder(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/course-features/reorder`, body: input });

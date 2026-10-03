@@ -686,6 +686,8 @@ export class DrawToolService {
         this.clearTransientOpState();
         this.features?.select(null);
         this.features?.niceRendering.set(true);
+        // Send debounced geometry saves now rather than after the debounce.
+        void this.features?.flush();
         this.suppressClick = false;
         this.ctx = null;
     }
@@ -1204,17 +1206,13 @@ export class DrawToolService {
             this.dragGhost.set(null);
             features.setDragging(move.features.map(f => f.id), false);
             // Commit the final translation: ONE store batch (a single
-            // FeatureCollection rebuild), ONE history entry for the whole
-            // multi-feature move, one autosave per feature.
+            // FeatureCollection rebuild), ONE history entry and ONE
+            // updateMany request for the whole multi-feature move.
             const entry = buildMoveEntry(move.features, move.dx, move.dy);
-            batch(() => {
-                for (const diff of entry) {
-                    features.patchLocal(diff.featureId, diff.after!.geometry); // instant visual snap
-                }
-            });
-            for (const diff of entry) {
-                void features.update(diff.featureId, { geometry: diff.after!.geometry });
-            }
+            void features.updateMany(
+                entry.map(diff => ({ id: diff.featureId, patch: { geometry: diff.after!.geometry } })),
+                { local: true },
+            );
             this.history.push(entry);
             return;
         }
@@ -1508,9 +1506,7 @@ export class DrawToolService {
             after: null,
             beforeVersion: f.version,
         })));
-        void (async () => {
-            for (const f of items) await features.removeFeature(f.id);
-        })();
+        void features.removeMany(items.map(f => f.id));
     }
 
     /**
@@ -1522,20 +1518,14 @@ export class DrawToolService {
         const items = features?.editableSelectedFeatures.peek() ?? [];
         if (!features || items.length === 0) return;
         void (async () => {
-            const entry: HistoryEntry = [];
-            const ids: string[] = [];
-            for (const f of items) {
-                const created = await features.create({
-                    type: f.type,
-                    holeId: f.holeId,
-                    geometry: translateGeometry(f.geometry, DUPLICATE_OFFSET_M, DUPLICATE_OFFSET_M),
-                });
-                if (!created) return; // save failed — history dropped via saveError watcher
-                entry.push({ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null });
-                ids.push(created.id);
-            }
-            features.setSelection(ids);
-            this.history.push(entry);
+            // One createMany request; it selects the clones in the same batch.
+            const created = await features.createMany(items.map(f => ({
+                type: f.type,
+                holeId: f.holeId,
+                geometry: translateGeometry(f.geometry, DUPLICATE_OFFSET_M, DUPLICATE_OFFSET_M),
+            })));
+            if (!created) return; // save failed — history dropped via saveError watcher
+            this.history.push(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
         })();
     }
 
@@ -1566,16 +1556,10 @@ export class DrawToolService {
             return;
         }
         this.actionNotice.set(null);
-        const entry: HistoryEntry = [];
-        const ids: string[] = [];
-        for (const create of plan) {
-            const created = await features.create(create);
-            if (!created) return; // save failed — history dropped via saveError watcher
-            entry.push({ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null });
-            ids.push(created.id);
-        }
-        features.setSelection(ids);
-        this.history.push(entry);
+        // One createMany request; it selects the new rings in the same batch.
+        const created = await features.createMany(plan);
+        if (!created) return; // save failed — history dropped via saveError watcher
+        this.history.push(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
     }
 
     /**
@@ -1723,7 +1707,7 @@ export class DrawToolService {
             after: { ...snapshotOf(f), type },
             beforeVersion: f.version,
         })));
-        for (const f of items) void features.update(f.id, { type });
+        void features.updateMany(items.map(f => ({ id: f.id, patch: { type } })), { local: true });
     }
 
     /** Re-assign the selection's hole (panel select). ONE history entry. */
@@ -1737,7 +1721,7 @@ export class DrawToolService {
             after: { ...snapshotOf(f), holeId },
             beforeVersion: f.version,
         })));
-        for (const f of items) void features.update(f.id, { holeId });
+        void features.updateMany(items.map(f => ({ id: f.id, patch: { holeId } })), { local: true });
     }
 
     /**
@@ -1821,20 +1805,14 @@ export class DrawToolService {
     async stampClones(sources: StampSource[], dx: number, dy: number): Promise<CourseFeature[] | null> {
         const features = this.features;
         if (!features || sources.length === 0) return null;
-        const entry: HistoryEntry = [];
-        const created: CourseFeature[] = [];
-        for (const s of sources) {
-            const c = await features.create({
-                type: s.type,
-                holeId: s.holeId,
-                geometry: translateGeometry(s.geometry, dx, dy),
-            });
-            if (!c) return null; // save failed
-            entry.push({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null });
-            created.push(c);
-        }
-        features.setSelection(created.map(c => c.id));
-        this.history.push(entry);
+        // One createMany request; it selects the clones in the same batch.
+        const created = await features.createMany(sources.map(s => ({
+            type: s.type,
+            holeId: s.holeId,
+            geometry: translateGeometry(s.geometry, dx, dy),
+        })));
+        if (!created) return null; // save failed
+        this.history.push(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
         return created;
     }
 

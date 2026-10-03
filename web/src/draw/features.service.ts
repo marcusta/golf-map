@@ -1,4 +1,4 @@
-import { Signal, Computed, effect, di } from '@basics/core/client/core';
+import { Signal, Computed, effect, di, batch } from '@basics/core/client/core';
 import { EntityStore } from '@basics/core/client/entity-store';
 import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
@@ -310,6 +310,8 @@ export class FeaturesService {
     /** Load all features for a course. Cached per courseId. */
     async load(courseId: string): Promise<void> {
         if (this.loadedCourseId === courseId) return;
+        // Land queued saves for the previous course before its rows go.
+        await this.flush();
         this.selectedIds.set(new Set());
         const items = await request(this.loading, this.error, () =>
             this.featuresApi.listByCourse({ courseId }));
@@ -322,6 +324,7 @@ export class FeaturesService {
     async reload(): Promise<void> {
         const courseId = this.loadedCourseId;
         if (!courseId) return;
+        this.dropQueues();
         this.loadedCourseId = null;
         await this.load(courseId);
     }
@@ -425,20 +428,38 @@ export class FeaturesService {
             || (f.source !== null && this.hiddenSources.peek().has(f.source));
     }
 
-    /** Create a feature (autosave on ring close). Selects it on success. */
-    async create(input: {
-        type: string;
-        holeId?: string | null;
-        geometry: FeatureGeometry;
-    }): Promise<CourseFeature | undefined> {
+    /**
+     * Create a feature (autosave on ring close). Selects it on success
+     * unless `select: false` (the caller sets the selection itself).
+     */
+    async create(input: CreateInput, opts: { select?: boolean } = {}): Promise<CourseFeature | undefined> {
+        const created = await this.createMany([input], opts);
+        return created?.[0];
+    }
+
+    /**
+     * Create several features with ONE request (`createMany`; a single item
+     * uses `create`) and add them to the store in one `batch()`, so the
+     * overlay collection rebuilds once. Selects all of them on success
+     * unless `select: false`. Returns undefined on failure (`saveError` set,
+     * nothing added).
+     */
+    async createMany(inputs: CreateInput[], opts: { select?: boolean } = {}): Promise<CourseFeature[] | undefined> {
         const courseId = this.loadedCourseId;
-        if (!courseId) return undefined;
-        const created = await request(this.saving, this.saveError, () =>
-            this.featuresApi.create({ courseId, ...input }));
-        if (created) {
-            this.store.add(created);
-            this.selectedIds.set(new Set([created.id]));
-        }
+        if (!courseId || inputs.length === 0) return undefined;
+        const done = this.track(inputs.length === 1
+            ? request(this.saving, this.saveError, () => this.featuresApi.create({ courseId, ...inputs[0]! }))
+                .then(c => c && [c])
+            : request(this.saving, this.saveError, () => this.featuresApi.createMany({ courseId, items: inputs })));
+        const server = await done;
+        if (!server) return undefined;
+        // The server stores exactly the geometry it was sent: keep the local
+        // object so the flatten cache and history snapshots share it.
+        const created = server.map((c, i) => ({ ...c, geometry: inputs[i]?.geometry ?? c.geometry }));
+        batched(() => {
+            for (const c of created) this.store.add(c);
+            if (opts.select !== false) this.selectedIds.set(new Set(created.map(c => c.id)));
+        });
         return created;
     }
 
@@ -454,59 +475,313 @@ export class FeaturesService {
     }
 
     /**
-     * Persist a partial update (geometry / type / holeId) with optimistic
-     * locking. On version conflict or other failure, `saveError` is set and
-     * the store re-syncs from the server (dropping local patches).
+     * Persist a partial update (geometry / type / holeId) through the
+     * feature's save queue (see `SaveQueue`): one request in flight per
+     * feature, later patches coalesce into one pending patch that goes out
+     * with the version the reply returned. Geometry-only patches wait
+     * `geometryDebounceMs` for more; type/holeId patches go as soon as the
+     * feature is idle. Callers `patchLocal` first for instant feedback.
+     *
+     * Resolves with the stored row once the request carrying this patch
+     * lands. On version conflict or other failure, `saveError` is set, every
+     * queued patch is dropped and the store re-syncs from the server.
      */
-    async update(
-        id: string,
-        patch: { geometry?: FeatureGeometry; type?: string; holeId?: string | null },
-    ): Promise<CourseFeature | undefined> {
-        const sent = this.store.items.peek().find(f => f.id === id);
-        if (!sent) {
+    update(id: string, patch: FeaturePatch): Promise<CourseFeature | undefined> {
+        if (!this.store.items.peek().some(f => f.id === id)) {
             this.saveError.set({ message: `Feature ${id} not found`, code: 'unknown' });
             void this.reload();
-            return undefined;
+            return Promise.resolve(undefined);
+        }
+        const q = this.queueFor(id);
+        return new Promise(resolve => {
+            const pending = q.pending ??= { patch: {}, base: null!, waiters: [], timer: null, ready: false };
+            Object.assign(pending.patch, definedFields(patch));
+            pending.base = this.baseOf(id)!;
+            pending.waiters.push(resolve);
+            if (pending.timer) clearTimeout(pending.timer);
+            pending.timer = null;
+            const geometryOnly = Object.keys(pending.patch).every(k => k === 'geometry');
+            if (geometryOnly && !pending.ready && this.geometryDebounceMs > 0) {
+                pending.timer = setTimeout(() => {
+                    pending.timer = null;
+                    pending.ready = true;
+                    this.kick(id);
+                }, this.geometryDebounceMs);
+            } else {
+                pending.ready = true;
+                this.kick(id);
+            }
+        });
+    }
+
+    /**
+     * Persist updates to several features with ONE request (`updateMany`;
+     * a single item uses `update`), bypassing the debounce. With
+     * `local: true` the patches land in the store first, in one `batch()`
+     * (undo/redo, retype, multi-move). Earlier queued saves for the same
+     * features go out first, so versions never race. The reply is applied
+     * in one `batch()` with the LOCAL geometry objects kept, so an
+     * unchanged render does not re-send the overlay.
+     */
+    async updateMany(
+        items: { id: string; patch: FeaturePatch }[],
+        opts: { local?: boolean } = {},
+    ): Promise<CourseFeature[] | undefined> {
+        if (items.length === 0) return [];
+        if (opts.local) {
+            batched(() => {
+                for (const { id, patch } of items) {
+                    const row = this.store.items.peek().find(f => f.id === id);
+                    if (row) this.store.patch({ ...row, ...definedFields(patch) });
+                }
+            });
+        }
+        const ids = items.map(i => i.id);
+        const bases = new Map(ids.map(id => [id, this.baseOf(id)]));
+        const work = (async () => {
+            const release = await this.acquire(ids);
+            try {
+                const versions = new Map<string, number>();
+                for (const { id } of items) {
+                    const row = this.store.items.peek().find(f => f.id === id);
+                    if (row) versions.set(id, row.version);
+                }
+                const live = items.filter(i => versions.has(i.id) && bases.get(i.id));
+                if (live.length === 0) return [];
+                const body = live.map(({ id, patch }) => ({ id, version: versions.get(id)!, ...definedFields(patch) }));
+                const server = body.length === 1
+                    ? await request(this.saving, this.saveError, () => this.featuresApi.update(body[0]!)).then(r => r && [r])
+                    : await request(this.saving, this.saveError, () => this.featuresApi.updateMany({ items: body }));
+                if (server === undefined) {
+                    this.dropQueues();
+                    void this.reload();
+                    return undefined;
+                }
+                const patches = new Map(live.map(i => [i.id, i.patch]));
+                const result: CourseFeature[] = [];
+                batched(() => {
+                    for (const row of server) {
+                        const merged = this.mergeReply(row, bases.get(row.id)!, patches.get(row.id) ?? {});
+                        result.push(merged ?? row);
+                    }
+                });
+                return result;
+            } finally {
+                release();
+            }
+        })();
+        return this.track(work);
+    }
+
+    /** Delete a feature. Deselects it. See `removeMany`. */
+    async removeFeature(id: string): Promise<boolean> {
+        return this.removeMany([id]);
+    }
+
+    /**
+     * Delete several features with ONE request (`removeMany`; a single id
+     * uses `remove`). The rows leave the store and the selection first, in
+     * one `batch()`; queued patches for them are dropped and an in-flight
+     * save is awaited for its version. On failure `saveError` is set and the
+     * store re-syncs from the server (the rows come back).
+     */
+    async removeMany(ids: string[]): Promise<boolean> {
+        const rows = ids
+            .map(id => this.store.items.peek().find(f => f.id === id))
+            .filter((f): f is CourseFeature => f !== undefined);
+        if (rows.length === 0) return false;
+        const gone = new Set(rows.map(r => r.id));
+        for (const id of gone) this.cancelPending(id);
+        batched(() => {
+            for (const id of gone) this.store.remove(id);
+            const selection = this.selectedIds.peek();
+            if ([...selection].some(id => gone.has(id))) {
+                this.selectedIds.set(new Set([...selection].filter(id => !gone.has(id))));
+            }
+        });
+        const work = (async () => {
+            const release = await this.acquire([...gone]);
+            try {
+                const items = rows.map(r => ({ id: r.id, version: this.removedVersions.get(r.id) ?? r.version }));
+                const result = items.length === 1
+                    ? await request(this.saving, this.saveError, () => this.featuresApi.remove(items[0]!))
+                    : await request(this.saving, this.saveError, () => this.featuresApi.removeMany({ items }));
+                if (result === undefined) {
+                    this.dropQueues();
+                    void this.reload();
+                    return false;
+                }
+                return true;
+            } finally {
+                for (const id of gone) this.removedVersions.delete(id);
+                release();
+            }
+        })();
+        return this.track(work);
+    }
+
+    /**
+     * Resolves once every queued and in-flight save has landed (debounced
+     * patches are sent immediately). Call before deactivating the editor
+     * or switching course; tests use it to wait for the queue to drain.
+     */
+    async flush(): Promise<void> {
+        for (;;) {
+            const waits: Promise<unknown>[] = [...this.inflight];
+            for (const [id, q] of this.queues) {
+                if (q.pending && !q.pending.ready) {
+                    if (q.pending.timer) clearTimeout(q.pending.timer);
+                    q.pending.timer = null;
+                    q.pending.ready = true;
+                    this.kick(id);
+                }
+                if (q.busy) waits.push(q.busy);
+            }
+            if (waits.length === 0) return;
+            await Promise.all(waits);
+        }
+    }
+
+    // ── Save queue internals ─────────────────────────────────────────────
+
+    /** Trailing debounce for geometry-only `update` patches, in ms. */
+    geometryDebounceMs = 150;
+    private readonly queues = new Map<string, SaveQueue>();
+    /** Every create/updateMany/removeMany request still in flight (`flush`). */
+    private readonly inflight = new Set<Promise<unknown>>();
+    /**
+     * Versions returned by saves that landed after their row left the store
+     * (removed locally while the save was in flight); `removeMany` sends them.
+     */
+    private readonly removedVersions = new Map<string, number>();
+
+    private track<T>(work: Promise<T>): Promise<T> {
+        this.inflight.add(work);
+        const done = () => { this.inflight.delete(work); };
+        work.then(done, done);
+        return work;
+    }
+
+    private queueFor(id: string): SaveQueue {
+        let q = this.queues.get(id);
+        if (!q) {
+            q = { busy: null, pending: null };
+            this.queues.set(id, q);
+        }
+        return q;
+    }
+
+    /** Send `id`'s pending patch when it is due and nothing is in flight for `id`. */
+    private kick(id: string): void {
+        const q = this.queues.get(id);
+        if (!q) return;
+        if (q.busy || !q.pending?.ready) {
+            if (!q.busy && !q.pending) this.queues.delete(id);
+            return;
+        }
+        const pending = q.pending;
+        q.pending = null;
+        const release = this.claim([id]);
+        void this.sendUpdate(id, pending).finally(release);
+    }
+
+    private async sendUpdate(id: string, pending: PendingPatch): Promise<void> {
+        const sent = this.store.items.peek().find(f => f.id === id);
+        if (!sent) {
+            for (const w of pending.waiters) w(undefined);
+            return;
         }
         const server = await request(this.saving, this.saveError, () =>
-            this.featuresApi.update({ id, version: sent.version, ...patch }));
+            this.featuresApi.update({ id, version: sent.version, ...pending.patch }));
         if (server === undefined) {
+            this.dropQueues();
+            for (const w of pending.waiters) w(undefined);
             void this.reload();
+            return;
+        }
+        const merged = this.mergeReply(server, pending.base, pending.patch);
+        for (const w of pending.waiters) w(merged ?? server);
+    }
+
+    /** The row's geometry/type/holeId when a save is requested (see `mergeReply`). */
+    private baseOf(id: string): Required<FeaturePatch> | null {
+        const row = this.store.items.peek().find(f => f.id === id);
+        return row ? { geometry: row.geometry, type: row.type, holeId: row.holeId } : null;
+    }
+
+    /**
+     * Patch the store with a save reply. Not the raw server row: its geometry
+     * is a freshly parsed object that would miss the flatten cache and
+     * re-send the whole overlay. A field the store changed locally after the
+     * save was requested (`base` → current) keeps the local value; otherwise
+     * geometry takes the object the caller passed (or the current one) and
+     * type/holeId take the server's. Returns undefined when the row left the
+     * store meanwhile (its version is kept for `removeMany`).
+     */
+    private mergeReply(server: CourseFeature, base: Required<FeaturePatch>, patch: FeaturePatch): CourseFeature | undefined {
+        const current = this.store.items.peek().find(f => f.id === server.id);
+        if (!current) {
+            this.removedVersions.set(server.id, server.version);
             return undefined;
         }
-        // Not `store.mutate`: the server row carries a freshly parsed
-        // geometry object, which would miss the flatten cache and re-send the
-        // whole hand-drawn source to the worker a second time (the local
-        // patch already sent it). The server stores exactly what we sent, so
-        // keep a LOCAL geometry object: the one sent, unless a newer local
-        // patch replaced it while the request was in flight.
-        const current = this.store.items.peek().find(f => f.id === id);
-        if (!current) return server; // removed while in flight
-        const geometry = patch.geometry === undefined || current.geometry !== sent.geometry
-            ? current.geometry
-            : patch.geometry;
-        const merged: CourseFeature = { ...server, geometry };
+        const merged: CourseFeature = {
+            ...server,
+            geometry: current.geometry !== base.geometry ? current.geometry : (patch.geometry ?? current.geometry),
+            type: current.type !== base.type ? current.type : server.type,
+            holeId: current.holeId !== base.holeId ? current.holeId : server.holeId,
+        };
         this.store.patch(merged);
         return merged;
     }
 
-    /** Delete a feature (uses the store's current version). Deselects it. */
-    async removeFeature(id: string): Promise<boolean> {
-        const current = this.store.items.peek().find(f => f.id === id);
-        if (!current) return false;
-        const result = await request(this.saving, this.saveError, () =>
-            this.featuresApi.remove({ id, version: current.version }));
-        if (result === undefined) {
-            void this.reload();
-            return false;
+    /** Mark `ids` busy until the returned release runs; release sends what queued up meanwhile. */
+    private claim(ids: string[]): () => void {
+        let resolve!: () => void;
+        const busy = new Promise<void>(r => { resolve = r; });
+        for (const id of ids) this.queueFor(id).busy = busy;
+        return () => {
+            for (const id of ids) {
+                const q = this.queues.get(id);
+                if (q?.busy === busy) q.busy = null;
+                this.kick(id);
+            }
+            resolve();
+        };
+    }
+
+    /** Wait until every id is idle (queued patches sent first), then claim them all. */
+    private async acquire(ids: string[]): Promise<() => void> {
+        for (;;) {
+            const waits: Promise<void>[] = [];
+            for (const id of ids) {
+                const q = this.queues.get(id);
+                if (!q) continue;
+                if (q.pending && !q.pending.ready) {
+                    if (q.pending.timer) clearTimeout(q.pending.timer);
+                    q.pending.timer = null;
+                    q.pending.ready = true;
+                    this.kick(id);
+                }
+                if (q.busy) waits.push(q.busy);
+            }
+            if (waits.length === 0) return this.claim(ids);
+            await Promise.all(waits);
         }
-        this.store.remove(id);
-        if (this.selectedIds.peek().has(id)) {
-            const next = new Set(this.selectedIds.peek());
-            next.delete(id);
-            this.selectedIds.set(next);
-        }
-        return true;
+    }
+
+    /** Drop `id`'s unsent patch (the feature is being deleted). */
+    private cancelPending(id: string): void {
+        const q = this.queues.get(id);
+        const pending = q?.pending;
+        if (!q || !pending) return;
+        if (pending.timer) clearTimeout(pending.timer);
+        q.pending = null;
+        for (const w of pending.waiters) w(undefined);
+    }
+
+    /** Drop every unsent patch (a failed save re-syncs the store from the server). */
+    private dropQueues(): void {
+        for (const id of [...this.queues.keys()]) this.cancelPending(id);
     }
 
     // ── Stack reorder (D27 verbs) ───────────────────────────────────────
@@ -771,6 +1046,63 @@ export class FeaturesService {
             if (dragging) map.setFeatureState({ source: FEATURES_OVERLAY_ID, id }, { dragging: true });
             else map.removeFeatureState({ source: FEATURES_OVERLAY_ID, id }, 'dragging');
         }
+    }
+}
+
+/** Fields `update` / `updateMany` can persist. */
+export type FeaturePatch = { geometry?: FeatureGeometry; type?: string; holeId?: string | null };
+
+/** Input for `create` / `createMany`. */
+export type CreateInput = { type: string; holeId?: string | null; geometry: FeatureGeometry };
+
+/** Unsent `update` patches for one feature, merged in call order. */
+interface PendingPatch {
+    patch: FeaturePatch;
+    /** Row fields at the latest `update` call merged into `patch`. */
+    base: Required<FeaturePatch>;
+    /** Resolvers of every `update` call merged into this patch. */
+    waiters: Array<(row: CourseFeature | undefined) => void>;
+    /** Geometry debounce timer; null once due or when not debounced. */
+    timer: ReturnType<typeof setTimeout> | null;
+    /** True when the patch may go as soon as the feature is idle. */
+    ready: boolean;
+}
+
+/**
+ * Per-feature save queue. `busy` is the request in flight for this feature
+ * (a single update or a batch that includes it); `pending` collects later
+ * patches and is sent after `busy` settles, with the version it returned.
+ */
+interface SaveQueue {
+    busy: Promise<void> | null;
+    pending: PendingPatch | null;
+}
+
+function definedFields(patch: FeaturePatch): FeaturePatch {
+    const out: FeaturePatch = {};
+    if (patch.geometry !== undefined) out.geometry = patch.geometry;
+    if (patch.type !== undefined) out.type = patch.type;
+    if (patch.holeId !== undefined) out.holeId = patch.holeId;
+    return out;
+}
+
+let batchDepth = 0;
+
+/**
+ * `batch()` that nests: core's batch flushes when ANY batch ends, so an
+ * inner batch would flush the outer one early. Only the outermost call
+ * batches; history.ts wraps a remove + update pair in one.
+ */
+export function batched(fn: () => void): void {
+    if (batchDepth > 0) {
+        fn();
+        return;
+    }
+    batchDepth++;
+    try {
+        batch(fn);
+    } finally {
+        batchDepth--;
     }
 }
 
