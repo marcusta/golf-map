@@ -5,7 +5,9 @@ import { waterGeometry } from './water-geometry';
 import { waterMaterial } from './water-material';
 import { WaterElevationQueue } from './water-elevation-queue';
 
-export const WATER_LAYER_ID = 'course-water-3d';
+import { WATER_LAYER_ID } from './custom-layer-ids';
+
+export { WATER_LAYER_ID };
 
 interface WaterEntry {
     type: string;

@@ -26,9 +26,10 @@ test('40k stems render and cull; surface fallback and walk restore work', async 
         // card triangles in view). Pull the full-card band in to 30 m and the half-card
         // band to 120 m so most of the stand renders as impostors (dev-only flag).
         await openPlanner(page, FURNITURE_COURSE_ID, HOLE_1, { treeLod: '30,120' });
-        // The layer exists once the map has loaded and the 40k-stem asset is parsed; slow on a cold vite dep cache.
-        await expect.poll(() => page.evaluate(() => (window as any).__trees3d?.total), { timeout: 60_000 }).toBe(40_000);
         await page.locator(tid('map-layers-btn')).click();
+        // The 3D trees row shows once the 40k-stem asset is parsed; slow on a cold vite dep cache.
+        // The layer itself (and __trees3d) arrives when the toggle loads its chunk.
+        await expect(page.locator(tid('layers-trees3d-toggle'))).toBeVisible({ timeout: 60_000 });
         await page.locator(tid('layers-canopy-toggle')).click();
         await page.locator(tid('layers-trees3d-toggle')).click();
         const state = () => page.evaluate(() => ({ terrain: (window as any).__map.getTerrain().source, canopy: (window as any).__map.getLayoutProperty('course-canopy-color', 'visibility'), ...((window as any).__trees3d ?? {}) }));

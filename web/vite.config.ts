@@ -119,6 +119,9 @@ export default defineConfig(({ command }) => ({
                 mobile: resolve(__dirname, 'mobile.html'),
                 ...(process.env.WEB_DEV_PAGES ? { vegetation: resolve(__dirname, 'dev/vegetation.html') } : {}),
             },
+            // maplibre-gl changes only on a dependency bump, so its own chunk
+            // keeps one hash across app deploys and stays in the browser cache.
+            output: { manualChunks: { maplibre: ['maplibre-gl'] } },
         },
     },
     server: {

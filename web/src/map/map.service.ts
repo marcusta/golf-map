@@ -3,7 +3,9 @@ import { loadSmoothedTerrain } from './terrain-smoothing-protocol';
 import { TERRAIN_SMOOTHING_PROTOCOL } from './terrain-smoothing';
 import type { GeoJSONSourceDiff, GeoJSONFeatureDiff, GeoJSONFeatureId, LayerSpecification, MapMouseEvent } from 'maplibre-gl';
 import type { GeoJSON, FeatureCollection } from 'geojson';
-import { WaterLayer, WATER_LAYER_ID } from './water-layer';
+import type { WaterLayer } from './water-layer';
+import { TREES_LAYER_ID, WATER_LAYER_ID } from './custom-layer-ids';
+import { LazyCustomLayer } from './lazy-custom-layer';
 import { MapPerformanceControl } from './map-performance-control';
 import { Signal, batch, effect, di } from '@basics/core/client/core';
 import type { TileManifest } from './tileset.service';
@@ -22,7 +24,8 @@ import {
     type TerrainMode,
 } from './map-style';
 import { TreeStemsService } from './tree-stems.service';
-import { TreesLayer, TREES_LAYER_ID, type TreesLayerOptions } from './trees-layer';
+import type { TreeStem } from '../../../shared/strategy/tree-stems';
+import type { TreesLayer, TreesLayerOptions } from './trees-layer';
 import { InteractionClaims } from './interaction';
 import { canonicalTilesOverlap, type CanonicalTile } from './tile-overlap';
 
@@ -250,7 +253,19 @@ export class MapService {
     private overlays = new Map<string, string[]>();
     private waterSourceId: string | null = null;
     private waterEnabled = true;
-    private waterLayer: WaterLayer | null = null;
+    /** The 3D water slot; reserved when the first water feature arrives. */
+    private water: LazyCustomLayer<WaterLayer> | null = null;
+    /** Latest water source data, applied when the water chunk resolves. */
+    private waterData: FeatureCollection | null = null;
+    /**
+     * Loads the three.js layers. They are split out of the initial bundle and
+     * fetched on first need: water when a course has water and the water
+     * toggle is on, trees when the 3D trees toggle turns on. Tests swap these
+     * for deferred stand-ins to drive a late resolve.
+     */
+    loadWaterLayer: () => Promise<WaterLayer> = async () => new (await import('./water-layer')).WaterLayer();
+    loadTreesLayer: (stems: readonly TreeStem[], options: TreesLayerOptions) => Promise<TreesLayer> =
+        async (stems, options) => new (await import('./trees-layer')).TreesLayer(stems, options);
     /** Overlays with at least one draped layer (see DRAPED_LAYER_TYPES). */
     private drapedOverlays = new Set<string>();
     /** Camera between movestart and moveend/zoomend. */
@@ -345,10 +360,7 @@ export class MapService {
             attributionControl: false,
         });
 
-        map.addControl(new MapPerformanceControl(() => this.waterEnabled, enabled => {
-            this.waterEnabled = enabled;
-            if (this.waterLayer) this.waterLayer.enabled = enabled;
-        }, () => this.waterLayer), 'top-right');
+        map.addControl(new MapPerformanceControl(() => this.waterEnabled, enabled => this.setWaterEnabled(enabled), () => this.water?.layer ?? null), 'top-right');
 
         map.on('error', e => {
             // MapLibre swallows tile/style errors into 'error' events —
@@ -396,30 +408,44 @@ export class MapService {
             if (!map.getLayer(CANOPY_COLOR_LAYER_ID)) return;
             map.setLayoutProperty(CANOPY_COLOR_LAYER_ID, 'visibility', visible ? 'visible' : 'none');
         }));
-        let treesLayer: TreesLayer | null = null;
+        // The trees slot is reserved on top when the stems load (where the
+        // layer itself went before it was split out); the three.js chunk
+        // loads the first time the 3D trees toggle turns on.
+        let trees: LazyCustomLayer<TreesLayer> | null = null;
         let loadedStems: unknown = null;
+        const applyTrees = (layer: TreesLayer): void => {
+            layer.enabled = this.trees3dVisible.peek();
+            layer.sway = this.treeSway.peek();
+            layer.exaggeration = this.exaggeration.peek();
+            map.triggerRepaint();
+        };
         this.disposers.push(effect(() => {
             const stems = this.stems.stems.get();
             const visible = this.trees3dVisible.get();
-            const sway = this.treeSway.get();
-            const exaggeration = this.exaggeration.get();
+            this.treeSway.get();
+            this.exaggeration.get();
             const ready = this.ready.get();
             this.hasTreeStems.set(stems !== null);
             if (!ready) return;
             if (stems !== loadedStems) {
-                if (map.getLayer(TREES_LAYER_ID)) map.removeLayer(TREES_LAYER_ID);
-                treesLayer = stems !== null ? new TreesLayer(stems, treeLodOverride()) : null;
+                trees?.release();
+                trees = null;
                 loadedStems = stems;
-                if (treesLayer) map.addLayer(treesLayer);
-                (window as any).__trees3d = treesLayer?.stats ?? null;
+                (window as any).__trees3d = null;
+                if (stems !== null) {
+                    trees = new LazyCustomLayer(map, TREES_LAYER_ID, () => this.loadTreesLayer(stems, treeLodOverride()), layer => {
+                        (window as any).__trees3d = layer.stats;
+                        applyTrees(layer);
+                    });
+                    trees.reserve();
+                }
             }
-            if (treesLayer) {
-                treesLayer.enabled = visible;
-                treesLayer.sway = sway;
-                treesLayer.exaggeration = exaggeration;
-                map.triggerRepaint();
-            }
+            if (!trees) return;
+            if (visible) void trees.request();
+            else trees.cancel();
+            if (trees.layer) applyTrees(trees.layer);
         }));
+        this.disposers.push(() => trees?.release());
         // Ortho visibility: show only the active vintage's layer, and only when
         // the photo layer is on (off → hillshade/terrain-only). Toggling
         // visibility is instant — MapLibre keeps already-fetched tiles cached.
@@ -506,7 +532,9 @@ export class MapService {
         this.gestureActive = false;
         this.overlayChangedSinceMoveStart = false;
         this.waterSourceId = null;
-        this.waterLayer = null;
+        this.water?.release();
+        this.water = null;
+        this.waterData = null;
         this.onTopOverlays.clear();
         this.pendingOverlayData.clear();
         if (this.drapeRepairTimer !== null) {
@@ -732,24 +760,37 @@ export class MapService {
     /** Persistent feature surfaces supply both the editor fills and the 3D water. */
     private setWaterFeatures(data: FeatureCollection): void {
         const map = this.requireMap();
-        let layer = map.getLayer(WATER_LAYER_ID) ? this.waterLayer : null;
-        if (!layer) {
+        this.waterData = data;
+        if (!this.water?.reserved) {
             if (!data.features.some(f => f.properties?.type === 'water' || f.properties?.type === 'water_creek')) return;
-            layer = new WaterLayer();
-            layer.enabled = this.waterEnabled;
+            this.water = new LazyCustomLayer(map, WATER_LAYER_ID, this.loadWaterLayer, layer => {
+                layer.enabled = this.waterEnabled;
+                if (this.waterData) layer.setData(this.waterData);
+            });
             // Bottom of the non-draped run: above every draped layer (one
             // terrain RTT stack, see overlayLayerSlot) and below the trees
             // and every circle/symbol overlay (vertex markers stay visible).
-            map.addLayer(layer, this.aboveDrapeSlot(map));
-            this.waterLayer = layer;
+            // The slot is taken now; the three.js chunk fills it when it lands.
+            this.water.reserve(this.aboveDrapeSlot(map));
         }
-        layer.setData(data);
+        const layer = this.water.layer;
+        if (layer) layer.setData(data);
+        else if (this.waterEnabled) void this.water.request();
+    }
+
+    /** The water toggle (map performance control). Off before the chunk lands cancels the add. */
+    private setWaterEnabled(enabled: boolean): void {
+        this.waterEnabled = enabled;
+        const layer = this.water?.layer;
+        if (layer) layer.enabled = enabled;
+        else if (enabled) void this.water?.request();
+        else this.water?.cancel();
     }
 
     private clearWaterFeatures(): void {
-        const map = this.map.peek();
-        if (map?.getLayer(WATER_LAYER_ID)) map.removeLayer(WATER_LAYER_ID);
-        this.waterLayer = null;
+        this.water?.release();
+        this.water = null;
+        this.waterData = null;
     }
 
     // ── GeoJSON overlays for tools ────────────────────────────────────────

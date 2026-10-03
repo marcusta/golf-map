@@ -9,14 +9,19 @@ import { s } from '../css';
 import { LoginComponent } from '../auth/login.component';
 import { CourseListComponent } from '../courses/course-list.component';
 import { CourseDetailComponent } from '../course-detail/course-detail.component';
-import { PlannerComponent } from '../planner/planner.component';
 import { PlayerSettingsComponent } from '../player/player-settings.component';
-import { NewCourseWizardComponent } from '../map-build/new-course-wizard.component';
-import { SetMapAreaComponent } from '../map-build/set-map-area.component';
-import { SitesComponent } from '../sites/sites.component';
 import { ConfirmDialogComponent } from './confirm-dialog.component';
 import { ServerModeService, type ServerMode } from './server-mode.service';
 import { icon } from '../ui/icons';
+import { lazy } from './lazy-route';
+
+// Route components outside the /course path load on first visit, each in its
+// own chunk. Module-level so every routeComponents() call returns the same
+// constructor per route.
+const PlannerRoute = lazy(() => import('../planner/planner.component').then(m => m.PlannerComponent));
+const NewCourseWizardRoute = lazy(() => import('../map-build/new-course-wizard.component').then(m => m.NewCourseWizardComponent));
+const SetMapAreaRoute = lazy(() => import('../map-build/set-map-area.component').then(m => m.SetMapAreaComponent));
+const SitesRoute = lazy(() => import('../sites/sites.component').then(m => m.SitesComponent));
 
 const tpl = template(`
     <div bind="layout" class="app-layout">
@@ -45,14 +50,14 @@ export function routeComponents(mode: ServerMode): Record<string, new () => Comp
     const routes: Record<string, new () => Component<any>> = {
         '/': CourseListComponent,
         '/course': CourseDetailComponent,
-        '/planner': PlannerComponent,
+        '/planner': PlannerRoute,
         '/player': PlayerSettingsComponent,
         '/login': LoginComponent,
     };
     if (mode === 'builder') {
-        routes['/new'] = NewCourseWizardComponent;
-        routes['/set-area'] = SetMapAreaComponent;
-        routes['/sites'] = SitesComponent;
+        routes['/new'] = NewCourseWizardRoute;
+        routes['/set-area'] = SetMapAreaRoute;
+        routes['/sites'] = SitesRoute;
     }
     return routes;
 }
