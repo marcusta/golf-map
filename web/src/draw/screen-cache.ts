@@ -25,6 +25,7 @@
 import type { Map as MaplibreMap } from 'maplibre-gl';
 import type { FeatureGeometry, Point } from '../geo/bezier';
 import { sweref99tmToWgs84 } from '../geo/transform';
+import { flatProjector } from '../editor/screen-point';
 
 interface LngLatEntry { x: number; y: number; lng: number; lat: number }
 const lngLatCache = new WeakMap<Point, LngLatEntry>();
@@ -60,24 +61,6 @@ export interface ScreenHit {
     which?: 'hIn' | 'hOut';
     ringIdx: number;
     idx: number;
-}
-
-type Project = (lng: number, lat: number) => { x: number; y: number };
-
-/**
- * Flat per-point projection. map.project raycasts the terrain DEM
- * (~40 us/call); the flat transform ignores draping, which shifts a marker
- * under 1 px at course pitch and exaggeration, far below the hit radii.
- */
-function flatProjector(map: MaplibreMap): Project {
-    const tr = map.transform as unknown as {
-        locationToScreenPoint?: (l: { lng: number; lat: number }) => { x: number; y: number };
-    };
-    if (tr.locationToScreenPoint) {
-        const fn = tr.locationToScreenPoint.bind(tr);
-        return (lng, lat) => fn({ lng, lat });
-    }
-    return (lng, lat) => map.project([lng, lat]);
 }
 
 export function projectGeometry(map: MaplibreMap, geometry: FeatureGeometry): ScreenPoints {
@@ -170,6 +153,10 @@ export class ScreenPointCache {
         FeatureGeometry,
         { epoch: number; map: MaplibreMap; elevation: number | undefined; sp: ScreenPoints }
     >();
+    private polylines = new WeakMap<
+        ReadonlyArray<readonly [number, number]>,
+        { epoch: number; map: MaplibreMap; elevation: number | undefined; xy: Float64Array }
+    >();
 
     invalidate(): void {
         this.epoch++;
@@ -182,5 +169,28 @@ export class ScreenPointCache {
         const sp = projectGeometry(map, geometry);
         this.entries.set(geometry, { epoch: this.epoch, map, elevation, sp });
         return sp;
+    }
+
+    /**
+     * Screen xy of a flattened EPSG:3006 polyline, [x0, y0, x1, y1, ...],
+     * cached per array identity for the same camera state as `get`. The
+     * flat-cache rings (geo/flat-cache.ts) are immutable per geometry, so
+     * their `pts` array is a stable key. Draw snapping reads neighbour
+     * outlines through this.
+     */
+    polyline(map: MaplibreMap, pts: ReadonlyArray<readonly [number, number]>): Float64Array {
+        const elevation = (map.transform as unknown as { elevation?: number }).elevation;
+        const hit = this.polylines.get(pts);
+        if (hit && hit.epoch === this.epoch && hit.map === map && hit.elevation === elevation) return hit.xy;
+        const project = flatProjector(map);
+        const xy = new Float64Array(pts.length * 2);
+        for (let i = 0; i < pts.length; i++) {
+            const { lat, lon } = sweref99tmToWgs84(pts[i][0], pts[i][1]);
+            const s = project(lon, lat);
+            xy[i * 2] = s.x;
+            xy[i * 2 + 1] = s.y;
+        }
+        this.polylines.set(pts, { epoch: this.epoch, map, elevation, xy });
+        return xy;
     }
 }

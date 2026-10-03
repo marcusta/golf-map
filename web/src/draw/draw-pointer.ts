@@ -25,6 +25,7 @@ import {
 } from './draw-state';
 import type { HistoryEntry } from './history';
 import type { FrameSignal } from './draw-frame';
+import { sameSnapMarker, snapMarkerOf, snapPointer, type SnapMarker } from './draw-snap';
 import {
     advanceAltCycle,
     applyInsertion,
@@ -175,6 +176,8 @@ export interface DrawPointerHost extends DrawHoverHost {
     readonly marquee: FrameSignal<Marquee | null>;
     readonly dragGhost: FrameSignal<GhostFeature[] | null>;
     readonly trace: FrameSignal<Point[] | null>;
+    /** Snap marker at the snapped pointer position (draw-snap.ts), or null. */
+    readonly snapMarker: FrameSignal<SnapMarker | null>;
     /** Raw mousedown/up binding (editor/drag-binding.ts); null while inactive. */
     dragBinding: DragBinding | null;
     drag: DragTarget | null;
@@ -260,8 +263,10 @@ function onClick(host: DrawPointerHost, e: MapPointerEvent): void {
             host.closeDraft();
             return;
         }
-        // Shift+click places a sharp corner control point.
-        host.state.addPoint(p, e.originalEvent.shiftKey);
+        // Shift+click places a sharp corner control point. The point snaps
+        // to a neighbour's anchor or outline unless Cmd/Ctrl is held.
+        const snap = snapPointer(host, e, p, null);
+        host.state.addPoint(snap ? snap.point : p, e.originalEvent.shiftKey);
         return;
     }
 
@@ -327,13 +332,24 @@ function onMouseMove(host: DrawPointerHost, e: MapPointerEvent): void {
             }
             return;
         }
+        // A held button mid-draft is a native pan: no snap scan while the
+        // camera moves (each frame would re-project the candidates).
+        if (e.originalEvent.buttons !== 0) {
+            setSnapMarker(host, null);
+            return;
+        }
+        // The snap marker shows before the first point too, so the user
+        // sees where the first click lands.
+        const raw = lngLatToSweref99tm(e.lngLat);
+        const snap = snapPointer(host, e, raw, null);
+        setSnapMarker(host, snapMarkerOf(snap, 'draft'));
         // Empty draft: the rubber band has nothing to attach to, so the
         // cursor is not tracked (no preview rebuild, no worker push).
         if (host.state.draft.peek().length === 0) {
             if (host.cursor.peek() !== null) host.cursor.set(null);
             return;
         }
-        const p = lngLatToSweref99tm(e.lngLat);
+        const p = snap ? snap.point : raw;
         const prev = host.cursor.peek();
         if (prev && prev.x === p.x && prev.y === p.y) return;
         host.cursor.setLater(() => p);
@@ -400,8 +416,14 @@ function onMouseMove(host: DrawPointerHost, e: MapPointerEvent): void {
 
     // Derive from the drag's base geometry — every op sets ABSOLUTE
     // positions, so this is frame-order independent and needs no store
-    // reads (the store is not patched until the mouseup commit).
-    const p = lngLatToSweref99tm(e.lngLat);
+    // reads (the store is not patched until the mouseup commit). The
+    // dragged point snaps to a neighbour unless Cmd/Ctrl is held; the
+    // dragged feature itself is never a target (its outline moves with
+    // the drag, and snapping onto it would fold the ring onto itself).
+    const raw = lngLatToSweref99tm(e.lngLat);
+    const snap = snapPointer(host, e, raw, drag.featureId);
+    setSnapMarker(host, snapMarkerOf(snap, 'drag'));
+    const p = snap ? snap.point : raw;
     const base = drag.baseGeometry;
     let geometry: FeatureGeometry;
     if (drag.kind === 'anchor') {
@@ -445,6 +467,12 @@ function bindExtraHandlers(host: DrawPointerHost, map: MaplibreMap): () => void 
  * Cmd/Ctrl (the pan escape, editor/drag-binding.ts), so a Cmd/Ctrl press
  * never reaches here: MapLibre's native dragPan pans, and a stationary
  * Cmd/Ctrl-click still toggles selection in onClick.
+ *
+ * The same modifier turns snapping off (draw-snap.ts) without a conflict:
+ * a Cmd/Ctrl draft click is a click, not a drag, so it still places an
+ * unsnapped point in onClick; a vertex drag starts without the modifier
+ * and reads it per mousemove, so pressing Cmd/Ctrl mid-drag releases the
+ * snap. On macOS Ctrl+click is a secondary click, so Cmd is the key there.
  */
 function onMouseDown(host: DrawPointerHost, e: MapMouseEvent, map: MaplibreMap): void {
     if (host.state.mode.peek() === 'draw') {
@@ -829,6 +857,7 @@ export function endDrag(host: DrawPointerHost, map?: MaplibreMap): void {
         host.dragGhost.set(null);
         host.features?.setDragging([drag.featureId], false);
     }
+    host.snapMarker.set(null);
     host.drag = null;
     host.dragBinding?.release(map);
 }
@@ -859,6 +888,12 @@ export function cancelStampDrag(host: DrawPointerHost): void {
     host.stampDrag = null;
     host.dragGhost.set(null);
     host.dragBinding?.release();
+}
+
+/** Write the snap marker on the next frame, only when it changed. */
+function setSnapMarker(host: DrawPointerHost, next: SnapMarker | null): void {
+    if (sameSnapMarker(host.snapMarker.peek(), next)) return;
+    host.snapMarker.setLater(() => next);
 }
 
 /** Flat screen-pixel distance from an EPSG:3006 point to a screen position. */

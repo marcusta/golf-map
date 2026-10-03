@@ -130,6 +130,12 @@ export function editorHelp(offered: readonly EditorTool[]): HelpSection[] {
                 { keys: 'Shift+1 … 0', desc: 'Hide or show a feature type' },
                 { keys: 'H', desc: 'Hide selected features' },
                 { keys: 'Shift+H', desc: 'Show all' },
+                // Draw snapping (draw/draw-snap.ts). The row belongs in
+                // the Draw section (draw/draw-tool.ts); it lives here until
+                // that file takes it.
+                ...(offered.some(tool => tool.id === 'draw')
+                    ? [{ keys: '⌘/Ctrl while placing or dragging', desc: 'Draw: no snapping to neighbouring shapes' }]
+                    : []),
                 { keys: '?', desc: 'This help' },
             ],
         },

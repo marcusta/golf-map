@@ -12,9 +12,10 @@ import {
     type Point,
 } from '../geo/bezier';
 import { rectFromCorners, vertexKey, type DrawState } from './draw-state';
-import { CAT, MARKER_FILL, OVERLAY_TEXT, STATUS_RISK } from '../map/map-palette';
+import { ACCENT_COLOR, CAT, MARKER_FILL, OVERLAY_TEXT, STATUS_RISK } from '../map/map-palette';
 import { DRAW_FILL_OPACITY, SELECTION_COLOR, typeColorExpression } from './feature-palette';
 import type { GhostFeature, Marquee } from './draw-pointer';
+import type { SnapMarker } from './draw-snap';
 
 // The draw tool's preview overlay: a WGS84 FeatureCollection built from the
 // tool's reactive state, plus the layer specs that style it. The overlay is
@@ -32,6 +33,7 @@ export interface DrawRenderHost {
     readonly features: FeaturesService | null;
     readonly trace: Readable<Point[] | null>;
     readonly cursor: Readable<Point | null>;
+    readonly snapMarker: Readable<SnapMarker | null>;
     readonly dragGhost: Readable<GhostFeature[] | null>;
     readonly marquee: Readable<Marquee | null>;
     readonly opPreviewGeometry: Computed<FeatureGeometry | null>;
@@ -50,6 +52,17 @@ export function drawPreviewGeojson(host: DrawRenderHost): FeatureCollection {
     const toLngLat = (p: Point): Position => {
         const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
         return [lon, lat];
+    };
+    // Snap marker (draw-snap.ts): drawn last so it sits over the vertices.
+    // Each branch draws only its own scope, so a stale draft marker never
+    // shows after a disarm and a drag marker never shows while armed.
+    const pushSnapMarker = (marker: SnapMarker | null, scope: SnapMarker['scope']): void => {
+        if (!marker || marker.scope !== scope) return;
+        features.push({
+            type: 'Feature',
+            properties: { role: marker.kind === 'anchor' ? 'snap-anchor' : 'snap-edge' },
+            geometry: { type: 'Point', coordinates: toLngLat(marker.point) },
+        });
     };
 
     if (host.state.isDrawing.get()) {
@@ -93,6 +106,7 @@ export function drawPreviewGeojson(host: DrawRenderHost): FeatureCollection {
                 geometry: { type: 'Point', coordinates: toLngLat(p) },
             });
         });
+        pushSnapMarker(host.snapMarker.get(), 'draft');
         return { type: 'FeatureCollection', features };
     }
 
@@ -204,6 +218,7 @@ export function drawPreviewGeojson(host: DrawRenderHost): FeatureCollection {
             });
         });
     }
+    pushSnapMarker(host.snapMarker.get(), 'drag');
     return { type: 'FeatureCollection', features };
 }
 
@@ -328,6 +343,23 @@ export function drawPreviewLayers(): OverlayLayerSpec[] {
                 'circle-color': CAT.sky, // '#6FA8C9' — --data-cat-7 (pairs with the marquee)
                 'circle-stroke-color': OVERLAY_TEXT, // --overlay-text
                 'circle-stroke-width': 1.5,
+            },
+        },
+        {
+            // Snap target (draw-snap.ts): an open ring around the snapped
+            // point. Anchor snap: larger clay ring. Edge snap: smaller sky
+            // ring. Last in the list, so it draws over the vertex markers.
+            id: 'draw-snap',
+            type: 'circle',
+            filter: ['in', ['get', 'role'], ['literal', ['snap-anchor', 'snap-edge']]] as FilterSpecification,
+            paint: {
+                'circle-radius': ['case', ['==', ['get', 'role'], 'snap-anchor'], 8, 6] as never,
+                'circle-opacity': 0,
+                'circle-stroke-color': ['case', ['==', ['get', 'role'], 'snap-anchor'],
+                    ACCENT_COLOR, // '#BF6A3E' — --data-cat-1 / --color-accent-primary
+                    CAT.sky, // '#6FA8C9' — --data-cat-7
+                ] as never,
+                'circle-stroke-width': 2.5,
             },
         },
     ];

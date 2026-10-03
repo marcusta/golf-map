@@ -54,6 +54,7 @@ import {
 } from './draw-pointer';
 import { bindDrawKeys, nudgeDirection, type DrawKeysHost, type ReorderKey } from './draw-keys';
 import { drawPreviewGeojson, drawPreviewLayers, type DrawRenderHost } from './draw-render';
+import type { SnapMarker } from './draw-snap';
 
 // DrawToolService is the coordinator: it owns the signals, the gesture state
 // and the ToolContext, and runs the actions (one history entry each). The
@@ -328,6 +329,8 @@ export class DrawToolService {
      * Null while the draft is empty: a lone cursor point draws nothing.
      */
     private cursor = new FrameSignal<Point | null>(null, this.frames);
+    /** Snap marker at the snapped pointer position (draw-snap.ts). */
+    private snapMarker = new FrameSignal<SnapMarker | null>(null, this.frames);
     /** Active marquee rectangle (reactive — drives the preview overlay). */
     private marquee = new FrameSignal<Marquee | null>(null, this.frames);
     /**
@@ -489,6 +492,7 @@ export class DrawToolService {
         this.state.boxSelect.set(false);
         this.spaceHeld.set(false);
         this.cursor.set(null);
+        this.snapMarker.set(null);
         this.clearTransientOpState();
         this.features?.select(null);
         this.features?.niceRendering.set(true);
@@ -1084,6 +1088,7 @@ export class DrawToolService {
             vertexSelection: this.vertexSelection,
             spaceHeld: this.spaceHeld,
             cursor: this.cursor,
+            snapMarker: this.snapMarker,
             marquee: this.marquee,
             dragGhost: this.dragGhost,
             trace: this.trace,
