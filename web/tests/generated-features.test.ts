@@ -16,6 +16,7 @@ import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-f
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { wgs84ToSweref99tm } from '../src/geo/transform';
 import type { FeatureGeometry } from '../src/geo/bezier';
+import { EditHistory, snapshotOf } from '../src/draw/history';
 
 afterEach(() => { _reset(); di.reset(); });
 
@@ -219,6 +220,69 @@ describe('FeaturesService generated set', () => {
 
         await svc.removeFeature('t3');
         expect(updates.filter(id => id === GENERATED_OVERLAY_ID)).toHaveLength(1);
+        dispose();
+    });
+});
+
+describe('overlay pushes per edit across undo and redo', () => {
+    /** Update-capable fake: stores rows, bumps versions, rejects stale versions. */
+    function updatingApi(rows: CourseFeature[]): CourseFeaturesApi {
+        const store = new Map(rows.map(r => [r.id, structuredClone(r)]));
+        return {
+            ...listOnlyApi(rows),
+            update: async input => {
+                const row = store.get(input.id);
+                if (!row || row.version !== input.version) throw new Error('Version conflict');
+                if (input.geometry !== undefined) row.geometry = structuredClone(input.geometry);
+                if (input.type !== undefined) row.type = input.type;
+                row.version = input.version + 1;
+                return structuredClone(row);
+            },
+        };
+    }
+
+    test('a hand-drawn drag, its undo and its redo each push the features overlay a counted number of times', async () => {
+        withNoHoles();
+        const svc = new FeaturesService(updatingApi([feature('h1'), ...canopy(20, 8)]));
+        await svc.load('c1');
+        const pushes: string[] = [];
+        const map = {
+            ready: new Signal(true),
+            map: new Signal({ setPaintProperty() {}, setFilter() {}, getSource: () => ({ type: 'geojson' }) }),
+            addOverlayLayer: () => {},
+            updateOverlayData: (id: string) => { pushes.push(id); },
+            removeOverlayLayer: () => {},
+        };
+        const dispose = svc.attachOverlay(map as never);
+        const count = (id: string): number => pushes.filter(p => p === id).length;
+        const history = new EditHistory();
+
+        // Drag commit, as the draw tool does it: patchLocal, update, one history entry.
+        const before = svc.store.items.peek().find(f => f.id === 'h1')!;
+        const beforeSnap = snapshotOf(before);
+        const moved = polygon(4, 10, base.x + 20, base.y);
+        svc.patchLocal('h1', moved);
+        const saved = await svc.update('h1', { geometry: moved });
+        history.push([{ featureId: 'h1', before: beforeSnap, after: snapshotOf(saved!), beforeVersion: before.version }]);
+        const afterDrag = count(FEATURES_OVERLAY_ID);
+
+        await history.undo(svc);
+        const afterUndo = count(FEATURES_OVERLAY_ID);
+
+        await history.redo(svc);
+        const afterRedo = count(FEATURES_OVERLAY_ID);
+
+        console.log(`[pushes] drag ${afterDrag}, undo ${afterUndo - afterDrag}, redo ${afterRedo - afterUndo}`);
+
+        // Current count (item 38); lower is fine.
+        expect(afterDrag).toBe(1);
+        // Current count (item 38); lower is fine.
+        expect(afterUndo - afterDrag).toBe(1);
+        // Current count (item 38); lower is fine.
+        expect(afterRedo - afterUndo).toBe(1);
+        // The generated canopy set never re-pushes on a hand-drawn edit.
+        expect(count(GENERATED_OVERLAY_ID)).toBe(0);
+        expect(svc.store.items.peek().find(f => f.id === 'h1')!.geometry).toEqual(moved);
         dispose();
     });
 });
