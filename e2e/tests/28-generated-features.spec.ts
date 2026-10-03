@@ -162,7 +162,7 @@ test('generated lidar trees render read-only, group in the stack panel, delete, 
     // Delete is allowed. Below the multi-select threshold there is no
     // confirm dialog; undo covers it.
     await page.locator('.sel-panel .delete-btn').click();
-    await expect(page.locator('.confirm-dialog--default')).toHaveCount(0);
+    await expect(page.locator('.confirm-dialog--default')).toBeHidden();
     await expect.poll(() => generatedCount(page)).toBe(1);
     await expect(groupRow).toContainText('1');
     await expect(badge).toBeHidden();
