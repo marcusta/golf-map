@@ -59,6 +59,13 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 export type OverlayLayerSpec = DistributiveOmit<LayerSpecification, 'source'>;
 
 /**
+ * Layer types maplibre 5.x renders into the terrain RTT tiles
+ * (`LAYERS_TO_TEXTURES` in render_to_texture.ts). Circle, symbol and
+ * fill-extrusion layers draw straight to the screen and never go stale.
+ */
+const DRAPED_LAYER_TYPES: ReadonlySet<string> = new Set(['background', 'fill', 'line', 'raster', 'hillshade', 'color-relief']);
+
+/**
  * `el` is attached to the page's own document — not to a detached fragment and
  * not to a template's inert owner document. MapLibre must only be constructed
  * against such an element (see the owner-document trap in `init`).
@@ -157,6 +164,12 @@ export class MapService {
     private waterSourceId: string | null = null;
     private waterEnabled = true;
     private waterLayer: WaterLayer | null = null;
+    /** Overlays with at least one draped layer (see DRAPED_LAYER_TYPES). */
+    private drapedOverlays = new Set<string>();
+    /** Camera between movestart and moveend/zoomend. */
+    private gestureActive = false;
+    /** A draped overlay's setData overlapped the current/last gesture (see onGestureEnd). */
+    private overlayChangedSinceMoveStart = false;
     /** Overlays that must stay above later-added overlays (tool previews). */
     private onTopOverlays = new Set<string>();
     /** Latest queued (not yet sent) overlay data per source (see updateOverlayData). */
@@ -264,9 +277,11 @@ export class MapService {
         map.on('zoom', () => this.zoom.set(map.getZoom()));
         // Gesture-end drape repair: a zoom/pan burst mid-edit can leave
         // draped overlay layers (fills, the draft line) on stale terrain
-        // render-to-texture tiles — see repairDrapedOverlays.
-        map.on('moveend', () => this.scheduleDrapeRepair());
-        map.on('zoomend', () => this.scheduleDrapeRepair());
+        // render-to-texture tiles — see repairDrapedOverlays. Only gestures
+        // during which a draped overlay changed need it.
+        map.on('movestart', () => this.onGestureStart());
+        map.on('moveend', () => this.onGestureEnd());
+        map.on('zoomend', () => this.onGestureEnd());
         // Per-tile drape invalidation for overlay sources — maplibre's own
         // misses overscaled tiles; see freeDrapeForOverlayTile.
         map.on('sourcedata', e => this.onOverlaySourceData(e));
@@ -400,6 +415,9 @@ export class MapService {
         for (const dispose of this.disposers) dispose();
         this.disposers = [];
         this.overlays.clear();
+        this.drapedOverlays.clear();
+        this.gestureActive = false;
+        this.overlayChangedSinceMoveStart = false;
         this.waterSourceId = null;
         this.waterLayer = null;
         this.onTopOverlays.clear();
@@ -671,6 +689,7 @@ export class MapService {
             map.addLayer({ ...layer, source: id } as LayerSpecification, beforeId);
         }
         this.overlays.set(id, layers.map(l => l.id));
+        if (layers.some(l => DRAPED_LAYER_TYPES.has(l.type))) this.drapedOverlays.add(id);
         if (opts.waterSurface && data.type === 'FeatureCollection') {
             this.waterSourceId = id;
             this.setWaterFeatures(data);
@@ -744,6 +763,7 @@ export class MapService {
                 if (!map || !this.ready.peek()) return;
                 const source = map.getSource(id);
                 if (!source || source.type !== 'geojson') return;
+                if (this.gestureActive && this.drapedOverlays.has(id)) this.overlayChangedSinceMoveStart = true;
                 await (source as maplibregl.GeoJSONSource).setData(data, true);
             }
         } catch {
@@ -787,7 +807,8 @@ export class MapService {
      * range; the cost is the re-render of the few touched RTT tiles.
      */
     private onOverlaySourceData(e: maplibregl.MapSourceDataEvent): void {
-        if (e.dataType !== 'source' || !e.tile || !this.overlays.has(e.sourceId)) return;
+        // Circle/symbol-only overlays (markers) never reach the RTT cache.
+        if (e.dataType !== 'source' || !e.tile || !this.drapedOverlays.has(e.sourceId)) return;
         const canonical = (e.tile as { tileID?: { canonical?: CanonicalTile } }).tileID?.canonical;
         if (!canonical) return;
         this.freeDrapeForOverlayTile(canonical);
@@ -823,12 +844,29 @@ export class MapService {
         }
     }
 
+    private onGestureStart(): void {
+        this.gestureActive = true;
+        // A setData sent just before the gesture can still be retiling.
+        for (const id of this.overlayDataInFlight) {
+            if (this.drapedOverlays.has(id)) this.overlayChangedSinceMoveStart = true;
+        }
+    }
+
+    /** moveend and zoomend both land here; the first one with the flag set schedules. */
+    private onGestureEnd(): void {
+        this.gestureActive = false;
+        if (!this.overlayChangedSinceMoveStart) return;
+        this.overlayChangedSinceMoveStart = false;
+        this.scheduleDrapeRepair();
+    }
+
     /**
      * Trailing-debounced FULL drape free on gesture end — a belt-and-braces
      * fallback behind the per-tile path above: a camera burst mid-edit can
-     * retile the overlay while its RTT tiles are being rebuilt, and one extra
-     * re-render of the visible draped tiles at settle costs the same as any
-     * camera move already does.
+     * retile the overlay while its RTT tiles are being rebuilt. Runs only
+     * after a gesture during which a draped overlay's setData was sent (or
+     * still in flight at movestart): a plain pan re-renders its draped tiles
+     * once, not twice.
      */
     private scheduleDrapeRepair(): void {
         if (this.drapeRepairTimer !== null) clearTimeout(this.drapeRepairTimer);
@@ -879,6 +917,7 @@ export class MapService {
             },
         }, before);
         this.overlays.set(id, [id]);
+        this.drapedOverlays.add(id);
     }
 
     /** Remove an overlay's layers and source. No-op if absent. */
@@ -889,6 +928,7 @@ export class MapService {
         }
         this.pendingOverlayData.delete(id);
         this.onTopOverlays.delete(id);
+        this.drapedOverlays.delete(id);
         const map = this.map.get();
         if (!map) return;
         for (const layerId of this.overlays.get(id) ?? []) {

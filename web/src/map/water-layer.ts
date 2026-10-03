@@ -1,11 +1,27 @@
 import { MercatorCoordinate, type CustomLayerInterface, type CustomRenderMethodInput, type Map as LibreMap } from 'maplibre-gl';
-import type { FeatureCollection } from 'geojson';
+import type { Feature, FeatureCollection } from 'geojson';
 import { Camera, Frustum, Matrix4, Mesh, Scene, Vector2, Vector3, WebGLRenderer, type BufferGeometry, type ShaderMaterial } from 'three';
 import { waterGeometry } from './water-geometry';
 import { waterMaterial } from './water-material';
 import { WaterElevationQueue } from './water-elevation-queue';
 
 export const WATER_LAYER_ID = 'course-water-3d';
+
+interface WaterEntry {
+    type: string;
+    /** The feature's coordinates array: its identity is the change key. */
+    coordinates: unknown;
+    meshes: Mesh<BufferGeometry, ShaderMaterial>[];
+}
+
+function coordinatesOf(feature: Feature): unknown {
+    const geometry = feature.geometry;
+    return geometry && 'coordinates' in geometry ? geometry.coordinates : geometry;
+}
+
+function sameWater(feature: Feature, entry: WaterEntry): boolean {
+    return feature.properties?.type === entry.type && coordinatesOf(feature) === entry.coordinates;
+}
 
 /** Water follows the loaded DEM and shares the map depth buffer with terrain and trees. */
 export class WaterLayer implements CustomLayerInterface {
@@ -21,9 +37,14 @@ export class WaterLayer implements CustomLayerInterface {
     private readonly eye = new Vector3();
     private readonly scale = new Vector3();
     private readonly frustum = new Frustum();
-    private dataKey = '';
     private readonly materials = [waterMaterial(), waterMaterial(true)];
     private meshes: Mesh<BufferGeometry, ShaderMaterial>[] = [];
+    /** One entry per water feature, in feature order; `meshes` is their flattening. */
+    private entries: WaterEntry[] = [];
+    /** Sampler of the last full elevation pass, reused for water added since. */
+    private sampler: ((x: number, y: number) => number) | null = null;
+    /** Water set changes and meshes built (tests / diagnostics). */
+    readonly builds = { sets: 0, meshes: 0 };
     private anchor = MercatorCoordinate.fromLngLat([0, 0]);
     private units = 1;
     private heightsDirty = true;
@@ -46,41 +67,80 @@ export class WaterLayer implements CustomLayerInterface {
         map.on('sourcedata', this.terrainChanged);
     }
 
+    /**
+     * Replace the water set. Called on every features push, so the unchanged
+     * case must stay cheap: features are matched by `[type, coordinates]`
+     * reference (the features service reuses each feature's cached ring array
+     * while its geometry is unchanged), which costs one compare per water and
+     * no serialization. Changed or added features get new meshes; kept
+     * features keep their meshes and their sampled heights.
+     */
     setData(data: FeatureCollection): void {
         const waters = data.features.filter(f => f.properties?.type === 'water' || f.properties?.type === 'water_creek');
-        const key = JSON.stringify(waters.map(f => [f.properties?.type, f.geometry]));
-        if (key === this.dataKey) return;
-        this.dataKey = key;
-        for (const mesh of this.meshes) { this.scene.remove(mesh); mesh.geometry.dispose(); }
-        this.meshes = [];
-        let anchored = false;
-        for (const feature of waters) {
-            const polygons = feature.geometry?.type === 'Polygon' ? [feature.geometry.coordinates]
-                : feature.geometry?.type === 'MultiPolygon' ? feature.geometry.coordinates : [];
-            for (const polygon of polygons) {
-                if (!polygon[0]?.length) continue;
-                if (!anchored) {
-                    this.anchor = MercatorCoordinate.fromLngLat(polygon[0][0] as [number, number]);
-                    this.units = this.anchor.meterInMercatorCoordinateUnits();
-                    anchored = true;
-                }
-                const rings = polygon.map(ring => ring.map(p => {
-                    const merc = MercatorCoordinate.fromLngLat(p as [number, number]);
-                    return new Vector2((merc.x - this.anchor.x) / this.units, (this.anchor.y - merc.y) / this.units);
-                }));
-                const mesh = new Mesh(waterGeometry(rings), this.materials[feature.properties?.type === 'water_creek' ? 1 : 0]);
-                // Bounds are recomputed after terrain samples arrive.
-                mesh.visible = false;
-                this.scene.add(mesh);
-                this.meshes.push(mesh);
-            }
+        if (waters.length === this.entries.length && waters.every((f, i) => sameWater(f, this.entries[i]))) return;
+        this.builds.sets++;
+        const previous = new Map<unknown, WaterEntry[]>();
+        for (const entry of this.entries) {
+            const list = previous.get(entry.coordinates);
+            if (list) list.push(entry); else previous.set(entry.coordinates, [entry]);
         }
+        const kept: WaterEntry[] = [];
+        const next = waters.map(feature => {
+            const list = previous.get(coordinatesOf(feature));
+            const index = list?.findIndex(e => e.type === feature.properties?.type) ?? -1;
+            if (index < 0) return { feature };
+            const [entry] = list!.splice(index, 1);
+            kept.push(entry);
+            return { entry };
+        });
+        for (const list of previous.values()) for (const entry of list) for (const mesh of entry.meshes) mesh.geometry.dispose();
+        // Kept meshes are positioned relative to the current anchor; only a
+        // fully new set may move it.
+        const keptMeshes = kept.some(entry => entry.meshes.length > 0);
+        const build = { anchored: keptMeshes, fresh: new Set<BufferGeometry>() };
+        this.entries = next.map(({ feature, entry }) => entry ?? this.buildEntry(feature!, build));
+        this.meshes = this.entries.flatMap(entry => entry.meshes);
+        this.scene.clear();
+        for (const mesh of this.meshes) this.scene.add(mesh);
+        const previousQueue = this.elevationQueue;
         this.elevationQueue = new WaterElevationQueue(this.meshes.map(mesh => mesh.geometry));
-        this.sampledTerrain = null;
-        this.heightsDirty = true;
-        this.lastSample = -Infinity;
-        Object.assign(this.stats, { maxDrapeMs: 0, samples: 0, verticesProcessed: 0, pending: false });
-        this.map.triggerRepaint();
+        if (keptMeshes && this.sampler && this.sampledTerrain && !previousQueue?.pending) {
+            // Kept water already carries heights for the current DEM/zoom/
+            // exaggeration: sample only the new surfaces with that sampler.
+            this.elevationQueue.start(this.sampler, build.fresh);
+        } else {
+            this.sampledTerrain = null;
+            this.heightsDirty = true;
+            this.lastSample = -Infinity;
+            Object.assign(this.stats, { maxDrapeMs: 0, samples: 0, verticesProcessed: 0, pending: false });
+        }
+        this.map?.triggerRepaint();
+    }
+
+    private buildEntry(feature: Feature, build: { anchored: boolean; fresh: Set<BufferGeometry> }): WaterEntry {
+        const meshes: Mesh<BufferGeometry, ShaderMaterial>[] = [];
+        const geometry = feature.geometry;
+        const polygons = geometry?.type === 'Polygon' ? [geometry.coordinates]
+            : geometry?.type === 'MultiPolygon' ? geometry.coordinates : [];
+        for (const polygon of polygons) {
+            if (!polygon[0]?.length) continue;
+            if (!build.anchored) {
+                this.anchor = MercatorCoordinate.fromLngLat(polygon[0][0] as [number, number]);
+                this.units = this.anchor.meterInMercatorCoordinateUnits();
+                build.anchored = true;
+            }
+            const rings = polygon.map(ring => ring.map(p => {
+                const merc = MercatorCoordinate.fromLngLat(p as [number, number]);
+                return new Vector2((merc.x - this.anchor.x) / this.units, (this.anchor.y - merc.y) / this.units);
+            }));
+            const mesh = new Mesh(waterGeometry(rings), this.materials[feature.properties?.type === 'water_creek' ? 1 : 0]);
+            // Bounds are recomputed after terrain samples arrive.
+            mesh.visible = false;
+            meshes.push(mesh);
+            build.fresh.add(mesh.geometry);
+            this.builds.meshes++;
+        }
+        return { type: feature.properties?.type as string, coordinates: coordinatesOf(feature), meshes };
     }
 
     render(_gl: WebGLRenderingContext | WebGL2RenderingContext, args: CustomRenderMethodInput): void {
@@ -97,10 +157,12 @@ export class WaterLayer implements CustomLayerInterface {
             // queryTerrainElevation recalculates visible tile coverage on EVERY call.
             // This bulk path uses the installed MapLibre terrain API at a fixed zoom;
             // it still falls back to loaded parent DEM tiles and includes exaggeration.
-            queue.start((x, y) => {
-                const merc = new MercatorCoordinate(this.anchor.x + x * this.units, this.anchor.y - y * this.units);
+            const anchor = this.anchor, units = this.units;
+            this.sampler = (x, y) => {
+                const merc = new MercatorCoordinate(anchor.x + x * units, anchor.y - y * units);
                 return terrain.getElevationForLngLatZoom(merc.toLngLat(), zoom) / Math.max(exaggeration, 0.001) + 0.12;
-            });
+            };
+            queue.start(this.sampler);
             this.sampledTerrain = terrain;
             this.sampledZoom = zoom;
             this.sampledExaggeration = exaggeration;
