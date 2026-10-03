@@ -224,3 +224,15 @@ test('the footer shows the draw tool notice as a quiet line', async () => {
     await tick();
     expect(footer.textContent).toBe('1 feature · autosaves on close & edit');
 });
+
+test('the feature dock collapses and expands live on a dock request', async () => {
+    const { host } = await setup([row(1)]);
+    const mode = di.get(EditorModeService);
+    const root = host.querySelector('.ctx-dock')!;
+    expect(root.classList.contains('is-collapsed')).toBe(false);
+    mode.dockRequest.set({ collapsed: true });
+    expect(root.classList.contains('is-collapsed')).toBe(true);
+    expect(localStorage.getItem('golf-map.featureDock.collapsed')).toBe('1');
+    mode.dockRequest.set({ collapsed: false });
+    expect(root.classList.contains('is-collapsed')).toBe(false);
+});

@@ -20,7 +20,7 @@ import { DRAW_TOOL_ID } from '../src/draw/draw-tool.service';
 import { FURNITURE_TOOL_ID } from '../src/furniture/furniture.service';
 import { ANALYSIS_TOOL_ID } from '../src/analysis/analysis-tool.service';
 import { TERRAIN_EDIT_TOOL_ID } from '../src/terrain-edit/terrain-edit-tool.service';
-import type { CourseFeaturesApi } from '../../shared/api/course-features.gen';
+import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 import type { Hole } from '../../shared/api/holes.gen';
 import type { Tee } from '../../shared/api/tees.gen';
 
@@ -448,4 +448,47 @@ test('follow-hole defaults on with nothing stored', () => {
     mountBuilder();
     expect(localStorage.getItem(FOLLOW_HOLE_KEY)).toBeNull();
     expect(di.get(EditorModeService).followHole.peek()).toBe(true);
+});
+
+// ── Visibility keys (item 27) ───────────────────────────────────────────
+
+function storeFeature(id: string, type: string): CourseFeature {
+    return {
+        id, courseId: COURSE_ID, holeId: null, type,
+        geometry: { crs: 'EPSG:3006', rings: [{ points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }], closed: true }] },
+        sortOrder: 0, source: null, sourceRef: null, license: null, attributes: null, version: 1,
+    } as unknown as CourseFeature;
+}
+
+test('Shift+digit toggles the feature type bound to that digit', () => {
+    const h = mountBuilder();
+    const features = di.get(FeaturesService);
+    // Shifted digit keys report a symbol in e.key; the layer reads e.code.
+    const e = press('!', { shiftKey: true, code: 'Digit1' });
+    expect(e.defaultPrevented).toBe(true);
+    expect(features.hiddenTypes.peek().has('tee')).toBe(true);
+    press('!', { shiftKey: true, code: 'Digit1' });
+    expect(features.hiddenTypes.peek().has('tee')).toBe(false);
+    expect(h.mode.activeToolId.peek()).toBe(DRAW_TOOL_ID);
+});
+
+test('H hides the selection; Shift+H shows everything again', () => {
+    mountBuilder();
+    const features = di.get(FeaturesService);
+    features.store.set([storeFeature('a', 'bunker'), storeFeature('b', 'green')]);
+
+    // Nothing selected: H falls through unconsumed.
+    expect(press('h').defaultPrevented).toBe(false);
+
+    features.select('a');
+    expect(press('h').defaultPrevented).toBe(true);
+    expect(features.hiddenIds.peek().has('a')).toBe(true);
+    expect(features.selectedIds.peek().size).toBe(0);
+
+    press('!', { shiftKey: true, code: 'Digit3' });
+    expect(features.hiddenTypes.peek().has('green')).toBe(true);
+
+    expect(press('H', { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(features.hiddenIds.peek().size).toBe(0);
+    expect(features.hiddenTypes.peek().size).toBe(0);
 });

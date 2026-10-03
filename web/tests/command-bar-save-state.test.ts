@@ -84,11 +84,11 @@ test('pill starts idle, reads Saving while a request is out, then Saved, then id
     expect(pill().dataset.state).toBe('idle');
     expect(pill().textContent).toBe('');
 
-    features.saving.set(true);
+    features.pendingSaves.set(1);
     expect(pill().dataset.state).toBe('saving');
     expect(pill().textContent).toContain('Saving');
 
-    features.saving.set(false);
+    features.pendingSaves.set(0);
     expect(pill().dataset.state).toBe('saved');
     expect(pill().textContent).toContain('Saved');
 
@@ -98,9 +98,9 @@ test('pill starts idle, reads Saving while a request is out, then Saved, then id
 
 test('pill turns failed with the error code and stays failed', async () => {
     const { features, pill } = setup();
-    features.saving.set(true);
+    features.pendingSaves.set(1);
     features.saveError.set({ code: 'conflict', message: 'Data has changed' });
-    features.saving.set(false);
+    features.pendingSaves.set(0);
 
     expect(pill().dataset.state).toBe('failed');
     expect(pill().textContent).toContain('Not saved');
@@ -136,10 +136,10 @@ test('toast appears once per transition into failed and dismisses on click', () 
     expect(toastOpen()).toBe(false);
 
     // A new request clears the error; its failure is a new transition.
-    features.saving.set(true);
+    features.pendingSaves.set(1);
     features.saveError.set(null);
     features.saveError.set({ code: 'timeout', message: 'Request timeout' });
-    features.saving.set(false);
+    features.pendingSaves.set(0);
     expect(toastOpen()).toBe(true);
     expect(toast().textContent).toContain('timeout');
 });
@@ -256,4 +256,21 @@ test('draw-target chip shows the chain policy and follows changes to it', () => 
     tool.setTypeFollowsLast(true);
     expect(chain()).toBe('Next: same type');
     tool.setDefaultDrawType('bunker'); // both prefs persist; restore the defaults
+});
+
+test('Dismiss clears the failure without a re-fetch', async () => {
+    const { host, features, fake, pill } = setup();
+    await features.load('c1');
+    await features.update('f1', { type: 'green' });
+    await features.flush();
+    await wait();
+    expect(pill().dataset.state).toBe('failed');
+    const lists = fake.counts.list;
+
+    pill().click();
+    host.querySelector<HTMLButtonElement>('[data-testid="save-dismiss"]')!.click();
+    expect(features.saveError.peek()).toBeNull();
+    expect(pill().dataset.state).toBe('idle');
+    expect(fake.counts.list).toBe(lists);
+    expect(host.querySelector('.cmdbar__save-panel')!.classList.contains('is-open')).toBe(false);
 });

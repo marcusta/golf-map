@@ -9,7 +9,8 @@ import { LAYER } from './shortcut.service';
 //
 // Conflict rule: this layer binds only keys the draw tool's own handler
 // leaves alone (draw owns Space, digits, N, B, C, I, Enter, Delete,
-// Backspace, PageUp/PageDown/Home/End, Cmd+Z/Y/D). Sub-mode letters require
+// Backspace, PageUp/PageDown/Home/End, Cmd+Z/Y/D; Shift+digit, H and
+// Shift+H are visibility keys here). Sub-mode letters require
 // no modifier at all, so Cmd+D still duplicates. `[` and `]` are avoided:
 // they need AltGr on a Swedish layout and the clean tool uses them for stamp
 // size.
@@ -31,6 +32,12 @@ export interface EditorKeyActions {
     fitHole(): boolean;
     fitCourse(): void;
     toggleDocks(): boolean;
+    /** Shift+digit: toggle the feature type bound to that digit. False when none is. */
+    toggleTypeHidden(digit: string): boolean;
+    /** H: hide the selected features. False when nothing is selected. */
+    hideSelected(): boolean;
+    /** Shift+H: clear every visibility toggle. */
+    showAll(): void;
 }
 
 /**
@@ -67,6 +74,24 @@ export function editorKeyLayer(actions: EditorKeyActions, offered: () => readonl
 
             if (meta || e.altKey) return false;
 
+            // Visibility (review item 27). Shift+digit goes by e.code: the
+            // shifted key is '!' or similar on every layout.
+            if (e.shiftKey && /^Digit[0-9]$/.test(e.code)) {
+                if (!actions.toggleTypeHidden(e.code.slice(5))) return false;
+                e.preventDefault();
+                return true;
+            }
+            if (key === 'h') {
+                if (e.shiftKey) {
+                    e.preventDefault();
+                    actions.showAll();
+                    return true;
+                }
+                if (!actions.hideSelected()) return false;
+                e.preventDefault();
+                return true;
+            }
+
             if (e.key === ',' || e.key === '.') {
                 e.preventDefault();
                 actions.stepHole(e.key === '.' ? 1 : -1);
@@ -102,6 +127,9 @@ export function editorHelp(offered: readonly EditorTool[]): HelpSection[] {
                 { keys: 'Shift+F', desc: 'Fit hole' },
                 { keys: '⌘/Ctrl+Shift+F', desc: 'Fit course' },
                 { keys: '⌘/Ctrl+\\', desc: 'Collapse or expand both docks' },
+                { keys: 'Shift+1 … 0', desc: 'Hide or show a feature type' },
+                { keys: 'H', desc: 'Hide selected features' },
+                { keys: 'Shift+H', desc: 'Show all' },
                 { keys: '?', desc: 'This help' },
             ],
         },

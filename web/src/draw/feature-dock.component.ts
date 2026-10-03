@@ -341,6 +341,12 @@ export class ContextDockComponent extends Component<ContextDockProps> {
             }
         }));
 
+        // Cmd+\ (EditorModeService.toggleDocks): apply the request live.
+        this.track(effect(() => {
+            const req = this.mode.dockRequest.get();
+            if (req) untrack(() => this.setCollapsed(req.collapsed));
+        }));
+
         this.track(() => this.clearBody());
     }
 

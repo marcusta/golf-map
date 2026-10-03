@@ -3,7 +3,7 @@ import { AuthService } from '@basics/core/client/auth';
 // Only the literal `href` needs the deploy prefix — router.navigate() adds it.
 import { BASE_PATH } from '@basics/core/client/base';
 import { t } from '../theme';
-import { s, statusTag, iconBtn, input, metric, panelTitle, selectedRow, keyHint, primaryBtn } from '../css';
+import { s, statusTag, iconBtn, input, metric, panelTitle, selectedRow, keyHint, primaryBtn, ghostBtn } from '../css';
 import { icon } from '../ui/icons';
 import { PopoverComponent, type PopoverContent } from '../ui/popover.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
@@ -468,7 +468,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             font-size: 0.75rem;
             color: ${t('color-text-tertiary')};
         }
-        .cmd-save__retry { ${primaryBtn()} align-self: flex-end; padding: ${s('xs')} ${s('md')}; font-size: 0.8rem; }
+        .cmd-save__actions { display: flex; justify-content: flex-end; gap: ${s('xs')}; }
+        .cmd-save__retry { ${primaryBtn()} padding: ${s('xs')} ${s('md')}; font-size: 0.8rem; }
+        .cmd-save__dismiss { ${ghostBtn()} padding: ${s('xs')} ${s('md')}; font-size: 0.8rem; }
 
         /* Sub-mode key hint (D, M, F, A, T): right-aligned, before the check. */
         .menu-item .cmd-key { ${keyHint()} color: ${t('color-text-tertiary')}; }
@@ -967,9 +969,11 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             const eye = document.createElement('button');
             eye.type = 'button';
             eye.className = 'cmd-ft-eye';
+            // Alt-click solos the type (a second Alt-click restores).
             eye.onclick = (e) => {
                 e.stopPropagation();
-                this.features.toggleTypeVisibility(type);
+                if (e.altKey) this.features.soloType(type);
+                else this.features.toggleTypeVisibility(type);
             };
             track(effect(() => {
                 const hidden = this.features.hiddenTypes.get().has(type);
@@ -993,9 +997,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private savedTimer: ReturnType<typeof setTimeout> | null = null;
 
     /**
-     * Derive the pill state from FeaturesService `saving` / `saveError`.
-     * `saving` turns true only once a request is sent, so a geometry patch
-     * inside its 150 ms debounce still reads idle. A failed save makes the
+     * Derive the pill state from FeaturesService `pendingSaves` / `saveError`.
+     * `pendingSaves` counts debounced patches as well as requests in flight,
+     * so a geometry patch reads Saving from the edit. A failed save makes the
      * service reload, which reverts the edit; the toast says so once per
      * transition into failed.
      */
@@ -1036,7 +1040,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         });
 
         this.track(effect(() => {
-            const saving = this.features.saving.get();
+            const saving = this.features.pendingSaves.get() > 0;
             const err = this.features.saveError.get();
             untrack(() => {
                 const prev = this.saveState.peek();
@@ -1070,11 +1074,18 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             + '<div class="cmd-save__msg" data-k="msg"></div>'
             + '<div class="cmd-save__code" data-k="code"></div>'
             + '<div class="cmd-save__msg">The latest edit was reverted to the server copy. Retry re-syncs features from the server.</div>'
+            + '<div class="cmd-save__actions">'
+            + '<button type="button" class="cmd-save__dismiss" data-testid="save-dismiss">Dismiss</button>'
             + '<button type="button" class="cmd-save__retry" data-testid="save-retry">Retry</button>'
-            + '</div>';
+            + '</div></div>';
         const msg = host.querySelector<HTMLElement>('[data-k="msg"]')!;
         const code = host.querySelector<HTMLElement>('[data-k="code"]')!;
         const retry = host.querySelector<HTMLButtonElement>('[data-testid="save-retry"]')!;
+        const dismiss = host.querySelector<HTMLButtonElement>('[data-testid="save-dismiss"]')!;
+        dismiss.onclick = () => {
+            this.features.clearSaveError();
+            close();
+        };
         track(effect(() => {
             const err = this.features.saveError.get();
             msg.textContent = err?.message ?? '';
@@ -1092,15 +1103,14 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     }
 
     /**
-     * Retry after a failed save: land anything still queued, re-sync the
-     * store from the server, and clear the failure once the re-sync worked.
-     * The failed patch itself is gone (the service dropped it on reload), so
-     * there is nothing to resend.
+     * Retry after a failed save: land anything still queued, then re-sync
+     * the store from the server. `reload()` clears the failure once the
+     * re-sync worked. The failed patch itself is gone (the service dropped it
+     * on resync), so there is nothing to resend.
      */
     private async retrySave(): Promise<void> {
         await this.features.flush();
         await this.features.reload();
-        if (!this.features.error.peek()) this.features.saveError.set(null);
     }
 
     // ── Zone 1: (i) info popover ──────────────────────────────────────────

@@ -4,6 +4,7 @@ import { ElevationService } from '../map/elevation.service';
 import { TilesetService } from '../map/tileset.service';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService } from '../draw/features.service';
+import { DIGIT_FEATURE_TYPES } from '../draw/feature-palette';
 import { FurnitureService } from '../furniture/furniture.service';
 import type { Hole } from '../../../shared/api/holes.gen';
 import { holeFurnitureBounds } from './hole-framing';
@@ -172,6 +173,26 @@ export class EditorModeService {
         writeFlag(FEATURE_DOCK_KEY, collapsed);
         this.dockRequest.set({ collapsed });
         return collapsed;
+    }
+
+    /** Shift+digit: toggle the feature type bound to that digit (feature-palette). */
+    toggleTypeHidden(digit: string): boolean {
+        const type = DIGIT_FEATURE_TYPES[digit];
+        if (!type) return false;
+        this.features.toggleTypeHidden(type);
+        return true;
+    }
+
+    /** H: hide the selected features. */
+    hideSelected(): boolean {
+        if (this.features.selectedIds.peek().size === 0) return false;
+        this.features.hideSelected();
+        return true;
+    }
+
+    /** Shift+H: show every type, feature and generated source. */
+    showAll(): void {
+        this.features.showAll();
     }
 
     /** Toggle a tool: activate it, or deactivate if it's already the active one. */
