@@ -596,6 +596,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                     host.dataset.testid = 'actions-menu-trigger';
                     host.innerHTML = icon('more-horizontal', 20);
                 },
+                lazyPanel: true, // panel body + its publish/lidar fetches wait for the first open
                 panel: (host, ctx) => this.buildActionsPanel(host, ctx.track, ctx.close),
             });
         }
@@ -1037,7 +1038,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         btn.dataset.testid = 'course-publish-vps-btn';
         host.appendChild(btn);
 
-        // Preseed configured/running state on menu open (cheap GET).
+        // Preseed configured/running state on first menu open (the panel is
+        // built lazily). Not re-run on later opens: this tab's own runs update
+        // `state` through run()'s polling while the menu is closed.
         void this.publishVps.refresh();
 
         track(effect(() => {

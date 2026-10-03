@@ -52,6 +52,8 @@ export type PopoverProps = {
     /** Extra class(es) for the panel, e.g. to widen it past the menu default. */
     panelClassName?: string;
     ariaLabel?: string;
+    /** Render `panel` on first open instead of at mount (keeps fetches and DOM work off the first-paint path). */
+    lazyPanel?: boolean;
 };
 
 const tpl = template(`
@@ -132,6 +134,14 @@ export class PopoverComponent extends Component<PopoverProps> {
 
     readonly open = new Signal(false);
     private rootEl!: HTMLElement;
+    private panelEl!: HTMLElement;
+    private panelRendered = false;
+
+    private renderPanel(): void {
+        if (this.panelRendered) return;
+        this.panelRendered = true;
+        this.renderContent(this.props.panel, this.panelEl);
+    }
 
     render(): DocumentFragment {
         const align = this.props.align ?? 'left';
@@ -158,7 +168,8 @@ export class PopoverComponent extends Component<PopoverProps> {
 
         this.rootEl = this.ref(frag, 'root');
         this.renderContent(this.props.trigger, this.ref(frag, 'trigger'));
-        this.renderContent(this.props.panel, this.ref(frag, 'panel'));
+        this.panelEl = this.ref(frag, 'panel');
+        if (!this.props.lazyPanel) this.renderPanel();
 
         return frag;
     }
@@ -201,6 +212,7 @@ export class PopoverComponent extends Component<PopoverProps> {
             if (other !== this) other.close();
         }
         openPopovers.add(this);
+        this.renderPanel();
         this.open.set(true);
     }
 
