@@ -1,0 +1,26 @@
+{
+  "format": "golfmap-paint-v1",
+  "notes": [
+    "Vertex paint generated onto the course meshes by GolfMap > Vertex Paint > Apply (bridge: golfmap.paint.apply). Re-run after editing this file or re-importing the FBX meshes.",
+    "edge rules paint near an edge: 'bunker' is the outer edge of every bunker blend. 'surfaces' are the mesh classes painted (GolfMapSurfaces: Rough, Semi, Fairway, Deep, ...).",
+    "channel: red, green, blue or black. mode 'replace' (default) blends the vertex colour toward that channel: on rough anything but red then thins the Stix 3D grass (blade chance = red), and black shows the material's dirt base. mode 'overlay' (red, green or blue) raises that channel and keeps the others, so red and the Stix grass stay: a colour-only change of the ground under the blades (MAHS blends black, red, green, blue in that order, each by its own channel).",
+    "widthM: how far from the edge the paint can reach; each spot reaches 35-100 % of it. strength: paint at the edge where the rule applies, 0-1. coverage: share of the edge where it applies at all, 0-1; the rest keeps its grass up to the edge. noiseM: length of those stretches. seed: change for a different pattern.",
+    "enabled: false keeps a rule (and its tuning) without painting it. bunker-surround is off since 2026-09-29: on OPCD's rough material (OPCD MAHS Rough No Mowlines_Sat) blue and black both draw the dirt base (base index 4) with a root and twig detail (detail 20 / 22 at 0.5), so a band of either read as root streaks round every bunker (black until the morning, then blue overlay: same streaks). The rough stays clean up to the blend."
+  ],
+  "rules": [
+    {
+      "id": "bunker-surround",
+      "enabled": false,
+      "kind": "edge",
+      "edge": "bunker",
+      "surfaces": ["Rough"],
+      "channel": "blue",
+      "mode": "overlay",
+      "widthM": 2.2,
+      "strength": 0.9,
+      "coverage": 0.55,
+      "noiseM": 3.5,
+      "seed": 1
+    }
+  ]
+}

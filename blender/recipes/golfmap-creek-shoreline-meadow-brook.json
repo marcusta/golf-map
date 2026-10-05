@@ -1,0 +1,13 @@
+{
+  "format": "golfmap-recipe-v1",
+  "name": "Shoreline creek (MEADOW_BROOK) + narrow-creek bank paint",
+  "notes": "Shoreline Studio's creek preset MEADOW_BROOK (cross-channel cut that keeps the fall, deterministic from the parent id and the recipe seed), then golfmap-creek-narrow's bank paint in golfmap colours: the blends joined in for good (red = grass lip), rings 1+ dirt with half of ring 1 flecked back to grass, rings 2+ bed.",
+  "steps": [
+    { "op": "shorelinestudio.shape", "tag": "channel", "params": { "preset": "MEADOW_BROOK" } },
+    { "op": "afrod.meshblendjoinpermanent", "params": {} },
+    { "op": "afrod.fillvertexpaint", "params": { "vertex_paint_type": "red", "paint_strength": 1.0, "paint_loop_inset": 0, "random_amt": 1.0 } },
+    { "op": "afrod.fillvertexpaint", "params": { "vertex_paint_type": "green", "paint_strength": 1.0, "paint_loop_inset": 1, "random_amt": 1.0 } },
+    { "op": "afrod.randomvertexpaintloop", "params": { "vertex_paint_type": "red", "paint_strength": 0.5, "paint_loop_inset": 1, "random_amt": 0.5, "skip_longest_loop": false } },
+    { "op": "afrod.fillvertexpaint", "params": { "vertex_paint_type": "blue", "paint_strength": 1.0, "paint_loop_inset": 2, "random_amt": 1.0 } }
+  ]
+}

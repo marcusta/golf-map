@@ -10,7 +10,7 @@
 //
 //   bun run grass:zones -- <course> [--terrain inner|outer] [--dry-run] [--no-export]
 //                          [--only <source>]   that generator and every one after it (keeps the zone stack order)
-//                          [--max-distance 75] [--spill 1.5] [--feather 4] [--noise 2] [--zone-type rough_tall]
+//                          [--max-distance 75] [--spill 0.3] [--feather 4] [--noise 0] [--zone-type rough_tall]
 //                                              tall-rough tuning, passed to pipeline/grass_zones.py
 //
 // Inputs, found from the course: the Unity surface map in its GSPro export
@@ -30,7 +30,7 @@ import { TALL_GRASS, VEGETATION_GENERATORS } from '../server/services/vegetation
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const PIPELINE = process.env.MAP_PIPELINE_DIR ?? path.join(ROOT, 'pipeline');
-const TALL_GRASS_TUNING = ['max-distance', 'spill', 'feather', 'band-feather', 'noise', 'zone-type', 'building-margin', 'road-margin'];
+const TALL_GRASS_TUNING = ['max-distance', 'spill', 'feather', 'band-feather', 'noise', 'zone-type', 'building-margin', 'road-margin', 'path-margin'];
 
 function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);

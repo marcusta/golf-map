@@ -66,7 +66,7 @@ from golfpipe.woodland_floor import floor_noise
 __all__ = [
     "DEFAULT_GROW_M", "DEFAULT_MIN_AREA_M2", "DEFAULT_FEATHER_M", "FALLBACK_AZIMUTH_DEG", "FALLBACK_RATIO",
     "Shadow", "RemovalReport", "roof_heights_on_grid", "burn_survey", "clean_roofs", "shadow_mask", "estimate_shadow",
-    "remove_buildings",
+    "remove_buildings", "nearest_fill",
 ]
 
 DEFAULT_GROW_M = 1.5
@@ -255,14 +255,16 @@ def estimate_shadow(rgb: np.ndarray, heights: np.ndarray, px: float) -> Shadow:
     return Shadow(float(best), round(max(0.3, min(MAX_RATIO, ratio)), 2), measured=True)
 
 
-def _nearest_fill(rgb: np.ndarray, source: np.ndarray, px: float) -> np.ndarray:
-    """(H, W, 3) float32: every pixel the colour of the nearest source-free
-    ground cell on a FILL_CELL_M grid (cell colour = mean of its usable
-    pixels), blurred by FILL_BLUR_M, back at full resolution (bilinear)."""
+def nearest_fill(rgb: np.ndarray, source: np.ndarray, px: float, cell_m: float = FILL_CELL_M,
+                 blur_m: float = FILL_BLUR_M) -> np.ndarray:
+    """(H, W, 3) float32: every pixel the colour of the nearest cell with no
+    `source` pixel in it (True = not to be sampled) on a `cell_m` grid (cell
+    colour = mean of its usable pixels), blurred by `blur_m`, back at full
+    resolution (bilinear). Also used by gspro.py's hazard edge fill."""
     from scipy.ndimage import zoom
 
     height, width = source.shape
-    f = max(1, int(round(FILL_CELL_M / px)))
+    f = max(1, int(round(cell_m / px)))
     hp, wp = -(-height // f), -(-width // f)
     pad = ((0, hp * f - height), (0, wp * f - width))
     usable = np.pad(~source, pad, constant_values=False).reshape(hp, f, wp, f)
@@ -277,7 +279,7 @@ def _nearest_fill(rgb: np.ndarray, source: np.ndarray, px: float) -> np.ndarray:
     if empty.any():
         _, (ri, ci) = distance_transform_edt(empty, return_indices=True)
         cells = cells[ri, ci]
-    sigma = FILL_BLUR_M / (px * f)
+    sigma = blur_m / (px * f)
     cells = np.stack([gaussian_filter(cells[..., c], sigma) for c in range(3)], axis=-1)
     up = zoom(cells, (f, f, 1), order=1, grid_mode=True, mode="nearest")
     return up[:height, :width].astype(np.float32)
@@ -315,7 +317,7 @@ def remove_buildings(
         mask = maximum_filter(mask.view(np.uint8), size=2 * grow + 1).astype(bool)
     gap = int(round(FILL_SOURCE_GAP_M / px))
     source = maximum_filter(mask.view(np.uint8), size=2 * gap + 1).astype(bool) if gap > 0 else mask
-    filled = _nearest_fill(rgb, source, px)
+    filled = nearest_fill(rgb, source, px)
     # The ground's spread round the holes, on a ~1 m sample of the photo.
     f = max(1, int(round(ESTIMATE_CELL_M / px)))
     small = _pool(mask.view(np.uint8), f, "max") > 0

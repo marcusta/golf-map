@@ -17,7 +17,7 @@ import { t } from '../theme';
 import { s, btn, primaryBtn, field, glassPanel, panelTitle, OVERLAY_W, OVERLAY_INSET } from '../css';
 import { GsproExportService, orthoSourceLabel, terrainLabel, jobLabel } from './gspro-export.service';
 import {
-    SVG_FEATURE_TYPES, COURSE_WIDE, NO_FILTER, svgFeatures, matchSvgFilter, variantFileName, landmarksOf, nearLabel,
+    SVG_FEATURE_TYPES, COURSE_WIDE, NO_FILTER, svgFeatures, matchSvgFilter, variantFileName, landmarksOf, nearLabel, shapeName,
     type SvgExclusionFilter, type SvgStatusFilter,
 } from './svg-exclusions';
 import { bisectTesting, bisectBuildsLeft, spatialOrder } from './svg-bisect';
@@ -55,7 +55,7 @@ const TIP = {
     brightness: 'Light multiplier for the -terrain twin, in linear light: 1 keeps the photo as-is, 0.4 (the default when blank) '
         + 'brings a sun-lit photo down to about the reflectance of real grass so Unity\'s own lighting does the rest. '
         + 'Try 0.3–0.6 and compare in Unity.',
-    tint: 'Adds a -meshes variant for the course meshes (4096 px): the darkened texture, softened to about 1 m of detail so it '
+    tint: 'Adds a -meshes variant for the course meshes (8192 px): the darkened texture, softened to about 1 m of detail so it '
         + 'doesn\'t read as a satellite photo in game, with an olive-green layer over the fairways, greens, tees, rough and '
         + 'everything that isn\'t drawn, masked by the course\'s own drawn features — the Photoshop step OPCD builders do by '
         + 'hand from the SVG. Water bodies and creeks get a darker brown layer instead, fading into the green over about 4 m '
@@ -570,10 +570,14 @@ export class GsproExportPanelComponent extends Component {
         return [FEATURE_STYLES[f.type as FeatureType]?.label ?? f.type, surface, near].filter(Boolean).join(' · ');
     }
 
-    /** `describe` plus the short id, for a feature id (the id alone once it is gone from the course). */
+    /** `describe` plus the shape name, for a feature id (the id alone once it is gone from the course). */
     private featureLabel(id: string): string {
         const f = this.features.store.items.peek().find(x => x.id === id);
-        return f ? `${this.describe(f)} (${id.slice(0, 8)})` : `Feature ${id.slice(0, 8)}`;
+        return f ? `${this.describe(f)} (${shapeName(f, this.holeNumber(f))})` : `Feature ${id.slice(0, 8)}`;
+    }
+
+    private holeNumber(f: CourseFeature): number | undefined {
+        return f.holeId ? this.courseDetail.holes.peek().find(h => h.id === f.holeId)?.number : undefined;
     }
 
     /** What the bisect box says about the current step. */
@@ -1041,7 +1045,7 @@ export class GsproExportPanelComponent extends Component {
                             + `${f.type === 'path' ? 'Roads' : hole ? `Hole${hole.number}` : 'Others'} layer.`,
                         onclick: () => this.showOnMap(f),
                     },
-                    where: () => f.id.slice(0, 8),
+                    where: () => shapeName(f, hole?.number),
                     locate: { onclick: () => this.showOnMap(f) },
                 }, track);
             },

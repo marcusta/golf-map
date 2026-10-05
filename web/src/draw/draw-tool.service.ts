@@ -30,6 +30,7 @@ import {
 } from '../../../shared/features/centerline';
 import { PATH_SURFACE_ATTRIBUTE, isPathSurface, type PathSurface } from '../../../shared/features/path-surface';
 import { takesBankVeg } from '../../../shared/features/creek-vegetation';
+import { TREE_AREA_SPECIES_ATTRIBUTE, TREE_AREA_TYPE, hasSpeciesMix } from '../../../shared/features/tree-areas';
 import { isGeneratedFeature } from './generated-features';
 import {
     DrawState,
@@ -554,6 +555,12 @@ export class DrawToolService {
      * zone-type picker.
      */
     readonly drawZoneType = new Signal<string>('');
+    /**
+     * Species mix (shared/features/tree-areas.ts) the next drawn tree species
+     * area starts with: the last one edited, so a run of oak groves is drawn
+     * without retyping it.
+     */
+    readonly drawTreeMix = new Signal<string>('oak');
     /** Feature type used for the next created polygon. */
     readonly drawType = new Signal<FeatureType>('bunker');
     /**
@@ -1727,6 +1734,7 @@ export class DrawToolService {
         if (surface) return { attributes: { [PATH_SURFACE_ATTRIBUTE]: surface } };
         const zoneType = type === 'vegetation_zone' ? this.drawZoneType.peek() : '';
         if (zoneType) return { attributes: { ...this.zoneTypes.defaultAttributes(), zoneType, zoneVariant: this.zoneTypes.startVariantOf(zoneType) } };
+        if (type === TREE_AREA_TYPE) return { attributes: { [TREE_AREA_SPECIES_ATTRIBUTE]: this.drawTreeMix.peek() || 'oak' } };
         return {};
     }
 
@@ -2081,16 +2089,36 @@ export class DrawToolService {
      */
     chooseZoneType(zoneType: string): void {
         const features = this.features;
-        const zones = this.state.isDrawing.peek() ? []
-            : (features?.editableSelectedFeatures.peek() ?? []).filter(f => isVegetationType(f.type));
-        if (!features || zones.length === 0) {
+        const selected = this.state.isDrawing.peek() ? [] : (features?.editableSelectedFeatures.peek() ?? []);
+        const zones = selected.filter(f => f.type === 'vegetation_zone');
+        const treeAreas = selected.filter(f => f.type === TREE_AREA_TYPE);
+        if (!features || zones.length + treeAreas.length === 0) {
             this.drawZoneType.set(zoneType);
+            if (this.scope.peek() === 'vegetation') this.drawType.set('vegetation_zone');
             return;
         }
+        const zoneAttributes = (f: CourseFeature) => ({ ...this.zoneTypes.attributesOf(f.attributes), zoneType, zoneVariant: this.zoneTypes.startVariantOf(zoneType) });
         for (const f of zones) {
             if (zoneTypeKeyOf(f.attributes) === zoneType) continue;
-            void features.update(f.id, { attributes: { ...this.zoneTypes.attributesOf(f.attributes), zoneType, zoneVariant: this.zoneTypes.startVariantOf(zoneType) } });
+            void features.update(f.id, { attributes: zoneAttributes(f) });
         }
+        // A selected tree species area becomes a zone of the picked type (its mix
+        // stays in the attributes, so an undo gets the area back as it was).
+        this.retype(treeAreas, 'vegetation_zone', f => ({ ...(attributesPatchOf(f.attributes) ?? {}), ...zoneAttributes(f) }));
+    }
+
+    /**
+     * The zone-type picker's "Tree species area" (Vegetation mode), like a
+     * zone-type pick: while armed, or with no zone selected, the next drawn
+     * shape is a tree species area; otherwise the selected zones become areas
+     * (with the mix edited last).
+     */
+    chooseTreeArea(): void {
+        if (!scopeOwnsType(this.scope.peek(), TREE_AREA_TYPE)) return;
+        const zones = this.state.isDrawing.peek() ? []
+            : (this.features?.editableSelectedFeatures.peek() ?? []).filter(f => f.type === 'vegetation_zone');
+        if (zones.length === 0) this.drawType.set(TREE_AREA_TYPE);
+        else this.retype(zones, TREE_AREA_TYPE);
     }
 
     /**
@@ -2098,8 +2126,19 @@ export class DrawToolService {
      * ONE history entry covering every changed feature.
      */
     retypeSelection(type: FeatureType): void {
+        this.retype(this.features?.editableSelectedFeatures.peek() ?? [], type);
+    }
+
+    /**
+     * Re-type `candidates` (those not already `type`) in ONE history entry.
+     * The history restores the type only; attributes ride along (every
+     * type's validator lets other keys through), so an undo finds the old
+     * type's settings still there. `attributesFor` sets what the new type
+     * gets; without it the type's required attributes are filled in.
+     */
+    private retype(candidates: readonly CourseFeature[], type: FeatureType, attributesFor?: (f: CourseFeature) => FeatureAttributesPatch): void {
         const features = this.features;
-        const items = (features?.editableSelectedFeatures.peek() ?? []).filter(f => f.type !== type);
+        const items = candidates.filter(f => f.type !== type);
         if (!features || items.length === 0) return;
         this.history.push(items.map(f => ({
             featureId: f.id,
@@ -2111,10 +2150,18 @@ export class DrawToolService {
         // rasterizer has nothing to draw without one, and the server rejects
         // zone attributes that lack it.
         for (const f of items) {
+            if (attributesFor) {
+                void features.update(f.id, { type, attributes: attributesFor(f) });
+                continue;
+            }
             const needsZone = type === 'vegetation_zone' && !zoneTypeKeyOf(f.attributes);
+            // Same for a tree species area: the server needs its species mix.
+            const needsMix = type === TREE_AREA_TYPE && !hasSpeciesMix(f.attributes);
             void features.update(f.id, needsZone
                 ? { type, attributes: { ...(attributesPatchOf(f.attributes) ?? {}), ...this.zoneTypes.defaultAttributes() } }
-                : { type });
+                : needsMix
+                    ? { type, attributes: { ...(attributesPatchOf(f.attributes) ?? {}), [TREE_AREA_SPECIES_ATTRIBUTE]: this.drawTreeMix.peek() || 'oak' } }
+                    : { type });
         }
     }
 

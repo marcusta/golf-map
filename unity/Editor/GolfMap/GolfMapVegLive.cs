@@ -142,7 +142,7 @@ namespace GolfMap.Editor
 
         public sealed class Result
         {
-            public int pushed, respawned, materialRefreshes, notInScene;
+            public int pushed, respawned, materialRefreshes, notInScene, baking;
             public readonly List<string> needsRebuild = new List<string>();   // item names whose change only a Rebuild VSP shows
             public readonly List<string> fileOnly = new List<string>();
             public bool trees;
@@ -151,6 +151,7 @@ namespace GolfMap.Editor
                 var parts = new List<string>();
                 if (pushed > 0) parts.Add(pushed + " live");
                 if (respawned > 0) parts.Add(respawned + " respawned");
+                if (baking > 0) parts.Add("tint bakes when you let go");
                 if (notInScene > 0) parts.Add(notInScene + " not in the scene (Rebuild VSP)");
                 if (needsRebuild.Count > 0) parts.Add("Rebuild VSP to see: " + string.Join(", ", needsRebuild.Distinct().Take(4).ToArray()) + (needsRebuild.Distinct().Count() > 4 ? " ..." : ""));
                 if (fileOnly.Count > 0) parts.Add("file only: " + string.Join(", ", fileOnly.Distinct().ToArray()));
@@ -180,8 +181,10 @@ namespace GolfMap.Editor
                 if (e.readOnly) continue;
                 GolfMapVegEntry was;
                 shown.TryGetValue(e.key, out was);
-                var changed = e.values.Where(v => { var w = was == null ? null : was.Find(v); return w == null || !w.Same(v); }).ToList();
-                if (changed.Count == 0) continue;
+                // An entry or value the scene has never shown is taken as it is: a reload that brings
+                // new values (a new kind of setting, a new look) must not bake or write anything.
+                var changed = was == null ? new List<GolfMapVegValue>() : e.values.Where(v => { var w = was.Find(v); return w != null && !w.Same(v); }).ToList();
+                if (changed.Count == 0) { if (was == null || was.values.Count != e.values.Count) shown[e.key] = e.Copy(); continue; }
                 try
                 {
                     if (e.kind == GolfMapVegKind.Tree) PushTree(course, e, changed, refresh, dirty, result);
@@ -385,6 +388,13 @@ namespace GolfMap.Editor
             foreach (var v in changed)
             {
                 if (string.IsNullOrEmpty(v.slot)) { if (v.role == "weight") result.fileOnly.Add("look weights (next Plant)"); continue; }
+                if (GolfMapVegPalette.IsBaked(v))
+                {
+                    // Baked into the albedo copy once the slider is let go (FlushBakes).
+                    QueueBake(v.slot.Substring(GolfMapVegPalette.BakeSlot.Length), GolfMapVegBake.ToTint(v.c));
+                    result.baking++;
+                    continue;
+                }
                 Material m;
                 if (!materials.TryGetValue(v.slot, out m)) materials[v.slot] = m = AssetDatabase.LoadAssetAtPath<Material>(AssetDatabase.GUIDToAssetPath(v.slot));
                 if (!m || !m.HasProperty(v.prop)) continue;
@@ -412,6 +422,52 @@ namespace GolfMap.Editor
                 }
             }
             result.pushed++;
+        }
+
+        // ---- baked tints (GolfMapVegBake) ------------------------------------------------------
+
+        static readonly Dictionary<string, Vector3> pendingBakes = new Dictionary<string, Vector3>();   // target texture -> tint
+        static double lastBakeQueued;
+        public static bool BakePending { get { return pendingBakes.Count > 0; } }
+        // A bake takes a second or two: wait until the value has settled (a colour picker streams changes).
+        public static bool BakeDue { get { return pendingBakes.Count > 0 && EditorApplication.timeSinceStartup - lastBakeQueued > 0.35; } }
+
+        public static void QueueBake(string texture, Vector3 tint) { pendingBakes[texture] = tint; lastBakeQueued = EditorApplication.timeSinceStartup; }
+
+        public static string FlushBakes(GolfMapCourse course)
+        {
+            if (pendingBakes.Count == 0) return "";
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var work = pendingBakes.ToList();
+            pendingBakes.Clear();
+            var log = new List<string>();
+            try
+            {
+                int i = 0;
+                foreach (var kv in work)
+                {
+                    var target = GolfMapVegBake.Targets(course).Values.FirstOrDefault(t => t.texture == kv.Key);
+                    if (target == null) { log.Add("no bake target " + kv.Key); continue; }
+                    EditorUtility.DisplayProgressBar("Vegetation palettes", "Baking the tint into " + System.IO.Path.GetFileName(kv.Key), (float)i++ / work.Count);
+                    GolfMapVegBake.Bake(course, target, kv.Value, log);
+                }
+            }
+            catch (Exception e) { Debug.LogException(e); log.Add("bake failed: " + e.Message); }
+            finally { EditorUtility.ClearProgressBar(); }
+            SceneView.RepaintAll();
+            EditorApplication.QueuePlayerLoopUpdate();
+            return "Baked " + string.Join(", ", work.Select(kv => System.IO.Path.GetFileNameWithoutExtension(kv.Key)).ToArray()) + " in " + (clock.ElapsedMilliseconds / 1000.0).ToString("0.0") + " s" +
+                (log.Count > 0 ? " (" + string.Join("; ", log.ToArray()) + ")" : "") + ". Save writes it.";
+        }
+
+        // A texture swapped under the planted trees: VSP's own material copies still hold the old one.
+        public static void Retexture(Texture from, Texture to, string prop)
+        {
+            if (!from || !to) return;
+            Lookup();
+            foreach (var s in treeSlots.Values.SelectMany(l => l).Distinct())
+                foreach (var m in ModelMaterials(s))
+                    if (m.HasProperty(prop) && m.GetTexture(prop) == from) m.SetTexture(prop, to);
         }
 
         public static List<GameObject> LookPrefabs(GolfMapCourse course, GolfMapVegEntry e)
@@ -641,7 +697,7 @@ namespace GolfMap.Editor
                         var prefab = look.original ? AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GUIDToAssetPath(shape.guid)) : GolfMapLooks.Prefab(course, species.Key, look, shape);
                         if (!prefab) { missing++; column++; continue; }
                         var tree = UnityEngine.Object.Instantiate(prefab, root.transform);
-                        tree.name = species.Key + " / " + look.id + " / " + shape.name;
+                        tree.name = species.Key + " · " + look.id + " · " + shape.name;   // no "/": it would read as an object path
                         var flat = origin + new Vector3(column * step, 0, z);
                         tree.transform.position = new Vector3(flat.x, terrain ? Ground(flat, terrain) : origin.y, flat.z);
                         column++;

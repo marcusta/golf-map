@@ -265,23 +265,28 @@ export const TERRAIN_TINT_OPACITY_RANGE: readonly [number, number] = [0, 1];
 export const MESH_TEXTURE_SOFTEN_M = 1;
 /**
  * Colour grade of the OUTER terrain's `-meshes` file (R, G, B multipliers in
- * linear light). Unity's terrain shader renders a texture about twice as
- * bright as the course-mesh shaders, and greyer, so the same colours on both
- * sides of the inner/outer seam LOOK different in game; the outer file is
- * pulled down and towards green by this so the terrain renders like the
- * meshes next to it. Measured as rendered-mesh / rendered-terrain on the
- * same field either side of the seam in Vreta screenshots: 0.57/0.67/0.37
- * from above, ×1.07/1.22/0.96 for the green it still lacked (= 0.61/0.82/0.35,
- * a match from above), then ×0.75/0.85/0.60 towards player height. The
- * terrain shader ADDS a sky sheen at low angles that no texture can cancel
- * — a full match there (0.34/0.59/0.13) is a dark hole from above — so the
- * last step is half of that gap: a compromise weighted to the view you play
- * from. When the two still differ in game: measure that ratio again and
- * multiply (part of) it in here.
+ * linear light), for an outer terrain on the Built In Legacy Diffuse
+ * material (the terrain importer sets it): the terrain shader lights a
+ * texture differently from the course-mesh shaders, so the same colours on
+ * both sides of the inner/outer seam LOOK different in game; the outer file
+ * is graded by this so the terrain renders like the meshes next to it.
+ * Measured as rendered-mesh / rendered-terrain on the same fields either
+ * side of the seam in Vreta screenshots. The Standard terrain material
+ * needed 0.46/0.70/0.21 and still had a pale sky sheen at low angles that no
+ * texture can cancel; Legacy Diffuse has no sheen, and with that grade came
+ * out too dark and too green (blue crushed to nothing), so ×1.8/1.4/3.6 on
+ * top. Dark and light fields do not respond alike (the darkest values render
+ * darker still), so this is a compromise between them. When the two still
+ * differ in game: measure that ratio again and multiply (part of) it in here.
  */
-export const OUTER_TERRAIN_GRADE: readonly [number, number, number] = [0.46, 0.70, 0.21];
-/** Edge of the `-meshes` file: once softened, nothing in it needs the full `ORTHO_EXPORT_SIZE`. */
-export const MESH_TEXTURE_SIZE = 4096;
+export const OUTER_TERRAIN_GRADE: readonly [number, number, number] = [0.83, 0.98, 0.76];
+/**
+ * Edge of the `-meshes` file. The softened grass would fit in 4096 px, but
+ * bunkers and paths stay sharp and a 2-3.5 m path is only 4-7 texels wide at
+ * 4096 over a 2 km square: its diagonal edges stepped in 0.5 m blocks, which
+ * Unity's BC1 compression turned into 2 m teeth. So the full size.
+ */
+export const MESH_TEXTURE_SIZE = 8192;
 /**
  * DEM export cell size per terrain (metres). The inner keeps the build's
  * 0.5 m lidar grid; the outer is background scenery gridded at 1 m.
@@ -915,6 +920,8 @@ export class GsproExportService {
             '--sidecar', sidecar,
             '--out', out,
             '--terrain', kind,
+            // The course's tree species areas (shared/features/tree-areas.ts) go into the file with it.
+            '--course', courseId,
         ];
         if (kind === 'outer') args.push('--exclude-square', terrainArg(terrain.inner));
         const rendered = await this.run(`GSPro ${kind} trees`, args, out);
@@ -1325,7 +1332,7 @@ export class GsproExportService {
      * disagree under it. (A deleted edit leaves no trace to compare.)
      */
     private async staleInnerDem(siteId: string, src: string): Promise<string | null> {
-        const edits = (await this.terrainEdits.listBySite(siteId)).filter(e => e.enabled);
+        const edits = await this.terrainEdits.listDemEdits(siteId);
         if (edits.length === 0) return null;
         if (path.basename(src) !== 'dem-edited.tif') {
             return `the site has ${edits.length} enabled terrain edit(s) but no edited DEM, so this heightmap has none of them: press Apply to terrain in the terrain tool, then export again`;
@@ -1346,7 +1353,7 @@ export class GsproExportService {
      * outer DEM is then the right source.
      */
     private async outerDemWithEdits(siteId: string, src: string): Promise<{ path: string; report: string[] } | null> {
-        const edits = (await this.terrainEdits.listBySite(siteId)).filter(e => e.enabled);
+        const edits = await this.terrainEdits.listDemEdits(siteId);
         if (edits.length === 0) return null;
         const out = path.join(this.sourcesDir(siteId), OUTER_DEM_EDITED_SOURCE);
         const work = await mkdtemp(path.join(os.tmpdir(), 'gspro-outer-edits-'));

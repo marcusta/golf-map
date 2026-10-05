@@ -66,6 +66,13 @@ namespace GolfMap.Editor
         // An asset without a species races, and is looked up, under its kind.
         public string Label { get { return string.IsNullOrEmpty(species)?kind:species; } }
     }
+    // A tree species area's mix (the trees export's `areas`, shared/features/tree-areas.ts).
+    public class GolfMapAreaMix
+    {
+        public readonly Dictionary<string,double> weights=new Dictionary<string,double>();
+        public bool ignoreKind;
+        public double Weight(string species) { double w;return species!=null&&weights.TryGetValue(species,out w)?w:0; }
+    }
     public class GolfMapBiomeMatch
     {
         public GolfMapBiomeAsset asset;
@@ -179,7 +186,7 @@ namespace GolfMap.Editor
         {
             unchecked { uint h=(uint)(Hash(text)*4294967296.0);h^=h>>16;h*=0x85ebca6b;h^=h>>13;h*=0xc2b2ae35;h^=h>>16;return h/4294967296.0; }
         }
-        public static GolfMapBiomeMatch Match(GolfMapBiome biome,string id,double height,double radius,int kind,bool woodland=false)
+        public static GolfMapBiomeMatch Match(GolfMapBiome biome,string id,double height,double radius,int kind,bool woodland=false,GolfMapAreaMix area=null)
         {
             var r=biome.rules;
             if(string.IsNullOrEmpty(id)||double.IsNaN(height)||double.IsInfinity(height)||height<=0||double.IsNaN(radius)||double.IsInfinity(radius)||radius<=0||kind<0||kind>2)throw new ArgumentException("Invalid tree dimensions, kind or ID");
@@ -187,16 +194,33 @@ namespace GolfMap.Editor
             bool canopy=woodland&&form=="tree"&&r.woodlandCrownMultiplier>=1&&r.woodlandWidthWeight>0;
             double targetWidth=2*radius*(canopy?r.woodlandCrownMultiplier:1);
             double widthWeight=canopy?r.woodlandWidthWeight:1;
-            var ranked=biome.assets.Where(a=>a.enabled&&a.form==form&&(kind==2||a.kind==(kind==0?"broadleaf":"conifer"))).Select(a=>{
+            Func<GolfMapBiomeAsset,GolfMapBiomeMatch> fit=a=>{
                 if(a.heightM<=0||a.crownWidthM<=0)throw new ArgumentException("Invalid biome dimensions");
                 double ideal=Math.Exp((2*Math.Log(height/a.heightM)+widthWeight*Math.Log(targetWidth/a.crownWidthM))/(2+widthWeight));
                 var m=new GolfMapBiomeMatch {asset=a,scale=Math.Max(r.minScale,Math.Min(r.maxScale,ideal))};
                 m.heightError=Math.Abs(Math.Log(a.heightM*m.scale/height));m.widthError=Math.Abs(Math.Log(a.crownWidthM*m.scale/targetWidth));
                 m.score=2*m.heightError+widthWeight*m.widthError+r.scalePenalty*Math.Abs(Math.Log(m.scale));return m;
-            }).OrderBy(m=>m.score).ThenBy(m=>m.asset.guid,StringComparer.Ordinal).ToList();
+            };
+            string detected=kind==0?"broadleaf":"conifer";
+            var ranked=biome.assets.Where(a=>a.enabled&&a.form==form&&(kind==2||a.kind==detected)).Select(fit).OrderBy(m=>m.score).ThenBy(m=>m.asset.guid,StringComparer.Ordinal).ToList();
+            // Inside a tree species area the mix is the rule: every species of it with a model of the
+            // stem's form races by the area's weight, however well it fits (the fit picks the size), and
+            // the survey's broadleaf/conifer class only counts unless the area ignores it. No such model
+            // (a shrub-size stem, a conifer in an oak area): the palette decides, as outside.
+            List<GolfMapBiomeMatch> pool=null;
+            if(area!=null){
+                var inMix=biome.assets.Where(a=>a.enabled&&a.form==form&&(area.ignoreKind||kind==2||a.kind==detected)&&area.Weight(a.Label)>0)
+                    .Select(fit).OrderBy(m=>m.score).ThenBy(m=>m.asset.guid,StringComparer.Ordinal).ToList();
+                if(inMix.Count>0){
+                    var mixSpecies=inMix.Select(m=>m.asset.Label).Distinct().OrderBy(s=>s,StringComparer.Ordinal).ToList();
+                    string picked=mixSpecies.OrderBy(s=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":species:"+s)))/area.Weight(s)).First();
+                    ranked=inMix;
+                    pool=inMix.Where(m=>m.asset.Label==picked).ToList();
+                }
+            }
             if(ranked.Count==0)return null;
-            var pool=ranked;
-            if(kind!=2&&r.speciesWeights!=null){
+            if(pool==null)pool=ranked;
+            if(pool==ranked&&kind!=2&&r.speciesWeights!=null){
                 double slack=canopy&&r.woodlandSpeciesFitSlack>0?r.woodlandSpeciesFitSlack:r.speciesFitSlack;
                 var eligible=ranked.Where(m=>m.score<=ranked[0].score+slack).ToList();
                 var species=eligible.Select(m=>m.asset.Label).Distinct().Where(s=>r.speciesWeights.Weight(s)>0).OrderBy(s=>s,StringComparer.Ordinal).ToList();

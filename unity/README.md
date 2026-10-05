@@ -8,6 +8,8 @@ course project; the `unity` MCP server's `unity_sync` does the copying, and the 
 (`Editor/GolfMapBridge/`) lets an agent recompile, run menus, read the console and take
 screenshots in the open editor. See [mcp/README.md](mcp/README.md).
 
+Agent-facing per-tool notes moved from `AGENTS.md`: [docs/unity-tool-notes.md](../docs/unity-tool-notes.md); gotchas: [docs/unity-gotchas.md](../docs/unity-gotchas.md).
+
 ## Terrain Importer
 
 `GolfMap > Terrain Importer` turns the folder the app's **Export to GSPro** panel writes
@@ -23,7 +25,7 @@ sidecars, nothing is named after a course.
    picker per terrain for the overlay. Every orthophoto export comes as two or three JPEGs:
    the photo as-is, a `-terrain` twin darkened for the terrain shader (which lights the
    photo a second time and washes an untouched one out) and, with the panel's mesh texture
-   on, a `-meshes` variant (4096 px): the darkened twin softened to ~1 m of detail, with the
+   on, a `-meshes` variant (8192 px): the darkened twin softened to ~1 m of detail, with the
    course's grass surfaces tinted dark green at 50 % and everything that isn't drawn (the Photoshop overlay step done automatically). The
    inner's is for the course meshes (the sun-lit tint lifts it); the outer's is the outer
    terrain's floor: as dark as its `-terrain` twin, with the colouring on top. The picker
@@ -194,6 +196,19 @@ on any asset shares its species' stems between the variants that fit (pine keeps
 one never moves a stem to another shape. All three are opt-in: a palette without them
 matches exactly as it did.
 
+**Tree species areas** override the palette's mix where you know better ("this grove is almost
+only oaks"). Draw them in the web app (Vegetation mode, zone-type picker → **Trees → Tree
+species area**) and give each a mix such as `oak=9, birch=1` (relative weights, names are the
+palette's species labels). Export the trees again (the app passes `--course`): the file carries
+the areas and every stem inside one names it (below). Inside an area every species of its mix
+with an enabled asset of the stem's form races by the area's weight - no `speciesFitSlack`,
+the fit only picks the size - and a stem the survey classed conifer (or broadleaf) keeps the
+palette unless the area has **Also where the survey says conifer/broadleaf** (`ignoreKind`)
+on. A stem with no such asset (a shrub-size stem, a conifer in a pure oak area) falls back
+to the palette. A hand-picked species or asset still wins over the area. **Load and check**
+lists each area's asked mix against what it got and warns about species with no enabled
+asset; **Plant** applies it.
+
 `rules.scaleJitter` (0.1 = ±10%) and `rules.maxLeanDeg` add cosmetic per-stem variety after
 the fit, each on its own hash: neighbours of the same measured height, or pinned at
 `minScale`/`maxScale`, stop looking like copies. Jitter may take a stem past the scale limits
@@ -349,7 +364,7 @@ without saving if any instance moved. Billboards still need rebaking.
 ## Vegetation Palettes (palette editor)
 
 `GolfMap > Vegetation Palettes` (`GolfMapVegPaletteWindow.cs`; model `GolfMapVegPalette.cs`,
-scene side `GolfMapVegLive.cs`, shared working copy + bridge commands `GolfMapVegSession.cs`)
+scene side `GolfMapVegLive.cs`, CTI tint bakes `GolfMapVegBake.cs`, shared working copy + bridge commands `GolfMapVegSession.cs`)
 tunes the course's lower vegetation (`grass-palette.json`: texture grass and mesh bushes) and
 its tree looks (`palette.json`) in one window, with the result live in the Scene view.
 
@@ -400,15 +415,30 @@ trees: planted instances) - click again for the next spot; **Views** saves Scene
 per course to come back to after each change. A file changed on disk (by hand, an agent, the Trees
 Inspector) is reloaded and the scene follows it while nothing is pending in the window.
 
-**Tree looks.** A species that plants with its pack's own materials is read-only: **Create a
+**Tree looks.** A species that plants with a pack's own materials is read-only: **Create a
 tunable look** copies its materials and prefabs (`GolfMapLooks.Generate`; the source stays as
-`original` at weight 0, so the next Plant uses the copy). **Duplicate** branches a look, **Remove
-look** drops it from the palette (the last one returns the species to its source materials),
-**Show in Lab** stands one plain instance per look and shape at the Scene view pivot (rows =
-looks, columns = shapes by height) under `GolfMap Lab (not saved)`, never saved or built. Values
-are read from the materials a look's prefabs really draw with: while a trial re-points them
+`original` at weight 0, so the next Plant uses the copy). An `original` whose materials are all the
+course's own copies (`FoliageTrialV2`, the CTI trial) is tuned in place. **Duplicate** branches a
+look, **Remove look** drops it from the palette (the last one returns the species to its source
+materials), **Show in Lab** stands one plain instance per look and shape at the Scene view pivot
+(rows = looks, columns = shapes by height) under `GolfMap Lab (not saved)`, never saved or built.
+Values are read from the materials a look's prefabs really draw with: while a trial re-points them
 outside the look folder (the CTI swap), the window says so - edits then change those materials in
-place and Save does not record them in `palette.json`.
+place and Save does not record them in `palette.json`. Values that two looks share (the same
+material or baked texture) are kept equal.
+
+**CTI trees (baked tints).** The CTI shaders have no tint: their colour is the albedo texture
+(`prepare-cti-maps.py` bakes source x tint into course copies). The editor treats that tint as the
+leaves' healthy tint and the bark colour (`GolfMapVegBake.cs`): when a slider is let go (and the
+value has settled for 0.35 s), it bakes the same formula in Unity - from the lossless source copy
+prepare-cti-maps.py leaves in `GolfMapSpelunk/cti-trial/sources/` (bit-identical to its bake; without
+it, from the DXT import) - compresses it to the live texture's format and copies it into the texture
+the Lab and the planted trees draw (4K leaves: ~0.8 s). **Save** writes the PNG and records the tint
+in `CTITrial/trial.json` (`source`, `tint`); a recorded tint wins when prepare-cti-maps.py runs again.
+The birch bark samples a Texture2DArray (`CTI/LOD Bark Array`): its first bake makes a course copy
+(`CTITrial/Textures/Birch Bark Array ... tinted.asset`, DXT5 like the source), points both birch bark
+trial materials at it and records the override at once. Tick **bark** in Adjust together to grade it
+with the leaves; a baked tint may go above 1 (brighter than the source).
 
 Bridge (the same working copy as an open window): `golfmap.vegpalette.list` (entries, values,
 unsaved, `vspDiffers` where VSP disagrees with the file), `.adjust {select, brightness, ..., set,
@@ -523,7 +553,12 @@ objects and lists, no nested arrays.
     "maxM": 71.9
   },
   "trees": [
-    { "id": "epsg3006:651612.31:6404380.02", "x": 412.31, "z": 880.02, "h": 14.2, "r": 4.1, "g": 34.85, "k": 1, "bush": false }
+    { "id": "epsg3006:651612.31:6404380.02", "x": 412.31, "z": 880.02, "h": 14.2, "r": 4.1, "g": 34.85, "k": 1, "bush": false, "area": "2ba54b9b" }
+  ],
+  "areas": [
+    { "id": "2ba54b9b", "name": "Oak grove", "ignoreKind": false,
+      "species": [{ "species": "oak", "weight": 9 }, { "species": "birch", "weight": 1 }],
+      "stems": 129, "rings": [{ "nodes": [{ "x": 400.0, "z": 870.0 }] }] }
   ]
 }
 ```
@@ -541,6 +576,8 @@ objects and lists, no nested arrays.
 | `g` | ground elevation at the stem, metres RH2000; used for the alignment check |
 | `k` | 0 broadleaf, 1 conifer, 2 unknown |
 | `bush` | crown radius above 0.35 x height, a wide low crown |
+| `area` | id of the tree species area the stem stands in (only with `--course`; absent = none) |
+| `areas[]` | the course's tree species areas over this square (only with `--course`): `species` the mix, `ignoreKind` the survey-class switch, `stems` how many stems name it, `rings` the outline in plot metres, clipped to the square |
 
 Trees outside the plot are dropped by the exporter. Coordinates assume the terrain object
 sits at the plot's south-west corner with x pointing east and z pointing north, which is
@@ -637,7 +674,11 @@ folder (`Assets/GolfMap/<Course>/bunker-channels.json`, the window's default) or
   keywords) from the convention's sources, a matching `ChannelMaterials` asset, and points
   the renderer and the store at them. `$bunker`/`$blend` are the mesh's original material,
   `$outer` the source of the blend's original Black channel (not
-  `BlendTarget.BlendToMaterialBlack`, which on Vreta names the Satellite-theme rough). A `tint` (the fake rolled-lip
+  `BlendTarget.BlendToMaterialBlack`, which on Vreta names the Satellite-theme rough); for a bunker mesh,
+  the `$outer` most of its blends have (by vertex count; the material name then ends `in <outer>`). A rule's
+  `base` (default the mesh's own original) is the material the render copy starts from, i.e. where the settings
+  outside the four channel blocks come from (`_SlopePower`: 0.678 on the rough, 0.2 on OPCD's bunker blend,
+  enough to shade the strip differently from the rough beside it). A `tint` (the fake rolled-lip
   shadow) or `blendStrength` is baked into its own source material so an OPCD rebuild from
   the asset gives the same look. Output: `Assets/GolfMap/<Course>/Bunkers/<convention>/`.
   Originals are never edited; Undo works.
@@ -645,7 +686,21 @@ folder (`Assets/GolfMap/<Course>/bunker-channels.json`, the window's default) or
   had before its first apply (`Bunkers/restore.json`).
 
 Running OPCD's theme window (SetMeshMaterialv4) reassigns bunker materials; apply again
-after it. `blender/tools/bunker_paint_report.py` is the Blender twin of Check paint (same
+after it.
+
+**Bunker edges like the references** (Marcus, 2026-09-29: dense grass right up to and over the sand, the strip
+the same grass as the rough, no pale strip, no brown band). What made Vreta's edges wrong, and the fix for each:
+
+| Seen | Cause (evidence) | Fix |
+|---|---|---|
+| Pale speckled strip round every bunker; white blades on the rough next to it | Every channel of the MAHS `_Sat` materials (rough, blend, bunker) with *Use Satellite for Base* takes its base colour from `_Satellite`, and Stix colours each blade by `_ColorMap` (`color = tex * lerp(main, sec)`, `GrassGeom.hlsl`): both are the `-meshes` export. Its sand ran ~1 m past the drawn outline (photo misregistration + the 1 m soften blur + bilinear sampling of 0.5 m texels): luma 82 vs 75 on the grass 0.5-1 m out | Pipeline **edge fill** (`gspro.py ortho --edge-fill`, default `bunker,path`): the `-meshes` file gets a band from 0.5 m inside to 1.25 m outside each bunker (from the outline out for paths, whose gravel left the same grey strip) filled from the grass beyond it, ramped in and out on the exact distance to the outline (a raster band edge showed as steps along paths) ([export.md](../docs/gspro/export.md)); `golfmap.orthos.update` copies it over the project's copy |
+| Dark blue blocks on the cart paths (e.g. the path by hole 13's tees), forest paths near black | Tree shadows in the photo: the path concrete (`OPCD MAHS Concrete - Asphalt_Sat`, red/green *Use Satellite for Base*; the `*Concrete*` blends the same) takes its colour from the `-meshes` ortho, which caught every shadow on the paths (Vreta: path luma median 95, p10 36; shadow pixels blue, (B-R)/luma 0.4-1) | Pipeline **path fill** (`gspro.py ortho --path-fill`, default on): inside every path the shadow is lifted to the sunlit path colour round it, keeping the gravel's grain ([export.md](../docs/gspro/export.md)); `golfmap.orthos.update`. Since 2026-10-04 the path meshes draw their own surface without the satellite (`golfmap.paths.materials`, "Cart paths"); the fill still matters for `look=photo` |
+| Brown dirt band, sparse blades on the rough side | `paint.json` `bunker-surround` painted black (`replace`): red down to ~0.1, so Stix (blade chance = red) thinned out and the rough's black channel (roots, debris) showed | Channel blue, mode `overlay` (red stays 1, the grass untouched); then off, see the next row |
+| Root and twig streaks round every bunker, still there with the blue overlay | On `OPCD MAHS Rough No Mowlines_Sat` **blue and black draw the same ground**: base index 4 (dirt) with a root/twig detail (detail 20 / 22, opacity 0.5, 0.7 / 0.48 channel opacity), so moving the band from black to blue changed nothing. Probe: rough `c6_1` at 3b red 1, blue up to 0.38 | `bunker-surround` **`enabled: false`** (the rule stays in `paint.json` with its tuning): the rough is clean red up to the blend (Marcus prefers the rough's look). A wear band without roots would need a rough material whose blue channel is not the dirt base |
+| Orange root streaks in a ring round 18_1c and 18_1d only, rough red 1 in the FBX, Blender and probe | A **VertexPainterPro stream** (OPCD hand paint, `VertexInstanceStream`) on `Spline_others_d4_piece4_Rough_-_Mesh`: 385 of 4 726 vertices black-ish (min red 0.1 near 18_1c). The renderer draws the stream's colours (`MeshRenderer.additionalVertexStreams`) instead of the mesh's, so FBX syncs and paint.json never touched it; this is the black band Marcus saw with ShowVertexColors | `golfmap.paint.streams` lists streams (`golfmap.paint.probe` now reports a stream's colours as `stream`); `remove=true` takes them off after saving each to `<course>/PaintedMeshes/streams/` (Undo works). Vreta: removed 2026-09-29 (save the scene to keep it) |
+| Dirt band inside the bunker edge a dark, ruled stripe | The dirt face (golfmap green = the bunker's `Sand Raked Dirt Lip` red) takes its base colour from the ortho, which the edge fill made grass-coloured there; OPCD's paint puts it on exactly rings 0-2 (0.18 m) with a sharp step to the sand at ring 3 | Convention `tint` takes `[r, g, b]`: dirt `[1.25, 1.15, 1.1]` (a little brighter, toward brown-grey), shadow lip `[0.88, 0.85, 0.8]` (was 0.8). Blender: the bunker recipes end with `golfmap.edge_jitter` (blender/README.md), which makes the dirt/sand border ragged by about one ring, seeded per bunker |
+| Stix grass stops at the strip | No `GrassRenderer` on the blends; and their red runs 1 -> 0 toward the sand, so blades by red would thin out exactly at the edge | `golfmap.roughgrass.plant` plants the blends on a lip material with even density (3D grass on the roughs) |
+| Strip unlike the rough | The golfmap blend's black (the bunker end) was `$bunker` red, a dirt lip; the render material kept OPCD's blend settings (slope shading) | golfmap convention: every blend channel `$outer` red, `base: $outer`; the bunker's grass lip and shadow `$outer` instead of the rough by name | `blender/tools/bunker_paint_report.py` is the Blender twin of Check paint (same
 file, rings and scores) for comparing a `.blend` with the Unity scene.
 
 ## 3D grass on the roughs
@@ -665,6 +720,90 @@ across the course, and rough grass next to a path turns white where it picks up 
 the ortho. The action sets both from the course's inner terrain on every run (logged, one Undo step with the
 rest) and warns if that terrain is not square or not at the origin, which the shader cannot follow.
 
+**Bunker lips** (`lip=true`, the default; `golfmap.course.refresh` runs this as step `roughgrass.plant`, so a mesh
+the sync re-adds gets its grass back): every bunker blend (`*_Bunker_-_Blend`) gets a `GrassRenderer` on
+`<course>/Grass/<material> Lip.mat`, rebuilt from the rough material on every run (so it follows the rough's colour
+map, colours and terrain scale; hand edits to it do not survive): `UNIFORM_DENSITY` instead of `VERTEX_DENSITY` (a
+blend's red fades 1 -> 0 toward the sand, which would thin the blades to nothing at the edge), `_TargetDensity` x
+`lipDensity` 0.7 (it is the blade spacing: 0.021 m vs 0.03 on the rough; ce.simgolf also ran lips denser), blade
+heights x `lipHeight` 1.15, `_Disorder` x `lipDisorder` 1.5. The blades grow along the surface normal
+(`GRASS_FOLLOW_SURFACE_NORMAL`), so on a lip that falls into the bunker they lean out over the sand. Bunker meshes
+painted with a red grass-lip ring (golfmap convention; on Vreta only 18_1c) get a renderer on the rough material itself
+(blades by red: the ring grows grass, the sand none). New renderers get their `NatureMeshFilter` cache built
+(`ResetCache` + `GetMeshes`). `lip=false` removes the lip renderers again. Fairway-side bunkers get the fringe too
+(OPCD's blends fade every bunker to the rough, so their strip is rough-coloured: a rough collar on the fairway).
+
+After the pipeline re-exports the orthophoto, `golfmap.orthos.update` (`GolfMapTerrainImporter.cs`) copies the export
+folder's `<prefix>-*-meshes.jpg` (`match=`) over the project's copy of the same name in place (same GUID), so the MAHS
+materials' `_Satellite` and the Stix `_ColorMap` - on Vreta both `Assets/Terrain Backup/vreta/vreta-orto-l2-2025-8192-meshes.jpg` -
+pick it up; the old file goes to `GolfMapSpelunk/ortho-backups/`. Files with no copy in the project are only listed.
+Regenerate: `bun run gspro:export -- <course> ortho --tint`, then `golfmap.orthos.update`.
+
+## Cart paths
+
+OPCD writes every path as one hard surface, concrete: its Satellite theme draws the path meshes
+(`Spline_*_Concrete_-_Mesh`) with `OPCD MAHS Concrete - Asphalt_Sat`, colour from the `-meshes` ortho, so gravel, dirt
+and asphalt were the same satellite-tinted concrete (with the photo's tree shadows), and the fringe strips OPCD builds
+along each path (`Spline_<shape>_B_<Neighbour>_Concrete_-_Blend`) with `Blend_Concrete - Asphalt_Sat to Concrete -
+Asphalt_Sat`: concrete on both edges, so the path ended in a razor-sharp line against the grass mesh beside the strip.
+`golfmap.paths.materials` (`GolfMapPathMaterials.cs`) draws each path as its own surface and fades the strips:
+
+- **Which surface.** golf-map's SVG export writes every road of a network as ONE shape (OPCD builds those best) and a
+  sidecar `<prefix>-paths.json` next to the SVG (`golfmap-path-regions-v1`, `pipeline/gspro.py`): `shapes` = each
+  shape's dominant surface (the Draw panel's Surface), `regions` = its pieces for Blender. OPCD names the meshes
+  `Spline_<shape>_...`; the longest shape name that fits wins and the mesh wears that surface - unless the Blender
+  shaping op `golfmap.split_surfaces` (blender/README.md) has cut a mixed shape apart, naming each part's surface right
+  after the shape (`Spline_roads_124_gravel_0_Concrete_-_Mesh`, `Spline_roads_124_asphalt_B_Concrete_-_Blend`): that
+  token wins. A mesh no shape names (older SVG, no sidecar) is the spec's `unknownSurface`; `sidecar=` points at
+  another file. Vreta 2026-10-05: roads_124 (gravel lanes joining the asphalt) came through as 8 gravel + 3 asphalt
+  meshes and 9 blends, the seam on the asphalt's kerb.
+- **Path meshes**: `<course>/Paths/Surfaces/<surface>.mat`, a copy of OPCD's non-satellite twin `OPCD MAHS Concrete -
+  Asphalt default` on the stock `OPCD 4 color Vert Paint MAHS` shader (so the MAHS knobs - near/far NRM, AO brightness,
+  detail distance/opacity - and OPCD's channel tools keep working), all four channels set to the surface, satellite
+  off. The surface's albedo, a MAHS map (metallic 0, AO from `occlusion`, height from `height`, smoothness x1) and its
+  normal are appended as slices to copies of OPCD's `_DetailArray`/`_NormalArray` (`<course>/Paths/Arrays/`,
+  `GolfMapTextureArrays.cs`, shared with the stone walls; every spec surface with textures gets a slice, in name order,
+  so the arrays do not depend on which meshes a run touches - the detail copy holds ~290 MB of texels, 555 MB on disk as a text-serialized asset; OPCD's 118 MAHS materials
+  all share one array set, checked). The copies sample their bytes linearly like OPCD's, so tints run darker than on a
+  Standard material. Beyond `detailDistanceM` the shader's base blend takes over: base-array slice 6 repeated every
+  2580 m (what OPCD's asphalt does), tinted to the surface's mean colour (albedo x AO, solved against the slice's mean),
+  so a distant path keeps its colour and does not tile. Path meshes take the surface's `physicMaterial`.
+- **Fringe strips fade into their neighbour.** A strip's paint is red on the path edge and black on the far edge (OPCD's
+  blend convention); the tool checks it per strip (boundary vertices within 5 cm of the road meshes' boundary = path
+  edge) and reports the tallies. It then casts rays down 15 cm past the far edge, takes the material of the mesh found
+  there (the name's neighbour type preferred, e.g. `*_Deep_*` for `_B_Deep_`; course-local copies under
+  `Assets/GolfMap/` skipped) and the paint channel that mesh shows there, and builds `<course>/Paths/Surfaces/<surface>
+  to <neighbour material>.mat`: a copy of that material (its grass channels byte for byte the mesh's beside the strip),
+  arrays swapped for the extended copies, the far channel (black) given the neighbour's painted channel (red on Vreta:
+  a rough's black is roots and dirt), the path channel (red) the surface with its height map and
+  `fringeBlendStrength`. MAHS mixes channels by height x paint x blend strength, so stones and grass interleave across
+  the strip instead of a linear cross-fade. On the current meshes the strips are ~10 cm wide (Blender widens them later):
+  judge the fade at 1.2 m eye height close up. Blends keep their collider physics. A `*Concrete*` blend whose OPCD
+  channels name no concrete (a fairway blend OPCD named after the path it meets) is left alone.
+- **Road to road**: a strip between two roads (`Spline_<shape>_B_Concrete_-_Blend`, path edge = its own road) whose
+  rays land on another road fades into that road's surface (`<surface> to <other>.mat`, one per ordered pair: the
+  owning road's surface material with the far channel the other surface). Pairs listed in `sharpPairs`
+  (asphalt/concrete) and same-surface pairs keep a hard edge: the owning road's surface material. No road and no grass
+  found: reported in `problems`, the strip wears its road's surface. (Not yet seen on Vreta: on the current meshes every
+  `_B_Concrete_` strip, including the holes of `roads_124`, borders grass.)
+- **Spec** `<course>/Paths/path-surfaces.json` (`golfmap-path-looks-v2`, written with defaults on the first run; a v1
+  spec is moved to `path-surfaces.v1.bak.json`): per surface `albedo`, `normal`, `occlusion`/`height` (optional),
+  `tileM`, `tint` (Detail Color Tint), `smoothness`, `nearNRMStrength`, `farNRMStrength`, `farNRMTilingM`,
+  `aoBrightness`, `detailOpacity`, `detailDistanceM`, `fringeBlendStrength`, `physicMaterial`; top level
+  `unknownSurface`, `sharpPairs`, `baseMaterial`. Every run rebuilds the materials from the spec (hand edits to them do
+  not survive: tune the spec). Vreta defaults (2026-10-04, matched to the earlier looks at 1.7 m): gravel = NatureManufacture
+  `T_Ground_Forest_Pebbles_Path_01` (A/N/AO/H) at 1.2 m, `#817f7a`; dirt = `GroundCracked01` at 3 m, `#665c4e`; asphalt
+  = OPCD `Asphalt Clean` (albedo/normal/AO/height) at 4 m, `#626262`. Concrete, paving and wood are untuned defaults.
+- `look=photo` puts OPCD's materials and the colliders' physic materials back from `<course>/Paths/paths.json`
+  (what each object wore before); `dryRun` returns the plan (surfaces, each strip's paint, neighbour and material),
+  `only` limits it to named objects.
+
+`golfmap.course.refresh` runs this as step `paths.materials` after the bunker convention (OPCD's Set Default Materials
+gives a re-added path mesh the satellite material again): `pathLook=surface` (default) or `pathLook=photo`. History:
+2026-09-29 a plain copy of OPCD's non-satellite asphalt drew every path one flat pinkish grey, then a custom
+`GolfMap/Path Surface` shader per surface lost OPCD's knobs; both retired. The pipeline's path fill (`gspro.py ortho
+--path-fill`, above) still matters for `look=photo`.
+
 ## Vertex paint
 
 `GolfMap > Vertex Paint > Apply paint.json` (`GolfMapVertexPaint.cs`, bridge `golfmap.paint.apply
@@ -676,7 +815,10 @@ How the paint reaches the game:
 
 - **MAHS channels.** OPCD's `4 color Vert Paint MAHS` material draws one texture per paint channel. Course
   meshes are 100 % red except bunkers, blends and water. Rough's black channel is OPCD's dirt base (index 4)
-  at about half opacity, so black on rough reads as a worn or dry patch.
+  at about half opacity, so black on rough reads as a worn or dry patch. The shader blends in order: black ->
+  red (by r) -> green (by g) -> blue (by b), each weighted by its own channel (times its height map and blend
+  strength), black by `1 - (r+g+b)`. So a vertex (1, 0, 0.6) shows the blue channel over the red one while
+  red, and with it the Stix grass, stays full.
 - **Stix reads red only.** `NewRough` is `ONE_GRASS_TYPE` + `VERTEX_DENSITY`: a blade spawns with the
   probability of the vertex colour's **red** component. Black, green and blue all mean no grass, and a
   gradient thins the grass gradually.
@@ -691,13 +833,29 @@ How the paint reaches the game:
   (`PaintedMeshes/restore.json` remembers each object's original), so re-running after tuning or after an
   FBX re-import gives the same result. Objects no rule touches any more go back to the FBX mesh. Apply marks
   the scene dirty and does not save it: save the scene to keep the swaps.
+- **Rewritten through the Mesh API.** An existing copy is refilled channel by channel (`Overwrite`), never with
+  `EditorUtility.CopySerialized`: that kept the loaded mesh's old render buffers, so after a Blender shaping run
+  changed an FBX's vertices the renderer drew the old triangles over the new vertices (flat white sheets and walls of
+  stretched triangles over Vreta's pond klippa, 2026-09-29) while the collider had the right shape.
+  `golfmap.materials.audit [under]` (read-only) lists renderers that may draw white or untextured (no mesh or
+  material, default material, error shader, textureless materials, OPCD MAHS without satellite/arrays, renderer and
+  collider meshes that differ).
 
 Rules (only `kind: edge`, `edge: bunker` so far): paint `channel` onto the `surfaces` (GolfMapSurfaces
 classes) within `widthM` of the outer edge of every bunker blend. World-anchored Perlin noise picks the
 stretches where the rule applies (`coverage` share, `noiseM` long, `seed`), and a second octave varies how
 far each spot reaches (35-100 % of `widthM`). The weight falls off smoothly from `strength` at the edge.
-Vreta's first recipe (`bunker-surround`: rough, black, 2.2 m, strength 0.9, coverage 0.55, 3.5 m) paints
-about 5 900 vertices on 20 of the 60 rough meshes. Many greenside bunkers border fairway or semi rough,
+`mode` `replace` (default) lerps the colour toward the channel (lowering red: fewer Stix blades); `overlay`
+(red, green or blue; not black) raises that channel and keeps the others, so red - the Stix blade chance - is
+untouched: a colour-only band under full grass. A rough reshaped by the stone-wall ground draws stone on blue,
+so blue rules skip those meshes.
+Vreta's recipe (`bunker-surround`: rough, blue, overlay, 2.2 m, strength 0.9, coverage 0.55, 3.5 m; snapshot in `docs/gspro/vreta/paint.json`) is
+**`enabled: false`** since 2026-09-29 (a rule with `enabled: false` is kept but not painted): the rough's blue channel is the same dirt base
+with roots and twigs as its black, so the band still read as root streaks (Bunker Materials, table). Enabled it painted
+about 5 850 vertices on 21 rough meshes. It was black `replace` until 2026-09-29: red fell to ~0.1 at the edge, so
+the grass thinned into a brown band of roots and debris (the rough's black channel) with a few blades - the
+opposite of the references (grass right to the edge). Marcus chose the rough's blue channel for the band; it now
+changes only the ground colour under full-density grass. Many greenside bunkers border fairway or semi rough,
 which have no Stix grass.
 
 Vertex spacing limits the detail: fairway, rough, semi and deep are about 1.2 m, rough within 3 m of a
@@ -706,7 +864,9 @@ meshes. Check a result from above (`unity_screenshot` with a pitched `rotation`)
 a band this narrow is hidden behind the blades.
 
 Read-only helpers: `golfmap.paint.survey` (per class: vertices, edge lengths, current paint, Stix setup,
-bunker centres) and `golfmap.paint.probe x z r` (paint of every course mesh near a point).
+bunker centres, `painterStreams`) and `golfmap.paint.probe x z r` (paint of every course mesh near a point; `stream`: the
+colours of a VertexPainterPro stream on the renderer, which is what it draws). `golfmap.paint.streams [remove=true] [only=]`
+lists (removes) those hand-paint streams: they outlive FBX syncs and paint.json and the probe's mesh colours never show them.
 
 ## Course meshes: FBX sync
 
@@ -731,15 +891,109 @@ It does what deleting and re-adding the meshes by hand does, but only for the me
   it) is ignored.
 - **Excluded:** FBX whose name starts with a prefix in the course's `meshExclude` (default `Gap_Issue`, OPCD's
   gap-check markers) are never added, even when OPCD's Batch Export writes them; objects showing one are stale.
-- **Vertex paint** is applied again after any add or replace (`paint=false` skips it).
+- **Vertex paint** is applied again after any add or replace (`paint=false` skips it). That also reshapes the ground
+  under stone walls (see Stone walls), and then the walls and boulders standing on a replaced or added mesh (one of
+  its vertices in their area) are built again so their stones meet it; the rest keep theirs. The preview lists them
+  as `wallsToRebuild`. An object whose collider shows a wall-ground copy maps to its FBX through the paint's
+  `restore.json`, so it is never taken for stale.
 - **First sync** (no record yet): nothing is replaced; the scene is taken as current and recorded. `GolfMap >
   Meshes > Rebuild all from FBX folder` (`replaceAll=true`) replaces every mesh.
 - The parent and objects with children are never treated as course meshes. A parent that renders a mesh itself
-  (e.g. made by dragging an FBX in and renaming it) is reported under `warnings`: it draws twice there.
+  (e.g. made by dragging an FBX in and renaming it) is reported under `warnings`: it draws twice there. Water
+  planes are the exception: OPCD's plane carries a child `Default Reflection Probe` and is still its FBX's object
+  (before, a sync would have added `Spline_others_WaterPlane` a second time).
 
 Folder, parent and exclusions come from the course asset (`meshFolder`, default `fbx` under Assets; `meshParent`,
 default `Meshes`; `meshExclude`, default `Gap_Issue`); the bridge takes `folder`/`parent`/`exclude` overrides. `Preview sync` / `dryRun=true` shows the plan. Undo
 covers the scene changes; the scene is marked dirty, not saved.
+
+## Course refresh after a Blender shaping run
+
+Step 5 of the [Blender shaping loop](../blender/SHAPING-PLAN.md). `GolfMap > Course > Refresh after Blender export`
+(`GolfMapCourseRefresh.cs`, bridge `golfmap.course.refresh`) chains, in order: `meshes.sync` (prune; `folder`/`parent`
+args; OPCD's Set Default Materials runs inside it on what it re-adds), the Bunker Materials convention
+(`convention`, `conventionFile`; default the window's), `paths.materials` (cart path look, `pathLook=surface|photo`,
+"Cart paths"), `paint.apply`, `roughgrass.plant` (Stix grass on the roughs
+and bunker lips; `grassMaterial`, `lipGrass=false`), `terrain.conform mode=match` (`margin`,
+`featherM`), `waterplanes.build` (every lake: a fresh OPCD `.blend` never has water planes - OPCD's Add Water Plane is a manual Blender step - so new lakes get one, ours are rebuilt keeping their lift, lakes another plane covers are left alone, and our stale planes plus any water plane whose mesh is gone - OPCD's after a new `.blend` - are deleted),
+`creeks.import` (refit), `walls.build` and `surfaces.export`. `skip=<ids>` leaves steps out; a failed step stops the
+rest unless `continueOnError`. Not automatic, listed under `pending`: grass zones (`bun run grass:zones -- <course>`,
+then `golfmap.zones.import` + `golfmap.grass.apply`) and `props.place` (it would drop props moved by hand).
+
+`dryRun=true` (menu: *... (dry run)*) runs each step's own dry run where it changes nothing (meshes.sync without
+importing, bunkers, paint, terrain match, water planes, creeks) and lists `walls.build` (its dry run prepares the stone
+models) and `surfaces.export` as `would run`. Every plan is measured on the scene as it is, before the earlier steps.
+The report goes to `<course>/refresh-report.json`; a dry run's to `GolfMapSpelunk/<Course>_refresh-report.dryrun.json`
+(outside Assets). The scene is marked dirty, never saved.
+
+### Per feature: `only=`
+
+`golfmap.course.refresh only=<object names, comma-separated>` (object = FBX name without extension, e.g.
+`only=Spline_hole_18_1c_Bunker_-_Mesh,Spline_hole_18_1c_B_Rough_Bunker_-_Blend`) is the fast path of the Terrain editor
+→ Blender loop (the shaping worker's `changedObjects`). Same steps and report, but only for those objects and the
+ground around them:
+
+| Step | With `only=` |
+|---|---|
+| `meshes.sync` | just those FBX: `AssetDatabase.ImportAsset` each (no full Refresh), each named object deleted and added again (or added when the scene has none) whatever the sync record says, MeshCollider + OPCD's Set Default Materials on them; prunes only named objects whose FBX is gone; updates only their entries of `meshes-sync.json`. `unknown` lists names with neither FBX nor object |
+| `bunkers.materials` | the convention on the bunker sets they belong to (`ApplyConvention(..., only)`: sets whose bunker/blend is named, or whose key `<key>_Bunker_-_Mesh` / `<key>_B_..._Bunker_-_Blend` gives); skipped when no bunker or blend is named |
+| `paths.materials` | the cart path look on the named path meshes (`*Concrete*`); skipped when none is named |
+| `paint.apply` | the named meshes and the course meshes whose bounds meet theirs + `featherM` + the rules' reach (`Apply(dryRun, only, within)`); bunker edges read from the blends there. Meshes outside keep their paint |
+| `roughgrass.plant` | the whole course (cheap: only objects without a `GrassRenderer` get one; the lip material is rebuilt) |
+| `terrain.conform mode=match` | only inside the union of their bounds + `featherM`: only the meshes over it rasterised, only that heightmap window read/written; the backup is that window's heights (`<course>/Backups/<terrain>-<stamp>-match.heights`, `golfmap.terrain.restore backup=<it>`) instead of a 36 MB TerrainData copy |
+| `waterplanes.build` | a named `*_Water_Base_Lake_-_Mesh`: created if it has no plane, else rebuilt keeping its lift |
+| `creeks.import` | only when a creek mesh is named: the creeks of the export with a point inside its bounds (+1 m) are refitted, no creek is removed |
+| `walls.build` | only the walls/boulders whose bank meets them (`WallsOver` for objects in the scene, `WallsIn` on bounds for the others); else skipped |
+| `surfaces.export` | not run (whole-course export): status `pending` |
+
+Where each object is (`where` in the report): the scene object (in a real run the union of the old and the new shape,
+so ground a smaller bunker gave up is matched too), else its imported FBX (root at the origin, as the sync places it),
+else the shaping report's place (`bounds.unity`) - that is how a dry run plans meshes Unity has not imported yet.
+`dryRun=true` works with `only=`. The dry run above (Vreta 2026-09-28, 18_1c renamed so the scene had no object of
+either name yet, bounds from the FBX): 0.41 s in all - sync 0.08 (2 to add), bunkers 0.07 (set `Spline_hole_18_1c`, not
+in the scene yet), paint 0.13 (1 mesh in scope), terrain 0.08 (window 45 x 24 samples: 392 would fall, max 11 cm, 209
+feathered); water, creeks and walls skipped as not concerned. A lake + creek + tee-bank rough in one call: 0.99 s (terrain
+window 784 x 1336 samples, 0.4 s; creeks 1 of 13 refitted; wall `h13-front-tee` would be rebuilt).
+
+Speed (Vreta, one bunker + its blend, 2026-09-29): 35 s before, ~3 s now (+ ~1 s when the terrain changes). What cost
+it: every `yield` of the conform coroutine is an editor frame (1-2 s on this scene), so the conform yields only after
+0.2 s of work (`Laps.Due`); the conform record `Reference/inner-conform.bytes` (16.6M entries, 133 MB) was read into a
+dictionary and rewritten on every conform (~23 s): a windowed conform now looks up just its samples and appends their
+totals (the last record of a sample wins; a big run rewrites, which compacts); the VSP refresh is the window's cells
+(`RefreshTerrainArea` + `ClearCache(bounds)`) instead of `RefreshVegetationSystem` (1.4 s); Bunker Materials imports
+its `restore.json` instead of a full `AssetDatabase.Refresh` (and not at all on `only=`). Each step's `result.timings`
+(meshes.sync, bunkers.materials, terrain.conform) gives the seconds per part. What is left: `ImportAsset` of the FBX
+(~0.6 s each), OPCD's Set Default Materials (0.2-1.1 s), `SaveAssets` (the 36 MB TerrainData, ~0.5 s).
+
+`golfmap.terrain.conform mode=match` puts the terrain under the meshes at exactly `margin` below the mesh top, raising
+**and** lowering (a dug bunker, a built-up tee), and fades the change out over `featherM` (default 2 m) outside the
+meshes' footprint so no cliff is left. Backup first, as `mode=raise` (the default, unchanged). The dry run reports
+`samplesRise`/`samplesFall` (under the meshes, changes over 1 mm), `featherRise`/`featherFall`, `maxRiseCm`/`maxFallCm`.
+Vreta 2026-09-28: 16.6 M samples under meshes (OPCD's deep-rough fill covers almost the whole inner square),
+11.2 M would fall (mean 2.1 cm, max 146.7 cm), 1 033 rise (max 157 cm), 39.7 k feathered.
+
+## Review (changed places)
+
+`GolfMap > Review` (`GolfMapReview.cs`) reads a shaping report (`shaping-report.json` from `shape_apply.py`,
+`golfmap-shaping-report-v1`; default the last picked path, else `<course export folder>/shaping-staging/shaping-report.json`,
+where `shape_apply` stages its output, else `<course export folder>/shaping-report.json`) and lists its `changedPlaces` grouped by hole:
+a done tick per place (EditorPrefs, per report), **Go**, **Prev/Next** (skipping done ones). Go frames the Scene view
+from its current heading, 35 deg down, far enough back to see the place's bounds. It also shows the last course
+refresh's pending steps. A place (`object`, `featureId`, `type`, `hole`, `ops` shown as its note, `centre` and `bounds`
+each as `{blend, epsg3006, unity}`) resolves to the scene object of that name (renderer bounds, `resolvedBy: object`),
+else the report's own Unity bounds (`unity`), else the Blender bounds mapped as `(x, y, z) -> (-x, z, -y)` (checked:
+object bounds and mapped Blender bounds agree to the millimetre), the height of both taken from the ground there, else
+`centre3006` through the inner DEM sidecar. Older reports (`centreBlend`, `centre3006`, `bounds: {min, max}`) still load.
+
+Bridge:
+- `golfmap.review.list [report]` (read-only, with `resolvedBy` and `blendOffsetM`);
+- `golfmap.review.goto index= | object= [report] [select]`: `object=<name>` is golf-map's "Show in Unity" - the
+  report's place for that object when there is one (scene object first, else its coordinates, e.g. a renamed mesh
+  before the refresh), else the scene object of that name without a report; a given report becomes the window's;
+- `golfmap.review.load [path] [open=true] [items=false]`: loads a report into the window (opens it, remembers the path)
+  and returns the place count per hole and how they resolve in the scene. Vreta 2026-09-28 (staged report, 421 places,
+  scene not refreshed yet): 69 by object, 352 by the report's Unity coordinates; `goto object=Spline_hole_18_1c_Bunker_-_Mesh`
+  framed the bunker from its coordinates (`resolvedBy: unity`).
 
 ## Creeks (R.A.M.)
 
@@ -822,8 +1076,17 @@ mesh. `GolfMap > Waterplanes > Build for all lakes` does every `*_Water_Base_Lak
   a hazard in GSPro), and a child **Default Reflection Probe** at the plane's centre (realtime, refresh on awake,
   1024, HDR, box projection, box 15×100×15 m) that the renderer uses as its anchor override. The whole plane
   reflects that one cubemap.
-- **Rebuild** refills the same mesh asset. The object, its material and its probe stay, and the probe moves to
-  the new centre. A lift changed by hand (the object's local y) is kept unless `liftM` is given.
+- **Probe placement**: the build then moves the probe over open water (a point where the plane is the top surface
+  and at least 0.3 m over the bed, so neither the outset ring under a bank nor a flooded margin), the one nearest the
+  plane's centre, 1 m over the highest ground within its box,
+  and renders it. At the bare bounds centre a curved creek's probe lands inside its inner bank. It then captures the
+  ground from underneath, and the whole plane reflects black. Vreta's hole 15_5 creek and OPCD's `Spline_others`
+  plane both had this. **GolfMap > Waterplanes > Place reflection probes** (bridge `golfmap.waterplanes.probes
+  [only] [aboveM=1] [dryRun]`) does the same for planes already in the scene, OPCD's FBX planes included; its report
+  says which probes were under the ground. A realtime probe refreshes on awake, so GSPro renders it where it is saved.
+  In the editor a probe moved by hand keeps its old cubemap until something renders it, so the water looks unchanged.
+- **Rebuild** refills the same mesh asset. The object, its material and its probe stay, and the probe is placed
+  again (a hand-moved probe is not kept). A lift changed by hand (the object's local y) is kept unless `liftM` is given.
 - **Covered lakes**: a lake that another water plane already covers (e.g. an OPCD FBX plane) is skipped.
   `replaceExisting=true` builds it anyway and switches the other plane off (it is not deleted).
 - `dryRun` lists every lake with its level, surface, edge heights (`rimM`) and `rimBelowSurface`, the share of the
@@ -868,6 +1131,25 @@ mesh. `GolfMap > Waterplanes > Build for all lakes` does every `*_Water_Base_Lak
 
 ## Stone walls
 
+Exposed rock can use `stoneAlbedo`, `stoneNormal` (imported as a normal map),
+`stoneTileM` and `stoneColor` in the walls defaults. Course-owned copies append
+rock albedo/MAHS and normal slices to the OPCD arrays, preserving the original
+slices and shader. Blue paints the top and green paints a brighter steep-face
+variant, fading between 35 and 60 degrees; both exclude generated tall grass.
+This requires blue/green to be available on the affected course meshes.
+`golfmap.walls.texture-survey` exports source texture previews;
+`golfmap.walls.material-check` checks preserved array slices and nonempty rock
+data after reload. `golfmap.paint.probe` reports all three mean colour channels.
+
+A cliff's `roundTopM` adds a tangent circular shoulder and smooths across the
+upper rim. `paintInsetM` pulls its paint inside the outline, and `grassPatches`
+are feathered irregular ellipses `[E,N,radiusEast,radiusNorth]` that retain the
+original grass paint. `paintOnly: true` preserves original mesh heights;
+`placeStones: false` shapes/paints without generating a wall of blocks (clear
+an old group once with `golfmap.walls.clear`). `placedColors: {id: [r,g,b]}`
+matches existing stone groups through `golfmap.walls.colors` without changing
+their transforms, and reapplies after builds.
+
 `GolfMapWalls.cs` builds stone faces on steep banks, and `GolfMapWallGround.cs` reshapes the ground under them: the
 raised tees of Vreta's 13th, whose downhill sides are dry-stone walls from foot to top edge. The lidar smooths such a
 wall into a 45-60 deg bank and OPCD's ~1.2 m mesh grid into ~35 deg; no placement of stones on that bank reads as a
@@ -907,3 +1189,20 @@ the stone in).
   gives the same stones every time, so hand edits to single stones are lost on a rebuild. `profile=<wall id>` shows
   the bank as the meshes have it, `dryRun=true` the plan. Report: `GolfMapSpelunk/<Course>_walls.txt`.
 - `golfmap.walls.clear` (`only=<ids>`) deletes the stones (the ground stays: drop `ground` and paint again).
+- `ground: false` on a wall turns its ground reshaping and rock paint off and keeps the rest of its entry. Vreta's
+  `pond-klippa` and `h4-klippa-a` have it since 2026-09-29 (the klippa ground is left to the Blender shaping tools);
+  the hole 13 tee walls keep theirs.
+- Klippor (natural rock outcrops) are not built with reshaped ground: sharpening the mesh read as a boxy terrace. They are
+  big closed rocks (NatureManufacture `Rock_01/03/05`, grass-top variants on the face) scaled to 5-8 m and sunk into the
+  lidar knoll, placed as `boulders` (`docs/gspro/vreta/stone-walls.gen.py` `outcrop_rocks`). The pack's cliff pieces are
+  one-sided facades, hollow from behind: `golfmap.props.measure` reports `face.oneSided` (~0.8 for them, ~0.05 closed).
+- A boulder with `pose` (`dy` over the ground under its pivot, `euler`, `scale`) is placed exactly so: that is how stones
+  moved by hand in Unity are kept (capture them into the generator before any rebuild).
+- A stone may carry `tint`, `materialFloats` and `materialColors`: drawn with course copies of its materials under
+  `<course>/Walls/Materials/` (e.g. less moss on the grass-top rocks: `_Snow_Amount`, `_SnowMaxAngle`).
+- Colliders: every stone collider gets the spec's `physicMaterial` (`GSPstone`); GSPro reads bounce and roll off the
+  collider's physics material, like the course meshes' `GSPrough`/`GSPfairway`. `golfmap.walls.colliders` sets it on
+  everything already placed. Prefab colliders sit on their LOD0 child, not the root.
+- Stone-painted course mesh (a wall-ground face) is class Rock (11) in the surface map, and the tall-grass rules keep off
+  it. After removing wall ground, the terrain it lowered stays down: `golfmap.terrain.conform` with `x0/z0/x1/z1` raises it
+  back in that area only; then `golfmap.surfaces.export` and `bun run grass:zones` so the grass returns.

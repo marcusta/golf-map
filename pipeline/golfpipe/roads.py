@@ -162,8 +162,10 @@ class RoadWay:
 
 # The app's path surfaces — the `surface` attribute on `path` features
 # (shared/features/path-surface.ts is the app's copy; keep them equal). The
-# GSPro export still paints every path as OPCD concrete; the surface picks
-# the look and the collider material in Unity.
+# GSPro export merges the roads of every surface into one concrete shape per
+# network (grass tracks apart, as rough); the surfaces go to the `-paths.json`
+# sidecar and pick the look and the collider material in Unity (Blender cuts a
+# mixed shape's mesh along the seams first).
 PATH_SURFACES = ("asphalt", "concrete", "paving", "gravel", "dirt", "grass", "wood")
 
 # OSM `surface=*` -> a PATH_SURFACES value. Generic `paved` is asphalt (what a

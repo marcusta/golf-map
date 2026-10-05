@@ -113,6 +113,8 @@ namespace GolfMap.Editor
         void Update()
         {
             if (GolfMapVegLive.RespawnPending && GUIUtility.hotControl == 0) { GolfMapVegLive.FlushRespawns(); }
+            // Baked tints (CTI): once the slider is let go and the value has settled.
+            if (GolfMapVegLive.BakeDue && GUIUtility.hotControl == 0 && !showSaved) { note = GolfMapVegSession.FlushBakes(); Repaint(); }
             if (EditorApplication.timeSinceStartup - lastDiskCheck > 1.5)
             {
                 lastDiskCheck = EditorApplication.timeSinceStartup;
@@ -544,11 +546,20 @@ namespace GolfMap.Editor
                     using (new EditorGUI.DisabledScope(!editable.Any(e => e.Has("bark"))))
                         adjust.bark = GUILayout.Toggle(adjust.bark, "bark", EditorStyles.miniButtonRight);
                 }
+                // Never a slider that silently does nothing: say what is missing instead.
+                bool anyTint = editable.Any(e => e.values.Any(v => v.colour && (v.role == "healthy" && adjust.healthy || v.role == "dry" && adjust.dry || v.role == "bark" && adjust.bark)));
+                if (!anyTint)
+                    EditorGUILayout.LabelField(editable.Any(e => e.values.Any(v => v.colour && v.role == "bark")) && !adjust.bark
+                        ? "Tick bark above to grade the bark: the selection has no leaf/blade tint of the ticked kinds."
+                        : "The selection has no tint colour of the ticked kinds, so the colour sliders are off.", EditorStyles.wordWrappedMiniLabel);
                 EditorGUI.BeginChangeCheck();
-                adjust.brightness = Percent("Brightness", "Linear-light brightness of the tints: -10% is 'a bit darker'.", adjust.brightness, -75, 100);
-                adjust.saturation = Percent("Saturation", "Colourfulness of the tints, luminance kept.", adjust.saturation, -100, 100);
-                adjust.hue = Slider("Hue", "Turns the tints round the colour wheel (degrees): + towards green/blue, - towards yellow/red.", adjust.hue, -45, 45, "0°");
-                adjust.warmth = Slider("Warmth", "+ warmer (yellow/red), - cooler (blue), brightness kept.", adjust.warmth * 100, -100, 100, "0") / 100;
+                using (new EditorGUI.DisabledScope(!anyTint))
+                {
+                    adjust.brightness = Percent("Brightness", "Linear-light brightness of the tints: -10% is 'a bit darker'.", adjust.brightness, -75, 100);
+                    adjust.saturation = Percent("Saturation", "Colourfulness of the tints, luminance kept.", adjust.saturation, -100, 100);
+                    adjust.hue = Slider("Hue", "Turns the tints round the colour wheel (degrees): + towards green/blue, - towards yellow/red.", adjust.hue, -45, 45, "0°");
+                    adjust.warmth = Slider("Warmth", "+ warmer (yellow/red), - cooler (blue), brightness kept.", adjust.warmth * 100, -100, 100, "0") / 100;
+                }
                 using (new EditorGUI.DisabledScope(!anySize))
                 {
                     adjust.height = Percent("Height", "Taller or shorter (grass and bushes).", adjust.height, -75, 200);
@@ -702,7 +713,7 @@ namespace GolfMap.Editor
             EditorGUI.showMixedValue = mixed;
             EditorGUI.BeginChangeCheck();
             float f2 = first.f; Color c2 = first.c;
-            if (first.colour) c2 = EditorGUILayout.ColorField(content, first.c, true, role.id == "hue", false);
+            if (first.colour) c2 = EditorGUILayout.ColorField(content, first.c, true, role.id == "hue", GolfMapVegPalette.IsBaked(first));
             else if (role.toggle || first.toggle) f2 = EditorGUILayout.Toggle(content, first.f > 0.5f) ? 1 : 0;
             else f2 = EditorGUILayout.Slider(content, first.f, Mathf.Min(role.min, first.f), Mathf.Max(role.max, first.f));
             bool changed = EditorGUI.EndChangeCheck();

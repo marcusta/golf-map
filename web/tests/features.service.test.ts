@@ -74,6 +74,7 @@ function fakeApi(initial: CourseFeature[] = []) {
                 sourceRef: input.sourceRef ?? null,
                 license: input.license ?? null,
                 attributes: input.attributes ?? null,
+                no: rows.size + 1,
                 version: 1,
             };
             rows.set(feature.id, feature);
@@ -119,7 +120,7 @@ function feature(id: string, type = 'bunker', version = 1, opts: { holeId?: stri
     return {
         id, courseId: 'c1', holeId: opts.holeId ?? null, layer: opts.layer ?? null, type,
         geometry: squareGeometry(), geojson: null, sortOrder: opts.sortOrder ?? 0,
-        source: null, generated: false, sourceRef: null, license: null, attributes: null, version,
+        source: null, generated: false, sourceRef: null, license: null, attributes: null, no: null, version,
     };
 }
 

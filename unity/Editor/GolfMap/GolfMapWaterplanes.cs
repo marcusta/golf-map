@@ -12,9 +12,13 @@
 //   - OPCD's GameObject > Set Default Materials (SetMeshEditorDLL, keyed on '_WaterPlane'
 //     in the name) gives it OPCD-WaterPlane_AquasLite, the GSPwater physic material and a
 //     child 'Default Reflection Probe' (realtime, on awake, box projection) that the
-//     renderer anchors on, at the plane's centre.
+//     renderer anchors on, at the plane's centre;
+//   - that probe is then moved over open water and above the banks (PlaceProbe): the whole
+//     plane reflects its one cubemap, and at the bare bounds centre a curved creek's probe
+//     sits inside its inner bank, captures the ground from underneath and the water goes black.
 // A rebuild refills the same mesh asset and keeps the object, its materials, its probe
-// (moved to the new centre) and its height above the level: a hand lift survives.
+// (placed again) and its height above the level: a hand lift survives.
+// golfmap.waterplanes.probes places the probes of existing planes, OPCD's FBX planes included.
 // Lakes a plane not made here already covers (e.g. an OPCD FBX plane) are skipped unless
 // replaceExisting, which switches the other plane off (not deleted).
 // One level per plane: right for lakes, wrong for a creek that falls (the R.A.M. creeks,
@@ -74,7 +78,7 @@ namespace GolfMap.Editor
         static void BuildMenu() { Log(Build(new BridgeArgs(null))); }
 
         [BridgeCommand("golfmap.waterplanes.build", "Build a flat AQUAS water plane over every lake of the course (or only the selected meshes) the way OPCD's Blender 'Add Water Plane' does, from the meshes in the scene (Spline_*_Water_Base_Lake_-_Mesh): flattened to the lowest point of the mesh's edge minus belowM, edges pushed out by outsetM, object <key>_WaterPlane under 'Waterplanes' raised liftM, mesh saved to <course>/WaterPlanes/, then OPCD's Set Default Materials (AQUAS material, GSPwater physics, child 'Default Reflection Probe'). A rebuild refills the same objects and keeps their current lift. Meshes another water plane already covers are skipped unless replaceExisting (switches that plane off). dryRun lists the lakes, levels and existing planes. Marks the scene dirty, does not save it.",
-            args = "dryRun=false, selected=false (the editor's selected meshes, any name, instead of the lakes; a selected plane rebuilds from its mesh), only (comma-separated lake keys or name parts; may name a Water_Base_Creek), outsetM=2, belowM=0.05, liftM=0.3 (new planes; existing ones keep theirs unless given), parent=Waterplanes, replaceExisting=false, prune=false (delete planes made here whose mesh is gone)")]
+            args = "dryRun=false, selected=false (the editor's selected meshes, any name, instead of the lakes; a selected plane rebuilds from its mesh), only (comma-separated lake keys or name parts; may name a Water_Base_Creek), outsetM=2, belowM=0.05, liftM=0.3 (new planes; existing ones keep theirs unless given), parent=Waterplanes, replaceExisting=false, prune=false (delete planes made here whose lake is gone, and any water plane whose mesh is gone, e.g. OPCD's after a new .blend)")]
         static object Command(BridgeArgs a) { return Build(a); }
 
         sealed class Lake
@@ -149,6 +153,10 @@ namespace GolfMap.Editor
             // Stale: made here, and no mesh in the scene (a lake or any other) would give its name any more.
             var sourceNames = new HashSet<string>(all.Where(g => !IsWaterPlane(g.name) && MeshOf(g) != null).Select(g => KeyOf(g.name) + PlaneSuffix));
             var stale = planes.Where(p => ours(p) && !sourceNames.Contains(p.name) && only.Length == 0 && !selected).ToList();
+            // Lost: a water plane object (ours or OPCD's) whose mesh is gone - e.g. OPCD's plane after a new .blend
+            // (a fresh OPCD .blend has no water plane, so its FBX disappears). It draws nothing and has no collider.
+            var lost = all.Where(g => IsWaterPlane(g.name) && g.GetComponent<MeshFilter>() != null && g.GetComponent<MeshFilter>().sharedMesh == null &&
+                (g.GetComponent<MeshCollider>() == null || g.GetComponent<MeshCollider>().sharedMesh == null) && only.Length == 0 && !selected).ToList();
 
             var result = new Dictionary<string, object>
             {
@@ -160,6 +168,7 @@ namespace GolfMap.Editor
                 { "lakes", report },
                 { "existingPlanes", planes.Select(p => (object)Describe(p, ours(p), lakes)).ToList() },
                 { "stale", stale.Select(p => (object)PathOf(p)).ToList() },
+                { "lostMesh", lost.Select(p => (object)PathOf(p)).ToList() },
             };
             if (selected) result["ignored"] = ignored;
             if (lakes.Count == 0 && !selected) result["note"] = "No lake meshes (*" + LakeSuffix + ") in the scene" + (only.Length > 0 ? " matching 'only'." : ".");
@@ -209,11 +218,6 @@ namespace GolfMap.Editor
                 var probe = Probes(go).FirstOrDefault();
                 var renderer = go.GetComponent<MeshRenderer>();
                 if (fresh || probe == null || renderer.sharedMaterial == null) needOpcd.Add(go);
-                else
-                {
-                    Undo.RecordObject(probe.transform, "Build water planes");
-                    probe.transform.position = renderer.bounds.center;
-                }
                 built.Add(go);
             }
             if (needOpcd.Count > 0)
@@ -224,6 +228,13 @@ namespace GolfMap.Editor
                     errors.Add("OPCD's '" + SetDefaultMaterialsMenu + "' is not in this project: the planes have no water material, physics or reflection probe.");
                 Selection.objects = selection;
             }
+            // After OPCD: it adds the probe of a new plane at the plane's centre.
+            Physics.SyncTransforms();
+            foreach (var go in built)
+            {
+                var probe = Probes(go).FirstOrDefault();
+                if (probe != null) PlaceProbe(go, probe, ProbeAboveM, "Build water planes");
+            }
             foreach (var g in switchOff) { Undo.RecordObject(g, "Build water planes"); g.SetActive(false); }
             if (prune)
                 foreach (var g in stale)
@@ -232,14 +243,17 @@ namespace GolfMap.Editor
                     Undo.DestroyObjectImmediate(g);
                     AssetDatabase.DeleteAsset(path);
                 }
+            if (prune)
+                foreach (var g in lost) Undo.DestroyObjectImmediate(g);
             Undo.CollapseUndoOperations(undoGroup);
             AssetDatabase.SaveAssets();
-            if (built.Count > 0 || switchOff.Count > 0 || (prune && stale.Count > 0)) EditorSceneManager.MarkSceneDirty(scene);
+            if (built.Count > 0 || switchOff.Count > 0 || (prune && (stale.Count > 0 || lost.Count > 0))) EditorSceneManager.MarkSceneDirty(scene);
 
             if (builtOut != null) builtOut.AddRange(built);
             result["built"] = built.Select(g => (object)Check(g)).ToList();
             result["switchedOff"] = switchOff.Select(g => (object)PathOf(g)).ToList();
             result["prunedStale"] = prune && stale.Count > 0;
+            result["prunedLost"] = prune ? lost.Count : 0;
             result["errors"] = errors;
             return result;
         }
@@ -471,6 +485,126 @@ namespace GolfMap.Editor
             return go.GetComponentsInChildren<ReflectionProbe>(true).Where(p => p.gameObject != go);
         }
 
+        const float ProbeAboveM = 1f;       // over the highest ground within the probe's box around it
+        const float ProbeMinDepthM = 0.3f;  // open water: at least this much over the bed
+
+        [MenuItem("GolfMap/Waterplanes/Place reflection probes", false, 40)]
+        static void ProbesMenu()
+        {
+            var result = PlaceProbes(new BridgeArgs(null));
+            Log(result);
+            var lines = ((List<object>)result["planes"]).Cast<Dictionary<string, object>>()
+                .Select(p => p["plane"] + ": " + (p.ContainsKey("problem") ? p["problem"] : "probe at " + string.Join(", ", ((List<object>)p["to"]).Select(o => o.ToString()).ToArray()))).ToArray();
+            Tell(lines.Length > 0 ? string.Join("\n", lines) : "No water planes with a reflection probe.", lines.Length == 0);
+        }
+
+        [BridgeCommand("golfmap.waterplanes.probes", "Place the reflection probe of every active water plane (OPCD's FBX planes included; or only some) where it sees the sky: over open water (the plane is the top surface there and at least 0.3 m over the bed: not a bank its outset runs under, not a flooded margin) at the point nearest the plane's centre, aboveM over the highest ground within the probe's box around it, then render it so the Scene view shows it at once (GSPro renders it on load). The whole plane reflects that one cubemap; a probe left inside a bank captures the ground from underneath and the water goes black. golfmap.waterplanes.build does the same for the planes it builds. Marks the scene dirty, does not save it.",
+            args = "only (comma-separated plane name parts), aboveM=1, dryRun=false")]
+        static object ProbesCommand(BridgeArgs a) { return PlaceProbes(a); }
+
+        static Dictionary<string, object> PlaceProbes(BridgeArgs a)
+        {
+            bool dryRun = a.Bool("dryRun", false);
+            float above = Mathf.Max(0f, (float)a.Number("aboveM", ProbeAboveM));
+            var only = (a.String("only") ?? "").Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();
+            var scene = EditorSceneManager.GetActiveScene();
+            var planes = scene.GetRootGameObjects().SelectMany(r => r.GetComponentsInChildren<Transform>(true)).Select(t => t.gameObject)
+                .Where(g => g.activeInHierarchy && IsWaterPlane(g.name) && g.GetComponent<MeshRenderer>() != null && Probes(g).Any())
+                .Where(g => only.Length == 0 || only.Any(o => g.name.IndexOf(o, StringComparison.OrdinalIgnoreCase) >= 0))
+                .OrderBy(g => g.name, StringComparer.Ordinal).ToList();
+            if (!dryRun)
+            {
+                Undo.IncrementCurrentGroup();
+                Undo.SetCurrentGroupName("Place water plane probes");
+            }
+            Physics.SyncTransforms();
+            var report = new List<object>();
+            foreach (var go in planes)
+            {
+                var probe = Probes(go).First();
+                var from = probe.transform.position;
+                float groundAtProbe = GroundAt(from.x, from.z);
+                var entry = new Dictionary<string, object>
+                {
+                    { "plane", PathOf(go) },
+                    { "from", Vec(from) },
+                    { "fromUnderGround", groundAtProbe > from.y },
+                };
+                var spot = dryRun ? ProbeSpot(go, probe, above) : PlaceProbe(go, probe, above, "Place water plane probes");
+                if (spot == null) entry["problem"] = "no open water found (no collider on the plane, or ground above all of it)";
+                else entry["to"] = Vec(spot.Value);
+                report.Add(entry);
+            }
+            if (!dryRun && planes.Count > 0) EditorSceneManager.MarkSceneDirty(scene);
+            return new Dictionary<string, object> { { "scene", scene.name }, { "dryRun", dryRun }, { "aboveM", above }, { "planes", report } };
+        }
+
+        // Move the probe to ProbeSpot and render it (realtime probes refresh on awake: in the editor a moved
+        // probe keeps its old cubemap until rendered). Null, probe left alone, when the plane has no open water.
+        static Vector3? PlaceProbe(GameObject plane, ReflectionProbe probe, float above, string undoName)
+        {
+            var spot = ProbeSpot(plane, probe, above);
+            if (spot == null) return null;
+            Undo.RecordObject(probe.transform, undoName);
+            probe.transform.position = spot.Value;
+            if (probe.mode == UnityEngine.Rendering.ReflectionProbeMode.Realtime) probe.RenderProbe();
+            return spot;
+        }
+
+        // Over open water, nearest the plane's centre: on a grid over the plane's bounds, the points where the
+        // plane is the top surface (the outset ring runs in under the banks, so ground lies above it there).
+        // Height: `above` over the highest of the water and the ground within the probe's box around the point,
+        // so the cubemap's horizon is sky and trees, not the walls of the channel.
+        static Vector3? ProbeSpot(GameObject plane, ReflectionProbe probe, float above)
+        {
+            var collider = plane.GetComponent<MeshCollider>();
+            if (collider == null || collider.sharedMesh == null) return null;
+            var b = plane.GetComponent<MeshRenderer>().bounds;
+            float step = Mathf.Max(0.5f, Mathf.Max(b.size.x, b.size.z) / 150f);
+            var centre = new Vector2(b.center.x, b.center.z);
+            // Deep enough to be the pond, not a bank margin the plane just floods; any water when none is.
+            Vector3? best = null, shallow = null;
+            float bestDist = float.MaxValue, shallowDist = float.MaxValue;
+            for (float x = b.min.x + step * 0.5f; x < b.max.x; x += step)
+                for (float z = b.min.z + step * 0.5f; z < b.max.z; z += step)
+                {
+                    float d = (new Vector2(x, z) - centre).sqrMagnitude;
+                    if (d >= bestDist) continue;
+                    RaycastHit hit;
+                    if (!collider.Raycast(new Ray(new Vector3(x, b.max.y + 100f, z), Vector3.down), out hit, b.size.y + 200f)) continue;
+                    float depth = hit.point.y - GroundAt(x, z);
+                    if (depth <= 0f) continue;
+                    if (depth >= ProbeMinDepthM) { if (d < bestDist) { best = hit.point; bestDist = d; } }
+                    else if (d < shallowDist) { shallow = hit.point; shallowDist = d; }
+                }
+            if (best == null) best = shallow;
+            if (best == null) return null;
+            var p = best.Value;
+            float top = p.y;
+            float r = Mathf.Min(probe.size.x, probe.size.z) * 0.5f;
+            for (int i = 0; i < 16; i++)
+            {
+                float angle = i * Mathf.PI / 8f;
+                foreach (var radius in new[] { r * 0.5f, r })
+                    top = Mathf.Max(top, GroundAt(p.x + Mathf.Cos(angle) * radius, p.z + Mathf.Sin(angle) * radius));
+            }
+            return new Vector3(p.x, top + above, p.z);
+        }
+
+        // The highest ground at x,z: terrains and course meshes, not water planes (or anything else: props, walls).
+        static float GroundAt(float x, float z)
+        {
+            float top = float.NegativeInfinity;
+            foreach (var h in Physics.RaycastAll(new Vector3(x, 10000f, z), Vector3.down, 20000f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                var n = h.collider.gameObject.name;
+                bool ground = h.collider is TerrainCollider
+                    || (!IsWaterPlane(n) && (n.StartsWith("Spline_", StringComparison.Ordinal) || n.StartsWith("Gap_Issue_", StringComparison.Ordinal)));
+                if (ground && h.point.y > top) top = h.point.y;
+            }
+            return top;
+        }
+
         static Dictionary<string, object> Describe(GameObject p, bool ours, List<Lake> lakes)
         {
             var mesh = p.GetComponent<MeshFilter>().sharedMesh;
@@ -510,6 +644,8 @@ namespace GolfMap.Editor
             if (c == null || c.sharedMaterial == null || c.sharedMaterial.name != "GSPwater") problems.Add("collider has no GSPwater physic material (GSPro would not call it water)");
             if (probes.Count != 1) problems.Add(probes.Count + " reflection probes (expected 1: " + ProbeName + ")");
             if (probes.Count > 0 && r.probeAnchor != probes[0].transform) problems.Add("renderer's anchor override is not its probe");
+            if (probes.Count > 0 && GroundAt(probes[0].transform.position.x, probes[0].transform.position.z) > probes[0].transform.position.y)
+                problems.Add("reflection probe is under the ground: the water reflects it black");
             if (problems.Count > 0) d["problems"] = problems;
             return d;
         }

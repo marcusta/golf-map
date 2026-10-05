@@ -114,7 +114,7 @@ namespace GolfMap.Editor
         public List<GolfMapVegEntry> entries = new List<GolfMapVegEntry>();
         // Saved copy only: where it came from and when (a file changed on disk since).
         public string coursePath, grassPath, treePath;
-        public long grassStamp, treeStamp;
+        public long grassStamp, treeStamp, trialStamp;   // trialStamp: CTITrial/trial.json (baked tints)
         public List<string> notes = new List<string>();
         [NonSerialized] Dictionary<string, GolfMapVegEntry> index;
         public GolfMapVegEntry Get(string key)
@@ -186,6 +186,8 @@ namespace GolfMap.Editor
         public static readonly string[] Sections = { "Colours", "Size", "Placement", "Shading", "Rendering", "Material", "Look", "Palette" };
 
         public static bool IsMaterial(string role) { return role.StartsWith("mat:", StringComparison.Ordinal); }
+        public const string BakeSlot = "bake:";
+        public static bool IsBaked(GolfMapVegValue v) { return v.slot != null && v.slot.StartsWith(BakeSlot, StringComparison.Ordinal); }
 
         // Material roles are made up as they are met: label, range and tip from the shader.
         static readonly Dictionary<string, GolfMapVegRole> MaterialRoles = new Dictionary<string, GolfMapVegRole>();
@@ -402,25 +404,30 @@ namespace GolfMap.Editor
                 var prefab = look.original ? null : GolfMapLooks.Prefab(course, species, look, first);
                 e.source = prefab ? AssetDatabase.GetAssetPath(prefab) : AssetDatabase.GUIDToAssetPath(first.guid);
             }
-            if (look.original)
-            {
-                e.readOnly = true;
-                e.readOnlyWhy = "The source prefabs' own materials (a pack's assets, shared by anything else using them). Create a tunable look to change " + species + ".";
-            }
             if (!implicitOriginal) e.values.Add(F("weight", "weight", (float)look.weight));
             // What the look's prefabs draw with - the thing to tune, even when a trial (the CTI
             // swap) re-pointed them away from the look's own copies.
             var prefabs = shapes.Select(s => look.original ? AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GUIDToAssetPath(s.guid)) : GolfMapLooks.Prefab(course, species, look, s)).Where(p => p).ToList();
             var materials = prefabs.Count > 0 ? GolfMapLooks.DrawnMaterials(prefabs) : GolfMapLooks.Materials(course, biome, species, look);
-            if (!look.original && materials.Count == 0) { e.readOnly = true; e.readOnlyWhy = "Recorded in palette.json but has no material copies in this project yet: Regenerate the look."; }
-            if (!look.original)
+            string courseFolder = GolfMapCourses.Folder(course);
+            if (look.original && materials.Any(m => !AssetDatabase.GetAssetPath(m).StartsWith(courseFolder, StringComparison.Ordinal)))
             {
-                string folder = GolfMapLooks.Folder(course, species, look.id);
-                var outside = materials.Where(m => !AssetDatabase.GetAssetPath(m).StartsWith(folder, StringComparison.Ordinal)).ToList();
-                if (outside.Count > 0)
-                    e.note = "Draws with " + string.Join(", ", outside.Select(m => AssetDatabase.GetAssetPath(m)).ToArray()) + " - outside the look's folder (a trial such as the CTI swap). Edits change those materials in place and Save does not record them in palette.json.";
+                // A pack's own assets, shared by anything else that uses them: tune a copy.
+                e.readOnly = true;
+                e.readOnlyWhy = "The source prefabs' own materials (a pack's assets, shared by anything else using them). Create a tunable look to change " + species + ".";
             }
-            foreach (var m in materials) AddMaterialValues(e, m);
+            if (!look.original && materials.Count == 0) { e.readOnly = true; e.readOnlyWhy = "Recorded in palette.json but has no material copies in this project yet: Regenerate the look."; }
+            string folder = look.original ? null : GolfMapLooks.Folder(course, species, look.id);
+            var outside = materials.Where(m => folder == null || !AssetDatabase.GetAssetPath(m).StartsWith(folder, StringComparison.Ordinal)).ToList();
+            if (!e.readOnly && outside.Count > 0)
+            {
+                // The course's own copies outside any look (FoliageTrialV2, the CTI trial): tuned in place.
+                bool trial = outside.Any(m => GolfMapVegBake.For(course, m) != null);
+                e.note = "Draws with " + string.Join(", ", outside.Select(m => Path.GetFileNameWithoutExtension(AssetDatabase.GetAssetPath(m))).ToArray()) +
+                    (look.original ? " - the course's own copies" : " - outside the look's folder") + ": edits change those materials in place (palette.json does not record them)." +
+                    (trial ? " CTI has no tint: the leaves and bark tint is baked into the trial's albedo copy when you let go of a slider (a second or two), and Save writes it and records it in CTITrial/trial.json." : "");
+            }
+            foreach (var m in materials) AddMaterialValues(course, e, m);
             return e;
         }
 
@@ -433,9 +440,14 @@ namespace GolfMap.Editor
         }
 
         // The colours a tree material tints with, under the shared roles; then its floats.
-        static void AddMaterialValues(GolfMapVegEntry e, Material m)
+        static void AddMaterialValues(GolfMapCourse course, GolfMapVegEntry e, Material m)
         {
             string guid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(m)), part = Part(m);
+            // No tint on the shader (the CTI trial): a tint baked into its albedo copy (GolfMapVegBake).
+            // Keyed by the texture, which several materials can share.
+            var bake = GolfMapVegBake.For(course, m);
+            if (bake != null)
+                e.values.Add(new GolfMapVegValue { role = part == "bark" ? "bark" : "healthy", slot = BakeSlot + bake.texture, prop = bake.prop, part = part, colour = true, c = GolfMapVegBake.ToColour(bake.tint) });
             Action<string, string> colour = (role, prop) => e.values.Add(new GolfMapVegValue { role = role, slot = guid, prop = prop, part = part, colour = true, c = m.GetColor(prop) });
             if (m.HasProperty("_HealthyColor")) colour("healthy", "_HealthyColor");
             if (m.HasProperty("_DryColor")) colour("dry", "_DryColor");
@@ -456,9 +468,10 @@ namespace GolfMap.Editor
 
         static float Luma(Color lin) { return 0.2126f * lin.r + 0.7152f * lin.g + 0.0722f * lin.b; }
 
-        public static Color Grade(Color c, GolfMapVegAdjust a)
+        // `cap`: how bright a graded tint may get (a baked albedo tint may lift the texture above its source).
+        public static Color Grade(Color c, GolfMapVegAdjust a, float cap = 1)
         {
-            float ceiling = Mathf.Max(1, Mathf.Max(c.r, Mathf.Max(c.g, c.b)));   // never clip an HDR tint down to 1
+            float ceiling = Mathf.Max(cap, Mathf.Max(c.r, Mathf.Max(c.g, c.b)));   // never clip an HDR tint down to 1
             float alpha = c.a;
             if (a.hue != 0)
             {
@@ -500,7 +513,7 @@ namespace GolfMap.Editor
                 if (v.colour)
                 {
                     bool on = v.role == "healthy" ? a.healthy : v.role == "dry" ? a.dry : v.role == "bark" && a.bark;
-                    if (on) v.c = Quantise(target, Grade(b.c, a));
+                    if (on) v.c = Quantise(target, Grade(b.c, a, IsBaked(v) ? 2 : 1));
                     continue;
                 }
                 switch (v.role)

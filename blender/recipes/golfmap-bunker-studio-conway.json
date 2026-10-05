@@ -1,0 +1,30 @@
+{
+  "format": "golfmap-recipe-v1",
+  "name": "Bunker Studio dig + Conway lip",
+  "notes": "Bunker Studio's metric dig (public preset, high side toward the hole's green) then ce.simgolf's Conway lip stack without its bunkeredit dig (cesimgolf-Conway_Bunker_Standard.json steps 2-19 and its separated-bunker rim paint), and without its two 6-10 cm loop spacings at inset 6: on Bunker Studio's narrower face rows they pushed a loop across its neighbour (a fold at the narrow end of hole_9_6c). Bunker Studio leaves a four-row blend, so the joined steps count rings from the seam (ringsFromSeam: +3 on Conway's insets, written for OPCD's one-quad blend). Conway's joined paint and its green sand fill are left out: Bunker Studio's dirt/sand mask and blend fade stay (mapped to golfmap roles), Conway's grass lip (rings 0-1) and shadow (ring 2) go on the separated bunker's rim. Last, golfmap.edge_jitter makes the borders between lip, shadow, dirt and sand a little ragged (about one ring, seeded per bunker; the seam ring stays).",
+  "steps": [
+    { "op": "bunkerstudio.shape", "tag": "dig", "params": { "preset": "CLASSIC", "depth": 0.45, "edgeVariation": 50, "edgeDirt": 35, "highSide": "green" } },
+    { "op": "afrod.meshblendjoin", "params": {} },
+    { "op": "afrod.loopcut", "ringsFromSeam": true, "params": { "loopcut_inset": 0 } },
+    { "op": "afrod.spaceloops", "ringsFromSeam": true, "params": { "loopslide_inset": 1, "loopslide_amount": 0.04 } },
+    { "op": "afrod.bunkereditlip", "ringsFromSeam": true, "params": { "bunker_selection_type": "Selected", "bunker_lip_depth": 0.025, "bunker_dig_inset": 2 } },
+    { "op": "afrod.loopcut", "ringsFromSeam": true, "params": { "loopcut_inset": 2 } },
+    { "op": "afrod.spaceloops", "ringsFromSeam": true, "params": { "loopslide_inset": 3, "loopslide_amount": -0.02 } },
+    { "op": "afrod.randomslideloop", "ringsFromSeam": true, "params": { "loopslide_inset": 3, "loopslide_random": 0.3 } },
+    { "op": "afrod.randomslideloop", "ringsFromSeam": true, "params": { "loopslide_inset": 4, "loopslide_random": 0.5 } },
+    { "op": "afrod.bunkereditlip", "ringsFromSeam": true, "params": { "bunker_selection_type": "Selected", "bunker_lip_depth": 0.01, "bunker_dig_inset": 6 } },
+    { "op": "afrod.bunkereditlip", "ringsFromSeam": true, "params": { "bunker_selection_type": "Selected", "bunker_lip_depth": 0.01, "bunker_dig_inset": 3 } },
+    { "op": "afrod.widenbunkerinterior", "ringsFromSeam": true, "params": { "bunker_selection_type": "Selected", "bunker_dig_inset": 4, "bunker_xy_shift": 0.01 } },
+    { "op": "afrod.loopcut", "ringsFromSeam": true, "params": { "loopcut_inset": 4 } },
+    { "op": "afrod.bunkereditlip", "ringsFromSeam": true, "params": { "bunker_selection_type": "Selected", "bunker_lip_depth": 0.03, "bunker_dig_inset": 5 } },
+    { "op": "afrod.bunkereditlip", "ringsFromSeam": true, "params": { "bunker_selection_type": "Selected", "bunker_lip_depth": -0.015, "bunker_dig_inset": 5 } },
+    { "op": "afrod.loopcut", "ringsFromSeam": true, "params": { "loopcut_inset": 0 } },
+    { "op": "afrod.bunkereditlip", "ringsFromSeam": true, "params": { "bunker_selection_type": "Selected", "bunker_lip_depth": 0.025, "bunker_dig_inset": 2 } },
+    { "op": "afrod.meshblendseparate", "params": {} },
+    { "op": "afrod.spaceloops", "params": { "loopslide_inset": 3, "loopslide_amount": -0.01 } },
+    { "op": "afrod.randomvertexpaintloop", "tag": "grassLip0", "params": { "vertex_paint_type": "red", "paint_strength": 1.0, "paint_loop_inset": 0, "random_amt": 1.0, "skip_longest_loop": false } },
+    { "op": "afrod.randomvertexpaintloop", "tag": "grassLip1", "params": { "vertex_paint_type": "red", "paint_strength": 1.0, "paint_loop_inset": 1, "random_amt": 1.0, "skip_longest_loop": false } },
+    { "op": "afrod.randomvertexpaintloop", "tag": "shadow", "params": { "vertex_paint_type": "black", "paint_strength": 1.0, "paint_loop_inset": 2, "random_amt": 1.0, "skip_longest_loop": false } },
+    { "op": "golfmap.edge_jitter", "params": { "amount": 0.5, "wavelengthM": 0.6, "grain": 0.5 } }
+  ]
+}

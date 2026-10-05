@@ -2,11 +2,18 @@ import { Component, Computed, Signal, effect, template, untrack } from '@basics/
 import { t } from '../theme';
 import { s, panelTitle, iconBtn } from '../css';
 import { icon } from '../ui/icons';
+import { SELECTION_COLOR } from '../draw/feature-palette';
+import { ConfirmService } from '../app/confirm-dialog.component';
+import {
+    NO_RECIPE, SEED, inapplicable, overridesToSave, surfaceOf, type RecipeParam, type ShapingRecipe,
+} from './shaping.service';
 import {
     TerrainEditToolService,
     OP_GLYPHS,
     DEFAULT_RADIUS_M,
+    isRecipeEdit,
     paramsSummary,
+    recipeParams,
     type DigSettings,
     type EditGroup,
     type TerrainEditOp,
@@ -18,6 +25,24 @@ import {
 
 const tpl = template(`
     <div class="tedit-panel" bind="root" data-testid="terrain-edit-panel">
+        <div bind="shapeSection" class="section shape" data-testid="terrain-shape-section">
+            <div class="shape__head">
+                <h4 class="section-title">Shape in Blender</h4>
+                <button bind="shapeCloseBtn" type="button" class="edit-row__btn" aria-label="Close" title="Deselect (Esc)">${icon('x', 16)}</button>
+            </div>
+            <div bind="shapeFeature" class="shape__feature" data-testid="terrain-shape-feature"></div>
+            <label class="field field--stack">
+                <span>Recipe</span>
+                <select bind="recipeSelect" class="input" data-testid="terrain-shape-recipe" aria-label="Recipe"></select>
+            </label>
+            <div bind="recipeHint" class="hint" data-testid="terrain-shape-recipe-hint"></div>
+            <div bind="paramsHost" class="shape-params" data-testid="terrain-shape-params"></div>
+            <div class="edit-form__actions">
+                <button bind="recipeSaveBtn" type="button" data-testid="terrain-shape-save">Save</button>
+                <button bind="shapeApplyBtn" type="button" data-testid="terrain-shape-apply">Apply to meshes</button>
+            </div>
+            <div bind="shapeJob" class="shape-job" data-testid="terrain-shape-job"></div>
+        </div>
         <div class="section">
             <h4 class="section-title">New edit</h4>
             <select bind="opSelect" class="input" data-testid="terrain-edit-op" aria-label="Operation">
@@ -45,6 +70,7 @@ const tpl = template(`
             <button bind="genBunkersBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-bunkers"></button>
             <button bind="genCreeksBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-creeks"></button>
             <div class="hint">Building pads: every OSM building footprint in the map area, measured on the lidar, gets a flat pad. Road grades: every OSM road, smoothed along and levelled across. Each run replaces its own previous edits only — yours stay. Then Apply to terrain.</div>
+            <div class="hint">Bunkers, ponds and creeks under the course meshes are shaped in Blender by their recipe (the course default unless you pick one — click the feature). The DEM digs here still shape the terrain around and outside the meshes.</div>
         </div>
         <div bind="savingLine" class="busy-line">Saving…</div>
         <div bind="notice" class="notice" data-testid="terrain-edit-notice"></div>
@@ -55,8 +81,11 @@ const tpl = template(`
         </div>
         <button bind="applyBtn" type="button" class="apply-btn" data-testid="terrain-edit-apply">Apply to terrain</button>
         <div bind="applyLine" class="busy-line" data-testid="terrain-edit-apply-progress"></div>
+        <button bind="applyMeshesBtn" type="button" class="apply-btn" data-testid="terrain-edit-apply-meshes">Apply to meshes (Blender → Unity)</button>
+        <div bind="courseJob" class="shape-job" data-testid="terrain-edit-meshes-job"></div>
         <div class="tedit-panel__hints">
-            <div><b>Click</b> to outline the area (parking lot, road, house pad…).</div>
+            <div><b>Click</b> a bunker, pond, creek or path to pick its Blender recipe; <b>Cmd/Ctrl+click</b> more of the same kind to give them all one recipe.</div>
+            <div><b>Click</b> open ground (or <b>Shift+click</b> anywhere) to outline an area (parking lot, road, house pad…).</div>
             <div><b>Click the first point</b> to save the edit; <b>Esc</b> discards the outline.</div>
             <div>Edits replay onto the DEM at build time — the raw lidar DEM stays pristine.</div>
         </div>
@@ -87,6 +116,14 @@ const groupTpl = template(`
     </button>
 `);
 
+/** Seconds as the shaping job view shows them: "0.4 s", "13 s", "1 min 35 s". */
+function secs(seconds: number): string {
+    if (seconds < 10) return `${Math.round(seconds * 10) / 10} s`;
+    if (seconds < 60) return `${Math.round(seconds)} s`;
+    const s = Math.round(seconds);
+    return `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
 /** One entry of the edit list: a group's header, or one of its edits. */
 type ListItem = { kind: 'group'; group: EditGroup } | { kind: 'edit'; edit: TerrainEdit; group: string };
 
@@ -98,6 +135,9 @@ function digPresetsOf(edit: TerrainEdit): { presets: Record<string, { label: str
 }
 
 const FEATURE_NOUNS: Record<string, string> = { 'creek-digs': 'creek', 'water-digs': 'pond', 'bunker-digs': 'bunker' };
+
+/** The recipe choice (and saved-overrides key) while the selected features differ; never a library id. */
+const MIXED = '*mixed*';
 
 /**
  * Dock panel for the terrain-edit tool (hosted by the contextual right dock
@@ -247,6 +287,88 @@ export class TerrainEditPanelComponent extends Component {
                 &:disabled { opacity: 0.45; cursor: not-allowed; }
             }
 
+            & .shape {
+                padding: ${s('sm')};
+                border-left: 2px solid ${SELECTION_COLOR};
+                background: color-mix(in srgb, ${t('color-text-primary')} 4%, transparent);
+                border-radius: ${t('radius-sm')};
+                &.hidden { display: none; }
+            }
+            & .shape__head { display: flex; align-items: center; justify-content: space-between; }
+            & .shape__head .section-title { margin: 0; }
+            & .shape__feature { font-weight: 600; }
+            & .field--stack { flex-direction: column; align-items: stretch; gap: 2px; }
+            & .shape-params {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                &.hidden { display: none; }
+            }
+            /* One param per row: name + range, slider, number, reset. */
+            & .param-row {
+                display: grid;
+                grid-template-columns: minmax(0, 6.5em) minmax(0, 1fr) 56px 22px;
+                align-items: center;
+                column-gap: ${s('xs')};
+            }
+            & .param-row__label { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+            & .param-row__name { color: ${t('color-text-secondary')}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            & .param-row.changed .param-row__name { color: ${t('color-text-primary')}; font-weight: 600; }
+            & .param-row__range { font-size: 0.68rem; color: ${t('color-text-tertiary')}; white-space: nowrap; }
+            & .param-row input[type='range'] { width: 100%; min-width: 0; margin: 0; accent-color: ${SELECTION_COLOR}; }
+            & .param-row .input--num { width: 56px; padding: 2px ${s('xs')}; text-align: right; }
+            & .param-reset {
+                width: 22px;
+                height: 22px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 0;
+                border: none;
+                border-radius: ${t('radius-sm')};
+                background: transparent;
+                color: ${t('color-text-secondary')};
+                cursor: pointer;
+                &:hover:not(:disabled) { background: color-mix(in srgb, ${t('color-text-primary')} 8%, transparent); }
+                &:disabled { opacity: 0.3; cursor: default; }
+            }
+            & .shape-params__seed {
+                display: flex;
+                align-items: center;
+                gap: ${s('xs')};
+                margin-top: 2px;
+                & .shape-params__seed-text { flex: 1; min-width: 0; color: ${t('color-text-secondary')}; }
+                & button:not(.param-reset) {
+                    font: inherit;
+                    padding: 2px ${s('sm')};
+                    border: 1px solid ${t('color-border-default')};
+                    border-radius: ${t('radius-sm')};
+                    background: ${t('color-surface-raised')};
+                    color: ${t('color-text-primary')};
+                    cursor: pointer;
+                    white-space: nowrap;
+                    &:disabled { opacity: 0.45; cursor: not-allowed; }
+                }
+            }
+            & .shape-job {
+                display: none;
+                flex-direction: column;
+                gap: 2px;
+                line-height: 1.4;
+                color: ${t('color-text-secondary')};
+                &.show { display: flex; }
+                & .shape-job__error, & .shape-job__warning { color: var(--data-bad); }
+                & ul { margin: 0; padding-left: ${s('md')}; }
+                & .shape-job__phases {
+                    margin: 0;
+                    padding: 0;
+                    list-style: none;
+                    & li[data-status="running"] { color: ${t('color-text-primary')}; }
+                    & li[data-status="failed"] { color: var(--data-bad); }
+                    & li[data-status="pending"] { opacity: 0.6; }
+                }
+            }
+
             & .tedit-panel__hints {
                 padding-top: var(--space-3);
                 border-top: 1px solid ${t('color-border-default')};
@@ -261,8 +383,43 @@ export class TerrainEditPanelComponent extends Component {
     `;
 
     private tool = this.inject(TerrainEditToolService);
-    /** The groups shown open; your own edits start open, the generated ones folded. */
-    private expanded = new Signal<ReadonlySet<string>>(new Set(['hand']));
+    /** The groups shown open; your own edits and recipes start open, the generated ones folded. */
+    private expanded = new Signal<ReadonlySet<string>>(new Set(['hand', 'recipes']));
+    /** Several features selected: Save gives them all one recipe and the same settings (each keeps its seed). */
+    private multi = new Computed(() => this.tool.selectedFeatures.get().length > 1);
+    /** The selected features' saved recipe ('' = the course default), MIXED when they differ. */
+    private savedRecipe = new Computed(() => {
+        const recipes = new Set(this.tool.selectedFeatures.get().map(feature => {
+            const edit = this.tool.recipeEditOf(feature.id);
+            return edit ? recipeParams(edit).recipe : '';
+        }));
+        return recipes.size > 1 ? MIXED : [...recipes][0] ?? '';
+    });
+    /** The recipe picked in the select (Save writes it). */
+    private recipeChoice = new Signal('');
+    /**
+     * The selected features' saved overrides (numbers only; not the seed when
+     * several), as a key the working values restart from; MIXED when they differ.
+     */
+    private savedOverrides = new Computed(() => {
+        const multi = this.multi.get();
+        const keys = new Set(this.tool.selectedFeatures.get().map(feature => {
+            const edit = this.tool.recipeEditOf(feature.id);
+            const values = edit ? numericOverrides(recipeParams(edit).overrides) : {};
+            if (multi) delete values[SEED];
+            return overridesKey(values);
+        }));
+        return keys.size > 1 ? MIXED : [...keys][0] ?? overridesKey({});
+    });
+    /** The working overrides: params set in the form and the seed (Save writes the non-default ones). */
+    private overrides = new Signal<Readonly<Record<string, number>>>({});
+    /** The recipe the choice runs (the course default for ''), null for none or one not in the library. */
+    private chosenRecipe = new Computed<ShapingRecipe | null>(() => {
+        const feature = this.tool.selectedFeature.get();
+        const surface = feature ? surfaceOf(feature.type) : null;
+        return surface ? this.tool.shaping.resolve(this.recipeChoice.get(), surface) : null;
+    });
+    private confirmDialog = this.inject(ConfirmService);
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -290,20 +447,20 @@ export class TerrainEditPanelComponent extends Component {
             },
             genPondsBtn: {
                 disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
-                textContent: () => this.tool.generating.get() === 'water-digs' ? 'Digging ponds…' : 'Dig ponds',
-                title: 'Each water feature dug below its water level (its dig preset, default Natural Pond); the shoreline stays at the level. Creeks are left alone. Replaces the previous pond digs',
+                textContent: () => this.tool.generating.get() === 'water-digs' ? 'Digging ponds…' : 'Dig ponds (DEM)',
+                title: 'DEM digs: each water feature dug below its water level (its dig preset, default Natural Pond); the shoreline stays at the level. Creeks are left alone. Replaces the previous pond digs. Under the course meshes the pond is shaped in Blender by its recipe instead (the course default lake recipe unless you pick one), so this matters outside the meshes',
                 onclick: () => void this.tool.generate('water-digs'),
             },
             genBunkersBtn: {
                 disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
-                textContent: () => this.tool.generating.get() === 'bunker-digs' ? 'Digging bunkers…' : 'Dig bunkers',
-                title: 'Each bunker dug below the ground around it, steep face towards its green, gentle entry opposite. Replaces the previous bunker digs',
+                textContent: () => this.tool.generating.get() === 'bunker-digs' ? 'Digging bunkers…' : 'Dig bunkers (DEM)',
+                title: 'DEM digs: each bunker dug below the ground around it, steep face towards its green, gentle entry opposite. Replaces the previous bunker digs. Under the course meshes the bunker is shaped in Blender by its recipe instead (the course default bunker recipe unless you pick one), so this matters outside the meshes',
                 onclick: () => void this.tool.generate('bunker-digs'),
             },
             genCreeksBtn: {
                 disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
-                textContent: () => this.tool.generating.get() === 'creek-digs' ? 'Digging creeks…' : 'Dig creeks',
-                title: 'Each creek\'s bed dug below its water surface, which only falls downstream — the level the R.A.M. creeks export puts the water at. Along its centerline, or the line found down its polygon. Replaces the previous creek digs',
+                textContent: () => this.tool.generating.get() === 'creek-digs' ? 'Digging creeks…' : 'Dig creeks (DEM)',
+                title: 'DEM digs: each creek\'s bed dug below its water surface, which only falls downstream — the level the R.A.M. creeks export puts the water at. Along its centerline, or the line found down its polygon. Replaces the previous creek digs. Under the course meshes the creek is shaped in Blender by its recipe instead (the course default creek recipe unless you pick one), so this matters outside the meshes',
                 onclick: () => void this.tool.generate('creek-digs'),
             },
             applyBtn: {
@@ -319,7 +476,105 @@ export class TerrainEditPanelComponent extends Component {
                 },
                 className: () => this.tool.applying.get() ? 'busy-line show' : 'busy-line',
             },
+            applyMeshesBtn: {
+                disabled: () => this.tool.shaping.running.get(),
+                textContent: () => this.tool.shaping.running.get() && this.tool.shaping.jobScope.get() === null
+                    ? 'Applying to meshes…' : 'Apply to meshes (Blender → Unity)',
+                title: 'Regenerate the shaping layers from every recipe and area edit, re-shape the changed course meshes in Blender and refresh them in the open Unity project. Apply to terrain still bakes the DEM outside the meshes',
+                onclick: () => void this.tool.applyToMeshes(),
+            },
+            shapeSection: {
+                className: () => this.tool.selectedFeature.get() ? 'section shape' : 'section shape hidden',
+            },
+            shapeCloseBtn: { onclick: () => this.tool.selectFeature(null) },
+            recipeHint: {
+                textContent: () => {
+                    const feature = this.tool.selectedFeature.get();
+                    const surface = feature ? surfaceOf(feature.type) : null;
+                    if (!surface) return '';
+                    const error = this.tool.shaping.recipesError.get();
+                    if (error) return error;
+                    const choice = this.recipeChoice.get();
+                    const n = this.tool.selectedFeatures.get().length;
+                    if (choice === MIXED) return `These ${n} have different recipes. Pick one to give it to all of them.`;
+                    if (choice === NO_RECIPE) {
+                        return n > 1 ? `No recipe runs on these ${n}, not even the course default.` : 'No recipe runs on this feature, not even the course default.';
+                    }
+                    const recipe = choice ? this.tool.shaping.recipe(choice) : this.tool.shaping.defaultFor(surface);
+                    if (!recipe) return choice ? 'Not in the recipe library.' : 'No course default for this surface in the recipe library.';
+                    const about = [`By ${recipe.author}`, recipe.notes].filter(Boolean).join(' — ');
+                    if (n > 1) return `${about.replace(/\.$/, '')}. Save gives ${n === 2 ? 'both' : `all ${n}`} this recipe and these settings; each keeps its own seed.`;
+                    // Settings live on a recipe edit, which names its recipe: saving them pins the default.
+                    return !choice && Object.keys(this.toSave()).length > 0
+                        ? `${about}. Saving these settings pins this recipe to the feature.` : about;
+                },
+            },
+            shapeFeature: {
+                textContent: () => this.tool.describeSelection(this.tool.selectedFeatures.get()),
+            },
+            recipeSaveBtn: {
+                disabled: () => this.tool.saving.get() || this.recipeChoice.get() === MIXED
+                    || (this.recipeChoice.get() === this.savedRecipe.get() && overridesKey(this.toSave()) === this.savedOverrides.get()),
+                onclick: () => {
+                    const features = this.tool.selectedFeatures.peek();
+                    if (features.length === 0) return;
+                    const overrides = untrack(() => this.toSave());
+                    const choice = this.recipeChoice.peek();
+                    // Overrides need a recipe edit, and an edit names its recipe: the course default gets pinned.
+                    const recipeId = choice || (Object.keys(overrides).length > 0 ? this.chosenRecipe.peek()?.id ?? null : null);
+                    if (features.length === 1) void this.tool.saveRecipe(features[0].id, recipeId, overrides);
+                    else void this.tool.saveRecipes(features.map(f => f.id), recipeId, overrides, { keepSeeds: true });
+                },
+            },
+            shapeApplyBtn: {
+                disabled: () => this.tool.shaping.running.get() || this.tool.saving.get(),
+                textContent: () => this.tool.shaping.running.get() && this.tool.shaping.jobScope.get() === this.tool.selectionScope.get()
+                    ? 'Applying…' : 'Apply to meshes',
+                title: () => this.multi.get()
+                    ? "Re-shape these features' meshes in Blender with their saved recipe and refresh them in the open Unity project"
+                    : "Re-shape this feature's meshes in Blender with the saved recipe and refresh them in the open Unity project",
+                onclick: () => {
+                    const scope = this.tool.selectionScope.peek();
+                    if (scope) void this.tool.applyToMeshes(scope);
+                },
+            },
         });
+
+        // Shape in Blender: the recipe choice follows the selected feature's saved recipe.
+        const recipeSelect = this.ref(frag, 'recipeSelect') as HTMLSelectElement;
+        recipeSelect.addEventListener('change', () => void this.chooseRecipe(recipeSelect));
+        this.track(effect(() => {
+            const feature = this.tool.selectedFeature.get();
+            const surface = feature ? surfaceOf(feature.type) : null;
+            const recipes = surface ? this.tool.shaping.recipesFor(surface) : [];
+            const def = surface ? this.tool.shaping.defaultFor(surface) : null;
+            const saved = this.savedRecipe.get();
+            untrack(() => {
+                recipeSelect.replaceChildren(
+                    ...(saved === MIXED ? [option('Different recipes — pick one for all', MIXED)] : []),
+                    option(def ? `Course default (${def.name})` : 'Course default', ''),
+                    ...recipes.map(r => option(r.name, r.id)),
+                    option('No recipe (leave the meshes as built)', NO_RECIPE),
+                );
+                // A saved recipe missing from the library still shows, by its id.
+                if (saved && saved !== NO_RECIPE && saved !== MIXED && !recipes.some(r => r.id === saved)) recipeSelect.add(option(`${saved} (not in the library)`, saved));
+                recipeSelect.value = saved;
+                this.recipeChoice.set(saved);
+            });
+        }));
+        // The working overrides restart from the saved ones for each selection (and after each save).
+        this.track(effect(() => {
+            this.tool.selectedFeatureIds.get();
+            const key = this.savedOverrides.get();
+            const saved = key === MIXED ? {} : JSON.parse(key) as Record<string, number>;
+            untrack(() => this.overrides.set(saved));
+        }));
+        this.recipeParamsForm(this.ref(frag, 'paramsHost') as HTMLElement);
+        this.shapeJob(this.ref(frag, 'shapeJob') as HTMLElement, () => {
+            const scope = this.tool.shaping.jobScope.get();
+            return scope !== null && scope === this.tool.selectionScope.get();
+        });
+        this.shapeJob(this.ref(frag, 'courseJob') as HTMLElement, () => this.tool.shaping.jobScope.get() === null);
 
         // Op / params controls — imperative two-way wiring (range/number
         // inputs need input events; sam-panel select pattern).
@@ -370,6 +625,282 @@ export class TerrainEditPanelComponent extends Component {
         return frag;
     }
 
+    /** The overrides Save writes for the current choice and working values (never the seed for several features). */
+    private toSave(): Record<string, number> {
+        const choice = this.recipeChoice.get();
+        if (choice === NO_RECIPE || choice === MIXED) return {};
+        const recipe = this.chosenRecipe.get();
+        const out = overridesToSave(recipe ? recipe.params : null, this.overrides.get());
+        if (this.multi.get()) delete out[SEED];
+        return out;
+    }
+
+    /**
+     * The select picked another recipe: working values it cannot take (params
+     * it lacks, values outside its ranges; the seed for "no recipe") are
+     * dropped, after a confirm; cancelling keeps the previous recipe.
+     */
+    private async chooseRecipe(select: HTMLSelectElement): Promise<void> {
+        const next = select.value;
+        const prev = this.recipeChoice.peek();
+        const feature = this.tool.selectedFeature.peek();
+        const surface = feature ? surfaceOf(feature.type) : null;
+        const recipe = surface ? this.tool.shaping.resolve(next, surface) : null;
+        const values = this.overrides.peek();
+        const dropped = next === NO_RECIPE ? Object.keys(values)
+            : recipe ? inapplicable(recipe.params, values) : [];
+        if (dropped.length > 0) {
+            const before = surface ? this.tool.shaping.resolve(prev, surface)?.params ?? [] : [];
+            const names = dropped.map(key => (key === SEED ? 'the seed' : before.find(p => p.id === key)?.label ?? key));
+            const target = next === NO_RECIPE ? 'No recipe' : recipe?.name ?? next;
+            const ok = await this.confirmDialog.confirm({
+                title: 'Drop overrides?',
+                body: `${target} does not take ${listOf(names)}: switching drops ${dropped.length === 1 ? 'it' : 'them'}.`,
+                confirmLabel: 'Switch recipe',
+                cancelLabel: 'Keep the recipe',
+                tone: 'primary',
+            });
+            if (!ok) {
+                select.value = prev;
+                return;
+            }
+            const kept = { ...values };
+            for (const key of dropped) delete kept[key];
+            this.overrides.set(kept);
+        }
+        this.recipeChoice.set(next);
+    }
+
+    /**
+     * The chosen recipe's params (SHAPING-PLAN.md, "Composite and
+     * parameterised recipes"): a slider + number per param with its unit and
+     * range and a reset, then the seed (default the feature number; every
+     * recipe takes it, params or not) with Variation, and Reset all. Rows are built when the recipe changes and
+     * kept in step with the working values.
+     */
+    private recipeParamsForm(host: HTMLElement): void {
+        let sync: Array<(values: Readonly<Record<string, number>>) => void> = [];
+        this.track(effect(() => {
+            const recipe = this.recipeChoice.get() === NO_RECIPE ? null : this.chosenRecipe.get();
+            const feature = this.tool.selectedFeature.get();
+            const multi = this.multi.get();
+            untrack(() => {
+                sync = [];
+                host.replaceChildren();
+                // Every recipe takes the seed; "no recipe" and one not in the library show nothing.
+                host.className = recipe && feature ? 'shape-params' : 'shape-params hidden';
+                if (!recipe || !feature) return;
+                const params = recipe.params;
+                const onSync = (fn: (values: Readonly<Record<string, number>>) => void) => sync.push(fn);
+                for (const param of params) host.append(this.paramRow(param, onSync));
+                host.append(multi ? hint('Each keeps its own seed (its feature number unless set), so they stay different shapes.') : this.seedRow(feature.no ?? null, onSync));
+                const values = this.overrides.peek();
+                for (const fn of sync) fn(values);
+            });
+        }));
+        this.track(effect(() => {
+            const values = this.overrides.get();
+            untrack(() => { for (const fn of sync) fn(values); });
+        }));
+    }
+
+    /** Sets one working value; undefined clears it (the param's default, the default seed). */
+    private setValue(key: string, value: number | undefined): void {
+        this.overrides.update(current => {
+            const next = { ...current };
+            if (value === undefined) delete next[key];
+            else next[key] = value;
+            return next;
+        });
+    }
+
+    /** One param: name and range, slider, number, reset to its default. */
+    private paramRow(param: RecipeParam, onSync: (fn: (values: Readonly<Record<string, number>>) => void) => void): HTMLElement {
+        const row = document.createElement('div');
+        row.className = 'param-row';
+        row.setAttribute('data-testid', 'terrain-shape-param');
+        row.setAttribute('data-param', param.id);
+        const unit = param.unit ? ` ${param.unit}` : '';
+        const label = document.createElement('div');
+        label.className = 'param-row__label';
+        const name = document.createElement('span');
+        name.className = 'param-row__name';
+        name.textContent = param.label;
+        name.title = param.label;
+        const range = document.createElement('span');
+        range.className = 'param-row__range';
+        range.textContent = `${param.min}–${param.max}${unit}`;
+        label.append(name, range);
+
+        const step = param.step !== undefined ? String(param.step) : 'any';
+        const title = `${param.label}: ${param.min}–${param.max}${unit} (default ${param.default}${unit})`;
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = String(param.min);
+        slider.max = String(param.max);
+        slider.step = step;
+        slider.title = title;
+        slider.setAttribute('aria-label', param.label);
+        const num = numberInput(param.default, param.min, 1);
+        num.step = step;
+        num.max = String(param.max);
+        num.title = title;
+        num.setAttribute('aria-label', param.unit ? `${param.label} (${param.unit})` : param.label);
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'param-reset';
+        reset.innerHTML = icon('undo', 16);
+        reset.title = `Back to the default (${param.default}${unit})`;
+        reset.setAttribute('aria-label', `Reset ${param.label}`);
+        reset.setAttribute('data-testid', 'terrain-shape-param-reset');
+
+        /** Takes a typed or slid value, clamped to the range; false when it is not a number. */
+        const set = (raw: string): boolean => {
+            const v = Number(raw);
+            if (raw.trim() === '' || !Number.isFinite(v)) return false;
+            const clamped = Math.min(Math.max(v, param.min), param.max);
+            this.setValue(param.id, clamped === param.default ? undefined : clamped);
+            return true;
+        };
+        slider.addEventListener('input', () => set(slider.value));
+        num.addEventListener('change', () => {
+            const before = this.overrides.peek()[param.id] ?? param.default;
+            if (!set(num.value)) num.value = String(before);
+            // A value clamped back to the one already there changes no signal: show it anyway.
+            num.value = String(this.overrides.peek()[param.id] ?? param.default);
+        });
+        reset.addEventListener('click', () => this.setValue(param.id, undefined));
+        onSync(values => {
+            const value = values[param.id] ?? param.default;
+            const changed = value !== param.default;
+            row.className = changed ? 'param-row changed' : 'param-row';
+            slider.value = String(value);
+            num.value = String(value);
+            reset.disabled = !changed;
+        });
+        row.append(label, slider, num, reset);
+        return row;
+    }
+
+    /** The seed (the feature number unless set; Variation picks a new one, reset goes back), then Reset all. */
+    private seedRow(featureNo: number | null, onSync: (fn: (values: Readonly<Record<string, number>>) => void) => void): HTMLElement {
+        const row = document.createElement('div');
+        row.className = 'shape-params__seed';
+        const text = document.createElement('span');
+        text.className = 'shape-params__seed-text';
+        text.setAttribute('data-testid', 'terrain-shape-seed');
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.className = 'param-reset';
+        clear.innerHTML = icon('undo', 16);
+        clear.title = 'Back to the default seed (the feature number)';
+        clear.setAttribute('aria-label', 'Default seed');
+        clear.setAttribute('data-testid', 'terrain-shape-seed-reset');
+        clear.addEventListener('click', () => this.setValue(SEED, undefined));
+        const variation = button('🎲 Variation', () => {
+            const current = this.overrides.peek()[SEED] ?? featureNo;
+            let seed: number;
+            do seed = 1 + Math.floor(Math.random() * 999_999); while (seed === current);
+            this.setValue(SEED, seed);
+        });
+        variation.title = 'A new random seed: the same settings, another take on the shape';
+        variation.setAttribute('data-testid', 'terrain-shape-variation');
+        const resetAll = button('Reset all', () => this.overrides.set({}));
+        resetAll.title = 'Every param back to its default, and the default seed';
+        resetAll.setAttribute('data-testid', 'terrain-shape-reset-all');
+        onSync(values => {
+            const seed = values[SEED];
+            text.textContent = seed !== undefined ? `Seed ${seed}` : `Seed ${featureNo ?? '—'} (feature number)`;
+            clear.disabled = seed === undefined;
+            resetAll.disabled = Object.keys(values).length === 0;
+        });
+        row.append(text, clear, variation, resetAll);
+        return row;
+    }
+
+    /**
+     * The shaping job's progress and outcome, shown in `host` while `inScope`
+     * (the feature section for a feature's job, under the course button for
+     * the whole course's): each phase live (generating layers → starting the
+     * worker, with the cold start's seconds → Blender sync → Unity refresh),
+     * then the outcome with the changed objects, the phase and Unity step
+     * timings and the warnings, or the failure.
+     */
+    private shapeJob(host: HTMLElement, inScope: () => boolean): void {
+        this.track(effect(() => {
+            const shaping = this.tool.shaping;
+            const job = shaping.job.get();
+            const error = shaping.jobError.get();
+            const connection = shaping.connection.get();
+            const show = inScope() && (job !== null || error !== null);
+            untrack(() => {
+                host.className = show ? 'shape-job show' : 'shape-job';
+                host.replaceChildren();
+                if (!show) return;
+                const line = (text: string, cls = '') => {
+                    const el = document.createElement('div');
+                    if (cls) el.className = cls;
+                    el.textContent = text;
+                    host.append(el);
+                    return el;
+                };
+                if (error) {
+                    line(error, 'shape-job__error');
+                    return;
+                }
+                if (!job) return;
+                const phases = job.phases ?? [];
+                const unity = phases.find(p => p.id === 'unity');
+                if (job.status === 'running') {
+                    line('Shaping in Blender…').setAttribute('data-testid', 'terrain-shape-status');
+                } else if (job.status === 'failed') {
+                    const at = phases.find(p => p.id === job.phase);
+                    line(`Applying to the meshes failed${at ? ` (${at.label.toLowerCase()})` : ''}: ${job.error ?? 'unknown error'}`, 'shape-job__error')
+                        .setAttribute('data-testid', 'terrain-shape-status');
+                } else {
+                    const changed = job.result?.changedObjects ?? [];
+                    const refreshed = unity?.status === 'done' ? ' and refreshed in Unity' : '';
+                    line(changed.length === 0
+                        ? `Done in ${secs(job.seconds)} — no mesh changed.`
+                        : `Done in ${secs(job.seconds)} — ${changed.length} object${changed.length === 1 ? '' : 's'} re-shaped${refreshed}:`)
+                        .setAttribute('data-testid', 'terrain-shape-status');
+                    if (changed.length > 0) {
+                        const list = document.createElement('ul');
+                        list.setAttribute('data-testid', 'terrain-shape-changed');
+                        for (const name of changed) {
+                            const li = document.createElement('li');
+                            li.textContent = name;
+                            list.append(li);
+                        }
+                        host.append(list);
+                    }
+                }
+                // Every phase: done ✓ / running … / failed ✗ / skipped – / pending ·, with what it did and its seconds.
+                const list = document.createElement('ol');
+                list.className = 'shape-job__phases';
+                list.setAttribute('data-testid', 'terrain-shape-phases');
+                for (const p of phases) {
+                    const li = document.createElement('li');
+                    li.dataset.phase = p.id;
+                    li.dataset.status = p.status;
+                    const mark = { done: '✓', running: '…', failed: '✗', skipped: '–', pending: '·' }[p.status] ?? '·';
+                    const detail = p.detail && p.status !== 'pending' ? ` — ${p.detail}` : '';
+                    li.textContent = `${mark} ${p.label}${detail}${p.seconds !== null ? ` (${secs(p.seconds)})` : ''}`;
+                    list.append(li);
+                }
+                if (phases.length > 0) host.append(list);
+                const steps = (job.result?.unitySteps ?? []).filter(st => st.seconds !== null && st.seconds >= 0.05);
+                if (steps.length > 0) {
+                    line(`Unity: ${steps.map(st => `${st.id} ${secs(st.seconds!)}`).join(' · ')}`)
+                        .setAttribute('data-testid', 'terrain-shape-unity-steps');
+                }
+                if (connection && job.status === 'running') line(connection, 'shape-job__warning');
+                for (const warning of job.result?.warnings ?? []) line(warning, 'shape-job__warning');
+                if (job.result?.unityError && unity?.status !== 'failed') line(`Unity: ${job.result.unityError}`, 'shape-job__warning');
+            });
+        }));
+    }
+
     /** A group's header: click to fold or unfold it. */
     private groupHeader(group: EditGroup, track: (d: () => void) => void): HTMLElement {
         const open = () => this.expanded.get().has(group.key);
@@ -394,12 +925,15 @@ export class TerrainEditPanelComponent extends Component {
                 row: {
                     className: () => {
                         const current = this.tool.edits.get().find(e => e.id === edit.id) ?? edit;
-                        const highlight = this.tool.view.get().highlightId === edit.id ? ' highlight' : '';
+                        const highlight = this.tool.highlightId.get() === edit.id ? ' highlight' : '';
                         return (current.enabled ? 'edit-row' : 'edit-row disabled') + highlight;
                     },
                 },
                 glyph: { textContent: () => OP_GLYPHS[(this.tool.edits.get().find(e => e.id === edit.id) ?? edit).op] },
-                text: { onclick: () => this.tool.zoomTo(edit.id) },
+                text: {
+                    title: isRecipeEdit(edit) ? 'Select its feature and show it on the map' : 'Show on the map',
+                    onclick: () => this.tool.showEdit(edit.id),
+                },
                 name: { textContent: () => this.tool.editName(this.tool.edits.get().find(e => e.id === edit.id) ?? edit) },
                 params: {
                     textContent: () => {
@@ -435,9 +969,11 @@ export class TerrainEditPanelComponent extends Component {
                 },
                 deleteBtn: {
                     onclick: () => void this.tool.remove(edit.id),
-                    title: edit.origin && FEATURE_NOUNS[edit.origin]
-                        ? `Don't dig this ${FEATURE_NOUNS[edit.origin]} (marks the feature dig: false, so re-running leaves it out)`
-                        : 'Delete edit',
+                    title: isRecipeEdit(edit)
+                        ? 'Back to the course default recipe'
+                        : edit.origin && FEATURE_NOUNS[edit.origin]
+                            ? `Don't dig this ${FEATURE_NOUNS[edit.origin]} (marks the feature dig: false, so re-running leaves it out)`
+                            : 'Delete edit',
                 },
                 item: {
                     'data-edit-id': edit.id,
@@ -534,11 +1070,35 @@ export class TerrainEditPanelComponent extends Component {
     }
 }
 
+/** A saved `overrides` object's numeric entries (the only kind the form edits). */
+function numericOverrides(overrides: Record<string, unknown> | undefined): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(overrides ?? {})) if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+    return out;
+}
+
+/** Overrides as a comparable key (sorted: the order they were saved in does not matter). */
+function overridesKey(overrides: Record<string, number>): string {
+    return JSON.stringify(Object.fromEntries(Object.entries(overrides).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
+}
+
+/** "a", "a and b", "a, b and c". */
+function listOf(items: string[]): string {
+    return items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
 function select(options: Array<[string, string]>, value: string): HTMLSelectElement {
     const el = document.createElement('select');
     el.className = 'input';
     for (const [v, label] of options) el.add(new Option(label, v));
     el.value = value;
+    return el;
+}
+
+function option(label: string, value: string): HTMLOptionElement {
+    const el = document.createElement('option');
+    el.value = value;
+    el.textContent = label;
     return el;
 }
 

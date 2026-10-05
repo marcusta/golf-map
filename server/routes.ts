@@ -26,6 +26,7 @@ import { createOsmApi } from './api/osm.api';
 import { createTerrainEditsApi } from './api/terrain-edits.api';
 import { createTerrainGeneratorsApi } from './api/terrain-generators.api';
 import { createGsproExportApi } from './api/gspro-export.api';
+import { createShapingApi } from './api/shaping.api';
 import { createPublishApi } from './api/publish.api';
 import { createTapscoreBridgeApi } from './api/tapscore-bridge.api';
 import { createIngestRoutes } from './api/ingest.routes';
@@ -65,6 +66,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         puttEstimateService,
         mapBuildService,
         gsproExportService,
+        shapingService,
         orthoPatchesService,
         hydroService,
         osmService,
@@ -118,6 +120,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         mount(app, '/api', createTerrainEditsApi(terrainEditsService));
         mount(app, '/api', createTerrainGeneratorsApi(terrainGeneratorsService));
         mount(app, '/api', createGsproExportApi(gsproExportService));
+        mount(app, '/api', createShapingApi(shapingService));
         mount(app, '/api', createPublishApi(publishService));
     } else {
         // --- Serve-only API: publish ingest (bearer-token, not cookie session) ---

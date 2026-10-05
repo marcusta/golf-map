@@ -456,7 +456,7 @@ export class MapBuildService {
         demTif: string,
         env: Record<string, string | undefined>,
     ): Promise<string | null | false> {
-        const edits = (await this.terrainEdits.listBySite(siteId)).filter(e => e.enabled);
+        const edits = await this.terrainEdits.listDemEdits(siteId);
         const persisted = path.join(this.sourcesDir(siteId), 'dem-edited.tif');
         if (edits.length === 0) {
             await rm(persisted, { force: true }).catch(() => {});

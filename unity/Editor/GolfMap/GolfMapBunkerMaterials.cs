@@ -117,6 +117,60 @@ namespace GolfMap.Editor
             catch (Exception e) { status = "Could not read " + filePath + ": " + e.Message; }
         }
 
+        // The window's "Build and apply" without the window (golfmap.course.refresh): file = the convention file (default:
+        // the window's, else <course>/bunker-channels.json), convention = its id (default: the window's). dryRun counts
+        // the bunker and blend meshes it would apply to and changes nothing.
+        // only (object names, golfmap.course.refresh only=): just the bunker sets those names belong to - a set whose
+        // bunker or one of whose blends is named, or whose key a named bunker/blend gives (SetKey: works before the
+        // named objects are in the scene). Null = every set.
+        internal static Dictionary<string, object> ApplyConvention(string file, string convention, bool dryRun, ICollection<string> only = null)
+        {
+            var course = GolfMapCourses.Require();
+            if (string.IsNullOrEmpty(file)) file = EditorPrefs.GetString(kFilePref, "");
+            if (string.IsNullOrEmpty(file) || !File.Exists(file)) file = GolfMapCourses.Folder(course) + GolfMapBunkerChannels.FileName;
+            if (!File.Exists(file))
+                throw new InvalidOperationException("No bunker convention file at " + file + ": copy blender/conventions/" + GolfMapBunkerChannels.FileName + " into the course folder.");
+            var w = CreateInstance<GolfMapBunkerMaterials>();
+            w.hideFlags = HideFlags.HideAndDontSave;
+            try
+            {
+                w.filePath = w.loadedPath = file;
+                w.conventions = GolfMapBunkerChannels.Load(file);
+                w.conventionId = string.IsNullOrEmpty(convention) ? EditorPrefs.GetString(kConventionPref, "ce-simgolf") : convention;
+                if (!w.conventions.Any(c => c.id == w.conventionId))
+                    throw new InvalidOperationException("No convention '" + w.conventionId + "' in " + file + " (" + string.Join(", ", w.conventions.Select(c => c.id).ToArray()) + ").");
+                w.selectedOnly = false;
+                HashSet<string> keys = null;
+                if (only != null)
+                {
+                    var named = new HashSet<string>(only, StringComparer.Ordinal);
+                    keys = new HashSet<string>(only.Select(SetKey).Where(k => k != null), StringComparer.Ordinal);
+                    keys.UnionWith(w.FindSets().Where(s => (s.bunker != null && named.Contains(s.bunker.name)) || s.blends.Any(b => named.Contains(b.name))).Select(s => s.key));
+                    w.onlySets = keys;
+                }
+                var sets = w.FindSets();
+                var result = new Dictionary<string, object>
+                {
+                    { "file", file }, { "convention", w.conventionId }, { "dryRun", dryRun },
+                    { "bunkers", sets.Count(s => s.bunker != null) }, { "blends", sets.Sum(s => s.blends.Count) },
+                };
+                if (keys != null)
+                {
+                    result["sets"] = sets.Select(s => (object)s.key).ToList();
+                    var inScene = new HashSet<string>(sets.Where(s => s.bunker != null).Select(s => s.key));
+                    result["setsWithoutBunkerInScene"] = keys.Where(k => !inScene.Contains(k)).OrderBy(k => k, StringComparer.Ordinal).Cast<object>().ToList();
+                    if (sets.Count == 0) { result["status"] = "no named bunker set in the scene"; return result; }
+                }
+                if (dryRun) return result;
+                w.laps = new GolfMapTerrainConform.Laps();
+                w.BuildAndApply();
+                result["status"] = w.status;
+                result["timings"] = w.laps.times;
+                return result;
+            }
+            finally { DestroyImmediate(w); }
+        }
+
         BunkerConvention Selected { get { return conventions.FirstOrDefault(c => c.id == conventionId) ?? conventions[0]; } }
 
         void Run(Action action)
@@ -144,6 +198,21 @@ namespace GolfMap.Editor
 
         const string kBunkerSuffix = "_Bunker_-_Mesh";
         const string kBlendMarker = "_Bunker_-_Blend";
+
+        // The bunker set an object name belongs to: "<key>_Bunker_-_Mesh", or a blend "<key>_B_<surface>_Bunker_-_Blend";
+        // null for anything else. FindSets gives a split blend the longest bunker key it starts with instead.
+        internal static string SetKey(string name)
+        {
+            if (string.IsNullOrEmpty(name) || name.Contains("Potwall")) return null;
+            int i = name.IndexOf(kBunkerSuffix, StringComparison.Ordinal);
+            if (i > 0) return name.Substring(0, i);
+            if (!name.Contains(kBlendMarker)) return null;
+            int b = name.IndexOf("_B_", StringComparison.Ordinal);
+            return b > 0 ? name.Substring(0, b) : null;
+        }
+
+        HashSet<string> onlySets;   // ApplyConvention's set filter (null = all)
+        GolfMapTerrainConform.Laps laps;   // ApplyConvention's timings (null = not timed)
 
         List<BunkerSet> FindSets()
         {
@@ -173,7 +242,7 @@ namespace GolfMap.Editor
                 if (owner == null) { int b = name.IndexOf("_B_", StringComparison.Ordinal); owner = b > 0 ? name.Substring(0, b) : name; }
                 Set(sets, owner).blends.Add(f);
             }
-            return sets.Values.OrderBy(s => s.key, StringComparer.Ordinal).ToList();
+            return sets.Values.Where(s => onlySets == null || onlySets.Contains(s.key)).OrderBy(s => s.key, StringComparer.Ordinal).ToList();
         }
 
         static BunkerSet Set(Dictionary<string, BunkerSet> sets, string key)
@@ -380,6 +449,21 @@ namespace GolfMap.Editor
             return black ?? Field(Opcd(blend, "BlendTarget"), "BlendToMaterialBlack") as Material;
         }
 
+        static Material BunkerOuter(BunkerSet set, Dictionary<string, RestoreRecord> records)
+        {
+            return set.blends
+                .Select(b => new { outer = Outer(b, records), n = b.sharedMesh != null ? b.sharedMesh.vertexCount : 0 })
+                .Where(x => x.outer != null)
+                .GroupBy(x => x.outer)
+                .OrderByDescending(g => g.Sum(x => x.n)).ThenBy(g => g.Key.name, StringComparer.Ordinal)
+                .Select(g => g.Key).FirstOrDefault();
+        }
+
+        static bool UsesOuter(BunkerMeshRule rule)
+        {
+            return rule.baseFrom == "$outer" || rule.channels.Values.Any(c => c.from == "$outer");
+        }
+
         static void Record(MeshFilter f, Dictionary<string, RestoreRecord> records)
         {
             var key = PathOf(f.transform);
@@ -398,6 +482,7 @@ namespace GolfMap.Editor
             var conv = Selected;
             var sets = FindSets();
             var records = ReadRestore();
+            if (laps != null) laps.Mark("findSets");
             var folder = OutputFolder(conv);
             var built = new Dictionary<string, Material>();          // render material cache
             var sources = new Dictionary<string, Material>();        // baked tinted sources
@@ -416,8 +501,12 @@ namespace GolfMap.Editor
                     {
                         try
                         {
-                            var roles = new Dictionary<string, Material> { { "$bunker", bunkerOriginal } };
-                            var mat = Build(conv.bunker, bunkerOriginal, roles, "Bunker - " + bunkerOriginal.name, folder, built, sources);
+                            // $outer for a bunker: what its blends fade to (the most common, by vertex count), so the
+                            // grass lip is the surface round it - rough, or fairway for a fairway bunker.
+                            var bunkerOuter = BunkerOuter(set, records);
+                            var roles = new Dictionary<string, Material> { { "$bunker", bunkerOriginal }, { "$outer", bunkerOuter } };
+                            var name = "Bunker - " + bunkerOriginal.name + (UsesOuter(conv.bunker) ? " in " + (bunkerOuter != null ? bunkerOuter.name : "none") : "");
+                            var mat = Build(conv.bunker, bunkerOriginal, roles, name, folder, built, sources);
                             Apply(set.bunker, mat, conv.bunker, roles, folder, sources, records);
                             applied++;
                         }
@@ -441,9 +530,14 @@ namespace GolfMap.Editor
             }
             finally
             {
+                if (laps != null) laps.Mark("build");
                 WriteRestore(records);
                 AssetDatabase.SaveAssets();
-                AssetDatabase.Refresh();
+                if (laps != null) laps.Mark("saveAssets");
+                // restore.json is written with File IO: import just it (a full Refresh scans the whole project, ~1 s);
+                // the per-feature path (only=) leaves it to Unity's next refresh (nothing loads it as an asset)
+                if (onlySets == null) AssetDatabase.ImportAsset(RestorePath);
+                if (laps != null) laps.Mark("importRestore");
             }
             EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
             var summary = string.Format("{0}: applied to {1} meshes with {2} materials in {3}{4}.", conv.label, applied, built.Count, folder, failed > 0 ? ", " + failed + " failed" : "");
@@ -469,14 +563,14 @@ namespace GolfMap.Editor
         Material Source(BunkerChannelSource src, Dictionary<string, Material> roles, string folder, Dictionary<string, Material> sources)
         {
             var mat = Resolve(src.from, roles);
-            bool tinted = !Mathf.Approximately(src.tint, 1f), strength = src.blendStrength >= 0;
+            bool tinted = src.Tinted, strength = src.blendStrength >= 0;
             if (!tinted && !strength) return mat;
-            var name = "Source - " + mat.name + " " + src.channel + (tinted ? " x" + src.tint.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "")
+            var name = "Source - " + mat.name + " " + src.channel + (tinted ? " x" + src.TintLabel : "")
                 + (strength ? " bs" + src.blendStrength.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "");
             Material cached;
             if (sources.TryGetValue(name, out cached)) return cached;
             var baked = new Material(mat) { name = name };
-            GolfMapBunkerChannels.Tint(baked, src.channel, src.tint);
+            if (tinted) GolfMapBunkerChannels.Tint(baked, src.channel, src.tint);
             GolfMapBunkerChannels.SetBlendStrength(baked, src.channel, src.blendStrength);
             return sources[name] = Save(baked, folder + Safe(name) + ".mat");
         }
@@ -487,7 +581,10 @@ namespace GolfMap.Editor
             if (original == null) throw new InvalidOperationException("mesh has no material");
             Material cached;
             if (built.TryGetValue(name, out cached)) return cached;
-            var render = new Material(original) { name = name };
+            var baseMaterial = rule.baseFrom == "$mesh" ? original : Resolve(rule.baseFrom, roles);
+            if (baseMaterial.shader != original.shader)
+                throw new InvalidOperationException("base " + baseMaterial.name + " uses " + baseMaterial.shader.name + ", the mesh " + original.shader.name);
+            var render = new Material(baseMaterial) { name = name };
             foreach (var ch in GolfMapBunkerChannels.All)
             {
                 var src = rule.channels[ch];

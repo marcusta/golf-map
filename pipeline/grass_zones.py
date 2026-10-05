@@ -31,10 +31,20 @@ Where tall grass grows (all in EPSG:3006 metres):
            sit on top, and the tall rough fills in where those fade out.
 
 From a surface map the rules become a WEIGHT FIELD instead of an area, so every
-fade is one gradient: deep rough 1; rough 1 at the deep border down to 0 at
-SPILL metres; times a ramp to 0 towards each forbidden surface (zero within its
-clearance, full beyond clearance + ramp; tees and greens widest), towards the
-reach limit and towards buildings and roads. The field is written as nested
+fade is one gradient: deep rough 1; the rough's first SPILL metres (a foot or
+so, ragged: noise decides where it reaches in) 1; times a ramp to 0 towards each
+forbidden surface (zero within its clearance, full beyond clearance + ramp; tees
+and greens widest) - but only where the deep rough meets that surface itself:
+where mown rough lies between (a metre or two, ROUGH_BUFFER_M), the rough is the
+buffer and the grass grows right up to it; times a ramp towards the reach limit
+and buildings. Paths and roads are not in the field at all: it runs on under
+them, and their drawn outlines (+ margin) are cut out of the band polygons, so
+the grass edge is the path's edge to the centimetre instead of to a 0.5 m cell
+(cells left bare strips beside a path and grass half across it). On loose ones
+(gravel, dirt) small notches in that cut let a tuft grow a foot onto the path
+here and there. The edges are ragged in the field itself, so the
+bands carry no edge noise (it would wobble bare patches into the deep rough
+along every rough and path). The field is written as nested
 contour bands (weight 0.1 ... 1.0, one zone per band polygon); the zone
 rasterizer keeps the maximum per type, so the bands stack into the ramp. One
 polygon with an inward feather cannot do that: it fades from every cut edge,
@@ -71,12 +81,12 @@ FORBIDDEN_TYPES = ("semi_rough", "fairway", "green", "tee", "bunker", "water", "
 SURFACE_TYPES = tuple(gspro.TYPE_SURFACE)
 
 DEFAULT_MAX_DISTANCE_M = 75.0
-DEFAULT_SPILL_M = 1.5    # a tight, ragged line into the mown rough (was 5: a wide fade)
+DEFAULT_SPILL_M = 0.3    # a foot or so into the mown rough, ragged (was 1.5, before that 5: a wide fade)
 DEFAULT_FEATHER_M = 4.0
 DEFAULT_NOISE_M = 1.0
 DEFAULT_BUILDING_MARGIN_M = 4.0
-DEFAULT_ROAD_MARGIN_M = 1.5
-DEFAULT_PATH_MARGIN_M = 1.0
+DEFAULT_ROAD_MARGIN_M = 0.5   # centerline + width is an estimate of the road's edge
+DEFAULT_PATH_MARGIN_M = 0.15  # the grass's feet stand a hand off the path's edge: its blades lean over it (0: slightly too much on the road)
 DEFAULT_MIN_AREA_M2 = 25.0
 DEFAULT_SIMPLIFY_M = 0.3
 DEFAULT_SOURCE = "tall-grass"
@@ -102,11 +112,29 @@ CLEARANCES = (
     ((3, 7), 2.0, 3.0),    # semi, bunker
     ((8,), 1.5, 2.0),      # water
     ((9,), 1.0, 2.0),      # blend strips
+    ((11,), 0.2, 1.0),     # rock: klippor and tee-wall faces (stone-painted course mesh)
 )
 BAND_LEVELS = (0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 0.97)   # w >= level; the top band has weight 1
-DEFAULT_BAND_FEATHER_M = 1.0
+DEFAULT_BAND_FEATHER_M = 0.5   # centred on the band's edge: full a quarter metre inside it
+DEFAULT_BAND_NOISE_M = 0.0     # the field's own edges are ragged; zone noise would open bare patches along them
 DEFAULT_REACH_RAMP_M = 10.0
 DEFAULT_BLOCK_RAMP_M = 1.5
+# Mown rough between the deep rough and a tee, green, fairway, ... is the buffer: behind
+# ROUGH_BUFFER_M of it the surface's own clearance starts to give way, and behind
+# ROUGH_BUFFER_M + ROUGH_BUFFER_RAMP_M it no longer applies. The same goes for the grass
+# that spills into the rough: none within ROUGH_BUFFER_M of the surface.
+ROUGH_BUFFER_M = 1.0
+ROUGH_BUFFER_RAMP_M = 1.0
+EDGE_NOISE_FEATURE_M = 3.0     # blobs of the noise that decides where the grass spills into the rough
+# Loose paths (gravel, dirt): a tuft every TUFT_SPACING_M of edge on average (never closer
+# than TUFT_MIN_GAP_M), each a disc on the edge reaching its radius onto the path.
+LOOSE_SURFACES = ("gravel", "dirt")
+TUFT_SPACING_M = 9.0
+TUFT_MIN_GAP_M = 2.0
+TUFT_RADIUS_M = (0.36, 0.42)   # >= half the diagonal of a 0.5 m mask pixel: each tuft holds one
+ROAD_DRAWN_REACH_M = 3.0       # a road centerline this close to a drawn path (or its own width) is that path
+PATH_SEAM_M = 1.0              # the surface map's cells this close to a drawn path are its mesh and seam
+MIN_SLIVER_M2 = 2.0            # band pieces smaller than this after the paths are cut out are dropped
 
 
 @dataclass
@@ -170,16 +198,19 @@ def cut_blockers(area: BaseGeometry, buildings: list[BaseGeometry], roads: list[
 
 
 # Surface map codes (unity/Editor/GolfMap/GolfMapSurfaces.cs, golfmap-surfaces-v1).
-S_NONE, S_DEEP, S_ROUGH, S_WATER = 0, 1, 2, 8
+S_NONE, S_DEEP, S_ROUGH, S_WATER, S_BLEND, S_OTHER = 0, 1, 2, 8, 9, 10
 S_PLAY = (2, 3, 4, 5, 6, 7)   # rough, semi, fairway, green, tee, bunker
-S_FORBIDDEN = (3, 4, 5, 6, 7, 8, 9)   # semi, fairway, green, tee, bunker, water, blend
+S_FORBIDDEN = (3, 4, 5, 6, 7, 8, 9, 11)   # semi, fairway, green, tee, bunker, water, blend, rock
 
 
 def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules: Rules,
                  clearances=CLEARANCES, reach_ramp: float = DEFAULT_REACH_RAMP_M,
-                 block_ramp: float = DEFAULT_BLOCK_RAMP_M) -> np.ndarray:
-    """Tall-grass weight 0..1 per cell of the surface map (see the module doc)."""
+                 block_ramp: float = DEFAULT_BLOCK_RAMP_M, seed: int = 0) -> np.ndarray:
+    """Tall-grass weight 0..1 per cell of the surface map (see the module doc).
+    `blocked`: buildings (+ margin), faded over `block_ramp`. Paths and roads are cut
+    from the band polygons instead (tall_grass_from_surfaces)."""
     from scipy.ndimage import distance_transform_edt
+    from creek_bank_zones import smooth_noise
 
     def dist(mask):
         return distance_transform_edt(~mask) * cell
@@ -188,50 +219,110 @@ def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules
         return np.clip((d - start) / max(width, 1e-6), 0.0, 1.0)
 
     deep = cls == S_DEEP
+    rough = cls == S_ROUGH
     w = deep.astype(np.float32)
-    if rules.spill > 0:
-        rough = cls == S_ROUGH
-        w = np.maximum(w, np.where(rough, np.clip(1.0 - dist(deep) / rules.spill, 0.0, 1.0), 0.0).astype(np.float32))
+    if rules.spill > 0 and rough.any():
+        # Into the rough from its deep border, as far as the noise says: 0 .. 2 x spill.
+        reach = rules.spill * (1.0 + smooth_noise(cls.shape, cell, EDGE_NOISE_FEATURE_M, seed))
+        w[rough & (dist(deep) - cell / 2 < reach)] = 1.0
+    d_rough = dist(rough) if rough.any() else None
     for codes, clear, width in clearances:
         present = np.isin(cls, codes)
         if present.any():
-            w *= ramp(dist(present), clear, width)
+            d = dist(present)
+            f = ramp(d, clear, width)
+            if d_rough is not None:   # rough in between: it is the buffer
+                f = np.maximum(f, ramp(d - d_rough, ROUGH_BUFFER_M, ROUGH_BUFFER_RAMP_M))
+            w *= f
     play = np.isin(cls, S_PLAY)
     w *= np.clip((rules.max_distance - dist(play)) / reach_ramp, 0.0, 1.0)
     if blocked is not None and blocked.any():
         w *= ramp(dist(blocked), 0.0, block_ramp)
-    return w
+    return w.astype(np.float32)
+
+
+def path_tufts(loose: BaseGeometry, seed: int = 0) -> BaseGeometry:
+    """Discs on the outline of the loose paths, where a tuft grows onto the path."""
+    from shapely.geometry import Point
+    rng = np.random.default_rng(seed)
+    discs = []
+    for poly in _each_polygon(loose):
+        for ring in (poly.exterior, *poly.interiors):
+            at = rng.exponential(TUFT_SPACING_M)
+            while at < ring.length:
+                discs.append(ring.interpolate(at).buffer(rng.uniform(*TUFT_RADIUS_M), quad_segs=3))
+                at += TUFT_MIN_GAP_M + rng.exponential(TUFT_SPACING_M - TUFT_MIN_GAP_M)
+    return _union(discs)
+
+
+def ways_cut(roads: list[tuple[LineString, float]], paths: list[tuple[BaseGeometry, str | None]],
+             rules: Rules, seed: int = 0) -> BaseGeometry:
+    """What paths and roads take out of the grass: roads by centerline and width (+ margin),
+    paths by their drawn outline (+ margin), less the tufts on the loose ones. A road that is
+    also drawn as a path is cut by the drawing alone: its centerline lies a metre off and its
+    width is an estimate, which left 1-2 m of bare ground along the drawn edge."""
+    drawn = _union(g for g, _ in paths)
+    survey = []
+    for line, width in roads:
+        if width > 0 and not drawn.is_empty:   # width 0: an area (parking lot), cut as it is
+            line = line.difference(drawn.buffer(max(width, ROAD_DRAWN_REACH_M)))
+        if not line.is_empty:
+            survey.append(line.buffer(width / 2 + rules.road_margin, cap_style=2))
+    hard = _union(survey + [g.buffer(rules.path_margin) for g, surface in paths if surface not in LOOSE_SURFACES])
+    loose = _union(g.buffer(rules.path_margin) for g, surface in paths if surface in LOOSE_SURFACES)
+    if not loose.is_empty:
+        loose = make_valid(loose.difference(path_tufts(loose, seed)))
+    return _union([hard, loose])
 
 
 def tall_grass_from_surfaces(cls: np.ndarray, cell: float, west: float, north: float,
                              buildings: list[BaseGeometry], roads: list[tuple[LineString, float]],
-                             rules: Rules = Rules(), levels=BAND_LEVELS, paths: list[BaseGeometry] = ()) -> Result:
+                             rules: Rules = Rules(), levels=BAND_LEVELS, paths: list = ()) -> Result:
     """`cls`: surface codes, rows north to south, `cell` metres; (`west`, `north`) the EPSG:3006
     corner of row 0, column 0. The weight field as nested bands; `area` is the lowest band.
-    `paths`: the app's `path` features (OPCD's path meshes are not in the surface map), kept
-    clear by `rules.path_margin` like roads."""
+    `paths`: the app's `path` features, each a geometry or (geometry, surface). The path
+    meshes are drawn from them, so their outlines are the grass's edge: cut from the bands
+    (ways_cut), with tufts onto those with a loose surface."""
     from rasterio import features
     from rasterio.transform import Affine
+    from scipy.ndimage import binary_dilation, distance_transform_edt
 
     transform = Affine(cell, 0, west, 0, -cell, north)
-    blockers = [b.buffer(rules.building_margin, join_style=2) for b in buildings] + \
-               [line.buffer(width / 2 + rules.road_margin, cap_style=2) for line, width in roads] + \
-               [g.buffer(rules.path_margin) for g in paths]
-    blocked = features.rasterize(blockers, out_shape=cls.shape, transform=transform).astype(bool) if blockers else None
+
+    def raster(geoms, all_touched=False):
+        geoms = [g for g in geoms if not g.is_empty]
+        return features.rasterize(geoms, out_shape=cls.shape, transform=transform, all_touched=all_touched).astype(bool) if geoms else None
+
+    paths = [p if isinstance(p, tuple) else (p, None) for p in paths]
+    blocked = raster([b.buffer(rules.building_margin, join_style=2) for b in buildings])
+    drawn = raster([g for g, _ in paths], all_touched=True)
+    if drawn is not None:
+        # The field runs on under the paths: their cells - the mesh ("other") and OPCD's seam
+        # along it (single blend cells, which would push the grass 1-3 m back) - take the
+        # surface beside the path.
+        near = raster([g.buffer(PATH_SEAM_M) for g, _ in paths], all_touched=True)
+        under = drawn | (near & (cls == S_OTHER))
+        under |= near & (cls == S_BLEND) & binary_dilation(under, structure=np.ones((3, 3), dtype=bool))
+        if not under.all():
+            rows, cols = distance_transform_edt(under, return_distances=False, return_indices=True)
+            cls = cls[rows, cols]
     w = weight_field(cls, cell, blocked, rules)
+    cut = ways_cut(roads, paths, rules)
 
     bands = []
     for i, level in enumerate(levels):
         m = w >= level
         polys = [shape(g) for g, v in features.shapes(m.astype(np.uint8), mask=m, transform=transform) if v == 1]
-        parts = [p.simplify(rules.simplify) for p in _each_polygon(_union(polys)) if p.area >= rules.min_area]
-        bands.append((1.0 if i == len(levels) - 1 else float(level), _union(parts)))
+        band = _union(p.simplify(rules.simplify) for p in _each_polygon(_union(polys)) if p.area >= rules.min_area)
+        if not cut.is_empty:   # after the simplify: the path's edge stays exact
+            band = _union(p for p in _each_polygon(make_valid(band.difference(cut))) if p.area >= min(rules.min_area, MIN_SLIVER_M2))
+        bands.append((1.0 if i == len(levels) - 1 else float(level), band))
 
     cell2 = cell * cell
     deep = cls == S_DEEP
     return Result(bands[0][1], float(deep.sum()) * cell2, float(((cls == S_ROUGH) & (w > 0)).sum()) * cell2,
                   float((deep & (w == 0)).sum()) * cell2,
-                  float(blocked.sum()) * cell2 if blocked is not None else 0.0, 0.0, bands)
+                  float(blocked.sum()) * cell2 if blocked is not None else 0.0, cut.area, bands)
 
 
 def load_surfaces_map(path: Path, sidecar: Path | None) -> tuple[np.ndarray, float, float, float, dict]:
@@ -291,6 +382,22 @@ def load_surfaces(db_path: Path, course_ident: str) -> tuple[dict, list[tuple[st
     return dict(course), surfaces
 
 
+def load_path_surfaces(db_path: Path, course_ident: str) -> list[tuple[BaseGeometry, str | None]]:
+    """The course's `path` features in EPSG:3006 metres with their `surface` attribute."""
+    conn = gspro._open_course_db(db_path)
+    course = gspro._resolve_course(conn, course_ident)
+    rows = conn.execute("SELECT geometry_json, attributes_json FROM course_features WHERE course_id = ? AND type = 'path'",
+                        (course["id"],)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        g = gspro._zone_geometry_m(json.loads(r["geometry_json"]))
+        if g is not None and not g.is_empty:
+            attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+            out.append((make_valid(g), attrs.get("surface")))
+    return out
+
+
 def load_buildings(path: Path | None) -> list[BaseGeometry]:
     if not path or not path.exists():
         return []
@@ -332,18 +439,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--feather", type=float, default=DEFAULT_FEATHER_M, help="zone feather (inward density fade) in metres")
     p.add_argument("--band-feather", type=float, default=DEFAULT_BAND_FEATHER_M,
                    help=f"feather of each weight band with --surfaces (default {DEFAULT_BAND_FEATHER_M} m)")
-    p.add_argument("--noise", type=float, default=DEFAULT_NOISE_M, help="zone edge noise in metres")
+    p.add_argument("--noise", type=float, help=f"zone edge noise in metres (default {DEFAULT_NOISE_M}; "
+                   f"{DEFAULT_BAND_NOISE_M} for the weight bands with --surfaces, whose edges are ragged already)")
     p.add_argument("--weight", type=float, default=1.0)
     p.add_argument("--building-margin", type=float, default=DEFAULT_BUILDING_MARGIN_M)
     p.add_argument("--road-margin", type=float, default=DEFAULT_ROAD_MARGIN_M)
+    p.add_argument("--path-margin", type=float, default=DEFAULT_PATH_MARGIN_M, help="metres kept clear beside the app's path features")
     p.add_argument("--clearance", type=float, help="metres kept from forbidden surfaces and the reach limit (default: noise + 0.5)")
     args = p.parse_args(argv)
 
     buildings = load_buildings(Path(args.buildings) if args.buildings else None)
     roads = load_roads(Path(args.roads) if args.roads else None)
     rules = Rules(max_distance=args.max_distance, spill=args.spill,
-                  building_margin=args.building_margin, road_margin=args.road_margin,
-                  clearance=args.clearance if args.clearance is not None else args.noise + 0.5)
+                  building_margin=args.building_margin, road_margin=args.road_margin, path_margin=args.path_margin,
+                  clearance=args.clearance if args.clearance is not None else (DEFAULT_NOISE_M if args.noise is None else args.noise) + 0.5)
     if args.surfaces:
         cls, cell, west, north, doc = load_surfaces_map(Path(args.surfaces), Path(args.sidecar) if args.sidecar else None)
         course = {"name": doc.get("course", args.course)}
@@ -355,14 +464,15 @@ def main(argv: list[str] | None = None) -> int:
             cls = cls.copy()
             cls[marked] = S_NONE
             print(f"  {marked.sum() * cell * cell:,.0f} m2 of water on creeks marked for bank vegetation: no clearance")
-        from creek_bank_zones import load_paths
         r = tall_grass_from_surfaces(cls, cell, west, north, buildings, roads, rules,
-                                     paths=load_paths(Path(args.db), args.course))
+                                     paths=load_path_surfaces(Path(args.db), args.course))
     else:
         course, surfaces = load_surfaces(Path(args.db), args.course)
         r = tall_grass_area(surfaces, buildings, roads, rules)
     doc = feature_collection(r.area, args.zone_type, args.source, args.weight,
-                             args.band_feather if r.bands is not None else args.feather, args.noise, r.bands)
+                             args.band_feather if r.bands is not None else args.feather,
+                             args.noise if args.noise is not None else DEFAULT_BAND_NOISE_M if r.bands is not None else DEFAULT_NOISE_M,
+                             r.bands)
     Path(args.out).write_text(json.dumps(doc), encoding="utf-8")
     print(f"{course['name']}: {len(doc['features'])} {args.zone_type} zones, {r.area.area:,.0f} m2 "
           f"(deep rough {r.habitat_m2:,.0f} m2 + rough spill {r.spill_m2:,.0f} m2; cut: beyond {args.max_distance:g} m "

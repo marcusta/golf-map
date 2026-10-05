@@ -66,6 +66,7 @@ export interface CoursesTable {
     site_id: string | null; // the site whose map this course uses (null = no map yet)
     gspro_export_dir: string | null; // GSPro SVG export folder; null = the server default (Downloads)
     gspro_course_dir: string | null; // GSPro course (scene) folder the GreenKeeper .GKD export writes into; null = not set
+    next_feature_no: Generated<number>; // the next course_features.feature_no (migration 026 triggers keep it)
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;
@@ -154,6 +155,7 @@ export interface CourseFeaturesTable {
     source_ref: string | null; // source-local ref (e.g. 'way/123456')
     license: string | null; // license short name (e.g. 'ODbL') — any ODbL feature makes the course's map data ODbL
     attributes_json: string | null; // flat JSON object of scalar per-feature attributes (e.g. lidar tree heights), null = none
+    feature_no: Generated<number | null>; // per-course number, never reused, shown in hex (the GSPro shape name); null = generated (migration 026)
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

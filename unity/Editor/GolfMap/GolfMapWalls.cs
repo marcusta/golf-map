@@ -50,12 +50,21 @@ namespace GolfMap.Editor
             public string groundChannel = "blue";
             // the stone the rough's groundChannel draws: this material's channel copied onto a copy of the rough material
             public string stoneMaterial = "", stoneMaterialChannel = "red";
+            public Color? stoneColor;  // the stone channel's overall colour (_<Channel>OverallColor), replacing the source's
             // style: "rose" (a stenröse: a heap of rounded stones, nested courses proud of the bank) or "wall" (a
             // dry-stone wall: courses of flat-faced stones fitted into the face's plane); stoneSet: the spec's stoneSets
             public string style = "rose", stoneSet = "default";
             public Vector2 baseCourseM = new Vector2(0.5f, 0.65f), courseM = new Vector2(0.34f, 0.5f), lengthRatio = new Vector2(1.3f, 2.6f), depthM = new Vector2(0.55f, 0.8f);
             public float maxStoneM = 1.4f, faceProudM = 0.03f, faceJitterM = 0.03f, minTopCourseM = 0.18f, bedJitterM = 0.05f;
+            public float jitterDeg = 0f;  // cliff: the face angle varies this much either way along the face
             public Vector2 stoneHeightVar = new Vector2(0.94f, 1.04f);  // a stone's height / its course's
+
+            public string stoneAlbedo = "", stoneNormal = "";
+            public float stoneTileM = 4f;
+            public bool paintOnly = false;
+            public float paintInsetM = 0f;
+            public float roundTopM = 0f;
+            public bool placeStones = true;
 
             public Settings Over(GolfMapJsonObject o)
             {
@@ -86,6 +95,15 @@ namespace GolfMap.Editor
                 s.groundChannel = o.String("groundChannel") ?? s.groundChannel;
                 s.stoneMaterial = o.String("stoneMaterial") ?? s.stoneMaterial;
                 s.stoneMaterialChannel = o.String("stoneMaterialChannel") ?? s.stoneMaterialChannel;
+                s.stoneAlbedo = o.String("stoneAlbedo") ?? s.stoneAlbedo;
+                s.stoneNormal = o.String("stoneNormal") ?? s.stoneNormal;
+                s.stoneTileM = (float)o.Number("stoneTileM", s.stoneTileM);
+                s.paintOnly = o.Bool("paintOnly", s.paintOnly);
+                s.paintInsetM = (float)o.Number("paintInsetM", s.paintInsetM);
+                s.roundTopM = (float)o.Number("roundTopM", s.roundTopM);
+                s.placeStones = o.Bool("placeStones", s.placeStones);
+                var sc = o.Array("stoneColor");
+                if (sc != null && sc.Count >= 3) s.stoneColor = new Color(F(sc[0]), F(sc[1]), F(sc[2]), 0f);
                 s.style = o.String("style") ?? s.style;
                 s.stoneSet = o.String("stoneSet") ?? s.stoneSet;
                 s.baseCourseM = Range(o, "baseCourseM", s.baseCourseM);
@@ -96,6 +114,7 @@ namespace GolfMap.Editor
                 s.faceProudM = (float)o.Number("faceProudM", s.faceProudM);
                 s.faceJitterM = (float)o.Number("faceJitterM", s.faceJitterM);
                 s.minTopCourseM = (float)o.Number("minTopCourseM", s.minTopCourseM);
+                s.jitterDeg = (float)o.Number("jitterDeg", s.jitterDeg);
                 s.bedJitterM = (float)o.Number("bedJitterM", s.bedJitterM);
                 s.stoneHeightVar = Range(o, "stoneHeightVar", s.stoneHeightVar);
                 return s;
@@ -114,6 +133,8 @@ namespace GolfMap.Editor
             public int seed;
             public Settings s;
             public List<Vector2> toe = new List<Vector2>(), lip = new List<Vector2>();  // scene x, z
+            public List<Vector2> outline;  // cliff: the rock seen from above (painted as rock), scene x, z
+            public List<Vector4> grassPatches = new List<Vector4>(); // scene x/z centre, east/north radii
             public float[] along;  // distance along the toe line at each station
             public float Length { get { return along[along.Length - 1]; } }
         }
@@ -126,6 +147,11 @@ namespace GolfMap.Editor
             public Stone stone;
             public Vector2 at;  // scene x, z
             public float yawDeg, lengthM, topM;
+            // pose: placed exactly as set by hand in Unity (captured into the spec): dy over the ground under its
+            // centre, rotation (Euler), local scale. Kept through rebuilds; follows the ground if the meshes change.
+            public bool hasPose;
+            public float poseDy;
+            public Vector3 poseEuler, poseScale;
         }
 
         // A boulder model (Blender-built FBX or prefab) measured once: its first LOD's vertices in the frame of an
@@ -136,6 +162,9 @@ namespace GolfMap.Editor
             public GameObject prefab;
             public float weight, longM;
             public bool longAlongZ, meshCollider;  // meshCollider: an FBX without one of its own
+            public Color? tint;                    // drawn with copies of its materials, _Color multiplied by this
+            public Dictionary<string, float> matFloats;   // ... and these float properties set (e.g. the moss amount)
+            public Dictionary<string, Color> matColors;   // ... and these colour properties set
             public float heightM, depthM;          // extents up and across the long side
             public int faceSign;                   // which end of the depth axis is its flattest side (a wall stone's face)
             public Vector3[] verts;
@@ -173,6 +202,43 @@ namespace GolfMap.Editor
             return EditorSceneManager.GetActiveScene().GetRootGameObjects().FirstOrDefault(g => g.name == RootName);
         }
 
+        [BridgeCommand("golfmap.walls.colors", "Apply the course recipe's placedColors to existing rock groups without moving or rebuilding them.")]
+        static object ApplyPlacedColors()
+        {
+            var course = GolfMapCourses.Require();
+            var folder = GolfMapCourses.Folder(course);
+            var spec = GolfMapJsonDoc.ParseObject(File.ReadAllText(folder + SpecFile));
+            var colors = spec.Object("placedColors");
+            var root = FindRoot();
+            int count = 0;
+            if (colors == null || root == null) return new Dictionary<string, object> { { "renderers", count } };
+            foreach (var id in colors.keys)
+            {
+                var group = root.transform.Find(id);
+                if (group == null) continue;
+                var values = colors.Array(id);
+                var color = new Color(F(values[0]), F(values[1]), F(values[2]), 1);
+                foreach (var r in group.GetComponentsInChildren<Renderer>(true))
+                {
+                    var materials = r.sharedMaterials;
+                    for (int i = 0; i < materials.Length; i++)
+                    {
+                        var original = materials[i];
+                        if (original == null || !original.HasProperty("_Color")) continue;
+                        var name = original.name.Split(new[] { " (rock color " }, StringSplitOptions.None)[0];
+                        var path = folder + "Walls/" + name + " (rock color " + id + ").mat";
+                        var copy = AssetDatabase.LoadAssetAtPath<Material>(path);
+                        if (copy == null) { copy = new Material(original); AssetDatabase.CreateAsset(copy, path); }
+                        copy.SetColor("_Color", color); EditorUtility.SetDirty(copy);
+                        materials[i] = copy;
+                    }
+                    Undo.RecordObject(r, "Match rock colors"); r.sharedMaterials = materials; count++;
+                }
+            }
+            AssetDatabase.SaveAssets(); EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            return new Dictionary<string, object> { { "renderers", count } };
+        }
+
         static Dictionary<string, object> Clear(HashSet<string> only)
         {
             var root = FindRoot();
@@ -195,20 +261,101 @@ namespace GolfMap.Editor
             return new Dictionary<string, object> { { "removed", n } };
         }
 
+        // The walls and boulders the scene has that stand on one of these course mesh objects (their bounds meet the
+        // wall's bank or the boulder); null when the course has no walls spec or the scene no walls.
+        internal static List<string> WallsOver(IList<GameObject> meshes)
+        {
+            GameObject root;
+            var areas = WallAreas(out root);
+            if (areas == null) return null;
+            // a mesh stands under a wall when one of its vertices lies in the wall's area (its bounds alone say little:
+            // a long rough or the outer deep reaches round half the course)
+            var hit = new HashSet<string>();
+            foreach (var g in meshes.Where(g => g != null))
+            {
+                var r = g.GetComponent<Renderer>();
+                var f = g.GetComponent<MeshFilter>();
+                if (r == null || f == null || f.sharedMesh == null) continue;
+                var b = r.bounds;
+                var near = areas.Where(kv => !hit.Contains(kv.Key) && root.transform.Find(kv.Key) != null &&
+                    b.max.x >= kv.Value.xMin && b.min.x <= kv.Value.xMax && b.max.z >= kv.Value.yMin && b.min.z <= kv.Value.yMax).ToList();
+                if (near.Count == 0) continue;
+                foreach (var v in f.sharedMesh.vertices)
+                {
+                    var p = g.transform.TransformPoint(v);
+                    foreach (var kv in near) if (kv.Value.Contains(new Vector2(p.x, p.z))) hit.Add(kv.Key);
+                    if (near.All(kv => hit.Contains(kv.Key))) break;
+                }
+            }
+            return hit.OrderBy(x => x, StringComparer.Ordinal).ToList();
+        }
+
+        // The walls and boulders the scene has whose area meets one of these world XZ boxes (golfmap.course.refresh only=
+        // plans with it for meshes not in the scene yet: their bounds from the FBX or the shaping report); null as WallsOver.
+        internal static List<string> WallsIn(IList<Rect> boxes)
+        {
+            GameObject root;
+            var areas = WallAreas(out root);
+            if (areas == null) return null;
+            return areas.Where(kv => root.transform.Find(kv.Key) != null && boxes.Any(b => b.Overlaps(kv.Value)))
+                .Select(kv => kv.Key).OrderBy(x => x, StringComparer.Ordinal).ToList();
+        }
+
+        // Each wall's bank (foot and top edge, +3 m) and each boulder's footprint (+1 m), world XZ, by id; null when the
+        // course has no walls spec or the scene no walls.
+        static Dictionary<string, Rect> WallAreas(out GameObject root)
+        {
+            root = FindRoot();
+            if (root == null) return null;
+            var course = GolfMapCourses.Require();
+            var file = GolfMapCourses.Folder(course) + SpecFile;
+            if (!File.Exists(file)) return null;
+            var spec = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
+            double e0, n0; Vector3 origin;
+            GolfMapProps.Frame(course, out e0, out n0, out origin);
+            var areas = new Dictionary<string, Rect>();
+            foreach (var w in ReadWalls(spec, file, e0, n0, origin))
+            {
+                float x0 = float.MaxValue, z0 = float.MaxValue, x1 = float.MinValue, z1 = float.MinValue;
+                foreach (var p in w.toe.Concat(w.lip)) { x0 = Mathf.Min(x0, p.x); z0 = Mathf.Min(z0, p.y); x1 = Mathf.Max(x1, p.x); z1 = Mathf.Max(z1, p.y); }
+                areas[w.id] = Rect.MinMaxRect(x0 - 3f, z0 - 3f, x1 + 3f, z1 + 3f);
+            }
+            foreach (var bo in (spec.Array("boulders") ?? new List<object>()).Cast<GolfMapJsonObject>())
+            {
+                var at = Scene(new List<object> { bo["e"], bo["n"] }, e0, n0, origin);
+                float r = (float)bo.Number("lengthM", 1) / 2 + 1f;
+                areas[bo.String("id")] = Rect.MinMaxRect(at.x - r, at.y - r, at.x + r, at.y + r);
+            }
+            return areas;
+        }
+
+        // After golfmap.meshes.sync replaced or added course meshes (and the paint reshaped their ground): build again the
+        // walls and boulders standing on them, so their stones meet the new meshes. Walls elsewhere keep their stones, hand
+        // edits included; a wall never built in this scene is not started. Null when there are no walls.
+        internal static Dictionary<string, object> RebuildOver(IList<GameObject> changed)
+        {
+            var ids = WallsOver(changed);
+            if (ids == null) return null;
+            if (ids.Count == 0) return new Dictionary<string, object> { { "rebuilt", new List<object>() } };
+            var built = Build(null, new HashSet<string>(ids), false, 0, null, false);
+            return new Dictionary<string, object> { { "rebuilt", ids.Cast<object>().ToList() }, { "placed", built["placed"] }, { "report", built["report"] } };
+        }
+
         // ---- spec ------------------------------------------------------------------------------
 
         // stones: [{asset, weight}] from the Blender-built props folder `stonesFolder` (under the course folder; its
         // props.json manifest gives the materials and colliders), or [{prefab, weight}] for a Unity prefab.
         // boulders: [{id, asset|prefab, e, n, yawDeg, lengthM, topM}], single stones placed whole.
-        static void Load(GolfMapCourse course, string path, double e0, double n0, Vector3 origin, out Dictionary<string, List<Stone>> stones, out List<Wall> walls, out List<Boulder> boulders)
+        static void Load(string courseFolder, string path, double e0, double n0, Vector3 origin, out Dictionary<string, List<Stone>> stones, out List<Wall> walls, out List<Boulder> boulders)
         {
             var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(path));
             if (root.String("format") != Format) throw new InvalidOperationException(path + " is not " + Format + ".");
             walls = ReadWalls(root, path, e0, n0, origin);
+            physics = LoadPhysics(root, path);
             Dictionary<string, GameObject> models = null;
             Dictionary<string, string> colliders = null;
             var folder = root.String("stonesFolder");
-            if (!string.IsNullOrEmpty(folder)) models = GolfMapProps.PrepareModels(GolfMapCourses.Folder(course) + folder, out colliders);
+            if (!string.IsNullOrEmpty(folder)) models = GolfMapProps.PrepareModels(courseFolder + folder, out colliders);
             Func<GolfMapJsonObject, Stone> resolve = so =>
             {
                 var id = so.String("asset");
@@ -218,6 +365,16 @@ namespace GolfMap.Editor
                 if (model == null) throw new InvalidOperationException(path + ": missing stone prefab " + so.String("prefab"));
                 var st = Measure(model, (float)so.Number("weight", 1));
                 st.meshCollider = id != null && colliders[id] == "mesh";
+                var tint = so.Array("tint");
+                if (tint != null && tint.Count >= 3) st.tint = new Color(F(tint[0]), F(tint[1]), F(tint[2]), 1f);
+                var mfl = so.Object("materialFloats");
+                if (mfl != null) { st.matFloats = new Dictionary<string, float>(); foreach (var k in mfl.keys) st.matFloats[k] = (float)mfl.Number(k); }
+                var mco = so.Object("materialColors");
+                if (mco != null)
+                {
+                    st.matColors = new Dictionary<string, Color>();
+                    foreach (var k in mco.keys) { var c = mco.Array(k); st.matColors[k] = new Color(F(c[0]), F(c[1]), F(c[2]), c.Count > 3 ? F(c[3]) : 1f); }
+                }
                 return st;
             };
             // stoneSets: {name: [stones]}; a plain `stones` list is the set "default"
@@ -240,6 +397,15 @@ namespace GolfMap.Editor
                     at = Scene(new List<object> { bo["e"], bo["n"] }, e0, n0, origin),
                     yawDeg = (float)bo.Number("yawDeg", 0), lengthM = (float)bo.Number("lengthM", 1), topM = (float)bo.Number("topM", 0.5),
                 };
+                var pose = bo.Object("pose");
+                if (pose != null)
+                {
+                    b.hasPose = true;
+                    b.poseDy = (float)pose.Number("dy", 0);
+                    var eu = pose.Array("euler"); var sc = pose.Array("scale");
+                    b.poseEuler = eu != null && eu.Count >= 3 ? new Vector3(F(eu[0]), F(eu[1]), F(eu[2])) : Vector3.zero;
+                    b.poseScale = sc != null && sc.Count >= 3 ? new Vector3(F(sc[0]), F(sc[1]), F(sc[2])) : Vector3.one;
+                }
                 if (string.IsNullOrEmpty(b.id)) throw new InvalidOperationException(path + ": a boulder has no id.");
                 boulders.Add(b);
             }
@@ -269,8 +435,18 @@ namespace GolfMap.Editor
                 if (styles != null && preset == null) throw new InvalidOperationException(path + ": wall " + wo.String("id") + " has style '" + style + "', which `styles` does not define.");
                 var ws = defaults.Over(preset).Over(wo);
                 ws.style = style;
-                if (style != "rose" && style != "wall") throw new InvalidOperationException(path + ": wall " + wo.String("id") + ": style must be rose or wall.");
+                if (style != "rose" && style != "wall" && style != "cliff") throw new InvalidOperationException(path + ": wall " + wo.String("id") + ": style must be rose, wall or cliff.");
                 var w = new Wall { id = wo.String("id"), note = wo.String("note"), seed = (int)wo.Number("seed", 1), s = ws };
+                var ol = wo.Array("outline");
+                if (ol != null) w.outline = ol.Cast<List<object>>().Select(q => Scene(q, e0, n0, origin)).ToList();
+                var patches = wo.Array("grassPatches");
+                if (patches != null) foreach (var q in patches.Cast<List<object>>())
+                {
+                    var p = Scene(q, e0, n0, origin);
+                    float rx = F(q[2]), rz = q.Count > 3 ? F(q[3]) : rx;
+                    if (rx <= 0 || rz <= 0) throw new InvalidOperationException("Grass patch radii must be positive.");
+                    w.grassPatches.Add(new Vector4(p.x, p.y, rx, rz));
+                }
                 if (string.IsNullOrEmpty(w.id)) throw new InvalidOperationException(path + ": a wall has no id.");
                 var toe = wo.Array("toe");
                 var lip = wo.Array("lip");
@@ -401,19 +577,23 @@ namespace GolfMap.Editor
             public Vector3 position, scale;
             public Quaternion rotation;
             public int course, fill;  // fill: 0 = the front row, 1.. = set in behind it
+            public bool absoluteScale;  // scale is the local scale itself, not a factor on the prefab's
             public float along, bankHeight, stoneHeight;
         }
 
-        public static Dictionary<string, object> Build(string file, HashSet<string> only, bool dryRun, int variant, string profile)
+        public static Dictionary<string, object> Build(string file, HashSet<string> only, bool dryRun, int variant, string profile, bool runPaint = true)
         {
             var course = GolfMapCourses.Require();
-            file = string.IsNullOrEmpty(file) ? GolfMapCourses.Folder(course) + SpecFile : file;
+            // read from the course now: importing the stones saves assets, which can leave `course` without a path
+            var courseFolder = GolfMapCourses.Folder(course);
+            var report = GolfMapCourses.ReportPath(course, "walls.txt");
+            file = string.IsNullOrEmpty(file) ? courseFolder + SpecFile : file;
             if (!File.Exists(file)) throw new InvalidOperationException("No walls spec at " + file + ": run docs/gspro/<course>/stone-walls.gen.py --out <course folder>.");
             double e0, n0; Vector3 origin;
             GolfMapProps.Frame(course, out e0, out n0, out origin);
             Dictionary<string, List<Stone>> stones; List<Wall> walls;
             List<Boulder> boulders;
-            Load(course, file, e0, n0, origin, out stones, out walls, out boulders);
+            Load(courseFolder, file, e0, n0, origin, out stones, out walls, out boulders);
             var ids = walls.Select(w => w.id).Concat(boulders.Select(b => b.id)).ToList();
             if (only != null)
             {
@@ -421,9 +601,10 @@ namespace GolfMap.Editor
                 if (unknown.Count > 0) throw new InvalidOperationException("No wall " + string.Join(", ", unknown.ToArray()) + " in " + file);
             }
             var result = new Dictionary<string, object> { { "spec", file }, { "dryRun", dryRun }, { "variant", variant } };
+            tintFolder = courseFolder + "Walls/Materials";
             // walls with ground: the course meshes on their banks reshaped (and painted) first, through the vertex
             // paint, which also redoes it after every mesh sync
-            if (!dryRun && string.IsNullOrEmpty(profile) && walls.Any(w => w.s.ground))
+            if (runPaint && !dryRun && string.IsNullOrEmpty(profile) && walls.Any(w => w.s.ground))
             {
                 var paint = GolfMapVertexPaint.Apply(false);
                 result["ground"] = paint.ContainsKey("ground") ? paint["ground"] : null;
@@ -462,7 +643,9 @@ namespace GolfMap.Editor
             foreach (var w in walls)
             {
                 if (only != null && !only.Contains(w.id)) continue;
-                var plan = w.s.style == "wall" ? PlanWall(w, stones[w.s.stoneSet], variant) : Plan(w, stones[w.s.stoneSet], variant);
+                if (w.s.paintOnly || !w.s.placeStones) continue; // exposed ground beneath separately placed outcrop rocks
+                var set = stones[w.s.stoneSet];
+                var plan = w.s.style == "wall" || w.s.style == "cliff" ? PlanWall(w, set, variant) : Plan(w, set, variant);
                 var heights = Enumerable.Range(0, Mathf.FloorToInt(w.Length) + 1).Select(s => BankAt(w, s).height).ToList();
                 var perCourse = plan.GroupBy(p => p.course).OrderBy(g => g.Key).Select(g => g.Count()).ToArray();
                 wallRows.Add(new Dictionary<string, object> {
@@ -488,6 +671,23 @@ namespace GolfMap.Editor
             {
                 if (only != null && !only.Contains(bd.id)) continue;
                 var st = bd.stone;
+                if (bd.hasPose)
+                {
+                    var g0 = Ground(bd.at.x, bd.at.y);
+                    if (g0 == null) throw new InvalidOperationException("Boulder " + bd.id + ": nothing to stand on.");
+                    var pp = new Vector3(bd.at.x, g0.Value + bd.poseDy, bd.at.y);
+                    boulderRows.Add(new Dictionary<string, object> { { "id", bd.id }, { "model", st.name }, { "pose", true }, { "y", Math.Round(pp.y, 2) } });
+                    sb.AppendLine(string.Format("{0}: {1} as set by hand, {2:F2} m over the ground  at {3:F2} {4:F2} {5:F2}", bd.id, st.name, bd.poseDy, pp.x, pp.y, pp.z));
+                    if (dryRun) continue;
+                    var pt = root.transform.Find(bd.id);
+                    if (pt != null) Undo.DestroyObjectImmediate(pt.gameObject);
+                    var pg = new GameObject(bd.id);
+                    Undo.RegisterCreatedObjectUndo(pg, "Build stone walls");
+                    pg.transform.SetParent(root.transform, false);
+                    Instantiate(new Placement { stone = st, position = pp, rotation = Quaternion.Euler(bd.poseEuler), scale = bd.poseScale, absoluteScale = true }, pg.transform, st.name + "#0");
+                    placed++;
+                    continue;
+                }
                 var scale = Vector3.one * (bd.lengthM / st.longM);
                 var rot = Quaternion.Euler(0f, bd.yawDeg + (st.longAlongZ ? 0f : -90f), 0f);
                 // its top topM over the highest ground under it (the ground under every vertex)
@@ -521,13 +721,13 @@ namespace GolfMap.Editor
                     sb.AppendLine("removed stale " + t.name);
                     Undo.DestroyObjectImmediate(t.gameObject);
                 }
-            var report = GolfMapCourses.ReportPath(course, "walls.txt");
             File.WriteAllText(report, sb.ToString());
             if (!dryRun) EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
             result["walls"] = wallRows;
             result["boulders"] = boulderRows;
             result["placed"] = placed;
             result["report"] = report;
+            if (!dryRun) result["colors"] = ApplyPlacedColors();
             return result;
         }
 
@@ -552,11 +752,86 @@ namespace GolfMap.Editor
             go.transform.SetParent(parent, false);
             go.transform.position = p.position;
             go.transform.rotation = p.rotation;
-            go.transform.localScale = Vector3.Scale(p.stone.prefab.transform.localScale, p.scale);
+            go.transform.localScale = p.absoluteScale ? p.scale : Vector3.Scale(p.stone.prefab.transform.localScale, p.scale);
+            if (p.stone.tint.HasValue || p.stone.matFloats != null || p.stone.matColors != null)
+                foreach (var r in go.GetComponentsInChildren<Renderer>(true))
+                    r.sharedMaterials = r.sharedMaterials.Select(m => Tinted(m, p.stone)).ToArray();
             if (p.stone.meshCollider)
                 foreach (var mf in go.GetComponentsInChildren<MeshFilter>()) mf.gameObject.AddComponent<MeshCollider>().sharedMesh = mf.sharedMesh;
+            if (physics != null) foreach (var c in go.GetComponentsInChildren<Collider>(true)) c.sharedMaterial = physics;
             foreach (var t in go.GetComponentsInChildren<Transform>(true))
                 GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticEditorFlags.BatchingStatic | StaticEditorFlags.OccludeeStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.ReflectionProbeStatic);
+        }
+
+        // A pack's material with its _Color multiplied by `tint`: a course-local copy under <course>/Walls/Materials/, made
+        // once per material and tint and then kept (its other settings stay the pack's). The pack's own stay untouched.
+        static string tintFolder;
+        static readonly Dictionary<string, Material> tinted = new Dictionary<string, Material>();
+        static Material Tinted(Material m, Stone st)
+        {
+            if (m == null || tintFolder == null) return m;
+            var tint = st.tint ?? Color.white;
+            var key = new StringBuilder(ColorUtility.ToHtmlStringRGB(tint));
+            if (st.matFloats != null) foreach (var kv in st.matFloats.OrderBy(k => k.Key, StringComparer.Ordinal)) key.Append(";" + kv.Key + "=" + kv.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            if (st.matColors != null) foreach (var kv in st.matColors.OrderBy(k => k.Key, StringComparer.Ordinal)) key.Append(";" + kv.Key + "=" + ColorUtility.ToHtmlStringRGBA(kv.Value));
+            var suffix = st.matFloats == null && st.matColors == null ? ColorUtility.ToHtmlStringRGB(tint) : ShortHash(key.ToString());
+            var path = tintFolder + "/" + m.name + " x" + suffix + ".mat";
+            Material t;
+            if (tinted.TryGetValue(path, out t) && t != null) return t;
+            t = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (t == null)
+            {
+                if (!AssetDatabase.IsValidFolder(tintFolder)) AssetDatabase.CreateFolder(tintFolder.Substring(0, tintFolder.LastIndexOf('/')), "Materials");
+                t = new Material(m) { name = m.name + " x" + suffix };
+                AssetDatabase.CreateAsset(t, path);
+            }
+            else { t.shader = m.shader; t.CopyPropertiesFromMaterial(m); }   // the spec wins: rebuilt from the pack's material
+            if (m.HasProperty("_Color")) { var c = m.GetColor("_Color"); t.SetColor("_Color", new Color(c.r * tint.r, c.g * tint.g, c.b * tint.b, c.a)); }
+            if (st.matFloats != null) foreach (var kv in st.matFloats) if (t.HasProperty(kv.Key)) t.SetFloat(kv.Key, kv.Value);
+            if (st.matColors != null) foreach (var kv in st.matColors) if (t.HasProperty(kv.Key)) t.SetColor(kv.Key, kv.Value);
+            EditorUtility.SetDirty(t);
+            tinted[path] = t;
+            return t;
+        }
+
+        static string ShortHash(string text)
+        {
+            uint h = 2166136261;
+            foreach (var ch in text) { h ^= ch; h *= 16777619; }
+            return h.ToString("X8").Substring(0, 6);
+        }
+
+        // The GSPro physics material stone colliders get (the spec's physicMaterial, e.g. GSPstone): GSPro reads the
+        // ball's bounce and roll off the collider's material, as on the course meshes (GSPrough, GSPfairway ...).
+        static PhysicMaterial physics;
+
+        [BridgeCommand("golfmap.walls.colliders", "Give every collider under 'GolfMap Walls' the walls spec's physicMaterial (GSPro reads bounce and roll off it; the course meshes carry GSPrough, GSPfairway ...). Counts colliders per wall. Marks the scene dirty.", args = "")]
+        static object CollidersCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            var file = GolfMapCourses.Folder(course) + SpecFile;
+            var spec = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
+            var mat = LoadPhysics(spec, file);
+            var root = FindRoot();
+            var rows = new Dictionary<string, object>();
+            if (root == null || mat == null) return new Dictionary<string, object> { { "physicMaterial", mat == null ? null : mat.name }, { "walls", rows } };
+            foreach (Transform w in root.transform)
+            {
+                var cs = w.GetComponentsInChildren<Collider>(true);
+                foreach (var c in cs) if (c.sharedMaterial != mat) { Undo.RecordObject(c, "Wall colliders"); c.sharedMaterial = mat; }
+                rows[w.name] = cs.Length;
+            }
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            return new Dictionary<string, object> { { "physicMaterial", mat.name }, { "walls", rows } };
+        }
+
+        static PhysicMaterial LoadPhysics(GolfMapJsonObject spec, string path)
+        {
+            var p = spec.String("physicMaterial");
+            if (string.IsNullOrEmpty(p)) return null;
+            var m = AssetDatabase.LoadAssetAtPath<PhysicMaterial>(p);
+            if (m == null) throw new InvalidOperationException(path + ": physicMaterial " + p + " is not a PhysicMaterial.");
+            return m;
         }
 
         // A stone turned and sized for a wall: its extents from its pivot along the wall, along the face's outward
@@ -589,6 +864,9 @@ namespace GolfMap.Editor
         // plane: faceDeg from the horizontal, rising from baseInM in from the foot (the plane the ground reshaping
         // builds). Beds follow the batter. The top course is cut down to end capM over the plateau, or left out
         // where that leaves less than minTopCourseM; the reshaped face, painted stone, shows there.
+        // A cliff (style "cliff", a klippa) is built the same way from big angular blocks, but its ground was
+        // sharpened through the bank's mid-height point with the face angle varying along it (GolfMapWallGround), so
+        // each block's plane is moved in or out to meet the sharpened mesh at the block's mid height.
         static List<Placement> PlanWall(Wall w, List<Stone> stones, int variant)
         {
             var s = w.s;
@@ -646,7 +924,13 @@ namespace GolfMap.Editor
                         o = Fit(st, rot, scaleFor(h * room / o.Rise), along, normal, upFace);
                     }
                     float proud = s.faceProudM + range(-s.faceJitterM, s.faceJitterM);
-                    var origin = new Vector3(b.toe.x, b.groundAtToe, b.toe.y) + new Vector3(b.inward.x, 0f, b.inward.y).normalized * s.baseInM;
+                    float t0 = s.baseInM;
+                    if (s.style == "cliff")
+                    {
+                        float qm = qs + o.Rise / 2;
+                        t0 = b.At(Mathf.Clamp(qm * sinF, 0f, b.height)) - qm * cosF;
+                    }
+                    var origin = new Vector3(b.toe.x, b.groundAtToe, b.toe.y) + new Vector3(b.inward.x, 0f, b.inward.y).normalized * t0;
                     var pos = origin - along * ((o.amin + o.amax) / 2) + normal * (proud - o.face) + upFace * (qs - o.emin);
                     plan.Add(new Placement { stone = st, rotation = o.rotation, scale = o.scale, course = k, along = centre, bankHeight = b.height, stoneHeight = o.Rise * sinF, position = pos });
                 }

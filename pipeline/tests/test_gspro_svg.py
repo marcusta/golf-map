@@ -37,33 +37,39 @@ def _ring(centre_frac, radius_m=20.0, n=6):
     ]}
 
 
-def _make_db(path, features, holes=(1, 2)):
-    """features: (type, hole_number|None, sort_order, rings, curve_type)."""
+def _make_db(path, features, holes=(1, 2), numbered=True):
+    """features: (type, hole_number|None, sort_order, rings, curve_type[, no[, id]]).
+    `no` is the server's per-course feature number (default: position in the
+    list + 1; None = unnumbered, like a generated feature), `id` defaults to
+    feat-<position>. The list is also the order they were drawn in
+    (created_at). numbered=False leaves the column out, like a database from
+    before the server's migration 026."""
     conn = sqlite3.connect(path)
     conn.executescript(
-        """CREATE TABLE courses (id TEXT PRIMARY KEY, name TEXT);
+        f"""CREATE TABLE courses (id TEXT PRIMARY KEY, name TEXT);
            CREATE TABLE holes (id TEXT PRIMARY KEY, course_id TEXT, number INTEGER);
            CREATE TABLE course_features (
                id TEXT PRIMARY KEY, course_id TEXT, hole_id TEXT, type TEXT,
-               geometry_json TEXT, sort_order INTEGER);"""
+               geometry_json TEXT, sort_order INTEGER, created_at TEXT{", feature_no INTEGER" if numbered else ""});"""
     )
     conn.execute("INSERT INTO courses VALUES (?, ?)", (COURSE, "Testbana"))
     for number in holes:
         conn.execute("INSERT INTO holes VALUES (?, ?, ?)", (f"h{number}", COURSE, number))
-    for i, (kind, hole, order, rings, curve) in enumerate(features):
+    for i, (kind, hole, order, rings, curve, *given) in enumerate(features):
         geom = {"crs": "EPSG:3006", "curveType": curve, "rings": rings}
-        conn.execute(
-            "INSERT INTO course_features VALUES (?, ?, ?, ?, ?, ?)",
-            (f"feat-{i}", COURSE, f"h{hole}" if hole else None, kind, json.dumps(geom), order),
-        )
+        no = given[0] if given else i + 1
+        fid = given[1] if len(given) > 1 else f"feat-{i}"
+        row = [fid, COURSE, f"h{hole}" if hole else None, kind, json.dumps(geom), order,
+               f"2026-01-01T00:{i // 60:02d}:{i % 60:02d}Z"] + ([no] if numbered else [])
+        conn.execute(f"INSERT INTO course_features VALUES ({', '.join('?' * len(row))})", row)
     conn.commit()
     conn.close()
 
 
-def _export(tmp_path, features, holes=(1, 2), **kwargs):
+def _export(tmp_path, features, holes=(1, 2), numbered=True, **kwargs):
     tmp_path.mkdir(parents=True, exist_ok=True)  # callers pass subdirs for a 2nd export
     db = tmp_path / "app.sqlite"
-    _make_db(db, features, holes)
+    _make_db(db, features, holes, numbered)
     out = tmp_path / "course.svg"
     kwargs.setdefault("flatten", None)
     kwargs.setdefault("precision", 3)
@@ -99,23 +105,60 @@ def test_layer_per_hole_and_others_for_the_rest(tmp_path):
     descending, so Hole1 lands topmost in Inkscape."""
     layers = _layers(_export(tmp_path, BASIC))
     assert [label for label, _ in layers] == ["Others", "Hole2", "Hole1"]
-    assert dict(layers)["Others"] == ["others_1"]
+    assert dict(layers)["Others"] == ["others_6"]
 
 
-def test_shape_ids_are_hole_number_plus_index_on_that_hole(tmp_path):
-    """Ids are hole_<hole>_<index on hole>: unique across the document, and
-    the mesh they become traces back to a hole. The material is already in the
-    mesh name via the fill, so the type is only kept as a data-type attribute."""
+def test_shape_ids_are_hole_number_plus_the_features_number_in_hex(tmp_path):
+    """Ids are hole_<hole>_<feature number in hex> (others_<number> off-hole):
+    the mesh they become traces back to a hole, and the number is the one the
+    server hands out per course and never reuses. The material is already in
+    the mesh name via the fill, so the type is only kept as a data-type
+    attribute."""
     layers = dict(_layers(_export(tmp_path, BASIC)))
     assert layers["Hole1"] == ["hole_1_1", "hole_1_2", "hole_1_3"]
-    assert layers["Hole2"] == ["hole_2_1", "hole_2_2"]
-    assert layers["Others"] == ["others_1"]
+    assert layers["Hole2"] == ["hole_2_4", "hole_2_5"]
+    assert layers["Others"] == ["others_6"]
 
     root = ET.parse(_export(tmp_path / "t", BASIC)).getroot()
     types = {p.get("id"): p.get("data-type") for p in root.iter(f"{SVG_NS}path")}
     assert types["hole_1_1"] == "semi_rough"
     assert types["hole_1_3"] == "bunker"
     assert len(set(types)) == len(types)  # ids unique
+
+    feats = [("bunker", 1, 0, [_ring((0.42, 0.42), 5)], "bspline", 26), ("bunker", 1, 1, [_ring((0.45, 0.45), 5)], "bspline", 4095)]
+    assert dict(_layers(_export(tmp_path / "hex", feats)))["Hole1"] == ["hole_1_1a", "hole_1_fff"]
+
+
+def test_a_shape_keeps_its_name_when_other_features_on_the_hole_change(tmp_path):
+    """The name is what Unity keys saved edits to (bunker lips, paint), and OPCD
+    carries it into the mesh name (Spline_hole_1_3_Bunker_-_Mesh). Adding,
+    removing or reordering other features on the hole must not rename it."""
+    semi = ("semi_rough", 1, 0, [_ring((0.40, 0.40), 40)], "bspline", 1, "semi")
+    fairway = ("fairway", 1, 1, [_ring((0.40, 0.40), 30)], "bspline", 2, "fairway")
+    bunker = ("bunker", 1, 2, [_ring((0.42, 0.42), 5)], "bspline", 3, "bunker")
+    rough = ("rough", 1, -1, [_ring((0.40, 0.40), 60)], "bspline", 4, "rough")
+
+    def bunker_name(features, sub):
+        root = ET.parse(_export(tmp_path / sub, features)).getroot()
+        return [p.get("id") for p in root.iter(f"{SVG_NS}path") if p.get("data-feature-id") == "bunker"]
+
+    assert bunker_name([semi, fairway, bunker], "a") == ["hole_1_3"]
+    assert bunker_name([rough, semi, fairway, bunker], "b") == ["hole_1_3"]  # a rough drawn under it
+    assert bunker_name([semi, bunker], "c") == ["hole_1_3"]                  # the fairway deleted
+    assert bunker_name([bunker, fairway, semi], "d") == ["hole_1_3"]         # listed in another order
+
+
+def test_an_unnumbered_feature_is_named_after_its_id(tmp_path):
+    """Generated features have no number (and a database from before the
+    server's migration 026 has none at all): 5 characters of the id, more only
+    where an older shape already has that name."""
+    feats = [
+        ("bunker", 1, 0, [_ring((0.42, 0.42), 5)], "bspline", None, "abcde111-old"),
+        ("bunker", 1, 1, [_ring((0.45, 0.45), 5)], "bspline", None, "abcde000-new"),  # sorts first by id
+        ("bunker", 1, 2, [_ring((0.48, 0.48), 5)], "bspline", 7, "7b20e4aa-numbered"),
+    ]
+    assert dict(_layers(_export(tmp_path / "a", feats)))["Hole1"] == ["hole_1_abcde", "hole_1_abcde0", "hole_1_7"]
+    assert dict(_layers(_export(tmp_path / "b", feats, numbered=False)))["Hole1"] == ["hole_1_abcde", "hole_1_abcde0", "hole_1_7b20e"]
 
 
 def _types_in(out, layer):
@@ -185,7 +228,7 @@ def test_roads_get_their_own_layer_on_top_of_everything(tmp_path):
     for stack in ("app", "opcd"):
         layers = _layers(_export(tmp_path / stack, feats, stack=stack))
         assert [label for label, _ in layers] == ["Others", "Hole2", "Hole1", "Roads"]
-        assert dict(layers)["Roads"] == ["roads_1", "roads_2"]
+        assert dict(layers)["Roads"] == ["roads_7", "roads_8"]  # named after their pieces' numbers
         assert "path" not in _types_in(tmp_path / stack / "course.svg", "Hole1")
 
 
@@ -211,7 +254,7 @@ def test_stack_opcd_keeps_sort_order_within_one_type(tmp_path):
         ("semi_rough", 1, 2, [_ring((0.44, 0.44), 40)], "bspline"),
     ]
     root = ET.parse(_export(tmp_path, feats, stack="opcd")).getroot()
-    assert [p.get("id") for p in root.iter(f"{SVG_NS}path")] == ["hole_1_1", "hole_1_2"]
+    assert [p.get("id") for p in root.iter(f"{SVG_NS}path")] == ["hole_1_2", "hole_1_1"]
     # the sort_order 2 shape (further east) is still written first
     ds = [p.get("d") for p in root.iter(f"{SVG_NS}path")]
     xs = [float(re.match(r"M (-?[\d.]+)", d).group(1)) for d in ds]
@@ -297,7 +340,7 @@ def test_north_is_up_and_the_origin_is_the_north_west_corner(tmp_path):
         x, y = re.match(r"M (-?[\d.]+),(-?[\d.]+)", d).groups()
         return float(x), float(y)
 
-    nw, se = first_point("hole_1_1"), first_point("hole_2_1")
+    nw, se = first_point("hole_1_1"), first_point("hole_2_2")
     assert nw[0] == pytest.approx(0.1 * side, abs=30)
     assert nw[1] == pytest.approx(0.1 * side, abs=30)  # 90% north -> 10% down
     assert se[0] == pytest.approx(0.9 * side, abs=30)
@@ -415,13 +458,62 @@ def test_touching_road_pieces_are_one_shape_with_the_slits_between_them_closed(t
         ("path", None, 2, [_rect(80, -3, 90, 3)], "bezier"),    # apart: its own shape
     ]
     out = _export(tmp_path, feats)
-    assert dict(_layers(out))["Roads"] == ["roads_1", "roads_2"]
+    assert dict(_layers(out))["Roads"] == ["roads_1", "roads_3"]
     root = ET.parse(out).getroot()
     ids = {p.get("id"): p.get("data-feature-id") for p in root.iter(f"{SVG_NS}path")}
-    assert ids == {"roads_1": "feat-0 feat-1", "roads_2": "feat-2"}
+    assert ids == {"roads_1": "feat-0 feat-1", "roads_3": "feat-2"}
     road = _shape(out, "roads_1")
     assert road.geom_type == "Polygon" and not road.interiors
     assert road.area == pytest.approx(60 * 6, rel=1e-3)  # the slit filled
+
+
+def _road_ids(out):
+    """{road shape id: data-feature-id} for the Roads layer."""
+    root = ET.parse(out).getroot()
+    g = next(g for g in root.findall(f"{SVG_NS}g") if g.get(f"{INK_NS}label") == "Roads")
+    return {p.get("id"): p.get("data-feature-id") for p in g.findall(f"{SVG_NS}path")}
+
+
+def test_a_merged_road_is_named_after_its_lowest_numbered_piece(tmp_path):
+    """roads_<lowest feature number in hex>, like every other shape, whatever
+    order the pieces are painted in; a road of generated (unnumbered) pieces
+    only - kerb fillets - takes its oldest piece's id-derived name."""
+    feats = [
+        ("path", None, 0, [_rect(-30, -3, 0, 3)], "bezier", 0x2b, "road-a"),
+        ("path", None, 1, [_rect(0, -3, 30, 3)], "bezier", 0x1c, "road-b"),     # touches road-a, lower number
+        ("path", None, 2, [_rect(80, -3, 90, 3)], "bezier", None, "f1llet-old"),
+        ("path", None, 3, [_rect(90, -3, 95, 3)], "bezier", None, "0fillet-new"),  # sorts first by id, drawn later
+    ]
+    ids = _road_ids(_export(tmp_path, feats))
+    assert ids == {"roads_1c": "road-a road-b", "roads_f1lle": "f1llet-old 0fillet-new"}
+
+
+def test_adding_an_unrelated_road_does_not_rename_a_merged_road(tmp_path):
+    """The name is what Blender/Unity key shaping and edits to: a road drawn
+    elsewhere - even painted before the others, even a generated one - and a
+    piece added to the road itself leave the existing names alone."""
+    road = ("path", None, 5, [_rect(-30, -3, 0, 3)], "bezier", 5, "road")
+    lane = ("path", None, 6, [_rect(40, -3, 60, 3)], "bezier", 9, "lane")
+    before = _road_ids(_export(tmp_path / "a", [road, lane]))
+    assert before == {"roads_5": "road", "roads_9": "lane"}
+
+    newer = ("path", None, -1, [_rect(-80, 20, -60, 26)], "bezier", 12, "newer")   # painted first
+    fillet = ("path", None, 0, [_rect(-90, -3, -85, 3)], "bezier", None, "00fillet")
+    spur = ("path", None, 7, [_rect(0, -3, 10, 3)], "bezier", 13, "spur")          # joins "road"
+    after = _road_ids(_export(tmp_path / "b", [road, lane, newer, fillet, spur]))
+    assert after["roads_5"] == "road spur" and after["roads_9"] == "lane"
+    assert after["roads_c"] == "newer" and after["roads_00fil"] == "00fillet"
+
+
+def test_road_names_stay_unique_when_two_roads_share_their_lowest_piece():
+    """A piece can reach into two merged roads (the merge opens a thin neck):
+    the road ranking first keeps the number, the other takes its next piece's,
+    and one with no other piece a suffix."""
+    rows = [{"id": i, "feature_no": n} for i, n in (("a", 3), ("b", 7), ("c", None))]
+    shape_ids = gspro._shape_ids(rows)
+    road = lambda *ids: gspro.MergedRoad("path", "#000000", None, list(ids))
+    assert gspro._road_names([road("b", "a"), road("a")], rows, shape_ids) == ["7", "3"]
+    assert gspro._road_names([road("a"), road("a"), road("c")], rows, shape_ids) == ["3", "3_2", "c"]
 
 
 def test_a_small_hole_inside_the_roads_is_filled_a_big_one_kept(tmp_path):
@@ -436,7 +528,7 @@ def test_a_small_hole_inside_the_roads_is_filled_a_big_one_kept(tmp_path):
     out = _export(tmp_path, feats)
     pocket = _shape(out, "roads_1")
     assert pocket.geom_type == "Polygon" and not pocket.interiors
-    ring = _shape(out, "roads_2")
+    ring = _shape(out, "roads_5")
     assert ring.area == pytest.approx(400 - 100, rel=1e-3)
 
 
@@ -449,9 +541,9 @@ def test_a_rough_drawn_just_short_of_a_road_is_grown_to_it(tmp_path):
         ("green", 1, 1, [_rect(-20, -20, 20, -3.4)], "bezier"),
     ]
     out = _export(tmp_path, feats)
-    rough = _shape(out, "hole_1_1")
+    rough = _shape(out, "hole_1_2")
     assert rough.area == pytest.approx(100 * (30 - 3) + 100 * 0.02, rel=2e-3)  # down to the kerb, a hair under it
-    green = _shape(out, "hole_1_2")
+    green = _shape(out, "hole_1_3")
     assert green.area == pytest.approx(40 * 16.6, rel=1e-6)
 
 
@@ -475,7 +567,7 @@ def test_a_surface_leaving_a_road_at_a_slant_gets_no_spike_along_the_kerb(tmp_pa
     out = _export(tmp_path, [("path", None, 0, [ring(SLANT_ROAD)], "bezier"),
                              ("fairway", 1, 0, [ring(SLANT_FAIRWAY)], "bezier")])
     road = Polygon([to_svg(*p) for p in SLANT_ROAD])
-    added = _shape(out, "hole_1_1").difference(Polygon([to_svg(*p) for p in SLANT_FAIRWAY])).difference(road.buffer(0.03))
+    added = _shape(out, "hole_1_2").difference(Polygon([to_svg(*p) for p in SLANT_FAIRWAY])).difference(road.buffer(0.03))
     assert added.area > 0.1  # the narrow part of the wedge is filled
     # Nothing added more than a few cm from the fairway's own edge: a spike runs away from it along the kerb.
     edge = Polygon([to_svg(*p) for p in SLANT_FAIRWAY]).boundary
@@ -490,7 +582,7 @@ def test_a_hairline_along_a_road_is_not_a_gap(tmp_path):
         ("rough", 1, 0, [_rect(-20, 3.001, 20, 30)], "bezier"),
     ]
     out = _export(tmp_path, feats)
-    assert _shape(out, "hole_1_1").area == pytest.approx(40 * 26.999, rel=1e-6)
+    assert _shape(out, "hole_1_2").area == pytest.approx(40 * 26.999, rel=1e-6)
 
 
 # --- Exclusions (test variants of the SVG for the Blender build) -------------
@@ -566,16 +658,18 @@ def test_bridge_decks_are_props_not_ground_and_stay_out_with_their_fillets(tmp_p
 
 def test_a_shape_that_collapsed_while_drawing_is_left_out_and_named(tmp_path, capsys):
     """A bunker of 8 points inside 0.4 x 0.15 m (a click that became a feature)
-    breaks OPCD's Blender build; small road pieces (kerb fillets) are fine."""
+    breaks OPCD's Blender build; small road pieces (kerb fillets) are fine
+    when they touch a road, which they merge into."""
     feats = [
         ("bunker", 1, 0, [_ring((0.42, 0.42), 5)], "bspline"),
         ("bunker", None, 1, [_ring((0.60, 0.60), 0.2)], "bspline"),   # the slip
-        ("path", None, 2, [_rect(0, 0, 0.5, 0.5)], "bezier"),          # a tiny road piece stays
+        ("path", None, 2, [_rect(0, 0, 0.5, 0.5)], "bezier"),          # a tiny road piece: a fillet
+        ("path", None, 3, [_rect(0.5, -3, 30, 3)], "bezier"),          # the road it fillets
     ]
     out = _export(tmp_path, feats)
     ids = _feature_ids(out)
     assert "feat-1" not in " ".join(ids)
-    assert "feat-0" in ids and any("feat-2" in i for i in ids)
+    assert "feat-0" in ids and any("feat-2" in i and "feat-3" in i for i in ids)
     assert "warning: 1 shape(s) under 1 m2 left out (drawn by mistake? delete them): bunker feat-1" in capsys.readouterr().out
 
 
@@ -643,3 +737,68 @@ def test_a_road_running_off_the_square_is_cut_at_its_edge(tmp_path):
     x0, _, x1, _ = _shape(out, "roads_1").bounds
     assert x1 == pytest.approx(e1 - e0, abs=1e-3)
     assert x1 - x0 == pytest.approx(50, abs=0.2)
+
+
+def _export_with_surfaces(tmp_path, features, surfaces):
+    """_export with attributes_json {"surface": ...} set on the features named in `surfaces` ({id: surface})."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    db = tmp_path / "app.sqlite"
+    _make_db(db, features)
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE course_features ADD COLUMN attributes_json TEXT")
+    for fid, surface in surfaces.items():
+        conn.execute("UPDATE course_features SET attributes_json = ? WHERE id = ?", (json.dumps({"surface": surface}), fid))
+    conn.commit()
+    conn.close()
+    out = tmp_path / "course.svg"
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app")
+    return out
+
+
+def _road_attrs(out, attr):
+    root = ET.parse(out).getroot()
+    g = next(g for g in root.findall(f"{SVG_NS}g") if g.get(f"{INK_NS}label") == "Roads")
+    return [(p.get("id"), p.get(attr)) for p in g.findall(f"{SVG_NS}path")]
+
+
+def test_roads_of_mixed_surfaces_are_one_shape_and_the_sidecar_says_which_parts_are_what(tmp_path):
+    """A gravel lane joining an asphalt road is ONE merged shape (what OPCD
+    builds best; splitting it in the SVG left slivers at every junction). The
+    sidecar beside the SVG says the shape's dominant surface and lists every
+    piece with its surface and outline, for the Blender step that cuts the
+    mesh apart."""
+    feats = [
+        ("path", None, 0, [_rect(-30, -3, 0, 3)], "bezier", 4, "road"),
+        ("path", None, 1, [_rect(0.2, -2, 30, 2)], "bezier", 2, "lane"),    # 0.2 m short of the road
+    ]
+    out = _export_with_surfaces(tmp_path, feats, {"road": "asphalt", "lane": "gravel"})
+    assert _road_attrs(out, "data-surface") == [("roads_2", None)]
+    assert dict(_road_attrs(out, "data-feature-id")) == {"roads_2": "road lane"}
+    assert _shape(out, "roads_2").area == pytest.approx(30 * 6 + 29.8 * 4 + 0.2 * 4, rel=1e-3)  # slit closed
+    sidecar = json.loads(gspro.path_surfaces_file(out).read_text(encoding="utf-8"))
+    assert sidecar["format"] == "golfmap-path-regions-v1" and sidecar["svg"] == "course.svg"
+    assert sidecar["shapes"] == {"roads_2": "asphalt"}          # by area
+    region = sidecar["regions"]["roads_2"]
+    assert region["mixed"] is True
+    assert {(p["id"], p["surface"], p["featureNo"]) for p in region["pieces"]} == {("road", "asphalt", 4), ("lane", "gravel", 2)}
+    assert all(len(p["rings"]) == 1 and len(p["rings"][0]) >= 4 for p in region["pieces"])
+
+
+def test_grass_tracks_are_written_as_rough_under_the_other_roads(tmp_path):
+    """A grass track is not hard ground: its own shape with the rough fill,
+    painted before every hard road so a gravel path crossing it wins, and
+    reaching only 5 cm under it (cut by a road running along its edge, a whole
+    track left a sliver of rough beside the road)."""
+    feats = [
+        ("path", None, 0, [_rect(-3, -30, 3, 30)], "bezier", 1, "track"),
+        ("path", None, 1, [_rect(-30, -2, 30, 2)], "bezier", 2, "path"),    # crosses the track
+    ]
+    out = _export_with_surfaces(tmp_path, feats, {"track": "grass", "path": "gravel"})
+    # The crossing cuts the track in two: one shape each side (a track and a road are never one mesh).
+    assert _road_attrs(out, "data-surface") == [("roads_1", "grass"), ("roads_1_2", "grass"), ("roads_2", None)]
+    fills = dict(_road_attrs(out, "style"))
+    assert gspro.OPCD_PALETTE["rough"] in fills["roads_1"] and gspro.OPCD_PALETTE["concrete"] in fills["roads_2"]
+    halves = [_shape(out, "roads_1"), _shape(out, "roads_1_2")]
+    assert sum(h.area for h in halves) == pytest.approx(6 * 60 - 6 * (4 - 2 * gspro.PATH_SURFACE_OVERLAP_M), rel=1e-2)
+    for h in halves:
+        assert h.intersection(_shape(out, "roads_2")).area == pytest.approx(6 * gspro.PATH_SURFACE_OVERLAP_M, abs=0.05)

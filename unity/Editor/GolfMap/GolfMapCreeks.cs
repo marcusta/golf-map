@@ -85,6 +85,9 @@ namespace GolfMap.Editor
             public float aboveBedM = 0.15f, buryM = 0.05f, bankM = 2f, searchM = 8f;
             public string trace;  // a creek id (or part of one): its stations go into the result
             public string water = "lake";  // lake: the lakes' AQUAS water; profile: R.A.M.'s material
+            // golfmap.course.refresh only=: refit just the creeks with a point inside one of these (world XZ); the others
+            // are left as they are and none is removed. Null = every creek of the export.
+            public List<Rect> within;
         }
 
         [MenuItem("GolfMap/Creeks/Import creeks (R.A.M.)")]
@@ -123,6 +126,9 @@ namespace GolfMap.Editor
             if (string.IsNullOrEmpty(file) || !File.Exists(file))
                 throw new InvalidOperationException("No creeks export at " + (file ?? "(the course has no export folder)") + ": run \"Export creeks\" in golf-map's GSPro panel.");
             var creeks = Load(file);
+            int exported = creeks.Count;
+            if (fit.within != null)
+                creeks = creeks.Where(c => c.points.Any(p => fit.within.Any(r => r.Contains(new Vector2(p.x, p.z))))).ToList();
 
             var splineType = FindType("RamSpline");
             var profileType = FindType("SplineProfile");
@@ -205,7 +211,8 @@ namespace GolfMap.Editor
                 imported.Add(go);
             }
 
-            // Creeks no longer in the export.
+            // Creeks no longer in the export (not when only some were refitted).
+            if (fit.within != null) existing.Clear();
             var removed = existing.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
             Dictionary<string, object> water = null;
             if (!dryRun)
@@ -219,7 +226,7 @@ namespace GolfMap.Editor
 
             var result = new Dictionary<string, object>
             {
-                { "file", file }, { "dryRun", dryRun }, { "creeks", creeks.Count },
+                { "file", file }, { "dryRun", dryRun }, { "creeks", creeks.Count }, { "exported", exported },
                 { "fit", fit.fit ? (object)new Dictionary<string, object> { { "aboveBedM", fit.aboveBedM }, { "bankM", fit.bankM }, { "buryM", fit.buryM }, { "searchM", fit.searchM } } : false },
                 { "created", created }, { "updated", updated }, { "removed", removed },
                 { "missingProfiles", missingProfiles.ToList() },

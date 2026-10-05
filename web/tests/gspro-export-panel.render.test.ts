@@ -561,7 +561,7 @@ test('bisecting the shown paths walks the steps to the culprit', async () => {
     };
     for (let i = 0; i < 3 && !svc.svgBisect.peek()?.result; i++) await answer();
     expect(svc.svgBisect.peek()?.result).toBe('confirmed');
-    expect(box()).toContain('Found it: Path (road-c)');
+    expect(box()).toContain('Found it: Path (roadc)');
     expect(svgCalls.map(c => c.variant)).toEqual(['bisect-1', 'bisect-2', 'bisect-3']);
 });
 

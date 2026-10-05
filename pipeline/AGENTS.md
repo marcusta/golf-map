@@ -7,12 +7,13 @@ Pure Python, self-contained venv. **No system GDAL** — rasterio wheels bundle 
 ## Setup
 
 ```sh
-cd pipeline
-./setup.sh              # idempotent: creates/reuses .venv, installs requirements.txt
-source .venv/bin/activate
-python -m golfpipe --help
-pytest                  # tests — synthetic in-memory GeoTIFF fixtures, no mocks; see root TESTING.md
+# from the repo root; runs pipeline/.venv/Scripts/python.exe with cwd pipeline/
+bun run py -m golfpipe --help
+bun run py gspro.py --help
+bun run py -m pytest    # tests — synthetic in-memory GeoTIFF fixtures, no mocks; see root TESTING.md
 ```
+
+Venv missing (fresh machine): `python -m venv .venv` in `pipeline/`, then `bun run py -m pip install -r requirements.txt`. (`setup.sh` targets `.venv/bin` and python3 — Linux/macOS only.)
 
 ## Layout (`golfpipe/`)
 
@@ -34,14 +35,15 @@ Everything renders over one square EPSG:3006 extent (`--square-3006` verbatim fr
 
 | Subcommand | Output |
 |---|---|
-| `svg` | Layered fill-only SVG from `data/app.sqlite` for Inkscape/Blender (OPCD). Layers `Hole1`…/`Others`, shapes `hole_<h>_<i>`; `Roads` on top, every touching road/fillet/taper merged into one `roads_<i>` (slits < 0.6 m closed, `data-feature-id` lists the pieces), and a rough/fairway drawn < 1 m short of a road grown to it (written flattened). **Fills are `OPCD_PALETTE` (from `OPCD Palette.gpl`) — fill colour tells OPCD what a shape is; never change those hexes.** |
-| `ortho` | 8192 px JPEG + `--terrain-out` darkened twin + `--tint-out` course-tinted `-meshes` texture; `--floor-course`, `--remove-buildings` |
+| `svg` | Layered fill-only SVG from `data/app.sqlite` for Inkscape/Blender (OPCD). Layers `Hole1`…/`Others`, shapes `hole_<h>_<feature_no hex>`; `Roads` on top, every touching road/fillet/taper (of every surface) merged into one `roads_<lowest feature_no hex among its pieces>` per network (slits < 0.6 m closed, `data-feature-id` lists the pieces, no `data-surface`; OPCD needs the junction fillets dissolved in one shape, a per-surface split in the SVG was tried 2026-10-04/05 and dropped), `surface: grass` tracks written as separate shapes with the rough fill (`data-surface="grass"`, under the roads), plus the sidecar `<stem>-paths.json` (`golfmap-path-regions-v1`: `shapes` = each road shape's dominant surface, read by Unity's `golfmap.paths.materials`; `regions` = every piece with surface and outline in SVG units, for the Blender step that cuts a mixed shape's mesh along the surface seams), and a rough/fairway drawn < 1 m short of a road grown to it (written flattened). **Fills are `OPCD_PALETTE` (from `OPCD Palette.gpl`) — fill colour tells OPCD what a shape is; never change those hexes.** |
+| `ortho` | 8192 px JPEG + `--terrain-out` darkened twin + `--tint-out` course-tinted `-meshes` texture (with the bunker/path edge fill: `--edge-fill`, default `bunker,path`, `none` = as photographed); `--floor-course`, `--remove-buildings` |
 | `dem` | float32 GeoTIFF + Unity `.raw` (4097² uint16) + `.json` sidecar (height range, Unity import values, outer position); `--sculpt <tif>` (repeatable) adds `<stem>-sculpt-in.raw` + `sculptIn`: the Unity sculpt layers the DEM contains, on the .raw's pixel grid (`golfpipe/sculpt.py`) |
 | `hillshade` | JPEG for checking overlays |
 | `trees` / `buildings` | `unity-trees-v1` / `unity-buildings-v1` JSON (plot-local metres, `plot` from the DEM sidecar, `--exclude-square` for outer) |
 | `zones` | `vegetation_zone` features → VSPro RGBA mask PNGs, **one channel per VSP item** (4 per PNG; density = Σ slot weight × maxDensity over the type Default / `<type>/<variant>` slots binding it, clipped — VSP multiplies an item's density rules, so never one channel per zone type) + `unity-zones-v2` JSON |
 | `creeks` | `water_creek` features → unity-creeks-v1 R.A.M. splines for the inner terrain: the drawn centerline (or `golfpipe.creeks.ribbon_centerline` down a polygon) with points at the water surface (`creeks.surface_profile` over the **raw** DEM: lowest across, turned downstream, only falling), plot-local, y above the sidecar's `minM` |
 | `gkd` | GreenKeeper's `<scene>.GKD` for the GSPro course folder: holes, tee boxes, pins, green centres, aim points from the app's tables, penalty areas + OOB ring from its drawn features, as Unity world positions. Water hazard lines are staked at least 0.5 m outside the water (nodes and the lines between them) and out to the end of its bank. **Merged into the existing file** (GreenKeeper keeps the course metadata), `.GKD.bak` on the first run. |
+| `shaping-global` | `golfmap-shaping-layer-v1` JSON for Blender (`blender/SHAPING-PLAN.md`), default `docs/gspro/<course>/shaping/00-global.gen.json`: tees flattened, paths cut + smoothed (select by type), paved lots (`level: plane`) and the site's building pads / plane terrain edits near the course (`level: median`) as `golfmap.flatten_footprint` footprints. Read-only DB, deterministic output. |
 
 ## Notes
 

@@ -2,8 +2,11 @@ import type { Kysely, Selectable } from 'kysely';
 import { sql } from 'kysely';
 import type { Database, TerrainEditsTable } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
-import { NotFoundError } from '@basics/core/server/auth';
+import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { wgs84ToSweref99tm } from './geo';
+import {
+    FEATURE_RECIPE_SURFACE, NO_RECIPE, RECIPE_SEED, defaultRecipeLibraryPath, loadRecipeLibrary, type RecipeParam, type RecipeSurface,
+} from './shaping-recipes';
 
 // --- Constants ---
 
@@ -16,8 +19,24 @@ import { wgs84ToSweref99tm } from './geo';
  * `plane` fitted to the ground around it) along a depth profile in from its
  * edge; generated from the course's bunkers and water (`bunker-digs`,
  * `water-digs`), listed and toggled like corridors.
+ * `recipe` — not a DEM edit: the Blender shaping recipe of ONE course feature
+ * (blender/SHAPING-PLAN.md, "Terrain editor → Blender"): params
+ * `{ recipe: <library id>, overrides? }`, origin `feature`, originRef
+ * `feature:<id>`, no rings. At most one per feature. The DEM replay skips it
+ * (`isDemEdit`); `gspro.py shaping-global` writes it as an `afrod.recipe` op.
  */
-export const TERRAIN_EDIT_OPS = ['plane', 'smooth', 'corridor', 'dig', 'delta'] as const;
+export const TERRAIN_EDIT_OPS = ['plane', 'smooth', 'corridor', 'dig', 'delta', 'recipe'] as const;
+
+/** The origin of every `recipe` edit (its originRef names the feature). */
+export const RECIPE_ORIGIN = 'feature';
+/** Most keys and serialized size of a recipe edit's `overrides`. */
+export const RECIPE_OVERRIDES_MAX_KEYS = 32;
+export const RECIPE_OVERRIDES_MAX_BYTES = 4096;
+
+/** Whether an edit changes the DEM (every op but `recipe`, which shapes the Blender meshes). */
+export function isDemEdit(edit: { op: string }): boolean {
+    return edit.op !== 'recipe';
+}
 
 /**
  * Unity sculpt layers (`delta`): heights changed in Unity, captured and
@@ -66,7 +85,13 @@ export interface TerrainEditParams {
     changedM2?: number;
     maxRaiseM?: number;
     maxLowerM?: number;
+    /** recipe: the shaping recipe library id (`none` = no recipe for this feature, not even the default) and per-feature overrides. */
+    recipe?: string;
+    overrides?: Record<string, unknown>;
 }
+
+/** Params as create/update take them: `featherM` may be left out for a `recipe` edit (it is stored as 0). */
+export type TerrainEditParamsInput = Omit<TerrainEditParams, 'featherM'> & { featherM?: number };
 
 /** The dig params, in the order they go into the pipeline handoff. */
 export const DIG_PARAM_KEYS = [
@@ -200,7 +225,7 @@ export function parseEditsGeojson(doc: unknown): { edits: TerrainEditInput[]; sk
             skipped.push(`feature ${i}: geometry is not a Polygon`);
             return;
         }
-        if (!(TERRAIN_EDIT_OPS as readonly string[]).includes(props.op)) {
+        if (!(TERRAIN_EDIT_OPS as readonly string[]).includes(props.op) || props.op === 'recipe') {
             skipped.push(`feature ${i}: unknown op ${JSON.stringify(props.op)}`);
             return;
         }
@@ -251,17 +276,25 @@ export class InvalidTerrainEditError extends Error {
     }
 }
 
+/** A `recipe` edit the service refuses (the API answers 400: terrain-edits.api.ts). */
+export class InvalidRecipeEditError extends InvalidTerrainEditError {
+    constructor(message: string) {
+        super(message);
+        this.name = 'InvalidRecipeEditError';
+    }
+}
+
 function assertValidOp(op: string): asserts op is TerrainEditOp {
     if (!(TERRAIN_EDIT_OPS as readonly string[]).includes(op)) {
         throw new InvalidTerrainEditError(`Invalid terrain-edit op: ${op}`);
     }
 }
 
-function assertValidParams(params: TerrainEditParams): void {
+function assertValidParams(params: TerrainEditParamsInput): asserts params is TerrainEditParams {
     if (!params || typeof params !== 'object') {
         throw new InvalidTerrainEditError('Params must be an object');
     }
-    if (!Number.isFinite(params.featherM) || params.featherM < 0) {
+    if (typeof params.featherM !== 'number' || !Number.isFinite(params.featherM) || params.featherM < 0) {
         throw new InvalidTerrainEditError('featherM must be a finite number >= 0');
     }
     if (params.radiusM !== undefined && (!Number.isFinite(params.radiusM) || params.radiusM <= 0)) {
@@ -317,6 +350,72 @@ function assertDigParams(p: TerrainEditParams): void {
     if (p.seed !== undefined && !Number.isInteger(p.seed)) throw new InvalidTerrainEditError('seed must be an integer');
 }
 
+/**
+ * A recipe edit's params, normalized to what is stored (`{ featherM: 0,
+ * recipe, overrides? }`). The recipe must be in the library and made for the
+ * feature's surface when there is a library (without one — it is being built —
+ * any plain id goes, and shaping-global reports ids it cannot resolve).
+ * `overrides` (blender/SHAPING-PLAN.md, "Composite and parameterised recipes")
+ * holds values for the recipe's declared params, each a number within the
+ * param's min..max, and `seed`, an integer; any other key is refused (with no
+ * library the param ids cannot be checked, only that values are numbers).
+ */
+async function recipeParams(params: TerrainEditParamsInput, surface: RecipeSurface, libraryFile: string): Promise<TerrainEditParams> {
+    if (!params || typeof params !== 'object') throw new InvalidRecipeEditError('Params must be an object');
+    const extra = Object.keys(params).filter(k => !['featherM', 'recipe', 'overrides'].includes(k));
+    if (extra.length) throw new InvalidRecipeEditError(`A recipe edit takes only recipe and overrides (not ${extra.join(', ')})`);
+    const { recipe, overrides } = params;
+    if (typeof recipe !== 'string' || !/^[\w.-]+$/.test(recipe)) {
+        throw new InvalidRecipeEditError('A recipe edit needs recipe: a recipe library id (or "none")');
+    }
+    const library = await loadRecipeLibrary(libraryFile);
+    /** The params overrides may set; null = unknown (no library). */
+    let known: RecipeParam[] | null = null;
+    if (recipe === NO_RECIPE) {
+        known = [];
+    } else if (library) {
+        const entry = library.find(e => e.id === recipe);
+        if (!entry) throw new InvalidRecipeEditError(`Unknown recipe '${recipe}' (not in ${libraryFile})`);
+        if (!entry.surfaces.includes(surface)) {
+            throw new InvalidRecipeEditError(`Recipe '${recipe}' is for ${entry.surfaces.join(', ') || 'no surface'}, not ${surface}`);
+        }
+        known = entry.params;
+    }
+    const out: TerrainEditParams = { featherM: 0, recipe };
+    if (overrides !== undefined) {
+        if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+            throw new InvalidRecipeEditError('overrides must be an object');
+        }
+        const keys = Object.keys(overrides);
+        if (keys.length > RECIPE_OVERRIDES_MAX_KEYS) throw new InvalidRecipeEditError(`overrides takes at most ${RECIPE_OVERRIDES_MAX_KEYS} keys`);
+        if (keys.some(k => !k.trim())) throw new InvalidRecipeEditError('overrides keys must be non-empty');
+        for (const key of keys) assertValidOverride(recipe, key, overrides[key], known);
+        const json = JSON.stringify(overrides);
+        if (json.length > RECIPE_OVERRIDES_MAX_BYTES) throw new InvalidRecipeEditError(`overrides must be under ${RECIPE_OVERRIDES_MAX_BYTES} bytes as JSON`);
+        if (keys.length) out.overrides = JSON.parse(json) as Record<string, unknown>;
+    }
+    return out;
+}
+
+/** One `overrides` entry: `seed` an integer, else a param the recipe declares, within its range (`known` null: any finite number). */
+function assertValidOverride(recipe: string, key: string, value: unknown, known: RecipeParam[] | null): void {
+    if (key === RECIPE_SEED) {
+        if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new InvalidRecipeEditError(`overrides.seed must be an integer (got ${JSON.stringify(value)})`);
+        return;
+    }
+    const param = known ? known.find(p => p.id === key) : null;
+    if (known && !param) {
+        const ids = [...known.map(p => p.id), RECIPE_SEED].join(', ');
+        throw new InvalidRecipeEditError(`Recipe '${recipe}' has no param '${key}' (overrides takes ${ids})`);
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new InvalidRecipeEditError(`overrides.${key} must be a number (got ${JSON.stringify(value)})`);
+    }
+    if (param && (value < param.min || value > param.max)) {
+        throw new InvalidRecipeEditError(`overrides.${key} must be within ${param.min}..${param.max} (got ${value})`);
+    }
+}
+
 function assertValidRings(rings: TerrainEditRing[]): void {
     if (!Array.isArray(rings) || rings.length === 0) {
         throw new InvalidTerrainEditError('rings must have at least one ring');
@@ -342,7 +441,12 @@ function assertValidRings(rings: TerrainEditRing[]): void {
  * overlap — and `listBySite` returns them so.
  */
 export class TerrainEditsService {
-    constructor(private db: Kysely<Database>) {}
+    private readonly recipeLibrary: string;
+
+    /** `recipeLibrary`: the shaping recipe library a `recipe` edit is checked against (default `defaultRecipeLibraryPath()`). */
+    constructor(private db: Kysely<Database>, opts: { recipeLibrary?: string } = {}) {
+        this.recipeLibrary = opts.recipeLibrary ?? defaultRecipeLibraryPath();
+    }
 
     private edits() {
         return this.db.selectFrom('terrain_edits').selectAll();
@@ -360,6 +464,11 @@ export class TerrainEditsService {
             .orderBy('id')
             .execute();
         return rows.map(toTerrainEdit);
+    }
+
+    /** The site's enabled edits that change the DEM (not `recipe`), in apply order: what every DEM replay takes. */
+    async listDemEdits(siteId: string): Promise<TerrainEdit[]> {
+        return (await this.listBySite(siteId)).filter(e => e.enabled && isDemEdit(e));
     }
 
     /**
@@ -380,8 +489,10 @@ export class TerrainEditsService {
         siteId: string, origin: string, inputs: TerrainEditInput[], scope: { courseId?: string } = {},
     ): Promise<TerrainEdit[]> {
         if (!origin) throw new InvalidTerrainEditError('origin is required');
+        if (origin === RECIPE_ORIGIN) throw new InvalidTerrainEditError(`origin '${RECIPE_ORIGIN}' belongs to the recipe edits, made one per feature`);
         for (const input of inputs) {
             assertValidOp(input.op);
+            if (input.op === 'recipe') throw new InvalidTerrainEditError('recipe edits are made one per feature (create), not generated');
             assertValidParams(input.params);
             assertOpParams(input.op, input.params);
             assertValidRings(input.rings);
@@ -452,16 +563,20 @@ export class TerrainEditsService {
         id?: string;
         siteId: string;
         op: TerrainEditOp;
-        params: TerrainEditParams;
-        rings: TerrainEditRing[];
+        params: TerrainEditParamsInput;
+        /** Required for every op but `recipe` (which has none). */
+        rings?: TerrainEditRing[];
         enabled?: boolean;
         origin?: string | null;
         originRef?: string | null;
+        /** `recipe`: the course feature it shapes (on a course of `siteId`). */
+        featureId?: string;
     }): Promise<TerrainEdit> {
         assertValidOp(input.op);
+        if (input.op === 'recipe') return this.createRecipe({ ...input, op: 'recipe' });
         assertValidParams(input.params);
         assertOpParams(input.op, input.params);
-        assertValidRings(input.rings);
+        assertValidRings(input.rings!);
 
         const id = input.id ?? crypto.randomUUID();
         await this.db.insertInto('terrain_edits').values({
@@ -478,23 +593,102 @@ export class TerrainEditsService {
         return this.get(id);
     }
 
+    /** The site's recipe edit of a feature, or null. */
+    async recipeOf(siteId: string, featureId: string): Promise<TerrainEdit | null> {
+        const row = await this.edits()
+            .where('site_id', '=', siteId).where('op', '=', 'recipe')
+            .where('origin_ref', '=', FEATURE_ORIGIN_REF + featureId)
+            .orderBy('created_at').orderBy('id')
+            .executeTakeFirst();
+        return row ? toTerrainEdit(row) : null;
+    }
+
+    /**
+     * A feature's recipe edit: origin `feature`, originRef `feature:<id>`, no
+     * rings. The feature must be a bunker/water/creek/path of a course on the
+     * site (course-scoped like the digs: another course on a shared site
+     * never picks it up); a second one for the same feature is a 409 naming
+     * the first - update that one instead.
+     */
+    private async createRecipe(input: {
+        id?: string; siteId: string; op: 'recipe'; params: TerrainEditParamsInput; rings?: TerrainEditRing[];
+        enabled?: boolean; featureId?: string;
+    }): Promise<TerrainEdit> {
+        if (input.rings !== undefined && (!Array.isArray(input.rings) || input.rings.length > 0)) {
+            throw new InvalidRecipeEditError('A recipe edit has no rings (its feature is the shape)');
+        }
+        if (typeof input.featureId !== 'string' || !input.featureId) throw new InvalidRecipeEditError('A recipe edit needs featureId');
+        const surface = await this.recipeSurfaceOf(input.siteId, input.featureId);
+        const params = await recipeParams(input.params, surface, this.recipeLibrary);
+        const id = input.id ?? crypto.randomUUID();
+        const ref = FEATURE_ORIGIN_REF + input.featureId;
+        await this.db.transaction().execute(async (trx) => {
+            const existing = await trx.selectFrom('terrain_edits').select('id')
+                .where('site_id', '=', input.siteId).where('op', '=', 'recipe').where('origin_ref', '=', ref)
+                .executeTakeFirst();
+            if (existing) throw new ConflictError(`Feature ${input.featureId} already has a recipe edit (${existing.id}): update that one`);
+            await trx.insertInto('terrain_edits').values({
+                id,
+                site_id: input.siteId,
+                op: 'recipe',
+                params_json: JSON.stringify(params),
+                rings_json: '[]',
+                enabled: input.enabled === false ? 0 : 1,
+                origin: RECIPE_ORIGIN,
+                origin_ref: ref,
+                version: 1,
+            }).execute();
+        });
+        return this.get(id);
+    }
+
+    /** The recipe surface of a feature on a course of the site: 404 for no such feature; another site's, or a type without one, is invalid. */
+    private async recipeSurfaceOf(siteId: string, featureId: string): Promise<RecipeSurface> {
+        const row = await this.db.selectFrom('course_features')
+            .innerJoin('courses', 'courses.id', 'course_features.course_id')
+            .select(['course_features.type', 'courses.site_id'])
+            .where('course_features.id', '=', featureId)
+            .executeTakeFirst();
+        if (!row) throw new NotFoundError(`Feature ${featureId} not found`);
+        if (row.site_id !== siteId) throw new InvalidRecipeEditError(`Feature ${featureId} is not on a course of site ${siteId}`);
+        const surface = FEATURE_RECIPE_SURFACE[row.type];
+        if (!surface) throw new InvalidRecipeEditError(`A ${row.type} feature takes no shaping recipe (only ${Object.keys(FEATURE_RECIPE_SURFACE).join(', ')})`);
+        return surface;
+    }
+
     async update(
         id: string,
         version: number,
-        patch: { op?: TerrainEditOp; params?: TerrainEditParams; rings?: TerrainEditRing[]; enabled?: boolean },
+        patch: { op?: TerrainEditOp; params?: TerrainEditParamsInput; rings?: TerrainEditRing[]; enabled?: boolean },
     ): Promise<TerrainEdit> {
         const row = await this.byId(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Terrain edit ${id} not found`);
         if (row.version !== version) throw new VersionConflictError('terrain_edits', id);
 
         if (patch.op !== undefined) assertValidOp(patch.op);
-        if (patch.params !== undefined) assertValidParams(patch.params);
-        if (patch.rings !== undefined) assertValidRings(patch.rings);
+        if ((row.op === 'recipe') !== ((patch.op ?? row.op) === 'recipe')) {
+            throw new InvalidRecipeEditError('An edit cannot become or stop being a recipe edit (create or remove one instead)');
+        }
+        let params: TerrainEditParams | undefined;
+        let rings = patch.rings;
+        if (row.op === 'recipe') {
+            if (rings !== undefined && rings.length > 0) throw new InvalidRecipeEditError('A recipe edit has no rings (its feature is the shape)');
+            rings = undefined;
+            if (patch.params !== undefined) {
+                const featureId = (row.origin_ref ?? '').slice(FEATURE_ORIGIN_REF.length);
+                params = await recipeParams(patch.params, await this.recipeSurfaceOf(row.site_id, featureId), this.recipeLibrary);
+            }
+        } else if (patch.params !== undefined) {
+            const p = patch.params;
+            assertValidParams(p);
+            params = p;
+        }
+        if (rings !== undefined) assertValidRings(rings);
 
         const dbInput: Record<string, unknown> = {};
         if (patch.op !== undefined) dbInput.op = patch.op;
-        if (patch.params !== undefined) dbInput.params_json = JSON.stringify(patch.params);
-        if (patch.rings !== undefined) dbInput.rings_json = JSON.stringify(patch.rings);
+        if (params !== undefined) dbInput.params_json = JSON.stringify(params);
+        if (rings !== undefined) dbInput.rings_json = JSON.stringify(rings);
         if (patch.enabled !== undefined) dbInput.enabled = patch.enabled ? 1 : 0;
 
         await this.db.updateTable('terrain_edits').where('id', '=', id).set({

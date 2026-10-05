@@ -18,8 +18,9 @@
 // implementation, terrain-edit-overlay.ts, imports maplibre-gl and cannot
 // load under bun test — same split as the analysis tool).
 
-import { Signal, Computed, effect, untrack } from '@basics/core/client/core';
+import { Signal, Computed, effect, untrack, di } from '@basics/core/client/core';
 import { api } from '../api';
+import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import type { TerrainEdit, TerrainEditsApi } from '../../../shared/api/terrain-edits.gen';
 import type { MapBuildApi, MapBuildJob } from '../../../shared/api/map-build.gen';
 import type { TerrainGeneratorsApi } from '../../../shared/api/terrain-generators.gen';
@@ -39,6 +40,11 @@ import type { MapPointerEvent, MapService } from '../map/map.service';
 import type { AnchorPoint } from '../geo/bezier';
 import { DrawState, MIN_RING_POINTS } from '../draw/draw-state';
 import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../geo/transform';
+import { flattenRing } from '../geo/bezier';
+import { containingTopDown } from '../draw/draw-tool.service';
+import { FEATURE_STYLES, type FeatureType } from '../draw/feature-palette';
+import { shapeName } from '../export/svg-exclusions';
+import { NO_RECIPE, SEED, ShapingService, surfaceOf } from './shaping.service';
 import {
     CREEK_DIG_PRESETS, DIG_ATTRIBUTES, DIG_GENERATOR_KINDS, WATER_DIG_PRESETS, type DigGeneratorKind,
 } from '../../../shared/features/dig-presets';
@@ -59,12 +65,43 @@ export const DEFAULT_RADIUS_M = 2;
 
 export type TerrainEditOp = TerrainEdit['op'];
 
+/**
+ * A feature's Blender shaping recipe (blender/SHAPING-PLAN.md): an edit with
+ * `op: 'recipe'`, `params: {recipe, overrides?}`, origin `feature` and
+ * originRef `feature:<id>`. It never touches the DEM; the shaping apply job
+ * replays it onto the feature's course meshes. No edit = the course default.
+ */
+export const RECIPE_OP = 'recipe' satisfies TerrainEditOp;
+
 /** Marker glyph per op (DOM markers — the editor style has no glyphs endpoint). */
-export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿', corridor: '⫽', dig: '◡', delta: '≈' };
+export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿', corridor: '⫽', dig: '◡', delta: '≈', recipe: '◈' };
+
+/** Whether an edit is a feature's Blender recipe. */
+export function isRecipeEdit(edit: TerrainEdit): boolean {
+    return edit.op === RECIPE_OP;
+}
+
+/** A recipe edit's params (the library id and the per-feature overrides). */
+export function recipeParams(edit: TerrainEdit): { recipe: string; overrides?: Record<string, unknown> } {
+    const { recipe, overrides } = edit.params;
+    return { recipe: recipe ?? '', ...(overrides ? { overrides } : {}) };
+}
+
+/** The course feature a recipe edit shapes, or null. */
+export function recipeFeatureId(edit: TerrainEdit): string | null {
+    if (!isRecipeEdit(edit)) return null;
+    return edit.originRef?.startsWith('feature:') ? edit.originRef.slice('feature:'.length) : null;
+}
 
 /** One-line params summary for the panel rows and the map glyph tooltips. */
 export function paramsSummary(edit: TerrainEdit): string {
     const parts: string[] = [];
+    if (isRecipeEdit(edit)) {
+        // Shaped in Blender, never baked into the DEM.
+        const { recipe, overrides } = recipeParams(edit);
+        const n = overrides ? Object.keys(overrides).length : 0;
+        return [`Blender recipe ${recipe}`, ...(n > 0 ? [`${n} override${n === 1 ? '' : 's'}`] : [])].join(' · ');
+    }
     if (edit.op === 'plane' && edit.params.flat) parts.push('flat');
     if (edit.op === 'smooth') parts.push(`r ${edit.params.radiusM ?? DEFAULT_RADIUS_M} m`);
     if (edit.op === 'corridor') {
@@ -100,6 +137,7 @@ export interface EditGroup {
 /** The list's groups, in panel order ('away': digs of features not on this course). */
 const GROUPS: Array<{ key: string; label: string }> = [
     { key: 'hand', label: 'Your edits' },
+    { key: 'recipes', label: 'Blender recipes' },
     { key: 'water-digs', label: 'Ponds' },
     { key: 'bunker-digs', label: 'Bunkers' },
     { key: 'creek-digs', label: 'Creeks' },
@@ -153,6 +191,8 @@ export interface TerrainEditView {
     highlightId: string | null;
     /** Each edit's name (editName), for its map label. */
     labels: Record<string, string>;
+    /** The outlines of the features selected for shaping (EPSG:3006 rings per feature), empty when none. */
+    selection: Array<Array<Array<{ x: number; y: number }>>>;
 }
 
 /**
@@ -202,14 +242,47 @@ export class TerrainEditToolService {
     /** The edit-list row under the pointer (its outline is highlighted). */
     readonly hoveredId = new Signal<string | null>(null);
 
+    /** The tool context while active, as a signal so the list's names follow features and holes. */
+    private readonly ctxSignal = new Signal<ToolContext | null>(null);
+
+    /**
+     * The course features clicked on the map for "Shape in Blender" (bunkers,
+     * ponds, creeks or paths — `surfaceOf` their type), in the order picked;
+     * Cmd/Ctrl+click adds more of the same surface. Empty when none.
+     */
+    readonly selectedFeatureIds = new Signal<readonly string[]>([]);
+    /** The first selected feature's id (the only one, unless several are selected). */
+    readonly selectedFeatureId = new Computed<string | null>(() => this.selectedFeatureIds.get()[0] ?? null);
+    /** The selected features that are loaded on this course. */
+    readonly selectedFeatures = new Computed<CourseFeature[]>(() => {
+        const ids = this.selectedFeatureIds.get();
+        if (ids.length === 0) return [];
+        const byId = new Map((this.ctxSignal.get()?.features.store.items.get() ?? []).map(f => [f.id, f]));
+        return ids.flatMap(id => byId.get(id) ?? []);
+    });
+    /** The first selected feature, while it is loaded on this course. */
+    readonly selectedFeature = new Computed<CourseFeature | null>(() => this.selectedFeatures.get()[0] ?? null);
+    /** The shaping job scope of the selection (ShapingService.jobScope): its ids, null when none. */
+    readonly selectionScope = new Computed<string | null>(() => {
+        const ids = this.selectedFeatureIds.get();
+        return ids.length > 0 ? ids.join(',') : null;
+    });
+
+    /** The edit drawn highlighted: the hovered row, else the open form's. */
+    readonly highlightId = new Computed<string | null>(() => this.hoveredId.get() ?? this.editingId.get());
+
+    /** Each edit's name, for its map label (its own computed: a hover must not rename every edit). */
+    private readonly labels = new Computed<Record<string, string>>(() =>
+        Object.fromEntries(this.edits.get().map(e => [e.id, this.editName(e)])));
+
     /** Renderable overlay state (persisted edits + the live draft). */
     readonly view = new Computed<TerrainEditView>(() => {
-        const edits = this.edits.get();
         return {
-            edits,
+            edits: this.edits.get(),
             draft: this.state.draft.get(),
-            highlightId: this.hoveredId.get() ?? this.editingId.get(),
-            labels: Object.fromEntries(edits.map(e => [e.id, this.editName(e)])),
+            highlightId: this.highlightId.get(),
+            labels: this.labels.get(),
+            selection: this.selectedFeatures.get().map(featureRings),
         };
     });
 
@@ -229,8 +302,6 @@ export class TerrainEditToolService {
         }));
     });
 
-    /** The tool context while active, as a signal so the list's names follow features and holes. */
-    private readonly ctxSignal = new Signal<ToolContext | null>(null);
     private ctx: ToolContext | null = null;
     private renderer: TerrainEditRenderer | null = null;
     /** True while a render flush is queued (microtask coalescing). */
@@ -244,6 +315,8 @@ export class TerrainEditToolService {
         /** Poll interval override for tests (real timers). */
         private pollMs: number = POLL_MS,
         private generatorsApi: TerrainGeneratorsApi = api.terrainGenerators,
+        /** The recipe library and the Blender apply job (shared with the panel). */
+        readonly shaping: ShapingService = di.get(ShapingService),
     ) {}
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -374,6 +447,171 @@ export class TerrainEditToolService {
         return true;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Shape in Blender (SHAPING-PLAN.md "Terrain editor → Blender"): click a
+    // bunker, pond, creek or path, pick its recipe (a `recipe` edit; none =
+    // the course default for its surface), then Apply to meshes runs the
+    // shaping job for it (ShapingService).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** The recipe edit of a feature, if it has one (else it gets the course default). */
+    recipeEditOf(featureId: string): TerrainEdit | null {
+        return this.edits.get().find(e => recipeFeatureId(e) === featureId) ?? null;
+    }
+
+    /** "Bunker · hole 3 · hole_3_1c": what the feature is, and its shape (mesh) name in the SVG. */
+    describeFeature(feature: CourseFeature): string {
+        const parts = [FEATURE_STYLES[feature.type as FeatureType]?.label ?? feature.type];
+        const hole = this.holeNumberOf(feature.holeId);
+        if (hole !== null) parts.push(`hole ${hole}`);
+        parts.push(shapeName(feature, hole ?? undefined));
+        return parts.join(' · ');
+    }
+
+    /** "Bunker × 3 · hole_3_1c, hole_3_2c, hole_5_1c" for several features, describeFeature for one. */
+    describeSelection(features: readonly CourseFeature[]): string {
+        if (features.length <= 1) return features[0] ? this.describeFeature(features[0]) : '';
+        const label = FEATURE_STYLES[features[0].type as FeatureType]?.label ?? features[0].type;
+        const names = features.map(f => shapeName(f, this.holeNumberOf(f.holeId) ?? undefined));
+        return `${label} × ${features.length} · ${names.join(', ')}`;
+    }
+
+    /** Selects the feature for shaping, alone (null clears the selection). */
+    selectFeature(featureId: string | null): void {
+        this.selectedFeatureIds.set(featureId ? [featureId] : []);
+    }
+
+    /**
+     * Cmd/Ctrl+click: adds the feature to the selection, or takes it out. A
+     * feature of another surface than the selection (a pond among bunkers)
+     * starts a new selection instead, so one recipe list fits them all.
+     */
+    toggleFeature(featureId: string): void {
+        const ids = this.selectedFeatureIds.peek();
+        if (ids.includes(featureId)) {
+            this.selectedFeatureIds.set(ids.filter(id => id !== featureId));
+            return;
+        }
+        const items = this.ctx?.features.store.items.peek() ?? [];
+        const surface = surfaceOf(items.find(f => f.id === featureId)?.type ?? '');
+        const current = this.selectedFeature.peek();
+        const same = current !== null && surfaceOf(current.type) === surface;
+        this.selectedFeatureIds.set(same ? [...ids, featureId] : [featureId]);
+    }
+
+    /**
+     * Saves the feature's recipe: a library id creates or updates its recipe
+     * edit, null deletes it (the course default). `overrides` (param values
+     * and `seed`, SHAPING-PLAN.md "Composite and parameterised recipes")
+     * replaces the saved ones, `{}` clears them; left out, they are kept.
+     */
+    saveRecipe(featureId: string, recipeId: string | null, overrides?: Record<string, number>): Promise<boolean> {
+        return this.saveRecipes([featureId], recipeId, overrides);
+    }
+
+    /**
+     * Saves one recipe on several features at once (saveRecipe for each).
+     * `keepSeeds`: each feature keeps its own saved seed instead of taking
+     * `overrides`' one, so the same settings still give each its own shape.
+     */
+    async saveRecipes(
+        featureIds: readonly string[], recipeId: string | null, overrides?: Record<string, number>,
+        opts: { keepSeeds?: boolean } = {},
+    ): Promise<boolean> {
+        const siteId = this.siteId();
+        if (!siteId) {
+            this.notice.set('This course has no site/map yet — set a map area first.');
+            return false;
+        }
+        this.saving.set(true);
+        try {
+            for (const featureId of featureIds) {
+                await this.saveRecipeOf(siteId, featureId, recipeId, overrides, opts.keepSeeds === true);
+            }
+            const n = featureIds.length;
+            const on = n === 1 ? '' : ` on ${n} features`;
+            const them = n === 1 ? 'it' : 'them';
+            this.notice.set(recipeId
+                ? `Recipe saved${on}. Apply to meshes to shape ${them}.`
+                : `Back to the course default recipe${on}. Apply to meshes to shape ${them}.`);
+            return true;
+        } catch (e) {
+            await this.reload(); // resync (order per setEnabled)
+            this.notice.set(`Saving the recipe failed: ${message(e)}`);
+            return false;
+        } finally {
+            this.saving.set(false);
+        }
+    }
+
+    /** One feature's recipe edit: created, updated or (null recipe) deleted. Throws on failure. */
+    private async saveRecipeOf(
+        siteId: string, featureId: string, recipeId: string | null,
+        overrides: Record<string, number> | undefined, keepSeed: boolean,
+    ): Promise<void> {
+        const existing = this.recipeEditOf(featureId);
+        if (!recipeId) {
+            if (existing) {
+                await this.editsApi.remove({ id: existing.id, version: existing.version });
+                this.edits.update(list => list.filter(e => e.id !== existing.id));
+            }
+            return;
+        }
+        const saved = existing ? recipeParams(existing).overrides : undefined;
+        let kept: Record<string, unknown> | undefined = overrides ?? saved;
+        if (overrides && keepSeed) {
+            const rest: Record<string, unknown> = { ...overrides };
+            delete rest[SEED];
+            kept = saved?.[SEED] !== undefined ? { ...rest, [SEED]: saved[SEED] } : rest;
+        }
+        const params = { recipe: recipeId, ...(kept && Object.keys(kept).length > 0 ? { overrides: kept } : {}) };
+        if (existing) {
+            const updated = await this.editsApi.update({ id: existing.id, version: existing.version, params });
+            this.edits.update(list => list.map(e => (e.id === existing.id ? updated : e)));
+        } else {
+            // No rings: the feature is the shape (the server sets origin `feature`, originRef `feature:<id>`).
+            const created = await this.editsApi.create({ siteId, op: RECIPE_OP, params, featureId });
+            this.edits.update(list => [...list, created]);
+        }
+    }
+
+    /**
+     * Runs the Blender → Unity shaping job, from the selection's section or
+     * the course button. The server always runs the whole course (the worker
+     * re-shapes only meshes whose ops changed, so one saved recipe re-shapes
+     * just its feature's meshes); `scope` (a feature id, or the selection's
+     * `selectionScope`) says where to show the outcome.
+     */
+    async applyToMeshes(scope?: string): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx) return false;
+        const job = await this.shaping.apply(ctx.courseId, scope ?? null);
+        return job?.status === 'succeeded';
+    }
+
+    /** A list row was clicked: a recipe edit selects its feature and shows it; any other row shows its outline. */
+    showEdit(id: string): void {
+        const edit = this.edits.peek().find(e => e.id === id);
+        if (!edit) return;
+        const featureId = recipeFeatureId(edit);
+        if (!featureId) {
+            this.zoomTo(id);
+            return;
+        }
+        this.selectFeature(featureId);
+        const feature = this.ctx?.features.store.items.peek().find(f => f.id === featureId) ?? null;
+        this.fitRings(featureRings(feature));
+    }
+
+    /** The topmost shapeable feature (bunker, pond, creek, path) at an EPSG:3006 point: draw mode's hit rule. */
+    private hitShapeable(p: { x: number; y: number }): CourseFeature | null {
+        const features = this.ctx?.features;
+        if (!features) return null;
+        const stack = features.stackTopDown.peek().filter(f => surfaceOf(f.type) !== null);
+        return containingTopDown(stack, features.effectiveHiddenTypes.peek(), p,
+            features.hiddenIds.peek(), features.hiddenSources.peek())[0] ?? null;
+    }
+
     // ── EditorTool lifecycle (called via terrain-edit-tool.ts) ─────────────
 
     activate(ctx: ToolContext, renderer: TerrainEditRenderer): void {
@@ -413,15 +651,20 @@ export class TerrainEditToolService {
             if (canvas) canvas.style.cursor = '';
         });
 
-        // The tool is always drawing — there is no select sub-mode here.
+        // The tool is always drawing — there is no select sub-mode here
+        // (a click on a bunker/pond/creek/path selects it for shaping instead).
         this.state.arm();
         void this.reload();
+        void this.shaping.loadRecipes();
+        // A shaping job still running (the page reloaded, or the editor was closed meanwhile): follow it again.
+        void this.shaping.resume(ctx.courseId);
     }
 
     deactivate(): void {
         this.state.disarm();
         this.saving.set(false);
         this.hoveredId.set(null);
+        this.selectedFeatureIds.set([]);
         this.ctx = null;
         this.ctxSignal.set(null);
         this.renderer = null;
@@ -434,6 +677,10 @@ export class TerrainEditToolService {
             this.state.arm(); // stay in draw mode for the next outline
             return true;
         }
+        if (this.selectedFeatureIds.peek().length > 0) {
+            this.selectedFeatureIds.set([]);
+            return true;
+        }
         return false;
     }
 
@@ -444,6 +691,17 @@ export class TerrainEditToolService {
      * ("Bunker · hole 3", "Pond · hole 5 · Deep Water"), the rest by kind.
      */
     editName(edit: TerrainEdit): string {
+        if (isRecipeEdit(edit)) {
+            const feature = this.featureOf(edit);
+            const { recipe } = recipeParams(edit);
+            const name = recipe === NO_RECIPE ? 'no recipe' : this.shaping.recipe(recipe)?.name ?? recipe;
+            if (!feature) return `Recipe · not on this course · ${name}`;
+            const parts = [FEATURE_STYLES[feature.type as FeatureType]?.label ?? feature.type];
+            const hole = this.holeNumber(edit);
+            if (hole !== null) parts.push(`hole ${hole}`);
+            parts.push(name);
+            return parts.join(' · ');
+        }
         if (!edit.origin) return `${capitalize(edit.op)} (drawn)`;
         if (edit.origin in DIG_NOUNS) {
             const noun = DIG_NOUNS[edit.origin as DigGeneratorKind];
@@ -470,10 +728,15 @@ export class TerrainEditToolService {
     /** Fits the map to an edit's outline. */
     zoomTo(id: string): void {
         const edit = this.edits.peek().find(e => e.id === id);
+        if (edit) this.fitRings(edit.rings);
+    }
+
+    /** Fits the map to EPSG:3006 rings. */
+    private fitRings(rings: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>): void {
         const ctx = this.ctx;
-        if (!edit || !ctx) return;
+        if (!ctx) return;
         let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-        for (const ring of edit.rings) {
+        for (const ring of rings) {
             for (const p of ring) {
                 const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
                 w = Math.min(w, lon); e = Math.max(e, lon);
@@ -484,6 +747,7 @@ export class TerrainEditToolService {
     }
 
     private groupKey(edit: TerrainEdit): string {
+        if (isRecipeEdit(edit)) return this.featureOf(edit) ? 'recipes' : 'away';
         if (!edit.origin) return 'hand';
         if (edit.origin in DIG_NOUNS) return this.featureOf(edit) ? edit.origin : 'away';
         if (edit.origin === 'building-pads' || edit.origin === 'road-grades') return edit.origin;
@@ -491,16 +755,19 @@ export class TerrainEditToolService {
         return 'other';
     }
 
-    /** The (loaded) course feature a generated dig came from. */
-    private featureOf(edit: TerrainEdit): { holeId?: string | null; attributes: Attributes | null } | undefined {
-        const featureId = digFeatureId(edit);
+    /** The (loaded) course feature a generated dig came from, or a recipe shapes. */
+    private featureOf(edit: TerrainEdit): { type: string; holeId?: string | null; attributes: Attributes | null } | undefined {
+        const featureId = digFeatureId(edit) ?? recipeFeatureId(edit);
         if (!featureId) return undefined;
         return this.ctxSignal.get()?.features.store.items.get().find(f => f.id === featureId) as
-            { holeId?: string | null; attributes: Attributes | null } | undefined;
+            { type: string; holeId?: string | null; attributes: Attributes | null } | undefined;
     }
 
     private holeNumber(edit: TerrainEdit): number | null {
-        const holeId = this.featureOf(edit)?.holeId;
+        return this.holeNumberOf(this.featureOf(edit)?.holeId);
+    }
+
+    private holeNumberOf(holeId: string | null | undefined): number | null {
         if (!holeId) return null;
         return this.ctxSignal.get()?.courseDetail.holes.get().find(h => h.id === holeId)?.number ?? null;
     }
@@ -712,7 +979,22 @@ export class TerrainEditToolService {
             void this.closeDraft();
             return;
         }
-        this.state.addPoint(lngLatToSweref99tm(e.lngLat));
+        const p = lngLatToSweref99tm(e.lngLat);
+        if (draft.length === 0) {
+            // Not outlining: a click on a bunker/pond/creek/path selects it for
+            // "Shape in Blender" (Shift+click starts an outline there anyway,
+            // Cmd/Ctrl+click adds it to the selection or takes it out); a
+            // click on open ground clears that and starts an outline.
+            if (e.originalEvent?.metaKey || e.originalEvent?.ctrlKey) {
+                const hit = this.hitShapeable(p);
+                if (hit) this.toggleFeature(hit.id);
+                return;
+            }
+            const hit = e.originalEvent?.shiftKey ? null : this.hitShapeable(p);
+            this.selectFeature(hit?.id ?? null);
+            if (hit) return;
+        }
+        this.state.addPoint(p);
     }
 
     /** Screen-pixel distance from an EPSG:3006 point to a screen position. */
@@ -738,6 +1020,13 @@ export class TerrainEditToolService {
             renderer.render(ctx.map, this.view.peek());
         });
     }
+}
+
+/** A feature's outline as plain straight-segment EPSG:3006 rings (curves flattened). */
+function featureRings(feature: CourseFeature | null): Array<Array<{ x: number; y: number }>> {
+    if (!feature) return [];
+    return feature.geometry.rings.map(ring =>
+        flattenRing(ring, 0.25, feature.geometry.curveType).map(([x, y]) => ({ x, y })));
 }
 
 function capitalize(text: string): string {

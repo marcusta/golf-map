@@ -72,6 +72,16 @@ namespace GolfMap.Bridge
             return new Dictionary<string, object> { { "compiling", EditorApplication.isCompiling } };
         }
 
+        [BridgeCommand("asset.reimport", "Force-reimport assets edited on disk that a refresh left alone (e.g. a .mat whose YAML was changed outside Unity while the editor held it loaded), then repaint the Scene view.", args = "paths (asset paths, comma-separated)")]
+        static object Reimport(BridgeArgs a)
+        {
+            var paths = (a.String("paths") ?? "").Split(',').Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
+            if (paths.Count == 0) throw new BridgeError("paths is required.");
+            foreach (var p in paths) AssetDatabase.ImportAsset(p, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
+            SceneView.RepaintAll();
+            return paths.Select(p => (object)new Dictionary<string, object> { { "path", p }, { "loaded", AssetDatabase.LoadMainAssetAtPath(p) != null } }).ToList();
+        }
+
         [BridgeCommand("menu", "Run a menu item by its path, e.g. 'GolfMap/Course/Select active course'.", args = "path")]
         static object Menu(BridgeArgs a)
         {
@@ -336,6 +346,34 @@ namespace GolfMap.Bridge
                 .OrderByDescending(h => h.point.y)
                 .Select(h => (object)new Dictionary<string, object> { { "object", PathOf(h.collider.transform) }, { "y", h.point.y } }).ToList();
             return new Dictionary<string, object> { { "x", x }, { "z", z }, { "terrains", terrains }, { "hits", hits } };
+        }
+
+        [BridgeCommand("ground.profile", "A cross-section: along the line from (x0, z0) to (x1, z1) every `step` metres, the highest collider hit straight down (object and height) and each active terrain's height. For comparing the meshes' shape with the heightmap.", args = "x0, z0, x1, z1, step=0.5, ignore (object path prefix left out, e.g. /GolfMap Walls)")]
+        static object GroundProfile(BridgeArgs a)
+        {
+            float x0 = (float)a.Number("x0", double.NaN), z0 = (float)a.Number("z0", double.NaN), x1 = (float)a.Number("x1", double.NaN), z1 = (float)a.Number("z1", double.NaN);
+            if (float.IsNaN(x0) || float.IsNaN(z0) || float.IsNaN(x1) || float.IsNaN(z1)) throw new BridgeError("Give x0, z0, x1, z1.");
+            float step = Mathf.Max(0.05f, (float)a.Number("step", 0.5));
+            var ignore = a.String("ignore");
+            float length = Vector2.Distance(new Vector2(x0, z0), new Vector2(x1, z1));
+            int n = Mathf.Min(4000, Mathf.FloorToInt(length / step) + 1);
+            var rows = new List<object>();
+            for (int i = 0; i < n; i++)
+            {
+                float f = n > 1 ? i / (float)(n - 1) : 0f, x = Mathf.Lerp(x0, x1, f), z = Mathf.Lerp(z0, z1, f);
+                var hit = Physics.RaycastAll(new Vector3(x, 10000f, z), Vector3.down, 20000f, ~0, QueryTriggerInteraction.Ignore)
+                    .Where(h => !(h.collider is TerrainCollider) && (string.IsNullOrEmpty(ignore) || !PathOf(h.collider.transform).StartsWith(ignore, StringComparison.Ordinal)))
+                    .OrderByDescending(h => h.point.y).FirstOrDefault();
+                var row = new Dictionary<string, object> { { "d", Math.Round(f * length, 3) }, { "x", x }, { "z", z } };
+                if (hit.collider != null) { row["y"] = hit.point.y; row["object"] = hit.collider.name; }
+                foreach (var t in Terrain.activeTerrains)
+                {
+                    var o = t.transform.position; var size = t.terrainData.size;
+                    if (x >= o.x && x <= o.x + size.x && z >= o.z && z <= o.z + size.z) { row[t.name] = t.SampleHeight(new Vector3(x, 0, z)) + o.y; break; }
+                }
+                rows.Add(row);
+            }
+            return new Dictionary<string, object> { { "length", length }, { "rows", rows } };
         }
 
         static Texture2D ReadSceneTarget(SceneView sv)

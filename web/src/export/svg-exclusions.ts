@@ -45,6 +45,20 @@ export function svgFeatures(items: readonly CourseFeature[]): CourseFeature[] {
     return items.filter(f => types.has(f.type));
 }
 
+/**
+ * The feature's shape name in the SVG, and so its mesh name after OPCD
+ * (`hole_18_1c` → `Spline_hole_18_1c_Bunker_-_Mesh`): its per-course number in
+ * hex, as `gspro.py` `_shape_ids` writes it. Paths are merged into the Roads
+ * layer's shapes, so for them only the number. A generated feature has no
+ * number and is named after 5 characters of its id (the exporter lengthens
+ * that in the rare case another shape already has it).
+ */
+export function shapeName(f: CourseFeature, holeNumber: number | undefined): string {
+    const id = f.no !== null && f.no !== undefined ? f.no.toString(16) : f.id.replace(/[^0-9a-z]/gi, '').slice(0, 5).toLowerCase();
+    if (f.type === 'path') return id;
+    return holeNumber !== undefined ? `hole_${holeNumber}_${id}` : `others_${id}`;
+}
+
 /** The features matching the filter. */
 export function matchSvgFilter(
     features: readonly CourseFeature[],

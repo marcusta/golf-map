@@ -1,0 +1,17 @@
+{
+  "format": "golfmap-recipe-v1",
+  "name": "Shoreline lake (Natural Pond) + overhang edge",
+  "notes": "Shoreline Studio's Natural Pond (lobed edge, uneven shelf, off-centre basin; seeded from the parent id and the recipe seed), then kaustin's Lake Overhang edge steps without his 2 m bunkeredit dig (the basin is Shoreline's): the blends joined in for good, two loop cuts at the rim, random slides and a widened interior (rings 4-5 pushed out under the lip: the overhanging grass edge), smoothed floor. Paint: Shoreline's surface zones (red rim, green bank, blue bed, black deep) mapped to golfmap roles; the joined blend keeps Shoreline's rim red (grass lip).",
+  "steps": [
+    { "op": "shorelinestudio.shape", "tag": "basin", "params": { "preset": "NATURAL_POND" } },
+    { "op": "afrod.meshblendjoinpermanent", "params": {} },
+    { "op": "afrod.spaceloops", "params": { "loopslide_inset": 1, "loopslide_amount": 0.01, "skip_longest_loop": false } },
+    { "op": "afrod.loopcut", "params": { "loopcut_inset": 1 } },
+    { "op": "afrod.loopcut", "params": { "loopcut_inset": 2 } },
+    { "op": "afrod.randomslideloop", "params": { "loopslide_inset": 3, "loopslide_random": 0.3 } },
+    { "op": "afrod.randomslideloop", "params": { "loopslide_inset": 4, "loopslide_random": 0.5 } },
+    { "op": "afrod.widenbunkerinterior", "tag": "overhang4", "params": { "bunker_selection_type": "Selected", "bunker_dig_inset": 4, "bunker_xy_shift": 0.1 } },
+    { "op": "afrod.widenbunkerinterior", "tag": "overhang5", "params": { "bunker_selection_type": "Selected", "bunker_dig_inset": 5, "bunker_xy_shift": 0.07 } },
+    { "op": "afrod.smoothmesh", "params": { "smooth_interior": 1.0, "smooth_interior_repeat": 5, "smooth_interior_inset": 5, "smooth_interior_3d": false } }
+  ]
+}

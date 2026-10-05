@@ -26,6 +26,10 @@ import { TilesetService } from '../map/tileset.service';
 import { MapService } from '../map/map.service';
 import { PublishClientService, PUBLISH_STEP_LABELS, type PublishState } from './publish-client.service';
 import { PATH_SURFACE_LABELS, PATH_SURFACES, type PathSurface } from '../../../shared/features/path-surface';
+import { TREE_AREA_TYPE } from '../../../shared/features/tree-areas';
+
+/** The zone-type trigger's value while a tree species area is picked (zone keys are [a-z0-9_], so it never clashes). */
+const TREE_AREA_PICK = '~tree_area';
 
 type CommandBarMode = 'create' | 'plan';
 
@@ -887,6 +891,12 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 const nameEl = h.querySelector<HTMLElement>('[data-k="name"]')!;
                 ctx.track(effect(() => {
                     const key = this.triggerZoneType();
+                    if (key === TREE_AREA_PICK) {
+                        swEl.style.background = FEATURE_STYLES.tree_area.fill;
+                        swEl.style.border = `1px solid ${FEATURE_STYLES.tree_area.outline}`;
+                        nameEl.textContent = FEATURE_STYLES.tree_area.label;
+                        return;
+                    }
                     swEl.style.background = this.zoneTypesSvc.colorFor(key) || FEATURE_STYLES.vegetation_zone.fill;
                     swEl.style.border = `1px solid ${FEATURE_STYLES.vegetation_zone.outline}`;
                     nameEl.textContent = key ? this.zoneTypesSvc.labelFor(key) : 'Zone type';
@@ -926,10 +936,15 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         return this.mode.activeToolId.get() === VEGETATION_TOOL_ID;
     }
 
-    /** Zone type shown on the zone-type trigger (selected single zone → the next zone's type). */
+    /**
+     * Zone type shown on the zone-type trigger (selected single zone → the next
+     * zone's type), or {@link TREE_AREA_PICK} for a tree species area.
+     */
     private triggerZoneType(): string {
         const selected = this.features.selectedIds.get().size === 1 ? this.features.selected.get() : null;
+        if (selected && selected.type === TREE_AREA_TYPE) return TREE_AREA_PICK;
         if (selected && isVegetationType(selected.type)) return zoneTypeKeyOf(selected.attributes);
+        if (!selected && this.tool.drawType.get() === TREE_AREA_TYPE) return TREE_AREA_PICK;
         return this.tool.drawZoneType.get() || (this.zoneTypesSvc.items.get()[0]?.key ?? '');
     }
 
@@ -1054,9 +1069,27 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
      */
     private buildZoneTypePanel(host: HTMLElement, track: (d: () => void) => void, close: () => void): void {
         host.innerHTML = `<div class="cmdbar__ft-title">Zone type</div><div class="cmdbar__ft-grid" data-k="grid"></div>`
+            + `<div class="cmdbar__ft-title">Trees</div><div class="cmdbar__ft-grid" data-k="trees"></div>`
             + `<div class="cmd-ft-policy"><button type="button" class="cmd-zt-edit" data-k="edit" data-testid="zone-types-edit-btn">`
             + `${icon('layers', 16)}<span>Edit zone types…</span></button></div>`;
         const grid = host.querySelector<HTMLElement>('[data-k="grid"]')!;
+        // A tree species area: the species mix the Unity tree planter uses inside it.
+        const treeArea = document.createElement('button');
+        treeArea.type = 'button';
+        treeArea.className = 'cmd-ft';
+        treeArea.title = 'Draw an area whose trees take their own species mix (e.g. almost only oaks)';
+        treeArea.dataset.testid = 'tree-area-pick';
+        treeArea.innerHTML = `<span class="cmd-ft__sw"></span><span class="cmd-ft__name"></span>`;
+        const treeSw = treeArea.querySelector<HTMLElement>('.cmd-ft__sw')!;
+        treeSw.style.background = FEATURE_STYLES.tree_area.fill;
+        treeSw.style.borderColor = FEATURE_STYLES.tree_area.outline;
+        treeArea.querySelector<HTMLElement>('.cmd-ft__name')!.textContent = FEATURE_STYLES.tree_area.label;
+        treeArea.onclick = () => {
+            this.tool.chooseTreeArea();
+            close();
+        };
+        track(effect(() => treeArea.setAttribute('aria-selected', String(this.triggerZoneType() === TREE_AREA_PICK))));
+        host.querySelector<HTMLElement>('[data-k="trees"]')!.appendChild(treeArea);
         const edit = host.querySelector<HTMLButtonElement>('[data-k="edit"]')!;
         edit.onclick = () => {
             const course = this.svc.course.peek();

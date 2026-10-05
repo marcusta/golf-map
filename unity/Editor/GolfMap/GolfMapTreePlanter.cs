@@ -32,6 +32,27 @@ namespace GolfMap.Editor
         public string format;
         public GolfMapTreePlot plot;
         public List<GolfMapTree> trees;
+        public List<GolfMapTreeArea> areas;   // tree species areas (optional; gspro.py trees --course)
+    }
+
+    // A tree species area drawn in golf-map (shared/features/tree-areas.ts): the stems that
+    // name it in `area` race its species mix instead of the palette's.
+    [Serializable]
+    public class GolfMapTreeArea
+    {
+        public string id;
+        public string name;
+        public bool ignoreKind;      // the mix decides even against the survey's broadleaf/conifer class
+        public List<GolfMapTreeAreaSpecies> species;
+        public int stems;
+        public List<GolfMapZoneRing> rings;   // plot-local outline, for the Scene view
+    }
+
+    [Serializable]
+    public class GolfMapTreeAreaSpecies
+    {
+        public string species;
+        public double weight;
     }
 
     [Serializable]
@@ -57,6 +78,7 @@ namespace GolfMap.Editor
         public int k;        // 0 broadleaf, 1 conifer, 2 unknown
         public bool bush;    // crown wider than 0.35 * height
         public string id;    // optional stable stem id; extensions seed per-stem randomness from it
+        public string area;  // id of the tree species area it stands in; empty = none
     }
 
     // partial: a course project may extend the planter in its own files (e.g. a
@@ -98,6 +120,7 @@ namespace GolfMap.Editor
         readonly HashSet<GolfMapTree> woodlandTrees = new HashSet<GolfMapTree>();
         // Manual edits (GolfMapTreeEdits.cs) applied on top of the loaded survey: tree -> its record.
         readonly Dictionary<GolfMapTree,GolfMapTreeEdit> treeEdits = new Dictionary<GolfMapTree,GolfMapTreeEdit>();
+        readonly Dictionary<string,GolfMapAreaMix> areaMixes = new Dictionary<string,GolfMapAreaMix>();   // loaded file's tree species areas by id
         GolfMapTreeEditFile editFile;
         string editsPath = "";
         List<string> editWarnings = new List<string>();
@@ -399,6 +422,14 @@ namespace GolfMap.Editor
                 editFile = GolfMapTreeEdits.Load(editsPath);
                 editWarnings = GolfMapTreeEdits.Apply(file.trees, editFile.edits, treeEdits);
                 foreach (var w in editWarnings) Debug.LogWarning("[GolfMap] " + w);
+                areaMixes.Clear();
+                foreach (var a in file.areas ?? new List<GolfMapTreeArea>())
+                {
+                    if (a == null || string.IsNullOrEmpty(a.id)) continue;
+                    var mix = new GolfMapAreaMix { ignoreKind = a.ignoreKind };
+                    foreach (var s in a.species ?? new List<GolfMapTreeAreaSpecies>()) if (s != null && !string.IsNullOrEmpty(s.species) && s.weight > 0) mix.weights[s.species] = s.weight;
+                    areaMixes[a.id] = mix;
+                }
                 loaded = file;
                 loadedPath = filePath;
             }
@@ -431,7 +462,10 @@ namespace GolfMap.Editor
                 source = new GolfMapBiome { format = biome.format, seed = biome.seed, rules = biome.rules, assets = assets };
                 kind = assets.All(a => a.kind == "conifer") ? 1 : assets.All(a => a.kind == "broadleaf") ? 0 : 2;
             }
-            var m = GolfMapBiomeMatcher.Match(source, t.id, t.h, t.r, kind, woodland);
+            // A tree species area gives the stem its mix; a hand-picked species or asset wins over it.
+            GolfMapAreaMix area = null;
+            if (source == biome && !string.IsNullOrEmpty(t.area)) areaMixes.TryGetValue(t.area, out area);
+            var m = GolfMapBiomeMatcher.Match(source, t.id, t.h, t.r, kind, woodland, area);
             if (m != null && edit != null && edit.rotationSet) m.rotation = edit.rotation;
             if (m != null && edit != null)
             {
@@ -586,7 +620,30 @@ namespace GolfMap.Editor
             }
             var speciesCounts=new Dictionary<string,int>();foreach(var m in biomeMatches.Values){string label=string.IsNullOrEmpty(m.asset.species)?m.asset.kind:m.asset.species;if(!speciesCounts.ContainsKey(label))speciesCounts[label]=0;speciesCounts[label]++;}
             var mix="";foreach(var pair in speciesCounts)mix+=pair.Key+" "+pair.Value+"; ";
-            return "\nBiome: "+matched+" eligible, "+review+" imperfect/unknown fits, "+unmatched+" unmatched (skipped). "+woodlandCount+" woodland stems use canopy matching. Uniform scale "+minScale+"–"+maxScale+". Uses prepared material colours.\n"+mix;
+            return "\nBiome: "+matched+" eligible, "+review+" imperfect/unknown fits, "+unmatched+" unmatched (skipped). "+woodlandCount+" woodland stems use canopy matching. Uniform scale "+minScale+"–"+maxScale+". Uses prepared material colours.\n"+mix+AreasReport();
+        }
+
+        // What each tree species area asked for and what its stems got, and species it names that
+        // the palette has no enabled asset for (those never plant).
+        string AreasReport()
+        {
+            var areas = loaded == null || loaded.areas == null ? new List<GolfMapTreeArea>() : loaded.areas.Where(a => a != null && !string.IsNullOrEmpty(a.id)).ToList();
+            if (areas.Count == 0) return "";
+            var known = new HashSet<string>(biome.assets.Where(a => a.enabled).Select(a => a.Label));
+            var text = "\nTree species areas: " + areas.Count + ".";
+            foreach (var a in areas)
+            {
+                var got = new Dictionary<string, int>();
+                foreach (var pair in biomeMatches) if (pair.Key.area == a.id) { string label = pair.Value.asset.Label; int n; got.TryGetValue(label, out n); got[label] = n + 1; }
+                var species = a.species ?? new List<GolfMapTreeAreaSpecies>();
+                double total = species.Sum(s => Math.Max(0, s.weight));
+                string asked = string.Join(", ", species.Where(s => s.weight > 0).Select(s => s.species + " " + (total > 0 ? Math.Round(100 * s.weight / total) : 0) + "%").ToArray());
+                string planted = got.Count == 0 ? "none" : string.Join(", ", got.OrderByDescending(g => g.Value).Select(g => g.Key + " " + g.Value).ToArray());
+                text += "\n  " + (string.IsNullOrEmpty(a.name) ? a.id : a.name) + ": " + asked + (a.ignoreKind ? " (any survey class)" : "") + " -> " + planted;
+                var unknown = species.Where(s => s.weight > 0 && !known.Contains(s.species)).Select(s => s.species).ToArray();
+                if (unknown.Length > 0) text += "  WARNING no enabled palette asset for: " + string.Join(", ", unknown);
+            }
+            return text;
         }
 
         // VSP picks a shader controller by *exact* shader name (ShaderSelector, matched against

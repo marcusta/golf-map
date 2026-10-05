@@ -17,7 +17,12 @@
 //     the file): never added, reported with its objects; the Blender export deletes it.
 //     A record older than any FBX is ignored (OPCD's Batch Export bypasses it).
 // Vertex paint renders from mesh copies (GolfMapVertexPaint): after any add or
-// replace the paint is applied again, so the copies follow the new geometry.
+// replace the paint is applied again, so the copies follow the new geometry. An
+// object showing a copy (renderer, and collider too once stone-wall ground reshaped
+// it) maps to its FBX through the paint's restore.json. The paint also reshapes
+// the ground under stone walls (GolfMapWallGround); the walls and boulders standing
+// on a replaced or added mesh are then built again (GolfMapWalls.RebuildOver), so
+// their stones meet it; the rest keep theirs, hand edits included.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -67,37 +72,128 @@ namespace GolfMap.Editor
             return Sync(a.Bool("dryRun", false), a.Bool("prune", false), a.Bool("paint", true), a.String("folder"), a.String("parent"), a.Bool("replaceAll", false), a.String("exclude"));
         }
 
-        public static Dictionary<string, object> Sync(bool dryRun, bool prune, bool paint, string folderName = null, string parentName = null, bool replaceAll = false, string excludePrefixes = null)
+        // Read-only: renderers that may draw white or untextured after a sync/refresh. Per active MeshRenderer of the
+        // scene: a missing mesh or material, Unity's default material, the error shader, a material with no texture
+        // at all, a Standard-type material without _MainTex, an OPCD MAHS material whose satellite/array textures are
+        // missing, and a painted copy whose collider shows another vertex count than the renderer (the two drew
+        // different shapes before GolfMapVertexPaint.Overwrite). Findings are grouped by material: objects per material.
+        [BridgeCommand("golfmap.materials.audit", "Read-only: active renderers that may draw white/untextured - no mesh or material, Unity's default material, error shader, material without any texture, Standard without _MainTex, OPCD MAHS without satellite/arrays, ortho material on a mesh without UVs, renderer and collider meshes that differ in vertex count.",
+            args = "under (object path prefix; default the whole scene), limit=40 (objects listed per finding)")]
+        static object AuditMaterials(BridgeArgs a)
         {
+            string under = a.String("under");
+            int limit = (int)a.Number("limit", 40);
+            var findings = new Dictionary<string, List<string>>();
+            Action<string, string> add = (reason, what) => { List<string> l; if (!findings.TryGetValue(reason, out l)) findings[reason] = l = new List<string>(); l.Add(what); };
+            int renderers = 0;
+            var scene = EditorSceneManager.GetActiveScene();
+            foreach (var r in scene.GetRootGameObjects().SelectMany(g => g.GetComponentsInChildren<MeshRenderer>(false)))
+            {
+                if (!r.enabled) continue;
+                var path = "/" + string.Join("/", r.GetComponentsInParent<Transform>(true).Reverse().Select(t => t.name).ToArray());
+                if (under != null && !path.StartsWith(under, StringComparison.Ordinal)) continue;
+                renderers++;
+                var mf = r.GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mf != null && mesh == null) add("no mesh", path);
+                var mc = r.GetComponent<MeshCollider>();
+                if (mesh != null && mc != null && mc.sharedMesh != null && mc.sharedMesh != mesh && mc.sharedMesh.vertexCount != mesh.vertexCount
+                    && AssetDatabase.GetAssetPath(mesh) != AssetDatabase.GetAssetPath(mc.sharedMesh) && AssetDatabase.GetAssetPath(mesh).Contains("/PaintedMeshes/")
+                    && !AssetDatabase.GetAssetPath(mc.sharedMesh).EndsWith(".fbx", StringComparison.OrdinalIgnoreCase))
+                    add("renderer and collider meshes differ", path);
+                var mats = r.sharedMaterials;
+                if (mats.Length == 0) add("no material", path);
+                foreach (var m in mats)
+                {
+                    if (m == null) { add("empty material slot", path); continue; }
+                    var mp = AssetDatabase.GetAssetPath(m);
+                    string what = m.name + " (" + (m.shader != null ? m.shader.name : "no shader") + ") | " + path;
+                    if (m.shader == null || m.shader.name == "Hidden/InternalErrorShader") { add("error shader (pink)", what); continue; }
+                    if (m.name == "Default-Material" || mp == "Resources/unity_builtin_extra") add("Unity default material", what);
+                    var texProps = Enumerable.Range(0, ShaderUtil.GetPropertyCount(m.shader))
+                        .Where(i => ShaderUtil.GetPropertyType(m.shader, i) == ShaderUtil.ShaderPropertyType.TexEnv)
+                        .Select(i => ShaderUtil.GetPropertyName(m.shader, i)).ToList();
+                    if (texProps.Count > 0 && texProps.All(p => m.GetTexture(p) == null)) add("material without any texture", what);
+                    if (m.shader.name.StartsWith("Standard", StringComparison.Ordinal) && m.HasProperty("_MainTex") && m.GetTexture("_MainTex") == null)
+                    {
+                        var c = m.HasProperty("_Color") ? m.color : Color.white;
+                        if (c.r > 0.8f && c.g > 0.8f && c.b > 0.8f) add("Standard, no _MainTex, white colour", what);
+                    }
+                    if (m.HasProperty("_Satellite"))
+                    {
+                        bool usesSat = m.shaderKeywords.Any(k => k.EndsWith("USESATELLITEFORBASE_ON", StringComparison.Ordinal));
+                        if (usesSat && m.GetTexture("_Satellite") == null) add("OPCD MAHS: satellite used but missing", what);
+                        foreach (var arr in new[] { "_BaseArray", "_DetailArray", "_NormalArray" })
+                            if (m.HasProperty(arr) && m.GetTexture(arr) == null) add("OPCD MAHS: " + arr + " missing", what);
+                    }
+                }
+            }
+            return new Dictionary<string, object>
+            {
+                { "scene", scene.name }, { "renderers", renderers },
+                { "findings", findings.ToDictionary(kv => kv.Key, kv => (object)new Dictionary<string, object> {
+                    { "objects", kv.Value.Count },
+                    { "groups", kv.Value.GroupBy(w => w.Split('|')[0].Trim()).OrderByDescending(g => g.Count()).Take(limit)
+                        .Select(g => g.Key + " x" + g.Count() + "  e.g. " + g.First().Split('|').Last().Trim()).ToList() } }) },
+            };
+        }
+
+        // only: object names (= FBX names without extension), the fast per-feature path of golfmap.course.refresh only=.
+        // Then just those FBX are imported (AssetDatabase.ImportAsset each, no full Refresh), every named FBX is replaced
+        // (or added when no object shows it) whatever the record says - the caller knows they changed -, only named
+        // objects whose FBX is gone are stale, and only their entries of the sync record are updated.
+        public static Dictionary<string, object> Sync(bool dryRun, bool prune, bool paint, string folderName = null, string parentName = null, bool replaceAll = false, string excludePrefixes = null, bool importChanged = true,
+            ICollection<string> only = null)
+        {
+            var laps = new GolfMapTerrainConform.Laps();
             var course = GolfMapCourses.Require();
             var folder = "Assets/" + (folderName ?? course.meshFolder).Trim('/', '\\').Replace('\\', '/');
             var parentObject = parentName ?? course.meshParent;
             // Read everything from the course now: OPCD's Set Default Materials saves assets and unloads
             // unused ones, and the course asset (referenced by nothing in the scene) goes with them.
             var courseFolder = GolfMapCourses.Folder(course);
+            var originals = GolfMapVertexPaint.OriginalAssets(courseFolder);
+            var painted = courseFolder + "PaintedMeshes/";
             var exclude = (excludePrefixes ?? course.meshExclude ?? "").Split(',').Select(x => x.Trim()).Where(x => x.Length > 0).ToArray();
             course = null;
             if (!AssetDatabase.IsValidFolder(folder)) throw new InvalidOperationException("Course mesh folder " + folder + " does not exist (course.meshFolder).");
-            AssetDatabase.Refresh();  // imports what the export rewrote, like focusing Unity would
-
-            var scene = EditorSceneManager.GetActiveScene();
+            // imports what the export rewrote, like focusing Unity would; importChanged=false plans from the files on
+            // disk without importing (golfmap.course.refresh dryRun)
+            var named = only == null ? null : new HashSet<string>(only, StringComparer.OrdinalIgnoreCase);
             var files = Directory.GetFiles(folder, "*.fbx", SearchOption.AllDirectories)
                 .Select(f => f.Replace('\\', '/')).OrderBy(f => f, StringComparer.Ordinal).ToList();
+            if (named != null) files = files.Where(f => named.Contains(Path.GetFileNameWithoutExtension(f))).ToList();
+            if (importChanged)
+            {
+                if (named == null) AssetDatabase.Refresh();
+                else foreach (var f in files) AssetDatabase.ImportAsset(f, ImportAssetOptions.ForceUpdate);
+            }
+            laps.Mark("import");
+
+            var scene = EditorSceneManager.GetActiveScene();
             var all = scene.GetRootGameObjects().SelectMany(r => r.GetComponentsInChildren<Transform>(true)).Select(t => t.gameObject).ToList();
             var parent = all.FirstOrDefault(g => g.transform.parent == null && g.name == parentObject)
                       ?? all.FirstOrDefault(g => g.name == parentObject);
             var underParent = parent == null ? new List<GameObject>()
                 : parent.GetComponentsInChildren<Transform>(true).Select(t => t.gameObject).Where(g => g != parent).ToList();
+            if (named != null)
+            {
+                // only the named objects (a painted copy keeps its object's name); the parent was found above from all
+                all = all.Where(g => named.Contains(g.name)).ToList();
+                underParent = underParent.Where(g => named.Contains(g.name)).ToList();
+            }
 
             // Which scene objects show which FBX. Course mesh objects are leaves: the parent, or anything
             // with children, is never one (replacing it would delete everything under it), even when it
-            // carries a mesh of its own - e.g. a parent made by dragging an FBX in and renaming it.
+            // carries a mesh of its own - e.g. a parent made by dragging an FBX in and renaming it. A water plane is
+            // the exception: OPCD's Set Default Materials gives it a child 'Default Reflection Probe', and it is the
+            // FBX's object (else a sync adds the plane a second time).
             var byFile = new Dictionary<string, List<GameObject>>(StringComparer.OrdinalIgnoreCase);
             var holders = new List<object>();
             foreach (var go in all)
             {
-                var src = SourceFbx(go, folder);
-                if (src != null && (go == parent || go.transform.childCount > 0))
+                var src = SourceFbx(go, folder, originals, painted);
+                if (src != null && (go == parent || (go.transform.childCount > 0 && !GolfMapWaterplanes.IsWaterPlane(go.name))))
                 {
                     holders.Add(PathOf(go) + " renders " + Path.GetFileNameWithoutExtension(src) + " itself: it draws twice where that mesh's own object is. Remove its MeshFilter/MeshRenderer/MeshCollider.");
                     continue;
@@ -118,17 +214,24 @@ namespace GolfMap.Editor
             leftovers = leftovers.Where(f => !excluded(f)).ToList();
             var current = files.Where(f => !leftovers.Contains(f) && !excluded(f)).ToList();
             var versions = current.ToDictionary(f => f, Version, StringComparer.OrdinalIgnoreCase);
+            laps.Mark("scan");
 
             var statePath = courseFolder + StateFile;
             var previous = LoadState(statePath, folder);
             var missing = current.Where(f => !byFile.ContainsKey(f)).ToList();
             var changed = current.Where(f => byFile.ContainsKey(f) &&
-                (replaceAll || (previous != null && (!previous.ContainsKey(f) || previous[f] != versions[f])))).ToList();
+                (replaceAll || named != null || (previous != null &&(!previous.ContainsKey(f) || previous[f] != versions[f])))).ToList();
             // Stale: a course mesh object under the parent that shows no current FBX. Its mesh reads
             // null once the FBX is deleted, but a painted copy keeps rendering, so that alone is not enough.
             // Objects showing an excluded FBX (course.meshExclude, e.g. OPCD's Gap_Issue markers) go the same way.
-            var stale = underParent.Where(g => g.transform.childCount == 0 && g.GetComponent<MeshFilter>() != null &&
-                (SourceFbx(g, folder) == null || excluded(SourceFbx(g, folder)))).ToList();
+            // A painted copy's source comes from the paint record, which still names the FBX after it was deleted
+            // (renamed meshes after a new .blend): stale too when that file is gone.
+            Func<GameObject, bool> isStale = g =>
+            {
+                var src = SourceFbx(g, folder, originals, painted);
+                return src == null || excluded(src) || !File.Exists(src);
+            };
+            var stale = underParent.Where(g => g.transform.childCount == 0 && g.GetComponent<MeshFilter>() != null && isStale(g)).ToList();
             var duplicates = byFile.Where(kv => kv.Value.Count > 1)
                 .Select(kv => (object)new Dictionary<string, object> { { "fbx", kv.Key }, { "objects", kv.Value.Select(g => (object)PathOf(g)).ToList() } }).ToList();
 
@@ -140,7 +243,7 @@ namespace GolfMap.Editor
                 { "dryRun", dryRun },
                 { "fbx", current.Count },
                 { "excluded", skipped.Count },
-                { "firstSync", previous == null && !replaceAll },
+                { "firstSync", previous == null && !replaceAll && named == null },
                 { "added", missing.Select(f => (object)Path.GetFileNameWithoutExtension(f)).ToList() },
                 { "replaced", changed.Select(f => (object)Path.GetFileNameWithoutExtension(f)).ToList() },
                 { "stale", stale.Select(g => (object)PathOf(g)).ToList() },
@@ -155,8 +258,20 @@ namespace GolfMap.Editor
             if (holders.Count > 0) result["warnings"] = holders;
             if (leftovers.Count > 0)
                 result["leftoversHint"] = leftovers.Count + " FBX are not exported by the current .blend: run Export changed FBX in Blender with 'Delete FBX of removed meshes' ticked, then sync again.";
-            if (previous == null && !replaceAll)
+            if (named != null)
+            {
+                var known = new HashSet<string>(files.Select(f => Path.GetFileNameWithoutExtension(f)), StringComparer.OrdinalIgnoreCase);
+                known.UnionWith(all.Select(g => g.name));
+                result["only"] = named.Count;
+                result["unknown"] = named.Where(n => !known.Contains(n)).OrderBy(n => n, StringComparer.Ordinal).Cast<object>().ToList();
+            }
+            if (previous == null && !replaceAll && named == null)
                 result["firstSyncNote"] = "No record of a previous sync: the scene's existing objects are taken as current and recorded. Use Rebuild all (replaceAll=true) if they may be out of date.";
+            // the stone walls a sync builds again: those standing on a mesh it replaces (see GolfMapWalls.RebuildOver)
+            var wallsOver = GolfMapWalls.WallsOver(changed.SelectMany(f => byFile[f]).ToList());
+            if (wallsOver != null && paint) result["wallsToRebuild"] = wallsOver.Cast<object>().ToList();
+            laps.Mark("plan");
+            result["timings"] = laps.times;
             if (dryRun) return result;
 
             Undo.IncrementCurrentGroup();
@@ -191,6 +306,7 @@ namespace GolfMap.Editor
                     Undo.AddComponent<MeshCollider>(go).sharedMesh = filter.sharedMesh;
                 created.Add(go);
             }
+            laps.Mark("swap");
             if (created.Count > 0)
             {
                 var selection = Selection.objects;
@@ -199,19 +315,35 @@ namespace GolfMap.Editor
                     errors.Add("OPCD's '" + SetDefaultMaterialsMenu + "' is not in this project; the new meshes have no materials.");
                 Selection.objects = selection;
             }
+            laps.Mark("opcdMaterials");
             if (prune)
                 foreach (var g in stale) if (g != null) Undo.DestroyObjectImmediate(g);
             Undo.CollapseUndoOperations(undoGroup);
 
             // Painting reads the FBX colours, so it runs after the new objects exist.
-            if (paint && created.Count > 0 && File.Exists(courseFolder + PaintFile)) result["paint"] = Summary(GolfMapVertexPaint.Apply(false));
+            if (paint && created.Count > 0 && File.Exists(courseFolder + PaintFile))
+            {
+                result["paint"] = Summary(GolfMapVertexPaint.Apply(false));
+                var walls = GolfMapWalls.RebuildOver(created);
+                if (walls != null) result["walls"] = walls;
+            }
 
             if (created.Count > 0 || (prune && stale.Count > 0)) EditorSceneManager.MarkSceneDirty(scene);
-            SaveState(statePath, folder, versions);
+            if (named == null) SaveState(statePath, folder, versions);
+            else if (previous != null)
+            {
+                // only the named entries; the rest keep what the last sync recorded (with no record yet none is started,
+                // so the next full sync still takes the scene as current)
+                foreach (var k in previous.Keys.Where(k => named.Contains(Path.GetFileNameWithoutExtension(k))).ToList()) previous.Remove(k);
+                foreach (var kv in versions) previous[kv.Key] = kv.Value;
+                SaveState(statePath, folder, previous);
+            }
+            result["created"] = created.Where(g => g != null).Select(g => (object)PathOf(g)).ToList();
 
             result["prunedStale"] = prune && stale.Count > 0;
             result["errors"] = errors;
             result["followUps"] = FollowUps(created, created.Count > 0 || (prune && stale.Count > 0));
+            laps.Mark("record");
             return result;
         }
 
@@ -241,17 +373,23 @@ namespace GolfMap.Editor
         }
 
         // The FBX (under folder) an object's mesh comes from: the collider keeps the
-        // FBX mesh when vertex paint has swapped the MeshFilter to a copy.
-        static string SourceFbx(GameObject go, string folder)
+        // FBX mesh when vertex paint has swapped the MeshFilter to a copy; when both
+        // show a copy under `painted` (stone-wall ground), the paint's record names it.
+        static string SourceFbx(GameObject go, string folder, Dictionary<string, string> originals, string painted)
         {
             var collider = go.GetComponent<MeshCollider>();
             var filter = go.GetComponent<MeshFilter>();
+            bool copy = false;
             foreach (var mesh in new[] { collider != null ? collider.sharedMesh : null, filter != null ? filter.sharedMesh : null })
             {
                 if (mesh == null) continue;
                 var p = AssetDatabase.GetAssetPath(mesh);
                 if (p.StartsWith(folder + "/", StringComparison.OrdinalIgnoreCase) && p.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase)) return p;
+                copy |= p.StartsWith(painted, StringComparison.OrdinalIgnoreCase);
             }
+            string o;
+            if (copy && originals.TryGetValue(PathOf(go), out o) && o != null &&
+                o.StartsWith(folder + "/", StringComparison.OrdinalIgnoreCase) && o.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase)) return o;
             return null;
         }
 

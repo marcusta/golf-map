@@ -409,3 +409,163 @@ so the alphamap step is dropped.
 3. Unity: import, rule wiring, read-only overlay, report. Verified in the OPCD project
    against a package with one bush item and one tall grass item.
 4. Later: Unity zone editor writing `<course>-<terrain>-zone-edits.json` (D-VZ4).
+
+## 12. Implementation notes: server
+
+Moved from server/AGENTS.md.
+
+
+`vegetation_zone` is an ordinary area feature type (appended to `FEATURE_TYPES`
+so the web's digit shortcuts keep their bindings; `TYPE_Z_ORDER` puts it above
+`green` and below `trees`) with no gameplay meaning — `shared/strategy/lie.ts`
+maps it to `rough` explicitly and `shared/render/resolved-surface-stack.ts`
+passes it through unclipped, since it is an overlay, not a surface. Its
+per-feature fields live in `attributes_json`: `zoneType` (required, the key
+into the course's zone-type table), `zoneVariant` (optional string, a variant
+key of that type; absent or `''` = the type's Default mix; like `zoneType` not
+checked against the table), `weight` (0..1, default 1), `feather` (m,
+default 2) and `noise` (m, default 0), plus `blend` (`replace` | `mix`,
+default replace) and `extraPalettes` (a string of comma-separated
+`<type>[/<variant>][=<weight>]`, since attributes are flat scalars;
+`shared/features/zone-layers.ts`, D-VZ12). The numeric keys may be absent and then
+mean their defaults; a zone with no `zoneType` (or a non-string `zoneVariant`,
+another `blend`, an `extraPalettes` that does not parse)
+is rejected on create, on an attributes update and in the generated-features
+import (the lidar `lidar-lowveg` proposals, D-VZ7, arrive through that route
+with the same property names).
+Overlap between zone types is resolved by document order (`stackKey`) — there
+is no priority field.
+
+`tree_area` (a tree species area, `shared/features/tree-areas.ts`) is the same
+kind of overlay (after `vegetation_zone` in `TYPE_Z_ORDER`, in `OVERLAY_TYPES`,
+no gameplay meaning): the Unity tree planter gives the survey stems inside it
+the area's species mix instead of the palette's. Attributes: `species`
+(required, comma-separated `<species>[=<weight>]`, palette labels read
+lower-cased, weight default 1, no repeats, some weight > 0), optional `name` and
+`ignoreKind` (boolean); anything else in the mix is rejected on create, update
+and the generated-features import. The GSPro trees export passes `--course` so
+`gspro.py trees` writes the areas into the trees file (`docs/gspro/export.md`).
+
+Migration 019 adds `course_zone_types` (the course's legend: `key` unique per
+course, `name`, `color`, `texture_index` + `channel` unique per course — four
+channels per mask texture — `sort_order` and `items_json`, the VSPro item
+bindings `[{ item, minDensity, maxDensity }]` from D-VZ9). `ZoneTypesService`
+**seeds the defaults** (`rough_tall`, `shrub`, `fern`, `meadow` on texture
+0, channels 0..3, and `woodland_floor` on texture 1 channel 0, D-VZ10) on a
+course's first `listByCourse`, so nothing has to run a bootstrap step;
+`addDefaults` is the same insert for the panel's button and fills in only the
+keys a course is missing (a preset whose slot is taken goes to the first free one). `create` without an explicit slot
+takes the lowest free (texture, channel). Migration 022 adds `variants_json`
+(`variants: [{ key, name, items }]` on create/update/read): named alternative
+item mixes a zone picks with `zoneVariant`; the type's own `items` are the
+Default mix. Variant keys match `^[a-z0-9_]+$` and are unique within the type
+(a repeat is a `ConflictError`, 409), names are non-empty, items are validated
+like `items`; malformed JSON in the column reads as `[]`. Since the zones
+export gives every bound item its own mask channel (unity-zones-v2), a type's
+`texture_index`/`channel` are legacy: still stored, unique and returned, but
+ignored by the pipeline and not shown in the web panel. `bun run zones --`
+(`scripts/vegetation-zones.ts`) lists/sets zone variants (`--variant`) and
+binds a variant's items (`bind --variant <key>`, creating it if missing).
+No `version` column and no optimistic
+locking — a short course-level legend, unlike the feature stack. The API
+(`/api/zone-types*`) mounts in **both** modes, like the features it belongs to.
+
+## 13. Implementation notes: web
+
+Moved from web/AGENTS.md.
+
+`zones/` — `ZoneTypesService` (the course's zone-type legend, loaded with the
+features in `editor/toolbar.component.ts`) and `ZoneTypesPanelComponent` (the
+table editor: colour, the VSPro item bindings of the type's "Default" mix, and
+its named variants, each with its own bindings; item inputs autocomplete from
+a `<datalist>` of every item name in the table). No mask texture/channel
+inputs: the export gives every bound item its own channel. "Add variant"
+creates `New variant` under a key slugged once and made unique in the type
+(`uniqueVariantKey`) — renaming later changes the name only, so zones stay
+bound. The panel is spawned by `CourseDetailComponent` and opened from the
+Vegetation mode's zone-type picker ("Edit zone types…") or the selection
+panel's zone section.
+
+`vegetation_zone` is a feature type in `draw/feature-palette.ts`
+(`VEGETATION_TYPES`; no digit shortcut; mirrored by hand into
+`mobile/course/feature-colors.ts`), drawn and edited in Vegetation mode only
+(see below).
+Its attributes (`zoneType`, `zoneVariant`, `weight`, `feather`, `noise`,
+`blend`, `extraPalettes`) are
+edited in the selection panel's "Vegetation zone" section and saved through
+`features.update(id, { attributes })`, which replaces the whole object — the
+section always sends all seven keys. "Generated vegetation under it"
+(`zone-blend-select`, attribute `blend`) is Replace it / Add to it: drawn zones
+always add up with each other (D-VZ14); "Also plants" lists `extraPalettes`
+(`shared/features/zone-layers.ts`) as rows of type, variant, weight and
+Remove, and every edit writes the whole string back. A zone's hole is only
+where it is filed (D-VZ14): with only zones selected the move select reads
+"Hole (folder)" with a hint and no Roughs, and the Vegetation stack panel
+defaults to `ALL_ZONES_KEY` ("All zones, by hole": a heading per hole, rows
+named by what the zone plants), keeps it when a zone is selected, and shows
+no reorder verbs for zones. The Variant select (`zone-variant-select`:
+"Default" = `''` plus the type's variants) is hidden while the type has none;
+changing the zone type also resets `zoneVariant` to `''`. `FeaturesService.create`
+fills in the zone defaults (first zone type, Default variant, weight 1, feather
+2 m, noise 0) for any zone that reaches it without a `zoneType`, so freshly
+drawn, duplicated, stamped and retyped zones are all valid server-side;
+duplicate/paste copy attributes generically, variant included. The overlay fill
+uses `featureFillColorExpression`, which paints a zone in its zone type's own
+colour (`properties.zoneColor`; variants share it, `properties.zoneVariant`
+carries the key) and everything else from the palette.
+
+`tree_area` (tree species area, `shared/features/tree-areas.ts`) is the other
+`VEGETATION_TYPES` entry, picked from the zone-type picker's **Trees** section
+(`tree-area-pick`). Like a zone-type pick, `DrawToolService.chooseTreeArea`
+converts the selected zones (a retype, one undo entry) or, with none selected
+or while drawing, arms the next shape. A zone-type pick in turn converts
+selected areas into zones of that type and otherwise arms a zone. The
+attributes of both types ride along (history snapshots restore the type only),
+so undo gets either back as it was. A new or converted area starts with the
+mix edited last (`drawTreeMix`, default `oak`). The selection panel's "Tree species area"
+section edits `name`, the mix (`species`, one row per species: name with a
+datalist of `SUGGESTED_TREE_SPECIES`, weight, share, remove; rows are refreshed
+in place so focus survives a save; a mix of zeros is not saved) and
+`ignoreKind`. The stack panel labels it "<name> · oak 90% · birch 10%";
+`buildLieMap` skips it.
+
+### Vegetation mode
+
+The zones are drawn and edited in the Vegetation sub-mode
+(`zones/vegetation-tool.ts`), the draw engine in its `vegetation` scope
+(`activate(ctx, { scope: 'vegetation', toolId })`, one history per scope,
+`scopeOwnsType` decides what each scope hits, picks and marquees). There the
+course features (`modeBackdropTypes` in `FeaturesService`) paint as a faint
+outline with no fill, out of hit tests and the stack panel, and the command
+bar swaps the feature-type picker for a zone-type picker
+(`DrawToolService.chooseZoneType`: the next zone's type, or retype the
+selected zones). Outside Vegetation mode the zones, drawn and generated, are
+in `modeHiddenTypes` by type — the default that `resetModeView()` restores at
+the end of every draw-engine span — so Draw, Furniture, the other tools and
+the planner never show them. The dock hosts the selection and stack panels
+for Vegetation as for Draw.
+
+Of the backdrop, Vegetation still selects the creeks and water
+(`scopeSelectsType`; `takesBankVeg` in shared/features/creek-vegetation.ts)
+so their bank vegetation is set point-and-click: a click takes a hand-drawn
+zone first, then the water, then generated zones (`vegetationHitOrder`: the
+generated creek-bank zones lie over the water they came from). A backdrop
+row is read-only there: `editableSelected`/`editableSelectedFeatures` leave
+out `modeBackdropTypes` (no handles, move, duplicate, retype), and delete and
+stack reorder skip it, so the selection panel shows only "Bank vegetation"
+and a hint that the shape is Draw's.
+
+The command bar's **Plant vegetation** (Vegetation mode only) runs the
+server's `vegetation` export job through `zones/plant-vegetation.service.ts`
+(start, or follow the planting already running; poll to the end): every
+vegetation generator, the zones export and the import into the open Unity
+project. Then the features reload and the job's report is shown. With zones
+selected, **Update in Unity** (`update-zones-btn`, `PlantVegetationService.update`)
+runs the `vegetation-update` job for just them (`GsproExportService.updateZones`:
+`gspro.py zones-patch` per exported terrain, then `golfmap.zones.patch`). It runs
+no generators and has no confirm; the result dialog warns when a terrain was
+skipped. A zone
+type whose Default mix binds nothing starts new and retyped zones on its
+first variant (`ZoneTypesService.startVariantOf`), and the Variant picker
+says so on Default; creek_bank's `<palette>_wet` halves are not offered
+(`pickableVariantsOf`).

@@ -430,11 +430,11 @@ test('exportOrtho renders the chosen source as an 8192px quality-92 JPEG over th
     expect(flag(tinted, '--tint-out')).toBe(path.join(dir, 'linkan-orto-l2-2025-8192-meshes.jpg'));
     expect(flag(tinted, '--tint-course')).toBe(TEST_COURSE_ID);
     expect(flag(tinted, '--tint-opacity')).toBe(String(TERRAIN_TINT_OPACITY));
-    // The mesh texture is the soft one: photo at half strength, 1 m of detail, 4096 px.
+    // The mesh texture is the soft one: photo at half strength, 1 m of detail, 8192 px (sharp paths).
     expect(TERRAIN_TINT_OPACITY).toBe(0.5);
     expect(flag(tinted, '--soften-m')).toBe(String(MESH_TEXTURE_SOFTEN_M));
     expect(flag(tinted, '--tint-size')).toBe(String(MESH_TEXTURE_SIZE));
-    expect(MESH_TEXTURE_SIZE).toBe(4096);
+    expect(MESH_TEXTURE_SIZE).toBe(8192);
     expect(args).not.toContain('--soften-m');
     // The inner's is for the course meshes: the tint colour goes on as it is.
     expect(tinted).not.toContain('--darken-tint');
@@ -834,6 +834,8 @@ test('the inner trees export converts the installed tree-stems asset over the in
     expect(flag(args, '--sidecar')).toBe(sidecar);
     expect(flag(args, '--out')).toBe(res.path);
     expect(flag(args, '--terrain')).toBe('inner');
+    // The course's tree species areas travel with the stems.
+    expect(flag(args, '--course')).toBe(TEST_COURSE_ID);
     expect(args).not.toContain('--exclude-square');
 });
 

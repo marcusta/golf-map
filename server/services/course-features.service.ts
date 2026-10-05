@@ -10,6 +10,7 @@ import { PATH_SURFACE_ATTRIBUTE, PATH_SURFACES, isPathSurface } from '../../shar
 import { centerlineError, centerlineGeometry } from '../../shared/features/centerline';
 import { bankVegProblem, takesBankVeg } from '../../shared/features/creek-vegetation';
 import { ZONE_BLENDS, ZONE_BLEND_ATTRIBUTE, ZONE_EXTRA_PALETTES_ATTRIBUTE, parseZonePalettes } from '../../shared/features/zone-layers';
+import { TREE_AREA_TYPE, treeAreaProblem } from '../../shared/features/tree-areas';
 import { KERB_FILLETS_ATTRIBUTE, ROAD_JUNCTIONS_SOURCE, junctionFillets, kerbFilletsOn } from '../../shared/features/road-junctions';
 import type { FeatureCollection } from 'geojson';
 
@@ -36,6 +37,9 @@ export const FEATURE_TYPES = [
     // `trees` so the web panel's digit shortcuts (first ten types) are
     // untouched; its draw order is set by TYPE_Z_ORDER below.
     'vegetation_zone',
+    // Tree species area (shared/features/tree-areas.ts): an overlay area whose
+    // species mix the Unity tree planter uses for the survey stems inside it.
+    'tree_area',
 ] as const;
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
@@ -65,6 +69,7 @@ const TYPE_Z_ORDER: readonly string[] = [
     'tee',
     'green',
     'vegetation_zone',
+    'tree_area',
     'trees',
     'bunker',
     'water',
@@ -130,6 +135,13 @@ export interface CourseFeature {
      * heightP90M, heightMeanM, areaM2). Null for hand-drawn features.
      */
     attributes: FeatureAttributes | null;
+    /**
+     * Per-course number, never reused (migration 026). Shown in hex it is the
+     * feature's GSPro SVG shape name, and so its mesh name in Blender and
+     * Unity: `hole_2_1a` → `Spline_hole_2_1a_Bunker_-_Mesh`. Null for
+     * generated features.
+     */
+    no: number | null;
     version: number;
 }
 
@@ -194,6 +206,7 @@ function toCourseFeature(row: FeatureRow): CourseFeature {
         sourceRef: row.source_ref,
         license: row.license,
         attributes: parseAttributes(row.attributes_json),
+        no: row.feature_no,
         version: row.version,
     };
 }
@@ -372,6 +385,12 @@ function assertValidVegetationZoneAttributes(attributes: FeatureAttributes | nul
     }
 }
 
+/** `tree_area` attributes: a species mix string, optional ignoreKind and name (shared/features/tree-areas.ts). */
+function assertValidTreeAreaAttributes(attributes: FeatureAttributes | null | undefined): void {
+    const problem = treeAreaProblem(attributes);
+    if (problem) throw new InvalidFeatureError(problem);
+}
+
 /**
  * `path` attributes: `surface`, when present, is one of PATH_SURFACES
  * (shared/features/path-surface.ts) — what the road or cart path is made of.
@@ -517,9 +536,10 @@ function parseGeneratedFeature(feature: unknown, index: number, source: string):
     // The lidar low-vegetation proposals (D-VZ7) come in through this route
     // with zoneType/weight/feather/noise (and optionally zoneVariant) as
     // ordinary GeoJSON properties.
-    if (props.type === 'vegetation_zone') {
+    if (props.type === 'vegetation_zone' || props.type === TREE_AREA_TYPE) {
         try {
-            assertValidVegetationZoneAttributes(attributes);
+            if (props.type === TREE_AREA_TYPE) assertValidTreeAreaAttributes(attributes);
+            else assertValidVegetationZoneAttributes(attributes);
         } catch (e) {
             throw new InvalidFeatureError(`${label}: ${(e as Error).message}`);
         }
@@ -571,6 +591,7 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
         sourceRef: row.source_ref,
         license: row.license,
         attributes: parseAttributes(row.attributes_json),
+        no: row.feature_no,
         version: row.version,
     };
 }
@@ -760,6 +781,7 @@ export class CourseFeaturesService {
         assertValidGeometry(geometry);
         assertValidAttributes(input.attributes);
         if (input.type === 'vegetation_zone') assertValidVegetationZoneAttributes(input.attributes);
+        if (input.type === TREE_AREA_TYPE) assertValidTreeAreaAttributes(input.attributes);
         if (input.type === 'path') assertValidPathAttributes(input.attributes);
         if (takesBankVeg(input.type)) assertValidBankVegAttributes(input.attributes);
 
@@ -773,7 +795,7 @@ export class CourseFeaturesService {
         const attributes = input.attributes ?? null;
         const geojson = toGeoJson(geometry);
 
-        const sortOrder = await this.db.transaction().execute(async (trx) => {
+        const { sortOrder, no } = await this.db.transaction().execute(async (trx) => {
             const groupStack = await this.byGroup(input.courseId, holeId, layer, trx).execute();
             const pos = insertionPosition(groupStack, input.type);
 
@@ -802,8 +824,10 @@ export class CourseFeaturesService {
                 },
                 trx,
             ).execute();
+            // Numbered by the migration 026 trigger.
+            const numbered = await trx.selectFrom('course_features').select('feature_no').where('id', '=', id).executeTakeFirstOrThrow();
 
-            return pos;
+            return { sortOrder: pos, no: numbered.feature_no };
         });
         if (input.type === 'path' && geometry.centerline) await this.refreshRoadJunctions(input.courseId);
 
@@ -821,6 +845,7 @@ export class CourseFeaturesService {
             sourceRef,
             license,
             attributes,
+            no,
             version: 1,
         };
     }
@@ -872,6 +897,7 @@ export class CourseFeaturesService {
         if (nextType === 'vegetation_zone' && input.attributes !== undefined) {
             assertValidVegetationZoneAttributes(input.attributes);
         }
+        if (nextType === TREE_AREA_TYPE && input.attributes !== undefined) assertValidTreeAreaAttributes(input.attributes);
         if (nextType === 'path' && input.attributes !== undefined) assertValidPathAttributes(input.attributes);
         if (takesBankVeg(nextType) && input.attributes !== undefined) assertValidBankVegAttributes(input.attributes);
         if (movingGroups) {

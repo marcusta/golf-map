@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { di, Signal } from '@basics/core/client/core';
+import { di, Signal, Computed } from '@basics/core/client/core';
 import type { ToolContext } from '../src/editor/tool';
 import type { MapService } from '../src/map/map.service';
 import type { TerrainEdit, TerrainEditsApi } from '../../shared/api/terrain-edits.gen';
@@ -16,6 +16,8 @@ import {
     type TerrainEditView,
     type TerrainGeneratorKind,
 } from '../src/terrain-edit/terrain-edit-tool.service';
+import { ShapingService } from '../src/terrain-edit/shaping.service';
+import { doneJob, fakeShapingApi, shapingJob, type FakeShapingApi, type LibraryEntry } from './shaping-fakes';
 
 // T55b — terrain-edit tool. The pointer/overlay wiring needs a live
 // MaplibreMap, so these tests drive the service's seams (closeDraft, the
@@ -76,8 +78,8 @@ function fakeApi(listResult: TerrainEdit[] = []): FakeApi {
                 id: `created-${n}`,
                 siteId: input.siteId,
                 op: input.op,
-                params: input.params,
-                rings: input.rings,
+                params: { featherM: 0, ...input.params },
+                rings: input.rings ?? [],
                 enabled: input.enabled ?? true,
             });
         },
@@ -89,7 +91,7 @@ function fakeApi(listResult: TerrainEdit[] = []): FakeApi {
                 ...current,
                 ...('enabled' in input ? { enabled: input.enabled! } : {}),
                 ...(input.op ? { op: input.op } : {}),
-                ...(input.params ? { params: input.params } : {}),
+                ...(input.params ? { params: { featherM: 0, ...input.params } } : {}),
                 version: input.version + 1,
             };
         },
@@ -187,15 +189,34 @@ function fakeGenerators(): FakeGenerators {
     return g;
 }
 
+interface FakeFeature {
+    id: string;
+    type: string;
+    holeId?: string | null;
+    attributes: Record<string, string | number | boolean> | null;
+    no?: number | null;
+    geometry?: { crs: string; rings: Array<{ points: Array<{ x: number; y: number }> }> };
+}
+
 interface FakeFeatures {
-    store: { items: Signal<Array<{ id: string; type: string; holeId?: string | null; attributes: Record<string, string | number | boolean> | null }>> };
+    store: { items: Signal<FakeFeature[]> };
+    /** FeaturesService's hit-test inputs (draw mode's rule): the stack, top first, and nothing hidden. */
+    stackTopDown: Computed<FakeFeature[]>;
+    effectiveHiddenTypes: Signal<ReadonlySet<string>>;
+    hiddenIds: Signal<ReadonlySet<string>>;
+    hiddenSources: Signal<ReadonlySet<string>>;
     updates: Array<{ id: string; patch: { attributes?: Record<string, string | number | boolean> | null } }>;
     update(id: string, patch: { attributes?: Record<string, string | number | boolean> | null }): Promise<unknown>;
 }
 
-function fakeFeatures(items: FakeFeatures['store']['items'] extends Signal<infer T> ? T : never = []): FakeFeatures {
+function fakeFeatures(items: FakeFeature[] = []): FakeFeatures {
+    const store = { items: new Signal(items) };
     const f: FakeFeatures = {
-        store: { items: new Signal(items) },
+        store,
+        stackTopDown: new Computed(() => store.items.get()),
+        effectiveHiddenTypes: new Signal<ReadonlySet<string>>(new Set()),
+        hiddenIds: new Signal<ReadonlySet<string>>(new Set()),
+        hiddenSources: new Signal<ReadonlySet<string>>(new Set()),
         updates: [],
         async update(id, patch) {
             f.updates.push({ id, patch });
@@ -209,6 +230,7 @@ function fakeFeatures(items: FakeFeatures['store']['items'] extends Signal<infer
 
 interface Harness {
     svc: TerrainEditToolService;
+    shaping: FakeShapingApi;
     features: FakeFeatures;
     /** Bounds passed to map.fitBounds ([w, s, e, n], WGS84). */
     fits: Array<[number, number, number, number]>;
@@ -232,13 +254,15 @@ async function harness(opts: {
     holes?: Array<{ id: string; number: number }>;
     siteId?: string | null;
     mapKey?: string | null;
+    recipes?: LibraryEntry[];
 } = {}): Promise<Harness> {
     const api = fakeApi(opts.listResult ?? []);
     const mapBuild = fakeMapBuild();
     const renderer = fakeRenderer();
     const generators = fakeGenerators();
     const features = opts.features ?? fakeFeatures();
-    const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */, generators);
+    const shaping = fakeShapingApi(opts.recipes ?? []);
+    const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */, generators, new ShapingService(shaping, 0));
 
     const ready = new Signal(true);
     const interactionMode = new Signal<string>(TERRAIN_EDIT_TOOL_ID);
@@ -280,6 +304,7 @@ async function harness(opts: {
 
     return {
         svc,
+        shaping,
         features,
         fits,
         api,
@@ -300,8 +325,8 @@ async function harness(opts: {
 }
 
 /** Place a draft point directly (screenDist is Infinity without a live map). */
-function click(h: Harness, lng: number, lat: number): void {
-    h.clickHandlers[0]({ lngLat: { lng, lat }, point: { x: 0, y: 0 } });
+function click(h: Harness, lng: number, lat: number, shiftKey = false, ctrlKey = false): void {
+    h.clickHandlers[0]({ lngLat: { lng, lat }, point: { x: 0, y: 0 }, originalEvent: { shiftKey, ctrlKey } } as never);
 }
 
 // Landeryd-ish clicks (must be inside the SWEREF99 TM domain).
@@ -773,5 +798,165 @@ describe('finding an edit', () => {
         expect(w).toBeLessThan(e);
         expect(s).toBeLessThan(n);
         expect(e - w).toBeGreaterThan(0.001); // ~100 m of longitude
+    });
+});
+
+// ─── Shape in Blender (SHAPING-PLAN.md "Terrain editor → Blender") ──────────
+
+describe('shape in Blender', () => {
+    /** A square feature of `half` m round a click point (EPSG:3006). */
+    const square = (at: { lng: number; lat: number }, half: number) => {
+        const c = lngLatToSweref99tm(at);
+        return {
+            crs: 'EPSG:3006',
+            rings: [{ points: [
+                { x: c.x - half, y: c.y - half }, { x: c.x + half, y: c.y - half },
+                { x: c.x + half, y: c.y + half }, { x: c.x - half, y: c.y + half },
+            ] }],
+        };
+    };
+    const library: LibraryEntry[] = [
+        { id: 'conway', name: 'Conway Standard', author: 'cesimgolf', surfaces: ['bunker'], defaultFor: ['bunker'], notes: 'Grass lip, steep face' },
+        { id: 'pot', name: 'Pot bunker', author: 'golfmap', surfaces: ['bunker'] },
+        { id: 'pond', name: 'Natural pond', author: 'afrod', surfaces: ['lake'], defaultFor: ['lake'] },
+    ];
+    // A bunker on top of a fairway at P1 (stack order: top first), a pond at P3.
+    const course = () => fakeFeatures([
+        { id: 'b1', type: 'bunker', holeId: 'h3', no: 28, attributes: null, geometry: square(P1, 5) },
+        { id: 'fw', type: 'fairway', holeId: 'h3', no: 2, attributes: null, geometry: square(P1, 40) },
+        { id: 'p1', type: 'water', holeId: null, no: 9, attributes: null, geometry: square(P3, 5) },
+    ]);
+    const holes = [{ id: 'h3', number: 3 }];
+
+    test('a click on a bunker selects it instead of starting an outline; open ground clears it and outlines', async () => {
+        const h = await harness({ features: course(), holes, recipes: library });
+        click(h, P1.lng, P1.lat);
+        expect(h.svc.selectedFeatureId.get()).toBe('b1');
+        expect(h.svc.state.draft.get()).toHaveLength(0);
+        expect(h.svc.describeFeature(h.svc.selectedFeature.get()!)).toBe('Bunker · hole 3 · hole_3_1c');
+        await tick();
+        expect(h.renderer.renders.at(-1)!.selection).toHaveLength(1); // its outline is drawn
+
+        // Beside the bunker, still on the fairway (not shaped per feature): an outline starts.
+        const off = { lng: P1.lng + 0.0002, lat: P1.lat };
+        click(h, off.lng, off.lat);
+        expect(h.svc.selectedFeatureId.get()).toBeNull();
+        expect(h.svc.state.draft.get()).toHaveLength(1);
+
+        // While outlining, a click on the pond is just the next point.
+        click(h, P3.lng, P3.lat);
+        expect(h.svc.selectedFeatureId.get()).toBeNull();
+        expect(h.svc.state.draft.get()).toHaveLength(2);
+    });
+
+    test('Shift+click on a bunker starts an outline there; Esc clears the selection', async () => {
+        const h = await harness({ features: course(), holes });
+        click(h, P1.lng, P1.lat, true);
+        expect(h.svc.selectedFeatureId.get()).toBeNull();
+        expect(h.svc.state.draft.get()).toHaveLength(1);
+        h.svc.onEscape();
+
+        click(h, P3.lng, P3.lat);
+        expect(h.svc.selectedFeatureId.get()).toBe('p1');
+        expect(h.svc.describeFeature(h.svc.selectedFeature.get()!)).toBe('Water · others_9');
+        expect(h.svc.onEscape()).toBe(true);
+        expect(h.svc.selectedFeatureId.get()).toBeNull();
+        expect(h.svc.onEscape()).toBe(false);
+    });
+
+    test("saving a recipe creates the feature's recipe edit, then updates it keeping its overrides; the default deletes it", async () => {
+        const h = await harness({ features: course(), holes, recipes: library });
+        expect(await h.svc.saveRecipe('b1', 'pot')).toBe(true);
+        // No rings (the feature is the shape): the server files it under origin feature, originRef feature:b1.
+        expect(h.api.calls.create).toEqual([{ siteId: 'site-1', op: 'recipe', params: { recipe: 'pot' }, featureId: 'b1' }]);
+
+        // The server's row: a recipe edit with overrides set elsewhere.
+        const row = makeEdit({ id: 'r1', op: 'recipe', params: { featherM: 0, recipe: 'pot', overrides: { rings: 3 } }, origin: 'feature', originRef: 'feature:b1', version: 2 });
+        h.api.listResult = [row];
+        await h.svc.reload();
+        expect(h.svc.recipeEditOf('b1')?.id).toBe('r1');
+
+        expect(await h.svc.saveRecipe('b1', 'conway')).toBe(true);
+        expect(h.api.calls.update).toEqual([{ id: 'r1', version: 2, params: { recipe: 'conway', overrides: { rings: 3 } } }]);
+
+        expect(await h.svc.saveRecipe('b1', null)).toBe(true);
+        expect(h.api.calls.remove).toEqual([{ id: 'r1', version: 3 }]);
+        expect(h.svc.recipeEditOf('b1')).toBeNull();
+        expect(h.svc.notice.get()).toContain('course default');
+    });
+
+    test('Cmd/Ctrl+click adds bunkers to the selection and takes them out; a pond starts a new one', async () => {
+        const features = fakeFeatures([
+            { id: 'b1', type: 'bunker', holeId: 'h3', no: 28, attributes: null, geometry: square(P1, 5) },
+            { id: 'b2', type: 'bunker', holeId: 'h3', no: 29, attributes: null, geometry: square(P2, 5) },
+            { id: 'p1', type: 'water', holeId: null, no: 9, attributes: null, geometry: square(P3, 5) },
+        ]);
+        const h = await harness({ features, holes, recipes: library });
+        click(h, P1.lng, P1.lat);
+        click(h, P2.lng, P2.lat, false, true);
+        expect(h.svc.selectedFeatureIds.get()).toEqual(['b1', 'b2']);
+        expect(h.svc.state.draft.get()).toHaveLength(0);
+        expect(h.svc.describeSelection(h.svc.selectedFeatures.get())).toBe('Bunker × 2 · hole_3_1c, hole_3_1d');
+        await tick();
+        expect(h.renderer.renders.at(-1)!.selection).toHaveLength(2); // both outlines are drawn
+
+        click(h, P1.lng, P1.lat, false, true); // again: out
+        expect(h.svc.selectedFeatureIds.get()).toEqual(['b2']);
+        click(h, P3.lng, P3.lat, false, true); // a pond among bunkers: a new selection
+        expect(h.svc.selectedFeatureIds.get()).toEqual(['p1']);
+        click(h, P1.lng + 0.0002, P1.lat, false, true); // open ground: nothing, and no outline
+        expect(h.svc.selectedFeatureIds.get()).toEqual(['p1']);
+        expect(h.svc.state.draft.get()).toHaveLength(0);
+        expect(h.svc.onEscape()).toBe(true);
+        expect(h.svc.selectedFeatureIds.get()).toEqual([]);
+    });
+
+    test('one recipe saves on several features, each keeping its own seed', async () => {
+        const saved = makeEdit({ id: 'r1', op: 'recipe', params: { featherM: 0, recipe: 'conway', overrides: { depth: 0.9, seed: 7 } },
+            origin: 'feature', originRef: 'feature:b1', rings: [], version: 2 });
+        const h = await harness({ features: course(), holes, recipes: library, listResult: [saved] });
+        expect(await h.svc.saveRecipes(['b1', 'p1'], 'pot', { depth: 1.2, seed: 99 }, { keepSeeds: true })).toBe(true);
+        expect(h.api.calls.update).toEqual([{ id: 'r1', version: 2, params: { recipe: 'pot', overrides: { depth: 1.2, seed: 7 } } }]);
+        expect(h.api.calls.create).toEqual([{ siteId: 'site-1', op: 'recipe', params: { recipe: 'pot', overrides: { depth: 1.2 } }, featureId: 'p1' }]);
+        expect(h.svc.notice.get()).toBe('Recipe saved on 2 features. Apply to meshes to shape them.');
+    });
+
+    test('recipe edits are listed under Blender recipes by feature, hole and recipe name; clicking one selects its feature', async () => {
+        const recipeEdit = (id: string, featureId: string, recipe: string) => makeEdit({
+            id, op: 'recipe', params: { featherM: 0, recipe }, origin: 'feature', originRef: `feature:${featureId}`, rings: [],
+        });
+        const h = await harness({
+            features: course(), holes, recipes: library,
+            listResult: [recipeEdit('r-b', 'b1', 'pot'), recipeEdit('r-p', 'p1', 'pond'), recipeEdit('r-x', 'gone', 'pot'), recipeEdit('r-n', 'fw', 'none'), makeEdit({ id: 'mine' })],
+        });
+        await tick();
+        const groups = h.svc.groups.get().map(g => [g.label, g.edits.map(e => h.svc.editName(e))]);
+        expect(groups).toEqual([
+            ['Your edits', ['Plane (drawn)']],
+            ['Blender recipes', ['Bunker · hole 3 · Pot bunker', 'Fairway · hole 3 · no recipe', 'Water · Natural pond']],
+            ['Not on this course', ['Recipe · not on this course · Pot bunker']],
+        ]);
+        expect(paramsSummary(h.svc.edits.get()[0])).toBe('Blender recipe pot');
+
+        h.svc.showEdit('r-b');
+        expect(h.svc.selectedFeatureId.get()).toBe('b1');
+        expect(h.fits).toHaveLength(1); // the bunker's outline
+        const [w, , e] = h.fits[0];
+        expect(e - w).toBeGreaterThan(0.0001);
+        expect(e - w).toBeLessThan(0.001); // about 10 m, not the 80 m fairway
+    });
+
+    test("Apply to meshes runs the course's shaping job from the feature's section or the course button, and follows it to the end", async () => {
+        const h = await harness({ features: course(), holes, recipes: library });
+        h.shaping.polls = [shapingJob(), doneJob(['Spline_hole_3_1c_Bunker_-_Mesh'])];
+        expect(await h.svc.applyToMeshes('b1')).toBe(true);
+        // The server runs the course (only changed ops re-run); the outcome shows in the feature's section.
+        expect(h.shaping.calls.apply).toEqual([{ courseId: 'course-1' }]);
+        expect(h.svc.shaping.jobScope.get()).toBe('b1');
+        expect(h.svc.shaping.job.get()?.result?.changedObjects).toEqual(['Spline_hole_3_1c_Bunker_-_Mesh']);
+
+        expect(await h.svc.applyToMeshes()).toBe(true);
+        expect(h.shaping.calls.apply[1]).toEqual({ courseId: 'course-1' });
+        expect(h.svc.shaping.jobScope.get()).toBeNull();
     });
 });

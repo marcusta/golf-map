@@ -28,7 +28,18 @@ namespace GolfMap.Editor
     {
         public string from = "$bunker";     // $bunker, $blend, $outer or a material asset name
         public BunkerPaintChannel channel;
-        public float tint = 1f;             // multiplies the channel's Overall Color
+        public Color tint = Color.white;    // multiplies the channel's Overall Color (json: a number, or [r, g, b])
+        public bool Tinted { get { return !(Mathf.Approximately(tint.r, 1f) && Mathf.Approximately(tint.g, 1f) && Mathf.Approximately(tint.b, 1f)); } }
+        // Material-name suffix: "0.8" for a grey tint, "1.1-1.06-1" for a coloured one.
+        public string TintLabel
+        {
+            get
+            {
+                var ci = System.Globalization.CultureInfo.InvariantCulture;
+                if (Mathf.Approximately(tint.r, tint.g) && Mathf.Approximately(tint.g, tint.b)) return tint.r.ToString("0.###", ci);
+                return tint.r.ToString("0.###", ci) + "-" + tint.g.ToString("0.###", ci) + "-" + tint.b.ToString("0.###", ci);
+            }
+        }
         public float blendStrength = -1f;   // < 0: keep the source's
     }
 
@@ -42,6 +53,10 @@ namespace GolfMap.Editor
         public BunkerPaintChannel inner;
         public BunkerPaintChannel outer;
         public readonly Dictionary<BunkerPaintChannel, BunkerChannelSource> channels = new Dictionary<BunkerPaintChannel, BunkerChannelSource>();
+        // The material the render material starts as, before its channels are filled: its settings outside the four
+        // channel blocks (slope shading, satellite offsets, arrays) are what the mesh gets. Default $mesh: the mesh's
+        // own original. "$outer" on a blend makes the strip shade exactly like the surface it fades to.
+        public string baseFrom = "$mesh";
         public bool verified = true;
     }
 
@@ -88,7 +103,7 @@ namespace GolfMap.Editor
         static BunkerMeshRule ReadRule(GolfMapJsonObject o, string where, bool verified)
         {
             if (o == null) throw new FormatException(where + " is missing.");
-            var rule = new BunkerMeshRule { verified = verified };
+            var rule = new BunkerMeshRule { verified = verified, baseFrom = o.String("base") ?? "$mesh" };
             var rings = o.Array("rings");
             if (rings != null) rule.rings = rings.Select(v => Channel(v as string, where + ".rings")).ToArray();
             if (o.Has("inner")) rule.inner = Channel(o.String("inner"), where + ".inner");
@@ -104,7 +119,7 @@ namespace GolfMap.Editor
                 {
                     from = s.String("from") ?? "$bunker",
                     channel = Channel(s.String("channel"), where + ".channels." + key + ".channel"),
-                    tint = (float)s.Number("tint", 1),
+                    tint = TintOf(s, where + ".channels." + key + ".tint"),
                     blendStrength = (float)s.Number("blendStrength", -1),
                 };
             }
@@ -173,13 +188,23 @@ namespace GolfMap.Editor
         static bool IsChannelProperty(string name, BunkerPaintChannel ch) { return name.StartsWith(Prefix(ch), StringComparison.Ordinal); }
         static bool IsChannelKeyword(string keyword, BunkerPaintChannel ch) { return keyword.StartsWith(Prefix(ch).ToUpperInvariant(), StringComparison.Ordinal); }
 
-        public static void Tint(Material m, BunkerPaintChannel ch, float tint)
+        public static void Tint(Material m, BunkerPaintChannel ch, Color tint)
         {
-            if (Mathf.Approximately(tint, 1f)) return;
             var name = Prefix(ch) + "OverallColor";
             if (!m.HasProperty(name)) return;
             var c = m.GetColor(name);
-            m.SetColor(name, new Color(c.r * tint, c.g * tint, c.b * tint, c.a));
+            m.SetColor(name, new Color(c.r * tint.r, c.g * tint.g, c.b * tint.b, c.a));
+        }
+
+        // A channel's "tint": a number (every component) or [r, g, b]; default white.
+        static Color TintOf(GolfMapJsonObject s, string where)
+        {
+            if (!s.Has("tint")) return Color.white;
+            var list = s.Array("tint");
+            if (list == null) { var t = (float)s.Number("tint", 1); return new Color(t, t, t, 1); }
+            var n = list.OfType<GolfMapJsonNumber>().Select(v => (float)v.Value).ToArray();
+            if (n.Length != 3 || list.Count != 3) throw new FormatException(where + " must be a number or [r, g, b].");
+            return new Color(n[0], n[1], n[2], 1);
         }
 
         public static void SetBlendStrength(Material m, BunkerPaintChannel ch, float strength)

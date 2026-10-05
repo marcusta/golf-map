@@ -258,6 +258,10 @@ namespace GolfMap.Editor
                     var pos = OuterPosition(inner.sidecar, outer.sidecar);
                     pos.y -= outerSinkM;
                     outerTerrain.transform.position = pos;
+#if !UNITY_2019_2_OR_NEWER
+                    // The outer overlay is graded for this material: the Standard one adds a pale sky sheen at low angles.
+                    outerTerrain.GetComponent<Terrain>().materialType = Terrain.MaterialType.BuiltInLegacyDiffuse;
+#endif
                     report += $"\n{kOuterName}: {outer.sidecar.sideM:0} m, height {outer.sidecar.heightRangeM:0.00} m, at ({pos.x:0.###}, {pos.y:0.###}, {pos.z:0.###}) incl. {outerSinkM} m sink.";
                 }
                 else if (importOuter)
@@ -406,6 +410,61 @@ namespace GolfMap.Editor
         static object UpdateCommand(BridgeArgs a)
         {
             return UpdateHeights(a.String("terrain", "both"), a.String("folder"), (float)a.Number("outerSink", double.NaN), a.Bool("dryRun", false));
+        }
+
+        // The course meshes' satellite (OPCD MAHS _Satellite) and the Stix grass colour map (_ColorMap) are a copy of the
+        // export's -meshes JPEG somewhere in the project, imported once by hand or by the Terrain Importer. A re-export
+        // (e.g. with the pipeline's bunker edge fill) reaches the course only when that copy is overwritten in place:
+        // same file, same GUID, so every material keeps pointing at it.
+        [BridgeCommand("golfmap.orthos.update", "Copy the course export folder's orthophoto JPEGs (<prefix>-*<match>, default the -meshes textures the course meshes and the Stix grass sample) over the project's copies of the same file name, in place (same GUID: materials keep their reference), each old file backed up to GolfMapSpelunk/ortho-backups/ first, then reimported. Files with no copy in the project are listed, not added.",
+            args = "match=-meshes.jpg (file name ending), folder (default: the active course's export folder), dryRun=false")]
+        static object OrthosUpdateCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            var folder = a.String("folder");
+            if (string.IsNullOrEmpty(folder))
+            {
+                if (string.IsNullOrEmpty(course.exportFolder)) throw new BridgeError("The course asset names no export folder; pass folder.");
+                folder = Path.IsPathRooted(course.exportFolder) ? course.exportFolder : Path.Combine(Application.dataPath, course.exportFolder);
+            }
+            folder = Path.GetFullPath(folder);
+            if (!Directory.Exists(folder)) throw new BridgeError("No export folder " + folder + ".");
+            var match = a.String("match", "-meshes.jpg");
+            bool dryRun = a.Bool("dryRun", false);
+            var root = Directory.GetParent(Application.dataPath).FullName;
+            var backupDir = Path.Combine(root, "GolfMapSpelunk", "ortho-backups");
+            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var rows = new List<object>();
+            foreach (var src in Directory.GetFiles(folder, course.exportPrefix + "-*.jpg").Where(p => p.EndsWith(match, StringComparison.OrdinalIgnoreCase)).OrderBy(p => p))
+            {
+                var name = Path.GetFileName(src);
+                var copies = AssetDatabase.FindAssets(Path.GetFileNameWithoutExtension(name) + " t:Texture2D")
+                    .Select(AssetDatabase.GUIDToAssetPath).Distinct()
+                    .Where(p => string.Equals(Path.GetFileName(p), name, StringComparison.OrdinalIgnoreCase)).ToList();
+                var row = new Dictionary<string, object> { { "file", name }, { "export", File.GetLastWriteTime(src).ToString("yyyy-MM-dd HH:mm") } };
+                if (copies.Count == 0) { row["status"] = "no copy in the project (import it with the Terrain Importer or by hand)"; rows.Add(row); continue; }
+                var updated = new List<object>();
+                foreach (var assetPath in copies)
+                {
+                    var full = Path.Combine(root, assetPath.Replace('/', Path.DirectorySeparatorChar));
+                    bool same = new FileInfo(full).Length == new FileInfo(src).Length && File.ReadAllBytes(full).SequenceEqual(File.ReadAllBytes(src));
+                    if (same) { updated.Add(assetPath + " (already the export)"); continue; }
+                    if (!dryRun)
+                    {
+                        Directory.CreateDirectory(backupDir);
+                        var backup = Path.Combine(backupDir, Path.GetFileNameWithoutExtension(name) + "-" + stamp + ".jpg");
+                        File.Copy(full, backup, true);
+                        File.Copy(src, full, true);
+                        AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+                        updated.Add(assetPath + " (backup " + backup.Substring(root.Length + 1).Replace('\\', '/') + ")");
+                    }
+                    else updated.Add(assetPath + " (would be replaced)");
+                }
+                row["copies"] = updated;
+                rows.Add(row);
+            }
+            if (!dryRun) SceneView.RepaintAll();
+            return new Dictionary<string, object> { { "folder", folder }, { "match", match }, { "dryRun", dryRun }, { "files", rows } };
         }
 
         public static Dictionary<string, object> UpdateHeights(string which, string folder, float outerSinkM, bool dryRun)

@@ -38,18 +38,20 @@ External paths (Vreta is the test course; nothing in code may hardcode it):
 
 - Bun workspaces `server`, `web`, `shared`: package scripts run with **cwd = the package dir**; root scripts (`start`, `dev`, `start:vps`, `db:migrate`, `db:health`) with cwd = repo root. `bun run dev` (`scripts/dev.ts`) is local development: `start`'s server under `bun --watch` (restarts on any server/shared change; in-memory export/build jobs die with it) plus the web Vite dev server proxying to it; `PORT` = server (3000), `WEB_PORT` = Vite (5173). `start:vps` carries the whole serve-mode environment (pinned by `scripts/vps-start.test.ts` against `deploy.json`); change port/DB paths there, never in the systemd unit.
 - `@basics/core` is a vendored tarball (`vendor/basics-core-<X.Y.Z>.tgz`) declared by all four package.json files. Upgrade only with `bun run fw:update [X.Y.Z]` (needs sibling `../mackans-client-fw`), then commit tarball + package.jsons + `bun.lock` together. Never edit `node_modules/@basics/core`, the tarball or the dep strings; fix the framework upstream and release it (`bun release.ts <level>`, needs a `CHANGELOG.md` heading).
-- `bun link @basics/core` for live framework work; **never commit while linked** (`fw:check` guards every `test` script — don't bypass). Restart Vite after link/unlink/update; `rm -rf web/node_modules/.vite` if exports look stale.
+- `bun link @basics/core` for live framework work; **never commit while linked** (the local guard `scripts/assert-not-linked.ts` — `bun run fw:check` — runs before every `test` script, so `bun run test` works without the sibling repo; don't bypass). Restart Vite after link/unlink/update; `rm -rf web/node_modules/.vite` if exports look stale.
 - API: change `server/api/*.api.ts`, then `bun run generate` (cwd `server/`).
 - Styling: only core's `s` spacing scale is used — see [web/AGENTS.md](web/AGENTS.md).
 - `data/` (gitignored): `app.sqlite`, `sessions.sqlite`, `obs.sqlite`, `tiles/`, `sources/`.
 - Auth: cookie sessions; no signup — `create-user` CLI. Tile routes are public.
 - `docs/`: feature proposals and decisions (`decisions-*.md`, `feature-*.md`); read the relevant one before touching the planner/strategy layer or a feature it covers.
+- Cross-area workflows (terrain round-trip and order of operations, new vegetation zone → Unity, Unity script edit + sync, re-placing props/walls without losing hand edits): [docs/workflows.md](docs/workflows.md) — read before any of them.
 
 ## This machine (Windows 11, native, no WSL)
 
 - GSPro exports without the web panel: `bun run gspro:export -- status <course>` / `-- <course> <kind[:terrain]>...` (`scripts/gspro-export.ts`, same service as the panel).
 - A Blender/OPCD build broke after edits: `bun run gspro:bisect -- <course> changes --from <when>` lists what changed (only feature types the SVG draws), `... svg --from <when> --apply <list>|--without <list>` exports `<course>-bisect-<list>.svg` with just those changes applied, from a copy of the DB. `<when>` = an export snapshot (every full SVG export keeps one in `<export dir>/export-history/`), a local time (edit history, migration 025), `db:<file>` or `now` (`scripts/gspro-bisect.ts`, `FeatureHistoryService`).
-- No `node` on PATH — use `bun` (also for `unity/*.test.mjs`). Pipeline venv: `pipeline/.venv/Scripts/python.exe` (`.venv/bin` is a junction).
+- No `node` on PATH — use `bun` (also for `unity/*.test.mjs`). Run pipeline Python one way: `bun run py <script> [args]` from the repo root (`scripts/py.ts`: the venv interpreter, cwd `pipeline/`).
+- Write files with the Write/Edit tools; Bash runs commands (27 of 95 sessions had 100+ line `cat <<EOF` heredocs fail with "unexpected EOF").
 - Port 3000 is excluded: use preview configs `api-e2e` (3100, isolated e2e DB) + `web-e2e` (5274) from `.claude/launch.json`; login `marcus` / `test-password-123`, course `/course/course-1`.
 - `server` `bun test` has ~17 known Windows-only failures (symlinks, `/` paths, bsdtar); Playwright e2e can't launch Chrome here.
 

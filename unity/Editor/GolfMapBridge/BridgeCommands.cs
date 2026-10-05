@@ -125,6 +125,8 @@ namespace GolfMap.Bridge
             }
             catch (TargetInvocationException e)
             {
+                // Rethrowing resets the stack: keep the inner one in the console (bridge errors are expected, not logged).
+                if (e.InnerException != null && !(e.InnerException is BridgeError)) Debug.LogError("[bridge] " + name + ": " + e.InnerException);
                 throw e.InnerException ?? e;
             }
         }

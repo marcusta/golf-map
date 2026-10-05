@@ -1,17 +1,38 @@
 import { Type, type Static } from '@sinclair/typebox';
+import type { Context, MiddlewareHandler } from 'hono';
 import { requireAuth } from '@basics/core/server/auth';
-import { parseEditsGeojson, type TerrainEditsService } from '../services/terrain-edits.service';
+import { InvalidRecipeEditError, parseEditsGeojson, type TerrainEditsService } from '../services/terrain-edits.service';
+
+// A refused recipe edit answers 400. mount() maps no error class to 400, so the
+// handler catches InvalidRecipeEditError, records its message here, and the
+// endpoint's middleware replaces the response once the handler is done.
+const refusedRecipe = new WeakMap<Context, string>();
+const recipeRefusalAs400: MiddlewareHandler = async (c, next) => {
+    await next();
+    const message = refusedRecipe.get(c);
+    if (message !== undefined) c.res = c.json({ error: message }, 400);
+};
+async function recipeChecked<T>(c: Context, f: () => Promise<T>): Promise<T> {
+    try {
+        return await f();
+    } catch (e) {
+        if (!(e instanceof InvalidRecipeEditError)) throw e;
+        refusedRecipe.set(c, e.message);
+        return null as T;  // never sent: the middleware answers 400
+    }
+}
 
 // --- Input schemas ---
 
-const OpSchema = Type.Union([Type.Literal('plane'), Type.Literal('smooth'), Type.Literal('corridor'), Type.Literal('dig'), Type.Literal('delta')]);
+const OpSchema = Type.Union([Type.Literal('plane'), Type.Literal('smooth'), Type.Literal('corridor'), Type.Literal('dig'), Type.Literal('delta'), Type.Literal('recipe')]);
 
 // A straight-segment ring in the DEM CRS (EPSG:3006).
 const RingSchema = Type.Array(Type.Object({ x: Type.Number(), y: Type.Number() }));
 const RingsSchema = Type.Array(RingSchema);
 
 const ParamsSchema = Type.Object({
-    featherM: Type.Number(),
+    // Required for every op but `recipe` (checked by the service).
+    featherM: Type.Optional(Type.Number()),
     radiusM: Type.Optional(Type.Number()),
     flat: Type.Optional(Type.Boolean()),
     // corridor (pipeline-generated road grading): the road's axis, along-road window, pavement width.
@@ -34,6 +55,9 @@ const ParamsSchema = Type.Object({
     changedM2: Type.Optional(Type.Number()),
     maxRaiseM: Type.Optional(Type.Number()),
     maxLowerM: Type.Optional(Type.Number()),
+    // recipe (a course feature's Blender shaping recipe): a recipe library id (`none` = no recipe, not even the default) and per-feature overrides.
+    recipe: Type.Optional(Type.String()),
+    overrides: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 });
 
 const ListTerrainEditsInput = Type.Object({
@@ -44,8 +68,11 @@ const CreateTerrainEditInput = Type.Object({
     siteId: Type.String(),
     op: OpSchema,
     params: ParamsSchema,
-    rings: RingsSchema,
+    // Every op but `recipe` (none: its feature is the shape).
+    rings: Type.Optional(RingsSchema),
     enabled: Type.Optional(Type.Boolean()),
+    // recipe: the course feature (bunker, water, water_creek, path) on a course of the site. One recipe edit per feature (409).
+    featureId: Type.Optional(Type.String()),
 });
 
 const UpdateTerrainEditInput = Type.Object({
@@ -74,10 +101,11 @@ const ImportTerrainEditsInput = Type.Object({
 
 export function createTerrainEditsApi(svc: TerrainEditsService) {
     const mw = [requireAuth()];
+    const writeMw = [requireAuth(), recipeRefusalAs400];
     return {
         list:   { method: 'GET'  as const, path: '/terrain-edits',        fn: (input: Static<typeof ListTerrainEditsInput>)   => svc.listBySite(input.siteId),                                                        schema: ListTerrainEditsInput,   middleware: mw },
-        create: { method: 'POST' as const, path: '/terrain-edits/create', fn: (input: Static<typeof CreateTerrainEditInput>)  => svc.create(input),                                                                    schema: CreateTerrainEditInput,  middleware: mw },
-        update: { method: 'POST' as const, path: '/terrain-edits/update', fn: (input: Static<typeof UpdateTerrainEditInput>)  => svc.update(input.id, input.version, { op: input.op, params: input.params, rings: input.rings, enabled: input.enabled }), schema: UpdateTerrainEditInput, middleware: mw },
+        create: { method: 'POST' as const, path: '/terrain-edits/create', fn: (input: Static<typeof CreateTerrainEditInput>, c: Context) => recipeChecked(c, () => svc.create(input)), schema: CreateTerrainEditInput, middleware: writeMw },
+        update: { method: 'POST' as const, path: '/terrain-edits/update', fn: (input: Static<typeof UpdateTerrainEditInput>, c: Context) => recipeChecked(c, () => svc.update(input.id, input.version, { op: input.op, params: input.params, rings: input.rings, enabled: input.enabled })), schema: UpdateTerrainEditInput, middleware: writeMw },
         remove: { method: 'POST' as const, path: '/terrain-edits/remove', fn: (input: Static<typeof RemoveTerrainEditInput>)  => svc.remove(input.id, input.version),                                                   schema: RemoveTerrainEditInput,  middleware: mw },
         // Generated edits (building pads): replace one origin's previous generation from a D-TE5 file.
         import: { method: 'POST' as const, path: '/terrain-edits/import', fn: async (input: Static<typeof ImportTerrainEditsInput>) => {

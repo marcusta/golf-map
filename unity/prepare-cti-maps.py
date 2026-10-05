@@ -30,6 +30,14 @@ nospec - with the albedo at the approved level the oak crowns turned grey-white 
     Normal map import repacks the channels, so the shader's specular (B) was no longer our zero -
     a black-albedo probe still showed grey-white birch leaves.
 
+Each override records its "source" and the linear "tint" it was baked with. GolfMap > Vegetation
+Palettes bakes the same formula in Unity (source x tint) when the leaves or bark are tuned there and
+records its tint; a recorded tint wins over the one computed here, so re-running this script keeps
+that tuning. Delete an override's "tint" to go back to the computed one. So that a bake in Unity
+starts from the same texels as this one (not from the DXT-compressed import), every tinted source is
+also written untinted and lossless to <project>/GolfMapSpelunk/cti-trial/sources/<source>.png
+(outside Assets: never imported or built).
+
 Outputs get a fixed guid derived from their path. A target that exists is regenerated only if it
 carries that guid (one of ours); anything else is refused. To go back to Forst's own texture, point
 the override's path at the source again.
@@ -112,7 +120,13 @@ for sp in species:
                 raise SystemExit("trial.json has no swap from %s/%s: run prepare-cti-trial.py" % (course, frm))
             swaps.append(swap)
         img = Image.open(root / source).convert("RGBA")
+        recorded = next((t.get("tint") for s in swaps for t in s.get("textures", []) if t["name"] == slot and t.get("tint")), None)
         if kind == "tint":
+            lossless = root / "GolfMapSpelunk/cti-trial/sources" / (Path(source).stem + ".png")
+            if not lossless.exists() or lossless.stat().st_mtime < (root / source).stat().st_mtime:
+                lossless.parent.mkdir(parents=True, exist_ok=True)
+                img.save(lossless, optimize=False)
+                print("wrote", lossless.relative_to(root))
             _, tint_from, what, shift, gain = edit
             tint = colour((root / course / tint_from).read_text(encoding="utf-8"), what)
             scale = lin(tint)
@@ -120,6 +134,8 @@ for sp in species:
                 shifted = scale * np.array([1 - shift, 1, 1])
                 scale = shifted * (scale @ W) / (shifted @ W)
             scale = scale * gain
+            if recorded:
+                scale = np.array(recorded, dtype=np.float64)   # tuned in Vegetation Palettes
             px = np.asarray(img).astype(np.float64) / 255
             out = px.copy()
             out[..., :3] = srgb(lin(px[..., :3]) * scale)
@@ -128,8 +144,9 @@ for sp in species:
             before = float(np.percentile(lin(px[..., :3])[opaque] @ W, 90))
             after = float(np.percentile((lin(px[..., :3]) * scale)[opaque] @ W, 90))
             name = Path(source).stem + " tinted.png"
-            report.append("%s: %s of %s %s, green shift %s, gain %s -> linear x%s; p90 linear luma %.3f -> %.3f"
-                          % (name, what, tint_from, tint.round(3).tolist(), shift, gain, scale.round(3).tolist(), before, after))
+            report.append("%s: %s -> linear x%s; p90 linear luma %.3f -> %.3f"
+                          % (name, "recorded tint" if recorded else "%s of %s %s, green shift %s, gain %s" % (what, tint_from, tint.round(3).tolist(), shift, gain),
+                             scale.round(3).tolist(), before, after))
         else:
             data = np.asarray(img).copy()
             report.append("%s: channel means %s" % (Path(source).name, " ".join(
@@ -148,7 +165,10 @@ for sp in species:
         writes[target] = (Image.fromarray(data), meta, guid)
         for swap in swaps:
             textures = [t for t in swap.get("textures", []) if t["name"] != slot]
-            textures.append({"name": slot, "path": target})
+            entry = {"name": slot, "path": target, "source": source}
+            if kind == "tint":
+                entry["tint"] = [round(float(v), 6) for v in scale]
+            textures.append(entry)
             swap["textures"] = textures
 
 refused = []

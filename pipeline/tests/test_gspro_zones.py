@@ -155,16 +155,16 @@ def test_a_feather_is_a_ramp_centred_on_the_drawn_edge():
     assert _at(fern, 100, 100) == pytest.approx(1.0)
     assert _at(fern, 135, 100) == pytest.approx(1.0)
     assert _at(fern, 165, 100) == pytest.approx(0.0)
-    # PIL fills the boundary column inclusively (column 150 is inside), the
-    # same fill the tint step uses, so the drawn edge sits between pixels 150
-    # and 151: those two average 0.5, and the ramp is linear in the distance
-    # from that edge (pixel 145 is 5.5 px inside it, pixel 154 3.5 px outside).
-    assert (row[150] + row[151]) / 2 == pytest.approx(0.5, abs=0.02)
-    assert row[145] == pytest.approx(0.5 + 5.5 / 20, abs=0.02)
-    assert row[154] == pytest.approx(0.5 - 3.5 / 20, abs=0.02)
+    # A pixel stands for the point VSP reads it for (_fill_even_odd): column c for
+    # x = c. Column 150 lies on the drawn edge and counts as outside, so the edge
+    # falls between pixels 149 and 150: those two average 0.5, and the ramp is
+    # linear in the distance from there (pixel 145 is 4.5 px inside, 154 4.5 px outside).
+    assert (row[149] + row[150]) / 2 == pytest.approx(0.5, abs=0.02)
+    assert row[145] == pytest.approx(0.5 + 4.5 / 20, abs=0.02)
+    assert row[154] == pytest.approx(0.5 - 4.5 / 20, abs=0.02)
     ramp = row[138:162]
     assert np.all(np.diff(ramp) <= 1e-6)  # monotone, still a ramp: nothing renormalised it
-    assert 0.6 < row[147] < 0.9 and 0.1 < row[153] < 0.45  # 3.5 px inside, 2.5 px outside
+    assert 0.55 < row[147] < 0.9 and 0.1 < row[153] < 0.45  # 2.5 px inside, 3.5 px outside
 
 
 def test_a_later_zone_of_another_type_claims_first_and_the_sum_never_exceeds_one():
@@ -211,7 +211,7 @@ def test_a_ramp_over_another_type_crossfades_with_a_constant_total():
     total = channels["rough_tall"] + channels["shrub"]
     assert np.allclose(total, 1.0, atol=1e-5)
     row = channels["shrub"][SIZE - 1 - 100]
-    assert 0.6 < row[147] < 0.9 and 0.1 < row[153] < 0.45  # 3.5 px inside, 2.5 px outside
+    assert 0.55 < row[147] < 0.9 and 0.1 < row[153] < 0.45  # 2.5 px inside, 3.5 px outside
 
 
 def test_a_ring_inside_a_ring_is_a_hole():
@@ -904,3 +904,14 @@ def test_a_generator_rerun_is_matched_by_content_and_only_what_changed_is_patche
     # Nothing changed since: the next patch finds nothing, and names no ghosts.
     again = gspro.cmd_zones_patch(db, "Zonbana", out, ["a"])
     assert again["changed"] is False and again["removed"] == [] and again["renamed"] == 0
+
+
+def test_a_pixel_is_filled_when_the_point_vsp_reads_it_for_is_inside():
+    """VSP reads Unity pixel round(metres / px): PNG pixel (col, row) is the square centred on
+    x = col, y = row + 1 (frame pixels, y from the north edge). An edge off the grid must not
+    leak a pixel to the west or south."""
+    for a, b in ((2.0, 7.0), (2.3, 7.3), (2.6, 7.6), (2.9, 7.9)):
+        m = gspro._fill_even_odd([[(a, a), (b, a), (b, b), (a, b)]], 0, 0, 12, 12)
+        cols, rows = np.where(m.any(0))[0], np.where(m.any(1))[0]
+        assert all(a - 1e-3 <= c <= b for c in cols) and len(cols) == 5
+        assert all(a <= r + 1 <= b + 1e-3 for r in rows) and len(rows) == 5

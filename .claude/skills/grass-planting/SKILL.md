@@ -54,20 +54,36 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
 ## Where tall grass grows (pipeline/grass_zones.py, tests in pipeline/tests/test_grass_zones.py)
 
 From the surface map the rules are a **weight field** (0..1 per 0.5 m cell), written as nested
-contour bands (weights 0.1 ... 1.0, one `vegetation_zone` per band polygon, 1 m feather (`--band-feather`), 1 m noise).
+contour bands (weights 0.1 ... 1.0, one `vegetation_zone` per band polygon, 0.5 m feather (`--band-feather`, centred on the
+edge), no zone noise: the field's own edges are ragged, and zone noise wobbled bare patches into the deep rough along every
+rough and path).
 The zone rasterizer keeps the maximum per slot (a type's Default or one of its variants), so the bands stack into one smooth ramp. Don't go
 back to one polygon with a wide inward feather: it fades from *every* cut edge, so a narrow rough strip
 between deep rough and a semi becomes a thin, dipping band - it reads as a hole along the mesh border.
 
 - deep rough (per-hole `Deep` meshes + `Outer_Deep_Sat` fill): 1;
-- rough: 1 at the deep border, falling to 0 at 1.5 m (`--spill`) - a tight, ragged line into the mown
-  rough like real unmown rough (5 m read as a wide, patchy fade);
+- rough: the grass grows right up to it and spills in a foot or so (`--spill` 0.3 m: noise decides where
+  it reaches the rough's first cell, rarely the second; 1.5 m and 5 m read as a wide fade);
 - times a ramp to 0 near each forbidden surface: zero within the clearance, full beyond clearance +
   ramp: tee/green 4 m + 4 m, fairway 3 + 3, semi/bunker 2 + 3, water 1.5 + 2, blend strips 1 + 2
-  (`CLEARANCES` in grass_zones.py);
+  (`CLEARANCES` in grass_zones.py) - **only where the deep rough meets that surface itself**. Where mown
+  rough lies between (1 m starts to count, 2 m is enough: `ROUGH_BUFFER_M`), the rough is the buffer and
+  the clearance does not reach through it (a tee in a 3 m ring of rough used to leave ~5 m of bare deep
+  rough around the ring);
 - times a 10 m ramp to 0 at the reach limit (75 m from rough/semi/fairway/green/tee/bunker);
-- times a 1.5 m ramp to 0 at buildings (+4 m) and roads (half width + 1.5 m).
-Tune with `--max-distance --spill --band-feather --building-margin --road-margin` (the clearances are constants). `ground.probe {x, z}` lists every collider and terrain height under a point, for "what is really here" questions.
+- times a 1.5 m ramp to 0 at buildings (+4 m);
+- paths and roads are **not in the weight field**: it runs on under them (the path mesh's `other` cells and
+  OPCD's seam of single `blend` cells along it take the surface beside the path - as blend strips they
+  pushed the grass 1-3 m back), and the app's drawn `path` outlines (+ `--path-margin`, 0.15 m: at 0 the blades leaning over read as slightly too much on the road) and the road
+  centerlines (half width + 0.5 m; only where the road is not also drawn as a path - the survey's line lies
+  a metre off the drawing and left 1-2 m bare along it) are cut out of the band polygons as vectors (`ways_cut`). The grass
+  edge is then the path's edge exactly; cutting by 0.5 m cells left bare strips beside a path and grass
+  half across it. On `gravel` and `dirt` paths a tuft grows a foot onto the path here and there: discs of
+  ~0.4 m on the outline (big enough to hold one 0.5 m mask pixel), one per ~9 m of edge (`TUFT_*`); noise blobs of cells closed a 1.5 m path.
+  Hard paths get none.
+Tune with `--max-distance --spill --band-feather --building-margin --road-margin --path-margin` (the clearances are constants).
+History: grass first grew onto paths and tee boxes (not ok), then the margins left bare deep-rough bands
+(1 m path margin + ramp + noise, tee clearance through the rough: not ok either) - keep the borders tight. `ground.probe {x, z}` lists every collider and terrain height under a point, for "what is really here" questions.
 
 Hand-drawn `rough_tall` zones also get the grass. Check them against the rules (overlay the
 zone on the surface map) and ask before deleting; setting `weight 0` (`bun run zones -- set
@@ -130,6 +146,12 @@ frames where it grows, screenshot, measure, repeat; `golfmap.vegpalette.save` wr
 white point and a bush's first `material` override still need `golfmap.vegpalette.rebuild` (= apply).
 
 ## Verify
+
+- **Mask registration**: VSP reads the mask as Unity pixel `round(metres / px)` (nearest, no filtering;
+  `TextureMask.cs`), so PNG pixel (col, row) stands for the point (col, row + 1) px from the north-west
+  corner. `gspro._fill_even_odd` fills by that point. PIL's polygon fill (used until 2026-10) leaked up
+  to a pixel west and south: grass 0.5 m onto the north/east side of every path, tee and green, bare on
+  the other. At 4096 px over 2050 m an edge is still only good to +-0.25 m (one mask pixel).
 
 - Bare line in the grass? Check the mask across it first (weight continuous = not the zones), then
   `ground.probe {x, z}` (mesh vs terrain height) and a screenshot with `hide: [mesh paths]` - grass
@@ -200,7 +222,7 @@ there) or Draw's selection panel, or `bun run zones -- creek <course> <id> --pal
 - Paths: OPCD's path meshes are NOT in the surface map (the cells under a cart path classify as the deep
   or rough below it), so both generators read the app's `path` features. Creek grass is zero within
   1.2 m of a path (a ~1 m card leans: a zone that stops at the path edge still hangs over it) and full
-  0.8 m further; the tall rough keeps its `path_margin` (1 m) from them.
+  0.8 m further; the tall rough grows up to the path's edge (above).
 - Wet split: when `creek_bank` has a `<palette>_wet` variant, the water and the lower bank (1 m from the
   water, a ragged hand-over over 0.6 m) get that mix and the rest of the bank the palette's own. Vreta
   `reed_wet` = cattails (Dry Cattails 05/01, spacing ~1, scale 0.95-1.35: sparser hid under the base),
@@ -253,6 +275,12 @@ there) or Draw's selection panel, or `bun run zones -- creek <course> <id> --pal
   shared with `reed` - fine blades `#719663`), and the shared brown tufts / canary heads x1.15 (`#756043`,
   `#717654`); banks now ~0.8x the fairway beside them, p90 at the ground's (2026-09-26). Tune the creek
   palettes only; `rough_tall` is the reference.
+- Vreta `lush_low` ("Lush grasses", 2026-09-28): `lush` cut down to a cleaner ~0.2-0.35 m bank sward
+  for ponds and creeks, taller than cut rough. Same textures and tints as `lush`, own items (`Creek lush
+  low - *`: an item's size is per item, so shared names would resize `lush`): cards 0.26-0.32 m (accents
+  canary heads 0.4 m, brown tufts 0.28 m), scale 0.8-1.2, height waves 0.8-1.25, squatter (width
+  0.45-0.5) and denser (base spacing 0.18) so the short blades still close up; heads/tufts sparser
+  (3.2 / 2.8) for a tidier look. First pass, not yet tuned against the fairway in a render.
 - The creek zone type is added to a course on first use (a course seeded before it existed).
 - Sections (one creek, several looks): draw a **hand-drawn `creek_bank` vegetation zone** (web Draw:
   vegetation zone, type Creek bank, the variant = the palette) over a stretch. The banks of every creek

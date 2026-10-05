@@ -15,6 +15,7 @@ export interface CourseFeature {
     sourceRef: null | string;
     license: null | string;
     attributes: null | FeatureAttributes;
+    no: null | number;
     version: number;
 }
 

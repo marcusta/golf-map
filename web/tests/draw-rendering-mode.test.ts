@@ -52,14 +52,16 @@ describe('DrawToolService rendering mode', () => {
         const tool = new DrawToolService();
 
         tool.activate(context(features));
-        expect([...features.modeHiddenTypes.get()].sort()).toEqual(['oob', 'penalty_red', 'penalty_yellow', 'vegetation_zone']);
+        expect([...features.modeHiddenTypes.get()].sort()).toEqual(['oob', 'penalty_red', 'penalty_yellow', 'tree_area', 'vegetation_zone']);
         tool.chooseType('oob');
         expect(tool.drawType.get()).toBe('bunker'); // Draw never picks a rules type
         tool.chooseType('vegetation_zone');
         expect(tool.drawType.get()).toBe('bunker'); // nor a zone
         tool.chooseType('green');
+        tool.chooseTreeArea();
+        expect(tool.drawType.get()).toBe('green'); // nor a tree species area
         tool.deactivate();
-        expect([...features.modeHiddenTypes.get()]).toEqual(['vegetation_zone']); // zones stay hidden outside Vegetation
+        expect([...features.modeHiddenTypes.get()]).toEqual(['vegetation_zone', 'tree_area']); // zones and tree areas stay hidden outside Vegetation
 
         const ctx = context(features);
         (ctx.map.interactionMode as Signal<string>).set('furniture');
@@ -67,7 +69,7 @@ describe('DrawToolService rendering mode', () => {
         expect(tool.scope.get()).toBe('rules');
         expect(features.niceRendering.get()).toBe(true);
         expect(features.rulesOutlines.get()).toBe(true);
-        expect([...features.modeHiddenTypes.get()]).toEqual(['vegetation_zone']);
+        expect([...features.modeHiddenTypes.get()]).toEqual(['vegetation_zone', 'tree_area']);
         expect(tool.drawType.get()).toBe('penalty_yellow');
         tool.chooseType('fairway');
         expect(tool.drawType.get()).toBe('penalty_yellow'); // only rules types here
@@ -98,17 +100,20 @@ describe('DrawToolService rendering mode', () => {
         expect([...features.modeHiddenTypes.get()].sort()).toEqual(['oob', 'penalty_red', 'penalty_yellow']);
         const backdrop = features.modeBackdropTypes.get();
         expect(backdrop.has('fairway') && backdrop.has('green') && backdrop.has('trees')).toBe(true);
-        expect(backdrop.has('vegetation_zone') || backdrop.has('oob')).toBe(false);
+        expect(backdrop.has('vegetation_zone') || backdrop.has('tree_area') || backdrop.has('oob')).toBe(false);
         expect(tool.drawType.get()).toBe('vegetation_zone');
         tool.chooseType('bunker');
-        expect(tool.drawType.get()).toBe('vegetation_zone'); // only zones here
-        tool.chooseZoneType('fern'); // nothing selected: the next zone's type
+        expect(tool.drawType.get()).toBe('vegetation_zone'); // only zones and tree areas here
+        tool.chooseTreeArea(); // the picker's "Tree species area"
+        expect(tool.drawType.get()).toBe('tree_area');
+        tool.chooseZoneType('fern'); // nothing selected: the next zone's type, and back to drawing zones
         expect(tool.drawZoneType.get()).toBe('fern');
+        expect(tool.drawType.get()).toBe('vegetation_zone');
 
         tool.deactivate();
         expect(tool.scope.get()).toBe('surfaces');
         expect(features.modeBackdropTypes.get().size).toBe(0);
-        expect([...features.modeHiddenTypes.get()]).toEqual(['vegetation_zone']);
+        expect([...features.modeHiddenTypes.get()]).toEqual(['vegetation_zone', 'tree_area']);
         expect(tool.drawType.get()).toBe('fairway'); // Draw's own type comes back
     });
 

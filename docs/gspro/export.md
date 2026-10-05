@@ -10,7 +10,7 @@ Migration 016 adds nullable `courses.gspro_export_dir` — the folder `GsproExpo
 
 **Terrain squares** (`terrain-square.ts`). A GSPro course is two squares in EPSG:3006 metres: the **inner terrain** — the map area, its side always a whole multiple of `TERRAIN_SIDE_STEP_M` (10 m: 2010 m, never 2009.37 m) on whole-metre edges — and the **outer terrain**, `OUTER_TERRAIN_SIDE_M` (5 km) centred on the inner (or inner + 1 km margin all round when the inner is too big for 5 km). The inner square is derived ONCE, at map-build time, from the drawn WGS84 area (`innerSquareFromWgs84`: corner-reprojected envelope, longer side snapped to the nearest 10 m, centred) and is what `grid-dem --bbox-3006` cuts the DEM to — so the tile manifest's `bounds` are that square's WGS84 envelope and the build writes it verbatim as `manifest.terrain.inner.square3006` (+ `sideM`; `refreshManifestAsset` carries it through re-terrain/trees). `resolveCourseMapBbox` returns it as `terrainSquare`; the exports render over it and derive the outer with `courseTerrainFor`. A site built before that field existed (or a georeference-bbox course) gets its bounds squared and snapped the same way on the fly. The web picker snaps to the same 10 m step in its own approximate metres, but the server's square is the authority.
 
-**Jobs.** Every export runs through `start(courseId, request)` → `GsproExportJob` (`running`/`succeeded`/`failed`, in memory, one running per course — a second `start` is a 409 naming the running one; `job(id)`, `current(courseId)` = running else latest finished; `whenIdle` for tests), because the fetch-first exports (outer ortho: nine 700 MB tiles; outer DEM; outer trees) run for minutes and a request that timed out in the browser left the operator guessing. The API exposes only `start`/`job`/`current`; the per-kind methods below are what a job performs. The service resolves the squares through the same `resolveCourseMapBbox` chain the hydro/OSM fetches use, then shells out via an injectable runner (same seam as `MapBuildService`) to `pipeline/gspro.py svg` / `ortho` / `dem` with `--square-3006 x0,y0,x1,y1` — never `--bbox` — so every file lands on the exact same square and overlays in GSPro; the palette and curve math stay pinned by the pipeline's own tests. `terrain(courseId)` describes both squares for the panel (409 with no map area). The inner orthophoto comes from the site's persisted `sources/<siteId>/ortho-*.tif` (`orthoSources` lists them, newest first, `.patched.tif` flagged; `exportOrtho` only accepts one of those names, so no request can reach outside the folder) as `<course>-<collection>[-patched]-8192.jpg`, 8192 px square at JPEG quality 92 (`ORTHO_EXPORT_SIZE` / `ORTHO_EXPORT_QUALITY`; OPCD uses 95, Unity recompresses anyway) **plus a `-terrain.jpg` twin** (`terrainTextureFileName`) dimmed in LINEAR light by `TERRAIN_TEXTURE_DARKEN` (0.4 — a sun-lit photo down to about grass albedo; ×0.25 on the sRGB bytes was ×0.05 in linear light and rendered muddy) or the request's own `darken` (0.05–1, `TERRAIN_TEXTURE_DARKEN_RANGE`, the panel's "Terrain texture brightness" field) in the same render (`--terrain-out`/`--darken`/`--darken-space linear`); the twin is JPEG q97 4:4:4 (`TERRAIN_JPEG_QUALITY`) since its reduced tonal range makes q92 blocking visible — Unity's terrain shader lights the photo a second time, so the plain one washes out on the terrain; the Unity importer picks the twin by default for the inner terrain, and the `-meshes` variant for the outer (whose export adds `--darken-tint`, `TerrainTintOptions.darkenTint`: the tint colour darkened like the photo, so that file is the twin's darkness plus the colouring — and `--tint-grade` `OUTER_TERRAIN_GRADE`, per-channel linear multipliers that make the terrain shader render it like the course meshes beside it; re-measure from a screenshot and multiply in when the seam still shows). With the request's `tint` (the panel's "Tint the grass surfaces", on by default) the same render also writes a **`-meshes.jpg`** (`meshTextureFileName`), the texture for the course meshes: the darkened twin with the course's grass surfaces tinted by its own drawn features — the Photoshop overlay step OPCD builders do from the SVG — via `--tint-out`/`--tint-course <courseId>`/`--tint-opacity` (`TERRAIN_TINT_OPACITY` 0.5 or the request's `tintOpacity`, 0–1, `TERRAIN_TINT_OPACITY_RANGE`), softened first by `--soften-m` (`MESH_TEXTURE_SOFTEN_M` 1 m, bunkers and paths stay sharp) and written at `--tint-size` (`MESH_TEXTURE_SIZE` 4096) so it doesn't read as a satellite photo in game; the colours, the water layer (brown, feathered shoreline) and which types are tinted or cut out are the pipeline's defaults; the Unity importer lists it for the terrain overlay only after the `-terrain` twins, since it is meant for the meshes. The **outer orthophoto** (`exportOuterOrtho(courseId, collection)`) is fetched with golfpipe `fetch-ortho` over the outer square's WGS84 envelope the first time and kept as `sources/<siteId>/outer-ortho-<collection>.tif` (not listed by `orthoSources`), then rendered as `<course>-outer-<collection>-8192.jpg`. **DEMs / heightmaps** (`exportDem(courseId, 'inner'|'outer')`) go out as square float32 EPSG:3006 GeoTIFFs **plus the Unity `.raw` heightmap** (OPCD's TIF→RAW step, done by `gspro.py dem`: 4097² uint16) and a `.json` sidecar (height range + Unity terrain/import settings), named `<course>-<inner|outer>-dem-<side>m.tif` / `.raw` / `.tif.json`; the pipeline gets `--terrain <kind>`, and an outer export passes `--inner-sidecar` when the inner's sidecar is already in the export folder (`demSidecarName`) so the outer sidecar carries the outer terrain's Unity position — else the report says to export the inner first. **Hillshades** (`exportHillshade(courseId, kind)`, `<course>-<kind>-hillshade-8192.jpg`) render the same DEM (`demSource`, same inner/outer rules) through `gspro.py hillshade` for checking overlays against the relief. **Trees** (`exportTrees(courseId, kind)`, `<course>-<kind>-trees.json`, unity-trees-v1 via `gspro.py trees`): the inner from the trees job's installed `tree-stems.json` (409 until it has run), the outer detected once with golfpipe `trees-stems --no-kind --resolution 2` (`OUTER_TREES_RESOLUTION_M`: background trees, four times fewer cells) over the outer lidar + DEM into `sources/<siteId>/outer-trees/` (`OUTER_TREES_DIR`) and written with `--exclude-square <inner>`; both need that terrain's heightmap sidecar in the export folder (409 otherwise) for the plot's height range. The DEM rules: the inner from `sources/<siteId>/dem-edited.tif` when present else `dem.tif` (D-TE2 — the export shows what the map shows) at `DEM_EXPORT_RESOLUTION_M.inner` (0.5 m); the outer gridded once from **Laserdata Skog lidar** — the same `fetch-lidar` → `grid-dem` route the build takes for the inner, never the licensed DTM product (`fetch-dem` 403s on these credentials) — into `sources/<siteId>/outer-dem.tif` (`OUTER_DEM_SOURCE`) at 1 m. The outer square's `.laz` tiles are kept in `sources/<siteId>/outer-lidar/` (`OUTER_LIDAR_DIR`), separate from the build's `lidar/` so the trees job's input does not grow; the inner tiles are hard-linked in first so `fetch-lidar`'s size-match skip spares re-downloading them. The fetch runs with `--skip-forbidden`: Lantmäteriet withholds some tiles (HTTP 403 though STAC lists them — Vreta's 5 km square hits `649_53`) and for scenery a flat, mean-filled patch beats no outer DEM; the pipeline's `warning:` line is passed through in the report. A fetch that fails leaves no half file (the ortho workdir is a temp dir and `--out` is only written on success). **Cleaned orthophotos** are their own export: the plain inner/outer buttons send neither of the next two options, and the panel's "Cleaned orthophoto textures" section sends them from its two boxes; a request with either writes `<course>-<collection>[-patched]-clean-8192.jpg` / `<course>-outer-<collection>-clean-8192.jpg` (+ their `-terrain`/`-meshes`), so the plain files are never overwritten. **Forest floor** (the request's `forestFloor`, the panel's "Forest floor under woodland stands" box, on by default in that section; `floorColor` `#rrggbb`, `floorMix` 0–1, both optional) adds `--floor-course <courseId>` (+ `--floor-color`/`--floor-mix`) to both orthophoto renders: the pipeline paints the course's `woodland_floor` zones as forest floor on the square before the plain file, the `-terrain` twin and the `-meshes` variant are written (D-VZ10). **Remove buildings** (the request's `removeBuildings`, the cleaned section's box, on by default) adds `--remove-buildings` with `--roofs sources/<siteId>/roofs.tif` and/or `--buildings-survey sources/<siteId>/buildings.geojson`, whichever is on disk; with neither the render goes ahead and the report's first line says to run Regenerate trees. **Vegetation zones** (`exportZones(courseId, kind)`, `<course>-<kind>-zones.json` + `-zones-<n>.png`, `zonesExportFileName`, unity-zones-v2 via `gspro.py zones --course <courseId>`) need that terrain's heightmap sidecar like trees; the outer passes `--exclude-square <inner>`. **Creeks** (`exportCreeks(courseId)`, `<course>-inner-creeks.json`, `creeksExportFileName`, unity-creeks-v1 via `gspro.py creeks`) are R.A.M. splines for the inner terrain only: each `water_creek` feature's line (drawn centerline, else the line found down its polygon) with control points at its water surface, read from the **raw** `sources/<siteId>/dem.tif`. The edited DEM has the creek beds dug (`creek-digs`), and the water belongs above them. They need the inner heightmap sidecar for the terrain's zero. **Heightmap into Unity** (`exportUnityTerrain(courseId, kind)`, kind `unity-terrain`, the panel's **Inner/Outer heightmap → Unity**) runs the heightmap export, then `golfmap.terrain.update` in the open Unity editor whose active GolfMap course's export folder is this course's (`services/unity-bridge.ts`, the MCP server's bridge client; 409 naming the open editors when none matches, before anything is exported). Unity updates that terrain in place with a backup. The report lists what moved, a warning when the sidecar's `minM` (the terrain's zero) moved, and when the outer plot now shows through the inner. **Stale inner heightmap:** the inner exports read the `dem-edited.tif` that "Apply to terrain" last wrote (D-TE2), while the outer replays the edits fresh. So when enabled terrain edits changed after that Apply (or were never applied), the inner heightmap export warns, and `unity-terrain` refuses, because the two terrains would disagree under the changed edits. On Vreta a regenerated building pad left the outer 2.3 m above the inner. **Unity sculpt back to golf-map** (`exportUnitySculpt(courseId, kind)`, kind `unity-sculpt`) runs `golfmap.terrain.capture` in the same editor, converts the capture with `golfpipe sculpt-tif` into `sources/<siteId>/terrain-sculpt/<kind>-sculpt.tif`, and stores it as that terrain's one `delta` terrain edit (origin `unity-sculpt-<kind>`, dated 2999 so it replays after every other edit, hand-drawn included). A capture with nothing sculpted removes it. The heightmap export passes the site's enabled sculpt GeoTIFFs as `gspro.py dem --sculpt`, so the sidecar's `sculptIn` tells Unity how much of the heights is sculpt (see unity/README.md).
+**Jobs.** Every export runs through `start(courseId, request)` → `GsproExportJob` (`running`/`succeeded`/`failed`, in memory, one running per course — a second `start` is a 409 naming the running one; `job(id)`, `current(courseId)` = running else latest finished; `whenIdle` for tests), because the fetch-first exports (outer ortho: nine 700 MB tiles; outer DEM; outer trees) run for minutes and a request that timed out in the browser left the operator guessing. The API exposes only `start`/`job`/`current`; the per-kind methods below are what a job performs. The service resolves the squares through the same `resolveCourseMapBbox` chain the hydro/OSM fetches use, then shells out via an injectable runner (same seam as `MapBuildService`) to `pipeline/gspro.py svg` / `ortho` / `dem` with `--square-3006 x0,y0,x1,y1` — never `--bbox` — so every file lands on the exact same square and overlays in GSPro; the palette and curve math stay pinned by the pipeline's own tests. `terrain(courseId)` describes both squares for the panel (409 with no map area). The inner orthophoto comes from the site's persisted `sources/<siteId>/ortho-*.tif` (`orthoSources` lists them, newest first, `.patched.tif` flagged; `exportOrtho` only accepts one of those names, so no request can reach outside the folder) as `<course>-<collection>[-patched]-8192.jpg`, 8192 px square at JPEG quality 92 (`ORTHO_EXPORT_SIZE` / `ORTHO_EXPORT_QUALITY`; OPCD uses 95, Unity recompresses anyway) **plus a `-terrain.jpg` twin** (`terrainTextureFileName`) dimmed in LINEAR light by `TERRAIN_TEXTURE_DARKEN` (0.4 — a sun-lit photo down to about grass albedo; ×0.25 on the sRGB bytes was ×0.05 in linear light and rendered muddy) or the request's own `darken` (0.05–1, `TERRAIN_TEXTURE_DARKEN_RANGE`, the panel's "Terrain texture brightness" field) in the same render (`--terrain-out`/`--darken`/`--darken-space linear`); the twin is JPEG q97 4:4:4 (`TERRAIN_JPEG_QUALITY`) since its reduced tonal range makes q92 blocking visible — Unity's terrain shader lights the photo a second time, so the plain one washes out on the terrain; the Unity importer picks the twin by default for the inner terrain, and the `-meshes` variant for the outer (whose export adds `--darken-tint`, `TerrainTintOptions.darkenTint`: the tint colour darkened like the photo, so that file is the twin's darkness plus the colouring — and `--tint-grade` `OUTER_TERRAIN_GRADE`, per-channel linear multipliers that make the terrain shader render it like the course meshes beside it; re-measure from a screenshot and multiply in when the seam still shows). With the request's `tint` (the panel's "Tint the grass surfaces", on by default) the same render also writes a **`-meshes.jpg`** (`meshTextureFileName`), the texture for the course meshes: the darkened twin with the course's grass surfaces tinted by its own drawn features — the Photoshop overlay step OPCD builders do from the SVG — via `--tint-out`/`--tint-course <courseId>`/`--tint-opacity` (`TERRAIN_TINT_OPACITY` 0.5 or the request's `tintOpacity`, 0–1, `TERRAIN_TINT_OPACITY_RANGE`), softened first by `--soften-m` (`MESH_TEXTURE_SOFTEN_M` 1 m, bunkers and paths stay sharp) and written at `--tint-size` (`MESH_TEXTURE_SIZE` 8192: the grass would fit in 4096, but a 2-3.5 m path at 4096 was 4-7 texels wide and its diagonal edges stepped, 2 m teeth after Unity's BC1) so it doesn't read as a satellite photo in game; the colours, the water layer (brown, feathered shoreline) and which types are tinted or cut out are the pipeline's defaults; the Unity importer lists it for the terrain overlay only after the `-terrain` twins, since it is meant for the meshes. The **outer orthophoto** (`exportOuterOrtho(courseId, collection)`) is fetched with golfpipe `fetch-ortho` over the outer square's WGS84 envelope the first time and kept as `sources/<siteId>/outer-ortho-<collection>.tif` (not listed by `orthoSources`), then rendered as `<course>-outer-<collection>-8192.jpg`. **DEMs / heightmaps** (`exportDem(courseId, 'inner'|'outer')`) go out as square float32 EPSG:3006 GeoTIFFs **plus the Unity `.raw` heightmap** (OPCD's TIF→RAW step, done by `gspro.py dem`: 4097² uint16) and a `.json` sidecar (height range + Unity terrain/import settings), named `<course>-<inner|outer>-dem-<side>m.tif` / `.raw` / `.tif.json`; the pipeline gets `--terrain <kind>`, and an outer export passes `--inner-sidecar` when the inner's sidecar is already in the export folder (`demSidecarName`) so the outer sidecar carries the outer terrain's Unity position — else the report says to export the inner first. **Hillshades** (`exportHillshade(courseId, kind)`, `<course>-<kind>-hillshade-8192.jpg`) render the same DEM (`demSource`, same inner/outer rules) through `gspro.py hillshade` for checking overlays against the relief. **Trees** (`exportTrees(courseId, kind)`, `<course>-<kind>-trees.json`, unity-trees-v1 via `gspro.py trees`): the inner from the trees job's installed `tree-stems.json` (409 until it has run), the outer detected once with golfpipe `trees-stems --no-kind --resolution 2` (`OUTER_TREES_RESOLUTION_M`: background trees, four times fewer cells) over the outer lidar + DEM into `sources/<siteId>/outer-trees/` (`OUTER_TREES_DIR`) and written with `--exclude-square <inner>`; both need that terrain's heightmap sidecar in the export folder (409 otherwise) for the plot's height range. The DEM rules: the inner from `sources/<siteId>/dem-edited.tif` when present else `dem.tif` (D-TE2 — the export shows what the map shows) at `DEM_EXPORT_RESOLUTION_M.inner` (0.5 m); the outer gridded once from **Laserdata Skog lidar** — the same `fetch-lidar` → `grid-dem` route the build takes for the inner, never the licensed DTM product (`fetch-dem` 403s on these credentials) — into `sources/<siteId>/outer-dem.tif` (`OUTER_DEM_SOURCE`) at 1 m. The outer square's `.laz` tiles are kept in `sources/<siteId>/outer-lidar/` (`OUTER_LIDAR_DIR`), separate from the build's `lidar/` so the trees job's input does not grow; the inner tiles are hard-linked in first so `fetch-lidar`'s size-match skip spares re-downloading them. The fetch runs with `--skip-forbidden`: Lantmäteriet withholds some tiles (HTTP 403 though STAC lists them — Vreta's 5 km square hits `649_53`) and for scenery a flat, mean-filled patch beats no outer DEM; the pipeline's `warning:` line is passed through in the report. A fetch that fails leaves no half file (the ortho workdir is a temp dir and `--out` is only written on success). **Cleaned orthophotos** are their own export: the plain inner/outer buttons send neither of the next two options, and the panel's "Cleaned orthophoto textures" section sends them from its two boxes; a request with either writes `<course>-<collection>[-patched]-clean-8192.jpg` / `<course>-outer-<collection>-clean-8192.jpg` (+ their `-terrain`/`-meshes`), so the plain files are never overwritten. **Forest floor** (the request's `forestFloor`, the panel's "Forest floor under woodland stands" box, on by default in that section; `floorColor` `#rrggbb`, `floorMix` 0–1, both optional) adds `--floor-course <courseId>` (+ `--floor-color`/`--floor-mix`) to both orthophoto renders: the pipeline paints the course's `woodland_floor` zones as forest floor on the square before the plain file, the `-terrain` twin and the `-meshes` variant are written (D-VZ10). **Remove buildings** (the request's `removeBuildings`, the cleaned section's box, on by default) adds `--remove-buildings` with `--roofs sources/<siteId>/roofs.tif` and/or `--buildings-survey sources/<siteId>/buildings.geojson`, whichever is on disk; with neither the render goes ahead and the report's first line says to run Regenerate trees. **Vegetation zones** (`exportZones(courseId, kind)`, `<course>-<kind>-zones.json` + `-zones-<n>.png`, `zonesExportFileName`, unity-zones-v2 via `gspro.py zones --course <courseId>`) need that terrain's heightmap sidecar like trees; the outer passes `--exclude-square <inner>`. **Creeks** (`exportCreeks(courseId)`, `<course>-inner-creeks.json`, `creeksExportFileName`, unity-creeks-v1 via `gspro.py creeks`) are R.A.M. splines for the inner terrain only: each `water_creek` feature's line (drawn centerline, else the line found down its polygon) with control points at its water surface, read from the **raw** `sources/<siteId>/dem.tif`. The edited DEM has the creek beds dug (`creek-digs`), and the water belongs above them. They need the inner heightmap sidecar for the terrain's zero. **Heightmap into Unity** (`exportUnityTerrain(courseId, kind)`, kind `unity-terrain`, the panel's **Inner/Outer heightmap → Unity**) runs the heightmap export, then `golfmap.terrain.update` in the open Unity editor whose active GolfMap course's export folder is this course's (`services/unity-bridge.ts`, the MCP server's bridge client; 409 naming the open editors when none matches, before anything is exported). Unity updates that terrain in place with a backup. The report lists what moved, a warning when the sidecar's `minM` (the terrain's zero) moved, and when the outer plot now shows through the inner. **Stale inner heightmap:** the inner exports read the `dem-edited.tif` that "Apply to terrain" last wrote (D-TE2), while the outer replays the edits fresh. So when enabled terrain edits changed after that Apply (or were never applied), the inner heightmap export warns, and `unity-terrain` refuses, because the two terrains would disagree under the changed edits. On Vreta a regenerated building pad left the outer 2.3 m above the inner. **Unity sculpt back to golf-map** (`exportUnitySculpt(courseId, kind)`, kind `unity-sculpt`) runs `golfmap.terrain.capture` in the same editor, converts the capture with `golfpipe sculpt-tif` into `sources/<siteId>/terrain-sculpt/<kind>-sculpt.tif`, and stores it as that terrain's one `delta` terrain edit (origin `unity-sculpt-<kind>`, dated 2999 so it replays after every other edit, hand-drawn included). A capture with nothing sculpted removes it. The heightmap export passes the site's enabled sculpt GeoTIFFs as `gspro.py dem --sculpt`, so the sidecar's `sculptIn` tells Unity how much of the heights is sculpt (see unity/README.md).
 
 ## Pipeline: `gspro.py` (standalone CLI, not part of the tile pipeline)
 
@@ -36,12 +36,12 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   course's grass surfaces tinted — the Photoshop step OPCD builders do by hand (SVG shapes as
   selections, a dark-green layer over the turf), computed from the app's own features instead
   (`--tint-course <id|name>` out of `--db`, same loader as `svg`). `TINT_TYPES` (fairway, green, tee,
-  semi/rough, deep_rough) get `--tint-color` (`DEFAULT_TINT_COLOR` #4c5f30, the olive fill of the colourists' Sat_Shader PSD; a sun-lit colour that lifts the darkened photo, right for the course meshes — `--darken-tint` puts it under `--darken` too, so the file stays as dark as the twin, which the app asks for on the outer terrain, together with `--tint-grade R,G,B`: linear-light multipliers on the finished file, because Unity's terrain shader renders the same texture ~2× brighter and greyer than the mesh shaders) at `--tint-opacity`
+  semi/rough, deep_rough) get `--tint-color` (`DEFAULT_TINT_COLOR` #4c5f30, the olive fill of the colourists' Sat_Shader PSD; a sun-lit colour that lifts the darkened photo, right for the course meshes — `--darken-tint` puts it under `--darken` too, so the file stays as dark as the twin, which the app asks for on the outer terrain, together with `--tint-grade R,G,B`: linear-light multipliers on the finished file, because Unity's terrain shader lights the same texture differently from the mesh shaders; the app's values are for the outer terrain on Built In Legacy Diffuse, which the terrain importer sets) at `--tint-opacity`
   (`DEFAULT_TINT_OPACITY` 0.5 — the GSPro colourists' "satellite at 50 % over green"). Before the tint the
   twin is softened by `--soften-m` (`DEFAULT_SOFTEN_M` 1.0: a Gaussian that drops detail finer than that many
   metres, what a 2048 px texture would hold; 0 = off) everywhere except where a masked-off type is on top, so
   turf and undrawn ground lose the "it's a satellite photo" detail while sand edges stay crisp, and the file is
-  written at `--tint-size` (`DEFAULT_TINT_SIZE` 4096, never above `--size`); `TINT_MASK_TYPES` (bunker, path) are painted at opacity 0 in
+  written at `--tint-size` (`DEFAULT_TINT_SIZE` 8192, never above `--size`); `TINT_MASK_TYPES` (bunker, path) are painted at opacity 0 in
   the SVG's `opcd` stacking order so they cut the tint out of what is under them; `TINT_WATER_TYPES`
   (water, water_creek) are a second layer composited over the grass result — `--water-color`
   (`DEFAULT_WATER_COLOR` #4a3d22, a dark brown) at `--water-opacity` (0.4) on the darkened photo, its
@@ -53,6 +53,37 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   bezier expansion as the SVG (even-odd for rings-with-holes), feathered `TINT_FEATHER_PX` 1 px, and
   composited as a normal blend in sRGB like the Photoshop layer it replaces, in `TINT_CHUNK_ROWS` row
   chunks so the 8192² texture never goes float32 in one piece. Vreta at 8192 px (194 features): ~3 s on top of the ~45 s render.
+  **Edge fill** (`--edge-fill TYPES`, default `bunker,path`; `none` = the old file, as photographed): the
+  course meshes sample this file as the base colour of every MAHS channel set to *Use Satellite for Base* (rough,
+  blend, the bunker's own sand) and the Stix 3D grass colours every blade by it (`_ColorMap`), so the photo's sand
+  running past the drawn outline (misregistration, the soften blur, bilinear sampling) painted a pale strip round
+  every bunker and white blades next to it. Measured on Vreta (35 bunkers, 4096 px file): luma 82 vs 75 on the
+  grass 0.5-1 m outside the outline; paths the same in grey gravel (+4 luma on average, the long ones +5..9 and
+  +6..8 blue within 1.5 m). After the resize, a band from the type's inset (`EDGE_FILL_INSET_M`: bunker 0.5, the
+  first 0.5 m texel inside the outline; path 0, since a ~2 m path's `_Sat` concrete samples the file
+  too; `--edge-fill-inset-m` sets one for all) to `--edge-fill-m` (1.25) outside each feature is filled from the ground beyond it (`building_removal.nearest_fill`: nearest clean
+  1 m cell at least 0.5 m past the band, blurred 2 m). Both ends are linear ramps on each pixel centre's exact
+  distance to the drawn outline (STRtree over the outline's segments): fill 0.5 at the inset over
+  `EDGE_FILL_INNER_RAMP_M` 1 m, and a fade from 1.25 to 2.25 m out (`EDGE_FILL_FEATHER_M`). A raster edge on
+  0.5 m texels is a staircase, and along a long path at a shallow angle every texel row showed in Unity as a
+  step in a pale strip; a one-texel ramp still aliases (along-path std 10-14 on a 4 degree test path, 2-5 with the
+  two-texel ramps). The rest of the bunker (and the whole path) stays
+  photographed: its sand channels sample this file too, and a filled bunker would turn green at a distance. Only
+  the `-meshes` file; the plain photo and the `-terrain` twin are unchanged. Into Unity: `golfmap.orthos.update`
+  copies the re-exported file over the project's copy in place (unity/README.md, "3D grass on the roughs").
+  **Path fill** (`--path-fill`, on by default; `--no-path-fill` = the shadows as photographed): OPCD's Satellite-theme
+  path concrete (`OPCD MAHS Concrete - Asphalt_Sat`, red/green *Use Satellite for Base*) takes its colour from this file,
+  so every tree shadow the photo caught on a path showed in Unity as dark blue blocks on the path (Vreta: path luma
+  median 95, p10 36; shadow pixels (B-R)/luma 0.4-1, sunlit gravel -0.05, dark asphalt ~0). Before the edge fill, inside
+  every `path` (roads included; not `surface: bridge` decks or `grass` tracks) a pixel is shadow by smoothstep weights
+  when it is darker than `PATH_FILL_RATIO` (0.6-0.85) of the sunlit path near it, blue (`PATH_FILL_BLUE`), or in a
+  mostly blue stretch (`PATH_FILL_BLUE_SHARE` within 2 m: a path shaded all along has no sunlit pixel to compare with).
+  Shadow becomes the sunlit path colour round it - normalised Gaussians of the sunlit pixels at `PATH_FILL_NEAR_M` 6 m
+  plus 0.05 x `PATH_FILL_FAR_M` 30 m on a 2 m grid, the course's sunlit path colour as the last resort - times the
+  pixel's own relief against its shadow neighbours (1 m, clipped to +/-20 %), so gravel keeps its grain and roads their
+  own colour. Neutral dark asphalt is left alone. Vreta: 102 paths, 7 900 m² lifted, +2 s. Compared in Unity with a
+  satellite-free path material (`golfmap.paths.materials look=plain`, unity/README.md "Cart paths"): the fill kept
+  gravel vs asphalt and the photo's variation, the plain material made every path one flat pinkish grey.
 - `dem` — clip + bilinear-resample a DEM GeoTIFF (`--dem`, e.g. `sources/<id>/dem-edited.tif`
   or the outer `outer-dem.tif` golfpipe `grid-dem` built from lidar) to the square at `--resolution`
   m/px (default 1; the side must be a whole number of cells) as a float32 EPSG:3006 GeoTIFF,
@@ -71,7 +102,13 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   south-west corner, `id` `epsg3006:<x>:<y>`, `bush` when the crown radius exceeds 0.35 × height,
   `plot.terrain` from `--terrain`, `plot.minM/maxM` copied from `--sidecar` (that terrain's
   heightmap sidecar, which must be for the same square) so the planter's ground check matches the
-  terrain; `--exclude-square` drops the inner square's stems from an outer file.
+  terrain; `--exclude-square` drops the inner square's stems from an outer file. With `--course`
+  (out of `--db`; the web export passes it), the course's `tree_area` features
+  (`shared/features/tree-areas.ts`: `species` `"oak=9, birch"`, optional `name`/`ignoreKind`) go
+  into `areas[]` (`{id, name, ignoreKind, species: [{species, weight}], stems, rings}`, the outline
+  clipped to the square minus `--exclude-square`, simplified 0.5 m, plot-local like the zones' rings)
+  and each stem inside one gets `area: <id>`. Where areas overlap, the one higher in the web editor's
+  stack wins; an area without a usable mix is skipped with a warning.
 - `zones` — a course's `vegetation_zone` features (`--course` out of `--db`, `attributes_json` keys
   `zoneType`/`zoneVariant`/`weight`/`feather`/`noise`/`blend`/`extraPalettes`) rasterized into VSPro texture masks for one terrain
   square, the `docs/feature-vegetation-zones.md` §6 rasterizer with D-VZ11's per-item projection. It writes
@@ -147,8 +184,54 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   fill-only SVG for the Inkscape/Blender leg of OPCD. One layer per hole (`Hole1`…, the
   unpadded spelling the course files use), anything not on a hole on `Others` (not the
   reserved `Hole99` — that changes how Blender cuts); shapes named
-  `hole_<hole>_<index>` (`others_<n>` off-hole) with the golf-map type kept in `data-type`,
-  since the mesh already carries the material from the fill; within a layer the paint order is the
+  `hole_<hole>_<number>` (`others_<number>` off-hole), the number being the feature's per-course
+  `feature_no` in hex (server migration 026: a counter that only goes up, so never reused; 3 hex digits
+  cover 4095 shapes; the export panel lists each feature under this name). A feature without one -
+  generated rows, or a database from before 026 - takes 5 characters of its id instead (`_shape_ids`;
+  more where an older shape already has that name). The feature id is in `data-feature-id` and the
+  golf-map type in `data-type`, since the mesh already carries the material from the fill. OPCD keeps
+  the name (`Spline_hole_18_1c_Bunker_-_Mesh`), so
+  a mesh keeps its name when other features on the hole change, and Unity-side edits can be keyed to
+  it (until 2026-09 it was the feature's index on the hole, which renumbered the hole's bunkers on
+  almost any edit there; the first export after that renames every mesh once, so the next Unity mesh
+  sync re-adds them all: run it with `prune`). The roads and paths go to a `Roads` layer on top, every
+  touching piece (kerb fillets, tapers, a drawn lot) of every surface merged into **one shape per
+  connected network** (`_merged_roads`, `data-feature-id` = the pieces' ids, space-separated), as OPCD
+  builds them best: the fillets of "Round kerbs at junctions" dissolve inside the one shape. The pieces
+  are cleaned as one network (slits and gaps under 0.6 m closed, `ROADS_CLOSE_M`; hairline spurs
+  opened, `ROADS_OPEN_M`; holes under `ROADS_MIN_HOLE_M2` filled; a shape under `PATH_SURFACE_MIN_M2`,
+  1 m², dropped) and carry no `data-surface`: which part is gravel and which asphalt is not the SVG's
+  business. A piece without a surface (a kerb fillet, an OSM way without the tag) has `surface: null`
+  in the sidecar and does not count towards its shape's dominant surface.
+  **Grass tracks** (`surface: grass`) are not hard ground: they are written as their own shapes with
+  the rough fill (`GRASS_TRACK_FILL`, merged among themselves) under every hard road, so OPCD makes
+  them rough, not a path mesh; they carry `data-surface="grass"`, the only road shapes that do. A
+  track is written minus the hard network eroded by `PATH_SURFACE_OVERLAP_M` (it reaches 5 cm under a
+  road and no further; cut by a road along its edge, a whole track left a sliver of rough), opened by
+  half of `GRASS_TRACK_MIN_WIDTH_M` (a track thinner than 30 cm is no track), and a track a road
+  crosses becomes one shape per side. With `--map` giving the path type another OPCD surface the
+  type is one fill and the tracks stay in the one shape.
+  **The sidecar `<stem>-paths.json`** (`path_surfaces_file`, `_road_regions`, format
+  `golfmap-path-regions-v1`) holds the surfaces, in two parts: `shapes` = `{"roads_124": "asphalt",
+  ...}`, each shape's dominant surface by area (what Unity's `golfmap.paths.materials` reads to give
+  each `Spline_roads_<n>_...` mesh its material; grass tracks included), and `regions` = per shape
+  `{surface, mixed, pieces: [{id, featureNo, surface, source, for, rings}]}`: every piece with its
+  surface and its outline in SVG units (`for` = the roads a junction piece was made for), the input of
+  the Blender step that cuts a mixed shape's OPCD meshes along the surface seams and separates one
+  object per surface, `Spline_roads_<n>_<surface>_...` (`golfmap.split_surfaces`, blender/README.md
+  "Shaping: surfaces of a merged road"; the layer op comes from `shaping-global`, below).
+  **History**: on 2026-10-04/05 the export wrote one shape per surface (`_surface_regions`, with a
+  `data-surface` on every road, the higher surface keeping the contested bits, the lower written first
+  and reaching 5 cm under it, slivers handed between the shares). It was dropped: a seam through a
+  junction cut the kerb fillets into slivers, every repair of those left its own bumps (wedges, thorns,
+  tapering tongues, hairlines that snapped into spikes), and OPCD's build failed on the result. The
+  per-surface split now happens in Blender, on the mesh, where the junction is already dissolved.
+  A shape is named `roads_<number>` after the **lowest**
+  `feature_no` among its pieces (`_road_names`), so a road drawn elsewhere, or a piece added to this
+  one, never renames it; a road of generated pieces only takes its oldest piece's id-derived name, and
+  two roads that would share a name (one piece reaching into both) keep them unique (the next piece's
+  number, else `_2`…). Until 2026-09 they were `roads_<i>` in paint order and renumbered whenever a
+  road was added before them. Within a layer the paint order is the
   app's own, except that `TOP_TYPES` (green, tee, bunker) are lifted to the top so nothing
   on the hole cuts them — `--stack app` keeps it verbatim; **fills are `OPCD_PALETTE`, transcribed from the
   installed `OPCD Palette.gpl`** — fill colour is how OPCD is told what a shape is, so
@@ -161,6 +244,10 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   the edge is written cut to the square (flattened, `_clip_to_square`); merged roads and road-sliver
   fills the same; one wholly outside is left out. Both are counted in the report. Vreta's three
   Lantmäteriet creeks overhung by 6–8 m.
+  **The report** has a roads line, e.g. `roads: 107 road piece(s) merged into 15 shape(s), slits and gaps
+  under 0.6 m closed; 4 grass track(s) written as rough` (the grass part only when there are tracks),
+  and `wrote vreta-paths.json (15 road shape(s) with a surface; 1 of mixed surfaces, for Blender to cut:
+  roads_124)` (the mixed part only when a shape holds more than one surface).
   **Left out, not ground**: bridge decks (`path` with the attribute `surface: bridge`, the props'
   deck outlines kept only so vegetation zones clear them; with their kerb fillets) and any drawn,
   non-road shape under `MIN_SHAPE_AREA_M2` (1 m²: a click or drag that collapsed while drawing -
@@ -191,3 +278,84 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   the next step. At one suspect a last export leaves out only it: built = confirmed, failed = it breaks
   only together with others. ⌈log2 n⌉ + 1 builds; undo per answer; the state survives a reload.
 
+- `shaping-global` — the generated Blender shaping layer (`blender/SHAPING-PLAN.md`) for a course:
+  `--course` out of `--db` (opened read-only, the `svg` loaders), written to
+  `docs/gspro/<course slug>/shaping/00-global.gen.json` (`--out` to override), format
+  `golfmap-shaping-layer-v1`, `generated: true`. Ops in replay order: `tees` (`afrod.flattentees`,
+  `select: {type: tee}`, `SHAPING_TEE_PARAMS`), `paths-cut` + `paths-smooth` (`afrod.cutcartpaths` /
+  `afrod.smoothcartpaths`, `select: {type: path}`, `SHAPING_PATH_SMOOTH_PARAMS`; one op for all
+  paths, not split per `surface`: neither op's params depend on it - the cut's paint is decided per road
+  shape in Blender: a grass track's `data-surface`, else the op's `pathSurfaces`, else the database; see blender/README.md "The cut's paint"), then, when a
+  merged road shape holds more than one surface, `paths-surfaces` (`golfmap.split_surfaces`, `select:
+  {shape: [<roads_n>, ...]}`: the shapes the SVG export's `<stem>-paths.json` marks `mixed`, worked out
+  from the same rows the same way, `_mixed_road_shapes`; Blender cuts their meshes along the seams and
+  separates one object per surface, after the cut and smooth and before the footprints, which level the
+  parts alike since they share the seam vertices; the report says `1 road shape(s) of mixed surfaces
+  split per surface in Blender: roads_124`), then `golfmap.flatten_footprint` per **lot** (`lot-<shape name>`, `featureId`, `seed` =
+  `feature_no`, `level: plane`, `falloffM` 2: a hand-made `path` polygon, not a centerline road,
+  generated fillet or bridge deck, with 4πA/P² ≥ 0.15 - the server's road-grading rule for a lot
+  plane) and per **pad** (`pad-<origin_ref slug>`, else `pad-<edit id>`: the site's enabled `plane`
+  terrain edits other than the lots graded from a feature, `level: median` when `flat`, else
+  `plane`). `footprint3006` (EPSG:3006, cm, open ring) is the area that ends up level and `falloffM`
+  the blend band outside it: a terrain edit feathers inside its ring, so its ring is shrunk by its
+  `featherM` (a building pad = footprint + 1.5 m apron, falloff 4 m). Pads whose falloff edge is over
+  `SHAPING_PAD_REACH_M` (10 m) from every course shape move no mesh and are left out, counted in the
+  report, as are lot edits of this course's features and stale ones (deleted features). No timestamps,
+  sorted stable ids: regenerating diffs cleanly (pad rows get new ids on every re-import; their
+  `origin_ref` doesn't change).
+
+  The same run writes **`10-features.gen.json`** next to it (`--out-dir <folder>` puts both files
+  there; `--library` names the recipe library, default `$GOLFMAP_RECIPE_LIBRARY`, else
+  `blender/recipes/library.json`): layer id `features`, one `afrod.recipe` op per course feature with a
+  shaping recipe, ordered by feature number: `id` `recipe-<shape name>` (the `feature_no` in hex),
+  `select: {feature: <id>}`, `recipe` = the library entry's `file`, `seed` = `feature_no`, `note` =
+  `<library id> (recipe edit)` or `(default for <surface>)`. Which recipe: the feature's enabled
+  **recipe terrain edit** (`op: recipe`, origin `feature`, origin_ref `feature:<id>` of a feature on
+  THIS course; `recipe: none` = no op at all), else for every `bunker`, `water` (surface `lake`) and
+  `water_creek` (`creek`) the library's default for its surface (`default: true`, or the surfaces
+  listed). Paths get a recipe only from an edit (the library's path default is not applied); bridge
+  decks never. A disabled recipe edit counts as none: the feature gets the default. Unknown ids, a
+  recipe not made for the surface (used anyway), edits of other courses' or deleted features, and
+  surfaces without a default are reported. Without a library the layer is written with no ops (so a
+  sync drops recipe ops applied before). **Overrides**: the edit's `overrides` go where the engine
+  (`blender/tools/shape_layers.py` `OPS["afrod.recipe"]`) takes them: whole into an `overrides` key
+  when its op spec has one, else the keys its `params` spec knows into `params`; the rest are
+  reported and not written (today `afrod.recipe` takes neither, so every override is reported: a key
+  the engine does not know would make it reject the whole layer). Vreta (2026-09-28): 70 ops, all
+  course defaults - 35 bunkers (`cesimgolf-conway`), 22 lakes (`kaustin-lake-gradual`), 13 creeks
+  (`kaustin-creek`).
+
+### Shaping from the Terrain editor (server, builder only)
+
+`ShapingService` (`server/services/shaping.service.ts`, API `server/api/shaping.api.ts`):
+
+- `GET /api/shaping/recipes?surface=bunker|lake|creek|path` — the recipe library's entries
+  `{id, name, file, author, surfaces, default?, notes?, params}` for that surface (`default` = the course
+  default for it); `[]` while there is no library file. `params` = the entry's declared knobs
+  `{id, label, unit?, min, max, step?, default}` (blender/SHAPING-PLAN.md, "Composite and
+  parameterised recipes"; the engine's `maps` are not served; malformed ones dropped), `[]` without any.
+- A feature's recipe is a terrain edit through the ordinary terrain-edits API: `create {siteId, op:
+  'recipe', featureId, params: {recipe, overrides?}}` (no rings), `update` (params / enabled),
+  `remove`; history as for every edit. One per feature (a second create is a 409 naming the first); `overrides` takes only the recipe's param ids, each a number within its min..max, plus `seed` (an integer; `none` and a recipe without params take only the seed; with no library file values need only be numbers). A refused recipe edit (unknown recipe, wrong surface, feature not on the site, bad overrides) is a 400 (`InvalidRecipeEditError`; other terrain-edit errors are unchanged).
+- `POST /api/courses/:courseId/shaping/apply {dryRun?, skipUnity?}` → a job (in memory, one at a time
+  on the machine: one worker; 409 while one runs): (a) `gspro.py shaping-global --course <id>
+  --out-dir docs/gspro/<course slug>/shaping --library <library> [--db $DB_PATH]`; (b) the shaping
+  worker on `GOLFMAP_SHAPING_URL` (default `http://127.0.0.1:8766`) — started when nothing answers
+  there (`<blender> -b --python blender/tools/shape_worker.py -- --port <p> --blend <blend> --layers
+  <dir> --fbx-folder <fbx>`, output in `<data>/shaping-worker.log` + `.err`; it outlives a server
+  restart), `POST /load {blend, layersDir, fbxFolder}` when it holds another .blend or layer folder
+  (or is in error), then `POST /sync {dryRun?}`; (c) `golfmap.course.refresh only=<changedObjects + removed FBX names without .fbx>` (meshes.sync prunes a named object whose FBX is gone)
+  (+ `dryRun`) in the Unity editor whose active course exports to the course's folder, skipped when
+  nothing changed or no editor is open (a warning, not a failure; a bridge that rejects `only` gets
+  the whole refresh); (d) result `{changedObjects, exported, removed, warnings, places, seams,
+  unityReport, unityError, layers, blend, layersDir, fbxFolder, dryRun, seconds}`.
+- `GET /api/courses/:courseId/shaping/status` → `{worker: {url, reachable, state, blend, conformed,
+  layersDir, appliedOps, lastRun, error, spawnedPid}, job}`; `GET /api/shaping/job?jobId=`.
+- Paths (env): `GOLFMAP_SHAPING_BLEND` (absolute or a name in the export folder; default the newest
+  `*.conformed.blend` there, else the newest source `.blend` — a source newer than the cache is a
+  warning), `GOLFMAP_SHAPING_FBX_FOLDER` (default `<Unity project>/Assets/fbx` of the course's open
+  editor; a worker that must load with neither is a 409), `GOLFMAP_SHAPING_LAYERS_ROOT` (replaces
+  `docs/gspro`), `GOLFMAP_BLENDER` (default Blender 4.5's install path, else `blender`),
+  `GOLFMAP_RECIPE_LIBRARY`.
+- Recipe edits are not DEM edits: `TerrainEditsService.listDemEdits` (every DEM replay: map build,
+  inner staleness check, outer DEM) leaves them out.

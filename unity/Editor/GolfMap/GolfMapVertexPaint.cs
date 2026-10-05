@@ -5,7 +5,10 @@
 // (NewRough: ONE_GRASS_TYPE + VERTEX_DENSITY) spawns a blade with the probability
 // of the vertex colour's red component. So on a rough mesh red is full grass and
 // anything else is fewer blades, down to none; rough's black channel is OPCD's
-// dirt base, which reads as a worn or dry patch.
+// dirt base (roots and debris), which reads as a worn or dry patch. MAHS blends
+// black -> red -> green -> blue, each by its own vertex channel, so a rule in
+// mode 'overlay' raises one channel and leaves red alone: the ground under the
+// blades changes colour and the grass stays (Vreta's bunker-surround: blue).
 //
 // The course meshes are read-only FBX sub-assets. OPCD's own painter
 // (VertexPainterPro) paints into a VertexInstanceStream that only the renderer
@@ -55,16 +58,19 @@ namespace GolfMap.Editor
   ""notes"": [
     ""Vertex paint generated onto the course meshes by GolfMap > Vertex Paint > Apply (bridge: golfmap.paint.apply). Re-run after editing this file or re-importing the FBX meshes."",
     ""edge rules paint near an edge: 'bunker' is the outer edge of every bunker blend. 'surfaces' are the mesh classes painted (GolfMapSurfaces: Rough, Semi, Fairway, Deep, ...)."",
-    ""channel: red, green, blue or black. On rough, anything but red thins the Stix 3D grass (blade chance = red) and black shows the material's dirt base."",
-    ""widthM: how far from the edge the paint can reach; each spot reaches 35-100 % of it. strength: paint at the edge where the rule applies, 0-1. coverage: share of the edge where it applies at all, 0-1; the rest keeps its grass up to the edge. noiseM: length of those stretches. seed: change for a different pattern.""
+    ""channel: red, green, blue or black. mode 'replace' (default) blends the vertex colour toward that channel: on rough anything but red then thins the Stix 3D grass (blade chance = red), and black shows the material's dirt base. mode 'overlay' (red, green or blue) raises that channel and keeps the others, so red and the Stix grass stay: a colour-only change of the ground under the blades (MAHS blends black, red, green, blue in that order, each by its own channel)."",
+    ""widthM: how far from the edge the paint can reach; each spot reaches 35-100 % of it. strength: paint at the edge where the rule applies, 0-1. coverage: share of the edge where it applies at all, 0-1; the rest keeps its grass up to the edge. noiseM: length of those stretches. seed: change for a different pattern."",
+    ""enabled: false keeps a rule (and its tuning) without painting it. bunker-surround is off: on OPCD's rough material (OPCD MAHS Rough No Mowlines_Sat) blue and black both draw the dirt base (base index 4) with a root and twig detail (detail 20 / 22 at 0.5), so any band of either reads as root streaks round the bunkers; the rough stays clean up to the blend.""
   ],
   ""rules"": [
     {
       ""id"": ""bunker-surround"",
+      ""enabled"": false,
       ""kind"": ""edge"",
       ""edge"": ""bunker"",
       ""surfaces"": [""Rough""],
-      ""channel"": ""black"",
+      ""channel"": ""blue"",
+      ""mode"": ""overlay"",
       ""widthM"": 2.2,
       ""strength"": 0.9,
       ""coverage"": 0.55,
@@ -83,6 +89,7 @@ namespace GolfMap.Editor
             public HashSet<GolfMapSurfaces.Surface> surfaces = new HashSet<GolfMapSurfaces.Surface>();
             public Color target;
             public string channel;
+            public bool overlay;             // mode 'overlay': raise the channel, keep the others (red, so the Stix grass)
             public float widthM, strength, coverage, noiseM;
             public int seed;
             public float threshold;          // noise value above which the rule applies (from coverage)
@@ -101,6 +108,7 @@ namespace GolfMap.Editor
                 string where = path + " rules[" + i + "]";
                 if (o == null) throw new InvalidOperationException(where + ": not an object.");
                 if (o.String("kind") != "edge") throw new InvalidOperationException(where + ": kind must be 'edge'.");
+                if (o["enabled"] is bool && !(bool)o["enabled"]) continue;  // kept in the file, not painted
                 var r = new EdgeRule
                 {
                     id = o.String("id") ?? ("rule" + i),
@@ -115,6 +123,10 @@ namespace GolfMap.Editor
                 if (r.edge != "bunker") throw new InvalidOperationException(where + ": edge '" + r.edge + "' is not supported (bunker).");
                 if (r.widthM <= 0) throw new InvalidOperationException(where + ": widthM must be > 0.");
                 r.target = ChannelColor(r.channel, where);
+                var mode = (o.String("mode") ?? "replace").ToLowerInvariant();
+                if (mode != "replace" && mode != "overlay") throw new InvalidOperationException(where + ": mode must be replace or overlay.");
+                r.overlay = mode == "overlay";
+                if (r.overlay && r.channel == "black") throw new InvalidOperationException(where + ": black has no overlay (it is the absence of the others); use mode replace.");
                 foreach (var s in o.Array("surfaces") ?? new List<object> { "Rough" })
                 {
                     GolfMapSurfaces.Surface surface;
@@ -165,6 +177,18 @@ namespace GolfMap.Editor
             return t * t * (3 - 2 * t);
         }
 
+        // Mode overlay: the channel raised toward 1 by `w`, the others kept.
+        static Color Overlay(Color c, string channel, float w)
+        {
+            switch (channel)
+            {
+                case "red": c.r = Mathf.Lerp(c.r, 1, w); break;
+                case "green": c.g = Mathf.Lerp(c.g, 1, w); break;
+                case "blue": c.b = Mathf.Lerp(c.b, 1, w); break;
+            }
+            return c;
+        }
+
         // Paint weight of one rule at a world point `d` metres from its edge.
         static float Weight(EdgeRule r, Vector3 p, float d)
         {
@@ -193,7 +217,10 @@ namespace GolfMap.Editor
         [BridgeCommand("golfmap.paint.restore", "Put every painted course mesh back to its original FBX mesh and reset its Stix grass cache. The painted copies stay in <course>/PaintedMeshes/.")]
         static object RestoreCommand(BridgeArgs a) { return Restore(); }
 
-        public static Dictionary<string, object> Apply(bool dryRun)
+        // only / within (golfmap.course.refresh only=): paint just the named objects and the course meshes whose bounds
+        // meet one of the `within` boxes (XZ) grown by the rules' widest reach; the bunker edges are read from the blends
+        // near them. Objects outside keep their paint as it is (never reverted). Both null = every course mesh.
+        public static Dictionary<string, object> Apply(bool dryRun, ICollection<string> only = null, IList<Bounds> within = null)
         {
             var course = GolfMapCourses.Require();
             var folder = GolfMapCourses.Folder(course);
@@ -211,13 +238,26 @@ namespace GolfMap.Editor
             var records = LoadRecords(meshFolder + RestoreFile);
 
             var scene = EditorSceneManager.GetActiveScene();
-            var filters = CourseMeshes(scene);
-            var ground = GolfMapWallGround.Load(course, filters,
+            var allFilters = CourseMeshes(scene);
+            float reach = Mathf.Max(1f, rules.Where(r => r.edge == "bunker").Select(r => r.widthM).DefaultIfEmpty(1f).Max());
+            bool scoped = only != null || within != null;
+            var boxes = (within ?? new List<Bounds>()).Select(b => { var g = b; g.Expand(new Vector3(2 * reach, 0, 2 * reach)); return g; }).ToList();
+            Func<MeshFilter, float, bool> near = (f, grow) =>
+            {
+                var r = f.GetComponent<Renderer>();
+                if (r == null) return false;
+                var b = r.bounds;
+                return boxes.Any(x => b.max.x >= x.min.x - grow && b.min.x <= x.max.x + grow && b.max.z >= x.min.z - grow && b.min.z <= x.max.z + grow);
+            };
+            var named = only == null ? null : new HashSet<string>(only, StringComparer.Ordinal);
+            var filters = !scoped ? allFilters : allFilters.Where(f => (named != null && named.Contains(f.name)) || near(f, 0)).ToList();
+            // the wall ground measures each bank's profile on every mesh around it, so it gets them all
+            var ground = GolfMapWallGround.Load(course, allFilters,
                 f => IsPaintedCopy(f.sharedMesh, meshFolder) ? LoadOriginal(records, PathOf(f.transform)) : f.sharedMesh);
 
             // Edges from the meshes as they are now (blends are never painted by this tool).
-            var bunkerEdge = new PointGrid(Mathf.Max(1f, rules.Where(r => r.edge == "bunker").Select(r => r.widthM).DefaultIfEmpty(1f).Max()));
-            foreach (var f in filters.Where(f => f.name.Contains(BunkerBlendMarker)))
+            var bunkerEdge = new PointGrid(reach);
+            foreach (var f in allFilters.Where(f => f.name.Contains(BunkerBlendMarker) && (!scoped || filters.Contains(f) || near(f, reach))))
                 foreach (var p in BoundaryPoints(f)) bunkerEdge.Add(p);
 
             var targets = new HashSet<GolfMapSurfaces.Surface>(rules.SelectMany(r => r.surfaces));
@@ -248,6 +288,7 @@ namespace GolfMap.Editor
                 bool reshaped = shaped != null;  // held: `shaped` is destroyed once copied into an existing asset
                 var baseMesh = shaped ?? source;
 
+                bool stoneOnBlue = reshaped && (surface == GolfMapSurfaces.Surface.Rough || surface == GolfMapSurfaces.Surface.Deep);
                 var local = baseMesh.vertices;
                 var colors = baseMesh.colors;
                 if (colors == null || colors.Length != local.Length) colors = Enumerable.Repeat(new Color(1, 0, 0, 1), local.Length).ToArray();
@@ -260,11 +301,13 @@ namespace GolfMap.Editor
                     foreach (var r in rules)
                     {
                         if (!r.surfaces.Contains(surface)) continue;
+                        // a wall-ground rough draws stone on blue: no ground-colour rule may paint it there
+                        if (stoneOnBlue && r.channel == "blue") continue;
                         float d = bunkerEdge.NearestXZ(p, r.widthM);
                         float w = Weight(r, p, d);
                         if (w <= 0.001f) continue;
-                        var t = r.target; t.a = c.a;
-                        c = Color.Lerp(c, t, w);
+                        if (r.overlay) c = Overlay(c, r.channel, w);
+                        else { var t = r.target; t.a = c.a; c = Color.Lerp(c, t, w); }
                     }
                     outColors[i] = c;
                     if (c != colors[i]) count++;
@@ -291,12 +334,12 @@ namespace GolfMap.Editor
                 var existing = AssetDatabase.LoadAssetAtPath<Mesh>(assetPath);
                 Mesh saved;
                 if (existing == null) { AssetDatabase.CreateAsset(copy, assetPath); saved = copy; }
-                else { EditorUtility.CopySerialized(copy, existing); UnityEngine.Object.DestroyImmediate(copy); saved = existing; EditorUtility.SetDirty(saved); }
+                else { Overwrite(existing, copy); UnityEngine.Object.DestroyImmediate(copy); saved = existing; EditorUtility.SetDirty(saved); }
                 SetMesh(f, saved, reshaped ? saved : source);
                 // a reshaped rough draws its stone channel from a copy of its material (the original is remembered)
                 string material = null;
                 var mr = f.GetComponent<MeshRenderer>();
-                if (reshaped && surface == GolfMapSurfaces.Surface.Rough && mr != null)
+                if (reshaped && (surface == GolfMapSurfaces.Surface.Rough || surface == GolfMapSurfaces.Surface.Deep) && mr != null)
                 {
                     var known = RecordMaterial(records, path);
                     var original = known ?? mr.sharedMaterial;
@@ -312,6 +355,13 @@ namespace GolfMap.Editor
                 records[path] = material == null ? new[] { AssetDatabase.GetAssetPath(source), source.name } : new[] { AssetDatabase.GetAssetPath(source), source.name, material };
             }
 
+            object terrainLowered = null;
+            if (!dryRun && ground != null && ground.loweredPoints.Count > 0)
+            {
+                // VSP grass grows on the terrain: bring it down under ground the walls lowered
+                var inner = GolfMapTerrainConform.InnerTerrain(course);
+                if (inner != null) terrainLowered = GolfMapTerrainConform.LowerUnder(folder, inner, ground.loweredPoints);
+            }
             if (!dryRun)
             {
                 Undo.CollapseUndoOperations(undoGroup);
@@ -335,10 +385,12 @@ namespace GolfMap.Editor
                 { "reverted", reverted },
                 { "untouched", unchanged },
                 { "ground", ground == null ? null : ground.report },
+                { "terrainLowered", terrainLowered },
                 { "meshes", painted },
                 { "warnings", warnings },
                 { "errors", errors },
             };
+            if (scoped) result["scope"] = new Dictionary<string, object> { { "meshesInScope", filters.Count }, { "courseMeshes", allFilters.Count }, { "reachM", reach } };
             WriteReport(course, result);
             return result;
         }
@@ -387,11 +439,43 @@ namespace GolfMap.Editor
             return !string.IsNullOrEmpty(p) && p.StartsWith(meshFolder, StringComparison.OrdinalIgnoreCase);
         }
 
+        // Rewrite an existing painted-copy asset (same GUID, so scene references stay) with another mesh's data through
+        // the Mesh API. EditorUtility.CopySerialized swaps the serialized data under the loaded mesh but leaves its
+        // render buffers: once the FBX under a copy changed its vertices (a Blender shaping run re-exports the meshes),
+        // the renderer kept the old index buffer and UVs over the new vertices - sheets and walls of stretched triangles,
+        // UVs off the ortho (white) - while the collider, cooked from the CPU data, had the right shape.
+        static void Overwrite(Mesh target, Mesh source)
+        {
+            target.Clear(false);
+            target.name = source.name;
+            target.indexFormat = source.indexFormat;
+            var v = new List<Vector3>(); source.GetVertices(v); target.SetVertices(v);
+            var n = new List<Vector3>(); source.GetNormals(n); if (n.Count == v.Count) target.SetNormals(n);
+            var t = new List<Vector4>(); source.GetTangents(t); if (t.Count == v.Count) target.SetTangents(t);
+            var c = new List<Color>(); source.GetColors(c); if (c.Count == v.Count) target.SetColors(c);
+            for (int ch = 0; ch < 4; ch++)
+            {
+                var uv = new List<Vector4>(); source.GetUVs(ch, uv);
+                if (uv.Count != v.Count) continue;
+                if (uv.All(u => u.z == 0 && u.w == 0)) target.SetUVs(ch, uv.Select(u => new Vector2(u.x, u.y)).ToList());
+                else target.SetUVs(ch, uv);
+            }
+            target.subMeshCount = source.subMeshCount;
+            for (int sm = 0; sm < source.subMeshCount; sm++) target.SetTriangles(source.GetTriangles(sm), sm, false);
+            target.RecalculateBounds();
+        }
+
         // Swap the rendered mesh and rebuild the Stix cache from it (the bake); the MeshCollider gets `collider`
         // (the FBX mesh, or a wall-ground copy that changed the shape).
         static void SetMesh(MeshFilter f, Mesh mesh, Mesh collider)
         {
             Undo.RecordObject(f, "Vertex paint");
+            // Upload the (possibly rewritten, see Overwrite) geometry and rebind it, just as we recook the collider below.
+            mesh.vertices = mesh.vertices;
+            mesh.normals = mesh.normals;
+            mesh.colors = mesh.colors;
+            mesh.UploadMeshData(false);
+            f.sharedMesh = null;
             f.sharedMesh = mesh;
             var mc = f.GetComponent<MeshCollider>();
             // a reshaped copy is rewritten in place on a re-run: assign it again so the collider cooks the new shape
@@ -448,6 +532,13 @@ namespace GolfMap.Editor
             File.WriteAllText(path, GolfMapJson.Serialize(new Dictionary<string, object> { { "format", RestoreFormat }, { "meshes", meshes } }));
         }
 
+        // Object path -> the FBX asset its painted (or wall-ground reshaped) copy was made from (restore.json). Takes the
+        // course folder: GolfMapCourseMeshes reads it before OPCD's Set Default Materials can unload the course asset.
+        internal static Dictionary<string, string> OriginalAssets(string courseFolder)
+        {
+            return LoadRecords(courseFolder + MeshFolder + "/" + RestoreFile).ToDictionary(kv => kv.Key, kv => kv.Value[0]);
+        }
+
         // The material a wall-ground mesh had before it drew stone (null when it was never swapped).
         static Material RecordMaterial(Dictionary<string, string[]> records, string objectPath)
         {
@@ -490,7 +581,7 @@ namespace GolfMap.Editor
 
         static string Safe(string name) { return string.Join("_", name.Split(Path.GetInvalidFileNameChars())); }
 
-        [BridgeCommand("golfmap.paint.probe", "Read-only: the vertex paint of every course mesh within r metres (XZ) of a point: vertex count, how many are not pure red, lowest and mean red (the Stix blade chance), nearest bunker-blend edge distance, and whether the mesh is a painted copy.",
+        [BridgeCommand("golfmap.paint.probe", "Read-only: the vertex paint of every course mesh within r metres (XZ) of a point: vertex count, how many are not pure red, lowest and mean red (the Stix blade chance), nearest bunker-blend edge distance, whether the mesh is a painted copy, and (stream) the colours of a VertexPainterPro stream on the renderer, which is what it draws.",
             args = "x, z, r=3")]
         static object Probe(BridgeArgs a)
         {
@@ -509,7 +600,11 @@ namespace GolfMap.Editor
                 if (x < b.min.x - r || x > b.max.x + r || z < b.min.z - r || z > b.max.z + r) continue;
                 var local = f.sharedMesh.vertices;
                 var colors = f.sharedMesh.colors;
-                int n = 0, notRed = 0; float minRed = 1, sumRed = 0;
+                // A VertexPainterPro stream (hand paint) is what the renderer draws: its colours replace the mesh's.
+                var streamMesh = f.GetComponent<MeshRenderer>().additionalVertexStreams;
+                var streamColors = streamMesh != null ? streamMesh.colors : new Color[0];
+                if (streamColors.Length != local.Length) streamColors = null;
+                int n = 0, notRed = 0, streamNotRed = 0; float minRed = 1, sumRed = 0, sumGreen = 0, sumBlue = 0, streamMinRed = 1, streamSumRed = 0, streamSumBlack = 0;
                 for (int i = 0; i < local.Length; i++)
                 {
                     var p = f.transform.TransformPoint(local[i]);
@@ -517,18 +612,97 @@ namespace GolfMap.Editor
                     if (dx * dx + dz * dz > r * r) continue;
                     var c = colors.Length == local.Length ? colors[i] : Color.red;
                     n++; sumRed += c.r; minRed = Mathf.Min(minRed, c.r);
+                    sumGreen += c.g; sumBlue += c.b;
                     if (c.r < 0.99f || c.g > 0.01f || c.b > 0.01f) notRed++;
+                    if (streamColors != null)
+                    {
+                        var s = streamColors[i];
+                        streamSumRed += s.r; streamMinRed = Mathf.Min(streamMinRed, s.r);
+                        streamSumBlack += Mathf.Max(0f, 1f - s.r - s.g - s.b);
+                        if (s.r < 0.99f || s.g > 0.01f || s.b > 0.01f) streamNotRed++;
+                    }
                 }
                 if (n == 0) continue;
-                hits.Add(new Dictionary<string, object>
+                var hit = new Dictionary<string, object>
                 {
                     { "object", f.name }, { "vertices", n }, { "notRed", notRed },
+                    { "vertexStream", streamMesh == null ? null : streamMesh.name },
                     { "minRed", (float)Math.Round(minRed, 3) }, { "meanRed", (float)Math.Round(sumRed / n, 3) },
+                    { "meanGreen", (float)Math.Round(sumGreen / n, 3) }, { "meanBlue", (float)Math.Round(sumBlue / n, 3) },
                     { "paintedCopy", AssetDatabase.GetAssetPath(f.sharedMesh).Contains("/" + MeshFolder + "/") },
-                });
+                };
+                if (streamColors != null)
+                    hit["stream"] = new Dictionary<string, object>
+                    {
+                        { "notRed", streamNotRed }, { "minRed", (float)Math.Round(streamMinRed, 3) },
+                        { "meanRed", (float)Math.Round(streamSumRed / n, 3) }, { "meanBlack", (float)Math.Round(streamSumBlack / n, 3) },
+                    };
+                hits.Add(hit);
             }
             float edge = bunkerEdge.NearestXZ(centre, Mathf.Max(r * 2, 3));
             return new Dictionary<string, object> { { "x", x }, { "z", z }, { "r", r }, { "bunkerEdgeM", edge == float.MaxValue ? (object)null : (float)Math.Round(edge, 2) }, { "meshes", hits } };
+        }
+
+        // ----------------------------------------------------- painter streams
+
+        // OPCD's painter (VertexPainterPro) keeps hand paint in a VertexInstanceStream: a mesh the renderer draws its
+        // colours from (MeshRenderer.additionalVertexStreams) instead of the mesh's own. It outlives FBX re-imports and
+        // paint.json, and the Stix grass never sees it. On Vreta one (the rough round 18_1c/18_1d) held black round the
+        // bunkers: the rough's dirt base with roots, which no paint rule or Blender paint explained.
+        [BridgeCommand("golfmap.paint.streams", "List the course meshes whose renderer draws a VertexPainterPro stream (OPCD hand paint, VertexInstanceStream) instead of its own vertex colours: vertices, how many are not pure red, mean black. remove=true takes the streams off (each stream mesh saved first to <course>/PaintedMeshes/streams/<object>.asset; Undo works), so the renderers draw the mesh's colours (FBX or paint.json). Marks the scene dirty, does not save it.",
+            args = "remove=false, only (object names, comma-separated)")]
+        static object Streams(BridgeArgs a)
+        {
+            bool remove = a.Bool("remove", false);
+            var only = new HashSet<string>((a.String("only", "") ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));
+            var course = GolfMapCourses.Require();
+            var folder = GolfMapCourses.Folder(course) + MeshFolder;
+            var scene = EditorSceneManager.GetActiveScene();
+            var rows = new List<object>();
+            foreach (var f in CourseMeshes(scene))
+            {
+                if (only.Count > 0 && !only.Contains(f.name)) continue;
+                var mr = f.GetComponent<MeshRenderer>();
+                var comp = Component(f, PainterStreamType);
+                var stream = mr != null ? mr.additionalVertexStreams : null;
+                if (comp == null && stream == null) continue;
+                var colors = stream != null ? stream.colors : new Color[0];
+                int notRed = 0; double black = 0;
+                foreach (var c in colors)
+                {
+                    if (c.r < 0.99f || c.g > 0.01f || c.b > 0.01f) notRed++;
+                    black += Mathf.Max(0f, 1f - c.r - c.g - c.b);
+                }
+                var row = new Dictionary<string, object>
+                {
+                    { "object", f.name }, { "component", comp != null }, { "streamVertices", colors.Length },
+                    { "meshVertices", f.sharedMesh.vertexCount }, { "notRed", notRed },
+                    { "meanBlack", colors.Length > 0 ? Math.Round(black / colors.Length, 4) : 0 },
+                };
+                if (remove)
+                {
+                    if (stream != null)
+                    {
+                        if (!AssetDatabase.IsValidFolder(folder)) AssetDatabase.CreateFolder(GolfMapCourses.Folder(course).TrimEnd('/'), MeshFolder);
+                        if (!AssetDatabase.IsValidFolder(folder + "/streams")) AssetDatabase.CreateFolder(folder, "streams");
+                        var backup = UnityEngine.Object.Instantiate(stream);
+                        var path = AssetDatabase.GenerateUniqueAssetPath(folder + "/streams/" + Safe(f.name) + ".asset");
+                        AssetDatabase.CreateAsset(backup, path);
+                        row["backup"] = path;
+                        Undo.RecordObject(mr, "Remove painter streams");
+                        mr.additionalVertexStreams = null;
+                    }
+                    if (comp != null) Undo.DestroyObjectImmediate(comp);
+                    row["removed"] = true;
+                }
+                rows.Add(row);
+            }
+            if (remove && rows.Count > 0)
+            {
+                AssetDatabase.SaveAssets();
+                EditorSceneManager.MarkSceneDirty(scene);
+            }
+            return new Dictionary<string, object> { { "remove", remove }, { "streams", rows } };
         }
 
         // ------------------------------------------------------------ survey

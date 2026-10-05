@@ -124,24 +124,65 @@ namespace GolfMap.Editor
 
         // ---- the conform record (golfmap.terrain.conform) ------------------------
 
-        /// Add what a conform raised (heightmap index z·res+x → metres) to the record.
+        /// Add what a conform raised (heightmap index z·res+x → metres) to the record. The file is a list of
+        /// (int index, float metres) records in which the last record of an index wins: a few changes (a windowed
+        /// conform, golfmap.course.refresh only=) look up just their indexes and append their new totals, instead of
+        /// reading the whole record (16M entries on a conformed 4097² terrain) into memory and writing it all again;
+        /// a bigger run rewrites it (which also drops the superseded records).
         public static void RecordConform(string courseFolder, string kind, Dictionary<int, float> raised)
         {
             if (raised.Count == 0) return;
-            var path = Full(Folder(courseFolder) + "/" + kind + "-conform.bytes");
+            RecordConformAt(Full(Folder(courseFolder) + "/" + kind + "-conform.bytes"), raised);
+        }
+
+        internal static void RecordConformAt(string path, Dictionary<int, float> raised)
+        {
+            if (raised.Count <= AppendLimit && File.Exists(path) && new FileInfo(path).Length % RecordBytes == 0)
+            {
+                var before = new Dictionary<int, float>(raised.Count);
+                int max = 0;
+                foreach (var k in raised.Keys) { before[k] = 0f; if (k > max) max = k; }
+                var wanted = new bool[max + 1];   // an array test per record: 16M dictionary lookups cost more than the read
+                foreach (var k in raised.Keys) if (k >= 0) wanted[k] = true;
+                ScanConform(path, (k, v) => { if (k >= 0 && k <= max && wanted[k]) before[k] = v; });
+                using (var w = new BinaryWriter(new FileStream(path, FileMode.Append, FileAccess.Write)))
+                    foreach (var kv in raised) { w.Write(kv.Key); w.Write(before[kv.Key] + kv.Value); }
+                return;
+            }
             var all = ReadConform(path);
             foreach (var kv in raised) { float v; all.TryGetValue(kv.Key, out v); all[kv.Key] = v + kv.Value; }
-            using (var w = new BinaryWriter(File.Create(path)))
+            using (var w = new BinaryWriter(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20)))
                 foreach (var kv in all) { w.Write(kv.Key); w.Write(kv.Value); }
         }
 
-        static Dictionary<int, float> ReadConform(string path)
+        const int RecordBytes = 8;
+        internal const int AppendLimit = 200000;
+
+        internal static Dictionary<int, float> ReadConform(string path)
         {
-            var all = new Dictionary<int, float>();
-            if (!File.Exists(path)) return all;
-            using (var r = new BinaryReader(File.OpenRead(path)))
-                while (r.BaseStream.Position + 8 <= r.BaseStream.Length) { int k = r.ReadInt32(); float v = r.ReadSingle(); all[k] = v; }
+            if (!File.Exists(path)) return new Dictionary<int, float>();
+            var all = new Dictionary<int, float>((int)Math.Min(int.MaxValue / 2, new FileInfo(path).Length / RecordBytes));
+            ScanConform(path, (k, v) => all[k] = v);
             return all;
+        }
+
+        /// Every whole record of the conform file in file order, read in 1 MB chunks (a trailing partial record is ignored).
+        internal static void ScanConform(string path, Action<int, float> each)
+        {
+            var buf = new byte[1 << 20];
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16))
+            {
+                int have = 0, n;
+                while ((n = fs.Read(buf, have, buf.Length - have)) > 0)
+                {
+                    have += n;
+                    int whole = have - have % RecordBytes;
+                    for (int i = 0; i < whole; i += RecordBytes) each(BitConverter.ToInt32(buf, i), BitConverter.ToSingle(buf, i + 4));
+                    int rest = have - whole;
+                    if (rest > 0) Buffer.BlockCopy(buf, whole, buf, 0, rest);
+                    have = rest;
+                }
+            }
         }
 
         // ---- capture ------------------------------------------------------------

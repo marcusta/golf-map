@@ -67,6 +67,16 @@ namespace GolfMap.Editor
                 .OrderBy(m => m.name, StringComparer.Ordinal).ThenBy(m => Guid(m), StringComparer.Ordinal).ToList();
         }
 
+        // What a look's copies are copies of: the source materials, with a CTI trial material mapped
+        // back to the material it replaced (GolfMapCtiTrial.Original) - a look is defined against the
+        // NM originals whether or not the trial is applied.
+        static List<Material> LookSources(GolfMapCourse course, GolfMapBiome biome, string species)
+        {
+            string folder = GolfMapCourses.Folder(course);
+            return SourceMaterials(biome, species).Select(m => GolfMapCtiTrial.Original(folder, m)).Distinct()
+                .OrderBy(m => m.name, StringComparer.Ordinal).ThenBy(m => Guid(m), StringComparer.Ordinal).ToList();
+        }
+
         static string Guid(UnityEngine.Object asset) { return AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(asset)); }
 
         // Source material -> where its copy lives in the look's folder. Two sources sharing a name get their guid appended.
@@ -84,7 +94,7 @@ namespace GolfMap.Editor
         public static List<Material> Materials(GolfMapCourse course, GolfMapBiome biome, string species, GolfMapBiomeLook look)
         {
             if (look.original) return SourceMaterials(biome, species);
-            var paths = CopyPaths(SourceMaterials(biome, species), Folder(course, species, look.id));
+            var paths = CopyPaths(LookSources(course, biome, species), Folder(course, species, look.id));
             return paths.Values.Select(p => AssetDatabase.LoadAssetAtPath<Material>(p)).Where(m => m).ToList();
         }
 
@@ -99,9 +109,10 @@ namespace GolfMap.Editor
         {
             if (look.original) return "";
             string folder = Folder(course, species, look.id);
+            string courseFolder = GolfMapCourses.Folder(course);   // before the Refresh, which can leave `course` stale
             Directory.CreateDirectory(folder);
             AssetDatabase.Refresh();
-            var sources = SourceMaterials(biome, species);
+            var sources = LookSources(course, biome, species);
             var paths = CopyPaths(sources, folder);
             var fromPaths = from == null || from.original ? null : CopyPaths(sources, Folder(course, species, from.id));
             int materials = 0, prefabs = 0;
@@ -130,7 +141,17 @@ namespace GolfMap.Editor
                 {
                     var slots = from_[i].sharedMaterials;
                     for (int s = 0; s < slots.Length; s++)
-                        if (slots[s] && paths.ContainsKey(slots[s])) slots[s] = AssetDatabase.LoadAssetAtPath<Material>(paths[slots[s]]);
+                    {
+                        if (!slots[s]) continue;
+                        // While the CTI trial is applied the source draws a trial material: the copy is of
+                        // the material it replaced, and the look prefab draws that copy's own trial
+                        // material (if the trial has one) so the trial - and its restore - still hold.
+                        var original = GolfMapCtiTrial.Original(courseFolder, slots[s]);
+                        if (!paths.ContainsKey(original)) continue;
+                        var copy_ = AssetDatabase.LoadAssetAtPath<Material>(paths[original]);
+                        var trial = original != slots[s] ? GolfMapCtiTrial.TrialFor(courseFolder, copy_) : null;
+                        slots[s] = trial ? trial : copy_;
+                    }
                     to[i].sharedMaterials = slots;
                     EditorUtility.SetDirty(to[i]);
                 }
@@ -146,7 +167,7 @@ namespace GolfMap.Editor
         public static void Capture(GolfMapCourse course, GolfMapBiome biome, string species, GolfMapBiomeLook look)
         {
             if (look.original) return;
-            var sources = SourceMaterials(biome, species);
+            var sources = LookSources(course, biome, species);
             var paths = CopyPaths(sources, Folder(course, species, look.id));
             var node = look.node ?? (look.node = new GolfMapJsonObject());
             // A material with no copy in this project keeps what the file already records for it.
@@ -187,7 +208,7 @@ namespace GolfMap.Editor
             var problems = new List<string>();
             var all = look.node == null ? null : look.node.Object("materials");
             if (look.original || all == null) return problems;
-            var sources = SourceMaterials(biome, species);
+            var sources = LookSources(course, biome, species);
             var paths = CopyPaths(sources, Folder(course, species, look.id));
             foreach (var source in sources)
             {

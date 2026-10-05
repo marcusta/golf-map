@@ -68,6 +68,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import shapely
 import rasterio
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
@@ -404,6 +405,20 @@ def _render_ortho(src: Path, extent, size: int, out: Path, quality: int = DEFAUL
             edge = min(tint.size or DEFAULT_TINT_SIZE, size)
             if edge != size:
                 im = im.resize((edge, edge), Image.LANCZOS)
+            # After the resize: the band must hold at the resolution the meshes sample.
+            # Paths first, so the edge fill ramps from the lifted path into the grass.
+            if tint.path_fill:
+                arr, fill_summary = _fill_path_shadows(np.asarray(im), extent, tint.rows)
+                im = Image.fromarray(arr)
+                summary += "; " + fill_summary
+            else:
+                summary += "; no path fill (path shadows as photographed)"
+            if tint.edge_fill is not None:
+                arr, fill_summary = _fill_hazard_edges(np.asarray(im), extent, tint.rows, tint.edge_fill)
+                im = Image.fromarray(arr)
+                summary += "; " + fill_summary
+            else:
+                summary += "; no edge fill (bunkers and paths as photographed)"
             if tint.grade is not None:
                 im = Image.fromarray(_darken(np.asarray(im), np.asarray(tint.grade, dtype=np.float32), "linear"))
                 summary += "; graded ×{:g}/{:g}/{:g} (R/G/B, linear light)".format(*tint.grade)
@@ -423,7 +438,12 @@ def cmd_ortho(bbox, out_dir: Path | None, size: int, count: int, ortho_tifs: lis
               floor_course: str | None = None, floor_color: str | None = None, floor_mix: float | None = None,
               floor_feather_m: float | None = None, floor_seed: int = 0,
               remove_buildings: bool = False, roofs: Path | None = None, buildings_survey: Path | None = None,
-              shadow_azimuth: float | None = None, shadow_ratio: float | None = None) -> None:
+              shadow_azimuth: float | None = None, shadow_ratio: float | None = None,
+              edge_fill: "EdgeFill | None" = ..., path_fill: bool = True) -> None:
+    # edge_fill: the -meshes file's band round bunkers and paths; ... = EdgeFill(), None = as photographed.
+    # path_fill: the -meshes file's path shadows lifted (see PATH_FILL_RATIO); False = as photographed.
+    if edge_fill is ...:
+        edge_fill = EdgeFill()
     if not 1 <= quality <= 100:
         raise SystemExit("error: --quality must be 1..100")
     if not 0 < darken <= 1:
@@ -452,7 +472,7 @@ def cmd_ortho(bbox, out_dir: Path | None, size: int, count: int, ortho_tifs: lis
         if water_feather_m < 0:
             raise SystemExit("error: --water-feather must be >= 0")
         tint = TintJob(tint_out, course["name"], rows, tints if tints is not None else _parse_tints(None),
-                       water_feather_m, soften_m, tint_size, darken_tint, tint_grade)
+                       water_feather_m, soften_m, tint_size, darken_tint, tint_grade, edge_fill, path_fill)
     elif tint_course:
         raise SystemExit("error: --tint-course goes with --tint-out")
     floor = None
@@ -763,13 +783,164 @@ def _load_stems(path: Path) -> list[dict]:
     return rows
 
 
+# Tree species areas (shared/features/tree-areas.ts): a drawn polygon whose
+# species mix the Unity tree planter uses for the stems inside it. The mix is
+# one attribute string, comma-separated `<species>[=<weight>]` (relative, default 1).
+TREE_AREA_FEATURE_TYPE = "tree_area"
+_TREE_SPECIES_ENTRY = re.compile(r"([a-z][a-z0-9_-]*)(?:=([0-9]*\.?[0-9]+))?")
+TREE_AREA_SIMPLIFY_M = 0.5
+
+
+def _parse_species_mix(raw) -> list[dict] | None:
+    """shared/features/tree-areas.ts parseSpeciesMix: [{species, weight}], or
+    None when an entry is malformed or a species is named twice."""
+    if not isinstance(raw, str):
+        return None
+    mix: list[dict] = []
+    for part in raw.split(","):
+        entry = part.strip().lower()
+        if not entry:
+            continue
+        m = _TREE_SPECIES_ENTRY.fullmatch(entry)
+        if not m or any(s["species"] == m.group(1) for s in mix):
+            return None
+        mix.append({"species": m.group(1), "weight": float(m.group(2)) if m.group(2) is not None else 1.0})
+    return mix
+
+
+def _load_tree_areas(db_path: Path, course_ident: str) -> list[dict]:
+    """A course's tree species areas bottom to top in the web editor's stack
+    order (as _load_zones), each {id, name, ignoreKind, species, geometry}.
+    An area without a usable mix (the server refuses those) is skipped with a warning."""
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    try:
+        rows = conn.execute(
+            f"""SELECT f.id, f.geometry_json, f.attributes_json
+               FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
+               WHERE f.course_id = ? AND f.type = ?
+               ORDER BY {_group_rank_sql(conn)}, f.sort_order, f.id""",
+            (course["id"], TREE_AREA_FEATURE_TYPE),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        raise SystemExit(f"error: {db_path}: {exc} (run the server once so its migrations bring the schema up)") from None
+    conn.close()
+    areas = []
+    for r in rows:
+        attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+        attrs = attrs if isinstance(attrs, dict) else {}
+        mix = _parse_species_mix(attrs.get("species"))
+        if not mix or not any(s["weight"] > 0 for s in mix):
+            print(f"  warning: tree area {r['id']} has no usable species mix ({attrs.get('species')!r}); skipped")
+            continue
+        name = attrs.get("name")
+        areas.append({
+            "id": str(r["id"]),
+            "name": name.strip() if isinstance(name, str) else "",
+            "ignoreKind": attrs.get("ignoreKind") is True,
+            "species": mix,
+            "geometry": json.loads(r["geometry_json"]),
+        })
+    return areas
+
+
+def _place_tree_areas(areas: list[dict], extent: Extent, exclude: Extent | None,
+                      trees: list[dict], e0: float, n0: float) -> list[dict]:
+    """Give every stem inside a tree area that area's id (`area`; the topmost
+    area wins where they overlap) and return the areas' unity-trees-v1 rows:
+    {id, name, ignoreKind, species: [{species, weight}], stems, rings} with the
+    outline clipped to the square (minus `exclude`) in plot-local metres."""
+    from shapely import intersects_xy
+    from shapely.geometry import box
+
+    square = box(*extent)
+    excl = box(*exclude) if exclude is not None else None
+    xs = np.array([t["x"] + e0 for t in trees], dtype=np.float64)
+    ys = np.array([t["z"] + n0 for t in trees], dtype=np.float64)
+    owner = np.full(len(trees), -1, dtype=np.int64)
+    rows = []
+    for area in areas:
+        geom = _zone_geometry_m(area["geometry"])
+        clipped = geom.intersection(square) if geom is not None and not geom.is_empty else None
+        if clipped is not None and excl is not None:
+            clipped = clipped.difference(excl)
+        if clipped is None or clipped.is_empty:
+            continue
+        if len(trees):
+            owner[intersects_xy(clipped, xs, ys)] = len(rows)   # later (higher in the stack) wins
+        rows.append({
+            "id": area["id"],
+            "name": area["name"],
+            "ignoreKind": area["ignoreKind"],
+            "species": area["species"],
+            "stems": 0,
+            "rings": _zone_rings_local(clipped.simplify(TREE_AREA_SIMPLIFY_M, preserve_topology=True), e0, n0),
+        })
+    for i, t in enumerate(trees):
+        if owner[i] >= 0:
+            row = rows[owner[i]]
+            t["area"] = row["id"]
+            row["stems"] += 1
+    return rows
+
+
+# A stem the survey puts on a road or path (a crown leaning over it, a detection a
+# metre off) is moved to the nearest spot this far outside the path's edge: room for
+# the trunk and its root flare.
+TREE_PATH_CLEARANCE_M = 0.8
+
+
+def _load_path_geometries(db_path: Path, course_ident: str) -> list:
+    """The course's `path` features (roads, cart paths, parking lots) in EPSG:3006 metres."""
+    from shapely import make_valid
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    rows = conn.execute("SELECT geometry_json FROM course_features WHERE course_id = ? AND type = 'path'",
+                        (course["id"],)).fetchall()
+    conn.close()
+    geoms = (_zone_geometry_m(json.loads(r["geometry_json"])) for r in rows)
+    return [make_valid(g) for g in geoms if g is not None and not g.is_empty]
+
+
+def _move_stems_off_paths(trees: list[dict], paths: list, e0: float, n0: float,
+                          clearance_m: float = TREE_PATH_CLEARANCE_M) -> tuple[int, float]:
+    """Move every stem on a path, or within `clearance_m` of its edge, to the nearest
+    point that far outside it. The stem keeps its id (the surveyed position), so looks
+    and hand edits keyed by it in Unity stay with the tree. Returns (moved, longest move in metres)."""
+    from shapely import contains_xy
+    from shapely.geometry import Point
+    from shapely.ops import nearest_points, unary_union
+    if not trees or not paths:
+        return 0, 0.0
+    keep_out = unary_union(paths).buffer(clearance_m, quad_segs=4)
+    xs = np.array([t["x"] + e0 for t in trees], dtype=np.float64)
+    ys = np.array([t["z"] + n0 for t in trees], dtype=np.float64)
+    edge = keep_out.boundary
+    moved, longest = 0, 0.0
+    for i in np.flatnonzero(contains_xy(keep_out, xs, ys)):
+        at = Point(xs[i], ys[i])
+        to = nearest_points(edge, at)[0]
+        d = at.distance(to)
+        # A few centimetres past the edge, so rounding cannot leave the stem inside.
+        k = (d + 0.05) / d if d > 1e-6 else 1.0
+        trees[i]["x"] = round(at.x + (to.x - at.x) * k - e0, 3)
+        trees[i]["z"] = round(at.y + (to.y - at.y) * k - n0, 3)
+        moved += 1
+        longest = max(longest, d)
+    return moved, longest
+
+
 def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: str | None = None,
-              exclude: Extent | None = None, extent: Extent | None = None) -> None:
+              exclude: Extent | None = None, extent: Extent | None = None,
+              db_path: Path | None = None, course: str | None = None) -> None:
     """Write a unity-trees-v1 file for one terrain: every stem inside the
     square (and outside `exclude`, the inner square when this is the outer)
     as x/z metres from the square's south-west corner, with the plot's
     height range copied from the terrain's heightmap sidecar so the planter's
-    ground check and the terrain agree to the centimetre."""
+    ground check and the terrain agree to the centimetre. With `course`, the
+    course's tree species areas (read from `db_path`) go into `areas` and each
+    stem inside one names it in `area`, and stems standing on the course's
+    paths are moved to just beside them (_move_stems_off_paths)."""
     if not stems_path.is_file():
         raise SystemExit(f"error: no such tree-stems asset: {stems_path}")
     if not sidecar_path.is_file():
@@ -829,6 +1000,11 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
         },
         "trees": trees,
     }
+    moved, longest = 0, 0.0
+    if course is not None:
+        moved, longest = _move_stems_off_paths(trees, _load_path_geometries(db_path or DEFAULT_DB, course), e0, n0)
+        areas = _place_tree_areas(_load_tree_areas(db_path or DEFAULT_DB, course), extent, exclude, trees, e0, n0)
+        doc["areas"] = areas
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, separators=(",", ":")) + "\n", encoding="utf-8")
     kinds = {k: sum(1 for t in trees if t["k"] == k) for k in (0, 1, 2)}
@@ -838,7 +1014,12 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
           f"{sum(1 for t in trees if t['bush'])} bushes); {outside} outside the square"
           + (f", {excluded} left to the inner terrain" if exclude is not None else "")
           + (f", {duplicates} duplicate position(s) merged" if duplicates else ""))
+    if moved:
+        print(f"  {moved} stem(s) on a road or path moved to {TREE_PATH_CLEARANCE_M:g} m beside it (longest move {longest:.1f} m)")
     print(f"  plot origin {e0:.0f},{n0:.0f} (EPSG:3006), height range {doc['plot']['minM']:.2f}..{doc['plot']['maxM']:.2f} m from {sidecar_path.name}")
+    for a in doc.get("areas", []):
+        mix = ", ".join(f"{s['species']} {s['weight']:g}" for s in a["species"])
+        print(f"  tree area {a['name'] or a['id']}: {a['stems']} stems -> {mix}" + (" (whatever the survey's class)" if a["ignoreKind"] else ""))
 
 
 # --- Command: buildings -----------------------------------------------------
@@ -1195,7 +1376,8 @@ def _group_rank_sql(conn: sqlite3.Connection) -> str:
 
 def _load_course_features(db_path: Path, course_ident: str, stack: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
     """A course and its features (id, type, geometry_json, sort_order,
-    hole_number, group_rank) in paint order: the app's own, or with `stack`
+    hole_number, group_rank, source, source_ref, attributes_json, created_at,
+    feature_no, generated) in paint order: the app's own, or with `stack`
     "opcd" the green/tee/bunker lift inside each group (see TOP_TYPES)."""
     conn = _open_course_db(db_path)
     course = _resolve_course(conn, course_ident)
@@ -1206,10 +1388,14 @@ def _load_course_features(db_path: Path, course_ident: str, stack: str) -> tuple
     source = "f.source" if "source" in cols else "NULL"
     source_ref = "f.source_ref" if "source_ref" in cols else "NULL"
     attributes = "f.attributes_json" if "attributes_json" in cols else "NULL"
+    created = "f.created_at" if "created_at" in cols else "NULL"
+    number = "f.feature_no" if "feature_no" in cols else "NULL"
+    generated = "f.generated" if "generated" in cols else "0"
     rows = conn.execute(
         f"""SELECT f.id, f.type, f.geometry_json, f.sort_order, h.number AS hole_number,
                    {rank} AS group_rank, {source} AS source, {source_ref} AS source_ref,
-                   {attributes} AS attributes_json
+                   {attributes} AS attributes_json, {created} AS created_at,
+                   {number} AS feature_no, {generated} AS generated
            FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
            WHERE f.course_id = ?
            ORDER BY group_rank, f.sort_order, f.id""",
@@ -1259,9 +1445,12 @@ DEFAULT_TINT_OPACITY = 0.5
 # square; Gaussian, sigma = half of it). Surfaces the tint masks off —
 # bunkers, paths — keep the sharp photo, so sand edges stay crisp.
 DEFAULT_SOFTEN_M = 1.0
-# The tinted twin is written at this edge (or the render's, when smaller):
-# after the soften there is nothing in it that 8192 px would still carry.
-DEFAULT_TINT_SIZE = 4096
+# The tinted twin is written at this edge (or the render's, when smaller).
+# The soften leaves the grass nothing 4096 px would not carry, but bunkers and
+# paths stay sharp, and a 2-3.5 m path is 4-7 texels wide at 4096 over
+# Vreta's 2 km: its diagonal edges stepped in 0.5 m blocks, and Unity's BC1
+# (4x4-texel blocks) made them 2 m teeth. 8192 halves both.
+DEFAULT_TINT_SIZE = 8192
 TINT_TYPES = ("fairway", "green", "tee", "semi_rough", "rough", "deep_rough")
 TINT_MASK_TYPES = ("bunker", "path")
 TINT_GROUND = "ground"
@@ -1287,6 +1476,322 @@ Rgb = tuple[int, int, int]
 # (colour, opacity 0..1) — opacity 0 means "mask the tint off here".
 Tint = tuple[Rgb, float]
 
+# --- Hazard edge fill -------------------------------------------------------
+# The course meshes sample the `-meshes` file twice: OPCD's MAHS materials use
+# it as the base colour of every channel set to "Use Satellite for Base" (the
+# _Sat rough, the bunker blends, the bunker's own sand), and the StixGames 3D
+# grass on the roughs colours every blade by it (`_ColorMap`). The photo's
+# sand runs past the drawn bunker outline (misregistration, the soften blur,
+# half a texel of bilinear sampling), so the strip of grass round every bunker
+# rendered pale and the Stix blades there came out white. Measured on Vreta
+# (2025 photo, 35 bunkers): luma is up over the grass to ~1.0 m outside the
+# outline in the 4096 px `-meshes` file (0.5 m in the 8192 photo). Paths do
+# the same with gravel: +4 luma on average, but the long ones +5..9 luma and
+# +6..8 blue within 1.5 m (a grey strip along both sides in Unity).
+# So the finished `-meshes` file gets a band round each bunker and path filled
+# from the grass beyond it (building_removal.nearest_fill: nearest clean ground
+# on a 1 m grid, blurred): from the type's EDGE_FILL_INSET_M inside the outline
+# out to EDGE_FILL_M, then fading out over EDGE_FILL_FEATHER_M. A bunker starts
+# 0.5 m in (the first 0.5 m texel, so bilinear sampling at the seam reads
+# grass, not sand); a path at its outline, as it is ~2 m wide and its concrete
+# (`_Sat`) samples this file too, so a 0.5 m inset would green a quarter of it
+# each side. Both ends are ramps on each pixel centre's exact distance to the
+# drawn outline, not on a raster of it: with 0.5 m texels a raster edge is a
+# staircase, and along a long path at a shallow angle every texel row showed
+# as a step (the first path fill had a hard one at 1.25 m out). The rest stays
+# photographed: a filled bunker turns green at a distance. `--edge-fill none`
+# keeps the old file (as photographed, halo included).
+EDGE_FILL_TYPES = ("bunker", "path")
+DEFAULT_EDGE_FILL_M = 1.25
+EDGE_FILL_INSET_M = {"bunker": 0.5, "path": 0.0}
+# A type with no entry above.
+DEFAULT_EDGE_FILL_INSET_M = 0.5
+# Fill colours come from at least this far beyond the band (its outer pixels
+# can still carry the halo).
+EDGE_FILL_GAP_M = 0.5
+# Outer fade (fill 1 at EDGE_FILL_M, 0 this much further out) and the inner
+# ramp (fill 0.5 at the inset, over this width), both linear: two 0.5 m
+# texels each, as a one-texel ramp still aliases into steps under bilinear
+# sampling (measured along a 4 degree path: std 10 at one texel, 2-3 at two).
+EDGE_FILL_FEATHER_M = 1.0
+EDGE_FILL_INNER_RAMP_M = 1.0
+
+
+@dataclass(frozen=True)
+class EdgeFill:
+    """Which feature types get their edge band filled, and how wide it is
+    (`inset_m` None = each type's EDGE_FILL_INSET_M)."""
+    types: tuple[str, ...] = EDGE_FILL_TYPES
+    margin_m: float = DEFAULT_EDGE_FILL_M
+    inset_m: float | None = None
+
+    def inset_for(self, kind: str) -> float:
+        if self.inset_m is not None:
+            return self.inset_m
+        return EDGE_FILL_INSET_M.get(kind, DEFAULT_EDGE_FILL_INSET_M)
+
+
+def _parse_edge_fill(types: str | None, margin_m: float | None = None,
+                     inset_m: float | None = None) -> "EdgeFill | None":
+    """`--edge-fill` (comma-separated types, `none` = off; default bunker,path)
+    with its band widths, validated (no inset = per type)."""
+    if types is not None and types.strip().lower() == "none":
+        return None
+    kinds = EDGE_FILL_TYPES if types is None else tuple(t.strip() for t in types.split(",") if t.strip())
+    if not kinds:
+        raise SystemExit("error: --edge-fill wants feature types (e.g. bunker,path) or none")
+    margin_m = DEFAULT_EDGE_FILL_M if margin_m is None else margin_m
+    if not 0 < margin_m <= 10:
+        raise SystemExit("error: --edge-fill-m must be in (0, 10]")
+    if inset_m is not None and not 0 <= inset_m <= 2:
+        raise SystemExit("error: --edge-fill-inset-m must be in [0, 2]")
+    return EdgeFill(kinds, margin_m, inset_m)
+
+
+def _signed_distance(shape, x: np.ndarray, y: np.ndarray, reach: float) -> np.ndarray:
+    """Each point's distance to `shape`'s outline in metres, negative inside;
+    +/-inf past `reach` (nearest segment through an STRtree, so a long path
+    outline is not walked once per pixel)."""
+    import shapely
+
+    segs = []
+    for poly in _polygons(shape):
+        for ring in (poly.exterior, *poly.interiors):
+            c = np.asarray(ring.coords)
+            segs.append(np.stack([c[:-1], c[1:]], axis=1))
+    lines = shapely.linestrings(np.concatenate(segs))
+    pts = shapely.points(x, y)
+    (qi, _), dist = shapely.STRtree(lines).query_nearest(pts, max_distance=reach, return_distance=True)
+    d = np.full(len(x), np.inf)
+    np.minimum.at(d, qi, dist)
+    shapely.prepare(shape)
+    return np.where(shapely.contains_xy(shape, x, y), -d, d)
+
+
+def _fill_hazard_edges(hwc: np.ndarray, extent: Extent, rows: list, fill: EdgeFill) -> tuple[np.ndarray, str]:
+    """`hwc` (the finished `-meshes` image on `extent`) with a band round
+    every feature of `fill.types` - from its type's inset inside its outline
+    to `margin_m` outside - filled from the ground beyond it (see EDGE_FILL_M).
+    Returns (image, summary)."""
+    from rasterio.features import rasterize
+    from shapely.ops import unary_union
+    from golfpipe.building_removal import nearest_fill
+
+    height, width = hwc.shape[:2]
+    px = (extent[2] - extent[0]) / width
+    by_type, counts = {}, {}
+    for row in rows:
+        if row["type"] not in fill.types:
+            continue
+        shape = _feature_shape(json.loads(row["geometry_json"]), min(0.05, px / 4))
+        if shape is not None:
+            by_type.setdefault(row["type"], []).append(shape)
+            counts[row["type"]] = counts.get(row["type"], 0) + 1
+    if not by_type:
+        return hwc, f"no {', '.join(fill.types)} to fill round"
+    unions = {kind: unary_union(shapes) for kind, shapes in by_type.items()}
+    hazards = unary_union(list(unions.values()))
+    transform = from_bounds(extent[0], extent[1], extent[2], extent[3], width, height)
+
+    def burn(geom) -> np.ndarray:
+        return rasterize([(geom, 1)], out_shape=(height, width), transform=transform, fill=0,
+                         dtype="uint8", all_touched=True).astype(bool)
+
+    # Every pixel the ramps can reach; the alpha itself comes from exact distances.
+    reach = fill.margin_m + EDGE_FILL_FEATHER_M + px
+    r, c = np.nonzero(burn(hazards.buffer(reach)))
+    x, y = extent[0] + (c + 0.5) * px, extent[3] - (r + 0.5) * px
+    alpha = np.ones(len(x))
+    nearest = np.full(len(x), np.inf)
+    for kind, shape in unions.items():
+        inset = fill.inset_for(kind)
+        d = _signed_distance(shape, x, y, max(reach, inset + EDGE_FILL_INNER_RAMP_M) + px)
+        alpha = np.minimum(alpha, np.clip((d + inset) / EDGE_FILL_INNER_RAMP_M + 0.5, 0.0, 1.0))
+        nearest = np.minimum(nearest, d)
+    alpha = np.minimum(alpha, np.clip((fill.margin_m + EDGE_FILL_FEATHER_M - nearest) / EDGE_FILL_FEATHER_M, 0.0, 1.0))
+    at = alpha > 0
+    if not at.any():
+        return hwc, f"edge fill: band under a pixel at {px:g} m/px, nothing filled"
+    r, c, a = r[at], c[at], alpha[at][:, None]
+    filled = nearest_fill(hwc, burn(hazards.buffer(fill.margin_m + EDGE_FILL_GAP_M)), px)
+    out = np.array(hwc, copy=True)
+    out[r, c] = np.clip(np.round(hwc[r, c].astype(np.float64) * (1.0 - a) + filled[r, c] * a), 0, 255).astype(np.uint8)
+    what = ", ".join(f"{k} {v} ({fill.inset_for(k):g} m in)" for k, v in sorted(counts.items()))
+    return out, (f"edge fill round {what} to {fill.margin_m:g} m out of the outline (+{EDGE_FILL_FEATHER_M:g} m fade), "
+                 f"{float(a.sum()) * px * px:,.0f} m² from the ground beyond")
+
+
+# Path shadow fill (`--path-fill`, on by default). The cart paths' concrete
+# (`OPCD MAHS Concrete - Asphalt_Sat`, red and green channels *Use Satellite
+# for Base*) takes its colour from the `-meshes` file, so every tree shadow the
+# photo caught on a path was baked into it: dark blue blocks on the path by
+# hole 13's tees, whole stretches of forest path near black, while Unity draws
+# its own shadows on top. Measured on Vreta (2025 photo, 4096 px file, 109
+# paths): path luma median 95, p10 36; the shadowed pixels are blue (B - R up to
+# 0.8 x luma below luma 30, sunlit gravel -0.05) where dark asphalt is neutral.
+# So inside every path (roads and OSM paths included; not bridge decks, not
+# `surface: grass` tracks, which are meant green) a pixel is shadow when it is
+# much darker than the sunlit path near it (luma under PATH_FILL_RATIO of the
+# local reference), blue (PATH_FILL_BLUE), or in a stretch that is mostly blue
+# (a path shaded end to end has no sunlit pixels to compare with). Shadow is
+# replaced by the sunlit path colour near it (a normalised Gaussian of the
+# sunlit pixels, PATH_FILL_NEAR_M, with a PATH_FILL_FAR_M one and the course's
+# sunlit path colour behind it for a path shaded all along) times the pixel's
+# own relief against its shadow neighbours (PATH_FILL_DETAIL_M, clipped to
+# +/-PATH_FILL_DETAIL), so the gravel keeps its grain and the path its real
+# colour changes; smoothstep weights, so a penumbra is lifted partly. Every
+# pixel inside the outline counts, green ones too: the path mesh covers it, and
+# sparing green-dark pixels near the edge (canopy over a forest path) left a
+# narrow path a bright line between dark ones. At the outline the lift ramps
+# out over PATH_FILL_EDGE_M (at least two texels) on each pixel centre's exact
+# distance to it: a mask of the pixel centres inside made the lifted gravel a
+# texel staircase along every diagonal path, seen in Unity as jagged teeth down
+# both sides. Runs on the -meshes file only, before the edge fill (which then
+# ramps the edge into the grass).
+PATH_FILL_SKIP_SURFACES = ("grass", "bridge")  # "bridge" = BRIDGE_SURFACE, defined further down
+PATH_FILL_RATIO = (0.60, 0.85)        # luma / sunlit reference: shadow at the first, sunlit from the second
+PATH_FILL_BLUE = (0.05, 0.35)          # (B - R) / luma: sunlit gravel ~-0.05, shadow 0.4..1
+PATH_FILL_BLUE_SHARE = (0.30, 0.60)    # share of blue pixels within PATH_FILL_BLUE_M: a shaded stretch
+PATH_FILL_BLUE_M = 2.0
+PATH_FILL_NEAR_M = 6.0
+PATH_FILL_FAR_M = 30.0
+PATH_FILL_FAR_WEIGHT = 0.05
+PATH_FILL_CELL_M = 2.0                 # the references are computed on this grid, then bilinear
+PATH_FILL_DETAIL_M = 1.0
+PATH_FILL_DETAIL = 0.2
+PATH_FILL_EDGE_M = 0.5                 # the lift's ramp across the outline (never under two texels)
+_LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+
+def _path_cover(shape, extent: Extent, px: float, r0: int, r1: int, c0: int, c1: int) -> np.ndarray:
+    """How much of the path each pixel of the [r0:r1, c0:c1] window is, 0..1:
+    1 more than half the ramp inside `shape`'s outline, 0 as far outside,
+    linear between on the pixel centre's exact distance to it."""
+    from rasterio.features import rasterize
+
+    ramp = max(PATH_FILL_EDGE_M, 2 * px)
+    win = from_bounds(extent[0] + c0 * px, extent[3] - r1 * px, extent[0] + c1 * px, extent[3] - r0 * px,
+                      c1 - c0, r1 - r0)
+    near = rasterize([(shape.buffer(ramp), 1)], out_shape=(r1 - r0, c1 - c0), transform=win, fill=0,
+                     dtype="uint8", all_touched=True).astype(bool)
+    cover = np.zeros((r1 - r0, c1 - c0), dtype=np.float32)
+    r, c = np.nonzero(near)
+    if len(r):
+        x, y = extent[0] + (c0 + c + 0.5) * px, extent[3] - (r0 + r + 0.5) * px
+        d = _signed_distance(shape, x, y, ramp + px)
+        cover[r, c] = np.clip(0.5 - d / ramp, 0.0, 1.0)
+    return cover
+
+
+def _smoothstep(x: np.ndarray) -> np.ndarray:
+    x = np.clip(x, 0.0, 1.0)
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _path_fill_rows(rows: list) -> list:
+    return [r for r in rows if r["type"] == "path" and _row_surface(r) not in PATH_FILL_SKIP_SURFACES]
+
+
+def _row_surface(row) -> str | None:
+    raw = row["attributes_json"] if "attributes_json" in row.keys() else None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw).get("surface")
+    except (ValueError, AttributeError):
+        return None
+
+
+def _fill_path_shadows(hwc: np.ndarray, extent: Extent, rows: list) -> tuple[np.ndarray, str]:
+    """`hwc` (the `-meshes` image on `extent`) with the photo's shadows on the
+    course's paths lifted to the sunlit path colour round them (see
+    PATH_FILL_RATIO). Returns (image, summary)."""
+    from rasterio.features import rasterize
+    from scipy.ndimage import gaussian_filter, zoom
+    from shapely.ops import unary_union
+
+    height, width = hwc.shape[:2]
+    px = (extent[2] - extent[0]) / width
+    shapes = [s for s in (_feature_shape(json.loads(r["geometry_json"]), min(0.05, px / 4))
+                          for r in _path_fill_rows(rows)) if s is not None]
+    if not shapes:
+        return hwc, "no paths to lift shadows on"
+    transform = from_bounds(extent[0], extent[1], extent[2], extent[3], width, height)
+    mask = rasterize([(unary_union(shapes), 1)], out_shape=(height, width), transform=transform, fill=0,
+                     dtype="uint8").astype(bool)
+    if not mask.any():
+        return hwc, "path fill: paths under a pixel, nothing lifted"
+    # Work on the paths' bounding box only (+ the far kernel's reach).
+    rows_any, cols_any = np.nonzero(mask.any(axis=1))[0], np.nonzero(mask.any(axis=0))[0]
+    pad = int(math.ceil(3 * PATH_FILL_FAR_M / px))
+    r0, r1 = max(0, rows_any[0] - pad), min(height, rows_any[-1] + pad + 1)
+    c0, c1 = max(0, cols_any[0] - pad), min(width, cols_any[-1] + pad + 1)
+    m = mask[r0:r1, c0:c1]
+    rgb = hwc[r0:r1, c0:c1].astype(np.float32)
+    luma = rgb @ _LUMA
+    lc = np.maximum(luma, 1.0)
+    blue = (rgb[..., 2] - rgb[..., 0]) / lc
+    green = (rgb[..., 1] - (rgb[..., 0] + rgb[..., 2]) / 2) / lc
+    mf = m.astype(np.float32)
+
+    def blur(v, metres):
+        return gaussian_filter(v, metres / px)
+
+    s_blue = _smoothstep((blue - PATH_FILL_BLUE[0]) / (PATH_FILL_BLUE[1] - PATH_FILL_BLUE[0])) * mf
+    share = blur(s_blue, PATH_FILL_BLUE_M) / np.maximum(blur(mf, PATH_FILL_BLUE_M), 1e-6)
+    neutral = m & (blue < 0.1) & (green < 0.1) & (share < PATH_FILL_BLUE_SHARE[0] + 0.05)
+    if not neutral.any():
+        return hwc, "path fill: no sunlit path in the photo to take the colour from, nothing lifted"
+    sunlit = rgb[neutral & (luma >= np.percentile(luma[neutral], 50))].mean(axis=0)
+
+    # Normalised Gaussians of the sunlit pixels on a coarse grid (a 30 m kernel on
+    # 0.5 m texels would take a minute), the course colour as the last resort.
+    f = max(1, int(round(PATH_FILL_CELL_M / px)))
+    h, w = m.shape
+    hp, wp = -(-h // f), -(-w // f)
+    grid_pad = ((0, hp * f - h), (0, wp * f - w))
+
+    def cells(v):
+        return np.pad(v, grid_pad).reshape(hp, f, wp, f).sum(axis=(1, 3))
+
+    def upsample(v):
+        return zoom(v, (f, f), order=1, grid_mode=True, mode="nearest")[:h, :w]
+
+    def reference(channels, weight, fallback):
+        near, far = PATH_FILL_NEAR_M / (px * f), PATH_FILL_FAR_M / (px * f)
+        cw = cells(weight)
+        den = gaussian_filter(cw, near) + PATH_FILL_FAR_WEIGHT * gaussian_filter(cw, far) + 1e-3
+        out = []
+        for v, fb in zip(channels, fallback):
+            cv = cells(v * weight)
+            num = gaussian_filter(cv, near) + PATH_FILL_FAR_WEIGHT * gaussian_filter(cv, far) + 1e-3 * fb
+            out.append(upsample(num / den))
+        return out
+
+    sunlit_luma = float(sunlit @ _LUMA)
+    ref_luma, = reference([luma], neutral.astype(np.float32), [sunlit_luma])
+    weight = (neutral & (luma >= 0.75 * ref_luma)).astype(np.float32)
+    ref_luma, *ref_rgb = reference([luma, rgb[..., 0], rgb[..., 1], rgb[..., 2]], weight, [sunlit_luma, *sunlit])
+    ref_rgb = np.stack(ref_rgb, axis=-1)
+    ref_l = np.maximum(ref_luma, 1.0)
+
+    lo, hi = PATH_FILL_RATIO
+    s_dark = _smoothstep((hi - luma / ref_l) / (hi - lo))
+    below = _smoothstep((0.95 * ref_l - luma) / (0.2 * ref_l))   # blue but as bright as the sunlit path: not shadow
+    b_lo, b_hi = PATH_FILL_BLUE_SHARE
+    s_stretch = _smoothstep((share - b_lo) / (b_hi - b_lo)) * _smoothstep((0.9 * ref_l - luma) / (0.25 * ref_l))
+    shadow = np.maximum(np.maximum(s_dark, s_blue * below), s_stretch)
+    shadow = shadow * _path_cover(unary_union(shapes), extent, px, r0, r1, c0, c1)
+
+    near_shadow = blur(luma * shadow, PATH_FILL_DETAIL_M) / np.maximum(blur(shadow, PATH_FILL_DETAIL_M), 1e-6)
+    detail = np.clip(luma / np.maximum(near_shadow, 1.0), 1 - PATH_FILL_DETAIL, 1 + PATH_FILL_DETAIL)
+    a = shadow[..., None]
+    lifted = rgb * (1 - a) + ref_rgb * detail[..., None] * a
+    out = np.array(hwc, copy=True)
+    out[r0:r1, c0:c1] = np.clip(np.round(lifted), 0, 255).astype(np.uint8)
+    return out, (f"path fill: shadows on {len(shapes)} paths lifted to the sunlit path colour round them, "
+                 f"{float(shadow.sum()) * px * px:,.0f} m²")
+
 
 class TintJob:
     """Everything `_render_ortho` needs to tint the terrain twin: where the
@@ -1295,10 +1800,12 @@ class TintJob:
     def __init__(self, out: Path, course_name: str, rows: list, tints: dict[str, Tint],
                  water_feather_m: float = DEFAULT_WATER_FEATHER_M, soften_m: float = DEFAULT_SOFTEN_M,
                  size: int | None = None, darken_tint: bool = False,
-                 grade: "tuple[float, float, float] | None" = None):
+                 grade: "tuple[float, float, float] | None" = None,
+                 edge_fill: "EdgeFill | None" = EdgeFill(), path_fill: bool = True):
         self.out, self.course_name, self.rows, self.tints = out, course_name, rows, tints
         self.water_feather_m, self.soften_m, self.size = water_feather_m, soften_m, size
-        self.darken_tint, self.grade = darken_tint, grade
+        self.darken_tint, self.grade, self.edge_fill = darken_tint, grade, edge_fill
+        self.path_fill = path_fill
 
 
 def _parse_hex(text: str, what: str) -> Rgb:
@@ -1552,12 +2059,34 @@ ROAD_GAP_MIN_WIDTH_M = 0.01
 ROAD_GAP_OPEN_M = 0.05
 
 
+# Roads of every surface are merged into ONE shape per network, as OPCD builds
+# them best (the kerb fillets and tapers of "Round kerbs at junctions" dissolve
+# inside it). Which part of a road is gravel and which asphalt is not the SVG's
+# business: the sidecar next to it (PATH_REGIONS_FORMAT) carries the raw
+# pieces with their surfaces, and the Blender shaping step cuts the OPCD mesh
+# along those seams and separates the parts (unity/README.md "Cart paths").
+# Splitting the shapes in the SVG instead was tried (2026-10-04/05): any seam
+# through a junction cut the fillets into slivers, and every repair of those
+# left its own bumps - OPCD's build failed on the result.
+# Grass tracks (`surface: grass`) are not hard ground: written with
+# GRASS_TRACK_FILL, merged among themselves, under every hard road and no
+# further than PATH_SURFACE_OVERLAP_M under it, no thinner than
+# GRASS_TRACK_MIN_WIDTH_M.
+GRASS_TRACK_SURFACE = "grass"
+GRASS_TRACK_FILL = "rough"
+PATH_SURFACE_OVERLAP_M = 0.05
+GRASS_TRACK_MIN_WIDTH_M = 0.3
+# A road shape (or track) under this is a slip, not a mesh (m²).
+PATH_SURFACE_MIN_M2 = 1.0
+
+
 @dataclass
 class MergedRoad:
     kind: str
     fill: str
     shape: object  # shapely Polygon
     ids: list[str]
+    surface: str | None = None  # GRASS_TRACK_SURFACE for a track; None for a hard road (its surfaces are in the sidecar)
 
 
 def _feature_shape(geom: dict, tol: float):
@@ -1622,45 +2151,124 @@ def _clip_to_square(shape, extent: Extent):
     return polys[0] if len(polys) == 1 else MultiPolygon(polys)
 
 
+PATH_REGIONS_FORMAT = "golfmap-path-regions-v1"
+
+
+def path_surfaces_file(svg: Path) -> Path:
+    """The road-surface sidecar written next to an SVG: <stem>-paths.json."""
+    return svg.with_name(f"{svg.stem}-paths.json")
+
+
+def _road_regions(roads: list[MergedRoad], names: list[str], rows: list, tol: float, to_svg) -> dict:
+    """The sidecar's content: per road shape its dominant surface (by the
+    area of the pieces that carry one) and every piece in it - id, feature
+    number, surface, source and the roads a junction piece was made for - with
+    its outline in SVG units, for the Blender step that cuts the mesh."""
+    by_id = {r["id"]: r for r in rows}
+    shapes: dict[str, str] = {}
+    regions: dict[str, dict] = {}
+    for road, name in zip(roads, names):
+        pieces = []
+        area: dict[str, float] = {}
+        for fid in road.ids:
+            r = by_id.get(fid)
+            if r is None:
+                continue
+            shape = _feature_shape(json.loads(r["geometry_json"]), tol)
+            if shape is None:
+                continue
+            surface = road.surface or _row_surface(r)
+            if surface:
+                area[surface] = area.get(surface, 0.0) + shape.area
+            refs = [x for x in (r["source_ref"] or "").split(",") if x] if r["source"] == ROAD_JUNCTIONS_SOURCE else []
+            pieces.append({
+                "id": fid,
+                "featureNo": r["feature_no"],
+                "surface": surface,
+                "source": r["source"],
+                "for": [by_id[x]["feature_no"] for x in refs if x in by_id],
+                "rings": [[[round(x, 3), round(y, 3)] for x, y in map(to_svg, poly.exterior.coords)] for poly in _polygons(shape)],
+            })
+        dominant = max(area, key=area.get) if area else None
+        if dominant:
+            shapes[name] = dominant
+        regions[name] = {"surface": dominant, "mixed": len(area) > 1, "pieces": pieces}
+    return {"shapes": dict(sorted(shapes.items())), "regions": regions}
+
+
 def _merged_roads(rows: list, fills: dict[str, str], tol: float) -> tuple[list[MergedRoad], str]:
     """The road features (ROADS_TYPES) merged into clean shapes per type (see
     ROADS_CLOSE_M), in the paint order of each shape's first feature, and a
-    note on what the merge did ("" when there are no roads)."""
+    note on what the merge did ("" when there are no roads). Grass tracks are
+    merged on their own, as rough, under the hard roads."""
     from shapely import unary_union
     from shapely.geometry import Polygon
 
-    pieces: dict[str, list[tuple[str, object]]] = {}
+    pieces: dict[str, list[tuple[str, object, str | None]]] = {}
     for row in rows:
         kind = row["type"]
         if kind not in ROADS_TYPES or not fills.get(kind):
             continue
         shape = _feature_shape(json.loads(row["geometry_json"]), tol)
         if shape is not None:
-            pieces.setdefault(kind, []).append((row["id"], shape))
+            pieces.setdefault(kind, []).append((row["id"], shape, _row_surface(row)))
 
-    out: list[tuple[int, MergedRoad]] = []
-    merged = 0
-    for kind, items in pieces.items():
-        order = {fid: i for i, (fid, _) in enumerate(items)}
-        raw = unary_union([s for _, s in items])
+    def cleaned(raw):
         # Closing fills slits and notches, opening drops hairline spurs.
         clean = (raw.buffer(ROADS_CLOSE_M, quad_segs=4)
                  .buffer(-ROADS_CLOSE_M - ROADS_OPEN_M, quad_segs=4)
                  .buffer(ROADS_OPEN_M, quad_segs=4))
-        clean = clean.simplify(tol / 2)
-        for poly in _polygons(clean):
-            poly = Polygon(poly.exterior, [h for h in poly.interiors if Polygon(h).area >= ROADS_MIN_HOLE_M2])
-            ids = sorted((fid for fid, s in items if s.intersects(poly)), key=order.get)
-            if not ids:
+        return clean.simplify(tol / 2)
+
+    def without_small_holes(poly):
+        return Polygon(poly.exterior, [h for h in poly.interiors if Polygon(h).area >= ROADS_MIN_HOLE_M2])
+
+    out: list[tuple[tuple[int, int], MergedRoad]] = []
+    merged = 0
+    tracks = 0
+    for kind, items in pieces.items():
+        order = {fid: i for i, (fid, _, _) in enumerate(items)}
+        # Grass tracks apart only when the type keeps its own fill (--map gave it one otherwise).
+        split_grass = fills[kind] == GSPRO_FILLS.get(kind)
+        hard = [(fid, s) for fid, s, surf in items if not (split_grass and surf == GRASS_TRACK_SURFACE)]
+        grass = [(fid, s) for fid, s, surf in items if split_grass and surf == GRASS_TRACK_SURFACE]
+        network = cleaned(unary_union([s for _, s in hard])) if hard else None
+        groups = [(None, fills[kind], hard, 1, network)]
+        if grass:
+            track = cleaned(unary_union([s for _, s in grass]))
+            if network is not None:
+                # Under the hard roads, reaching PATH_SURFACE_OVERLAP_M under them
+                # and no further (cut by a road along its edge, a whole track
+                # left a sliver of rough beside it); no part thinner than
+                # GRASS_TRACK_MIN_WIDTH_M (a track that thin is no track).
+                track = track.difference(network.buffer(-PATH_SURFACE_OVERLAP_M, quad_segs=4))
+            r = GRASS_TRACK_MIN_WIDTH_M / 2
+            # The opening's arcs and the cut's intersections put vertices millimetres
+            # apart (OPCD merges those into degenerate faces): 2 cm is accuracy enough for rough.
+            track = track.buffer(-r, quad_segs=8).buffer(r, quad_segs=8).simplify(0.02)
+            groups.insert(0, (GRASS_TRACK_SURFACE, OPCD_PALETTE[GRASS_TRACK_FILL], grass, 0, track))
+        for surface, fill, members, rank, shape in groups:
+            if shape is None:
                 continue
-            out.append((order[ids[0]], MergedRoad(kind, fills[kind], poly, ids)))
-            merged += len(ids)
+            for poly in _polygons(shape):
+                if poly.area < PATH_SURFACE_MIN_M2:
+                    continue
+                poly = without_small_holes(poly)
+                ids = sorted((fid for fid, s in members if s.intersects(poly)), key=order.get)
+                if not ids:
+                    continue
+                out.append(((rank, order[ids[0]]), MergedRoad(kind, fill, poly, ids, surface)))
+                merged += len(ids)
+                tracks += surface == GRASS_TRACK_SURFACE
     out.sort(key=lambda t: t[0])
     roads = [r for _, r in out]
     if not roads:
         return [], ""
-    return roads, (f"{merged} road piece(s) merged into {len(roads)} shape(s), slits and gaps "
-                   f"under {2 * ROADS_CLOSE_M:g} m closed")
+    note = (f"{merged} road piece(s) merged into {len(roads)} shape(s), slits and gaps "
+            f"under {2 * ROADS_CLOSE_M:g} m closed")
+    if tracks:
+        note += f"; {tracks} grass track(s) written as {GRASS_TRACK_FILL}"
+    return roads, note
 
 
 def _road_edge_fills(rows: list, fills: dict[str, str], roads: list[MergedRoad],
@@ -1823,6 +2431,73 @@ def _exclude_rows(rows: list, ids: set[str], types: set[str]) -> tuple[list, dic
     return kept, counts, sorted(ids - known)
 
 
+# Unnumbered features (generated ones, or a database from before the server's
+# migration 026) are named after their id instead: this many characters of it.
+UNNUMBERED_ID_LEN = 5
+
+
+def _shape_ids(rows_oldest_first: list) -> dict[str, str]:
+    """The id part of each feature's shape name: its per-course number in hex
+    (`feature_no`, handed out by the server and never reused, so the name
+    never changes). A feature without a number takes UNNUMBERED_ID_LEN
+    characters of its id, or as many more as it needs to differ from every
+    name taken before it, so it never renames an older one."""
+    short: dict[str, str] = {}
+    taken: set[str] = set()
+    for r in rows_oldest_first:
+        if r["feature_no"] is not None:
+            short[r["id"]] = f"{r['feature_no']:x}"
+            taken.add(short[r["id"]])
+    for r in rows_oldest_first:
+        if r["feature_no"] is not None:
+            continue
+        key = re.sub(r"[^0-9A-Za-z]", "", str(r["id"])).lower()
+        n = UNNUMBERED_ID_LEN
+        while key[:n] in taken and n < len(key):
+            n += 1
+        if key[:n] in taken:  # the same id once stripped, e.g. "a-1" and "a1"
+            raise SystemExit(f"error: feature id {r['id']} gives the same shape name as another feature")
+        short[r["id"]] = key[:n]
+        taken.add(key[:n])
+    return short
+
+
+def _road_names(roads: list[MergedRoad], rows_oldest_first: list, shape_ids: dict[str, str]) -> list[str]:
+    """The id part of each merged road's shape name (`roads_<part>`), like
+    every other shape's: the lowest `feature_no` among the pieces merged into
+    it, in hex, so adding, removing or reordering an unrelated road never
+    renames it (the old `roads_<i>` counted them in paint order). A road of
+    unnumbered pieces only (generated kerb fillets) takes the oldest piece's
+    `_shape_ids` name. Names are unique: where two roads would share one (a
+    piece reaching into both, when the merge splits a thin neck), the road
+    whose own candidates rank first keeps it and the other falls back to its
+    next piece, then to a `_2`, `_3`… suffix."""
+    number = {r["id"]: r["feature_no"] for r in rows_oldest_first}
+    age = {r["id"]: i for i, r in enumerate(rows_oldest_first)}
+
+    def candidates(road: MergedRoad) -> list[tuple[int, int, str]]:
+        numbered = sorted(number[f] for f in road.ids if number.get(f) is not None)
+        unnumbered = sorted((f for f in road.ids if f in age and number.get(f) is None), key=age.get)
+        return ([(0, n, f"{n:x}") for n in numbered]
+                + [(1, age[f], shape_ids[f]) for f in unnumbered if f in shape_ids])
+
+    names: list[str | None] = [None] * len(roads)
+    taken: set[str] = set()
+    ranked = sorted(range(len(roads)), key=lambda i: ([c[:2] for c in candidates(roads[i])], roads[i].ids))
+    for i in ranked:
+        cands = [c[2] for c in candidates(roads[i])]
+        if not cands:  # no piece the course knows (cannot happen from cmd_svg): stay unique anyway
+            cands = [re.sub(r"[^0-9A-Za-z]", "", roads[i].ids[0]).lower()[:UNNUMBERED_ID_LEN] or "road"]
+        name = next((c for c in cands if c not in taken), None)
+        k = 2
+        while name is None or name in taken:
+            name = f"{cands[0]}_{k}"
+            k += 1
+        names[i] = name
+        taken.add(name)
+    return names  # type: ignore[return-value]
+
+
 def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
             flatten: float | None, precision: int, mapped: dict[str, str],
             stack: str = "opcd", extent: Extent | None = None,
@@ -1841,6 +2516,10 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     from shapely.geometry import box
 
     course, rows = _load_course_features(db_path, course_ident, stack)
+    # From every shape the course could write, oldest first, so excluding one
+    # never changes another's, and a new one never renames an older one.
+    shapes = sorted((r for r in rows if r["type"] in fills), key=lambda r: (r["created_at"] or "", r["id"]))
+    shape_ids = _shape_ids(shapes)
     # Bridge decks are props, not ground (with their kerb fillets, like any excluded road).
     rows, decks, _ = _exclude_rows(rows, {r["id"] for r in rows if _is_bridge_deck(r)}, set())
     rows, excluded, unknown_ids = _exclude_rows(rows, exclude_ids or set(), exclude_types or set())
@@ -1857,11 +2536,13 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     # course file here uses) plus 'Others' for features not tied to a hole
     # and 'Roads' for the roads and paths, on or off a hole.
 
-    # Shapes are named hole_<hole>_<index on hole> (others_<index> off-hole).
-    # The mesh keeps the material from the fill, so the name only has to say
-    # which hole it came from and stay unique.
+    # Shapes are named hole_<hole>_<feature number in hex> (others_<number>
+    # off-hole; _shape_ids). OPCD carries the name into the mesh
+    # (Spline_hole_2_1a_Bunker_-_Mesh) and Unity keys saved edits to it, so it
+    # must not change when other features on the hole do. The mesh keeps the
+    # material from the fill, so the name only has to say which hole and which
+    # feature.
     layers: dict[str, list[str]] = {}
-    counts: dict[str, int] = {}
     written: dict[str, int] = {}
     skipped: dict[str, int] = {}
     # Nothing may reach past the terrain square: Blender cuts the meshes out
@@ -1918,8 +2599,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
             layer, stem = f"Hole{row['hole_number']}", f"hole_{row['hole_number']}"
         else:
             layer, stem = COURSE_WIDE_LAYER, "others"
-        counts[stem] = counts.get(stem, 0) + 1
-        name = f"{stem}_{counts[stem]}"
+        name = f"{stem}_{shape_ids[row['id']]}"
         written[kind] = written.get(kind, 0) + 1
         # Several rings on one feature = outer ring plus holes; even-odd makes
         # the inner rings punch through.
@@ -1929,11 +2609,15 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
             f' data-feature-id="{row["id"]}"'
             f' style="{PATH_STYLE.format(fill=fill)}"{rule} d="{" ".join(subpaths)}"/>'
         )
-    for i, road in enumerate(roads, start=1):
+    # Merged roads are named after their lowest-numbered piece (_road_names),
+    # so a road drawn elsewhere never renames one; still written in paint order.
+    road_names = [f"roads_{part}" for part in _road_names(roads, shapes, shape_ids)]
+    for road, name in zip(roads, road_names):
         subpaths = _shape_subpaths(road.shape, to_svg, precision)
         rule = ' fill-rule="evenodd"' if len(subpaths) > 1 else ""
+        surface = f' data-surface="{road.surface}"' if road.surface else ""
         layers.setdefault(ROADS_LAYER, []).append(
-            f'    <path id="roads_{i}" inkscape:label="roads_{i}" data-type="{road.kind}"'
+            f'    <path id="{name}" inkscape:label="{name}" data-type="{road.kind}"{surface}'
             f' data-feature-id="{" ".join(road.ids)}"'
             f' style="{PATH_STYLE.format(fill=road.fill)}"{rule} d="{" ".join(subpaths)}"/>'
         )
@@ -1967,6 +2651,17 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    surfaces_out = path_surfaces_file(out)
+    regions = _road_regions(roads, road_names, rows, tol, to_svg)
+    surfaces_out.write_text(json.dumps({
+        "format": PATH_REGIONS_FORMAT,
+        "note": "The surfaces of the road shapes of the SVG next to this file (the Draw panel's path surface). "
+                "shapes: each shape's dominant surface, what Unity's golfmap.paths.materials uses until the "
+                "Blender step has cut a mixed shape's mesh apart; regions: every piece of each shape with its "
+                "surface and outline (SVG units), the input of that cut. OPCD names the meshes Spline_<shape>_....",
+        "svg": out.name,
+        **regions,
+    }, indent=1) + "\n", encoding="utf-8")
 
     total = sum(len(v) for v in layers.values())
     kinds = ", ".join(f"{k} {v}" for k, v in sorted(written.items(), key=lambda kv: -kv[1]))
@@ -1975,6 +2670,9 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
                   if stack == "opcd" else "the app's own z-order")
     print(f"Wrote {out}")
     print(f"  {course['name']} ({course['id']}): {total} features in {len(order)} layer(s) - {kinds}")
+    mixed = sorted(n for n, r in regions["regions"].items() if r["mixed"])
+    print(f"  wrote {surfaces_out.name} ({len(regions['shapes'])} road shape(s) with a surface"
+          + (f"; {len(mixed)} of mixed surfaces, for Blender to cut: {', '.join(mixed)}" if mixed else "") + ")")
     print(f"  {side:.1f} m square = {side:.1f} mm at 1 unit/m, {curves}, stacked {order_note}")
     if road_notes:
         print(f"  roads: {road_notes}")
@@ -2004,6 +2702,524 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         detail = ", ".join(f"{k} {v}" for k, v in sorted(dropped_outside.items(), key=lambda kv: -kv[1]))
         print(f"  {sum(dropped_outside.values())} shape(s) lie wholly outside the terrain square and were "
               f"left out: {detail}")
+
+
+# --- Command: shaping-global --------------------------------------------------
+# The generated shaping layer blender/SHAPING-PLAN.md replays onto the OPCD
+# course meshes in Blender (`docs/gspro/<course>/shaping/00-global.gen.json`,
+# format golfmap-shaping-layer-v1): the area edits every course gets, written
+# from the course DB so a tee or lot drawn tomorrow is in the next generation
+# without anyone editing a layer. Applied in list order:
+#   1. `afrod.flattentees` on every tee mesh (select by type);
+#   2. `afrod.cutcartpaths` + `afrod.smoothcartpaths` on every road/path mesh
+#      (select by type). Not split per `surface` here: the ops' own params
+#      do not depend on it (the SVG has one `roads_<n>` shape per network,
+#      data-surface only on grass tracks; the cut paint is decided per shape
+#      from that, else the op's `pathSurfaces`, else the DB - see
+#      shape_apply.cut_paint_mode);
+#   2b. `golfmap.split_surfaces` on the road shapes of more than one surface
+#      (select by shape name, `roads_<n>` as the SVG export names them,
+#      worked out here the same way: _mixed_road_shapes): Blender cuts their
+#      meshes along the seams of the export's `<stem>-paths.json` sidecar and
+#      separates one object per surface (blender/tools/shape_surfaces.py);
+#      after the cut and smooth, before the footprints, which then level the
+#      separated parts alike (they share the seam vertices);
+#   3. `golfmap.flatten_footprint` per paved lot (a hand-drawn/imported `path`
+#      polygon compact enough to be an area, not a road outline - the same
+#      rule the server's road grading uses to fit a lot one plane), tilted
+#      like the DEM's lot planes (`level: plane`);
+#   4. `golfmap.flatten_footprint` per building pad / other plane terrain
+#      edit on the course's site (`level: median` for a flat pad), when it
+#      comes near a course shape at all.
+# A footprint is the area that ends up level (EPSG:3006, metres); `falloffM` is
+# the blend band OUTSIDE it. The DEM edits feather inside their ring instead,
+# so a terrain edit's ring is shrunk by its featherM: the same level core and
+# the same outer edge. No timestamps and sorted, stable ids (a lot by its shape
+# name, a pad by its origin_ref: pad rows get new ids on every re-import), so a
+# regeneration diffs cleanly.
+#
+# The same command writes `10-features.gen.json` next to it (id `features`):
+# one `afrod.recipe` op per course feature with a shaping recipe - the
+# feature's `recipe` terrain edit (op `recipe`, origin_ref `feature:<id>`,
+# params {recipe: <library id>, overrides?}; see shaping_features), else the
+# course default of its surface in the recipe library for every bunker, water
+# (lake) and creek. Area ops first, edge recipes after (the plan's order).
+
+SHAPING_LAYER_FORMAT = "golfmap-shaping-layer-v1"
+SHAPING_GLOBAL_ID = "global"
+SHAPING_GLOBAL_FILE = "00-global.gen.json"
+SHAPING_TEE_TYPE = "tee"
+SHAPING_TEE_PARAMS = {"tees_flat_inset": 1, "tees_flat_outset": 3.0}
+SHAPING_PATH_SMOOTH_PARAMS = {"smooth_path_distance": 3.0, "smooth_path_amt": 20}
+# A paved `path` polygon less compact than this (4πA/P²; ~0.7 for a 2:1 lot,
+# ~0.05 for a 5 m × 300 m road) is a road outline, not a lot: server
+# terrain-generators.service.ts MIN_PLANE_COMPACTNESS.
+SHAPING_LOT_MIN_COMPACTNESS = 0.15
+# The DEM lot planes' feather (golfpipe/roads.py DEFAULT_LOT_FEATHER_M).
+SHAPING_LOT_FALLOFF_M = 2.0
+SHAPING_LOT_FLATTEN_M = 0.1
+# A pad whose falloff edge stays further than this from every course shape
+# moves no mesh vertex (blends reach a few metres past a shape): left out.
+SHAPING_PAD_REACH_M = 10.0
+SHAPING_TERRAIN_OP = "plane"
+SHAPING_COORD_DECIMALS = 2
+SHAPING_SIMPLIFY_M = 0.02
+
+
+def _shaping_ring(poly) -> list[list[float]]:
+    """A polygon's outer ring as [[x, y], ...] (open, cm), simplified a hair."""
+    pts = list(poly.simplify(SHAPING_SIMPLIFY_M).exterior.coords)[:-1]
+    return [[round(x, SHAPING_COORD_DECIMALS), round(y, SHAPING_COORD_DECIMALS)] for x, y in pts]
+
+
+def _largest_polygon(shape):
+    polys = _polygons(shape)
+    return max(polys, key=lambda p: p.area) if polys else None
+
+
+def _is_lot(row) -> "object | None":
+    """A course feature's lot polygon (its largest part), or None when it is
+    not a paved lot: not a hand-made `path`, a centerline road, a bridge deck,
+    or a polygon too long and thin to be graded as one plane."""
+    if row["type"] not in ROADS_TYPES or row["generated"] or _is_bridge_deck(row):
+        return None
+    geom = json.loads(row["geometry_json"])
+    if geom.get("centerline"):
+        return None
+    poly = _largest_polygon(_feature_shape(geom, SHAPING_LOT_FLATTEN_M))
+    if poly is None or poly.length <= 0:
+        return None
+    compactness = 4 * math.pi * poly.area / poly.length ** 2
+    return poly if compactness >= SHAPING_LOT_MIN_COMPACTNESS else None
+
+
+def _load_plane_edits(db_path: Path, course_id: str) -> list[sqlite3.Row]:
+    """The enabled `plane` terrain edits of the course's site (none without a site)."""
+    conn = _open_course_db(db_path)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        course_cols = {r[1] for r in conn.execute("PRAGMA table_info(courses)")}
+        if "terrain_edits" not in tables or "site_id" not in course_cols:
+            return []
+        site = conn.execute("SELECT site_id FROM courses WHERE id = ?", (course_id,)).fetchone()
+        if not site or not site["site_id"]:
+            return []
+        return conn.execute(
+            """SELECT id, op, params_json, rings_json, origin, origin_ref, created_at FROM terrain_edits
+               WHERE site_id = ? AND op = ? AND enabled = 1 ORDER BY created_at, id""",
+            (site["site_id"], SHAPING_TERRAIN_OP),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _pad_slug(edit) -> str:
+    ref = edit["origin_ref"]
+    if ref:
+        return re.sub(r"[^0-9a-z]+", "-", ref.lower()).strip("-")
+    return re.sub(r"[^0-9a-z]", "", str(edit["id"]).lower())[:8]
+
+
+def _course_slug(name: str) -> str:
+    import unicodedata
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-") or "course"
+
+
+def _shaping_json(doc: dict) -> str:
+    """Indented JSON with each [x, y] pair on one line (a footprint diffs per vertex)."""
+    text = json.dumps(doc, indent=2, ensure_ascii=False)
+    return re.sub(r"\[\s+(-?[\d.eE+-]+),\s+(-?[\d.eE+-]+)\s+\]", r"[\1, \2]", text) + "\n"
+
+
+def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
+    """The global shaping layer for a course, and counts for the report."""
+    from shapely import STRtree
+    from shapely.geometry import Polygon
+
+    course, rows = _load_course_features(db_path, course_ident, "app")
+    fills = GSPRO_FILLS
+    shapes_oldest = sorted((r for r in rows if r["type"] in fills), key=lambda r: (r["created_at"] or "", r["id"]))
+    shape_ids = _shape_ids(shapes_oldest)
+    course_ids = {r["id"] for r in rows}
+    stats: dict[str, int] = {}
+    ops: list[dict] = []
+
+    tees = [r for r in rows if r["type"] == SHAPING_TEE_TYPE]
+    stats["tees"] = len(tees)
+    if tees:
+        ops.append({"id": "tees", "op": "afrod.flattentees", "select": {"type": SHAPING_TEE_TYPE},
+                    "params": dict(SHAPING_TEE_PARAMS)})
+    paths = [r for r in rows if r["type"] in ROADS_TYPES and not _is_bridge_deck(r)]
+    stats["paths"] = len(paths)
+    if paths:
+        ops.append({"id": "paths-cut", "op": "afrod.cutcartpaths", "select": {"type": "path"}})
+        ops.append({"id": "paths-smooth", "op": "afrod.smoothcartpaths", "select": {"type": "path"},
+                    "params": dict(SHAPING_PATH_SMOOTH_PARAMS)})
+    mixed = _mixed_road_shapes(rows) if paths else []
+    stats["mixed_roads"] = len(mixed)
+    if mixed:
+        ops.append({"id": SHAPING_SPLIT_ID, "op": "golfmap.split_surfaces", "select": {"shape": mixed}})
+
+    lots = []
+    for r in rows:
+        poly = _is_lot(r)
+        if poly is not None:
+            seed = r["feature_no"] if r["feature_no"] is not None else _id_seed(r["id"])
+            lots.append({"id": f"lot-{shape_ids[r['id']]}", "op": "golfmap.flatten_footprint",
+                         "featureId": r["id"], "seed": seed, "footprint3006": _shaping_ring(poly),
+                         "level": "plane", "falloffM": SHAPING_LOT_FALLOFF_M})
+    lots.sort(key=lambda o: (o["seed"], o["id"]))
+    ops += lots
+    stats["lots"] = len(lots)
+
+    # Where the meshes are: every shape the SVG writes (bridge decks are props).
+    course_shapes = [s for r in rows if r["type"] in fills and not _is_bridge_deck(r)
+                     for s in [_feature_shape(json.loads(r["geometry_json"]), 0.25)] if s is not None]
+    tree = STRtree(course_shapes) if course_shapes else None
+    pads, used = [], set()
+    stats.update(pads_far=0, lot_edits=0, stale_edits=0, bad_edits=0)
+    for edit in _load_plane_edits(db_path, course["id"]):
+        ref = edit["origin_ref"] or ""
+        if ref.startswith("feature:"):
+            # A lot graded from a feature: this course's is a lot op above (or not
+            # a lot any more); another course's, or a deleted feature's, is not ours.
+            stats["lot_edits" if ref[len("feature:"):] in course_ids else "stale_edits"] += 1
+            continue
+        try:
+            rings = json.loads(edit["rings_json"])
+            params = json.loads(edit["params_json"] or "{}")
+            ring = Polygon([(p["x"], p["y"]) for p in rings[0]])
+        except (ValueError, KeyError, IndexError, TypeError):
+            stats["bad_edits"] += 1
+            continue
+        ring = _largest_polygon(ring.buffer(0)) if not ring.is_valid else ring
+        if ring is None or ring.area <= 0:
+            stats["bad_edits"] += 1
+            continue
+        feather = float(params.get("featherM") or 0.0)
+        core = _largest_polygon(ring.buffer(-feather, quad_segs=4)) if feather > 0 else ring
+        falloff = feather
+        if core is None:  # narrower than its feather: all of it is the blend
+            core, falloff = ring, 0.0
+        reach = core.buffer(falloff + SHAPING_PAD_REACH_M, quad_segs=4)
+        if tree is None or not any(course_shapes[int(i)].intersects(reach) for i in tree.query(reach)):
+            stats["pads_far"] += 1
+            continue
+        pid = base = f"pad-{_pad_slug(edit)}"
+        k = 2
+        while pid in used:
+            pid, k = f"{base}-{k}", k + 1
+        used.add(pid)
+        op = {"id": pid, "op": "golfmap.flatten_footprint", "footprint3006": _shaping_ring(core),
+              "level": "median" if params.get("flat") else "plane", "falloffM": falloff}
+        if edit["origin"]:
+            op["origin"] = edit["origin"]
+        if edit["origin_ref"]:
+            op["originRef"] = edit["origin_ref"]
+        pads.append(op)
+    pads.sort(key=lambda o: o["id"])
+    ops += pads
+    stats["pads"] = len(pads)
+
+    doc = {
+        "format": SHAPING_LAYER_FORMAT,
+        "id": SHAPING_GLOBAL_ID,
+        "generated": True,
+        "generator": "pipeline/gspro.py shaping-global",
+        "course": {"id": course["id"], "name": course["name"]},
+        "ops": ops,
+    }
+    return doc, stats
+
+
+SHAPING_SPLIT_ID = "paths-surfaces"
+
+
+def _mixed_road_shapes(rows: list) -> list[str]:
+    """The merged road shapes (`roads_<n>`) whose pieces carry more than one
+    surface: the shapes the SVG export's `<stem>-paths.json` marks `mixed`,
+    worked out from the same rows the same way (cmd_svg: bridge decks and
+    tiny shapes left out, _merged_roads, _road_names, _road_regions; without
+    the export's --exclude options)."""
+    fills = GSPRO_FILLS
+    shapes = sorted((r for r in rows if r["type"] in fills), key=lambda r: (r["created_at"] or "", r["id"]))
+    shape_ids = _shape_ids(shapes)
+    rows, _, _ = _exclude_rows(rows, {r["id"] for r in rows if _is_bridge_deck(r)}, set())
+    tiny = {r["id"] for r in _tiny_rows(rows, ROADS_FLATTEN_M, fills)}
+    rows = [r for r in rows if r["id"] not in tiny]
+    roads, _ = _merged_roads(rows, fills, ROADS_FLATTEN_M)
+    if not roads:
+        return []
+    names = [f"roads_{part}" for part in _road_names(roads, shapes, shape_ids)]
+    regions = _road_regions(roads, names, rows, ROADS_FLATTEN_M, lambda xy: xy)["regions"]
+    return sorted(n for n, r in regions.items() if r["mixed"])
+
+
+def _id_seed(text: str) -> int:
+    """A stable seed for a feature without a number."""
+    import zlib
+    return zlib.crc32(text.encode("utf-8")) & 0xFFFF
+
+
+def cmd_shaping_global(db_path: Path, course_ident: str, out: Path | None = None, out_dir: Path | None = None,
+                       library: Path | None = None) -> Path:
+    """Write 00-global.gen.json (to `out`, else into `out_dir`, else the course's
+    docs folder) and 10-features.gen.json next to it. Returns the global layer's path."""
+    doc, stats = shaping_global(db_path, course_ident)
+    if out is None:
+        folder = out_dir or REPO_ROOT / "docs" / "gspro" / _course_slug(doc["course"]["name"]) / "shaping"
+        out = folder / SHAPING_GLOBAL_FILE
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_shaping_json(doc), encoding="utf-8", newline="\n")
+    counts: dict[str, int] = {}
+    for op in doc["ops"]:
+        counts[op["op"]] = counts.get(op["op"], 0) + 1
+    print(f"Wrote {out}")
+    print(f"  {doc['course']['name']} ({doc['course']['id']}): {len(doc['ops'])} op(s) - "
+          + ", ".join(f"{k} {v}" for k, v in counts.items()))
+    print(f"  {stats['tees']} tee(s), {stats['paths']} path piece(s) (bridge decks left out), "
+          f"{stats['lots']} lot(s) levelled as planes, {stats['pads']} pad(s)")
+    if stats.get("mixed_roads"):
+        split = next(o for o in doc["ops"] if o["id"] == SHAPING_SPLIT_ID)
+        print(f"  {stats['mixed_roads']} road shape(s) of mixed surfaces split per surface in Blender: "
+              + ", ".join(split["select"]["shape"]))
+    if stats["pads_far"]:
+        print(f"  {stats['pads_far']} plane edit(s) further than {SHAPING_PAD_REACH_M:g} m from every course "
+              f"shape left out (they move no mesh)")
+    if stats["lot_edits"]:
+        print(f"  {stats['lot_edits']} lot plane edit(s) of this course's paths skipped (the lots come from the features)")
+    if stats["stale_edits"]:
+        print(f"  {stats['stale_edits']} plane edit(s) of a feature not on this course (deleted, or another "
+              f"course's) skipped")
+    if stats["bad_edits"]:
+        print(f"  warning: {stats['bad_edits']} plane edit(s) with unreadable rings skipped")
+
+    features_doc, fstats, warnings = shaping_features(db_path, course_ident, library)
+    features_out = out.parent / SHAPING_FEATURES_FILE
+    features_out.write_text(_shaping_json(features_doc), encoding="utf-8", newline="\n")
+    defaults = ", ".join(f"{k} {v}" for k, v in sorted(fstats["defaults"].items())) or "none"
+    print(f"Wrote {features_out}")
+    print(f"  {len(features_doc['ops'])} recipe op(s): {fstats['edits']} from recipe edits, "
+          f"{sum(fstats['defaults'].values())} course default(s) ({defaults})"
+          + (f", {fstats['opted_out']} feature(s) with recipe none" if fstats["opted_out"] else ""))
+    for line in warnings:
+        print(f"  warning: {line}")
+    return out
+
+
+# --- Shaping: per-feature recipes (10-features.gen.json) ----------------------
+# The Terrain editor's recipe edits (blender/SHAPING-PLAN.md, "Terrain editor ->
+# Blender") and the course defaults as `afrod.recipe` ops, one per feature:
+#   - a feature with an enabled `recipe` terrain edit on its course's site
+#     (origin_ref `feature:<id>`, the feature on THIS course: an edit of another
+#     course sharing the site, or of a deleted feature, is not ours) gets that
+#     library recipe; `none` opts it out of any recipe, the default included;
+#   - every other bunker, water (lake) and water_creek (creek) gets its
+#     surface's default from the library (`default: true`, or the surfaces it is
+#     the default for); paths get a recipe only from an edit;
+#   - bridge decks are props, never meshes.
+# Op ids are `recipe-<shape id>` (the feature number in hex, like its mesh
+# name), `select` the feature id, `recipe` the library entry's `file`, `seed`
+# the feature number. Overrides: the engine (blender/tools/shape_layers.py)
+# decides what an afrod.recipe op may carry. When its op spec takes an
+# `overrides` key the edit's overrides go there whole; otherwise the keys its
+# params spec knows are merged into `params` and the rest are dropped with a
+# warning (today afrod.recipe takes no params, so every override is reported,
+# never written: a layer the engine rejects would stop the whole replay).
+
+SHAPING_FEATURES_ID = "features"
+SHAPING_FEATURES_FILE = "10-features.gen.json"
+SHAPING_RECIPE_OP = "recipe"
+SHAPING_NO_RECIPE = "none"
+SHAPING_RECIPE_SURFACE = {"bunker": "bunker", "water": "lake", "water_creek": "creek", "path": "path"}
+SHAPING_DEFAULT_RECIPE_TYPES = ("bunker", "water", "water_creek")
+DEFAULT_RECIPE_LIBRARY = REPO_ROOT / "blender" / "recipes" / "library.json"
+SHAPING_ENGINE_LAYERS = REPO_ROOT / "blender" / "tools" / "shape_layers.py"
+
+
+def recipe_library_path() -> Path:
+    """The recipe library: $GOLFMAP_RECIPE_LIBRARY, else blender/recipes/library.json."""
+    env = os.environ.get("GOLFMAP_RECIPE_LIBRARY")
+    return Path(env) if env else DEFAULT_RECIPE_LIBRARY
+
+
+def load_recipe_library(path: Path) -> list[dict] | None:
+    """Library entries in file order ({id, file, surfaces, defaultFor}), None when
+    there is no file. A top-level list or {"recipes": [...]}; entries without an
+    id or file are skipped, like the server does."""
+    if not path.is_file():
+        return None
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    items = doc if isinstance(doc, list) else (doc.get("recipes") if isinstance(doc, dict) else None)
+    if not isinstance(items, list):
+        raise SystemExit(f"error: recipe library {path} must be a list of recipes (or {{\"recipes\": [...]}})")
+    known = set(SHAPING_RECIPE_SURFACE.values())
+    entries, seen = [], set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rid, file = item.get("id"), item.get("file")
+        if not (isinstance(rid, str) and rid and isinstance(file, str) and file) or rid in seen or rid == SHAPING_NO_RECIPE:
+            continue
+        seen.add(rid)
+        raw = item.get("surfaces")
+        surfaces = [s for s in (raw if isinstance(raw, list) else [raw]) if s in known]
+        d = item.get("default")
+        default_for = surfaces if d is True else [s for s in (d if isinstance(d, list) else [d]) if s in surfaces]
+        entries.append({"id": rid, "file": file, "surfaces": surfaces, "defaultFor": default_for})
+    return entries
+
+
+def _recipe_override_support(engine: Path = SHAPING_ENGINE_LAYERS) -> tuple[str, set[str]]:
+    """How the shaping engine takes an afrod.recipe op's overrides: ("key", set())
+    when the op takes an `overrides` key, else ("params", <param names it knows>)."""
+    import importlib.util
+    try:
+        spec = importlib.util.spec_from_file_location("golfmap_shape_layers", engine)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        op = module.OPS["afrod.recipe"]
+    except Exception:  # no engine checkout: write no overrides
+        return "params", set()
+    if "overrides" in op.get("keys", set()):
+        return "key", set()
+    return "params", set(op.get("params", {}))
+
+
+def _load_recipe_edits(db_path: Path, course_id: str) -> list[sqlite3.Row]:
+    """The enabled `recipe` terrain edits of the course's site, oldest first."""
+    conn = _open_course_db(db_path)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        course_cols = {r[1] for r in conn.execute("PRAGMA table_info(courses)")}
+        if "terrain_edits" not in tables or "site_id" not in course_cols:
+            return []
+        site = conn.execute("SELECT site_id FROM courses WHERE id = ?", (course_id,)).fetchone()
+        if not site or not site["site_id"]:
+            return []
+        return conn.execute(
+            """SELECT id, params_json, origin_ref, created_at FROM terrain_edits
+               WHERE site_id = ? AND op = ? AND enabled = 1 ORDER BY created_at, id""",
+            (site["site_id"], SHAPING_RECIPE_OP),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def shaping_features(db_path: Path, course_ident: str, library: Path | None = None,
+                     engine: Path = SHAPING_ENGINE_LAYERS) -> tuple[dict, dict, list[str]]:
+    """The per-feature recipe layer for a course, counts, and warnings."""
+    course, rows = _load_course_features(db_path, course_ident, "app")
+    library = library or recipe_library_path()
+    entries = load_recipe_library(library)
+    warnings: list[str] = []
+    stats: dict = {"edits": 0, "defaults": {}, "opted_out": 0, "other_edits": 0, "unknown": 0,
+                   "unresolved": 0, "mismatched": 0, "no_default": {}, "overrides_dropped": 0}
+    by_id = {e["id"]: e for e in entries or []}
+    defaults: dict[str, dict] = {}
+    for e in entries or []:
+        for surface in e["defaultFor"]:
+            if surface in defaults:
+                warnings.append(f"recipes {defaults[surface]['id']} and {e['id']} are both the {surface} default: "
+                                f"{defaults[surface]['id']} (first in the library) is used")
+            else:
+                defaults[surface] = e
+    if entries is None:
+        warnings.append(f"no recipe library at {library}: no recipe ops (course defaults and recipe edits need it)")
+
+    shapes_oldest = sorted((r for r in rows if r["type"] in GSPRO_FILLS), key=lambda r: (r["created_at"] or "", r["id"]))
+    shape_ids = _shape_ids(shapes_oldest)
+    course_ids = {r["id"] for r in rows}
+    edits: dict[str, dict] = {}
+    for edit in _load_recipe_edits(db_path, course["id"]):
+        ref = edit["origin_ref"] or ""
+        fid = ref[len("feature:"):] if ref.startswith("feature:") else None
+        if fid not in course_ids:
+            stats["other_edits"] += 1
+            continue
+        if fid in edits:  # the server keeps one per feature; the oldest wins
+            continue
+        try:
+            params = json.loads(edit["params_json"] or "{}")
+        except ValueError:
+            params = {}
+        edits[fid] = params if isinstance(params, dict) else {}
+
+    mode, known_params = _recipe_override_support(engine)
+    ops = []
+    for r in rows:
+        surface = SHAPING_RECIPE_SURFACE.get(r["type"])
+        if surface is None or r["id"] not in shape_ids or _is_bridge_deck(r):
+            continue
+        name = shape_ids[r["id"]]
+        params = edits.get(r["id"])
+        overrides: dict = {}
+        if params is not None:
+            rid = params.get("recipe")
+            if rid == SHAPING_NO_RECIPE:
+                stats["opted_out"] += 1
+                continue
+            if entries is None:
+                stats["unresolved"] += 1
+                continue
+            entry = by_id.get(rid)
+            if entry is None:
+                stats["unknown"] += 1
+                warnings.append(f"feature {name} ({r['type']}): recipe {rid!r} is not in the library - left out")
+                continue
+            if surface not in entry["surfaces"]:
+                stats["mismatched"] += 1
+                warnings.append(f"feature {name}: recipe {rid!r} is not made for {surface} (it is for "
+                                f"{', '.join(entry['surfaces']) or 'no surface'}) - used anyway")
+            raw = params.get("overrides")
+            overrides = raw if isinstance(raw, dict) else {}
+            note = f"{entry['id']} (recipe edit)"
+            stats["edits"] += 1
+        elif r["type"] in SHAPING_DEFAULT_RECIPE_TYPES:
+            entry = defaults.get(surface)
+            if entry is None:
+                if entries is not None:
+                    stats["no_default"][surface] = stats["no_default"].get(surface, 0) + 1
+                continue
+            note = f"{entry['id']} (default for {surface})"
+            stats["defaults"][surface] = stats["defaults"].get(surface, 0) + 1
+        else:
+            continue
+        seed = r["feature_no"] if r["feature_no"] is not None else _id_seed(r["id"])
+        op = {"id": f"recipe-{name}", "op": "afrod.recipe", "select": {"feature": r["id"]},
+              "recipe": entry["file"], "seed": seed, "note": note}
+        if overrides:
+            ordered = {k: overrides[k] for k in sorted(overrides)}
+            if mode == "key":
+                op["overrides"] = ordered
+            else:
+                kept = {k: v for k, v in ordered.items() if k in known_params}
+                dropped = [k for k in ordered if k not in known_params]
+                if kept:
+                    op["params"] = kept
+                if dropped:
+                    stats["overrides_dropped"] += len(dropped)
+                    warnings.append(f"feature {name}: override(s) {', '.join(dropped)} not written - the shaping "
+                                    f"engine's afrod.recipe does not take them")
+        ops.append(((r["feature_no"] is None, r["feature_no"] or 0, name), op))
+    ops.sort(key=lambda t: t[0])
+    for surface, n in sorted(stats["no_default"].items()):
+        warnings.append(f"{n} {surface} feature(s) without a recipe: the library has no {surface} default")
+    if stats["unresolved"]:
+        warnings.append(f"{stats['unresolved']} recipe edit(s) not resolved (no library)")
+    if stats["other_edits"]:
+        warnings.append(f"{stats['other_edits']} recipe edit(s) of a feature not on this course (deleted, or another "
+                        f"course's on the site) skipped")
+    doc = {
+        "format": SHAPING_LAYER_FORMAT,
+        "id": SHAPING_FEATURES_ID,
+        "generated": True,
+        "generator": "pipeline/gspro.py shaping-global",
+        "course": {"id": course["id"], "name": course["name"]},
+        "ops": [op for _, op in ops],
+    }
+    return doc, stats, warnings
 
 
 # --- Command: zones ---------------------------------------------------------
@@ -2326,12 +3542,27 @@ class _ValueNoise:
 
 def _fill_even_odd(polys: list[list[Pt]], x0: int, y0: int, w: int, h: int) -> np.ndarray:
     """Rings filled even-odd (rings with holes, like the SVG and the tint)
-    into a bool crop whose top-left pixel is (x0, y0) of the frame."""
+    into a bool crop whose top-left pixel is (x0, y0) of the frame.
+
+    A pixel is filled when the point VSP reads it for lies inside. VSP looks a
+    spawn location up as pixel round(metres / pixel size) of the Unity texture
+    (TextureMask.cs), so Unity pixel (x, z) stands for the square centred on
+    (x, z) pixels from the terrain's corner - not on (x + 0.5, z + 0.5) - and
+    Unity's row z is the PNG's row size - 1 - z. In frame coordinates (x east,
+    y south from the north edge) PNG pixel (col, row) is therefore read for the
+    point (col, row + 1). PIL's polygon fill is not that: it fills
+    floor(min) .. floor(max), up to a pixel too far west and south, which put
+    the grass half a metre onto one side of every path, tee and green."""
+    from rasterio import features
+    from shapely.geometry import Polygon as _Polygon
     acc = np.zeros((h, w), dtype=bool)
     for poly in polys:
-        m = Image.new("L", (w, h), 0)
-        ImageDraw.Draw(m).polygon([(x - x0, y - y0) for x, y in poly], fill=255)
-        acc ^= np.asarray(m, dtype=bool)
+        # rasterio fills the pixels whose centre (col + 0.5, row + 0.5) is inside. The nudge
+        # counts a point on the west or south edge as inside (a zone that ends at the frame).
+        ring = _Polygon([(x - x0 + 0.5 - 1e-4, y - y0 - 0.5 + 1e-4) for x, y in poly])
+        if ring.is_empty or ring.area <= 0:
+            continue
+        acc ^= features.rasterize([ring], out_shape=(h, w)).astype(bool)
     return acc
 
 
@@ -3929,6 +5160,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="per-type override: TYPE=#rrggbb, TYPE=@0.2, TYPE=#rrggbb@0.2 or TYPE=none to mask it off "
                         f"(repeatable; tinted by default: {', '.join(TINT_TYPES)} and {TINT_GROUND} = whatever isn't drawn; masked: {', '.join(TINT_MASK_TYPES)}; "
                         f"water layer: {', '.join(TINT_WATER_TYPES)})")
+    p.add_argument("--edge-fill", dest="edge_fill", metavar="TYPES",
+                   help=f"--tint-out: fill a band round these feature types (comma-separated) from the grass beyond "
+                        f"it, so the course meshes and the 3D grass next to them do not pick up the photo's sand or gravel "
+                        f"(default {','.join(EDGE_FILL_TYPES)}; none = keep them as photographed, the old file)")
+    p.add_argument("--edge-fill-m", dest="edge_fill_m", type=float,
+                   help=f"--edge-fill: how far out of the outline the band reaches, metres (default {DEFAULT_EDGE_FILL_M:g})")
+    p.add_argument("--path-fill", dest="path_fill", action=argparse.BooleanOptionalAction, default=True,
+                   help="--tint-out: lift the photo's tree shadows on the course's paths to the sunlit path colour "
+                        "round them, keeping the gravel's grain (default on; --no-path-fill = as photographed)")
+    p.add_argument("--edge-fill-inset-m", dest="edge_fill_inset_m", type=float,
+                   help="--edge-fill: how far inside the outline it starts, metres, for every type (default per type: "
+                        + ", ".join(f"{k} {v:g}" for k, v in EDGE_FILL_INSET_M.items()) + ")")
     p.add_argument("--water-color", dest="water_color", default=DEFAULT_WATER_COLOR,
                    help=f"tint colour for water bodies and creeks (default {DEFAULT_WATER_COLOR}, a dark brown)")
     p.add_argument("--water-opacity", dest="water_opacity", type=float, default=DEFAULT_WATER_OPACITY,
@@ -3991,6 +5234,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--terrain", choices=["inner", "outer"], help="which GSPro terrain (default: the sidecar's)")
     p.add_argument("--exclude-square", dest="exclude_square",
                    help="x0,y0,x1,y1 in EPSG:3006 to leave out — the inner square when writing the outer's trees")
+    p.add_argument("--course", help="course id or name substring: add its tree species areas (and each stem's area)")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database for --course (default {DEFAULT_DB})")
 
     p = sub.add_parser("buildings", help="write the unity-buildings-v1 file for one terrain from a fetch-buildings survey")
     _add_area(p)
@@ -4067,6 +5312,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--altitude", type=float,
                    help="course altitude in metres above sea level (default: the ground under the green centres)")
 
+    p = sub.add_parser("shaping-global", help="write a course's generated Blender shaping layers: 00-global "
+                       "(tees flattened, paths cut + smoothed, lots and building pads levelled) and 10-features "
+                       "(per-feature recipes: recipe edits + course defaults); blender/SHAPING-PLAN.md")
+    p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database, opened read-only (default {DEFAULT_DB})")
+    p.add_argument("--out", help=f"the global layer's path (default docs/gspro/<course>/shaping/{SHAPING_GLOBAL_FILE}); "
+                                 f"{SHAPING_FEATURES_FILE} goes next to it")
+    p.add_argument("--out-dir", dest="out_dir", help="the layer folder both files go into (default docs/gspro/<course>/shaping)")
+    p.add_argument("--library", help="the shaping recipe library (default $GOLFMAP_RECIPE_LIBRARY, else "
+                                     "blender/recipes/library.json)")
+
     p = sub.add_parser("svg", help="export a course's drawn features as a layered GSPro/OPCD SVG")
     _add_area(p)
     p.add_argument("--out", required=True, help="output SVG path")
@@ -4109,6 +5365,10 @@ def main(argv: list[str] | None = None) -> int:
                         Path(args.result) if args.result else None,
                         _parse_square(args.exclude_square) if args.exclude_square else None)
         return 0
+    if args.command == "shaping-global":
+        cmd_shaping_global(Path(args.db), args.course, Path(args.out) if args.out else None,
+                           Path(args.out_dir) if args.out_dir else None, Path(args.library) if args.library else None)
+        return 0
     bbox, extent = _resolve_area(args)
 
     if args.command == "ortho":
@@ -4126,7 +5386,9 @@ def main(argv: list[str] | None = None) -> int:
                   floor_feather_m=args.floor_feather, floor_seed=args.floor_seed,
                   remove_buildings=args.remove_buildings, roofs=Path(args.roofs) if args.roofs else None,
                   buildings_survey=Path(args.buildings_survey) if args.buildings_survey else None,
-                  shadow_azimuth=args.shadow_azimuth, shadow_ratio=args.shadow_ratio)
+                  shadow_azimuth=args.shadow_azimuth, shadow_ratio=args.shadow_ratio,
+                  edge_fill=_parse_edge_fill(args.edge_fill, args.edge_fill_m, args.edge_fill_inset_m),
+                  path_fill=args.path_fill)
     elif args.command == "hillshade":
         cmd_hillshade(
             bbox, Path(args.out), args.size,
@@ -4140,7 +5402,8 @@ def main(argv: list[str] | None = None) -> int:
                 sculpt=[Path(p) for p in args.sculpt] if args.sculpt else None)
     elif args.command == "trees":
         cmd_trees(bbox, Path(args.stems), Path(args.sidecar), Path(args.out), args.terrain,
-                  _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent)
+                  _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent,
+                  db_path=Path(args.db), course=args.course)
     elif args.command == "buildings":
         cmd_buildings(bbox, Path(args.survey), Path(args.sidecar), Path(args.out), args.terrain,
                       _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent)

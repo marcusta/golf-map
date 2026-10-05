@@ -1,0 +1,835 @@
+{
+  "format": "golfmap-recipe-library-v1",
+  "notes": [
+    "Index of the Afrod JSON recipes the shaping engine offers per feature (blender/SHAPING-PLAN.md, 'Terrain editor -> Blender'). 'file' is relative to $GOLFMAP_AFROD_RECIPES (default D:/gspro/afrod-recipes; third-party files stay there untouched), then blender/recipes/ (ours).",
+    "'paint' says what each colour a recipe leaves means, as a golfmap role, separately for the bunker/water mesh ('mesh') and its blend strip ('blend'). After the recipe, blender/tools/shape_paint.py (remap_after_recipe) rewrites the touched objects' paint so every channel carries its canonical role (the golfmap convention in blender/conventions/bunker-channels.json). A missing colour keeps its channel; an empty map means the recipe does not repaint that part, so OPCD's paint is still there and 'opcdDefault' applies.",
+    "Rings: Afrod counts rings in from an object's open boundary. On a joined bunker + blend (meshblendjoin / meshblendjoinpermanent) ring 0 is the blend's OUTER edge (OPCD blends are one quad strip: ring 0 outer, ring 1 the seam), so 'red on rings 0-2 of the joined mesh' is the blend plus the bunker's rim. After meshblendseparate only the bunker mesh is selected, so later paint steps touch the mesh alone.",
+    "'join': 'last-blend' = meshblendjoin (Afrod joins the alphanumerically last blend of the mesh, same opcd_parent_id; any other split blends keep OPCD's paint), 'permanent' = meshblendjoinpermanent (every blend is merged into the mesh for good and loses its material: no blend objects remain), 'none' = the recipe works on the mesh only.",
+    "'default': the recipe a feature of that surface gets when the course names none (one per surface).",
+    "kaustin's 'Bunker overhang' download (kaustin-Bunker overhang-20260928T173517Z-1-001) is an empty folder: no recipe to index."
+  ],
+  "roles": {
+    "mesh": {
+      "grassLip": {
+        "channel": "red",
+        "text": "grass lip: the adjoining grass look, 3D grass grows"
+      },
+      "dirt": {
+        "channel": "green",
+        "text": "dirt / bank soil face"
+      },
+      "shadow": {
+        "channel": "black",
+        "text": "dark lip without 3D grass (rolled-lip shadow line) / dark wet edge"
+      },
+      "floor": {
+        "channel": "blue",
+        "text": "sand / water bed (no wet-sand channel: wet paint becomes sand)"
+      }
+    },
+    "blend": {
+      "adjoining": {
+        "channel": "red",
+        "text": "the adjoining surface"
+      },
+      "longGrass": {
+        "channel": "green",
+        "text": "longer, darker grass"
+      },
+      "browning": {
+        "channel": "black",
+        "text": "browning grass / dirt toward the hazard"
+      }
+    }
+  },
+  "opcdDefault": {
+    "notes": "OPCD's own paint, for objects no painting recipe touched (and the parts of a recipe's objects it leaves alone). Read off vreta_svg_1985 and the OPCD 'Theme - Default' materials: bunker mesh rings red, green, green, then blue; bunker material red/green = dirt (array index 4), blue/black = sand (6); bunker blend red at the bunker (= the bunker's red, dirt), black at the rough (= the rough's red). Lake mesh the same rings; Water Base Lake material red = grass (2), green/blue = soil (4) - already the golfmap layout. Lake blends: red at the water (lake grass), black at the deep rough (grass): both become 'adjoining', so no blend channel OPCD leaves unset (green/blue, base index 0) is used before Unity has a water convention. Creeks differ: Water Base Creek red/green/blue = soil (4), black = grass (2), and Vreta's narrow creek meshes are red all over (soil) -> dirt; creek blends are like bunker blends (red = the creek's soil at the water, black = deep rough).",
+    "bunker": {
+      "mesh": {
+        "red": "dirt",
+        "green": "dirt",
+        "blue": "floor",
+        "black": "floor"
+      },
+      "blend": {
+        "red": "browning",
+        "green": "longGrass",
+        "blue": "adjoining",
+        "black": "adjoining"
+      }
+    },
+    "lake": {
+      "mesh": {
+        "red": "grassLip",
+        "green": "dirt",
+        "blue": "floor",
+        "black": "shadow"
+      },
+      "blend": {
+        "red": "adjoining",
+        "green": "longGrass",
+        "blue": "adjoining",
+        "black": "adjoining"
+      }
+    },
+    "creek": {
+      "mesh": {
+        "red": "dirt",
+        "green": "dirt",
+        "blue": "floor",
+        "black": "grassLip"
+      },
+      "blend": {
+        "red": "browning",
+        "green": "longGrass",
+        "blue": "adjoining",
+        "black": "adjoining"
+      }
+    },
+    "path": {
+      "mesh": {},
+      "blend": {}
+    }
+  },
+  "studioPaint": {
+    "notes": "What a studio step's output paint means, as golfmap roles (golfmap recipes remap it right after the step; an entry's stepPaint or a step's own paint wins). Bunker Studio (bunker_studio/__init__.py _deform_bunker / _rebuild_blend): bunker mesh (red, 0, 1 - red) = red dirt fading to blue sand; blend (red, 0, 0) = red the dirt fade at the bunker, black the grass outside; blend UV0 = its 3D-grass density (kept as is). Shoreline Studio (shoreline_studio/core.py surface_zone_color): every preset paints its zone stops red (rim, 0) -> green (bank) -> blue (bed) -> black (deepest) across the water base, in preset-specific places (PRESET_RECIPES zone_stops, recorded per run); blends all red (zone 0). Water has no Unity convention yet, so a water mesh uses the bunker roles: rim grass lip, bank dirt, bed and deep water floor.",
+    "bunkerstudio.shape": {
+      "mesh": {
+        "red": "dirt",
+        "green": "dirt",
+        "blue": "floor",
+        "black": "floor"
+      },
+      "blend": {
+        "red": "browning",
+        "green": "longGrass",
+        "blue": "adjoining",
+        "black": "adjoining"
+      }
+    },
+    "shorelinestudio.shape": {
+      "mesh": {
+        "red": "grassLip",
+        "green": "dirt",
+        "blue": "floor",
+        "black": "floor"
+      },
+      "blend": {
+        "red": "adjoining",
+        "green": "longGrass",
+        "blue": "adjoining",
+        "black": "browning"
+      }
+    }
+  },
+  "recipes": [
+    {
+      "id": "golfmap-bunker-paint-only",
+      "name": "Keep OPCD shape (paint only)",
+      "file": "golfmap-bunker-paint-only.json",
+      "author": "golfmap",
+      "surfaces": [
+        "bunker"
+      ],
+      "join": "none",
+      "default": true,
+      "notes": "No reshaping: OPCD's bunker as conformed, paint remapped to the golfmap roles. Pick a shaping recipe per bunker in the Terrain editor."
+    },
+    {
+      "id": "cesimgolf-conway",
+      "name": "Conway bunker (standard)",
+      "file": "cesimgolf-Conway_Bunker_Standard.json",
+      "author": "cesimgolf",
+      "surfaces": [
+        "bunker"
+      ],
+      "join": "last-blend",
+      "params": [
+        {
+          "id": "depth",
+          "label": "Depth",
+          "unit": "m",
+          "min": 0.1,
+          "max": 1.2,
+          "step": 0.05,
+          "default": 0.3,
+          "maps": [
+            {
+              "step": "bunkeredit",
+              "field": "bunker_dig_depth",
+              "mode": "set"
+            }
+          ]
+        },
+        {
+          "id": "lipHeight",
+          "label": "Lip height",
+          "unit": "×",
+          "min": 0,
+          "max": 2,
+          "step": 0.1,
+          "default": 1,
+          "maps": [
+            {
+              "step": "bunkereditlip",
+              "field": "bunker_lip_depth",
+              "mode": "scale"
+            }
+          ]
+        },
+        {
+          "id": "lipRaggedness",
+          "label": "Lip raggedness",
+          "unit": "×",
+          "min": 0,
+          "max": 2,
+          "step": 0.1,
+          "default": 1,
+          "maps": [
+            {
+              "step": "randomslideloop",
+              "field": "loopslide_random",
+              "mode": "scale"
+            }
+          ]
+        }
+      ],
+      "paint": {
+        "mesh": {
+          "red": "grassLip",
+          "black": "shadow",
+          "green": "floor",
+          "blue": "floor"
+        },
+        "blend": {
+          "red": "adjoining",
+          "green": "longGrass",
+          "blue": "browning",
+          "black": "browning"
+        }
+      },
+      "notes": "Digs 0.3 m (concave lip), joins bunker + blend and builds ce.simgolf's stack of 1-3 cm terraces across the seam (loop cuts, spacing, lip steps, random slides, widened interior). Joined: rings 0-2 red, ring 3 black - the whole blend (outer edge red, the seam black). Separated bunker: filled green, rings 0-1 red, ring 2 black. ce.simgolf's paint: red = lip with 3D grass -> grassLip, black = the same lip without 3DG, darkened for a rolled-lip shadow -> shadow, green = sand -> floor, blue = wet floor -> floor. Blend: red = the rough -> adjoining, black at the seam -> browning; his blue ('grass browning into the lip dirt') -> browning. No dirt face: the lip is grass down to the sand."
+    },
+    {
+      "id": "cesimgolf-hazeltine",
+      "name": "Hazeltine bunker",
+      "file": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "author": "cesimgolf",
+      "surfaces": [
+        "bunker"
+      ],
+      "join": "last-blend",
+      "paint": {
+        "mesh": {
+          "red": "grassLip",
+          "black": "shadow",
+          "green": "floor",
+          "blue": "floor"
+        },
+        "blend": {
+          "red": "adjoining",
+          "green": "longGrass",
+          "blue": "browning",
+          "black": "browning"
+        }
+      },
+      "notes": "Deep dig (2.5 m, dig shape 2) from the rim, then the same terrace stack as Conway with more spacing on the bunker side. Joined: rings 0-1 red, ring 2 blue (the blend seam). Separated bunker: filled green, rings 0-1 red, ring 2 black. Same ce.simgolf meanings as Conway; the blue on the blend seam is his 'grass browning into the lip' -> browning."
+    },
+    {
+      "id": "blrk-bunker-simple-no-dig",
+      "name": "BLRK bunker simple (no dig)",
+      "file": "BLRK Bunker Simple - No Dig.json",
+      "author": "BLRK",
+      "surfaces": [
+        "bunker"
+      ],
+      "join": "last-blend",
+      "paint": {
+        "mesh": {
+          "red": "grassLip",
+          "black": "dirt",
+          "green": "floor",
+          "blue": "floor"
+        },
+        "blend": {
+          "red": "adjoining",
+          "green": "longGrass",
+          "blue": "adjoining",
+          "black": "browning"
+        }
+      },
+      "notes": "No dig: three loop cuts across the seam, 4-5 mm lip steps. Joined: filled red (the whole blend red). Separated bunker: three more cuts at the rim, spacing and small lip steps, filled green then blue (all blue), green on 40-80 deg slopes, rings 0-6 green, green grown in 3x (35/25/15 %), ring 0 red, rings 1-2 black. BLRK's material (Bunker-for-blrk-bunker-simple.mat next to the recipe): red = a green-tinted grass texture -> grassLip, black = dirt (OPCD array index 4, darkened 0.72) -> dirt, green and blue = sand (index 6; green with a stronger blend for the face) -> floor. Blend all red -> adjoining."
+    },
+    {
+      "id": "kaustin-bunker-higher-lip",
+      "name": "KA deeper bunker with higher lip",
+      "file": "kaustin-Deeper Bunker w higher lip-20260928T172402Z-1-001/Deeper Bunker w higher lip/KA_Bunker_higher_lip.json",
+      "author": "kaustin",
+      "surfaces": [
+        "bunker"
+      ],
+      "join": "permanent",
+      "paint": {
+        "mesh": {
+          "red": "grassLip",
+          "green": "dirt",
+          "black": "floor",
+          "blue": "floor"
+        },
+        "blend": {}
+      },
+      "notes": "Joins every blend into the bunker for good (no blend objects remain; Unity must drop their FBX), 1.5 m concave dig, random slides, widened interior, a raised outer lip (z shifts). Paint: filled red, ring 5 green (60 %), rings 5+ green, rings 7+ black, ring 7 flecked green. kaustin's ReadMe: black = his base material (the sand), red = set to the adjoining material, green = the dirt part of the lip. So red -> grassLip, green -> dirt, black -> floor. Screenshots: grass down to a thin dirt edge over the sand."
+    },
+    {
+      "id": "kaustin-lake-gradual",
+      "name": "KA lake, gradual entry",
+      "file": "kaustin-Lake Gradual Entry-20260928T172349Z-1-001/Lake Gradual Entry/KA_Lake_gradual.json",
+      "author": "kaustin",
+      "surfaces": [
+        "lake"
+      ],
+      "join": "permanent",
+      "params": [
+        {
+          "id": "depth",
+          "label": "Depth",
+          "unit": "m",
+          "min": 0.5,
+          "max": 5,
+          "step": 0.1,
+          "default": 3,
+          "maps": [
+            {
+              "step": "bunkeredit",
+              "field": "bunker_dig_depth",
+              "mode": "set"
+            }
+          ]
+        },
+        {
+          "id": "lipHeight",
+          "label": "Bank raise",
+          "unit": "×",
+          "min": 0,
+          "max": 3,
+          "step": 0.1,
+          "default": 1,
+          "maps": [
+            {
+              "step": "zshiftloop",
+              "field": "z_shift",
+              "mode": "scale"
+            }
+          ]
+        }
+      ],
+      "paint": {
+        "mesh": {
+          "red": "grassLip",
+          "green": "dirt",
+          "black": "floor",
+          "blue": "floor"
+        },
+        "blend": {}
+      },
+      "notes": "Joins the blends in for good, pulls ring 1 out, one cut, two 3 m concave digs (insets 3, 4), then a gentle bank (z shifts +4..7 cm on rings 1-5). Paint: filled red, ring 4 black (60 %), rings 5+ black. kaustin: red = adjoining grass -> grassLip, black = the base material (the lake bed) -> floor. No dirt band: grass runs into the bed (his screenshots)."
+    },
+    {
+      "id": "kaustin-lake-overhang",
+      "name": "KA lake, overhang",
+      "file": "kaustin-Lake Overhang-20260928T172329Z-1-001/Lake Overhang/KA_Lake_overhang.json",
+      "author": "kaustin",
+      "surfaces": [
+        "lake"
+      ],
+      "join": "permanent",
+      "paint": {
+        "mesh": {
+          "red": "grassLip",
+          "green": "dirt",
+          "black": "floor",
+          "blue": "floor"
+        },
+        "blend": {}
+      },
+      "notes": "Joins the blends in for good, two cuts at the rim, a 2 m concave dig, random slides and a widened interior (inner rings pushed out under the lip: an overhanging grass edge), smoothed floor. Paint: filled red, ring 4 black (20 %), rings 5+ black. red -> grassLip, black (kaustin's base material) -> floor."
+    },
+    {
+      "id": "gradual-edge-lake",
+      "name": "Gradual edge lake",
+      "file": "gradual_edge_lake.json",
+      "author": "unknown",
+      "surfaces": [
+        "lake"
+      ],
+      "join": "last-blend",
+      "paint": {
+        "mesh": {},
+        "blend": {
+          "red": "adjoining",
+          "green": "longGrass",
+          "blue": "adjoining",
+          "black": "adjoining"
+        }
+      },
+      "notes": "Smooths the lake interior, digs 2 m with a convex lip, joins the blend, paints the joined ring 0 (the blend's outer edge) red, one cut in the blend, small lip steps, widens the interior. The water mesh keeps OPCD's paint (grass rim, soil, bed: opcdDefault). The blend ends up red all over (OPCD red at the water, the new red outside): the adjoining grass."
+    },
+    {
+      "id": "kaustin-creek",
+      "name": "KA creek",
+      "file": "KA_Creek.json",
+      "author": "kaustin",
+      "surfaces": [
+        "creek"
+      ],
+      "join": "permanent",
+      "paint": {
+        "mesh": {
+          "red": "grassLip",
+          "green": "dirt",
+          "black": "floor",
+          "blue": "floor"
+        },
+        "blend": {}
+      },
+      "notes": "kaustin's lake recipe style (KA_ prefix, permanent join, red fill, black base): pulls ring 1 out, one cut, two concave digs (1 m, then 1.5 m from ring 3), a raised bank (z shifts on rings 1-5), random slide, smoothed bed. Paint: filled red, rings 6+ black at 75 % (80 % of them), rings 7+ black. red -> grassLip, black -> floor (bed). Not the default: on Vreta's creeks (OPCD meshes 2-3 rings wide, joined 3-4) the bed paint never lands and the whole creek is grass (checked on others_f, others_9, others_11d), and the dig/cut fail on the narrowest ones (hole_18_10: loopcut finds no inner vertex; bunkeredit divides by zero below 4 rings). Fine for wide creeks."
+    },
+    {
+      "id": "golfmap-creek-narrow",
+      "name": "Creek, narrow (golfmap, from KA creek)",
+      "file": "golfmap-creek-narrow.json",
+      "author": "golfmap",
+      "surfaces": [
+        "creek"
+      ],
+      "join": "permanent",
+      "params": [
+        {
+          "id": "depth",
+          "label": "Depth",
+          "unit": "×",
+          "min": 0.25,
+          "max": 3,
+          "step": 0.05,
+          "default": 1,
+          "maps": [
+            {
+              "step": "bunkereditlip",
+              "field": "bunker_lip_depth",
+              "mode": "scale"
+            }
+          ]
+        },
+        {
+          "id": "lipRaggedness",
+          "label": "Bank raggedness",
+          "unit": "×",
+          "min": 0,
+          "max": 2,
+          "step": 0.1,
+          "default": 1,
+          "maps": [
+            {
+              "step": "randomslideloop",
+              "field": "loopslide_random",
+              "mode": "scale"
+            }
+          ]
+        }
+      ],
+      "paint": {
+        "mesh": {
+          "red": "grassLip",
+          "green": "dirt",
+          "blue": "floor",
+          "black": "shadow"
+        },
+        "blend": {}
+      },
+      "notes": "Ours (blender/recipes/), after kaustin's KA_Creek for Vreta's narrow creeks (OPCD meshes 2-3 rings wide): KA's loop cut and bunkeredit digs fail on them (no inner vertex / division by zero below 4 rings) and its bed paint (rings 6+) never lands. Joins the blends in for good, pulls ring 1 out 7 cm like KA, steps rings 1+ down 3 cm, 2+ 12 cm, 3+ 8 cm, 4+ 5 cm (bunkereditlip works on any width), KA's random slide and interior smoothing (wide creeks only). Paint in golfmap colours (identity map): filled red (the former blend = grass lip), rings 1+ dirt with half of ring 1 flecked back to grass at 50 %, rings 2+ floor (bed). Ran on all 13 Vreta creeks without an error (max 0.23 m down)."
+    },
+    {
+      "id": "golfmap-bunker-studio-conway",
+      "name": "Bunker Studio dig + Conway lip (golfmap)",
+      "file": "golfmap-bunker-studio-conway.json",
+      "author": "golfmap",
+      "surfaces": [
+        "bunker"
+      ],
+      "join": "last-blend",
+      "params": [
+        {
+          "id": "depth",
+          "label": "Depth",
+          "unit": "m",
+          "min": 0.2,
+          "max": 1.2,
+          "step": 0.05,
+          "default": 0.45,
+          "maps": [
+            {
+              "step": "bunkerstudio.shape",
+              "field": "depth",
+              "mode": "set"
+            }
+          ]
+        },
+        {
+          "id": "faceSteepness",
+          "label": "Face steepness",
+          "unit": "×",
+          "min": 0.5,
+          "max": 2,
+          "step": 0.1,
+          "default": 1,
+          "maps": [
+            {
+              "step": "bunkerstudio.shape",
+              "field": "faceSteepness",
+              "mode": "set"
+            }
+          ]
+        },
+        {
+          "id": "highSideStrength",
+          "label": "High side strength",
+          "unit": "×",
+          "min": 0,
+          "max": 2,
+          "step": 0.1,
+          "default": 1,
+          "maps": [
+            {
+              "step": "bunkerstudio.shape",
+              "field": "highSideStrength",
+              "mode": "set"
+            }
+          ]
+        },
+        {
+          "id": "lipHeight",
+          "label": "Lip height",
+          "unit": "×",
+          "min": 0,
+          "max": 2,
+          "step": 0.1,
+          "default": 1,
+          "maps": [
+            {
+              "step": "afrod.bunkereditlip",
+              "field": "bunker_lip_depth",
+              "mode": "scale"
+            }
+          ]
+        },
+        {
+          "id": "lipRaggedness",
+          "label": "Lip raggedness",
+          "unit": "×",
+          "min": 0,
+          "max": 2,
+          "step": 0.1,
+          "default": 1,
+          "maps": [
+            {
+              "step": "afrod.randomslideloop",
+              "field": "loopslide_random",
+              "mode": "scale"
+            }
+          ]
+        },
+        {
+          "id": "edgeDirt",
+          "label": "Edge dirt",
+          "unit": "%",
+          "min": 0,
+          "max": 100,
+          "step": 5,
+          "default": 35,
+          "maps": [
+            {
+              "step": "bunkerstudio.shape",
+              "field": "edgeDirt",
+              "mode": "set"
+            }
+          ]
+        }
+      ],
+      "stepPaint": {
+        "afrod": {
+          "mesh": {
+            "red": "grassLip",
+            "black": "shadow",
+            "green": "floor",
+            "blue": "floor"
+          },
+          "blend": {
+            "red": "adjoining",
+            "green": "longGrass",
+            "blue": "browning",
+            "black": "browning"
+          }
+        }
+      },
+      "notes": "Ours (blender/recipes/, golfmap-recipe-v1): Bunker Studio's Classic dig in metres (depth, face widths, high crown toward the hole's green: the rim point facing the green of the bunker's hole), then ce.simgolf's Conway lip stack without its bunkeredit dig, counted from the seam of Bunker Studio's four-row blend. Paint: Bunker Studio's dirt -> sand mask (golfmap dirt / floor) and blend fade (browning at the bunker, adjoining outside, 3D-grass density in the blend's UV0), then Conway's grass lip (rings 0-1) and shadow (ring 2) on the separated bunker's rim (ce.simgolf colours, translated step by step: red grassLip, black shadow). faceSteepness divides the preset's face widths; highSideStrength scales its high crown raise and high-face tightening."
+    },
+    {
+      "id": "golfmap-creek-shoreline-meadow-brook",
+      "name": "Shoreline creek, Meadow Brook (golfmap)",
+      "file": "golfmap-creek-shoreline-meadow-brook.json",
+      "author": "golfmap",
+      "surfaces": [
+        "creek"
+      ],
+      "join": "permanent",
+      "params": [
+        {
+          "id": "depth",
+          "label": "Depth",
+          "unit": "m",
+          "min": 0.05,
+          "max": 1.5,
+          "step": 0.05,
+          "default": 0.28,
+          "maps": [
+            {
+              "step": "shorelinestudio.shape",
+              "field": "depth",
+              "mode": "set"
+            }
+          ]
+        },
+        {
+          "id": "bankSlope",
+          "label": "Bank slope",
+          "unit": "deg",
+          "min": 3,
+          "max": 60,
+          "step": 1,
+          "default": 10,
+          "maps": [
+            {
+              "step": "shorelinestudio.shape",
+              "field": "bankSlope",
+              "mode": "set"
+            }
+          ]
+        }
+      ],
+      "notes": "Ours (golfmap-recipe-v1): Shoreline Studio's Meadow Brook (broad U-shaped channel, soft banks, gentle meander; seeded from the parent id and the recipe seed; the fall along the creek kept) then golfmap-creek-narrow's bank paint (identity map): the blends joined in for good as the grass lip, rings 1+ dirt, rings 2+ bed. Needs one water base with its blends (OPCD's split creek pieces without a blend of their own are refused by Shoreline and left as they were)."
+    },
+    {
+      "id": "golfmap-creek-shoreline-maintained-drain",
+      "name": "Shoreline creek, Maintained Drain (golfmap)",
+      "file": "golfmap-creek-shoreline-maintained-drain.json",
+      "author": "golfmap",
+      "surfaces": [
+        "creek"
+      ],
+      "join": "permanent",
+      "params": [
+        {
+          "id": "depth",
+          "label": "Depth",
+          "unit": "m",
+          "min": 0.05,
+          "max": 1.5,
+          "step": 0.05,
+          "default": 0.35,
+          "maps": [
+            {
+              "step": "shorelinestudio.shape",
+              "field": "depth",
+              "mode": "set"
+            }
+          ]
+        },
+        {
+          "id": "bankSlope",
+          "label": "Bank slope",
+          "unit": "deg",
+          "min": 3,
+          "max": 60,
+          "step": 1,
+          "default": 18,
+          "maps": [
+            {
+              "step": "shorelinestudio.shape",
+              "field": "bankSlope",
+              "mode": "set"
+            }
+          ]
+        }
+      ],
+      "notes": "As golfmap-creek-shoreline-meadow-brook with Shoreline's Maintained Drain: a controlled trapezoidal channel with consistent fall (no meander, no pools)."
+    },
+    {
+      "id": "golfmap-lake-shoreline-overhang",
+      "name": "Shoreline lake, Natural Pond + overhang (golfmap)",
+      "file": "golfmap-lake-shoreline-overhang.json",
+      "author": "golfmap",
+      "surfaces": [
+        "lake"
+      ],
+      "join": "permanent",
+      "params": [
+        {
+          "id": "depth",
+          "label": "Depth",
+          "unit": "m",
+          "min": 0.2,
+          "max": 3,
+          "step": 0.1,
+          "default": 1.0,
+          "maps": [
+            {
+              "step": "shorelinestudio.shape",
+              "field": "depth",
+              "mode": "set"
+            }
+          ]
+        },
+        {
+          "id": "bankSlope",
+          "label": "Bank slope",
+          "unit": "deg",
+          "min": 3,
+          "max": 45,
+          "step": 1,
+          "default": 11,
+          "maps": [
+            {
+              "step": "shorelinestudio.shape",
+              "field": "bankSlope",
+              "mode": "set"
+            }
+          ]
+        },
+        {
+          "id": "lipRaggedness",
+          "label": "Edge raggedness",
+          "unit": "×",
+          "min": 0,
+          "max": 2,
+          "step": 0.1,
+          "default": 1,
+          "maps": [
+            {
+              "step": "afrod.randomslideloop",
+              "field": "loopslide_random",
+              "mode": "scale"
+            }
+          ]
+        }
+      ],
+      "notes": "Ours (golfmap-recipe-v1): Shoreline Studio's Natural Pond (lobed edge, uneven shelf, off-centre basin), then kaustin's Lake Overhang edge steps without his dig: blends joined in for good, two loop cuts at the rim, random slides, the interior widened under the lip (the overhanging grass edge), smoothed floor. Paint: Shoreline's zones (studioPaint: rim grass lip, bank dirt, bed floor); kaustin's paint steps are left out."
+    },
+    {
+      "id": "kaustin-creek-deep",
+      "name": "KA creek, deep",
+      "file": "KA_Creek_DEEP.json",
+      "author": "kaustin",
+      "surfaces": [
+        "creek"
+      ],
+      "join": "permanent",
+      "paint": {
+        "mesh": {
+          "red": "grassLip",
+          "green": "dirt",
+          "black": "floor",
+          "blue": "floor"
+        },
+        "blend": {}
+      },
+      "notes": "KA_Creek with a 3.5 m second dig. Same paint and mapping."
+    },
+    {
+      "id": "simple-creek-double-subdivided",
+      "name": "Simple creek (double subdivided)",
+      "file": "simple_creek_double_subdivided.json",
+      "author": "unknown",
+      "surfaces": [
+        "creek"
+      ],
+      "join": "last-blend",
+      "paint": {
+        "mesh": {},
+        "blend": {}
+      },
+      "notes": "Reshape only: 0.4 m and 0.1 m lip steps on the creek, joins the blend, 2-7 cm steps on rings 1-4, separates. No paint: OPCD's paint stays and opcdDefault maps it. Meant for a mesh subdivided twice beforehand (name)."
+    },
+    {
+      "id": "raised-path-blitz",
+      "name": "Raised path (blitz)",
+      "file": "raised_path_blitz.json",
+      "author": "unknown",
+      "surfaces": [
+        "path"
+      ],
+      "join": "permanent",
+      "default": true,
+      "paint": {
+        "mesh": {
+          "red": "red",
+          "green": "green",
+          "blue": "blue",
+          "black": "black"
+        },
+        "blend": {}
+      },
+      "notes": "Joins the path's blends in for good, two cuts at the edge, raises the edge rings 5-20 mm (negative lip depth) for a curbed, raised path. Paint: filled red, ring 0 black. Paths have no golfmap roles (the convention is bunkers and water): paint kept as is - red = the path surface, black = its outer edge fading to the neighbour in the path material. Not run on Vreta yet."
+    },
+    {
+      "id": "rustic-path-no-subdivide",
+      "name": "Rustic path (no subdivide)",
+      "file": "rustic_path_no_subdivide.json",
+      "author": "unknown",
+      "surfaces": [
+        "path"
+      ],
+      "join": "permanent",
+      "paint": {
+        "mesh": {
+          "red": "red",
+          "green": "green",
+          "blue": "blue",
+          "black": "black"
+        },
+        "blend": {}
+      },
+      "notes": "Joins the blends in for good, fills red, jitters ring 2, paints rings 2+ black, then inverts the selection and separates it as a 'Rough' mesh (a new object the engine does not pair). Paint kept as is (no path roles). Not run on Vreta yet."
+    },
+    {
+      "id": "basic-loop-paint",
+      "name": "Basic loop paint",
+      "file": "basic_loop_paint.json",
+      "author": "unknown",
+      "surfaces": [],
+      "join": "none",
+      "paint": {
+        "mesh": {},
+        "blend": {}
+      },
+      "notes": "Paint utility, no shaping: the mesh's boundary ring blue (except vertices spaced > 0.75 m, i.e. edges shared with the same material), grown one ring. Not offered for a surface; on a bunker it would be sand at the rim, which opcdDefault already reads as floor."
+    },
+    {
+      "id": "three-color-blend",
+      "name": "Three colour blend",
+      "file": "three_color_blend.json",
+      "author": "unknown",
+      "surfaces": [],
+      "join": "none",
+      "paint": {
+        "mesh": {},
+        "blend": {
+          "red": "adjoining",
+          "green": "longGrass",
+          "blue": "longGrass",
+          "black": "browning"
+        }
+      },
+      "notes": "Blend utility: swaps red and black (OPCD's red at the hazard / black outside becomes black at the hazard, red outside - the golfmap blend layout), cuts a middle ring, turns blue into green. Needs the blend selected on its own; the engine runs recipes on the feature's mesh, so it is not offered for a surface."
+    }
+  ]
+}

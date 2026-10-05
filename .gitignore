@@ -19,6 +19,7 @@ tools/sam-server/venv
 pipeline/**/__pycache__
 pipeline/**/*.egg-info
 tools/**/__pycache__
+__pycache__/
 .pytest_cache
 .env
 data/

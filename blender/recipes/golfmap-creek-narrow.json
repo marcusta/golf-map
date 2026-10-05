@@ -1,0 +1,14 @@
+[
+	{ "meshblendjoinpermanent": {} },
+	{ "spaceloops": { "loopslide_inset": 1, "loopslide_amount": -0.07, "skip_longest_loop": false } },
+	{ "bunkereditlip": { "bunker_selection_type": "Selected", "bunker_lip_depth": 0.03, "bunker_dig_inset": 1 } },
+	{ "bunkereditlip": { "bunker_selection_type": "Selected", "bunker_lip_depth": 0.12, "bunker_dig_inset": 2 } },
+	{ "bunkereditlip": { "bunker_selection_type": "Selected", "bunker_lip_depth": 0.08, "bunker_dig_inset": 3 } },
+	{ "bunkereditlip": { "bunker_selection_type": "Selected", "bunker_lip_depth": 0.05, "bunker_dig_inset": 4 } },
+	{ "fillvertexpaint": { "vertex_paint_type": "red", "paint_strength": 1.0, "paint_loop_inset": 0, "random_amt": 1.0 } },
+	{ "fillvertexpaint": { "vertex_paint_type": "green", "paint_strength": 1.0, "paint_loop_inset": 1, "random_amt": 1.0 } },
+	{ "randomvertexpaintloop": { "vertex_paint_type": "red", "paint_strength": 0.5, "paint_loop_inset": 1, "random_amt": 0.5, "skip_longest_loop": false } },
+	{ "fillvertexpaint": { "vertex_paint_type": "blue", "paint_strength": 1.0, "paint_loop_inset": 2, "random_amt": 1.0 } },
+	{ "randomslideloop": { "loopslide_inset": 4, "loopslide_random": 0.8 } },
+	{ "smoothmesh": { "smooth_interior": 0.5, "smooth_interior_repeat": 3, "smooth_interior_inset": 5, "smooth_interior_3d": true } }
+]

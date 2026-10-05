@@ -141,3 +141,32 @@ test('scale jitter and lean vary neighbours without changing the pick or authore
  const authored=matchTree(stem,varied,{guid:birch.guid,scale:.9,rotationY:10});
  assert.equal(authored.scale,.9);assert.equal(authored.rotationY,10);assert.ok(authored.leanDeg>0);
 });
+
+test('a tree species area races its own mix, whatever the fit, and only the mix',()=>{
+ // oak fits badly (twice the size), birch and elm fit well: the palette would pick by fit and its weights.
+ const assets=[{...birch,guid:'oak',species:'oak',heightM:20,crownWidthM:12},{...birch,guid:'birch',species:'birch',heightM:10,crownWidthM:6},{...birch,guid:'elm',species:'elm',heightM:10,crownWidthM:6}];
+ const cfg={...config,assets,rules:{...config.rules,speciesFitSlack:.2,speciesWeights:{oak:1,birch:1,elm:1}}};
+ const area={species:[{species:'oak',weight:9},{species:'birch',weight:1}],ignoreKind:false};
+ const totals={oak:0,birch:0,elm:0},outside={oak:0,birch:0,elm:0};
+ for(let i=0;i<3000;i++){
+  const s={...stem,id:'area-'+i,h:10,r:3,k:0};
+  totals[matchTree(s,cfg,undefined,area).guid]++;
+  outside[matchTree(s,cfg).guid]++;
+ }
+ assert.equal(totals.elm,0);                                // not in the mix
+ assert.ok(totals.oak>2550&&totals.oak<2850,totals.oak);     // ~90% although oak fits worst
+ assert.equal(outside.oak,0);                               // outside the area the fit guard keeps it out
+});
+
+test('an area respects the survey class unless it ignores it, and falls back to the palette without a fitting form',()=>{
+ const assets=[{...birch,guid:'oak',species:'oak',kind:'broadleaf'},{...birch,guid:'pine',species:'pine',kind:'conifer'}];
+ const cfg={...config,assets};
+ const oaks={species:[{species:'oak',weight:1}],ignoreKind:false};
+ const conifer={...stem,id:'kind-1',k:1};
+ assert.equal(matchTree(conifer,cfg,undefined,oaks).guid,'pine');                          // a conifer keeps the palette's conifers
+ assert.equal(matchTree(conifer,cfg,undefined,{...oaks,ignoreKind:true}).guid,'oak');       // unless the area overrides the survey
+ const shrub={...stem,id:'kind-2',h:2,r:1,k:1};
+ const withShrub={...cfg,assets:[...assets,{...birch,guid:'dwarf',species:'pine',kind:'conifer',form:'shrub',heightM:2,crownWidthM:2}]};
+ assert.equal(matchTree(shrub,withShrub,undefined,{...oaks,ignoreKind:true}).guid,'dwarf'); // no oak shrub: the palette decides
+ assert.equal(matchTree({...stem,id:'kind-3'},cfg,{guid:'pine',scale:1},oaks).guid,'pine'); // an authored choice wins over the area
+});

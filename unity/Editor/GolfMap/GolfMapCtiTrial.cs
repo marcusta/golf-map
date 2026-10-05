@@ -40,11 +40,13 @@ namespace GolfMap.Editor
         [Serializable] class Trial { public Swap[] swaps = new Swap[0]; }
         [Serializable] class Backup { public string created = "", course = ""; public string[] files = new string[0], folders = new string[0], prefabs = new string[0]; public Swap[] swaps = new Swap[0]; }
 
-        static string TrialFile(GolfMapCourse course) { return GolfMapCourses.Folder(course) + "CTITrial/trial.json"; }
+        // Everything takes the course folder, resolved once up front: an AssetDatabase.Refresh can leave
+        // a GolfMapCourse reference stale with no asset path (see GolfMapTerrainSculpt).
+        static string TrialFile(string folder) { return folder + "CTITrial/trial.json"; }
 
-        static Trial LoadTrial(GolfMapCourse course)
+        static Trial LoadTrial(string folder)
         {
-            var path = TrialFile(course);
+            var path = TrialFile(folder);
             if (!File.Exists(path)) throw new BridgeError(path + " not found. Run unity/prepare-cti-trial.py first.");
             var trial = JsonUtility.FromJson<Trial>(File.ReadAllText(path));
             if (trial.swaps == null || trial.swaps.Length == 0) throw new BridgeError(path + " lists no swaps.");
@@ -53,6 +55,37 @@ namespace GolfMap.Editor
             var shared = trial.swaps.GroupBy(s => s.to).Where(g => g.Count() > 1).Select(g => g.Key).ToArray();
             if (shared.Length > 0) throw new BridgeError(path + ": each swap needs its own trial material; shared: " + string.Join(", ", shared));
             return trial;
+        }
+
+        // For GolfMapLooks. While the trial is applied the palette's source prefabs draw trial materials,
+        // but a look is still defined against the materials those replaced: its copies are copies of the
+        // NM originals, recorded in palette.json by their guids. Without this a Regenerate took the trial
+        // materials for the species' sources, copied them into the look folder and pointed the look's
+        // prefabs there - outside trial.json, so the palette's baked tint no longer applied (2026-09-27).
+        static Swap[] SwapsIn(string courseFolder)
+        {
+            var path = courseFolder + "CTITrial/trial.json";
+            if (!File.Exists(path)) return new Swap[0];
+            return JsonUtility.FromJson<Trial>(File.ReadAllText(path)).swaps ?? new Swap[0];
+        }
+
+        // The material a trial material replaced (m itself when it is not a trial material).
+        public static Material Original(string courseFolder, Material m)
+        {
+            if (!m) return m;
+            var path = AssetDatabase.GetAssetPath(m);
+            var s = SwapsIn(courseFolder).FirstOrDefault(x => x.to == path);
+            var from = s == null ? null : AssetDatabase.LoadAssetAtPath<Material>(s.from);
+            return from ? from : m;
+        }
+
+        // The trial material that replaces m, or null.
+        public static Material TrialFor(string courseFolder, Material m)
+        {
+            if (!m) return null;
+            var path = AssetDatabase.GetAssetPath(m);
+            var s = SwapsIn(courseFolder).FirstOrDefault(x => x.from == path);
+            return s == null ? null : AssetDatabase.LoadAssetAtPath<Material>(s.to);
         }
 
         static Material Mat(string path)
@@ -78,10 +111,16 @@ namespace GolfMap.Editor
         }
 
         // Prefab asset paths the catalogues draw that use any of these materials.
-        static List<string> PrefabsUsing(IEnumerable<VegetationPackagePro> catalogues, HashSet<Material> materials)
+        // Prefabs the catalogues draw, plus every prefab under the course folder: the palette's own
+        // prefabs are not always the planted ones (a look plants copies), but they are what the palette
+        // falls back to and what GolfMap Lab shows as "original", so they must not stay on the old
+        // material either.
+        static List<string> PrefabsUsing(string folder, IEnumerable<VegetationPackagePro> catalogues, HashSet<Material> materials)
         {
+            var course = AssetDatabase.FindAssets("t:Prefab", new[] { folder.TrimEnd('/') })
+                .Select(g => AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GUIDToAssetPath(g)));
             return catalogues.SelectMany(c => c.VegetationInfoList).Where(i => i.VegetationPrefab)
-                .Select(i => i.VegetationPrefab).Distinct()
+                .Select(i => i.VegetationPrefab).Concat(course).Where(p => p).Distinct()
                 .Where(p => Renderers(p).SelectMany(r => r.sharedMaterials).Any(materials.Contains))
                 .Select(AssetDatabase.GetAssetPath).Where(p => !string.IsNullOrEmpty(p))
                 .Distinct().OrderBy(p => p, StringComparer.Ordinal).ToList();
@@ -98,8 +137,8 @@ namespace GolfMap.Editor
         [BridgeCommand("golfmap.cti.status", "CTI shader trial on the palette oaks/birches: the swaps in <course>/CTITrial/trial.json, whether each material and shader is ready and known to GSPro's VSP, which prefabs use the current and the trial materials, and the backups apply made.")]
         static object Status(BridgeArgs a)
         {
-            var course = GolfMapCourses.Require();
-            var trial = LoadTrial(course);
+            var folder = GolfMapCourses.Folder(GolfMapCourses.Require());
+            var trial = LoadTrial(folder);
             var catalogues = Catalogues();
             var swaps = new List<object>();
             foreach (var s in trial.swaps)
@@ -116,8 +155,8 @@ namespace GolfMap.Editor
                     { "useWindFromScript", to && to.HasProperty("_LODTerrain") ? (object)to.GetFloat("_LODTerrain") : null },
                     { "fromInMemory", Describe(from) },
                     { "toInMemory", Describe(to) },
-                    { "prefabsUsingFrom", from ? PrefabsUsing(catalogues, new HashSet<Material> { from }).Count : 0 },
-                    { "prefabsUsingTo", to ? PrefabsUsing(catalogues, new HashSet<Material> { to }).Count : 0 },
+                    { "prefabsUsingFrom", from ? PrefabsUsing(folder, catalogues, new HashSet<Material> { from }).Count : 0 },
+                    { "prefabsUsingTo", to ? PrefabsUsing(folder, catalogues, new HashSet<Material> { to }).Count : 0 },
                 });
             }
             return new Dictionary<string, object>
@@ -151,12 +190,12 @@ namespace GolfMap.Editor
         [BridgeCommand("golfmap.cti.apply", "Back up, then swap the palette oaks/birches onto Forst's CTI materials (stock-named shader copies, wind from script, trial.json texture overrides) and refresh vegetation from materials. On an applied trial it only updates the trial materials. Undo with golfmap.cti.restore.")]
         static object Apply(BridgeArgs a)
         {
-            var course = GolfMapCourses.Require();
+            var folder = GolfMapCourses.Folder(GolfMapCourses.Require());
             if (File.Exists(RenderingTestsBaseline))
                 throw new BridgeError("A Tree rendering tests session is still open (" + RenderingTestsBaseline + "). End it first.");
             // Import what the prepare scripts wrote (tint textures, materials) before looking them up.
             AssetDatabase.Refresh();
-            var trial = LoadTrial(course);
+            var trial = LoadTrial(folder);
             var swap = new Dictionary<Material, Material>();
             foreach (var s in trial.swaps)
             {
@@ -169,12 +208,12 @@ namespace GolfMap.Editor
             }
             var catalogues = Catalogues();
             if (catalogues.Count == 0) throw new BridgeError("No GolfMap tree catalogue in the open scene.");
-            var prefabs = PrefabsUsing(catalogues, new HashSet<Material>(swap.Keys));
+            var prefabs = PrefabsUsing(folder, catalogues, new HashSet<Material>(swap.Keys));
             if (prefabs.Count == 0)
             {
                 // Already applied: only the trial materials change (a new tint texture, say). They
                 // are trial-only files and the catalogue keeps its CTI items, so no backup is taken.
-                if (PrefabsUsing(catalogues, new HashSet<Material>(swap.Values)).Count == 0)
+                if (PrefabsUsing(folder, catalogues, new HashSet<Material>(swap.Values)).Count == 0)
                     throw new BridgeError("No catalogue prefab uses the current or the trial materials.");
                 var updated = new List<string> { "trial already applied; updating the trial materials only" };
                 PrepareTrialMaterials(trial, updated);
@@ -197,7 +236,7 @@ namespace GolfMap.Editor
             }
             var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
             var dir = Path.Combine(BackupRoot, stamp);
-            var backup = new Backup { created = stamp, course = GolfMapCourses.Folder(course), files = files.ToArray(), folders = folders.ToArray(), prefabs = prefabs.ToArray(), swaps = trial.swaps };
+            var backup = new Backup { created = stamp, course = folder, files = files.ToArray(), folders = folders.ToArray(), prefabs = prefabs.ToArray(), swaps = trial.swaps };
             WriteBackup(dir, backup);
 
             var log = new List<string> { "backup " + dir + ": " + files.Count + " files, " + folders.Count + " billboard folders" };
@@ -247,7 +286,7 @@ namespace GolfMap.Editor
         static readonly Vector4 WindMultipliers = new Vector4(0.5f, 0.5f, 0.5f, 0);
 
         // The trial materials: stock-named CTI shader, wind from script, the damped wind multipliers and
-        // trial.json's texture overrides (prepare-cti-tint.py's tinted albedo copies).
+        // trial.json's texture overrides (prepare-cti-maps.py's tinted / no-spec copies).
         static void PrepareTrialMaterials(Trial trial, List<string> log)
         {
             foreach (var s in trial.swaps)
@@ -368,9 +407,17 @@ namespace GolfMap.Editor
 
             // 4. Verify memory against the files before anything can save again.
             var problems = new List<string>();
+            // Exactly the materials the restored file references - not just "no trial material": a prefab
+            // re-pointed by something else during the trial (a look Regenerate) must not slip through.
             foreach (var path in backup.prefabs)
-                if (Renderers(AssetDatabase.LoadAssetAtPath<GameObject>(path)).SelectMany(r => r.sharedMaterials).Any(m => m && back.ContainsKey(m)))
-                    problems.Add(path + " still uses a trial material in memory");
+            {
+                var inFile = new HashSet<string>(System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(path), @"fileID: 2100000, guid: (\w+)")
+                    .Cast<System.Text.RegularExpressions.Match>().Select(m => m.Groups[1].Value));
+                var inMemory = new HashSet<string>(Renderers(AssetDatabase.LoadAssetAtPath<GameObject>(path)).SelectMany(r => r.sharedMaterials)
+                    .Where(m => m).Select(m => AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(m))));
+                if (!inFile.SetEquals(inMemory))
+                    problems.Add(path + " draws " + string.Join(", ", inMemory.Except(inFile).Select(g => Path.GetFileName(AssetDatabase.GUIDToAssetPath(g))).ToArray()) + " in memory, not its file's materials");
+            }
             foreach (var path in catalogues)
             {
                 var catalog = AssetDatabase.LoadAssetAtPath<VegetationPackagePro>(path);

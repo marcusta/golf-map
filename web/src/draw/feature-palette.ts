@@ -25,6 +25,9 @@ export const FEATURE_TYPES = [
     // than slotted next to `trees` so the digit shortcuts below (the first
     // ten types) keep their bindings; its draw order is TYPE_Z_ORDER's.
     'vegetation_zone',
+    // Tree species area (shared/features/tree-areas.ts): which species the
+    // Unity tree planter uses for the survey stems inside it. Vegetation mode.
+    'tree_area',
 ] as const;
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
@@ -63,12 +66,13 @@ export function isRulesType(type: string): boolean {
 }
 
 /**
- * The vegetation zones — Unity planting input, not playing surfaces. Drawn
- * and edited in Vegetation mode (the draw engine in its `vegetation` scope)
- * and hidden everywhere else: off the map, out of hit tests, the type picker
- * and the stack.
+ * The vegetation zones and tree species areas — Unity planting input, not
+ * playing surfaces. Drawn and edited in Vegetation mode (the draw engine in its
+ * `vegetation` scope) and hidden everywhere else: off the map, out of hit tests,
+ * the type picker and the stack. The first is what Vegetation mode draws until
+ * the zone-type picker's "Tree species area" is chosen.
  */
-export const VEGETATION_TYPES: readonly FeatureType[] = ['vegetation_zone'];
+export const VEGETATION_TYPES: readonly FeatureType[] = ['vegetation_zone', 'tree_area'];
 
 export function isVegetationType(type: string): boolean {
     return (VEGETATION_TYPES as readonly string[]).includes(type);
@@ -117,6 +121,8 @@ export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
     // table owns the real one, see `featureFillColorExpression`), so the
     // palette entry is only the fallback for a zone whose type is gone.
     vegetation_zone: { label: 'Vegetation zone', fill: '#7c8f3a', draw: '#7c8f3a', outline: '#4c5a20' },
+    // Autumn oak-brown: reads apart from the olive zones and the dark trees fill.
+    tree_area: { label: 'Tree species area', fill: '#a0662e', draw: '#b0703a', outline: '#6b3f16' },
 };
 
 /**
@@ -165,6 +171,7 @@ export const TYPE_Z_ORDER: readonly FeatureType[] = [
     'tee',
     'green',
     'vegetation_zone',
+    'tree_area',
     'trees',
     'bunker',
     'water',
@@ -206,6 +213,7 @@ export const SURROUND_PAIRINGS: Record<FeatureType, { targetType: FeatureType; e
     path: null, // no surround for paths
     outside: null, // no surround for outside
     vegetation_zone: null, // an overlay over whatever surface is there
+    tree_area: null, // an overlay over whatever surface is there
 };
 
 /**

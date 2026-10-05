@@ -8,6 +8,29 @@ Record new fixes here with the symptom, actual material/shader, cause, exact cha
 refresh steps and where the result was verified. Separate confirmed results from
 experiments: a Unity result does not establish the GSPro result.
 
+## Exposed rock material, 2026-09-28
+
+Confirmed in Unity: `EditorUtility.CopySerialized` rewrote the painted mesh's
+CPU data and collider while the renderer retained old vertex buffers. This
+made repeated crest rounding and green-channel painting appear ineffective.
+`GolfMapVertexPaint.SetMesh` now reassigns vertices, normals and colours before
+`UploadMeshData(false)` and rebinding the mesh. Upload/rebinding alone did not
+resolve it. The corrected render visibly shows the rounded shoulder and grass
+pockets; reduce the steep-face AO multiplier to 1.6 after this refresh. GSPro
+runtime has not been checked.
+
+Verified in Unity; GSPro runtime still unverified. A blue-painted klippa looked
+like grass because the stock OPCD Mossy Rock preset uses soil/gravel detail,
+blends to a grass-like base at distance, and lets underlying colour through
+its height mask. `GolfMapWallGround` now supports appended exposed-rock texture
+slices on the same stock shader, disables that channel's base-distance blend,
+and uses a white height mask so full paint means full rock. Original texture
+slices were compared after script reload and preserved. Green provides a
+brighter steep-face variant: OPCD's slope shading multiplies colour toward
+black by `acos(normal.y) * _SlopePower` (0.604 in this course), independent of
+the normal-map setting. See the Stone walls section of `unity/README.md` and
+`docs/gspro/vreta/pond-klippa.md` for the recipe and verification commands.
+
 ## Confirmed: oak turns white from one angle
 
 **Confirmed by Marcus in Unity on 2026-09-17. GSPro not yet checked.**
@@ -81,9 +104,25 @@ To undo, restore the original material and refresh vegetation again.
 Do not rerun the older `prepare-oak-nm-shader.py` conversion over this fix: it
 targets the metallic shader and writes older smoothness/back-face settings.
 
-## Experiment: Forst's CTI shaders under stock names (2026-09-26)
+## Confirmed: Forst trees on CTI shaders under stock names (2026-09-26/27)
 
-**Applied in Unity on 2026-09-26. GSPro not yet checked. Reversible.**
+**The standard for Forst trees (the Vreta birches and oaks). Confirmed by Marcus in
+GreenKeeper on 2026-09-27. Still reversible.**
+
+The course built and loaded in GreenKeeper (OPCD's course tool), and the CTI birches and
+oaks rendered there. The log showed no exception after the course loaded, so the whole
+package loaded. GreenKeeper's VSP runtime
+(`D:/gspro/GreenKeeper_Launcher/Data/Application/GreenKeeper_Data/Managed`) is a
+different build from GSPro's but the same size (524800 bytes), with the same IL for the
+lookup: exact `==` in `CTIShaderController.MatchShader`, and no fallback in
+`ShaderUtility.GetShaderController`. That makes it the same test as the GSPro release. Not
+yet seen: wind in motion, and GSPro itself. Both would only show the look, not whether
+the package loads.
+
+The feature is still named "trial" (`golfmap.cti.*`, `CTITrial/`, `trial.json`). Renaming
+would move assets that `GolfMapVegBake` and the palette editor read by path, for no
+functional gain. The trial state *is* the configuration: palette prefabs, looks, the
+palette's baked tints and replants all use it.
 
 Forst's manual recommends its CTI shaders for the oaks and birches in VSP, with
 `VSPro_CTIShaderController.unitypackage`. That package is no use for GSPro: it only
@@ -114,14 +153,37 @@ cache: every Forst material in the project had been converted in place to NM sha
   `GolfMapSpelunk/cti-trial/<stamp>/` (outside Assets), swaps the oak and birch
   leaf/bark materials, refreshes vegetation from materials and resets VSP. Restore puts
   that backup back; `backup=<stamp>` picks an older one.
-- Only planted items are swapped: the 4 oak prefabs, `FoliageTrialV2/PF Birch C wide` and
-  the four `Looks/birch/darker` birches (most planted birches are that look). Each swap
+- Swapped: every prefab the catalogues draw, plus every prefab under the course folder,
+  that uses a swapped material. That is 12 on Vreta: the 4 oaks, the palette's own 4
+  birches in `FoliageTrialV2` and the 4 `Looks/birch/darker` copies. Most planted birches
+  are the darker look, but the palette's own prefabs are what the "original" look
+  replants and what GolfMap Lab shows. The first version skipped the unplanted ones, and
+  the Lab's original row stayed on NM with its flecks. Each swap
   has its own trial material, because restore reverses swaps in memory. The darker-look
   birches still get the original birch colour; Marcus never liked the dark look.
+- Looks are trial-aware (`GolfMapLooks.LookSources`, `GolfMapCtiTrial.Original/TrialFor`).
+  Swapping the palette's source prefabs made a look **Regenerate** (2026-09-27) take the
+  trial materials for the species' sources. It copied them into the look folder and pointed
+  the darker birches there, outside `trial.json`, so the palette's baked tint control
+  disappeared. A look is now always defined against the NM originals, which is how
+  `palette.json` keys its records anyway. While the trial is applied, a regenerated look
+  prefab draws its copy's trial material. Restore now checks that each prefab's in-memory
+  materials exactly match its restored file, not just that no trial material remains.
+  That Regenerate left two unreferenced copies, `Looks/birch/darker/CTI Birch {Leaves,Bark}.mat`,
+  which are safe to delete.
+- Forst trees in the Vreta palette: the 4 birches and 4 oaks, all on the trial. The fir is
+  NM. Forst's Conifers package is in the Asset Store cache but not imported.
 - `pipeline/.venv/Scripts/python unity/prepare-cti-maps.py <UnityProject> oak birch` tunes the look.
   CTI has no tint or specular controls, so every change is a texture copy under
   `<course>/CTITrial/Textures/`, recorded as an override in `trial.json`. Re-running
   `golfmap.cti.apply` on an applied trial only updates the trial materials.
+- Tints are tuned live in `GolfMap > Vegetation Palettes` (2026-09-27): the leaves' healthy tint and
+  the bark colour are baked there with the same formula (bit-identical to the script's bake, from the
+  lossless source copies it writes to `GolfMapSpelunk/cti-trial/sources/`), and Save records the tint
+  on the override (`tint`, `source`); the script honours a recorded tint. The birch bark (a
+  Texture2DArray the script never tinted) got a course copy, `CTITrial/Textures/Birch Bark Array
+  [Albedo] [Smoothness] 2K4K tinted.asset`, at tint 1 (identical to Forst's) so it can be graded too.
+  See unity/README.md, "CTI trees (baked tints)".
 
 Unity result: the shaders render cleanly (alpha, bark, VSP instancing, wind). Billboards
 are VSP's default atlas while the trial is applied. The look took three steps, each
@@ -167,10 +229,19 @@ under an open Unity 2018.2 editor:
    script reload did. Apply and restore end with `InternalEditorUtility.RequestScriptReload()`.
    GSPro loads the bundle fresh, so this is editor-only.
 
-Next: build the course and check oaks and birches in GSPro. Check that the whole
-package loads, that the oaks and birches don't come out "colourful", and that wind
-works. Record the result here. To end the trial, run `golfmap.cti.restore`. To remove it
-completely, also delete `Assets/GolfMap/CTI/` and `<course>/CTITrial/`.
+Rollback: `golfmap.cti.restore backup=20260927-134917` returns the NM setup. That backup
+is byte-identical to the original state; newer backups are taken of whatever state apply
+starts from. Then delete `Assets/GolfMap/CTI/` and `<course>/CTITrial/` to remove CTI
+completely. Keep `GolfMapSpelunk/cti-trial/20260927-134917/` for as long as that rollback
+should stay possible.
+
+Open items:
+- **Billboards.** Swapping the shader re-derived the items and replaced the
+  GolfMap-baked billboards with VSP's default atlas. Replant the outer with "Rebake
+  billboard colours" before a release build, so distant birches and oaks match.
+- **Other courses.** `prepare-cti-trial.py` / `prepare-cti-maps.py` name Vreta's paths
+  (`FoliageTrialV2/...`, `Looks/birch/darker/...`). A new course needs its own SWAPS
+  rows, or the planter needs to pick the CTI materials for Forst prefabs itself.
 
 ## Recurring pitfalls and diagnosis
 

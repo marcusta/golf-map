@@ -1,0 +1,33 @@
+{
+  "format": "golfmap-recipe-v1",
+  "notes": "Keeps OPCD's bunker shape: remaps its paint to the golfmap roles, so the course-wide golfmap convention renders it, then makes the dirt band's border with the sand a little ragged (golfmap.edge_jitter: about one mesh ring, seeded per bunker; the seam ring stays). The bunker default until a bunker is given a shaping recipe.",
+  "steps": [
+    {
+      "op": "golfmap.paint_map",
+      "params": {
+        "map": {
+          "mesh": {
+            "red": "dirt",
+            "green": "dirt",
+            "blue": "floor",
+            "black": "floor"
+          },
+          "blend": {
+            "red": "browning",
+            "green": "longGrass",
+            "blue": "adjoining",
+            "black": "adjoining"
+          }
+        }
+      }
+    },
+    {
+      "op": "golfmap.edge_jitter",
+      "params": {
+        "amount": 0.5,
+        "wavelengthM": 0.6,
+        "grain": 0.5
+      }
+    }
+  ]
+}

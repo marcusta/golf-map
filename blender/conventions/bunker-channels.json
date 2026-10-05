@@ -4,8 +4,9 @@
   "notes": [
     "One file read by both sides: the Blender bunker tools paint by these roles, the Unity Bunker Materials window builds materials from them and checks the paint.",
     "Paint expectations: 'rings' are the colours of the bunker's rings counted in from its seam (ring 0 is the loop shared with its blend), 'interior' the colours expected further in. For blends, 'inner' is the edge shared with the bunker, 'outer' the edge shared with the surrounding surface.",
-    "Channel sources: 'from' is $bunker (the bunker mesh's original OPCD material), $blend (the blend mesh's original OPCD material), $outer (the material the blend fades to: the source of its original OPCD Black channel) or a material asset name. 'channel' is the source channel copied. 'tint' multiplies that channel's Overall Color (a shadow is ~0.8). 'blendStrength' overrides the channel's Blend Strength.",
-    "Black is the channel with no dominant colour (max(r,g,b) < 0.25)."
+    "Channel sources: 'from' is $bunker (the bunker mesh's original OPCD material), $blend (the blend mesh's original OPCD material), $outer (the material the blend fades to: the source of its original OPCD Black channel; for a bunker mesh, what most of its blends fade to) or a material asset name. 'channel' is the source channel copied. 'tint' multiplies that channel's Overall Color: a number, or [r, g, b] to shift its hue (a shadow is ~0.8). 'blendStrength' overrides the channel's Blend Strength.",
+    "Black is the channel with no dominant colour (max(r,g,b) < 0.25).",
+    "'base' (bunker or blend rule, optional): the material the render material starts as before its channels are filled, i.e. where its settings outside the four channel blocks (slope shading, satellite offsets) come from. Default: the mesh's own original. $outer on a blend shades the strip exactly like the surface round it."
   ],
   "conventions": {
     "opcd-default": {
@@ -56,6 +57,38 @@
           "red": { "from": "$outer", "channel": "red" },
           "green": { "from": "$outer", "channel": "red", "tint": 0.85 },
           "blue": { "from": "$bunker", "channel": "red" },
+          "black": { "from": "$outer", "channel": "red" }
+        }
+      }
+    },
+    "golfmap": {
+      "label": "golfmap (canonical)",
+      "verified": { "bunker": false, "blend": false },
+      "description": "What the Blender shaping engine leaves after any recipe: blender/tools/shape_paint.py remaps each recipe's colours (blender/recipes/library.json) and OPCD's own paint to these roles. Bunker: red grass lip (the adjoining grass look, 3D grass grows), green dirt face, black dark lip without 3D grass (the adjoining grass darkened: rolled-lip shadow), blue sand. Blend: red the adjoining surface, green longer darker grass, black browning grass / dirt toward the bunker. Check paint expects the grass lip on the seam ring and no grass inside; recipes with a wide lip (kaustin: the old blend joined in) or bunkers never reshaped (dirt rim) read !! although painted right.",
+      "roles": {
+        "bunker": { "red": "grass lip", "green": "dirt face", "black": "shadow lip (no 3D grass)", "blue": "sand" },
+        "blend": { "red": "adjoining surface", "green": "longer, darker grass", "black": "adjoining surface at the hazard edge (was: browning toward the hazard)", "blue": "unused" },
+        "water": { "red": "bank grass", "green": "bank soil", "black": "dark wet edge", "blue": "water bed" }
+      },
+      "sourceNotes": "The bunker's grass lip and shadow copy $outer: for a bunker mesh, what most of its blends fade to (rough, or fairway for a fairway bunker; it copied the rough by name before, 'OPCD MAHS Rough No Mowlines_Sat'). blendStrength 2 is OPCD's value on every channel, pinned so another surface does not soften the lip line. The blend is the surround's grass all the way to the sand (Marcus's references: grass right up to and over the edge, no brown band): every channel it paints (red at the outer edge, black at the bunker) is $outer's red, on $outer's base settings, so rough -> strip is seamless; green stays the darker, longer grass. Its black was the bunker's dirt lip ($bunker red) before, which read as a brown band. Stix 3D grass grows on the blends at an even density (golfmap.roughgrass.plant, lip material), not by their red. The dirt face (green) is the bunker's dirt lip lifted a little and toward brown-grey (tint [1.25, 1.15, 1.1]: its base is the ortho, which the edge fill made grass-coloured there, so untinted it read as a dark stripe), the shadow lip likewise ([0.88, 0.85, 0.8], was 0.8); the recipes end with golfmap.edge_jitter so the band's border with the sand is ragged, not a ruled line (Marcus, 2026-09-29).",
+      "bunker": {
+        "rings": ["red"],
+        "interior": ["green", "black", "blue"],
+        "channels": {
+          "red": { "from": "$outer", "channel": "red", "blendStrength": 2 },
+          "green": { "from": "$bunker", "channel": "red", "tint": [1.25, 1.15, 1.1] },
+          "blue": { "from": "$bunker", "channel": "blue" },
+          "black": { "from": "$outer", "channel": "red", "tint": [0.88, 0.85, 0.8], "blendStrength": 2 }
+        }
+      },
+      "blend": {
+        "inner": "black",
+        "outer": "red",
+        "base": "$outer",
+        "channels": {
+          "red": { "from": "$outer", "channel": "red" },
+          "green": { "from": "$outer", "channel": "red", "tint": 0.85 },
+          "blue": { "from": "$outer", "channel": "red" },
           "black": { "from": "$outer", "channel": "red" }
         }
       }

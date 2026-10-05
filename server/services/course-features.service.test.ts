@@ -1483,3 +1483,76 @@ describe('CourseFeaturesService — road junction fillets', () => {
         expect(await fillets(svc)).toHaveLength(0);
     });
 });
+
+// Tree species areas (shared/features/tree-areas.ts): the Unity tree planter uses
+// an area's species mix for the survey stems inside it.
+describe('CourseFeaturesService — tree_area', () => {
+    const areaAttributes = { species: 'oak=9, birch=1', name: 'Oak grove' };
+
+    test('create stores the mix and update round-trips it with ignoreKind', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const area = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'tree_area',
+            geometry: squareGeometry(), attributes: areaAttributes,
+        });
+        expect(area.type).toBe('tree_area');
+        expect(area.attributes).toEqual(areaAttributes);
+
+        const updated = await svc.update(area.id, 1, { attributes: { species: 'oak', ignoreKind: true } });
+        expect(updated.attributes).toEqual({ species: 'oak', ignoreKind: true });
+        expect((await svc.findById(area.id)).attributes).toEqual(updated.attributes);
+    });
+
+    test('an area without a usable mix is refused, on create and on update', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const create = (attributes: Record<string, unknown> | undefined) => svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'tree_area', geometry: squareGeometry(), attributes: attributes as never,
+        });
+
+        await expect(create(undefined)).rejects.toThrow('needs attributes.species');
+        await expect(create({ species: 'oak=0, birch=0' })).rejects.toThrow('above 0');
+        await expect(create({ species: 'oak oak' })).rejects.toThrow('<species>[=<weight>]');
+        await expect(create({ species: 'oak', ignoreKind: 'yes' })).rejects.toBeInstanceOf(InvalidFeatureError);
+
+        const area = await create(areaAttributes);
+        await expect(svc.update(area.id, 1, { attributes: { species: 'oak, oak' } })).rejects.toThrow('named twice');
+        // Geometry-only edits leave the attributes alone.
+        const moved = await svc.update(area.id, 1, { geometry: squareGeometry(20, 20) });
+        expect(moved.attributes).toEqual(areaAttributes);
+    });
+
+    test('generated areas carry their mix through the generated route, and a bad one names the feature', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const areaFeature = (properties: Record<string, unknown>) => ({
+            type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring(0, 0, 5)] },
+            properties: { type: 'tree_area', source: 'survey-species', ...properties },
+        });
+
+        await svc.replaceGenerated(TEST_COURSE_ID, 'survey-species', collection([areaFeature({ species: 'pine=3, birch' })]));
+        const stored = (await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.type === 'tree_area');
+        expect(stored.map((f) => f.attributes)).toEqual([{ species: 'pine=3, birch' }]);
+
+        await expect(svc.replaceGenerated(TEST_COURSE_ID, 'survey-species', collection([areaFeature({ species: '' })])))
+            .rejects.toThrow('above 0');
+    });
+
+    test('is an overlay in the stack: it lands above vegetation zones and below trees', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const at = async (type: string, attributes?: Record<string, unknown>) => svc.create({
+            courseId: TEST_COURSE_ID, holeId: TEST_HOLE_2_ID, type,
+            geometry: squareGeometry(), attributes: attributes as never,
+        });
+
+        await at('trees');
+        await at('vegetation_zone', { zoneType: 'shrub' });
+        await at('tree_area', areaAttributes);
+
+        const stack = (await svc.listByHole(TEST_HOLE_2_ID)).map((f) => f.type);
+        expect(stack).toEqual(['vegetation_zone', 'tree_area', 'trees']);
+    });
+});

@@ -19,6 +19,13 @@ import {
     BANK_VEG_WET_SUFFIX,
 } from '../../../shared/features/creek-vegetation';
 import { formatZonePalettes, zoneExtraPalettesOf, type ZoneBlend, type ZonePalette } from '../../../shared/features/zone-layers';
+import {
+    SUGGESTED_TREE_SPECIES, TREE_AREA_IGNORE_KIND_ATTRIBUTE, TREE_AREA_NAME_ATTRIBUTE, TREE_AREA_SPECIES_ATTRIBUTE, TREE_AREA_TYPE,
+    formatSpeciesMix, speciesMixOf, treeAreaIgnoresKind, treeAreaNameOf, type TreeSpeciesShare,
+} from '../../../shared/features/tree-areas';
+
+/** The `<datalist>` of species suggestions the mix rows' inputs share (one per page). */
+const TREE_SPECIES_LIST_ID = 'tree-area-species-options';
 
 /** The surface picker's value for a selection whose paths disagree. */
 const MIXED_SURFACE = '__mixed';
@@ -90,6 +97,22 @@ const tpl = template(`
                 <button bind="zoneExtraAddBtn" type="button" class="op-btn show" data-testid="zone-extra-add">Add palette</button>
             </div>
             <button bind="zoneTypesBtn" type="button" class="op-btn show">Edit zone types…</button>
+        </div>
+        <div bind="treeAreaSection" class="zone-section" data-testid="tree-area-section">
+            <h4 class="section-title">Tree species area</h4>
+            <label class="zone-field">Name
+                <input bind="treeAreaName" type="text" placeholder="e.g. Oak grove" data-testid="tree-area-name" />
+            </label>
+            <div class="zone-extras" title="The species the Unity tree planter gives the survey trees inside this area, by relative weight (9 and 1 = 90% and 10%). Each tree still takes the size of its species that fits it best.">
+                <span class="zone-extras-title">Species mix</span>
+                <div bind="treeAreaMix" class="zone-extras-list" data-testid="tree-area-mix"></div>
+                <button bind="treeAreaAddBtn" type="button" class="op-btn show" data-testid="tree-area-add">Add species</button>
+            </div>
+            <label class="tree-area-kind" title="Off: a tree the survey classed conifer keeps the palette's conifers when the mix has none (and a broadleaf the broadleaves). On: every tree inside takes the mix.">
+                <input bind="treeAreaIgnoreKind" type="checkbox" data-testid="tree-area-ignore-kind" />
+                Also where the survey says conifer/broadleaf
+            </label>
+            <div class="tree-area-hint">Used by the Unity tree planter: export the trees, then Load and check / Plant.</div>
         </div>
         <div bind="pathSection" class="zone-section" data-testid="path-surface-section">
             <h4 bind="pathTitle" class="section-title"></h4>
@@ -324,6 +347,31 @@ export class SelectionPanelComponent extends Component {
                 display: none;
                 &.show { display: flex; }
             }
+            & .tree-area-kind {
+                display: flex;
+                align-items: center;
+                gap: ${s('xs')};
+                font-size: 0.75rem;
+                color: ${t('color-text-secondary')};
+            }
+            & .tree-area-hint {
+                font-size: 0.72rem;
+                color: ${t('color-text-secondary')};
+            }
+            & .tree-species {
+                ${field()}
+                flex-direction: row;
+                align-items: center;
+                & input[type=text] { flex: 1 1 6rem; min-width: 0; }
+                & input[type=number] { width: 4rem; }
+                & .tree-species-share { width: 2.5rem; text-align: right; font-size: 0.75rem; color: ${t('color-text-secondary')}; }
+                & .zone-extra-remove {
+                    padding: ${s('xs')} ${s('sm')};
+                    font-size: 0.9rem;
+                    line-height: 1;
+                    ${btn(t('radius-sm'))}
+                }
+            }
             & .path-kerbs-field {
                 display: none;
                 align-items: center;
@@ -450,6 +498,30 @@ export class SelectionPanelComponent extends Component {
             // for read-only (generated) rows.
             zoneSection: {
                 className: () => this.zoneSelection() ? 'zone-section show' : 'zone-section',
+            },
+            // Tree species area (shared/features/tree-areas.ts): the species mix
+            // the Unity tree planter uses for the survey trees inside it.
+            treeAreaSection: {
+                className: () => this.treeAreaSelection() ? 'zone-section show' : 'zone-section',
+            },
+            treeAreaName: {
+                value: () => treeAreaNameOf(this.treeAreaSelection()?.attributes),
+                onchange: (e: Event) => {
+                    const name = (e.target as HTMLInputElement).value.trim();
+                    this.saveTreeArea({ [TREE_AREA_NAME_ATTRIBUTE]: name || undefined });
+                },
+            },
+            treeAreaIgnoreKind: {
+                checked: () => treeAreaIgnoresKind(this.treeAreaSelection()?.attributes),
+                onchange: (e: Event) => this.saveTreeArea({ [TREE_AREA_IGNORE_KIND_ATTRIBUTE]: (e.target as HTMLInputElement).checked || undefined }),
+            },
+            treeAreaAddBtn: {
+                onclick: () => {
+                    const mix = this.treeAreaMix();
+                    const used = new Set(mix.map(m => m.species));
+                    const next = SUGGESTED_TREE_SPECIES.find(sp => !used.has(sp));
+                    if (next) this.saveTreeMix([...mix, { species: next, weight: 1 }]);
+                },
             },
             // Path surface (shared/features/path-surface.ts): what the road or
             // cart path is made of — every selected path at once, so a batch
@@ -750,6 +822,35 @@ export class SelectionPanelComponent extends Component {
             extras.forEach((extra, index) => extrasList.appendChild(untrack(() => this.zoneExtraRow(extras, extra, index))));
         }));
 
+        // The tree species area's mix: one row per species (name, weight, share,
+        // remove) from the attribute string. Every edit writes it all back; the
+        // rows are kept and refreshed in place so Tab after an edit moves on.
+        const mixList = this.ref(frag, 'treeAreaMix');
+        const mixRows: { row: HTMLElement; show: (mix: TreeSpeciesShare[]) => void }[] = [];
+        this.track(effect(() => {
+            const mix = this.treeAreaMix();
+            untrack(() => {
+                while (mixRows.length > mix.length) mixRows.pop()!.row.remove();
+                while (mixRows.length < mix.length) {
+                    const row = this.treeSpeciesRow(mixRows.length);
+                    mixRows.push(row);
+                    mixList.appendChild(row.row);
+                }
+                for (const row of mixRows) row.show(mix);
+            });
+        }));
+        // Species suggestions for the rows (one list per page, shared by every row).
+        if (!document.getElementById(TREE_SPECIES_LIST_ID)) {
+            const list = document.createElement('datalist');
+            list.id = TREE_SPECIES_LIST_ID;
+            for (const sp of SUGGESTED_TREE_SPECIES) {
+                const option = document.createElement('option');
+                option.value = sp;
+                list.appendChild(option);
+            }
+            document.body.appendChild(list);
+        }
+
         this.moveSelect = this.ref(frag, 'moveSelect') as HTMLSelectElement;
         this.moveSelect.addEventListener('change', () => {
             if (this.moveSelect.value === '__mixed') return;
@@ -901,6 +1002,101 @@ export class SelectionPanelComponent extends Component {
         const zone = this.zoneSelection();
         if (!zone) return;
         void this.features.update(zone.id, { attributes: { ...this.zoneAttributes(), ...patch } });
+    }
+
+    /** The single selected feature when it is an editable tree species area, else null. */
+    private treeAreaSelection(): CourseFeature | null {
+        const f = this.features.editableSelected.get();
+        return f && f.type === TREE_AREA_TYPE ? f : null;
+    }
+
+    private treeAreaMix(): TreeSpeciesShare[] {
+        return speciesMixOf(this.treeAreaSelection()?.attributes);
+    }
+
+    /**
+     * Persist the area's attributes with `patch` applied (undefined drops a key).
+     * The mix edited last is also what the next drawn area starts with.
+     */
+    private saveTreeArea(patch: Record<string, string | boolean | undefined>): void {
+        const area = this.treeAreaSelection();
+        if (!area) return;
+        const attributes = { ...(area.attributes ?? {}) } as Record<string, string | number | boolean>;
+        for (const [key, value] of Object.entries(patch)) {
+            if (value === undefined) delete attributes[key];
+            else attributes[key] = value;
+        }
+        const mix = attributes[TREE_AREA_SPECIES_ATTRIBUTE];
+        if (typeof mix === 'string') this.tool.drawTreeMix.set(mix);
+        void this.features.update(area.id, { attributes });
+    }
+
+    /** False (nothing saved) for a mix of zeros: an area needs some weight, and the server refuses it. */
+    private saveTreeMix(mix: TreeSpeciesShare[]): boolean {
+        if (!mix.some(m => m.weight > 0)) return false;
+        this.saveTreeArea({ [TREE_AREA_SPECIES_ATTRIBUTE]: formatSpeciesMix(mix) });
+        return true;
+    }
+
+    /**
+     * The mix's row `index`: the species (a palette label, with suggestions), its
+     * weight, its share and remove. `show` fills it from the current mix; the
+     * handlers read the mix when they fire.
+     */
+    private treeSpeciesRow(index: number): { row: HTMLElement; show: (mix: TreeSpeciesShare[]) => void } {
+        const current = () => this.treeAreaMix()[index] ?? { species: '', weight: 0 };
+        const replace = (patch: Partial<TreeSpeciesShare>) => this.saveTreeMix(this.treeAreaMix().map((m, i) => i === index ? { ...m, ...patch } : m));
+        const row = document.createElement('div');
+        row.className = 'tree-species';
+        row.dataset.testid = 'tree-area-species';
+
+        const species = document.createElement('input');
+        species.type = 'text';
+        species.setAttribute('list', TREE_SPECIES_LIST_ID);
+        species.title = 'A species of the course tree palette (oak, birch, elm ...)';
+        species.dataset.testid = 'tree-area-species-name';
+        species.addEventListener('change', () => {
+            const name = species.value.trim().toLowerCase();
+            const ok = /^[a-z][a-z0-9_-]*$/.test(name) && !this.treeAreaMix().some((m, i) => i !== index && m.species === name);
+            species.value = ok ? name : current().species;
+            if (ok) replace({ species: name });
+        });
+
+        const weight = document.createElement('input');
+        weight.type = 'number';
+        weight.min = '0';
+        weight.step = '1';
+        weight.title = 'Relative weight (9 and 1 = 90% and 10%)';
+        weight.dataset.testid = 'tree-area-species-weight';
+        weight.addEventListener('change', () => {
+            const value = Number(weight.value);
+            const ok = weight.value.trim() !== '' && Number.isFinite(value) && value >= 0 && replace({ weight: value });
+            weight.value = String(ok ? value : current().weight);
+        });
+
+        const pct = document.createElement('span');
+        pct.className = 'tree-species-share';
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'zone-extra-remove';
+        remove.textContent = '×';
+        remove.title = 'Remove this species';
+        remove.setAttribute('aria-label', 'Remove this species');
+        remove.dataset.testid = 'tree-area-species-remove';
+        remove.addEventListener('click', () => this.saveTreeMix(this.treeAreaMix().filter((_, i) => i !== index)));
+
+        row.append(species, weight, pct, remove);
+        const show = (mix: TreeSpeciesShare[]) => {
+            const share = mix[index];
+            // A field being typed in keeps its text until it is committed.
+            if (document.activeElement !== species) species.value = share.species;
+            if (document.activeElement !== weight) weight.value = String(share.weight);
+            const total = mix.reduce((sum, m) => sum + m.weight, 0);
+            pct.textContent = total > 0 ? `${Math.round((share.weight / total) * 100)}%` : '';
+            remove.disabled = mix.length <= 1;
+        };
+        return { row, show };
     }
 
     /** The editable `path` features in the selection (others in a mixed selection are left alone). */

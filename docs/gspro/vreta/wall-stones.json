@@ -656,6 +656,530 @@
     }
    ]
   },
+  "klippa_block_1": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.62,
+     "sz": 0.5,
+     "seed": 81,
+     "exponent": 4.2,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.8,
+       "keep": 0.05
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.8,
+       "keep": 0.1
+      },
+      {
+       "dir": [
+        0.7,
+        0.55,
+        0.4
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      }
+     ],
+     "seg": 28,
+     "rings": 16,
+     "mat": "granite_boulder",
+     "moss": 0.8,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "klippa_block_2": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.7,
+     "sz": 0.58,
+     "seed": 82,
+     "exponent": 3.6,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.8,
+       "keep": 0.05
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.8,
+       "keep": 0.1
+      },
+      {
+       "dir": [
+        -0.6,
+        0.55,
+        0.5
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      }
+     ],
+     "seg": 28,
+     "rings": 16,
+     "mat": "granite_boulder",
+     "moss": 0.8,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "klippa_block_3": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.55,
+     "sz": 0.46,
+     "seed": 83,
+     "exponent": 5.0,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.8,
+       "keep": 0.05
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.8,
+       "keep": 0.1
+      },
+      {
+       "dir": [
+        0.6,
+        0.55,
+        -0.3
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      },
+      {
+       "dir": [
+        -0.5,
+        0.55,
+        0.6
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      }
+     ],
+     "seg": 28,
+     "rings": 16,
+     "mat": "granite_boulder",
+     "moss": 0.8,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "klippa_block_4": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.75,
+     "sz": 0.62,
+     "seed": 84,
+     "exponent": 3.8,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.8,
+       "keep": 0.05
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.8,
+       "keep": 0.1
+      },
+      {
+       "dir": [
+        -0.7,
+        0.55,
+        -0.3
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      }
+     ],
+     "seg": 28,
+     "rings": 16,
+     "mat": "granite_boulder",
+     "moss": 0.8,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "klippa_block_5": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.6,
+     "sz": 0.42,
+     "seed": 85,
+     "exponent": 4.6,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.8,
+       "keep": 0.05
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.8,
+       "keep": 0.1
+      },
+      {
+       "dir": [
+        0.5,
+        0.55,
+        0.6
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      }
+     ],
+     "seg": 28,
+     "rings": 16,
+     "mat": "granite_boulder",
+     "moss": 0.8,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "klippa_block_6": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.68,
+     "sz": 0.55,
+     "seed": 86,
+     "exponent": 3.4,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.8,
+       "keep": 0.05
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.8,
+       "keep": 0.1
+      },
+      {
+       "dir": [
+        0.7,
+        0.55,
+        0.2
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      },
+      {
+       "dir": [
+        -0.7,
+        0.55,
+        0.2
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      }
+     ],
+     "seg": 28,
+     "rings": 16,
+     "mat": "granite_boulder",
+     "moss": 0.8,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "klippa_block_7": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.58,
+     "sz": 0.52,
+     "seed": 87,
+     "exponent": 4.4,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.8,
+       "keep": 0.05
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.8,
+       "keep": 0.1
+      },
+      {
+       "dir": [
+        -0.4,
+        0.55,
+        0.7
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      }
+     ],
+     "seg": 28,
+     "rings": 16,
+     "mat": "granite_boulder",
+     "moss": 0.8,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "klippa_block_8": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.72,
+     "sz": 0.48,
+     "seed": 88,
+     "exponent": 4.0,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.8,
+       "keep": 0.05
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.8,
+       "keep": 0.1
+      },
+      {
+       "dir": [
+        0.6,
+        0.55,
+        0.6
+       ],
+       "at": 0.72,
+       "keep": 0.04
+      }
+     ],
+     "seg": 28,
+     "rings": 16,
+     "mat": "granite_boulder",
+     "moss": 0.8,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "klippa_slab_1": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "rock",
+     "sx": 8.0,
+     "sy": 4.5,
+     "sz": 0.9,
+     "seed": 91,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
+  "klippa_slab_2": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "rock",
+     "sx": 6.5,
+     "sy": 4.0,
+     "sz": 0.8,
+     "seed": 92,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
+  "klippa_slab_3": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "rock",
+     "sx": 5.0,
+     "sy": 3.2,
+     "sz": 0.6,
+     "seed": 93,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
   "boulder_ivy": {
    "category": "prop",
    "collider": "mesh",

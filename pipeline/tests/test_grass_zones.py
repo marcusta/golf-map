@@ -5,6 +5,8 @@ Plain shapely geometry in metres; each test states one rule of the module doc.
 
 from shapely.geometry import LineString, Point, box
 
+import pytest
+
 import grass_zones as gz
 
 RULES = gz.Rules(max_distance=75, spill=5, building_margin=4, road_margin=1.5, min_area=1, simplify=0, clearance=0)
@@ -107,18 +109,54 @@ def test_weight_ramps_to_zero_before_forbidden_surfaces_and_the_reach_limit():
     assert not a.contains(Point(96, 100))       # 76 m: past the reach limit
 
 
-def test_one_gradient_from_deep_into_rough_no_dip():
-    """Deep rough meeting a narrow rough band next to a semi: the weight never dips at the
-    deep/rough border, and falls monotonically to 0 before the semi."""
+def test_grass_grows_up_to_the_rough_and_spills_a_foot_in():
+    """Deep rough behind a band of mown rough next to a semi: the rough is the buffer, so the
+    deep rough is full right up to it (no dip, no semi clearance reaching through), and the
+    grass spills raggedly into the rough's first cell or two - never near the semi."""
+    import numpy as np
+    cls = np.full((200, 200), gz.S_DEEP, dtype=np.uint8)
+    cls[:, 0:20] = 3                                            # semi, west
+    cls[:, 20:32] = gz.S_ROUGH                                  # 6 m of rough between semi and deep
+    w = gz.weight_field(cls, 0.5, None, gz.Rules(min_area=1, simplify=0))
+    assert (w[:, 32:120] == 1).all()                            # deep: full from the first cell
+    assert w[:, :29].max() == 0                                 # nothing beyond 1.5 m into the rough
+    first = w[:, 31]                                            # the rough's cell at the deep border
+    assert 0.3 < (first == 1).mean() < 0.95 and ((first == 0) | (first == 1)).all()   # here and there
+
+
+def test_a_tee_without_rough_around_it_keeps_its_clearance_next_to_one_with():
     import numpy as np
     cls = np.full((100, 100), gz.S_DEEP, dtype=np.uint8)
-    cls[:, 0:10] = 3                                            # semi, west
-    cls[:, 10:16] = gz.S_ROUGH                                  # 6 m of rough between semi and deep
-    rules = gz.Rules(max_distance=75, spill=6, min_area=1, simplify=0)
-    w = gz.weight_field(cls, 1.0, None, rules)[50]              # one row, west to east
-    assert w[:12].max() == 0                                    # semi and 2 m clearance
-    assert all(w[i] <= w[i + 1] + 1e-6 for i in range(10, 40)) # rises monotonically into the deep
-    assert w[30] == 1.0
+    cls[40:60, 40:60] = 6                                       # a tee ...
+    cls[40:60, 60:63] = gz.S_ROUGH                              # ... with 3 m of rough on its east side only
+    w = gz.weight_field(cls, 1.0, None, gz.Rules(min_area=1, simplify=0))[50]
+    assert w[63] == 1.0                                         # east: full behind the rough
+    assert w[37] == 0 and 0 < w[34] < 1                         # west: the tee's own clearance
+
+
+def test_grass_stands_at_the_path_edge_with_tufts_onto_gravel_only():
+    """The path's drawn outline is the grass's edge, wherever it falls in the 0.5 m cells."""
+    import numpy as np
+    cls = np.full((400, 100), gz.S_DEEP, dtype=np.uint8)
+    cls[:, 0] = gz.S_ROUGH                                      # play nearby (reach)
+    cls[:, 40:44] = gz.S_OTHER                                  # the path mesh as the surface map sees it
+    cls[::3, 39] = gz.S_BLEND                                   # OPCD seam cells along its west edge
+    path = box(20.2, 0.0, 21.9, 200.0)                          # x 20.2 .. 21.9: off the cell grid
+    rules = gz.Rules(min_area=1, simplify=0, path_margin=0.0)
+
+    def full(surface):
+        return gz.tall_grass_from_surfaces(cls, 0.5, 0.0, 200.0, [], [], rules, paths=[(path, surface)]).bands[-1][1]
+
+    hard = full("asphalt")
+    assert hard.intersection(path).area < 1e-6                  # none on the path
+    strips = box(19.2, 0.0, 20.2, 200.0).union(box(21.9, 0.0, 22.9, 200.0))
+    assert hard.intersection(strips).area > 0.999 * strips.area   # and no bare strip beside it
+
+    gravel = full("gravel")
+    on_path = gravel.intersection(path)
+    assert 0.001 * path.area < on_path.area < 0.05 * path.area  # a tuft here and there
+    assert on_path.intersection(path.buffer(-0.45)).is_empty    # a foot or so onto the path, no further
+    assert gravel.intersection(strips).area > 0.999 * strips.area
 
 
 def test_tees_get_the_widest_clearance():
@@ -129,3 +167,15 @@ def test_tees_get_the_widest_clearance():
     assert w[36] == 0 and w[37] == 0                            # 3 m from the tee: still nothing
     assert 0 < w[34] < 1                                        # 5.5 m: ramping
     assert w[30] == 1.0                                         # 9.5 m: full
+
+
+def test_a_road_that_is_also_drawn_as_a_path_is_cut_by_the_drawing_alone():
+    from shapely.geometry import LineString
+    path = box(20.0, 0.0, 23.0, 100.0)                          # the drawn road, 3 m wide
+    centerline = LineString([(22.3, 0.0), (22.3, 100.0)])       # the survey's line, 0.8 m off its middle
+    rules = gz.Rules(path_margin=0.0)
+    cut = gz.ways_cut([(centerline, 3.5)], [(path, "asphalt")], rules)
+    assert cut.symmetric_difference(path).area < 1e-6           # the drawing, nothing more
+    alone = gz.ways_cut([(centerline, 3.5)], [], rules)         # not drawn: centerline + width + margin
+    assert alone.area == pytest.approx(100 * (3.5 + 2 * rules.road_margin), rel=0.01)
+

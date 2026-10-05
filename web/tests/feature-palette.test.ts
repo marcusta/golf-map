@@ -46,6 +46,7 @@ describe('SURROUND_PAIRINGS (ported prototype table)', () => {
             'path',
             'outside',
             'vegetation_zone',
+            'tree_area',
         ] as const) {
             expect(SURROUND_PAIRINGS[type]).toBeNull();
         }
@@ -118,7 +119,7 @@ describe('TYPE_Z_ORDER', () => {
         expect([...TYPE_Z_ORDER].sort()).toEqual([...FEATURE_TYPES].sort());
         expect(TYPE_Z_ORDER).toEqual([
             'outside', 'deep_rough', 'rough', 'semi_rough', 'fairway',
-            'tee', 'green', 'vegetation_zone', 'trees', 'bunker', 'water', 'water_creek',
+            'tee', 'green', 'vegetation_zone', 'tree_area', 'trees', 'bunker', 'water', 'water_creek',
             'penalty_yellow', 'penalty_red', 'oob', 'path',
         ]);
     });

@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { svgFeatures, matchSvgFilter, variantFileName, loadExclusions, NO_FILTER, COURSE_WIDE, landmarksOf, nearLabel } from '../src/export/svg-exclusions';
+import { svgFeatures, matchSvgFilter, variantFileName, loadExclusions, NO_FILTER, COURSE_WIDE, landmarksOf, nearLabel, shapeName } from '../src/export/svg-exclusions';
 import type { CourseFeature } from '../../shared/api/course-features.gen';
 
 // The exclusion list's filter and the variant file name (svg-exclusions.ts).
@@ -54,4 +54,12 @@ test('a feature is described by the hole green, tee or fairway it sits nearest',
     expect(nearLabel(at('p', 'path', null, 120), marks)).toBe('near hole 13 green');
     expect(nearLabel(at('p', 'path', null, 280), marks)).toBe('near hole 8 fairway');
     expect(nearLabel(at('p', 'path', null, 0), [])).toBe('');
+});
+
+test('the shape name is the hole plus the feature number in hex, as the SVG and the meshes have it', () => {
+    const f = (type: string, no: number | null, id = 'abcde123-4567') => ({ id, type, no }) as CourseFeature;
+    expect(shapeName(f('bunker', 28), 18)).toBe('hole_18_1c');
+    expect(shapeName(f('water', 281), undefined)).toBe('others_119');
+    expect(shapeName(f('path', 10), 3)).toBe('a');                  // merged into the Roads layer's shapes
+    expect(shapeName(f('trees', null, '7B-20e4aa'), undefined)).toBe('others_7b20e');   // generated: no number
 });

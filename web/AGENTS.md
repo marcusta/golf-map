@@ -1,204 +1,28 @@
 # web — AGENTS
 
-Vite + TS SPA on `@basics/core` client framework, MapLibre for maps. Course building (SVG/vector), strategy planning, follow-up analytics. Run with **cwd = `web/`**.
+Vite + TS SPA on the `@basics/core` client framework, MapLibre for maps. Course building (SVG/vector), strategy planning, follow-up analytics. Run with **cwd = `web/`**; commands are `package.json` scripts (`dev` proxies `/api` and `/tiles` to the server, which must run).
+
+## Pointers
+
+- Layout of `src/` (one folder per feature): `ls src`; per-folder notes: [docs/web-features.md](../docs/web-features.md).
+- Vegetation zones (zone-type panel, selection-panel sections, tree species areas, Vegetation mode, Plant vegetation): [docs/feature-vegetation-zones.md](../docs/feature-vegetation-zones.md) section 13.
+- Roads and paths (centerline editing, kerb fillets): [docs/feature-roads-centerline.md](../docs/feature-roads-centerline.md).
+- Reference photos, Rules lines in Furniture, Roughs-layer eye, map performance control, `/dev/vegetation` test scene: [docs/web-features.md](../docs/web-features.md).
+- Verify UI changes with the `preview_*` tools. Tests (`bun test`, happy-dom, mirrors in `tests/`): integration-first, no mocks, units for hard algorithms; see root [TESTING.md](../TESTING.md).
+- `fw:update` / `bun link`: root [AGENTS.md](../AGENTS.md); restart the dev server after either (`rm -rf node_modules/.vite` on `does not provide an export named ...`).
 
 ## Framework
 
-`@basics/core/client` — DI container (`di.get`), signals/`effect` (push-based, eager — see below), `Router`, components. Conventions:
-- `*.component.ts` — view components. `*.service.ts` — injectable state/logic (+ `*.tool.service.ts` for editor tools).
-- Entry `src/main.ts` → `startApp(AppComponent, '#app')`. `src/api.ts` wires `shared/api/*.gen.ts` typed clients (base `/api`).
+`@basics/core/client`: DI container (`di.get`), signals/`effect`, `Router`, components. `*.component.ts` view components; `*.service.ts` injectable state/logic (`*.tool.service.ts` for editor tools). Entry `src/main.ts` runs `startApp(AppComponent, '#app')`; `src/api.ts` wires the typed `shared/api/*.gen.ts` clients (base `/api`).
 
-⚠️ Signals are eager/push-based; derived-geometry effects can fire on mixed intermediate state. Coalesce side effects with `queueMicrotask`.
+- **Signals are eager and push-based.** Derived-geometry effects fire on mixed intermediate state; coalesce side effects with `queueMicrotask`.
+- **Detached template clone.** A component spawned inside a parent's `render()` runs `onMount` while its host sits in an inert `about:blank` document. A library that binds document-level listeners at construction (MapLibre: drag mousemove/mouseup) then gets clicks working and every drag dead. Wait for the host to join the live document, as `MapService.init` does, before handing it to such a library.
+- **Vendored framework.** The package is a versioned tarball in `vendor/`; edits go through `fw:update`, leaving `node_modules/@basics/core` and the dep string as they are. `bunfig.toml` preloads the package's own happy-dom adapter (`@basics/core/happy-dom`).
 
-⚠️ A component spawned inside a parent's `render()` runs its `onMount` while its host is still inside a **detached template clone** (`ownerDocument` = an inert `about:blank` document). Never hand such a host to a library that binds document-level listeners at construction — MapLibre puts a drag's mousemove/mouseup there, so the map's clicks work while every drag is silently dead. `MapService.init` waits for the host to join the live document; do the same for anything similar.
+## Styling: local recipes, semantic tokens
 
-The package is a versioned tarball in `vendor/` — never edit `node_modules/@basics/core`, never repoint the dep string. See root [AGENTS.md](../AGENTS.md) for `fw:update` / `bun link`. After either, restart the dev server (`rm -rf node_modules/.vite` if you hit `does not provide an export named ...`). `bunfig.toml` preloads the package's own happy-dom adapter (`@basics/core/happy-dom`); there is no local shim.
+A deliberate, assessed divergence from the other `@basics/core` consumers; keep it.
 
-## Styling — local recipes, semantic tokens
-
-This is a **deliberate, assessed** divergence from the other `@basics/core` consumers. Do not "consolidate" it.
-
-- **`src/css.ts` is the source of truth for component recipes** (Links & Loam). The only thing imported from `@basics/core/client/ui` anywhere in the repo is the `s` spacing scale. Core's `btn()`/`input()`/`card()` and its table / status-pill / empty-state components are **not** used — don't port `round-sg-table.ts` and friends onto them.
-- Because the local recipes aren't core's, the recipe-ordering rule from the other consumer repos (recipe interpolation first in a block, overrides after) **does not apply here**.
-- **`src/theme.ts` speaks full semantic token names** (`color-text-primary`, `color-surface-card`, …) through the typed `t()`. Theme-invariant layers (map/data/scale/type/motion) are raw `var()` reads from `design-tokens.css`. Keep theme edits on that vocabulary: do **not** reintroduce the legacy short-name aliases (`bg`/`primary`/`text`/…) — they were deliberately removed — and do **not** apply `bridgeLegacyControls` (that helper is for legacy-vocabulary themes like tapscore; it would be wrong here). There are zero direct `var(--btn-bg|btn-hover|radius|shadow|error|input-bg|primary)` reads — keep it that way.
-
-## Layout (`src/`)
-
-`app/` shell · `auth/` login+guard · `courses/` list · `sites/` (site setup page `/sites`, builder only: rename sites and courses, add a course on an existing site, detach, delete an empty site; `SitesService` also backs the new-course wizard's New site / Existing site step) · `course-detail/` · `editor/` (toolbar + `tools/`) · `draw/` (SVG feature drawing, history/undo) · `import/` (SVG orthophoto trace import) · `export/` (GSPro/OPCD export panel: SVG, inner/outer orthophoto JPEGs, inner/outer DEM GeoTIFFs over the two terrain squares, and GreenKeeper's .GKD into the course's GSPro folder; long explanations go behind `ui/info-tip.ts` (i) tips, only what the operator must act on stays in view) · `measure/` · `analysis/` (green slope) · `planner/` (strategy: overlay, gates, plan service) · `player/` (club config) · `map/` (MapLibre style/tiles/interaction; `tree-renderer.ts` is the three.js tree drawing shared with the vegetation scene) · `geo/` (bezier, bspline, transform) · `furniture/` · `vegetation/` (dev-only tree test scene) · `photos/` (reference photo browser, see below).
-
-## Vegetation zones (docs/feature-vegetation-zones.md, wave 1)
-
-`zones/` — `ZoneTypesService` (the course's zone-type legend, loaded with the
-features in `editor/toolbar.component.ts`) and `ZoneTypesPanelComponent` (the
-table editor: colour, the VSPro item bindings of the type's "Default" mix, and
-its named variants, each with its own bindings; item inputs autocomplete from
-a `<datalist>` of every item name in the table). No mask texture/channel
-inputs: the export gives every bound item its own channel. "Add variant"
-creates `New variant` under a key slugged once and made unique in the type
-(`uniqueVariantKey`) — renaming later changes the name only, so zones stay
-bound. The panel is spawned by `CourseDetailComponent` and opened from the
-Vegetation mode's zone-type picker ("Edit zone types…") or the selection
-panel's zone section.
-
-`vegetation_zone` is a feature type in `draw/feature-palette.ts`
-(`VEGETATION_TYPES`; no digit shortcut; mirrored by hand into
-`mobile/course/feature-colors.ts`), drawn and edited in Vegetation mode only
-(see below).
-Its attributes (`zoneType`, `zoneVariant`, `weight`, `feather`, `noise`,
-`blend`, `extraPalettes`) are
-edited in the selection panel's "Vegetation zone" section and saved through
-`features.update(id, { attributes })`, which replaces the whole object — the
-section always sends all seven keys. "Generated vegetation under it"
-(`zone-blend-select`, attribute `blend`) is Replace it / Add to it: drawn zones
-always add up with each other (D-VZ14); "Also plants" lists `extraPalettes`
-(`shared/features/zone-layers.ts`) as rows of type, variant, weight and
-Remove, and every edit writes the whole string back. A zone's hole is only
-where it is filed (D-VZ14): with only zones selected the move select reads
-"Hole (folder)" with a hint and no Roughs, and the Vegetation stack panel
-defaults to `ALL_ZONES_KEY` ("All zones, by hole": a heading per hole, rows
-named by what the zone plants), keeps it when a zone is selected, and shows
-no reorder verbs for zones. The Variant select (`zone-variant-select`:
-"Default" = `''` plus the type's variants) is hidden while the type has none;
-changing the zone type also resets `zoneVariant` to `''`. `FeaturesService.create`
-fills in the zone defaults (first zone type, Default variant, weight 1, feather
-2 m, noise 0) for any zone that reaches it without a `zoneType`, so freshly
-drawn, duplicated, stamped and retyped zones are all valid server-side;
-duplicate/paste copy attributes generically, variant included. The overlay fill
-uses `featureFillColorExpression`, which paints a zone in its zone type's own
-colour (`properties.zoneColor`; variants share it, `properties.zoneVariant`
-carries the key) and everything else from the palette.
-
-## Roads and paths are centerlines
-
-A `path` drawn in path mode (`P`) or imported from Fetch roads is a
-**centerline feature**: `geometry.centerline` (`points`, with `corner` flags,
-and `widthM`) is the shape, and `geometry.rings` is the corridor derived from
-it by `shared/features/centerline.ts` (Catmull-Rom curve through the points,
-buffered with round joins/caps). The server re-derives the rings on every
-write, so every ring consumer (render, lie, surface stack, GSPro SVG, iOS) is
-unchanged. In the draw tool the vertex ops run on an **edit view**
-(`draw-state` `editViewOf` / `applyVertexEdit` / `fromEditView`): the control
-points as one open b-spline-flavoured ring, mapped back with the corridor
-re-derived. Move/offset/simplify act on the line (offset = width), the
-selection panel's Width field sets `widthM`, and the terrain tool's Grade
-roads grades these lines. Old polygon paths stay polygons. Path mode draws by
-clicks + Enter or by a freehand press-drag (thinned to a few points); `N`
-draws a plain area (a paved yard is a `path` polygon, graded as a plane).
-
-Kerb fillets where centerline roads meet, and width tapers where a road ends
-in a narrower one (`shared/features/road-junctions.ts`), are derived, never
-edited: `FeaturesService.junctionFeatures` computes them
-live into the map collection (not selectable), and the server's stored copies
-(generated, source `road-junctions`, for export/iOS) are dropped on load.
-Per road, the selection panel's "Round kerbs at junctions" box sets the
-`kerbFillets` attribute (`false` = off, absent = on); a corner is rounded only
-when both roads meeting there have it on. Tapers ignore it.
-
-## Photos sub-mode (docs/feature-reference-photos.md §7)
-
-`photos/` — browse and tag the site's reference photos from the iPhone capture
-mode. A normal EditorTool (`photos`, not builder-only: the photo routes are
-mounted in both modes). `PhotosService` holds the list (by the course's
-`siteId`), the filter (hole, picked position + radius, tags any/all or
-untagged), the List/Map view (localStorage) and the selection; tag/note/hole
-saves are serialized and each computes its patch from the row the previous
-save left. `photo-filter.ts` is the pure filter: "near hole" = the phone's
-stored hole OR within `HOLE_NEAR_M` of the play line (tees → aim points → green
-centre, from `FurnitureService`, which the tool loads itself). The dock hosts
-`PhotosPanelComponent` (filters); `PhotoBrowserComponent`, spawned by
-`CourseDetailComponent` into the editor canvas, draws the List catalog, the
-Map view's photo card and the large viewer. `photos-overlay.ts` draws markers
-and view wedges (dashed = heading not refined). Thumbnails are the 2048 px
-previews, lazy-loaded; the server has no smaller size.
-
-## Rules lines live in Furniture
-
-The penalty areas and OOB (`RULES_TYPES` in `draw/feature-palette.ts`) are
-drawn and edited in Furniture mode, not Draw. There is one polygon engine:
-`FurnitureToolService` runs `DrawToolService` in its `rules` scope
-(`activate(ctx, { scope: 'rules', toolId, yieldTo })`), which hit-tests and
-creates only those types (OOB by its line, not its inside), keeps nice
-rendering with the penalty outlines stroked, has its own undo history, and
-leaves presses on furniture markers (and everything while a placement is
-armed) to the Furniture tool. Draw (`surfaces` scope) puts them, and the
-vegetation zones, in `FeaturesService.modeHiddenTypes`: off the map, out of
-hit tests, the type picker and the stack panel. `resolveSurfaceStack` passes them through like
-OOB, so a higher shape never trims them away.
-
-## Vegetation zones live in Vegetation mode
-
-The zones are drawn and edited in the Vegetation sub-mode
-(`zones/vegetation-tool.ts`), the draw engine in its `vegetation` scope
-(`activate(ctx, { scope: 'vegetation', toolId })`, one history per scope,
-`scopeOwnsType` decides what each scope hits, picks and marquees). There the
-course features (`modeBackdropTypes` in `FeaturesService`) paint as a faint
-outline with no fill, out of hit tests and the stack panel, and the command
-bar swaps the feature-type picker for a zone-type picker
-(`DrawToolService.chooseZoneType`: the next zone's type, or retype the
-selected zones). Outside Vegetation mode the zones, drawn and generated, are
-in `modeHiddenTypes` by type — the default that `resetModeView()` restores at
-the end of every draw-engine span — so Draw, Furniture, the other tools and
-the planner never show them. The dock hosts the selection and stack panels
-for Vegetation as for Draw.
-
-Of the backdrop, Vegetation still selects the creeks and water
-(`scopeSelectsType`; `takesBankVeg` in shared/features/creek-vegetation.ts)
-so their bank vegetation is set point-and-click: a click takes a hand-drawn
-zone first, then the water, then generated zones (`vegetationHitOrder`: the
-generated creek-bank zones lie over the water they came from). A backdrop
-row is read-only there: `editableSelected`/`editableSelectedFeatures` leave
-out `modeBackdropTypes` (no handles, move, duplicate, retype), and delete and
-stack reorder skip it, so the selection panel shows only "Bank vegetation"
-and a hint that the shape is Draw's.
-
-The command bar's **Plant vegetation** (Vegetation mode only) runs the
-server's `vegetation` export job through `zones/plant-vegetation.service.ts`
-(start, or follow the planting already running; poll to the end): every
-vegetation generator, the zones export and the import into the open Unity
-project. Then the features reload and the job's report is shown. With zones
-selected, **Update in Unity** (`update-zones-btn`, `PlantVegetationService.update`)
-runs the `vegetation-update` job for just them (`GsproExportService.updateZones`:
-`gspro.py zones-patch` per exported terrain, then `golfmap.zones.patch`). It runs
-no generators and has no confirm; the result dialog warns when a terrain was
-skipped. A zone
-type whose Default mix binds nothing starts new and retyped zones on its
-first variant (`ZoneTypesService.startVariantOf`), and the Variant picker
-says so on Default; creek_bank's `<palette>_wet` halves are not offered
-(`pickableVariantsOf`).
-
-## Hiding the Roughs layer is editor-only
-
-The stack panel's "Roughs layer" eye (`FeaturesService.roughsLayerHidden`)
-drops every `layer: 'roughs'` feature from the overlay and hit tests, but only
-while the editor owns the overlay (`attachOverlay(map, { editor: true })`,
-from `editor/toolbar.component.ts`). The planner attaches without the flag, so
-it always draws the roughs; the GSPro SVG export reads stored features on the
-server. Session-only, never persisted.
-
-## Commands (cwd `web/`)
-
-```sh
-bun run dev          # vite dev server :5173, proxies /api + /tiles → :3000 (server must run)
-bun test             # tests (happy-dom); mirrors in tests/
-bun run check:client # typecheck
-```
-
-Prefer the `preview_*` tools to verify UI changes over asking the user to check.
-
-Testing: integration-first, no mocks, units only for hard algorithms. See root [TESTING.md](../TESTING.md).
-
-## Map performance measurement
-
-The map's top-right `FPS` control has a water shader toggle, live map renders per second, and a 10-second benchmark. Benchmarking requests continuous renders in both water modes and retains the last on/off results. Keep the same camera and loaded course data between runs. Moving the camera, hiding the tab, changing water mode, or closing the panel cancels a run. Average FPS and p95 frame intervals measure map render cadence, not GPU execution time. The live rate includes idle time; a still map can report zero. The water toggle lasts for the map service session and defaults to on after a reload.
-
-The same control is available in `/dev/water.html`, a synthetic pond and creek preview. Its results do not represent full-course performance.
-
-## Vegetation test scene (dev only)
-
-URL: `http://localhost:5173/dev/vegetation` (vite dev; `dev/vegetation.html`, entry `src/vegetation/main.ts`). Plain three.js, no MapLibre, no login. Not in the production build unless `WEB_DEV_PAGES=1`.
-
-Contents (`src/vegetation/vegetation-stems.ts`): 400 x 400 m ground with a generated grass tile (`grass-texture.ts`); a lineup at y = 0 of every species x variant (broadleaf, spruce, pine x 4) at 15 m plus one shrub; a size ladder at y = 40 (broadleaf and spruce at 2, 5, 10, 20, 30 m); a 200-stem mixed stand at 8 to 25 m north of the ladder, with the layer's `adjustStand`; a strip of 30 shrubs south of the lineup. Conifers use connected branch meshes and three folded surfaces per needle spray; medium LOD keeps two surfaces at every attachment. Each species has four forms batched separately. Conifers use a deterministic 70% pine / 30% spruce mix. Shrubs use woody stems and folded leaf meshes, with a reduced mesh beyond 45 m. The panel has a form inspector, a hide-controls button, camera presets (3/10/40/150/600 m), sun azimuth/elevation with three time-of-day presets (the first matches the ortho-derived layer default), forced LOD band, sway, wireframe, HTML name tags over the lineup and ladder stems, a 1:1 atlas viewer and frame stats. Controls persist in localStorage (`vegetation-scene`); `?lod=`, `?preset=<m>`, `?sway=0` and `?labels=0` override them.
-
-- Add an asset type to the lineup: append to `lineupEntries()` in `vegetation-stems.ts` (species/variant pair, or a height under 4 m for a shrub); `tests/vegetation-stems.test.ts` counts the entries.
-- Regenerate the tree textures: `bun scripts/gen-tree-textures.ts` (writes `public/trees/`; `--only <name>` for one atlas). The impostor atlas is baked at runtime from those textures.
-- The map layer accepts `?treeLod=<fullM>[,<halfM>]` on the planner URL in dev builds to pull the LOD bands in; `e2e/tests/30-individual-trees.spec.ts` uses it on SwiftShader. `e2e/tests/31-vegetation-scene.spec.ts` cycles the presets and writes screenshots to `docs/validation/vegetation/`.
+- **`src/css.ts` is the source of truth for component recipes** (Links & Loam). Import only the `s` spacing scale from `@basics/core/client/ui`; core's `btn()`/`input()`/`card()` and its table, status-pill and empty-state components stay unused (so `round-sg-table.ts` and friends keep their local recipes).
+- The recipe-ordering rule of the other consumer repos (recipe interpolation first in a block, overrides after) applies to core's recipes only; here ordering is free.
+- **`src/theme.ts` speaks full semantic token names** (`color-text-primary`, `color-surface-card`, ...) through the typed `t()`; theme-invariant layers (map/data/scale/type/motion) are raw `var()` reads from `design-tokens.css`. Write theme edits in that vocabulary. The legacy short aliases (`bg`/`primary`/`text`/...) were removed on purpose, `bridgeLegacyControls` is for legacy-vocabulary themes like tapscore, and there are zero direct `var(--btn-bg|btn-hover|radius|shadow|error|input-bg|primary)` reads; keep it that way.

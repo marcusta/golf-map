@@ -10,6 +10,7 @@ import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { ROUGHS_LAYER } from '../../../shared/render/stack-key';
 import { ZoneTypesService, zoneTypeKeyOf, zoneVariantKeyOf } from '../zones/zone-types.service';
 import { zoneBlendOf, zoneExtraPalettesOf } from '../../../shared/features/zone-layers';
+import { TREE_AREA_TYPE, speciesMixLabel, speciesMixOf, treeAreaNameOf } from '../../../shared/features/tree-areas';
 import {
     generatedBadgeLabel,
     generatedGroupLabel,
@@ -515,12 +516,16 @@ export class FeatureStackPanelComponent extends Component {
 
     /**
      * A row's name: the type's palette label, except a vegetation zone, which
-     * says what it plants - "Creek bank · Vass (common reed) + 2 · adds" - so
-     * zones can be told apart in the list.
+     * says what it plants - "Creek bank · Vass (common reed) + 2 · adds" - and a
+     * tree species area, which says its mix - "Oak grove · oak 90% · birch 10%" -
+     * so they can be told apart in the list.
      */
     private rowLabel(id: string): string {
         const f = this.liveFeature(id);
         const type = f?.type ?? '';
+        if (f && type === TREE_AREA_TYPE) {
+            return `${treeAreaNameOf(f.attributes) || FEATURE_STYLES.tree_area.label} · ${speciesMixLabel(speciesMixOf(f.attributes))}`;
+        }
         if (!f || type !== 'vegetation_zone') return FEATURE_STYLES[type as keyof typeof FEATURE_STYLES]?.label ?? type;
         const zoneType = zoneTypeKeyOf(f.attributes);
         const variantKey = zoneVariantKeyOf(f.attributes);

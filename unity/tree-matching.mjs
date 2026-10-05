@@ -10,7 +10,9 @@ export function speciesHash(text) {
  h^=h>>>16;h=Math.imul(h,0x85ebca6b);h^=h>>>13;h=Math.imul(h,0xc2b2ae35);h^=h>>>16;
  return (h>>>0)/4294967296;
 }
-export function matchTree(stem,config,override) {
+// `area`: the tree species area the stem stands in (the trees export's `areas`,
+// shared/features/tree-areas.ts): {species:[{species,weight}], ignoreKind}.
+export function matchTree(stem,config,override,area) {
  if(!stem.id)throw Error('Every stem needs a stable ID');
  if(![stem.h,stem.r,stem.x,stem.z].every(Number.isFinite)||stem.h<=0||stem.r<=0||![0,1,2].includes(stem.k))throw Error('Invalid stem '+stem.id);
  if(override?.exclude)return {stemId:stem.id,status:'excluded',source:'override',position:{x:stem.x,z:stem.z}};
@@ -22,7 +24,7 @@ export function matchTree(stem,config,override) {
  const form=stem.h<=rules.shrubMaxHeightM?'shrub':'tree';
  const canopy=stem.woodland===true&&form==='tree'&&rules.woodlandCrownMultiplier>=1&&rules.woodlandWidthWeight>0;
  const targetWidth=2*stem.r*(canopy?rules.woodlandCrownMultiplier:1),widthWeight=canopy?rules.woodlandWidthWeight:1;
- const ranked=candidates.filter(a=>a.form===form&&(kind==='unknown'||a.kind===kind)).map(a=>{
+ const fit=a=>{
    if(!(a.heightM>0&&a.crownWidthM>0))throw Error('Invalid asset dimensions: '+a.guid);
    const h=stem.h/a.heightM,w=targetWidth/a.crownWidthM;
    const ideal=Math.exp((2*Math.log(h)+widthWeight*Math.log(w))/(2+widthWeight));
@@ -31,7 +33,25 @@ export function matchTree(stem,config,override) {
    const widthError=Math.abs(Math.log(a.crownWidthM*scale/targetWidth));
    const score=2*heightError+widthWeight*widthError+rules.scalePenalty*Math.abs(Math.log(scale));
    return {guid:a.guid,name:a.name,species:a.species,label:speciesLabel(a),weight:a.selectionWeight,scale,heightError,widthError,score};
- }).sort((a,b)=>a.score-b.score||a.guid.localeCompare(b.guid));
+ };
+ const byFit=(a,b)=>a.score-b.score||a.guid.localeCompare(b.guid);
+ let ranked=candidates.filter(a=>a.form===form&&(kind==='unknown'||a.kind===kind)).map(fit).sort(byFit);
+ // Inside a tree species area the mix is the rule: every species of it with a model of the
+ // stem's form races by the area's weight, however well it fits (the fit picks the size), and
+ // the survey's broadleaf/conifer class only counts unless the area ignores it. No such model
+ // (a shrub-size stem, a conifer in an oak area): the palette decides, as outside.
+ let areaPool=null;
+ const areaWeight=s=>area?.species?.find(x=>x.species===s)?.weight||0;
+ if(area&&!override?.guid){
+   const inMix=candidates.filter(a=>a.form===form&&(area.ignoreKind||kind==='unknown'||a.kind===kind)&&areaWeight(speciesLabel(a))>0).map(fit).sort(byFit);
+   if(inMix.length){
+     const species=[...new Set(inMix.map(a=>a.label))].sort();
+     const race=s=>-Math.log(Math.max(Number.EPSILON,speciesHash(config.seed+':'+stem.id+':species:'+s)))/areaWeight(s);
+     const selected=species.reduce((best,s)=>race(s)<race(best)?s:best);
+     ranked=inMix;
+     areaPool=inMix.filter(a=>a.label===selected);
+   }
+ }
  let chosen;
  if(override?.guid){
    const asset=config.assets.find(a=>a.guid===override.guid||a.catalogueGuid===override.guid);
@@ -39,10 +59,10 @@ export function matchTree(stem,config,override) {
    if(!Number.isFinite(override.scale)||override.scale<=0)throw Error('Override requires positive uniform scale');
    chosen={guid:asset.guid,name:asset.name,scale:override.scale};
  }else if(ranked.length){
-   let pool=ranked;
+   let pool=areaPool||ranked;
    // Pick species once, independently of its number of prefab variants. Poor fits
    // cannot win merely to meet a species target; proportions are preferences.
-   if(kind!=='unknown'&&rules.speciesWeights){
+   if(!areaPool&&kind!=='unknown'&&rules.speciesWeights){
      const slack=canopy&&rules.woodlandSpeciesFitSlack>0?rules.woodlandSpeciesFitSlack:(rules.speciesFitSlack??0);
      const eligible=ranked.filter(a=>a.score<=ranked[0].score+slack);
      const species=[...new Set(eligible.map(a=>a.label))].filter(s=>(rules.speciesWeights[s]||0)>0).sort();

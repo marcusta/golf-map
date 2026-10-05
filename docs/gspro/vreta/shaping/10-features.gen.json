@@ -1,0 +1,362 @@
+{
+  "format": "golfmap-shaping-layer-v1",
+  "id": "features",
+  "generated": true,
+  "generator": "pipeline/gspro.py shaping-global",
+  "course": {
+    "id": "88E5F5B7-B1E6-4EBA-9D47-49B289C59EAE",
+    "name": "Vreta"
+  },
+  "ops": [
+    {
+      "id": "recipe-19",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "b0654a52-6c55-472e-9821-2da474c6e18e"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 25,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1a",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "60334cc9-c016-4aa2-bbe7-f42310dda654"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 26,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1b",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "919fbdcb-5984-4a03-a7b2-09cdb4b85a20"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 27,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-1c",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "04542ab7-cd16-4072-b6f6-3939f97207b9"
+      },
+      "recipe": "golfmap-bunker-studio-conway.json",
+      "seed": 28,
+      "note": "golfmap-bunker-studio-conway (recipe edit)"
+    },
+    {
+      "id": "recipe-1d",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "5f87592b-1268-43a8-8b3a-4337e4d2fbb3"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 29,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-24",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "bec99bb7-f43f-4b89-b2be-0e712cd9c830"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 36,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-32",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "676a1218-a86c-4392-a068-a7afb2cbcbde"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 50,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-38",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "4dd62369-fe40-4b4b-a466-cca99a7eadcc"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 56,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-39",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "9f03461b-fa6f-4861-bca0-9825f86ddbb6"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 57,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-3a",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "19752757-27c8-440a-add7-e071fdb37afa"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 58,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-3b",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "a4926092-f621-4122-881c-5710a33a3e14"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 59,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-3c",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "01b89dbf-cedb-407a-8759-34279dd6d95f"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 60,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-49",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3f2b863a-3d71-4333-a1ce-108e7c52c17f"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 73,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-4a",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3f152bfe-0b2d-46f6-bdbd-d22d8decac81"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 74,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-4b",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "1cbe472a-47d9-4cae-88fe-dd918803ed48"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 75,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-4c",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "5a933726-86da-4a66-8825-715804eb86f6"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 76,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-4d",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "e6ff8ddb-91a8-40d5-a4d1-2cde53f94447"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 77,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-53",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "77dbcbda-7b6d-4c03-bfde-bd6e9eb3e958"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 83,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-54",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "e57e408e-c07b-4712-ab3f-9e79a8c40cf2"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 84,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-55",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "bbea1cf1-bfaf-4660-88ea-73fadc0ed39b"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 85,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-66",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "27f35dee-c593-4345-9f5a-0c736c1bc80f"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 102,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-67",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "f4f2c8b6-a4bd-495c-8d68-8d14505f2f4d"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 103,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-6c",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "b0b404da-eea3-46da-bd2d-bcdf56c7d4a2"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 108,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-6d",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "cba4669e-0531-4748-8f71-98bab198e99b"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 109,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-78",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "dcd91daa-c47d-4d54-977e-184df5193d85"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 120,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-b4",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "c439c472-0754-4aaf-a58d-6f74d1f66554"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 180,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-c7",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "a40ce4ce-b416-42c4-a2d9-9e67841261e1"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 199,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-c8",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "6f99ceaf-a00a-443f-99b1-d12012e5de4f"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 200,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-f6",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3b51132f-4069-4ea9-9c6c-4b972341316d"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 246,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-f8",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "f31349b0-9bf2-456d-bfa5-46756b909025"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 248,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-fd",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "ef2d91cf-70d2-437b-a6a5-c80e01b4312f"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 253,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-fe",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "142fff90-59b1-4cf2-81f7-ba19b587e5a8"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 254,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-103",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "409925c2-e36a-4e37-a2c1-46f137bfe35a"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 259,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-164",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "7ba1e990-24d6-42bc-b731-ae8b6a157da0"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 356,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-165",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "9bd93601-f775-4f39-ba4e-d5b4983b7c28"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 357,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    }
+  ]
+}

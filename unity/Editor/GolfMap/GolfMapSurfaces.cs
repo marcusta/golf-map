@@ -13,6 +13,10 @@
 // (uint8 class per cell, rows north to south) + .json (golfmap-surfaces-v1:
 // cell size, terrain origin and size in world metres, class names, counts) and
 // a small colour preview PNG. pipeline/grass_zones.py --surfaces reads it.
+//
+// Rock: a course mesh the stone walls' ground reshaped draws its stone channel with a copy of its material under
+// <course>/Walls/ (GolfMapWallGround); its triangles painted mostly in that channel (blue) are Rock, not the mesh's
+// own class, so tall grass keeps off klippor and tee-wall faces.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -30,7 +34,7 @@ namespace GolfMap.Editor
         public const string Format = "golfmap-surfaces-v1";
 
         // Codes are the file format; append, never renumber.
-        public enum Surface : byte { None = 0, Deep = 1, Rough = 2, Semi = 3, Fairway = 4, Green = 5, Tee = 6, Bunker = 7, Water = 8, Blend = 9, Other = 10 }
+        public enum Surface : byte { None = 0, Deep = 1, Rough = 2, Semi = 3, Fairway = 4, Green = 5, Tee = 6, Bunker = 7, Water = 8, Blend = 9, Other = 10, Rock = 11 }
 
         // Tie-break rank: higher keeps vegetation out and wins a near tie.
         static int Rank(Surface s)
@@ -61,6 +65,15 @@ namespace GolfMap.Editor
             return Surface.Other;
         }
 
+        // A course mesh that draws the stone walls' stone channel (a material copy under <course>/Walls/).
+        static bool StoneMaterial(MeshFilter mf)
+        {
+            var r = mf.GetComponent<Renderer>();
+            if (r == null || r.sharedMaterial == null) return false;
+            var p = AssetDatabase.GetAssetPath(r.sharedMaterial);
+            return p.IndexOf("/Walls/", StringComparison.OrdinalIgnoreCase) >= 0 && r.sharedMaterial.name.EndsWith("(stone)", StringComparison.Ordinal);
+        }
+
         internal static bool IsCourseMesh(string name)
         {
             return (name.StartsWith("Spline_", StringComparison.Ordinal) || name.StartsWith("Gap_Issue", StringComparison.Ordinal)) && !GolfMapWaterplanes.IsWaterPlane(name);
@@ -68,7 +81,7 @@ namespace GolfMap.Editor
 
         [BridgeCommand("golfmap.surfaces.export", "Rasterize the course meshes (Spline_*, Gap_Issue_*) over a terrain into a surface map: <prefix>-<terrain>-surfaces.bin/.json/-preview.png in the course's export folder. Input of pipeline/grass_zones.py --surfaces.",
             args = "terrain=inner|outer (default inner), cell=0.5 (metres)")]
-        static IEnumerator Export(BridgeArgs a)
+        internal static IEnumerator Export(BridgeArgs a)
         {
             var course = GolfMapCourses.Require();
             var role = a.String("terrain", "inner");
@@ -104,11 +117,19 @@ namespace GolfMap.Editor
                 for (int i = 0; i < local.Length; i++) world[i] = m.MultiplyPoint3x4(local[i]);
                 var tris = mesh.triangles;
                 triangles += tris.Length / 3;
-                byte code = (byte)surface;
-                int rank = Rank(surface);
+                byte meshCode = (byte)surface;
+                int meshRank = Rank(surface);
+                var colors = StoneMaterial(mf) ? mesh.colors : null;
+                if (colors != null && colors.Length != local.Length) colors = null;
                 for (int t = 0; t < tris.Length; t += 3)
                 {
                     Vector3 p0 = world[tris[t]], p1 = world[tris[t + 1]], p2 = world[tris[t + 2]];
+                    byte code = meshCode; int rank = meshRank;
+                    if (colors != null)
+                    {
+                        var c = (colors[tris[t]] + colors[tris[t + 1]] + colors[tris[t + 2]]) / 3f;
+                        if (c.b + c.g > 0.5f && c.b + c.g > c.r) { code = (byte)Surface.Rock; rank = Rank(Surface.Rock); }
+                    }
                     // cell space: x east from the terrain's west edge, row 0 at the north edge
                     float x0 = (p0.x - origin.x) / cell, y0 = (origin.z + size.z - p0.z) / cell;
                     float x1 = (p1.x - origin.x) / cell, y1 = (origin.z + size.z - p1.z) / cell;
@@ -211,6 +232,7 @@ namespace GolfMap.Editor
             new Color32(0, 0, 192, 255),        // water
             new Color32(200, 0, 200, 255),      // blend
             new Color32(255, 120, 0, 255),      // other
+            new Color32(128, 128, 128, 255),    // rock
         };
 
         static void WritePreview(byte[] cls, int w, int h, string path)

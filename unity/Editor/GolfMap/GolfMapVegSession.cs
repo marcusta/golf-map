@@ -35,7 +35,16 @@ namespace GolfMap.Editor
                 if (s.name == "GolfMapVeg current") current = s;
                 else if (s.name == "GolfMapVeg saved") saved = s;
             }
-            if (current && saved && saved.coursePath == CoursePath()) { GolfMapVegPalette.DescribeRoles(current.entries); GolfMapVegLive.Assume(current.entries); return; }
+            if (current && saved && saved.coursePath == CoursePath())
+            {
+                GolfMapVegPalette.DescribeRoles(current.entries);
+                GolfMapVegLive.Assume(current.entries);
+                // A script reload puts the textures' GPU copies back to the files: bake unsaved tints again.
+                foreach (var e in current.entries)
+                    foreach (var v in e.values.Where(x => GolfMapVegPalette.IsBaked(x) && Edited(e, x)))
+                        GolfMapVegLive.QueueBake(v.slot.Substring(GolfMapVegPalette.BakeSlot.Length), GolfMapVegBake.ToTint(v.c));
+                return;
+            }
             Load();
         }
 
@@ -60,7 +69,7 @@ namespace GolfMap.Editor
             var loaded = GolfMapVegPalette.Load(course);
             saved.coursePath = AssetDatabase.GetAssetPath(course);
             saved.grassPath = loaded.grassPath; saved.treePath = loaded.treePath;
-            saved.grassStamp = Stamp(loaded.grassPath); saved.treeStamp = Stamp(loaded.treePath);
+            saved.grassStamp = Stamp(loaded.grassPath); saved.treeStamp = Stamp(loaded.treePath); saved.trialStamp = Stamp(TrialPath());
             saved.notes = loaded.notes;
             saved.entries = loaded.entries.Select(e => e.Copy()).ToList(); saved.Reindex();
             Undo.ClearUndo(current);
@@ -79,8 +88,12 @@ namespace GolfMap.Editor
         // this on its own; bridge commands call it first).
         public static void Fresh() { if (DiskChanged && DirtyEntries().Count == 0) Load(); }
 
-        // A file changed on disk since it was loaded or saved here.
-        public static bool DiskChanged { get { Ensure(); return Stamp(saved.grassPath) != saved.grassStamp || Stamp(saved.treePath) != saved.treeStamp; } }
+        // A file changed on disk since it was loaded or saved here (trial.json: the CTI tints).
+        public static bool DiskChanged { get { Ensure(); return Stamp(saved.grassPath) != saved.grassStamp || Stamp(saved.treePath) != saved.treeStamp || Stamp(TrialPath()) != saved.trialStamp; } }
+
+        static string TrialPath() { return string.IsNullOrEmpty(saved.treePath) ? null : Path.GetDirectoryName(saved.treePath).Replace('\\', '/') + "/CTITrial/trial.json"; }
+        // GolfMapVegBake wrote trial.json itself: not a change from outside.
+        public static void TrialWritten() { if (saved) saved.trialStamp = Stamp(TrialPath()); }
 
         public static GolfMapBiome Biome()
         {
@@ -98,16 +111,38 @@ namespace GolfMap.Editor
 
         public static void Record(string what) { Undo.RecordObject(Current, what); }
 
-        // Push to the scene; `dragging` holds respawns back while a slider moves.
-        public static GolfMapVegLive.Result Push(IEnumerable<GolfMapVegEntry> entries, bool dragging)
+        // Push to the scene; `dragging` holds respawns back while a slider moves. Tree values keyed
+        // by a material or a baked texture that another look shares are carried over to it first.
+        public static GolfMapVegLive.Result Push(IEnumerable<GolfMapVegEntry> entries, bool dragging, bool propagate = true)
         {
-            var result = GolfMapVegLive.Push(Course(), Current, entries, dragging);
+            var list = propagate ? Propagate(entries) : entries.ToList();
+            var result = GolfMapVegLive.Push(Course(), Current, list, dragging);
             LastResult = result.Summary();
             Raise();
             return result;
         }
 
-        public static GolfMapVegLive.Result PushAll() { return Push(Current.entries, false); }
+        public static GolfMapVegLive.Result PushAll() { return Push(Current.entries, false, false); }
+
+        // Bake queued tints now (bridge commands; the window waits for the value to settle).
+        public static string FlushBakes() { var note = GolfMapVegLive.FlushBakes(Course()); if (note.Length > 0) LastResult = note; return note; }
+
+        static List<GolfMapVegEntry> Propagate(IEnumerable<GolfMapVegEntry> edited)
+        {
+            var list = edited.ToList();
+            var extra = new List<GolfMapVegEntry>();
+            foreach (var e in list.Where(x => x.kind == GolfMapVegKind.Tree && !x.readOnly))
+                foreach (var v in e.values.Where(x => !string.IsNullOrEmpty(x.slot)))
+                    foreach (var o in Current.entries)
+                    {
+                        if (o == e || o.kind != GolfMapVegKind.Tree || o.readOnly || list.Contains(o)) continue;
+                        var w = o.Find(v);
+                        if (w == null || w.Same(v)) continue;
+                        w.c = v.c; w.f = v.f;
+                        if (!extra.Contains(o)) extra.Add(o);
+                    }
+            return list.Concat(extra).ToList();
+        }
 
         // Absolute value for a role on every selected entry that has it (part/slot narrow it).
         public static void Set(IEnumerable<GolfMapVegEntry> entries, string role, string part, string slot, float? f, Color? c)
@@ -163,6 +198,20 @@ namespace GolfMap.Editor
                 }
             }
             var trees = dirty.Where(e => e.kind == GolfMapVegKind.Tree).ToList();
+            // Tints baked into CTI albedo copies: the texture files and trial.json.
+            GolfMapVegLive.FlushBakes(course);
+            var baked = new List<string>();
+            foreach (var g in trees.SelectMany(e => e.values.Where(v => GolfMapVegPalette.IsBaked(v) && Edited(e, v))).GroupBy(v => v.slot))
+            {
+                string texture = g.Key.Substring(GolfMapVegPalette.BakeSlot.Length);
+                var target = GolfMapVegBake.Targets(course).Values.FirstOrDefault(t => t.texture == texture);
+                if (target == null) continue;
+                EditorUtility.DisplayProgressBar("Vegetation palettes", "Writing " + Path.GetFileName(texture), 0.5f);
+                try { GolfMapVegBake.Save(course, target, GolfMapVegBake.ToTint(g.First().c), baked); }
+                finally { EditorUtility.ClearProgressBar(); }
+            }
+            if (baked.Count > 0) notes.Add("baked tints (" + string.Join(", ", baked.ToArray()) + ", CTITrial/trial.json)");
+            trees = trees.Where(e => e.values.Any(v => !GolfMapVegPalette.IsBaked(v) && Edited(e, v))).ToList();
             if (trees.Count > 0)
             {
                 GolfMapJsonObject doc;
@@ -186,10 +235,17 @@ namespace GolfMap.Editor
             AssetDatabase.SaveAssets();
             foreach (var e in dirty) { var s = saved.Get(e.key); if (s != null) saved.entries[saved.entries.IndexOf(s)] = e.Copy(); }
             saved.Reindex();
-            saved.grassStamp = Stamp(saved.grassPath); saved.treeStamp = Stamp(saved.treePath);
+            saved.grassStamp = Stamp(saved.grassPath); saved.treeStamp = Stamp(saved.treePath); saved.trialStamp = Stamp(TrialPath());
             LastResult = notes.Count == 0 ? "Nothing to save." : "Saved " + string.Join(" and ", notes.ToArray()) + ".";
             Raise();
             return LastResult;
+        }
+
+        static bool Edited(GolfMapVegEntry e, GolfMapVegValue v)
+        {
+            var s = saved.Get(e.key);
+            var w = s == null ? null : s.Find(v);
+            return w == null || !w.Same(v);
         }
 
         public static void Revert(IEnumerable<GolfMapVegEntry> only = null)
@@ -417,11 +473,12 @@ namespace GolfMap.Editor
                     else Set(entries, role, part, null, (float)Convert.ToDouble(kv.Value), null);
                 }
             var pushed = Push(entries, false);
+            string bakes = FlushBakes();
             string saveNote = a.Bool("save", false) ? Save() : "Not saved (save=true or the window's Save).";
             return new Dictionary<string, object>
             {
                 { "changed", entries.Select((e, i) => new KeyValuePair<string, object>(e.key, Changes(before[i], e))).Where(kv => ((Dictionary<string, object>)kv.Value).Count > 0).ToDictionary(kv => kv.Key, kv => kv.Value) },
-                { "live", pushed.Summary() }, { "save", saveNote },
+                { "live", pushed.Summary() + (bakes.Length > 0 ? " · " + bakes : "") }, { "save", saveNote },
             };
         }
 
@@ -471,6 +528,7 @@ namespace GolfMap.Editor
             var only = a.Has("select") ? Select(a.String("select")) : null;
             int n = (only ?? DirtyEntries()).Count(IsDirty);
             Revert(only);
+            FlushBakes();
             return "Reverted " + n + " entr" + (n == 1 ? "y" : "ies") + ".";
         }
 

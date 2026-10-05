@@ -14,9 +14,11 @@ const HELP: HelpSection[] = [
     {
         title: 'Terrain edits',
         shortcuts: [
-            { keys: 'Click', desc: 'Place an outline point' },
+            { keys: 'Click', desc: 'Select a bunker, pond, creek or path (its Blender recipe), else place an outline point' },
+            { keys: 'Cmd/Ctrl+Click', desc: 'Add a bunker, pond, creek or path of the same kind to the selection (or take it out), to give them one recipe' },
+            { keys: 'Shift+Click', desc: 'Place an outline point, even on a bunker/pond/creek/path' },
             { keys: 'Click the first point', desc: 'Close the outline & save the edit' },
-            { keys: 'Esc', desc: 'Discard the outline' },
+            { keys: 'Esc', desc: 'Discard the outline, then deselect' },
         ],
     },
 ];

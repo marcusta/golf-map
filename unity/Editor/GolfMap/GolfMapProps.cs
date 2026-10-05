@@ -204,6 +204,15 @@ namespace GolfMap.Editor
         // Renderer bounds of a prefab in its own root space (instantiated for a moment: prefab assets have no bounds).
         static Bounds Measure(GameObject prefab, out bool lods, out int colliders)
         {
+            Vector3 face; float steep, up;
+            return Measure(prefab, out lods, out colliders, out face, out steep, out up);
+        }
+
+        // face: the area-weighted outward normal of the first LOD's steep triangles (normal within 45 deg of level), in the
+        // prefab's own frame, horizontal; its length = how one-sided they are (0 = all round, 1 = one flat face). steep/up:
+        // shares of the surface area that is steep and that faces up. For turning a cliff piece's face outward.
+        static Bounds Measure(GameObject prefab, out bool lods, out int colliders, out Vector3 face, out float steep, out float up)
+        {
             var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
             try
             {
@@ -212,14 +221,33 @@ namespace GolfMap.Editor
                 var rs = go.GetComponentsInChildren<Renderer>();
                 var b = rs.Length > 0 ? rs[0].bounds : new Bounds();
                 foreach (var r in rs) b.Encapsulate(r.bounds);
-                lods = go.GetComponentInChildren<LODGroup>() != null;
+                var lodGroup = go.GetComponentInChildren<LODGroup>();
+                lods = lodGroup != null;
                 colliders = go.GetComponentsInChildren<Collider>().Length;
+                var lod0 = lods && lodGroup.GetLODs().Length > 0 ? lodGroup.GetLODs()[0].renderers.Where(r => r != null).ToArray() : rs;
+                Vector3 sum = Vector3.zero; float steepArea = 0, upArea = 0, total = 0;
+                foreach (var r in lod0)
+                {
+                    var mf = r.GetComponent<MeshFilter>();
+                    if (mf == null || mf.sharedMesh == null) continue;
+                    var v = mf.sharedMesh.vertices; var t = mf.sharedMesh.triangles; var m = r.transform.localToWorldMatrix;
+                    for (int i = 0; i < t.Length; i += 3)
+                    {
+                        var n = Vector3.Cross(m.MultiplyPoint3x4(v[t[i + 1]]) - m.MultiplyPoint3x4(v[t[i]]), m.MultiplyPoint3x4(v[t[i + 2]]) - m.MultiplyPoint3x4(v[t[i]]));
+                        float area = n.magnitude / 2; if (area <= 0) continue;
+                        var nn = n.normalized; total += area;
+                        if (nn.y > 0.7f) upArea += area;
+                        else if (Mathf.Abs(nn.y) < 0.7f) { steepArea += area; sum += new Vector3(nn.x, 0, nn.z) * area; }
+                    }
+                }
+                face = steepArea > 0 ? sum / steepArea : Vector3.zero;
+                steep = total > 0 ? steepArea / total : 0; up = total > 0 ? upArea / total : 0;
                 return b;
             }
             finally { UnityEngine.Object.DestroyImmediate(go); }
         }
 
-        [BridgeCommand("golfmap.props.measure", "Size of prefabs (renderer bounds in the prefab's own space, metres), whether they have LODs and colliders: what a props spec needs to tile a hedge row or scale a bush.",
+        [BridgeCommand("golfmap.props.measure", "Size of prefabs (renderer bounds in the prefab's own space, metres), whether they have LODs and colliders: what a props spec needs to tile a hedge row or scale a bush. face = which way the first LOD's steep surfaces look (angleDeg from the prefab's +z toward +x; oneSided 0 = all round, 1 = one flat face): which side of a cliff piece is its rock face.",
             args = "paths (asset paths of prefabs) or folder (every prefab under it)")]
         static object MeasureCommand(BridgeArgs a)
         {
@@ -232,11 +260,14 @@ namespace GolfMap.Editor
             {
                 var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(p);
                 if (prefab == null) { rows.Add(new Dictionary<string, object> { { "path", p }, { "error", "not a prefab" } }); continue; }
-                bool lods; int cols;
-                var b = Measure(prefab, out lods, out cols);
+                bool lods; int cols; Vector3 face; float steep, up; Bounds b;
+                try { b = Measure(prefab, out lods, out cols, out face, out steep, out up); }
+                catch (Exception e) { rows.Add(new Dictionary<string, object> { { "path", p }, { "error", e.GetType().Name + ": " + e.Message } }); continue; }
                 rows.Add(new Dictionary<string, object> {
                     { "path", p }, { "size", new[] { b.size.x, b.size.y, b.size.z } }, { "center", new[] { b.center.x, b.center.y, b.center.z } },
-                    { "lods", lods }, { "colliders", cols } });
+                    { "lods", lods }, { "colliders", cols },
+                    { "face", new Dictionary<string, object> { { "angleDeg", Math.Round(Mathf.Atan2(face.x, face.z) * Mathf.Rad2Deg, 1) }, { "oneSided", Math.Round(face.magnitude, 2) } } },
+                    { "steepShare", Math.Round(steep, 2) }, { "upShare", Math.Round(up, 2) } });
             }
             return rows;
         }

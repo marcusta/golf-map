@@ -552,7 +552,10 @@ namespace GolfMap.Editor
                 if(storage&&storage.VegetationSystemPro){
                     if(!StorageMatchesTerrain(storage,terrain))throw new InvalidOperationException("Storage does not match the current terrain/bounds. Click Create / select storage for this terrain to select or create a matching system. The old storage will be preserved.");
                     var catalogs=storage.VegetationSystemPro.VegetationPackageProList;
-                    if(catalogs.Any(p=>p&&p.VegetationInfoList.Count>0&&p.PackageName!=CatalogName))throw new InvalidOperationException("Storage contains a different planting layer. Inner and outer must use separate systems.");
+                    // Only the other area's tree catalogue is a clash: the inner system also carries the
+                    // lower-vegetation (grass) package, which the planter never touches.
+                    var other=catalogs.FirstOrDefault(p=>IsImportedCatalogue(p)&&p.VegetationInfoList.Count>0&&p.PackageName!=CatalogName);
+                    if(other)throw new InvalidOperationException("This system already holds the '"+other.PackageName+"' catalogue. Inner and outer trees must use separate systems.");
                 }
                 probe = new GroundProbe(terrain, forceBillboards ? new List<GameObject>() : groundMeshes);
                 foreach (var tree in loaded.trees)

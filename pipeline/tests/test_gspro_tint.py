@@ -6,6 +6,8 @@ a synthetic orthophoto, no mocks.
 
 import json
 
+import math
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -232,8 +234,8 @@ def test_the_tinted_twin_is_written_at_its_own_smaller_size(tmp_path):
     (tmp_path / "a").mkdir(), (tmp_path / "b").mkdir()
     dark, tinted = _run(tmp_path / "a", [("fairway", 1, 0, [_rect(0.0, 0.0, 1.0, 1.0)], "bezier")], tint_size=32)
     assert tinted.size == (32, 32) and dark.size == (SIZE, SIZE)
-    # Never scaled UP past the render: the default 4096 on a 64 px render stays 64.
-    assert gspro.DEFAULT_TINT_SIZE == 4096 and gspro.DEFAULT_SOFTEN_M == 1.0
+    # Never scaled UP past the render: the default 8192 on a 64 px render stays 64.
+    assert gspro.DEFAULT_TINT_SIZE == 8192 and gspro.DEFAULT_SOFTEN_M == 1.0
     _, tinted = _run(tmp_path / "b", [("fairway", 1, 0, [_rect(0.0, 0.0, 1.0, 1.0)], "bezier")])
     assert tinted.size == (SIZE, SIZE)
 
@@ -279,3 +281,252 @@ def test_darken_tint_is_opt_in_and_puts_the_tint_colour_under_the_photos_multipl
     assert t["water"] == (WATER, 0.4)
     assert gspro._darken_tints(gspro._parse_tints(None), 0.4, "linear")["ground"][0] == (47, 60, 28)
     assert gspro._darken_tints(gspro._parse_tints(None), 1.0, "linear")["ground"][0] == GREEN
+
+
+# --- Hazard edge fill (the sand/gravel halo round bunkers and paths in the -meshes file)
+
+FILL_EXTENT = (500000.0, 6400000.0, 500100.0, 6400100.0)  # 100 m square
+FILL_SIZE = 200  # 0.5 m/px, what the 4096 px -meshes file has over Vreta's 2050 m
+GRASS = np.array([60, 90, 40], dtype=float)
+SAND = np.array([225, 218, 200], dtype=float)
+
+
+def _box_row(kind, x0, y0, x1, y1):
+    e0, n0 = FILL_EXTENT[:2]
+    pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    return _row(kind, {"points": [{"x": e0 + x, "y": n0 + y} for x, y in pts]})
+
+
+def _haloed_photo(halo_m=1.0):
+    """Grass everywhere, sand over the 40..60 m box grown by `halo_m` (the
+    photo's sand running past the drawn outline)."""
+    hwc = np.empty((FILL_SIZE, FILL_SIZE, 3), dtype=np.uint8)
+    hwc[:] = GRASS
+    lo, hi = int((40 - halo_m) * 2), int((60 + halo_m) * 2)
+    hwc[FILL_SIZE - hi:FILL_SIZE - lo, lo:hi] = SAND
+    return hwc
+
+
+def _grass_share(rgb):
+    """How far a sand..grass mix is toward the grass (0 = sand, 1 = grass)."""
+    return float(np.dot(np.asarray(rgb, dtype=float) - SAND, GRASS - SAND) / np.dot(GRASS - SAND, GRASS - SAND))
+
+
+def _at(arr, x_m, y_m):
+    """The pixel at x_m east, y_m north of the extent's SW corner."""
+    return np.asarray(arr, dtype=float)[FILL_SIZE - 1 - int(y_m * 2), int(x_m * 2)]
+
+
+def test_edge_fill_paints_the_sand_halo_round_a_bunker_from_the_grass_and_keeps_the_sand():
+    """A bunker drawn over 40..60 m, the photo's sand 1 m wider all round.
+    After the fill: the halo (and the outermost texel inside the outline,
+    where bilinear sampling at the seam would read sand) is grass; the
+    bunker's sand further in and the grass further out are untouched."""
+    photo = _haloed_photo()
+    out, summary = gspro._fill_hazard_edges(photo, FILL_EXTENT, [_box_row("bunker", 40, 40, 60, 60)], gspro.EdgeFill())
+    for x in (60.25, 60.75, 39.25):                # the halo outside
+        assert np.abs(_at(out, x, 50) - GRASS).max() < 4, x
+    assert _grass_share(_at(out, 59.9, 50)) > 0.7        # the outermost texel inside: mostly grass (ramp)
+    assert np.abs(_at(out, 50, 60.6) - GRASS).max() < 4   # north side too
+    assert np.abs(_at(out, 50, 50) - SAND).max() == 0     # the bunker stays photographed
+    assert np.abs(_at(out, 58, 50) - SAND).max() == 0
+    assert np.abs(_at(out, 80, 50) - _at(photo, 80, 50)).max() == 0  # beyond the band: as it was
+    assert np.abs(_at(photo, 60.5, 50) - SAND).max() == 0  # (the halo was there)
+    assert "edge fill round bunker 1" in summary
+
+
+def test_edge_fill_paints_the_gravel_halo_round_a_path_from_its_outline_and_keeps_the_whole_path():
+    """Paths are filled by default too, but centred on the outline: the
+    path's own concrete samples the file, so its edge texel stays mostly
+    gravel and the texel just outside mostly grass."""
+    photo = _haloed_photo()
+    out, summary = gspro._fill_hazard_edges(photo, FILL_EXTENT, [_box_row("path", 40, 40, 60, 60)], gspro.EdgeFill())
+    for x in (60.75, 39.25, 61.25):
+        assert np.abs(_at(out, x, 50) - GRASS).max() < 4, x
+    assert _grass_share(_at(out, 60.25, 50)) > 0.7        # the outline's outer texel: mostly grass
+    assert _grass_share(_at(out, 59.9, 50)) < 0.3         # its inner texel: mostly still the path
+    assert np.abs(_at(out, 58, 50) - SAND).max() == 0
+    assert "path 1 (0 m in)" in summary
+
+
+def _bilinear(arr, x_m, y_m):
+    """`arr` sampled like the GPU does, at x_m east / y_m north of the SW corner."""
+    a = np.asarray(arr, dtype=float)
+    fx, fy = x_m * 2 - 0.5, FILL_SIZE - y_m * 2 - 0.5
+    x0, y0 = int(np.floor(fx)), int(np.floor(fy))
+    tx, ty = fx - x0, fy - y0
+    return ((a[y0, x0] * (1 - tx) + a[y0, x0 + 1] * tx) * (1 - ty)
+            + (a[y0 + 1, x0] * (1 - tx) + a[y0 + 1, x0 + 1] * tx) * ty)
+
+
+def test_edge_fill_along_a_shallow_slanted_path_has_no_texel_staircase():
+    """A 2 m path at 4 degrees to the texel rows, its gravel running 1.5 m
+    past the outline into the grass. Sampled along lines parallel to the
+    path, the filled file must be even: a band edge rasterised on the 0.5 m
+    texels steps up and down every few metres (seen in Unity as a stepped
+    pale strip; the raster band measured std 8..14 here, the ramps <= 5)."""
+    ang = math.radians(4.0)
+    ux, uy, nx, ny = math.cos(ang), math.sin(ang), -math.sin(ang), math.cos(ang)
+    cx, cy = 50.0, 45.0
+
+    def at(t, o):
+        return cx + ux * t + nx * o, cy + uy * t + ny * o
+
+    corners = [at(-45, -1), at(45, -1), at(45, 1), at(-45, 1)]
+    e0, n0 = FILL_EXTENT[:2]
+    rows = [_row("path", {"points": [{"x": e0 + x, "y": n0 + y} for x, y in corners]})]
+    ys, xs = np.mgrid[0:FILL_SIZE, 0:FILL_SIZE]
+    xm, ym = (xs + 0.5) / 2, (FILL_SIZE - ys - 0.5) / 2
+    off = np.abs((xm - cx) * nx + (ym - cy) * ny)          # exact distance from the centre line
+    w = np.clip((off - 1.0) / 1.5, 0.0, 1.0)[..., None]    # gravel to the outline, grass 1.5 m past it
+    photo = np.round(SAND * (1 - w) + GRASS * w).astype(np.uint8)
+    out, _ = gspro._fill_hazard_edges(photo, FILL_EXTENT, rows, gspro.EdgeFill())
+    for o in np.arange(0.75, 4.01, 0.25):                   # just inside the outline, outwards
+        line = np.array([_bilinear(out, *at(t, o)) for t in np.arange(-30, 30, 0.2)])
+        assert line.std(axis=0).max() < 6, (o, line.std(axis=0))
+    assert np.abs(_bilinear(out, *at(0, 2.5)) - GRASS).max() < 2   # and the halo is gone
+
+
+def test_edge_fill_insets_per_type_and_one_inset_overrides_them_all():
+    photo = _haloed_photo()
+    rows = [_box_row("path", 40, 40, 60, 60)]
+    out, _ = gspro._fill_hazard_edges(photo, FILL_EXTENT, rows, gspro.EdgeFill(inset_m=0.5))
+    assert _grass_share(_at(out, 59.9, 50)) > 0.7
+    out, summary = gspro._fill_hazard_edges(photo, FILL_EXTENT, rows, gspro.EdgeFill(types=("bunker",)))
+    assert np.array_equal(out, photo) and "no bunker" in summary
+
+
+def test_parse_edge_fill_defaults_none_and_junk():
+    assert gspro._parse_edge_fill(None) == gspro.EdgeFill(("bunker", "path"), 1.25, None)
+    assert [gspro._parse_edge_fill(None).inset_for(k) for k in ("bunker", "path")] == [0.5, 0.0]
+    assert gspro._parse_edge_fill("none") is None and gspro._parse_edge_fill("NONE") is None
+    assert gspro._parse_edge_fill("bunker, path", 1.5, 0).types == ("bunker", "path")
+    assert gspro._parse_edge_fill("bunker", 1.5, 0).inset_for("bunker") == 0
+    for bad in (dict(types=","), dict(types=None, margin_m=0), dict(types=None, margin_m=11),
+                dict(types=None, inset_m=-1), dict(types=None, inset_m=3)):
+        with pytest.raises(SystemExit, match="--edge-fill"):
+            gspro._parse_edge_fill(**bad)
+
+
+def test_the_meshes_file_gets_the_edge_fill_by_default_and_none_keeps_the_old_file(tmp_path, capsys):
+    (tmp_path / "a").mkdir(), (tmp_path / "b").mkdir()
+    features = [("fairway", 1, 0, [_rect(0.0, 0.0, 1.0, 1.0)], "bezier"), ("bunker", 1, 1, [_rect(0.2, 0.4, 0.3, 0.6)], "bezier")]
+    _run(tmp_path / "a", features)
+    assert "edge fill" in capsys.readouterr().out
+    _run(tmp_path / "b", features, edge_fill=None)
+    assert "no edge fill (bunkers and paths as photographed)" in capsys.readouterr().out
+
+
+# --- path fill: the photo's tree shadows lifted off the paths ------------------
+
+GRAVEL = np.array([118, 114, 108], dtype=float)
+SHADOW = np.array([22, 30, 52], dtype=float)   # a tree shadow on gravel: dark and blue (measured on Vreta)
+
+
+def _path_photo(shadow_x=(45.0, 55.0), seed=1):
+    """Grass everywhere; a 4 m path over x 10..90 m, y 48..52 m, gravel with a
+    +/-6 grain; a tree shadow over `shadow_x` (the same grain, darker, blue)."""
+    rng = np.random.default_rng(seed)
+    hwc = np.empty((FILL_SIZE, FILL_SIZE, 3), dtype=float)
+    hwc[:] = GRASS
+    grain = rng.uniform(-6, 6, (FILL_SIZE, FILL_SIZE))[..., None]
+    rows = slice(FILL_SIZE - 104, FILL_SIZE - 96)   # y 48..52 m
+    hwc[rows, 20:180] = GRAVEL + grain[rows, 20:180]
+    if shadow_x is not None:
+        c0, c1 = int(shadow_x[0] * 2), int(shadow_x[1] * 2)
+        hwc[rows, c0:c1] = SHADOW + grain[rows, c0:c1] * 0.3
+    return np.clip(np.round(hwc), 0, 255).astype(np.uint8)
+
+
+def _path_rows(surface=None, x0=10, x1=90):
+    row = _box_row("path", x0, 48, x1, 52)
+    if surface is not None:
+        row["attributes_json"] = json.dumps({"surface": surface})
+    return [row]
+
+
+def _strip(arr, x0, x1):
+    """The path's pixels (y 48.5..51.5 m, inside the outline) over x0..x1 m."""
+    return np.asarray(arr, dtype=float)[FILL_SIZE - 103:FILL_SIZE - 97, int(x0 * 2):int(x1 * 2)].reshape(-1, 3)
+
+
+def test_path_fill_lifts_a_tree_shadow_to_the_sunlit_gravel_and_keeps_its_grain():
+    """The shadow over x 45..55 m becomes the gravel round it (within a few
+    levels, no blue left), with grain of its own rather than one flat colour;
+    the sunlit gravel and everything outside the path stay as they were."""
+    photo = _path_photo()
+    out, summary = gspro._fill_path_shadows(photo, FILL_EXTENT, _path_rows())
+    lifted = _strip(out, 46, 54)
+    assert np.abs(lifted.mean(axis=0) - GRAVEL).max() < 8, lifted.mean(axis=0)
+    assert lifted[:, 2].mean() - lifted[:, 0].mean() < 2            # the blue is gone
+    assert lifted.std(axis=0).min() > 1.0                            # grain, not a flat fill
+    assert np.abs(_strip(out, 15, 35) - _strip(photo, 15, 35)).max() <= 1   # sunlit gravel as photographed
+    outside = np.ones((FILL_SIZE, FILL_SIZE), dtype=bool)
+    outside[FILL_SIZE - 105:FILL_SIZE - 95, 18:182] = False
+    assert np.array_equal(out[outside], photo[outside])
+    assert "path fill: shadows on 1 paths" in summary
+
+
+def test_path_fill_along_a_shallow_slanted_path_has_no_texel_staircase():
+    """A 3 m path at 4 degrees to the texel rows, in a tree shadow along its
+    middle, its photographed edge a smooth 1 m blend into the grass. The
+    lifted gravel must end as smoothly: lifting the pixels whose centres are
+    inside made it a texel staircase down both sides (jagged teeth in Unity)."""
+    ang = math.radians(4.0)
+    ux, uy, nx, ny = math.cos(ang), math.sin(ang), -math.sin(ang), math.cos(ang)
+    cx, cy = 50.0, 45.0
+
+    def at(t, o):
+        return cx + ux * t + nx * o, cy + uy * t + ny * o
+
+    e0, n0 = FILL_EXTENT[:2]
+    corners = [at(-45, -1.5), at(45, -1.5), at(45, 1.5), at(-45, 1.5)]
+    rows = [_row("path", {"points": [{"x": e0 + x, "y": n0 + y} for x, y in corners]})]
+    ys, xs = np.mgrid[0:FILL_SIZE, 0:FILL_SIZE]
+    xm, ym = (xs + 0.5) / 2, (FILL_SIZE - ys - 0.5) / 2
+    off = np.abs((xm - cx) * nx + (ym - cy) * ny)
+    along = (xm - cx) * ux + (ym - cy) * uy
+    path_w = np.clip((2.0 - off) / 1.0, 0.0, 1.0)[..., None]          # 1 at 1 m from the centre, 0 at 2 m
+    ground = np.where((np.abs(along) < 25)[..., None], SHADOW, GRAVEL)
+    photo = np.round(ground * path_w + GRASS * (1 - path_w)).astype(np.uint8)
+    out, _ = gspro._fill_path_shadows(photo, FILL_EXTENT, rows)
+    for o in np.arange(0.75, 2.51, 0.25):                               # inside the outline, out past it
+        line = np.array([_bilinear(out, *at(t, o)) for t in np.arange(-15, 15, 0.2)])
+        assert line.std(axis=0).max() < 6, (o, line.std(axis=0))
+    assert np.abs(_bilinear(out, *at(0, 0)) - GRAVEL).max() < 15         # and the shadow is lifted
+
+
+def test_path_fill_keeps_a_dark_asphalt_road_dark():
+    """Dark but neutral grey is asphalt, not shadow: a road that dark all along
+    stays as photographed."""
+    photo = _path_photo(shadow_x=None)
+    rows = slice(FILL_SIZE - 104, FILL_SIZE - 96)
+    photo[rows, 20:180] = np.clip(photo[rows, 20:180].astype(float) * 0.55, 0, 255).astype(np.uint8)
+    out, _ = gspro._fill_path_shadows(photo, FILL_EXTENT, _path_rows("asphalt"))
+    assert np.abs(_strip(out, 12, 88) - _strip(photo, 12, 88)).mean() < 1.5
+
+
+def test_a_path_shaded_end_to_end_takes_the_sunlit_colour_of_the_courses_other_paths():
+    """A forest path in shadow all along has no sunlit gravel of its own: it
+    gets the sunlit path colour of the course (here a second, sunlit path)."""
+    photo = _path_photo(shadow_x=(10.0, 90.0))
+    rows = slice(FILL_SIZE - 44, FILL_SIZE - 36)   # a sunlit path at y 18..22 m
+    photo[rows, 20:180] = GRAVEL
+    out, _ = gspro._fill_path_shadows(photo, FILL_EXTENT, _path_rows() + [_box_row("path", 10, 18, 90, 22)])
+    assert np.abs(_strip(out, 30, 70).mean(axis=0) - GRAVEL).max() < 12
+
+
+def test_path_fill_leaves_grass_tracks_and_bridge_decks_alone():
+    photo = _path_photo()
+    for surface in ("grass", "bridge"):
+        out, summary = gspro._fill_path_shadows(photo, FILL_EXTENT, _path_rows(surface))
+        assert np.array_equal(out, photo) and "no paths" in summary, surface
+
+
+def test_the_meshes_file_gets_the_path_fill_by_default_and_false_keeps_the_shadows(tmp_path, capsys):
+    (tmp_path / "a").mkdir(), (tmp_path / "b").mkdir()
+    features = [("fairway", 1, 0, [_rect(0.0, 0.0, 1.0, 1.0)], "bezier"), ("path", 1, 1, [_rect(0.1, 0.45, 0.9, 0.55)], "bezier")]
+    _run(tmp_path / "a", features)
+    assert "path fill: shadows on 1 paths" in capsys.readouterr().out
+    _run(tmp_path / "b", features, path_fill=False)
+    assert "no path fill (path shadows as photographed)" in capsys.readouterr().out
