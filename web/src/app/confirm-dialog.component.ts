@@ -332,7 +332,6 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
     private cancelDefault!: HTMLButtonElement;
     private cancelReview!: HTMLButtonElement;
     private confirmDefault!: HTMLButtonElement;
-    private confirmReview!: HTMLButtonElement;
 
     render(): DocumentFragment {
         const request = () => this.svc.current.get();
@@ -397,7 +396,7 @@ export class ConfirmDialogComponent extends Component<ConfirmDialogProps> {
         this.cancelDefault = this.ref(frag, 'cancelDefault') as HTMLButtonElement;
         this.cancelReview = this.ref(frag, 'cancelReview') as HTMLButtonElement;
         this.confirmDefault = this.ref(frag, 'confirmDefault') as HTMLButtonElement;
-        this.confirmReview = this.ref(frag, 'confirmReview') as HTMLButtonElement;
+        this.ref(frag, 'confirmReview');
 
         this.track(effect(() => {
             const current = this.svc.current.get();

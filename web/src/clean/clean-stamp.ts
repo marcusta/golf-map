@@ -194,3 +194,243 @@ export function renderStampStroke(data: Uint8ClampedArray, size: number, stroke:
         }
     }
 }
+
+/** Axis-aligned pixel rectangle, half-open: [x0, x1) x [y0, y1). */
+export interface PxRect {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+}
+
+function unionRect(a: PxRect | null, b: PxRect | null): PxRect | null {
+    if (!a) return b;
+    if (!b) return a;
+    return { x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) };
+}
+
+/**
+ * The live form of renderStampStroke: the stroke grows point by point and
+ * `flush()` paints only what changed since the last flush into `out`.
+ *
+ * After any flush, `out` equals `base` with renderStampStroke(path so far)
+ * applied, byte for byte. That holds because:
+ * - Dab centers come from the same carried-distance walk as dabCenters. The
+ *   interior dabs of a path are a prefix of the dabs of any extension of it.
+ *   Only the endpoint dab is provisional: it is painted on top for the flush
+ *   and its alpha window is restored afterwards.
+ * - The stroke alpha accumulates per dab in the same order and the same
+ *   float32 buffer arithmetic (a += dab * (1 - a)).
+ * - Tone-match sums are integer sums over pixels whose alpha is above zero,
+ *   so they do not depend on visit order.
+ * - Source and destination always read `base`, the pre-stroke snapshot.
+ *
+ * With tone-match on, a flush that moves the mean shift re-composites the
+ * whole painted rectangle; otherwise only the new dab windows and the old
+ * and new endpoint windows.
+ */
+export class IncrementalStampStroke {
+    private readonly alpha: Float32Array;
+    private readonly flow: number;
+    private readonly opacity: number;
+    private readonly spacing: number;
+    private readonly r: number;
+    private readonly dx: number;
+    private readonly dy: number;
+    private readonly path: PxPoint[] = [];
+    /** Path points already walked for dab centers. */
+    private walked = 0;
+    private carried = 0;
+    private lastCenter: PxPoint | null = null;
+    /** Dab centers found but not yet painted into `alpha`. */
+    private queued: PxPoint[] = [];
+    /** Tone-match sums over committed alpha (dest RGB, source RGB, count). */
+    private sums = [0, 0, 0, 0, 0, 0, 0];
+    private shift: [number, number, number] = [0, 0, 0];
+    /** Union of every dab window painted so far (committed + endpoint). */
+    private painted: PxRect | null = null;
+    /** Endpoint dab window of the previous flush (restored, must repaint). */
+    private prevTail: PxRect | null = null;
+    private readonly enabled: boolean;
+
+    constructor(
+        private readonly base: Uint8ClampedArray,
+        private readonly out: Uint8ClampedArray,
+        private readonly size: number,
+        private readonly params: Omit<StampStrokePx, 'path'>,
+    ) {
+        this.alpha = new Float32Array(size * size);
+        this.flow = Math.max(params.flow, MIN_FLOW);
+        this.opacity = Math.min(Math.max(params.opacity, 0), 1);
+        this.spacing = dabSpacingPx(params.radiusPx * 2, params.flow);
+        this.r = Math.ceil(params.radiusPx) + 1;
+        this.dx = Math.round(params.offsetPx.dx);
+        this.dy = Math.round(params.offsetPx.dy);
+        this.enabled = params.radiusPx > 0 && this.opacity > 0;
+    }
+
+    /** Points recorded so far (the stroke's dest polyline in surface px). */
+    get points(): readonly PxPoint[] {
+        return this.path;
+    }
+
+    /** Append one path point. Cheap: painting waits for flush(). */
+    add(p: PxPoint): void {
+        this.path.push({ x: p.x, y: p.y });
+    }
+
+    /**
+     * Paint every point added since the last flush. Returns the rectangle of
+     * `out` that changed, or null when nothing did.
+     */
+    flush(): PxRect | null {
+        if (!this.enabled || this.path.length === 0) return null;
+        this.walk();
+        let dirty: PxRect | null = this.prevTail;
+        for (const c of this.queued) dirty = unionRect(dirty, this.paintDab(c, this.alpha, true));
+        this.queued = [];
+
+        // Provisional endpoint dab (dabCenters' tail rule).
+        const last = this.path[this.path.length - 1];
+        const tail = this.lastCenter!;
+        let tailRect: PxRect | null = null;
+        let saved: Float32Array | null = null;
+        let tailSums: number[] | null = null;
+        if (Math.hypot(last.x - tail.x, last.y - tail.y) > this.spacing * 0.5) {
+            tailRect = this.dabRect(last);
+            if (tailRect) {
+                saved = this.saveWindow(tailRect);
+                const before = this.sums.slice();
+                this.paintDab(last, this.alpha, true);
+                tailSums = this.sums;
+                this.sums = before;
+            }
+        }
+        dirty = unionRect(dirty, tailRect);
+        this.painted = unionRect(this.painted, tailRect);
+
+        const sums = tailSums ?? this.sums;
+        const n = sums[6];
+        const shift: [number, number, number] = this.params.toneMatch && n > 0
+            ? [(sums[0] - sums[3]) / n, (sums[1] - sums[4]) / n, (sums[2] - sums[5]) / n]
+            : [0, 0, 0];
+        const shiftMoved = shift[0] !== this.shift[0] || shift[1] !== this.shift[1] || shift[2] !== this.shift[2];
+        this.shift = shift;
+        if (shiftMoved) dirty = unionRect(dirty, this.painted);
+        if (dirty) this.composite(dirty);
+
+        if (tailRect && saved) this.restoreWindow(tailRect, saved);
+        this.prevTail = tailRect;
+        return dirty;
+    }
+
+    /** Walk new path segments for dab centers (mirrors dabCenters). */
+    private walk(): void {
+        const path = this.path;
+        if (this.walked === 0) {
+            this.lastCenter = { ...path[0] };
+            this.queued.push(this.lastCenter);
+            this.walked = 1;
+        }
+        for (let i = this.walked - 1; i + 1 < path.length; i++) {
+            const a = path[i];
+            const b = path[i + 1];
+            const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+            if (segLen === 0) continue;
+            let t = this.spacing - this.carried;
+            while (t <= segLen) {
+                const k = t / segLen;
+                this.lastCenter = { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+                this.queued.push(this.lastCenter);
+                t += this.spacing;
+            }
+            this.carried = segLen - (t - this.spacing);
+        }
+        this.walked = path.length;
+    }
+
+    private dabRect(c: PxPoint): PxRect | null {
+        const r = this.r;
+        const x0 = Math.max(0, Math.floor(c.x) - r);
+        const x1 = Math.min(this.size, Math.ceil(c.x) + r + 1);
+        const y0 = Math.max(0, Math.floor(c.y) - r);
+        const y1 = Math.min(this.size, Math.ceil(c.y) + r + 1);
+        return x1 > x0 && y1 > y0 ? { x0, y0, x1, y1 } : null;
+    }
+
+    /** Accumulate one dab into `alpha`; pixels that turn non-zero join the
+     * tone-match sums. Returns the dab window. */
+    private paintDab(c: PxPoint, alpha: Float32Array, track: boolean): PxRect | null {
+        const rect = this.dabRect(c);
+        if (!rect) return null;
+        const { radiusPx, hardness } = this.params;
+        const size = this.size;
+        const base = this.base;
+        const sums = this.sums;
+        for (let y = rect.y0; y < rect.y1; y++) {
+            for (let x = rect.x0; x < rect.x1; x++) {
+                const d = Math.hypot(x + 0.5 - c.x, y + 0.5 - c.y);
+                const a = this.flow * dabAlphaAt(d, radiusPx, hardness);
+                if (a <= 0) continue;
+                const i = y * size + x;
+                const was = alpha[i];
+                alpha[i] += a * (1 - was);
+                if (!track || was > 0 || alpha[i] <= 0) continue;
+                const sx = x + this.dx, sy = y + this.dy;
+                if (sx < 0 || sy < 0 || sx >= size || sy >= size) continue;
+                const di = i * 4;
+                const si = (sy * size + sx) * 4;
+                sums[0] += base[di]; sums[1] += base[di + 1]; sums[2] += base[di + 2];
+                sums[3] += base[si]; sums[4] += base[si + 1]; sums[5] += base[si + 2];
+                sums[6]++;
+            }
+        }
+        if (track) this.painted = unionRect(this.painted, rect);
+        return rect;
+    }
+
+    private saveWindow(rect: PxRect): Float32Array {
+        const w = rect.x1 - rect.x0;
+        const saved = new Float32Array(w * (rect.y1 - rect.y0));
+        for (let y = rect.y0; y < rect.y1; y++) {
+            saved.set(this.alpha.subarray(y * this.size + rect.x0, y * this.size + rect.x1), (y - rect.y0) * w);
+        }
+        return saved;
+    }
+
+    private restoreWindow(rect: PxRect, saved: Float32Array): void {
+        const w = rect.x1 - rect.x0;
+        for (let y = rect.y0; y < rect.y1; y++) {
+            this.alpha.set(saved.subarray((y - rect.y0) * w, (y - rect.y0 + 1) * w), y * this.size + rect.x0);
+        }
+    }
+
+    /** Write `out` over `rect` from base + current alpha (renderStampStroke's
+     * final loop; pixels without alpha or source go back to base). */
+    private composite(rect: PxRect): void {
+        const { size, base, out, alpha, opacity, dx, dy } = this;
+        const [shiftR, shiftG, shiftB] = this.shift;
+        for (let y = rect.y0; y < rect.y1; y++) {
+            for (let x = rect.x0; x < rect.x1; x++) {
+                const di = (y * size + x) * 4;
+                const a = alpha[y * size + x] * opacity;
+                const sx = x + dx, sy = y + dy;
+                if (a <= 0 || sx < 0 || sy < 0 || sx >= size || sy >= size) {
+                    out[di] = base[di];
+                    out[di + 1] = base[di + 1];
+                    out[di + 2] = base[di + 2];
+                    out[di + 3] = base[di + 3];
+                    continue;
+                }
+                const si = (sy * size + sx) * 4;
+                const cr = Math.min(255, Math.max(0, base[si] + shiftR));
+                const cg = Math.min(255, Math.max(0, base[si + 1] + shiftG));
+                const cb = Math.min(255, Math.max(0, base[si + 2] + shiftB));
+                out[di] = Math.round(base[di] * (1 - a) + cr * a);
+                out[di + 1] = Math.round(base[di + 1] * (1 - a) + cg * a);
+                out[di + 2] = Math.round(base[di + 2] * (1 - a) + cb * a);
+                out[di + 3] = 255;
+            }
+        }
+    }
+}

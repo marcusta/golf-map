@@ -691,17 +691,11 @@ export class SelectionPanelComponent extends Component {
         });
         this.track(effect(() => {
             const current = this.pathSurfaceValue();
-            surfaceSelect.textContent = '';
-            const add = (value: string, label: string) => {
-                const option = document.createElement('option');
-                option.value = value;
-                option.textContent = label;
-                surfaceSelect.appendChild(option);
-            };
-            if (current === MIXED_SURFACE) add(MIXED_SURFACE, 'Mixed');
-            add('', 'Unknown');
-            for (const surface of PATH_SURFACES) add(surface, PATH_SURFACE_LABELS[surface]);
-            surfaceSelect.value = current;
+            const options: [string, string][] = [];
+            if (current === MIXED_SURFACE) options.push([MIXED_SURFACE, 'Mixed']);
+            options.push(['', 'Unknown']);
+            for (const surface of PATH_SURFACES) options.push([surface, PATH_SURFACE_LABELS[surface]]);
+            syncOptions(surfaceSelect, options, current);
         }));
 
         // Creek palette picker: None, the creek_bank type's Default mix when it
@@ -725,14 +719,7 @@ export class SelectionPanelComponent extends Component {
             for (const value of values) {
                 if (value && !options.some(([key]) => key === value)) options.push([value, `${value} (no such palette)`]);
             }
-            paletteSelect.textContent = '';
-            for (const [value, label] of options) {
-                const option = document.createElement('option');
-                option.value = value;
-                option.textContent = label;
-                paletteSelect.appendChild(option);
-            }
-            paletteSelect.value = current;
+            syncOptions(paletteSelect, options, current);
         }));
 
         // Kerb rounding: on/off for every selected centerline road; mixed
@@ -760,21 +747,9 @@ export class SelectionPanelComponent extends Component {
         this.track(effect(() => {
             const types = this.zoneTypes.items.get();
             const current = this.zoneAttributes().zoneType;
-            zoneSelect.textContent = '';
-            const keys = types.map(z => z.key);
-            for (const zoneType of types) {
-                const option = document.createElement('option');
-                option.value = zoneType.key;
-                option.textContent = zoneType.name;
-                zoneSelect.appendChild(option);
-            }
-            if (current && !keys.includes(current)) {
-                const orphan = document.createElement('option');
-                orphan.value = current;
-                orphan.textContent = `${current} (no such zone type)`;
-                zoneSelect.appendChild(orphan);
-            }
-            zoneSelect.value = current;
+            const options: [string, string][] = types.map(z => [z.key, z.name]);
+            if (current && !types.some(z => z.key === current)) options.push([current, `${current} (no such zone type)`]);
+            syncOptions(zoneSelect, options, current);
         }));
 
         // Variant picker: "Default" plus the selected zone's type's pickable
@@ -795,20 +770,13 @@ export class SelectionPanelComponent extends Component {
             variantField.className = variants.length > 0 || orphan || hiddenCurrent
                 ? 'zone-field zone-variant-field show'
                 : 'zone-field zone-variant-field';
-            variantSelect.textContent = '';
             const options: [string, string][] = [
                 ['', this.zoneTypes.hasDefaultItems(zoneType) ? 'Default' : 'Default (no items: plants nothing)'],
                 ...variants.map(v => [v.key, v.name] as [string, string]),
                 ...(hiddenCurrent ? [[hiddenCurrent.key, `${hiddenCurrent.name} (water half only)`] as [string, string]] : []),
                 ...(orphan ? [[zoneVariant, `${zoneVariant} (no such variant)`] as [string, string]] : []),
             ];
-            for (const [value, label] of options) {
-                const option = document.createElement('option');
-                option.value = value;
-                option.textContent = label;
-                variantSelect.appendChild(option);
-            }
-            variantSelect.value = zoneVariant;
+            syncOptions(variantSelect, options, zoneVariant);
         }));
 
         // The zone's extra palettes: one row each (type, variant, weight,
@@ -858,24 +826,38 @@ export class SelectionPanelComponent extends Component {
         });
 
         // Move-target options + current selection scope. This is explicit
-        // repair UI for "I drew that on the wrong hole" mistakes.
+        // repair UI for "I drew that on the wrong hole" mistakes. The options
+        // depend on the selection (Roughs takes rough types only, zones have
+        // no Roughs), so they are rebuilt when that changes; an edit of the
+        // selected feature only moves the value.
+        let builtFor: { holes: unknown; mixed: boolean; roughsDisabled: boolean; zonesOnly: boolean } | null = null;
         this.track(effect(() => {
             const holes = this.courseDetail.holes.get();
             const selected = this.features.selectedFeatures.get();
             const selectedScopes = new Set(selected.map(f => scopeKey(scopeOf(f))));
             const value = selectedScopes.size === 1 ? [...selectedScopes][0]! : '__mixed';
+            const next = {
+                holes,
+                mixed: selectedScopes.size > 1,
+                roughsDisabled: !selected.every(f => isRoughsLayerType(f.type)),
+                zonesOnly: this.zonesOnlySelection(),
+            };
+            if (builtFor && builtFor.holes === next.holes && builtFor.mixed === next.mixed
+                && builtFor.roughsDisabled === next.roughsDisabled && builtFor.zonesOnly === next.zonesOnly) {
+                if (this.moveSelect.value !== value) this.moveSelect.value = value;
+                return;
+            }
+            builtFor = next;
             this.moveSelect.textContent = '';
-            if (selectedScopes.size > 1) {
+            if (next.mixed) {
                 const mixed = document.createElement('option');
                 mixed.value = '__mixed';
                 mixed.textContent = 'Mixed holes';
                 this.moveSelect.appendChild(mixed);
             }
             // The Roughs layer takes rough types only (D28).
-            fillScopeOptions(this.moveSelect, holes, {
-                roughsDisabled: !selected.every(f => isRoughsLayerType(f.type)),
-            });
-            if (this.zonesOnlySelection()) {
+            fillScopeOptions(this.moveSelect, holes, { roughsDisabled: next.roughsDisabled });
+            if (next.zonesOnly) {
                 // A zone's "hole" is a folder: no stack words, no Roughs.
                 for (const option of [...this.moveSelect.options]) {
                     if (option.value === scopeKey(COURSE_SCOPE)) option.textContent = 'No hole (course level)';
@@ -892,12 +874,6 @@ export class SelectionPanelComponent extends Component {
     private zonesOnlySelection(): boolean {
         const selected = this.features.selectedFeatures.get();
         return selected.length > 0 && selected.every(f => f.type === 'vegetation_zone');
-    }
-
-    /** The single selected feature when it is generated (read-only), else null. */
-    private generatedSelection() {
-        const f = this.features.selected.get();
-        return f && isGeneratedFeature(f) ? f : null;
     }
 
     /**
@@ -1210,6 +1186,23 @@ function fillOptions(select: HTMLSelectElement, options: [string, string][], val
         select.appendChild(option);
     }
     select.value = value;
+}
+
+/**
+ * Give `select` exactly `options` and `value`. The options are rebuilt only
+ * when they differ from what is there, so an edit of the selected feature
+ * (which re-runs the picker effects) adds no DOM.
+ */
+function syncOptions(select: HTMLSelectElement, options: [string, string][], value: string): void {
+    const current = select.options;
+    const same = current.length === options.length
+        && options.every(([key, label], i) => current[i]!.value === key && current[i]!.textContent === label);
+    if (!same) {
+        select.textContent = '';
+        fillOptions(select, options, value);
+    } else if (select.value !== value) {
+        select.value = value;
+    }
 }
 
 function numberOf(e: Event, fallback: number): number {

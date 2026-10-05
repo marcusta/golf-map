@@ -7,9 +7,10 @@
 // point, both ABSOLUTE coordinates). Segment i runs anchor[i] → anchor
 // [(i+1) % n] as the cubic (a, a.hOut ?? a, b.hIn ?? b, b).
 //
-// `flattenRing` is a verbatim port of the server's flattening (same
-// tolerance heuristic, same subdivision caps) so client-rendered shapes
-// match the server-materialized GeoJSON exactly. The rest is editor math:
+// Segment flattening lives in shared/geo/bezier.ts and is the same code the
+// server runs, so client-rendered shapes match the server-materialized
+// GeoJSON exactly. `flattenRing` here adds the per-segment cache
+// (geo/flat-cache.ts) on top of it. The rest is editor math:
 // hit-testing, bboxes, nearest-point queries for vertex insertion, and a
 // de Casteljau split that inserts an anchor WITHOUT changing the curve.
 //
@@ -20,6 +21,10 @@
 
 import { bsplineRingToBezier } from './bspline';
 import type { FeatureCenterline } from '../../../shared/features/centerline';
+import { cachedSegment, flatGeometry, flatRing } from './flat-cache';
+import { cubicBezierPoint, flattenOpenPath, flattenSegment } from '../../../shared/geo/bezier';
+
+export { cubicBezierPoint, flattenOpenPath, flattenSegment };
 
 export interface Point {
     x: number;
@@ -63,22 +68,6 @@ export interface FeatureGeometry {
     centerline?: FeatureCenterline;
 }
 
-function dist(a: Point, b: Point): number {
-    return Math.hypot(b.x - a.x, b.y - a.y);
-}
-
-export function cubicBezierPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number): [number, number] {
-    const mt = 1 - t;
-    const a = mt * mt * mt;
-    const b = 3 * mt * mt * t;
-    const c = 3 * mt * t * t;
-    const d = t * t * t;
-    return [
-        a * p0.x + b * p1.x + c * p2.x + d * p3.x,
-        a * p0.y + b * p1.y + c * p2.y + d * p3.y,
-    ];
-}
-
 /** The cubic control points for segment `i` (anchor i → anchor (i+1) % n). */
 export function segmentControls(ring: PathRing, i: number): [Point, Point, Point, Point] {
     const a = ring.points[i];
@@ -92,84 +81,99 @@ export function segmentControls(ring: PathRing, i: number): [Point, Point, Point
 }
 
 /**
- * Flattens a closed PathRing into a polyline of [x, y] points — port of the
- * server's flattenRing (identical output for identical input). The polyline
- * is NOT explicitly closed. Straight segments (no handles on either end)
- * contribute only their start anchor; curved segments are subdivided into
- * ceil(controlPolygonLength / tolerance) pieces (clamped to [1, 256]).
+ * Flattens a closed PathRing into a polyline of [x, y] points. Identical
+ * output to the shared (server) flattenRing for identical input. The
+ * polyline is NOT explicitly closed. Straight segments (no handles on
+ * either end) contribute only their start anchor; curved segments are
+ * subdivided adaptively by chord error (shared/geo/bezier.ts).
  *
  * When `curveType` is 'bspline' the ring's points are B-spline CONTROL
  * points: the ring is first converted to its exact bezier equivalent
- * (corner triplication + closed wrap), then flattened identically —
- * matching the server's flattenRing.
+ * (corner triplication + closed wrap), then flattened identically.
+ *
+ * Each segment's points come from the per-segment cache in
+ * geo/flat-cache.ts (keyed on the segment's AnchorPoint, verified against
+ * its control values). The returned array is fresh, but its [x, y] tuples
+ * are shared with other calls: callers must not mutate the tuples.
  */
 export function flattenRing(
     ring: PathRing,
     toleranceMeters: number,
     curveType?: CurveType,
 ): Array<[number, number]> {
-    if (curveType === 'bspline') ring = bsplineRingToBezier(ring);
+    if (curveType === 'bspline') return flattenBsplineRing(ring, toleranceMeters);
     const pts = ring.points;
     if (pts.length === 0) return [];
     if (pts.length === 1) return [[pts[0].x, pts[0].y]];
 
-    const out: Array<[number, number]> = [];
     const n = pts.length;
-
+    const segs: Array<Array<[number, number]>> = new Array(n);
+    let total = 0;
     for (let i = 0; i < n; i++) {
         const a = pts[i];
         const b = pts[(i + 1) % n];
-
-        out.push([a.x, a.y]);
-
-        const p0: Point = { x: a.x, y: a.y };
-        const p1: Point = a.hOut ?? { x: a.x, y: a.y };
-        const p2: Point = b.hIn ?? { x: b.x, y: b.y };
-        const p3: Point = { x: b.x, y: b.y };
-
-        const isStraight = !a.hOut && !b.hIn;
-        if (isStraight) continue;
-
-        const controlLength = dist(p0, p1) + dist(p1, p2) + dist(p2, p3);
-        const segments = Math.max(1, Math.min(256, Math.ceil(controlLength / toleranceMeters)));
-
-        for (let s = 1; s < segments; s++) {
-            const t = s / segments;
-            out.push(cubicBezierPoint(p0, p1, p2, p3, t));
-        }
+        const h1 = a.hOut ?? a;
+        const h2 = b.hIn ?? b;
+        const seg = cachedSegment(
+            false, a, 0, toleranceMeters, !a.hOut && !b.hIn,
+            a.x, a.y, h1.x, h1.y, h2.x, h2.y, b.x, b.y,
+        );
+        segs[i] = seg;
+        total += seg.length;
     }
+    return concatSegments(segs, total);
+}
 
+/** Concatenate per-segment slices into one fresh array. */
+function concatSegments(segs: Array<Array<[number, number]>>, total: number): Array<[number, number]> {
+    const out: Array<[number, number]> = new Array(total);
+    let o = 0;
+    for (let i = 0; i < segs.length; i++) {
+        const seg = segs[i];
+        for (let k = 0; k < seg.length; k++) out[o++] = seg[k];
+    }
     return out;
 }
 
 /**
- * Flattens an OPEN path (a drawing draft): same subdivision as flattenRing
- * but without the closing segment from last anchor back to the first, and
- * the final anchor is included.
+ * flattenRing for a b-spline control ring. Computes each bezier segment of
+ * the exact conversion (geo/bspline.ts, same arithmetic) without building
+ * the converted ring, so the segment cache can key on the ORIGINAL control
+ * point: segment i is keyed on the control at expanded index i + 1, with
+ * its triplicate copy number as the slot for corner points.
  */
-export function flattenOpenPath(points: AnchorPoint[], toleranceMeters: number): Array<[number, number]> {
-    if (points.length === 0) return [];
-    const out: Array<[number, number]> = [];
-    for (let i = 0; i < points.length - 1; i++) {
-        const a = points[i];
-        const b = points[i + 1];
-        out.push([a.x, a.y]);
-
-        const p0: Point = { x: a.x, y: a.y };
-        const p1: Point = a.hOut ?? p0;
-        const p2: Point = b.hIn ?? { x: b.x, y: b.y };
-        const p3: Point = { x: b.x, y: b.y };
-        if (!a.hOut && !b.hIn) continue;
-
-        const controlLength = dist(p0, p1) + dist(p1, p2) + dist(p2, p3);
-        const segments = Math.max(1, Math.min(256, Math.ceil(controlLength / toleranceMeters)));
-        for (let s = 1; s < segments; s++) {
-            out.push(cubicBezierPoint(p0, p1, p2, p3, s / segments));
+function flattenBsplineRing(ring: PathRing, toleranceMeters: number): Array<[number, number]> {
+    const points = ring.points;
+    const origIdx: number[] = [];
+    const copy: number[] = [];
+    for (let i = 0; i < points.length; i++) {
+        const copies = points[i].corner ? 3 : 1;
+        for (let c = 0; c < copies; c++) {
+            origIdx.push(i);
+            copy.push(c);
         }
     }
-    const last = points[points.length - 1];
-    out.push([last.x, last.y]);
-    return out;
+    const n = origIdx.length;
+    if (n < 3) return flattenRing(bsplineRingToBezier(ring), toleranceMeters);
+
+    const segs: Array<Array<[number, number]>> = new Array(n);
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+        const c0 = points[origIdx[i]];
+        const c1 = points[origIdx[(i + 1) % n]];
+        const c2 = points[origIdx[(i + 2) % n]];
+        const c3 = points[origIdx[(i + 3) % n]];
+        const seg = cachedSegment(
+            true, c1, copy[(i + 1) % n], toleranceMeters, false,
+            (c0.x + 4 * c1.x + c2.x) / 6, (c0.y + 4 * c1.y + c2.y) / 6,
+            (2 * c1.x + c2.x) / 3, (2 * c1.y + c2.y) / 3,
+            (c1.x + 2 * c2.x) / 3, (c1.y + 2 * c2.y) / 3,
+            (c1.x + 4 * c2.x + c3.x) / 6, (c1.y + 4 * c2.y + c3.y) / 6,
+        );
+        segs[i] = seg;
+        total += seg.length;
+    }
+    return concatSegments(segs, total);
 }
 
 /**
@@ -177,7 +181,7 @@ export function flattenOpenPath(points: AnchorPoint[], toleranceMeters: number):
  * treated as implicitly closed. Points exactly on an edge may land on
  * either side — fine for click hit-testing.
  */
-export function pointInRing(p: Point, ring: Array<[number, number]>): boolean {
+export function pointInRing(p: Point, ring: ReadonlyArray<readonly [number, number]>): boolean {
     let inside = false;
     const n = ring.length;
     for (let i = 0, j = n - 1; i < n; j = i++) {
@@ -196,22 +200,21 @@ export interface Bbox {
     maxY: number;
 }
 
-/** Bbox of a ring's flattened outline (tolerance 0.25 m). Null for empty rings. */
+/**
+ * Bbox of a ring's flattened outline (tolerance 0.25 m). Null for empty rings.
+ * Cached on the ring object (geo/flat-cache.ts); the result is shared, so
+ * callers must not mutate it.
+ */
 export function ringBbox(ring: PathRing, toleranceMeters = 0.25, curveType?: CurveType): Bbox | null {
-    const flat = flattenRing(ring, toleranceMeters, curveType);
-    if (flat.length === 0) return null;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const [x, y] of flat) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-    }
-    return { minX, minY, maxX, maxY };
+    return flatRing(ring, toleranceMeters, curveType).bbox;
+}
+
+function bboxContains(b: Bbox | null, p: Point): boolean {
+    return !!b && p.x >= b.minX && p.x <= b.maxX && p.y >= b.minY && p.y <= b.maxY;
 }
 
 /** Signed area (shoelace) of a flattened ring. Positive = CCW. */
-export function signedArea(poly: Array<[number, number]>): number {
+export function signedArea(poly: ReadonlyArray<readonly [number, number]>): number {
     let sum = 0;
     for (let i = 0; i < poly.length; i++) {
         const [x1, y1] = poly[i];
@@ -237,8 +240,14 @@ export interface NearestOnRing {
  * insertion. Coarse-samples each cubic segment, then refines the best
  * parameter by local ternary search. Accuracy is well under editor click
  * tolerance (sub-centimeter for golf-feature-sized segments).
+ *
+ * With `maxDist`, a segment whose control-point bbox expanded by `maxDist`
+ * does not contain `p` is skipped without sampling: a cubic lies inside the
+ * convex hull of its controls, so every point on it is farther than
+ * `maxDist`. The result then equals the unbounded result whenever that
+ * result is within `maxDist`, and is null otherwise.
  */
-export function nearestOnRing(ring: PathRing, p: Point): NearestOnRing | null {
+export function nearestOnRing(ring: PathRing, p: Point, maxDist?: number): NearestOnRing | null {
     const n = ring.points.length;
     if (n < 2) return null;
 
@@ -246,6 +255,13 @@ export function nearestOnRing(ring: PathRing, p: Point): NearestOnRing | null {
 
     for (let i = 0; i < n; i++) {
         const [p0, p1, p2, p3] = segmentControls(ring, i);
+        if (maxDist !== undefined) {
+            const minX = Math.min(p0.x, p1.x, p2.x, p3.x) - maxDist;
+            const maxX = Math.max(p0.x, p1.x, p2.x, p3.x) + maxDist;
+            const minY = Math.min(p0.y, p1.y, p2.y, p3.y) - maxDist;
+            const maxY = Math.max(p0.y, p1.y, p2.y, p3.y) + maxDist;
+            if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY) continue;
+        }
         // Coarse scan
         const STEPS = 32;
         let bestT = 0;
@@ -278,6 +294,7 @@ export function nearestOnRing(ring: PathRing, p: Point): NearestOnRing | null {
         }
     }
 
+    if (best && maxDist !== undefined && best.dist > maxDist) return null;
     return best;
 }
 
@@ -286,13 +303,15 @@ export function nearestOnRing(ring: PathRing, p: Point): NearestOnRing | null {
  * the curve (de Casteljau split). For a straight segment the new anchor is
  * a plain point on the line; for a curved segment the neighbors' handles
  * are re-derived and the new anchor gets hIn/hOut from the split.
- * Returns a NEW ring (input is not mutated).
+ * Returns a NEW ring (input is not mutated). Points other than the two
+ * segment ends keep their object identity (see draw-state structural
+ * sharing).
  */
 export function splitSegment(ring: PathRing, segIdx: number, t: number): PathRing {
     const n = ring.points.length;
-    const points = ring.points.map(pt => ({ ...pt }));
-    const a = points[segIdx];
-    const b = points[(segIdx + 1) % n];
+    const points = ring.points.slice();
+    const a = (points[segIdx] = { ...points[segIdx] });
+    const b = (points[(segIdx + 1) % n] = { ...points[(segIdx + 1) % n] });
 
     const straight = !a.hOut && !b.hIn;
     if (straight) {
@@ -319,15 +338,19 @@ export function splitSegment(ring: PathRing, segIdx: number, t: number): PathRin
 
 /**
  * Feature hit-test in ring space: true when `p` is inside the outer ring
- * (rings[0]) and NOT inside any hole ring (rings[1..]).
+ * (rings[0]) and NOT inside any hole ring (rings[1..]). Flattened rings and
+ * bboxes come from the identity-keyed cache (geo/flat-cache.ts); a point
+ * outside a ring's bbox skips that ring's ray cast.
  */
 export function pointInGeometry(p: Point, geometry: FeatureGeometry, toleranceMeters = 0.25): boolean {
     if (geometry.rings.length === 0) return false;
-    const outer = flattenRing(geometry.rings[0], toleranceMeters, geometry.curveType);
-    if (outer.length < 3 || !pointInRing(p, outer)) return false;
-    for (let i = 1; i < geometry.rings.length; i++) {
-        const hole = flattenRing(geometry.rings[i], toleranceMeters, geometry.curveType);
-        if (hole.length >= 3 && pointInRing(p, hole)) return false;
+    const flat = flatGeometry(geometry, toleranceMeters);
+    const outer = flat.rings[0];
+    if (!bboxContains(outer.bbox, p)) return false;
+    if (outer.pts.length < 3 || !pointInRing(p, outer.pts)) return false;
+    for (let i = 1; i < flat.rings.length; i++) {
+        const hole = flat.rings[i];
+        if (hole.pts.length >= 3 && bboxContains(hole.bbox, p) && pointInRing(p, hole.pts)) return false;
     }
     return true;
 }
@@ -335,5 +358,5 @@ export function pointInGeometry(p: Point, geometry: FeatureGeometry, toleranceMe
 /** |Area| of a geometry's outer ring — used to pick the topmost (smallest) hit. */
 export function outerRingArea(geometry: FeatureGeometry, toleranceMeters = 0.25): number {
     if (geometry.rings.length === 0) return 0;
-    return Math.abs(signedArea(flattenRing(geometry.rings[0], toleranceMeters, geometry.curveType)));
+    return Math.abs(signedArea(flatGeometry(geometry, toleranceMeters).rings[0].pts));
 }

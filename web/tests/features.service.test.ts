@@ -2,8 +2,11 @@ import { test, expect, describe, afterEach } from 'bun:test';
 import { di, Signal } from '@basics/core/client/core';
 import { ApiError } from '@basics/core/client/api-error';
 import { _reset } from '@basics/core/client/error-report';
-import { COURSE_SCOPE, FeaturesService, geometryToWgs84Rings, shiftBlock, moveBlockToEdge } from '../src/draw/features.service';
+import { COURSE_SCOPE, FeaturesService, geometryToWgs84Rings, shiftBlock, moveBlockToEdge, OVERLAY_DIFF_MAX_FEATURES, hiddenTypesKey } from '../src/draw/features.service';
+import type { GeoJSONSourceDiff } from 'maplibre-gl';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
+import { withBatchEndpoints, recordRequests } from './fake-feature-api';
+import { surfaceStackStats } from '../../shared/render/resolved-surface-stack';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { wgs84ToSweref99tm } from '../src/geo/transform';
 import type { FeatureGeometry } from '../src/geo/bezier';
@@ -12,8 +15,9 @@ import { ZoneTypesService } from '../src/zones/zone-types.service';
 import type { ZoneTypesApi } from '../../shared/api/zone-types.gen';
 import type { FeatureCollection, MultiPolygon } from 'geojson';
 import { createInlineSurfaceStackClient } from '../src/draw/surface-stack-client';
+import { stackKey } from '../../shared/render/stack-key';
 
-afterEach(() => { _reset(); di.reset(); });
+afterEach(() => { _reset(); di.reset(); localStorage.clear(); });
 
 /** Registers a CourseDetailService with the given holes' numbers for stackKey (D24) tests. */
 function withHoleNumbers(holes: Array<{ id: string; number: number }>): void {
@@ -67,7 +71,6 @@ function fakeApi(initial: CourseFeature[] = []) {
                 layer: input.layer ?? null,
                 type: input.type,
                 geometry: structuredClone(input.geometry),
-                geojson: null,
                 sortOrder: 0,
                 source: input.source ?? null,
                 generated: false,
@@ -113,13 +116,14 @@ function fakeApi(initial: CourseFeature[] = []) {
             return { ok: true };
         },
     };
+    withBatchEndpoints(api, rows);
     return { api, rows, calls };
 }
 
 function feature(id: string, type = 'bunker', version = 1, opts: { holeId?: string | null; layer?: 'roughs' | null; sortOrder?: number } = {}): CourseFeature {
     return {
         id, courseId: 'c1', holeId: opts.holeId ?? null, layer: opts.layer ?? null, type,
-        geometry: squareGeometry(), geojson: null, sortOrder: opts.sortOrder ?? 0,
+        geometry: squareGeometry(), sortOrder: opts.sortOrder ?? 0,
         source: null, generated: false, sourceRef: null, license: null, attributes: null, no: null, version,
     };
 }
@@ -284,6 +288,118 @@ describe('update (optimistic locking)', () => {
         expect(stored.rings[0].points[0].hOut).toEqual({ x: base.x - 5, y: base.y - 15 });
         expect(stored.rings[0].points[1].hIn).toEqual({ x: base.x + 5, y: base.y - 15 });
         expect(svc.store.items.get()[0].geometry.rings[0].points[0].hOut).toEqual({ x: base.x - 5, y: base.y - 15 });
+    });
+});
+
+/**
+ * Counting stand-in for MapService: records every hand-drawn overlay push
+ * (addOverlayLayer counts as the initial send, updateOverlayData as re-sends).
+ */
+function countingMap() {
+    const pushes: string[] = [];
+    const map = {
+        ready: new Signal(true),
+        map: new Signal({ setPaintProperty() {}, setFilter() {}, getSource: () => ({ type: 'geojson' }) }),
+        addOverlayLayer: () => {},
+        updateOverlayData: (id: string) => { pushes.push(id); },
+        removeOverlayLayer: () => {},
+    };
+    return { map, featurePushes: () => pushes.filter(id => id === 'features').length };
+}
+
+describe('update: overlay push count (review item 2a)', () => {
+    test('drag commit (patchLocal + update with the same geometry) pushes the overlay exactly once', async () => {
+        const { api, rows } = fakeApi([feature('a'), feature('b')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        // A drag happens in Draw mode; nice mode would follow up with the resolved stack.
+        svc.niceRendering.set(false);
+        const { map, featurePushes } = countingMap();
+        const dispose = svc.attachOverlay(map as never);
+        expect(featurePushes()).toBe(0);
+
+        const moved = squareGeometry(10, base.x + 20, base.y);
+        svc.patchLocal('a', moved);
+        const result = await svc.update('a', { geometry: moved });
+
+        expect(featurePushes()).toBe(1);
+        expect(result?.version).toBe(2);
+        // Local geometry object kept (flatten-cache hit), server has the same shape.
+        expect(svc.store.items.peek().find(f => f.id === 'a')!.geometry).toBe(moved);
+        expect(rows.get('a')!.geometry).toEqual(moved);
+        dispose();
+    });
+
+    test('a type change pushes the overlay exactly once', async () => {
+        const { api } = fakeApi([feature('a'), feature('b')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        const { map, featurePushes } = countingMap();
+        const dispose = svc.attachOverlay(map as never);
+        const geometryBefore = svc.store.items.peek()[0].geometry;
+
+        await svc.update('a', { type: 'green' });
+
+        expect(featurePushes()).toBe(1);
+        expect(svc.geojson.get().features.find(f => f.id === 'a')!.properties!.type).toBe('green');
+        expect(svc.store.items.peek()[0].geometry).toBe(geometryBefore);
+        dispose();
+    });
+
+    test('version comes from the server reply and the next save uses it', async () => {
+        const { api, rows } = fakeApi([feature('a', 'bunker', 7)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        const g1 = squareGeometry(12);
+        svc.patchLocal('a', g1);
+        await svc.update('a', { geometry: g1 });
+        expect(svc.store.items.peek()[0].version).toBe(8);
+
+        const g2 = squareGeometry(14);
+        svc.patchLocal('a', g2);
+        const second = await svc.update('a', { geometry: g2 });
+        expect(second?.version).toBe(9);
+        expect(rows.get('a')!.version).toBe(9);
+        expect(svc.saveError.get()).toBeNull();
+    });
+
+    test('a newer local patch landing while the save is in flight is not clobbered by the reply', async () => {
+        const { api } = fakeApi([feature('a')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+
+        const g1 = squareGeometry(12);
+        svc.patchLocal('a', g1);
+        const pending = svc.update('a', { geometry: g1 });
+        const g2 = squareGeometry(16);
+        svc.patchLocal('a', g2); // next drag frame before the reply
+        await pending;
+
+        const row = svc.store.items.peek()[0];
+        expect(row.geometry).toBe(g2);
+        expect(row.version).toBe(2);
+    });
+
+    test('version conflict still sets saveError and reloads server truth', async () => {
+        const { api, rows, calls } = fakeApi([feature('a', 'bunker', 1)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        rows.get('a')!.version = 5;
+        rows.get('a')!.type = 'water';
+
+        const g = squareGeometry(30);
+        svc.patchLocal('a', g);
+        const result = await svc.update('a', { geometry: g });
+
+        expect(result).toBeUndefined();
+        expect(svc.saveError.get()?.code).toBe('conflict');
+        await Bun.sleep(0);
+        expect(calls.list).toBe(2);
+        const row = svc.store.items.get()[0];
+        expect(row.version).toBe(5);
+        expect(row.type).toBe('water');
+        expect(row.geometry.rings[0].points[0].x).toBeCloseTo(base.x - 10, 6); // local patch dropped
     });
 });
 
@@ -1067,5 +1183,637 @@ describe('vegetation zones (docs/feature-vegetation-zones.md)', () => {
         expect(withVariant.properties!.zoneColor).toBe('#6b8f3a');
         expect(byDefault.properties!.zoneVariant).toBeUndefined();
         expect(byDefault.properties!.zoneColor).toBe('#6b8f3a');
+    });
+});
+
+/** Five features on the fake server, the service loaded, overlay and requests counted. */
+async function countedService(n = 5) {
+    const initial = Array.from({ length: n }, (_, i) => feature(`f${i}`, 'bunker', 1, { sortOrder: i }));
+    const fake = fakeApi(initial);
+    const { api, log } = recordRequests(fake.api);
+    const svc = new FeaturesService(api);
+    await svc.load('c1');
+    log.length = 0;
+    const { map, featurePushes } = countingMap();
+    const dispose = svc.attachOverlay(map as never);
+    return { svc, rows: fake.rows, log, featurePushes, dispose };
+}
+
+describe('multi-feature ops: one push, one request (review item 3)', () => {
+    test('move of 5 (updateMany, local first) pushes once and sends one updateMany', async () => {
+        const { svc, rows, log, featurePushes, dispose } = await countedService();
+        const items = svc.store.items.peek().map(f => ({ id: f.id, patch: { geometry: squareGeometry(10, base.x + 40, base.y) } }));
+
+        const pending = svc.updateMany(items, { local: true });
+        expect(featurePushes()).toBe(1); // local patch lands before the request
+        const result = await pending;
+
+        expect(result).toHaveLength(5);
+        expect(featurePushes()).toBe(1);
+        expect(log).toEqual(['updateMany']);
+        for (const { id, patch } of items) {
+            const row = svc.store.items.peek().find(f => f.id === id)!;
+            expect(row.version).toBe(2);
+            expect(row.geometry).toBe(patch.geometry); // local object kept
+            expect(rows.get(id)!.geometry).toEqual(patch.geometry);
+        }
+        dispose();
+    });
+
+    test('delete of 5 (removeMany) pushes once and sends one removeMany', async () => {
+        const { svc, rows, log, featurePushes, dispose } = await countedService();
+        svc.setSelection(['f0', 'f1']);
+
+        const ok = await svc.removeMany(svc.store.items.peek().map(f => f.id));
+
+        expect(ok).toBe(true);
+        expect(featurePushes()).toBe(1);
+        expect(log).toEqual(['removeMany']);
+        expect(rows.size).toBe(0);
+        expect(svc.store.items.peek()).toHaveLength(0);
+        expect(svc.selectedIds.peek().size).toBe(0);
+        dispose();
+    });
+
+    test('retype of 3 pushes once and sends one updateMany', async () => {
+        const { svc, rows, log, featurePushes, dispose } = await countedService(3);
+        await svc.updateMany(['f0', 'f1', 'f2'].map(id => ({ id, patch: { type: 'green' } })), { local: true });
+        expect(featurePushes()).toBe(1);
+        expect(log).toEqual(['updateMany']);
+        expect([...rows.values()].map(r => r.type)).toEqual(['green', 'green', 'green']);
+        dispose();
+    });
+
+    test('createMany of 3 pushes once, sends one createMany, selects the new rows', async () => {
+        const { svc, log, featurePushes, dispose } = await countedService(1);
+        const created = await svc.createMany([0, 1, 2].map(i => ({
+            courseId: 'c1', holeId: null, type: 'bunker', geometry: squareGeometry(5, base.x + i * 30, base.y),
+        })));
+        expect(created).toHaveLength(3);
+        expect(featurePushes()).toBe(1);
+        expect(log).toEqual(['createMany']);
+        expect([...svc.selectedIds.peek()]).toEqual(created!.map(f => f.id));
+        dispose();
+    });
+
+    test('createMany with select: false leaves the selection alone', async () => {
+        const { svc, dispose } = await countedService(1);
+        svc.select('f0');
+        await svc.createMany([{ courseId: 'c1', holeId: null, type: 'bunker', geometry: squareGeometry(5) }], { select: false });
+        expect([...svc.selectedIds.peek()]).toEqual(['f0']);
+        dispose();
+    });
+
+    test('a conflict on one row rejects the whole batch: nothing written, server truth reloaded', async () => {
+        const { svc, rows, dispose } = await countedService(3);
+        rows.get('f1')!.version = 4; // another client saved f1
+        const result = await svc.updateMany(['f0', 'f1', 'f2'].map(id => ({ id, patch: { type: 'green' } })), { local: true });
+        expect(result).toBeUndefined();
+        expect(svc.saveError.get()?.code).toBe('conflict');
+        expect([...rows.values()].map(r => r.type)).toEqual(['bunker', 'bunker', 'bunker']);
+        await Bun.sleep(0);
+        expect(svc.store.items.peek().map(f => f.type)).toEqual(['bunker', 'bunker', 'bunker']);
+        dispose();
+    });
+});
+
+describe('per-feature save queue (review item 4)', () => {
+    test('3 quick geometry patches send at most 2 requests and the final geometry', async () => {
+        const { svc, rows, log, dispose } = await countedService(1);
+        const geoms = [12, 14, 16].map(h => squareGeometry(h));
+        const saves = geoms.map(g => { svc.patchLocal('f0', g); return svc.update('f0', { geometry: g }); });
+        expect(svc.store.items.peek()[0].geometry).toBe(geoms[2]); // patchLocal stays instant
+
+        const results = await Promise.all(saves);
+
+        expect(log.length).toBeLessThanOrEqual(2);
+        expect(rows.get('f0')!.geometry).toEqual(geoms[2]);
+        expect(svc.store.items.peek()[0].geometry).toBe(geoms[2]);
+        expect(results.every(r => r?.id === 'f0')).toBe(true);
+        expect(svc.saveError.get()).toBeNull();
+        dispose();
+    });
+
+    test('with no debounce, patches arriving during an in-flight save coalesce into one follow-up', async () => {
+        const { svc, rows, log, dispose } = await countedService(1);
+        svc.geometryDebounceMs = 0;
+        const geoms = [12, 14, 16].map(h => squareGeometry(h));
+        const saves = geoms.map(g => { svc.patchLocal('f0', g); return svc.update('f0', { geometry: g }); });
+        await Promise.all(saves);
+
+        expect(log).toEqual(['update', 'update']);
+        expect(rows.get('f0')!.version).toBe(3); // second request used the first reply's version
+        expect(rows.get('f0')!.geometry).toEqual(geoms[2]);
+        expect(svc.saveError.get()).toBeNull();
+        dispose();
+    });
+
+    test('rapid un-awaited commits of mixed kinds never 409', async () => {
+        const { svc, rows, dispose } = await countedService(3);
+        svc.geometryDebounceMs = 0;
+        const g = squareGeometry(20);
+        const all = [
+            svc.update('f0', { geometry: g }),
+            svc.update('f0', { type: 'green' }),
+            svc.updateMany(['f0', 'f1'].map(id => ({ id, patch: { holeId: 'h1' } })), { local: true }),
+            svc.update('f1', { geometry: g }),
+            svc.updateMany(['f0', 'f1', 'f2'].map(id => ({ id, patch: { type: 'fairway' } })), { local: true }),
+            svc.removeMany(['f2']),
+        ];
+        await Promise.all(all);
+        await svc.flush();
+
+        expect(svc.saveError.get()).toBeNull();
+        expect(rows.get('f0')).toMatchObject({ type: 'fairway', holeId: 'h1', geometry: g });
+        expect(rows.get('f1')).toMatchObject({ type: 'fairway', holeId: 'h1', geometry: g });
+        expect(rows.has('f2')).toBe(false);
+        for (const id of ['f0', 'f1']) {
+            expect(svc.store.items.peek().find(f => f.id === id)!.version).toBe(rows.get(id)!.version);
+        }
+        dispose();
+    });
+
+    test('a type patch goes immediately and carries a pending geometry with it', async () => {
+        const { svc, rows, log, dispose } = await countedService(1);
+        svc.geometryDebounceMs = 10_000;
+        const g = squareGeometry(18);
+        svc.patchLocal('f0', g);
+        const geomSave = svc.update('f0', { geometry: g });
+        const typeSave = svc.update('f0', { type: 'green' });
+        await Promise.all([geomSave, typeSave]);
+
+        expect(log).toEqual(['update']);
+        expect(rows.get('f0')).toMatchObject({ type: 'green', geometry: g, version: 2 });
+        dispose();
+    });
+
+    test('flush() sends a debounced patch at once and resolves when the queue is empty', async () => {
+        const { svc, rows, log, dispose } = await countedService(1);
+        svc.geometryDebounceMs = 10_000;
+        const g = squareGeometry(22);
+        svc.patchLocal('f0', g);
+        void svc.update('f0', { geometry: g });
+        expect(log).toEqual([]); // geometry patch waits out the debounce
+
+        await svc.flush();
+
+        expect(log).toEqual(['update']);
+        expect(rows.get('f0')).toMatchObject({ geometry: g, version: 2 });
+        dispose();
+    });
+
+    test('load() of another course flushes pending saves first', async () => {
+        const { svc, rows, dispose } = await countedService(1);
+        svc.geometryDebounceMs = 10_000;
+        const g = squareGeometry(24);
+        svc.patchLocal('f0', g);
+        void svc.update('f0', { geometry: g });
+
+        await svc.load('c2');
+
+        expect(rows.get('f0')!.geometry).toEqual(g);
+        dispose();
+    });
+});
+
+/**
+ * MapService stand-in that records every overlay send with its optional
+ * updateData diff, the addOverlayLayer options, and every raw-map call that
+ * selection could make (setFilter, setFeatureState, removeFeatureState).
+ */
+function recordingMap() {
+    const sends: Array<{ id: string; data: { features: unknown[] }; diff?: GeoJSONSourceDiff }> = [];
+    const addOpts: Array<{ id: string; opts: Record<string, unknown> | undefined }> = [];
+    const rawCalls: Array<[string, ...unknown[]]> = [];
+    const raw = {
+        setPaintProperty() {},
+        setFilter: (...args: unknown[]) => { rawCalls.push(['setFilter', ...args]); },
+        setFeatureState: (target: unknown, state: unknown) => { rawCalls.push(['setFeatureState', target, state]); },
+        removeFeatureState: (target: unknown, key: unknown) => { rawCalls.push(['removeFeatureState', target, key]); },
+        getSource: () => ({ type: 'geojson' }),
+    };
+    const map = {
+        ready: new Signal(true),
+        map: new Signal(raw),
+        addOverlayLayer: (id: string, _data: unknown, _layers: unknown, opts?: Record<string, unknown>) => { addOpts.push({ id, opts }); },
+        updateOverlayData: (id: string, data: { features: unknown[] }, diff?: GeoJSONSourceDiff) => { sends.push({ id, data, diff }); },
+        removeOverlayLayer: () => {},
+    };
+    const featureSends = () => sends.filter(s => s.id === 'features');
+    return { map, sends, featureSends, addOpts, rawCalls };
+}
+
+/** n features with distinct sortOrder (unique stackKeys), loaded, Draw mode, overlay attached. */
+async function diffService(n: number) {
+    const initial = Array.from({ length: n }, (_, i) => feature(`f${i}`, 'bunker', 1, { sortOrder: i }));
+    const fake = fakeApi(initial);
+    const svc = new FeaturesService(fake.api);
+    await svc.load('c1');
+    svc.niceRendering.set(false);
+    const rec = recordingMap();
+    const dispose = svc.attachOverlay(rec.map as never);
+    return { svc, ...rec, dispose };
+}
+
+describe('overlay updateData diffs (review item 2b)', () => {
+    test('both feature sources promote the string id property', async () => {
+        const { addOpts, dispose } = await diffService(2);
+        expect(addOpts.find(a => a.id === 'features')!.opts).toMatchObject({ promoteId: 'id' });
+        expect(addOpts.find(a => a.id === 'features-generated')!.opts).toMatchObject({ promoteId: 'id' });
+        dispose();
+    });
+
+    test('a geometry edit of one feature out of 100 sends a one-entry diff with only the new geometry', async () => {
+        const { svc, featureSends, dispose } = await diffService(100);
+        const before = svc.geojson.get();
+        const moved = squareGeometry(10, base.x + 30, base.y);
+        svc.patchLocal('f7', moved);
+
+        const sends = featureSends();
+        expect(sends).toHaveLength(1);
+        const { diff, data } = sends[0]!;
+        expect(data).toBe(svc.geojson.get());
+        expect(diff).toEqual({ update: [{ id: 'f7', newGeometry: svc.geojson.get().features[7]!.geometry }] });
+        expect(diff!.update![0]!.newGeometry).toBe(svc.geojson.get().features[7]!.geometry);
+        // Unchanged rows keep their Feature objects.
+        expect(svc.geojson.get().features[3]).toBe(before.features[3]);
+        dispose();
+    });
+
+    test('a type change sends the full property set and no geometry', async () => {
+        const { svc, featureSends, dispose } = await diffService(10);
+        svc.patchLocal('f2', svc.store.items.peek()[2]!.geometry); // no-op patch: same render signature
+        expect(featureSends()).toHaveLength(0);
+        await svc.update('f2', { type: 'green' });
+        const diff = featureSends()[0]!.diff!;
+        expect(diff.update).toHaveLength(1);
+        expect(diff.update![0]!.newGeometry).toBeUndefined();
+        expect(diff.update![0]!.addOrUpdateProperties).toContainEqual({ key: 'type', value: 'green' });
+        expect(diff.update![0]!.addOrUpdateProperties).toContainEqual({ key: 'stackKey', value: stackKey(null, null, 2, 'green') });
+        dispose();
+    });
+
+    test('create and delete send add and remove diffs', async () => {
+        // The fake server numbers created rows f1, f2, ... at sortOrder 0,
+        // so the loaded rows use other ids and sortOrders from 1.
+        const initial = Array.from({ length: 5 }, (_, i) => feature(`k${i}`, 'bunker', 1, { sortOrder: i + 1 }));
+        const svc = new FeaturesService(fakeApi(initial).api);
+        await svc.load('c1');
+        svc.niceRendering.set(false);
+        const { map, featureSends } = recordingMap();
+        const dispose = svc.attachOverlay(map as never);
+        const created = await svc.create({ type: 'green', geometry: squareGeometry(5) });
+        const addDiff = featureSends().at(-1)!.diff!;
+        expect(addDiff.add?.map(f => f.id)).toEqual([created!.id]);
+
+        await svc.removeFeature('k1');
+        expect(featureSends().at(-1)!.diff).toEqual({ remove: ['k1'] });
+        dispose();
+    });
+
+    test('more than OVERLAY_DIFF_MAX_FEATURES changed features fall back to a full setData', async () => {
+        const { svc, featureSends, dispose } = await diffService(OVERLAY_DIFF_MAX_FEATURES + 5);
+        const shifted = squareGeometry(10, base.x + 50, base.y);
+        await svc.updateMany(svc.store.items.peek().map(f => ({ id: f.id, patch: { geometry: shifted } })), { local: true });
+        const sends = featureSends();
+        expect(sends).toHaveLength(1);
+        expect(sends[0]!.diff).toBeUndefined();
+        expect(sends[0]!.data.features).toHaveLength(OVERLAY_DIFF_MAX_FEATURES + 5);
+        dispose();
+    });
+
+    test('an edited feature that shares its stackKey falls back to setData (worker reorder)', async () => {
+        const initial = [feature('a', 'bunker', 1, { sortOrder: 3 }), feature('b', 'bunker', 1, { sortOrder: 3 })];
+        const svc = new FeaturesService(fakeApi(initial).api);
+        await svc.load('c1');
+        svc.niceRendering.set(false);
+        const { map, featureSends } = recordingMap();
+        const dispose = svc.attachOverlay(map as never);
+        svc.patchLocal('a', squareGeometry(10, base.x + 30, base.y));
+        expect(featureSends()).toHaveLength(1);
+        expect(featureSends()[0]!.diff).toBeUndefined();
+        dispose();
+    });
+
+    test('nice mode, hidden-type toggles and reloads send full setData', async () => {
+        const { svc, featureSends, dispose } = await diffService(5);
+        svc.hiddenIds.set(new Set(['f4']));
+        expect(featureSends()).toHaveLength(1);
+        expect(featureSends().at(-1)!.diff).toBeUndefined();
+
+        const before = featureSends().length;
+        await svc.reload();
+        // Reloaded rows carry new geometry objects: one full set.
+        expect(featureSends()).toHaveLength(before + 1);
+        expect(featureSends().at(-1)!.diff).toBeUndefined();
+        svc.patchLocal('f0', squareGeometry(10, base.x + 30, base.y));
+        // The edit after a reload diffs against the reloaded collection.
+        expect(featureSends().at(-1)!.diff).toBeDefined();
+
+        svc.niceRendering.set(true);
+        svc.patchLocal('f1', squareGeometry(10, base.x + 40, base.y));
+        expect(featureSends().at(-1)!.diff).toBeUndefined();
+
+        // Back to Draw: the first send after nice mode must be a full set.
+        svc.niceRendering.set(false);
+        expect(featureSends().at(-1)!.diff).toBeUndefined();
+        svc.patchLocal('f2', squareGeometry(10, base.x + 50, base.y));
+        expect(featureSends().at(-1)!.diff).toBeDefined();
+        dispose();
+    });
+});
+
+describe('nice-mode surface stack resolve on tool switches (review item 10)', () => {
+    /**
+     * n disjoint features (50 m apart), loaded, overlay attached in Draw
+     * mode. DrawToolService flips `niceRendering` false on activate and
+     * true on deactivate; the tests drive the flag the same way. The stack
+     * is resolved off the calling thread (here: the inline client, on a
+     * later tick), so each step waits for it with `settle`.
+     */
+    async function drawSession(n: number) {
+        const initial = Array.from({ length: n }, (_, i) => ({
+            ...feature(`f${i}`, 'bunker', 1, { sortOrder: i }),
+            geometry: squareGeometry(10, base.x + i * 50, base.y),
+        }));
+        const svc = new FeaturesService(fakeApi(initial).api, createInlineSurfaceStackClient());
+        await svc.load('c1');
+        svc.niceRendering.set(false);
+        const rec = recordingMap();
+        const dispose = svc.attachOverlay(rec.map as never);
+        return { svc, ...rec, dispose };
+    }
+    const work = () => ({ resolves: surfaceStackStats.resolves, clips: surfaceStackStats.clips });
+    const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
+    test('switching tools back and forth with no edit resolves the stack once in total', async () => {
+        const { svc, dispose } = await drawSession(6);
+        const start = work();
+        svc.niceRendering.set(true); // Draw -> Measure
+        await settle();
+        const afterFirst = work();
+        expect(afterFirst.resolves - start.resolves).toBe(1);
+        svc.niceRendering.set(false); // Measure -> Draw
+        svc.niceRendering.set(true); // Draw -> Measure
+        svc.niceRendering.set(false);
+        svc.niceRendering.set(true);
+        await settle();
+        expect(work()).toEqual(afterFirst);
+        dispose();
+    });
+
+    test('an edit followed by a switch resolves once and re-clips only the edited surface', async () => {
+        const { svc, dispose } = await drawSession(6);
+        svc.niceRendering.set(true);
+        await settle();
+        svc.niceRendering.set(false); // back in Draw, per-surface memo primed
+        svc.patchLocal('f3', squareGeometry(10, base.x + 3 * 50 + 2, base.y));
+        const before = work();
+        svc.niceRendering.set(true);
+        await settle();
+        const after = work();
+        expect(after.resolves - before.resolves).toBe(1);
+        expect(after.clips - before.clips).toBe(1);
+        dispose();
+    });
+
+    test('hiding a feature in nice mode re-sends without re-clipping', async () => {
+        const { svc, featureSends, dispose } = await drawSession(6);
+        svc.niceRendering.set(true);
+        await settle();
+        const sends = featureSends().length;
+        const before = work();
+        svc.hiddenIds.set(new Set(['f5']));
+        await settle();
+        // The plain collection at once, its resolved stack when it lands.
+        expect(featureSends()).toHaveLength(sends + 2);
+        expect(work().clips).toBe(before.clips);
+        dispose();
+    });
+});
+
+describe('selection via feature-state (review item 9)', () => {
+    test('selecting sets feature-state only: no setFilter, no source data', async () => {
+        const { svc, sends, rawCalls, dispose } = await diffService(5);
+        const sendsBefore = sends.length;
+        rawCalls.length = 0;
+
+        svc.select('f1');
+        expect(rawCalls.filter(c => c[0] === 'setFilter')).toHaveLength(0);
+        expect(sends.length).toBe(sendsBefore);
+        expect(rawCalls).toContainEqual(['setFeatureState', { source: 'features', id: 'f1' }, { selected: true }]);
+
+        // Switching selection clears the previous id's state.
+        rawCalls.length = 0;
+        svc.select('f2');
+        expect(rawCalls).toContainEqual(['removeFeatureState', { source: 'features', id: 'f1' }, 'selected']);
+        expect(rawCalls).toContainEqual(['setFeatureState', { source: 'features', id: 'f2' }, { selected: true }]);
+        expect(rawCalls.filter(c => c[0] === 'setFilter')).toHaveLength(0);
+        expect(sends.length).toBe(sendsBefore);
+        dispose();
+    });
+
+    test('multi-select adds state per id and only touches the changed ids', async () => {
+        const { svc, rawCalls, dispose } = await diffService(5);
+        svc.select('f1');
+        rawCalls.length = 0;
+        svc.selectedIds.set(new Set(['f1', 'f3']));
+        const touched = rawCalls.filter(c => (c[1] as { source: string }).source === 'features');
+        expect(touched).toEqual([['setFeatureState', { source: 'features', id: 'f3' }, { selected: true }]]);
+
+        rawCalls.length = 0;
+        svc.select(null);
+        const cleared = rawCalls
+            .filter(c => c[0] === 'removeFeatureState' && (c[1] as { source: string }).source === 'features')
+            .map(c => (c[1] as { id: string }).id)
+            .sort();
+        expect(cleared).toEqual(['f1', 'f3']);
+        dispose();
+    });
+
+    test('the selection line opacity reads the selected and dragging states', async () => {
+        const { svc } = await diffService(1);
+        let layers: Array<{ id: string; filter?: unknown; paint?: Record<string, unknown> }> = [];
+        const map = {
+            ready: new Signal(true),
+            map: new Signal(null),
+            addOverlayLayer: (_id: string, _data: unknown, next: typeof layers) => { layers = [...layers, ...next]; },
+            updateOverlayData: () => {},
+            removeOverlayLayer: () => {},
+        };
+        const dispose = svc.attachOverlay(map as never);
+        const expected = [
+            'case',
+            ['boolean', ['feature-state', 'dragging'], false], 0,
+            ['boolean', ['feature-state', 'selected'], false], 1,
+            0,
+        ];
+        for (const id of ['features-selected', 'features-generated-selected']) {
+            const layer = layers.find(l => l.id === id)!;
+            expect(layer.filter).toBeUndefined();
+            expect(layer.paint?.['line-opacity']).toEqual(expected);
+        }
+        dispose();
+    });
+});
+
+describe('visibility keys (review item 27)', () => {
+    test('toggleTypeHidden persists per course and load() restores it', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.toggleTypeHidden('bunker');
+        expect([...svc.hiddenTypes.get()]).toEqual(['bunker']);
+        expect(JSON.parse(localStorage.getItem(hiddenTypesKey('c1'))!)).toEqual(['bunker']);
+
+        const fresh = new FeaturesService(api);
+        await fresh.load('c1');
+        expect([...fresh.hiddenTypes.get()]).toEqual(['bunker']);
+        await fresh.load('c2');
+        expect(fresh.hiddenTypes.get().size).toBe(0);
+
+        svc.toggleTypeHidden('bunker');
+        expect(localStorage.getItem(hiddenTypesKey('c1'))).toBeNull();
+    });
+
+    test('hiding a type drops its features from the selection', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.setSelection(['a', 'b']);
+        svc.toggleTypeHidden('bunker');
+        expect([...svc.selectedIds.get()]).toEqual(['b']);
+    });
+
+    test('soloType hides every other type; the second call restores the previous set', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green'), feature('c', 'custom-type')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.toggleTypeHidden('green');
+
+        svc.soloType('bunker');
+        const hidden = svc.hiddenTypes.get();
+        expect(hidden.has('bunker')).toBe(false);
+        expect(hidden.has('green')).toBe(true);
+        expect(hidden.has('custom-type')).toBe(true); // store-only types count too
+        expect(hidden.has('water')).toBe(true); // palette types without features too
+
+        svc.soloType('bunker');
+        expect([...svc.hiddenTypes.get()]).toEqual(['green']);
+    });
+
+    test('soloType on another type while soloed switches the solo', async () => {
+        const { api } = fakeApi([feature('a', 'bunker'), feature('b', 'green')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.soloType('bunker');
+        svc.soloType('green');
+        expect(svc.hiddenTypes.get().has('green')).toBe(false);
+        expect(svc.hiddenTypes.get().has('bunker')).toBe(true);
+    });
+
+    test('hideSelected hides the selection and clears it; showAll clears every toggle', async () => {
+        const { api } = fakeApi([feature('a'), feature('b'), feature('c')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.setSelection(['a', 'b']);
+        svc.hideSelected();
+        expect([...svc.hiddenIds.get()].sort()).toEqual(['a', 'b']);
+        expect(svc.selectedIds.get().size).toBe(0);
+
+        svc.toggleTypeHidden('green');
+        svc.toggleSourceVisibility('lidar');
+        svc.showAll();
+        expect(svc.hiddenIds.get().size).toBe(0);
+        expect(svc.hiddenTypes.get().size).toBe(0);
+        expect(svc.hiddenSources.get().size).toBe(0);
+        expect(localStorage.getItem(hiddenTypesKey('c1'))).toBeNull();
+    });
+
+    test('hideSelected with nothing selected changes nothing', async () => {
+        const { api } = fakeApi([feature('a')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        const before = svc.hiddenIds.get();
+        svc.hideSelected();
+        expect(svc.hiddenIds.get()).toBe(before);
+    });
+});
+
+describe('save status (pendingSaves, clearSaveError, reload)', () => {
+    test('pendingSaves counts a debounced patch and an in-flight request, then returns to 0', async () => {
+        const { api } = fakeApi([feature('a')]);
+        let release!: () => void;
+        const gate = new Promise<void>(r => { release = r; });
+        const update = api.update;
+        api.update = async input => { await gate; return update(input); };
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.geometryDebounceMs = 10_000;
+        expect(svc.pendingSaves.get()).toBe(0);
+
+        const g = squareGeometry(15);
+        svc.patchLocal('a', g);
+        const save = svc.update('a', { geometry: g });
+        expect(svc.pendingSaves.get()).toBe(1); // waiting out the debounce
+
+        const flushed = svc.flush();
+        await Bun.sleep(0);
+        expect(svc.pendingSaves.get()).toBeGreaterThan(0); // request in flight
+        release();
+        await Promise.all([save, flushed]);
+        expect(svc.pendingSaves.get()).toBe(0);
+    });
+
+    test('pendingSaves covers create and remove requests', async () => {
+        const { api } = fakeApi([feature('a')]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        const removing = svc.removeFeature('a');
+        expect(svc.pendingSaves.get()).toBe(1);
+        await removing;
+        expect(svc.pendingSaves.get()).toBe(0);
+    });
+
+    test('a failed save keeps saveError through the automatic re-sync; reload() clears it', async () => {
+        const { api, rows } = fakeApi([feature('a', 'bunker', 1)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        rows.get('a')!.version = 2;
+
+        await svc.update('a', { type: 'green' });
+        await Bun.sleep(0);
+        expect(svc.saveError.get()?.code).toBe('conflict');
+        expect(svc.store.items.get()[0].version).toBe(2); // re-synced
+
+        await svc.reload();
+        expect(svc.saveError.get()).toBeNull();
+    });
+
+    test('reload() keeps saveError when the re-fetch fails', async () => {
+        const { api, rows } = fakeApi([feature('a', 'bunker', 1)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        rows.get('a')!.version = 2;
+        await svc.update('a', { type: 'green' });
+        await Bun.sleep(0);
+
+        api.listByCourse = () => Promise.reject(new ApiError(500, 'down'));
+        await svc.reload();
+        expect(svc.saveError.get()?.code).toBe('conflict');
+    });
+
+    test('clearSaveError dismisses the failure without a re-fetch', async () => {
+        const { api, rows, calls } = fakeApi([feature('a', 'bunker', 1)]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        rows.get('a')!.version = 2;
+        await svc.update('a', { type: 'green' });
+        await Bun.sleep(0);
+        const lists = calls.list;
+
+        svc.clearSaveError();
+        expect(svc.saveError.get()).toBeNull();
+        expect(calls.list).toBe(lists);
     });
 });

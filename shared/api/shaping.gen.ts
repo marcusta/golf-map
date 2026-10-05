@@ -45,7 +45,7 @@ export interface RecipeParam {
 export interface ShapingPhase {
     id: 'layers' | 'worker' | 'blender' | 'unity';
     label: string;
-    status: 'running' | 'failed' | 'pending' | 'done' | 'skipped';
+    status: 'done' | 'running' | 'failed' | 'pending' | 'skipped';
     detail: null | string;
     seconds: null | number;
 }

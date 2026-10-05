@@ -24,7 +24,6 @@ function feature(over: Partial<CourseFeature> = {}): CourseFeature {
                 ],
             }],
         },
-        geojson: null,
         sortOrder: 0,
         source: null,
         sourceRef: null,

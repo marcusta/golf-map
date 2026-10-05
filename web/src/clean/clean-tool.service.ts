@@ -22,6 +22,10 @@
 //          source, drag paints (live local preview by cloning tile pixels
 //          on the preview surface — clean-stamp.ts, the client mirror of
 //          golfpipe/stamp.py), each finished stroke queues directly.
+//          The live stroke paints dabs incrementally (IncrementalStampStroke)
+//          at most once per animation frame into the surface's persistent
+//          canvas, which the map reads through a CanvasSource
+//          (stamp-canvas-view.ts). No PNG encode, no overlay re-add per move.
 //          Aligned ON: the source offset persists across strokes; OFF:
 //          every stroke restarts from the picked source. Single clicks
 //          stamp one dab; Shift-click extends a straight line from the
@@ -55,6 +59,7 @@ import { Signal, effect } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
 import type { GeoJSON } from 'geojson';
 import type { ToolContext } from '../editor/tool';
+import { bindDrag, type DragBinding } from '../editor/drag-binding';
 import type { MapPointerEvent } from '../map/map.service';
 import { tileUrlTemplate } from '../map/map-style';
 import { deriveTileVersion } from '../map/tileset.service';
@@ -62,7 +67,9 @@ import type { OrthoPatchesApi } from '../../../shared/api/ortho-patches.gen';
 import { api } from '../api';
 import { lngLatToSweref99tm } from '../geo/transform';
 import { SamClient, largestPolygon, SAM_CROP_SIZE } from '../sam/sam-client';
-import { planCrop, cropPixelToLngLat, cropPixelToSweref, fillTileUrl, type CropPlan } from '../sam/sam-crop';
+import { planCrop, cropPixelToLngLat, cropPixelToSweref, type CropPlan } from '../sam/sam-crop';
+import { canvasToBase64, composeCropCanvas, cropTiles, type CropTile } from '../imaging/crop-source';
+import { SidecarHealth, type SidecarStatus } from '../imaging/sidecar-health';
 import { CleanClient } from './clean-client';
 import {
     dilateMask,
@@ -77,7 +84,8 @@ import {
     mercatorToLngLat,
     planBounds3857,
 } from './clean-mask';
-import { renderStampStroke, type PxPoint } from './clean-stamp';
+import { IncrementalStampStroke, renderStampStroke, type PxPoint, type PxRect } from './clean-stamp';
+import { canvasStampView, type StampSurfaceView, type StampViewFactory } from './stamp-canvas-view';
 
 /** Interaction-claim id for the Clean tool (also its registry id). */
 export const CLEAN_TOOL_ID = 'clean';
@@ -104,7 +112,7 @@ const STAMP_MAX_PATH_POINTS = 1500;
 
 export type CleanMode = 'click' | 'ellipse' | 'stamp';
 export type CleanPhase = 'idle' | 'working' | 'preview' | 'applying';
-export type CleanHealth = 'checking' | 'online' | 'offline';
+export type CleanHealth = SidecarStatus;
 
 /**
  * Browser-only imaging seam: crop composition and PNG encoding need canvas,
@@ -114,54 +122,41 @@ export type CleanHealth = 'checking' | 'online' | 'offline';
 export interface CleanImaging {
     /** Compose the ortho crop from tiles → base64 PNG (lossless — unmasked
      * result pixels stay byte-identical through the sidecar round trip). */
-    composeCropPng(tiles: Array<{ url: string; dx: number; dy: number }>, size: number): Promise<string>;
+    composeCropPng(tiles: CropTile[], size: number): Promise<string>;
     /** Mask bitmap → base64 PNG (white = inpaint) — sent to the sidecar for
      * the preview AND to the server on bake (the mask-edit payload). */
     encodeMaskPng(mask: Uint8Array, size: number): Promise<string>;
     /** Compose the ortho crop from tiles → flat RGBA pixels (size×size×4) —
      * the clone-stamp preview surface. */
-    composeCropPixels(tiles: Array<{ url: string; dx: number; dy: number }>, size: number): Promise<Uint8ClampedArray>;
-    /** Flat RGBA pixels → PNG data URL for the image overlay. */
-    pixelsToPngDataUrl(pixels: Uint8ClampedArray, size: number): Promise<string>;
+    composeCropPixels(tiles: CropTile[], size: number): Promise<Uint8ClampedArray>;
 }
 
-async function blobToBase64(blob: Blob): Promise<string> {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-    });
-    return dataUrl.slice(dataUrl.indexOf(',') + 1);
+/** Animation-frame seam: the live stroke paints at most once per frame. */
+export interface FrameScheduler {
+    request(cb: () => void): number;
+    cancel(handle: number): void;
 }
 
-async function composeCropCanvas(
-    tiles: Array<{ url: string; dx: number; dy: number }>,
-    size: number,
-): Promise<OffscreenCanvas> {
-    const canvas = new OffscreenCanvas(size, size);
-    const ctx = canvas.getContext('2d')!;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, size, size);
-    await Promise.all(tiles.map(async tile => {
-        try {
-            const res = await fetch(tile.url);
-            if (!res.ok) return; // out-of-coverage tile — keep background
-            const bitmap = await createImageBitmap(await res.blob());
-            ctx.drawImage(bitmap, tile.dx, tile.dy);
-            bitmap.close();
-        } catch {
-            // Network hiccup on one tile: clean what we have.
-        }
-    }));
-    return canvas;
+export const browserFrames: FrameScheduler = {
+    request: cb => (typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame(() => cb())
+        : (setTimeout(cb, 16) as unknown as number)),
+    cancel: handle => {
+        if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle);
+        else clearTimeout(handle);
+    },
+};
+
+/** Live-stroke seams: the surface view (canvas source) and the frame clock. */
+export interface CleanLiveSeams {
+    views?: StampViewFactory;
+    frames?: FrameScheduler;
 }
 
 /** Real canvas implementation of the imaging seam. */
 export const browserCleanImaging: CleanImaging = {
     async composeCropPng(tiles, size) {
-        const canvas = await composeCropCanvas(tiles, size);
-        return blobToBase64(await canvas.convertToBlob({ type: 'image/png' }));
+        return canvasToBase64(await composeCropCanvas(tiles, size), 'image/png');
     },
 
     async encodeMaskPng(mask, size) {
@@ -176,22 +171,12 @@ export const browserCleanImaging: CleanImaging = {
             img.data[i * 4 + 3] = 255;
         }
         ctx.putImageData(img, 0, 0);
-        return blobToBase64(await canvas.convertToBlob({ type: 'image/png' }));
+        return canvasToBase64(canvas, 'image/png');
     },
 
     async composeCropPixels(tiles, size) {
         const canvas = await composeCropCanvas(tiles, size);
         return canvas.getContext('2d')!.getImageData(0, 0, size, size).data;
-    },
-
-    async pixelsToPngDataUrl(pixels, size) {
-        const canvas = new OffscreenCanvas(size, size);
-        const ctx = canvas.getContext('2d')!;
-        const img = ctx.createImageData(size, size);
-        img.data.set(pixels);
-        ctx.putImageData(img, 0, 0);
-        const base64 = await blobToBase64(await canvas.convertToBlob({ type: 'image/png' }));
-        return `data:image/png;base64,${base64}`;
     },
 };
 
@@ -236,8 +221,8 @@ interface PendingStampEdit {
 type PendingEdit = PendingMaskEdit | PendingStampEdit;
 
 /** One clone-stamp preview surface: a tile-composed crop the pending strokes
- * of that area render onto (shown as an image overlay below the feature
- * fills, exactly like the inpaint preview). */
+ * of that area render onto (shown below the feature fills, like the inpaint
+ * preview, through a canvas-backed view). */
 interface StampSurface {
     id: string;
     plan: CropPlan;
@@ -245,13 +230,21 @@ interface StampSurface {
     base: Uint8ClampedArray;
     /** base + every pending stroke of this surface (+ the live stroke). */
     work: Uint8ClampedArray;
+    /** Map view, created on the first draw. */
+    view: StampSurfaceView | null;
 }
 
 interface ActiveStroke {
     surface: StampSurface;
     /** Surface content BEFORE this stroke — the render/cancel baseline. */
     workBase: Uint8ClampedArray;
-    pathPx: PxPoint[];
+    /** Incremental painter: base = workBase, out = surface.work. Holds the
+     * stroke's surface-px path. */
+    live: IncrementalStampStroke;
+    /** Points added since the last paint. */
+    dirty: boolean;
+    /** Source-ring center waiting for the next frame. */
+    ringMerc: { x: number; y: number } | null;
     pathSweref: Array<{ x: number; y: number }>;
     pathMerc: Array<{ x: number; y: number }>;
     offsetM: { dx: number; dy: number };
@@ -269,12 +262,14 @@ interface ActiveStroke {
  * (clean-panel.component.ts). See the module header for the flow.
  */
 export class CleanToolService {
+    /** Sidecar /health probe (imaging/sidecar-health.ts). */
+    readonly sidecar = new SidecarHealth(() => this.client.health());
     /** Sidecar process reachability (mask modes only — stamping is local). */
-    readonly health = new Signal<CleanHealth>('checking');
+    readonly health: Signal<CleanHealth> = this.sidecar.status;
     /** LaMa weights + torch ready on the sidecar (/health `inpaint`). */
-    readonly inpaintReady = new Signal(false);
+    readonly inpaintReady = this.sidecar.inpaintReady;
     /** Sidecar's reason when inpaint is unavailable. */
-    readonly healthDetail = new Signal<string | null>(null);
+    readonly healthDetail = this.sidecar.detail;
     /** Mode: click = SAM mask; ellipse = drag mask; stamp = clone brush. */
     readonly mode = new Signal<CleanMode>('click');
     readonly phase = new Signal<CleanPhase>('idle');
@@ -309,7 +304,8 @@ export class CleanToolService {
     private preview: PreviewState | null = null;
     private drag: { start: { lng: number; lat: number }; current: { lng: number; lat: number } } | null = null;
     private ellipseOverlayLive = false;
-    private rawDisposers: Array<() => void> = [];
+    /** Raw mousedown/up binding (editor/drag-binding.ts); null while inactive. */
+    private dragBinding: DragBinding | null = null;
 
     private pending: PendingEdit[] = [];
     private surfaces: StampSurface[] = [];
@@ -324,6 +320,17 @@ export class CleanToolService {
     private stroke: ActiveStroke | null = null;
     private strokeInit: Promise<boolean> | null = null;
     private sourceOverlayLive = false;
+    /**
+     * Monotonic stroke token. beginStroke and cancelStroke bump it; an async
+     * step (surface compose, the init await in endStroke) that resumes under
+     * an older value drops its result, so a slow earlier step never
+     * overwrites or commits over a later one.
+     */
+    private strokeSeq = 0;
+    /** Pending animation-frame handle for the live stroke paint. */
+    private frame: number | null = null;
+    private readonly views: StampViewFactory;
+    private readonly frames: FrameScheduler;
 
     constructor(
         private client: CleanClient = new CleanClient(),
@@ -332,7 +339,11 @@ export class CleanToolService {
         private patchesApi: OrthoPatchesApi = api.orthoPatches,
         private confirmFn: (message: string) => boolean =
             message => (typeof confirm === 'function' ? confirm(message) : true),
-    ) {}
+        live: CleanLiveSeams = {},
+    ) {
+        this.views = live.views ?? canvasStampView;
+        this.frames = live.frames ?? browserFrames;
+    }
 
     // ── EditorTool lifecycle ────────────────────────────────────────────────
 
@@ -345,18 +356,19 @@ export class CleanToolService {
         ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));
 
         // Raw mousedown/mouseup (ellipse drags + stamp strokes) need the live
-        // map instance; rebind whenever a (re)created map turns ready. The
-        // photo state (sim vs pristine ortho source) is re-applied there too.
-        const rebind = effect(() => {
+        // map instance; the drag binding rebinds whenever a (re)created map
+        // turns ready.
+        this.dragBinding = bindDrag(ctx, {
+            toolId: CLEAN_TOOL_ID,
+            onDown: (e, map) => this.onRawMouseDown(e, map),
+            onUp: (_e, map) => this.onRawMouseUp(map),
+        });
+        // Re-apply the photo state (sim vs pristine ortho source) whenever
+        // a (re)created map turns ready.
+        ctx.track(effect(() => {
             if (!ctx.map.ready.get()) return;
-            const map = ctx.map.map.peek();
-            if (map) this.bindRawHandlers(map as MaplibreMap);
             this.applyPhotoState();
-        });
-        ctx.track(() => {
-            rebind();
-            this.disposeRawHandlers();
-        });
+        }));
 
         // [ / ] resize the stamp brush (ignored while typing in inputs).
         const onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
@@ -384,7 +396,7 @@ export class CleanToolService {
         for (const edit of this.pending) {
             if (edit.kind === 'mask') ctx?.map.removeOverlayLayer(edit.overlayId);
         }
-        for (const surface of this.surfaces) ctx?.map.removeOverlayLayer(surface.id);
+        for (const surface of this.surfaces) surface.view?.remove();
         this.surfaces = [];
         this.preview = null;
         this.phase.set('idle');
@@ -392,7 +404,7 @@ export class CleanToolService {
         // Always hand the map back showing the PRISTINE photo.
         const pristine = ctx?.tileset.tileVersion.peek();
         if (ctx && pristine) ctx.map.setOrthoPhotoState('ortho', pristine);
-        this.disposeRawHandlers();
+        this.dragBinding = null;
         this.ctx = null;
     }
 
@@ -422,12 +434,8 @@ export class CleanToolService {
     }
 
     /** Probe the sidecar's /health (activation + the panel's retry button). */
-    async checkHealth(): Promise<void> {
-        this.health.set('checking');
-        const h = await this.client.health();
-        this.health.set(h.online ? 'online' : 'offline');
-        this.inpaintReady.set(h.inpaintAvailable);
-        this.healthDetail.set(h.detail);
+    checkHealth(): Promise<void> {
+        return this.sidecar.check();
     }
 
     /** Refresh the baked-patch count + bake pre-flight from the server. */
@@ -523,28 +531,11 @@ export class CleanToolService {
 
     // ── Raw pointer plumbing (ellipse drags + stamp strokes) ────────────────
 
-    private bindRawHandlers(map: MaplibreMap): void {
-        this.disposeRawHandlers();
-        const onMouseDown = (e: MapMouseEvent) => this.onRawMouseDown(e, map);
-        const onMouseUp = () => this.onRawMouseUp(map);
-        map.on('mousedown', onMouseDown);
-        map.on('mouseup', onMouseUp);
-        this.rawDisposers.push(() => {
-            map.off('mousedown', onMouseDown);
-            map.off('mouseup', onMouseUp);
-        });
-    }
-
-    private disposeRawHandlers(): void {
-        for (const dispose of this.rawDisposers) dispose();
-        this.rawDisposers = [];
-    }
-
+    /**
+     * Left press under the clean claim. Cmd/Ctrl-drag stays the pan escape:
+     * the drag binding filters that press before it gets here.
+     */
     private onRawMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
-        if (this.ctx?.map.interactionMode.peek() !== CLEAN_TOOL_ID) return;
-        if (e.originalEvent.button !== 0) return;
-        // ⌘/Ctrl-drag stays the guaranteed pan escape hatch (draw-tool convention).
-        if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
         const mode = this.mode.peek();
         const p = { lng: e.lngLat.lng, lat: e.lngLat.lat };
 
@@ -560,16 +551,14 @@ export class CleanToolService {
                 return;
             }
             if (this.phase.peek() !== 'idle') return;
-            e.preventDefault();
-            map.dragPan.disable();
+            this.dragBinding?.claim(e, map);
             this.strokeInit = this.beginStroke(p);
             return;
         }
 
         if (mode !== 'ellipse') return;
         if (this.phase.peek() !== 'idle') return;
-        e.preventDefault();
-        map.dragPan.disable();
+        this.dragBinding?.claim(e, map);
         this.drag = { start: p, current: p };
     }
 
@@ -585,14 +574,14 @@ export class CleanToolService {
 
     private onRawMouseUp(map: MaplibreMap): void {
         if (this.strokeInit || this.stroke) {
-            map.dragPan.enable();
+            this.releasePan(map);
             void this.endStroke();
             return;
         }
         const drag = this.drag;
         if (!drag) return;
         this.drag = null;
-        map.dragPan.enable();
+        this.releasePan(map);
         this.removeEllipseOverlay();
         void this.finishEllipse(drag.start, drag.current);
     }
@@ -601,8 +590,11 @@ export class CleanToolService {
         if (!this.drag) return;
         this.drag = null;
         this.removeEllipseOverlay();
-        const map = this.ctx?.map.map.peek();
-        (map as MaplibreMap | null)?.dragPan.enable();
+        this.releasePan();
+    }
+
+    private releasePan(map?: MaplibreMap): void {
+        this.dragBinding?.release(map);
     }
 
     // ── Ellipse mode (SAM-free mask) ────────────────────────────────────────
@@ -708,6 +700,7 @@ export class CleanToolService {
      * when no source is picked or the spot is outside the tiled area.
      */
     async beginStroke(lngLat: { lng: number; lat: number }): Promise<boolean> {
+        const token = ++this.strokeSeq;
         const gate = this.stampGate();
         if (!gate) return false;
         if (!this.source) {
@@ -729,34 +722,53 @@ export class CleanToolService {
         }
 
         const surface = await this.surfaceFor(destMerc, offsetMerc, gate.zoom, gate);
+        // A cancel or a newer stroke started while the crop composed.
+        if (token !== this.strokeSeq) return false;
         if (!surface) return false;
 
         const start = mercatorToCropPixel(surface.plan, destMerc.x, destMerc.y);
         const mpp = mercatorMetersPerPixel(surface.plan.zoom, surface.plan.tileSize);
         const radiusPx = (this.stampSizeM.peek() / 2) / groundMetersPerPixel(surface.plan.zoom, lngLat.lat);
+        const brush = {
+            sizeM: this.stampSizeM.peek(),
+            opacity: this.stampOpacity.peek(),
+            flow: this.stampFlow.peek(),
+            hardness: this.stampHardness.peek(),
+        };
+        const toneMatch = this.stampToneMatch.peek();
+        // Screen y grows south; mercator y grows north.
+        const offsetPx = { dx: offsetMerc.dx / mpp, dy: -offsetMerc.dy / mpp };
+        const workBase = surface.work.slice();
+        const live = new IncrementalStampStroke(workBase, surface.work, surface.plan.size, {
+            offsetPx,
+            radiusPx,
+            opacity: brush.opacity,
+            flow: brush.flow,
+            hardness: brush.hardness,
+            toneMatch,
+        });
+        live.add({ x: start.px, y: start.py });
         this.stroke = {
             surface,
-            workBase: surface.work.slice(),
-            pathPx: [{ x: start.px, y: start.py }],
+            workBase,
+            live,
+            dirty: true,
+            ringMerc: null,
             pathSweref: [destSweref],
             pathMerc: [destMerc],
             offsetM,
             offsetMerc,
-            // Screen y grows south; mercator y grows north.
-            offsetPx: { dx: offsetMerc.dx / mpp, dy: -offsetMerc.dy / mpp },
+            offsetPx,
             radiusPx,
             lastLngLat: lngLat,
-            brush: {
-                sizeM: this.stampSizeM.peek(),
-                opacity: this.stampOpacity.peek(),
-                flow: this.stampFlow.peek(),
-                hardness: this.stampHardness.peek(),
-            },
-            toneMatch: this.stampToneMatch.peek(),
+            brush,
+            toneMatch,
             aligned: this.stampAligned.peek(),
         };
         this.notice.set(null);
-        this.renderLiveStroke();
+        // The first dab shows right away (a click is feedback); moves after
+        // it coalesce to one paint per frame.
+        this.paintLiveStroke();
         return true;
     }
 
@@ -765,18 +777,51 @@ export class CleanToolService {
     extendStroke(lngLat: { lng: number; lat: number }): void {
         const stroke = this.stroke;
         if (!stroke) return;
-        if (stroke.pathPx.length >= STAMP_MAX_PATH_POINTS) return;
+        const points = stroke.live.points;
+        if (points.length >= STAMP_MAX_PATH_POINTS) return;
         const merc = lngLatToMercator(lngLat);
         const px = mercatorToCropPixel(stroke.surface.plan, merc.x, merc.y);
-        const last = stroke.pathPx[stroke.pathPx.length - 1];
+        const last = points[points.length - 1];
         if (Math.hypot(px.px - last.x, px.py - last.y) < STAMP_SAMPLE_PX) return;
-        stroke.pathPx.push({ x: px.px, y: px.py });
+        stroke.live.add({ x: px.px, y: px.py });
         stroke.pathSweref.push(lngLatToSweref99tm(lngLat));
         stroke.pathMerc.push(merc);
         stroke.lastLngLat = lngLat;
-        this.renderLiveStroke();
+        stroke.dirty = true;
         // The source ring follows the brush at the stroke's offset.
-        this.updateSourceOverlay({ x: merc.x + stroke.offsetMerc.dx, y: merc.y + stroke.offsetMerc.dy });
+        stroke.ringMerc = { x: merc.x + stroke.offsetMerc.dx, y: merc.y + stroke.offsetMerc.dy };
+        this.scheduleFrame();
+    }
+
+    /** Ask for one paint on the next animation frame (no-op if pending). */
+    private scheduleFrame(): void {
+        if (this.frame !== null) return;
+        this.frame = this.frames.request(() => {
+            this.frame = null;
+            this.paintLiveStroke();
+        });
+    }
+
+    private cancelFrame(): void {
+        if (this.frame === null) return;
+        this.frames.cancel(this.frame);
+        this.frame = null;
+    }
+
+    /** Paint the dabs added since the last paint and push the changed
+     * rectangle to the surface view; move the source ring. */
+    private paintLiveStroke(): void {
+        const stroke = this.stroke;
+        if (!stroke) return;
+        if (stroke.dirty) {
+            stroke.dirty = false;
+            const rect = stroke.live.flush();
+            if (rect) this.drawSurface(stroke.surface, rect);
+        }
+        if (stroke.ringMerc) {
+            this.updateSourceOverlay(stroke.ringMerc);
+            stroke.ringMerc = null;
+        }
     }
 
     /**
@@ -788,12 +833,20 @@ export class CleanToolService {
     async endStroke(): Promise<boolean> {
         if (this.strokeInit) {
             const init = this.strokeInit;
+            const token = this.strokeSeq;
             this.strokeInit = null;
             if (!(await init)) return false;
+            // Cancelled or superseded while the init was in flight.
+            if (token !== this.strokeSeq) return false;
         }
         const stroke = this.stroke;
         if (!stroke) return false;
+        // Paint whatever the pending frame would have, synchronously: the
+        // committed surface must carry the whole stroke.
+        this.cancelFrame();
+        this.paintLiveStroke();
         this.stroke = null;
+        const pathPx = stroke.live.points.slice();
 
         const rM = stroke.brush.sizeM / 2;
         const lat = stroke.lastLngLat.lat;
@@ -822,15 +875,15 @@ export class CleanToolService {
                 north: Math.max(...sy) + rM,
             },
             surfaceId: stroke.surface.id,
-            pathPx: stroke.pathPx,
+            pathPx,
             offsetPx: stroke.offsetPx,
             radiusPx: stroke.radiusPx,
         };
         this.pending.push(edit);
         this.pendingCount.set(this.pending.length);
         this.lastDab = stroke.lastLngLat;
-        // Commit the stroke's render (work already carries it via the live
-        // render) and rest the source ring per the aligned semantics.
+        // surface.work already carries the stroke (the live painter writes
+        // it in place). Rest the source ring per the aligned semantics.
         const rest = stroke.aligned
             ? { x: lngLatToMercator(stroke.lastLngLat).x + stroke.offsetMerc.dx, y: lngLatToMercator(stroke.lastLngLat).y + stroke.offsetMerc.dy }
             : this.source?.merc;
@@ -854,14 +907,16 @@ export class CleanToolService {
 
     /** Cancel the live stroke (ESC / teardown): restore the surface. */
     private cancelStroke(): void {
+        // Invalidate any in-flight beginStroke / endStroke await.
+        this.strokeSeq++;
         this.strokeInit = null;
+        this.cancelFrame();
         const stroke = this.stroke;
         if (!stroke) return;
         this.stroke = null;
         stroke.surface.work = stroke.workBase;
-        void this.updateSurfaceOverlay(stroke.surface);
-        const map = this.ctx?.map.map.peek();
-        (map as MaplibreMap | null)?.dragPan.enable();
+        this.drawSurface(stroke.surface, null);
+        this.releasePan();
         if (this.source) this.updateSourceOverlay(this.source.merc);
     }
 
@@ -897,59 +952,34 @@ export class CleanToolService {
             return null;
         }
         const template = this.orthoTemplate(gate);
-        const base = await this.imaging.composeCropPixels(
-            plan.tiles.map(t => ({ url: fillTileUrl(template, plan.zoom, t.x, t.y), dx: t.dx, dy: t.dy })),
-            plan.size,
-        );
+        const base = await this.imaging.composeCropPixels(cropTiles(plan, template), plan.size);
         const surface: StampSurface = {
             id: `clean-stamp-${++this.overlaySeq}`,
             plan,
             base: base.slice(),
             work: base,
+            view: null,
         };
         this.surfaces.push(surface);
         return surface;
     }
 
-    /** Re-render the live stroke onto its surface from the pre-stroke state. */
-    private renderLiveStroke(): void {
-        const stroke = this.stroke;
-        if (!stroke) return;
-        const work = stroke.workBase.slice();
-        renderStampStroke(work, stroke.surface.plan.size, {
-            path: stroke.pathPx,
-            offsetPx: stroke.offsetPx,
-            radiusPx: stroke.radiusPx,
-            opacity: stroke.brush.opacity,
-            flow: stroke.brush.flow,
-            hardness: stroke.brush.hardness,
-            toneMatch: stroke.toneMatch,
-        });
-        stroke.surface.work = work;
-        void this.updateSurfaceOverlay(stroke.surface);
-    }
-
-    private async updateSurfaceOverlay(surface: StampSurface): Promise<void> {
+    /** Push `surface.work` to the surface's map view (created on first
+     * use, then updated in place). `rect` null copies the whole surface. */
+    private drawSurface(surface: StampSurface, rect: PxRect | null): void {
         const ctx = this.ctx;
         if (!ctx) return;
-        try {
-            const url = await this.imaging.pixelsToPngDataUrl(surface.work, surface.plan.size);
+        if (!surface.view) {
             const corner = (px: number, py: number): [number, number] => {
                 const p = cropPixelToLngLat(surface.plan, px, py);
                 return [p.lng, p.lat];
             };
             const size = surface.plan.size;
-            ctx.map.removeOverlayLayer(surface.id);
-            ctx.map.addImageOverlay(
-                surface.id,
-                url,
-                [corner(0, 0), corner(size, 0), corner(size, size), corner(0, size)],
-                // Below the feature fills, like the inpaint preview.
-                { beforeId: 'features-fill' },
-            );
-        } catch {
-            // Map mid-teardown — the preview is decorative until bake.
+            surface.view = this.views(ctx.map, surface.id, size,
+                [corner(0, 0), corner(size, 0), corner(size, size), corner(0, size)]);
+            rect = null;
         }
+        surface.view.draw(surface.work, rect);
     }
 
     /** The clone-source ring marker (follows the brush during a stroke). */
@@ -1041,10 +1071,7 @@ export class CleanToolService {
         plan: CropPlan,
     ): Promise<string> {
         const template = this.orthoTemplate(gate);
-        return this.imaging.composeCropPng(
-            plan.tiles.map(t => ({ url: fillTileUrl(template, plan.zoom, t.x, t.y), dx: t.dx, dy: t.dy })),
-            plan.size,
-        );
+        return this.imaging.composeCropPng(cropTiles(plan, template), plan.size);
     }
 
     private async runInpaint(plan: CropPlan, cropBase64: string, mask: Uint8Array, tool: string): Promise<boolean> {
@@ -1234,7 +1261,7 @@ export class CleanToolService {
         for (const edit of this.pending) {
             if (edit.kind === 'mask') this.ctx?.map.removeOverlayLayer(edit.overlayId);
         }
-        for (const surface of this.surfaces) this.ctx?.map.removeOverlayLayer(surface.id);
+        for (const surface of this.surfaces) surface.view?.remove();
         this.surfaces = [];
     }
 
@@ -1246,7 +1273,7 @@ export class CleanToolService {
         const strokes = this.pending.filter(
             (e): e is PendingStampEdit => e.kind === 'stamp' && e.surfaceId === surfaceId);
         if (strokes.length === 0) {
-            this.ctx?.map.removeOverlayLayer(surface.id);
+            surface.view?.remove();
             this.surfaces = this.surfaces.filter(s => s !== surface);
             return;
         }
@@ -1263,7 +1290,7 @@ export class CleanToolService {
             });
         }
         surface.work = work;
-        void this.updateSurfaceOverlay(surface);
+        this.drawSurface(surface, null);
     }
 
     /** Revert v1: drop the last BAKED entry (server re-replays + retiles the

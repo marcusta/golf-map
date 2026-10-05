@@ -1,6 +1,7 @@
 import { Component, Computed, Signal, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, panelTitle, iconBtn } from '../css';
+import { s, iconBtn } from '../css';
+import { dockBody, sectionTitle, panelInput, busyAndNotice, hintsFooter } from '../editor/panel-recipes.css';
 import { icon } from '../ui/icons';
 import { SELECTION_COLOR } from '../draw/feature-palette';
 import { ConfirmService } from '../app/confirm-dialog.component';
@@ -86,7 +87,8 @@ const tpl = template(`
         <div class="tedit-panel__hints">
             <div><b>Click</b> a bunker, pond, creek or path to pick its Blender recipe; <b>Cmd/Ctrl+click</b> more of the same kind to give them all one recipe.</div>
             <div><b>Click</b> open ground (or <b>Shift+click</b> anywhere) to outline an area (parking lot, road, house pad…).</div>
-            <div><b>Click the first point</b> to save the edit; <b>Esc</b> discards the outline.</div>
+            <div><b>Click the first point</b> or press <b>Enter</b> to save the edit; <b>Esc</b> discards the outline.</div>
+            <div><b>Backspace</b> or <b>⌘Z</b> removes the last point.</div>
             <div>Edits replay onto the DEM at build time — the raw lidar DEM stays pristine.</div>
         </div>
     </div>
@@ -151,28 +153,12 @@ export class TerrainEditPanelComponent extends Component {
     static styles = `
         .tedit-panel {
             /* Flat dock body (feature-dock.component.ts hosting contract). */
-            display: flex;
-            flex-direction: column;
-            gap: var(--space-3);
-            padding: var(--space-3) var(--space-4) var(--space-4);
-            font-size: 0.8rem;
-            color: ${t('color-text-primary')};
+            ${dockBody()}
 
             & .section { display: flex; flex-direction: column; gap: ${s('xs')}; }
-            & .section-title {
-                margin: 0 0 ${s('xs')};
-                ${panelTitle()}
-            }
+            ${sectionTitle()}
 
-            & .input {
-                width: 100%;
-                font: inherit;
-                padding: ${s('xs')} ${s('sm')};
-                border: 1px solid ${t('color-border-default')};
-                border-radius: ${t('radius-sm')};
-                background: ${t('color-surface-card')};
-                color: ${t('color-text-primary')};
-            }
+            & .input { ${panelInput()} }
 
             & .field {
                 display: flex;
@@ -189,17 +175,7 @@ export class TerrainEditPanelComponent extends Component {
                 & input { margin: 0; }
             }
 
-            & .busy-line {
-                display: none;
-                color: ${t('color-text-secondary')};
-                &.show { display: block; }
-            }
-            & .notice {
-                display: none;
-                color: var(--data-bad);
-                line-height: 1.4;
-                &.show { display: block; }
-            }
+            ${busyAndNotice()}
 
             & .edit-list { display: flex; flex-direction: column; gap: 2px; }
             & .empty {
@@ -369,16 +345,7 @@ export class TerrainEditPanelComponent extends Component {
                 }
             }
 
-            & .tedit-panel__hints {
-                padding-top: var(--space-3);
-                border-top: 1px solid ${t('color-border-default')};
-                display: flex;
-                flex-direction: column;
-                gap: ${s('xs')};
-                font-size: 0.72rem;
-                color: ${t('color-text-secondary')};
-                line-height: 1.4;
-            }
+            ${hintsFooter('tedit-panel__hints')}
         }
     `;
 

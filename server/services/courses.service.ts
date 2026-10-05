@@ -48,6 +48,19 @@ export interface Course {
     updatedAt: string;
 }
 
+/**
+ * `Course` plus its site's tile manifest, for the course GET. The map client
+ * boots from one request instead of course GET followed by assets/by-site.
+ */
+export interface CourseDetail extends Course {
+    /**
+     * `meta_json` of the site's `tile_manifest` asset: the same string as
+     * `CourseAsset.metaJson` from `assets/by-site`. Null when the course has no
+     * site, the site has no manifest, or the manifest has no metadata.
+     */
+    tileManifestJson: string | null;
+}
+
 // --- Row mapping ---
 
 type CourseRow = Selectable<CoursesTable>;
@@ -242,6 +255,28 @@ export class CoursesService {
         const row = await this.byId(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Course ${id} not found`);
         return toCourse(row);
+    }
+
+    /**
+     * The course with its site's tile manifest in one query. Tiles and the
+     * manifest are keyed by site, so the lookup goes course -> site_id ->
+     * course_assets(site_id, kind = 'tile_manifest'), oldest row first, the
+     * same row `assets/by-site` lists first.
+     */
+    async getDetail(id: string): Promise<CourseDetail> {
+        const row = await this.courses()
+            .where('id', '=', id)
+            .select((eb) => eb
+                .selectFrom('course_assets')
+                .select('course_assets.meta_json')
+                .where('course_assets.kind', '=', 'tile_manifest')
+                .whereRef('course_assets.site_id', '=', 'courses.site_id')
+                .orderBy('course_assets.created_at')
+                .limit(1)
+                .as('tile_manifest_json'))
+            .executeTakeFirst();
+        if (!row) throw new NotFoundError(`Course ${id} not found`);
+        return { ...toCourse(row), tileManifestJson: row.tile_manifest_json ?? null };
     }
 
     async create(input: {

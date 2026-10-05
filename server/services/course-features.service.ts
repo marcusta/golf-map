@@ -114,7 +114,6 @@ export interface CourseFeature {
     layer: FeatureLayer;
     type: string;
     geometry: FeatureGeometry;
-    geojson: GeoJsonPolygon | null;
     sortOrder: number;
     /** Import provenance (T49): producer id (e.g. 'osm'), null = hand-drawn. */
     source: string | null;
@@ -189,7 +188,30 @@ export interface CourseFeatureFeatureCollection {
 
 // --- Row mapping ---
 
-type FeatureRow = Selectable<CourseFeaturesTable>;
+/**
+ * Every column except the materialized `geojson`, which only
+ * `geojsonByCourse` reads (review item 1: it was ~25 MB of a 33 MB list).
+ */
+type FeatureRow = Omit<Selectable<CourseFeaturesTable>, 'geojson'>;
+
+const FEATURE_COLUMNS = [
+    'id',
+    'course_id',
+    'hole_id',
+    'layer',
+    'type',
+    'geometry_json',
+    'generated',
+    'feature_no',
+    'sort_order',
+    'source',
+    'source_ref',
+    'license',
+    'attributes_json',
+    'version',
+    'created_at',
+    'updated_at',
+] as const;
 
 function toCourseFeature(row: FeatureRow): CourseFeature {
     return {
@@ -199,7 +221,6 @@ function toCourseFeature(row: FeatureRow): CourseFeature {
         layer: toLayer(row.layer),
         type: row.type,
         geometry: JSON.parse(row.geometry_json) as FeatureGeometry,
-        geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
         sortOrder: row.sort_order,
         source: row.source,
         generated: row.generated === 1,
@@ -584,7 +605,6 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
         layer: toLayer(row.layer),
         type: row.type,
         geometry,
-        geojson: row.geojson ? (JSON.parse(row.geojson) as GeoJsonPolygon) : null,
         sortOrder: row.sort_order,
         source: row.source,
         generated: row.generated === 1,
@@ -596,6 +616,54 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
     };
 }
 
+export interface CreateFeatureInput {
+    courseId: string;
+    holeId?: string | null;
+    /** `'roughs'` puts it in the Roughs group (rough types, no hole). */
+    layer?: string | null;
+    type: string;
+    geometry: FeatureGeometry;
+    /** Import provenance (T49), omitted for hand-drawn features. */
+    source?: string | null;
+    sourceRef?: string | null;
+    license?: string | null;
+    /** Flat scalar attributes; omitted/null for hand-drawn features. */
+    attributes?: FeatureAttributes | null;
+}
+
+export interface UpdateFeatureInput {
+    holeId?: string | null;
+    /**
+     * `'roughs'` moves it into the Roughs group (and off its hole);
+     * `null` moves it out, to `holeId` or course-level. Omitted: it
+     * stays, unless the same update assigns a hole or a non-rough
+     * type — both of those leave the Roughs group.
+     */
+    layer?: string | null;
+    type?: string;
+    geometry?: FeatureGeometry;
+    /** `null` clears the attributes; omitted leaves them untouched. */
+    attributes?: FeatureAttributes | null;
+}
+
+function assertValidCreate(input: CreateFeatureInput): void {
+    assertValidType(input.type);
+    assertValidGeometry(deriveCenterlineRings(input.geometry));
+    assertValidAttributes(input.attributes);
+    if (input.type === 'vegetation_zone') assertValidVegetationZoneAttributes(input.attributes);
+    if (input.type === TREE_AREA_TYPE) assertValidTreeAreaAttributes(input.attributes);
+    if (input.type === 'path') assertValidPathAttributes(input.attributes);
+    if (takesBankVeg(input.type)) assertValidBankVegAttributes(input.attributes);
+    assertValidLayer(input.layer ?? null, input.holeId ?? null, input.type);
+}
+
+/** The row-independent checks; updateIn does the ones that need the stored row. */
+function assertValidUpdate(input: UpdateFeatureInput): void {
+    if (input.type !== undefined) assertValidType(input.type);
+    if (input.geometry !== undefined) assertValidGeometry(deriveCenterlineRings(input.geometry));
+    if (input.attributes !== undefined) assertValidAttributes(input.attributes);
+}
+
 export class CourseFeaturesService {
     constructor(private db: Kysely<Database>) {}
 
@@ -604,7 +672,7 @@ export class CourseFeaturesService {
     private byCourse(courseId: string) {
         return this.db
             .selectFrom('course_features')
-            .selectAll()
+            .select(FEATURE_COLUMNS)
             .where('course_id', '=', courseId)
             .orderBy('sort_order');
     }
@@ -612,7 +680,7 @@ export class CourseFeaturesService {
     private byHole(holeId: string) {
         return this.db
             .selectFrom('course_features')
-            .selectAll()
+            .select(FEATURE_COLUMNS)
             .where('hole_id', '=', holeId)
             .orderBy('sort_order');
     }
@@ -628,8 +696,8 @@ export class CourseFeaturesService {
         return query.orderBy('sort_order');
     }
 
-    private byId(id: string) {
-        return this.db.selectFrom('course_features').selectAll().where('id', '=', id);
+    private byId(id: string, trx: Kysely<Database> = this.db) {
+        return trx.selectFrom('course_features').select(FEATURE_COLUMNS).where('id', '=', id);
     }
 
     // --- Queries (write) ---
@@ -725,7 +793,11 @@ export class CourseFeaturesService {
         for (const row of rows) {
             const feature = toCourseFeatureSafe(row as unknown as FeatureRow);
             if (!feature) continue;
-            const geojson = feature.geojson ?? toGeoJson(feature.geometry);
+            // Prefer the stored WGS84 polygon; the CourseFeature API type
+            // omits it (review item 1), so read it off the row.
+            const geojson = row.geojson
+                ? (JSON.parse(row.geojson) as GeoJsonPolygon)
+                : toGeoJson(feature.geometry);
             features.push({
                 type: 'Feature',
                 id: feature.id,
@@ -762,32 +834,34 @@ export class CourseFeaturesService {
         return collection;
     }
 
-    async create(input: {
-        courseId: string;
-        holeId?: string | null;
-        /** `'roughs'` puts it in the Roughs group (rough types, no hole). */
-        layer?: string | null;
-        type: string;
-        geometry: FeatureGeometry;
-        /** Import provenance (T49) — omitted for hand-drawn features. */
-        source?: string | null;
-        sourceRef?: string | null;
-        license?: string | null;
-        /** Flat scalar attributes; omitted/null for hand-drawn features. */
-        attributes?: FeatureAttributes | null;
-    }): Promise<CourseFeature> {
-        assertValidType(input.type);
-        const geometry = deriveCenterlineRings(input.geometry);
-        assertValidGeometry(geometry);
-        assertValidAttributes(input.attributes);
-        if (input.type === 'vegetation_zone') assertValidVegetationZoneAttributes(input.attributes);
-        if (input.type === TREE_AREA_TYPE) assertValidTreeAreaAttributes(input.attributes);
-        if (input.type === 'path') assertValidPathAttributes(input.attributes);
-        if (takesBankVeg(input.type)) assertValidBankVegAttributes(input.attributes);
+    async create(input: CreateFeatureInput): Promise<CourseFeature> {
+        assertValidCreate(input);
+        const created = await this.db.transaction().execute((trx) => this.createIn(trx, input));
+        if (created.type === 'path' && created.geometry.centerline) await this.refreshRoadJunctions(input.courseId);
+        return created;
+    }
 
+    /**
+     * Creates every item in one transaction, in input order (each lands at
+     * its own D26 insertion position, as sequential create() calls would).
+     * Any invalid item rejects the whole batch before anything is written.
+     */
+    async createMany(courseId: string, items: Omit<CreateFeatureInput, 'courseId'>[]): Promise<CourseFeature[]> {
+        const inputs = items.map((item) => ({ ...item, courseId }));
+        for (const input of inputs) assertValidCreate(input);
+        const created = await this.db.transaction().execute(async (trx) => {
+            const created: CourseFeature[] = [];
+            for (const input of inputs) created.push(await this.createIn(trx, input));
+            return created;
+        });
+        if (created.some((f) => f.type === 'path' && f.geometry.centerline)) await this.refreshRoadJunctions(courseId);
+        return created;
+    }
+
+    private async createIn(trx: Kysely<Database>, input: CreateFeatureInput): Promise<CourseFeature> {
+        const geometry = deriveCenterlineRings(input.geometry);
         const id = crypto.randomUUID();
         const holeId = input.holeId ?? null;
-        assertValidLayer(input.layer ?? null, holeId, input.type);
         const layer = toLayer(input.layer ?? null);
         const source = input.source ?? null;
         const sourceRef = input.sourceRef ?? null;
@@ -795,41 +869,36 @@ export class CourseFeaturesService {
         const attributes = input.attributes ?? null;
         const geojson = toGeoJson(geometry);
 
-        const { sortOrder, no } = await this.db.transaction().execute(async (trx) => {
-            const groupStack = await this.byGroup(input.courseId, holeId, layer, trx).execute();
-            const pos = insertionPosition(groupStack, input.type);
+        const groupStack = await this.byGroup(input.courseId, holeId, layer, trx).execute();
+        const sortOrder = insertionPosition(groupStack, input.type);
 
-            for (const row of groupStack) {
-                if (row.sort_order >= pos) {
-                    await this.updateById(row.id, trx)
-                        .set({ sort_order: row.sort_order + 1, updated_at: sql`(datetime('now'))` })
-                        .execute();
-                }
+        for (const row of groupStack) {
+            if (row.sort_order >= sortOrder) {
+                await this.updateById(row.id, trx)
+                    .set({ sort_order: row.sort_order + 1, updated_at: sql`(datetime('now'))` })
+                    .execute();
             }
+        }
 
-            await this.insertFeature(
-                {
-                    id,
-                    course_id: input.courseId,
-                    hole_id: holeId,
-                    layer,
-                    type: input.type,
-                    geometry_json: JSON.stringify(geometry),
-                    geojson: JSON.stringify(geojson),
-                    sort_order: pos,
-                    source,
-                    source_ref: sourceRef,
-                    license,
-                    attributes_json: serializeAttributes(attributes),
-                },
-                trx,
-            ).execute();
-            // Numbered by the migration 026 trigger.
-            const numbered = await trx.selectFrom('course_features').select('feature_no').where('id', '=', id).executeTakeFirstOrThrow();
-
-            return { sortOrder: pos, no: numbered.feature_no };
-        });
-        if (input.type === 'path' && geometry.centerline) await this.refreshRoadJunctions(input.courseId);
+        await this.insertFeature(
+            {
+                id,
+                course_id: input.courseId,
+                hole_id: holeId,
+                layer,
+                type: input.type,
+                geometry_json: JSON.stringify(geometry),
+                geojson: JSON.stringify(geojson),
+                sort_order: sortOrder,
+                source,
+                source_ref: sourceRef,
+                license,
+                attributes_json: serializeAttributes(attributes),
+            },
+            trx,
+        ).execute();
+        // Numbered by the migration 026 trigger.
+        const numbered = await trx.selectFrom('course_features').select('feature_no').where('id', '=', id).executeTakeFirstOrThrow();
 
         return {
             id,
@@ -838,43 +907,54 @@ export class CourseFeaturesService {
             layer,
             type: input.type,
             geometry,
-            geojson,
             sortOrder,
             source,
             generated: false,
             sourceRef,
             license,
             attributes,
-            no,
+            no: numbered.feature_no,
             version: 1,
         };
     }
 
-    async update(
+    async update(id: string, version: number, input: UpdateFeatureInput): Promise<CourseFeature> {
+        assertValidUpdate(input);
+        const roads = new Set<string>();
+        const updated = await this.db.transaction().execute((trx) => this.updateIn(trx, id, version, input, roads));
+        for (const courseId of roads) await this.refreshRoadJunctions(courseId);
+        return updated;
+    }
+
+    /**
+     * Applies every update in one transaction, in input order. Each row is
+     * version-checked like update(); one stale version (or a missing row)
+     * throws VersionConflictError and rolls back the whole batch.
+     */
+    async updateMany(items: (UpdateFeatureInput & { id: string; version: number })[]): Promise<CourseFeature[]> {
+        for (const item of items) assertValidUpdate(item);
+        const roads = new Set<string>();
+        const updated = await this.db.transaction().execute(async (trx) => {
+            const updated: CourseFeature[] = [];
+            for (const item of items) updated.push(await this.updateIn(trx, item.id, item.version, item, roads));
+            return updated;
+        });
+        for (const courseId of roads) await this.refreshRoadJunctions(courseId);
+        return updated;
+    }
+
+    /** `roads` collects the courses whose kerb fillets the caller re-derives after the commit. */
+    private async updateIn(
+        trx: Kysely<Database>,
         id: string,
         version: number,
-        input: {
-            holeId?: string | null;
-            /**
-             * `'roughs'` moves it into the Roughs group (and off its hole);
-             * `null` moves it out, to `holeId` or course-level. Omitted: it
-             * stays, unless the same update assigns a hole or a non-rough
-             * type — both of those leave the Roughs group.
-             */
-            layer?: string | null;
-            type?: string;
-            geometry?: FeatureGeometry;
-            /** `null` clears the attributes; omitted leaves them untouched. */
-            attributes?: FeatureAttributes | null;
-        },
+        input: UpdateFeatureInput,
+        roads: Set<string>,
     ): Promise<CourseFeature> {
-        const row = await this.byId(id).executeTakeFirst();
+        const row = await this.byId(id, trx).executeTakeFirst();
         if (!row || row.version !== version) throw new VersionConflictError('course_features', id);
 
-        if (input.type !== undefined) assertValidType(input.type);
         const geometry = input.geometry !== undefined ? deriveCenterlineRings(input.geometry) : undefined;
-        if (geometry !== undefined) assertValidGeometry(geometry);
-        if (input.attributes !== undefined) assertValidAttributes(input.attributes);
 
         const dbInput: Record<string, unknown> = {};
         const nextType = input.type ?? row.type;
@@ -912,50 +992,59 @@ export class CourseFeaturesService {
         if (input.attributes !== undefined) dbInput.attributes_json = serializeAttributes(input.attributes);
 
         if (movingGroups) {
-            await this.db.transaction().execute(async (trx) => {
-                const groupStack = await this.byGroup(row.course_id, nextHoleId, nextLayer, trx).execute();
-                const pos = insertionPosition(groupStack, nextType);
+            const groupStack = await this.byGroup(row.course_id, nextHoleId, nextLayer, trx).execute();
+            const pos = insertionPosition(groupStack, nextType);
 
-                for (const targetRow of groupStack) {
-                    if (targetRow.sort_order >= pos) {
-                        await this.updateById(targetRow.id, trx)
-                            .set({ sort_order: targetRow.sort_order + 1, updated_at: sql`(datetime('now'))` })
-                            .execute();
-                    }
+            for (const targetRow of groupStack) {
+                if (targetRow.sort_order >= pos) {
+                    await this.updateById(targetRow.id, trx)
+                        .set({ sort_order: targetRow.sort_order + 1, updated_at: sql`(datetime('now'))` })
+                        .execute();
                 }
-
-                await this.updateById(id, trx)
-                    .set({
-                        ...dbInput,
-                        sort_order: pos,
-                        version: version + 1,
-                        updated_at: sql`(datetime('now'))`,
-                    })
-                    .execute();
-            });
-        } else {
-            await this.updateById(id)
-                .set({
-                    ...dbInput,
-                    version: version + 1,
-                    updated_at: sql`(datetime('now'))`,
-                })
-                .execute();
+            }
+            dbInput.sort_order = pos;
         }
 
-        const updated = await this.byId(id).executeTakeFirstOrThrow();
+        await this.updateById(id, trx)
+            .set({
+                ...dbInput,
+                version: version + 1,
+                updated_at: sql`(datetime('now'))`,
+            })
+            .execute();
+
+        const updated = await this.byId(id, trx).executeTakeFirstOrThrow();
         if ((row.type === 'path' || nextType === 'path')
             && (geometry !== undefined || input.type !== undefined || input.attributes !== undefined)) {
-            await this.refreshRoadJunctions(row.course_id);
+            roads.add(row.course_id);
         }
         return toCourseFeature(updated);
     }
 
     async remove(id: string, version: number): Promise<void> {
-        const row = await this.byId(id).executeTakeFirst();
+        const roads = new Set<string>();
+        await this.db.transaction().execute((trx) => this.removeIn(trx, id, version, roads));
+        for (const courseId of roads) await this.refreshRoadJunctions(courseId);
+    }
+
+    /**
+     * Deletes every listed row in one transaction. Each row is
+     * version-checked like remove(); one stale version (or a missing row)
+     * throws VersionConflictError and nothing is deleted.
+     */
+    async removeMany(items: { id: string; version: number }[]): Promise<void> {
+        const roads = new Set<string>();
+        await this.db.transaction().execute(async (trx) => {
+            for (const item of items) await this.removeIn(trx, item.id, item.version, roads);
+        });
+        for (const courseId of roads) await this.refreshRoadJunctions(courseId);
+    }
+
+    private async removeIn(trx: Kysely<Database>, id: string, version: number, roads: Set<string>): Promise<void> {
+        const row = await this.byId(id, trx).executeTakeFirst();
         if (!row || row.version !== version) throw new VersionConflictError('course_features', id);
-        await this.deleteById(id).execute();
-        if (row.type === 'path') await this.refreshRoadJunctions(row.course_id);
+        await this.deleteById(id, trx).execute();
+        if (row.type === 'path') roads.add(row.course_id);
     }
 
     /**

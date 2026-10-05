@@ -52,7 +52,6 @@ function greenFeature(): CourseFeature {
                 ],
             }],
         },
-        geojson: null,
         sortOrder: 0,
         source: null,
         sourceRef: null,
@@ -214,13 +213,13 @@ test('serve mode: Escape (nothing armed) does not fall back to the draw dock', a
     expect(host.textContent).not.toContain('Feature stack');
 });
 
-test('builder mode: Escape still falls back to the draw dock', async () => {
+test('builder mode: Escape keeps Draw armed and the draw dock up', async () => {
     const editor = mountEditor('builder');
     await tick();
     const host = mountDock();
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(editor.editorMode.activeToolId.peek()).toBeNull();
+    expect(editor.editorMode.activeToolId.peek()).toBe(DRAW_TOOL_ID);
 
     expect(host.textContent).toContain('Feature stack');
 });

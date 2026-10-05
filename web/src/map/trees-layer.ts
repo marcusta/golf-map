@@ -7,7 +7,9 @@ import { sweref99tmToLngLat } from '../geo/transform';
 
 export { TREE_DRAW_DISTANCE_M, TREE_TEXTURE_FILES } from './tree-renderer';
 
-export const TREES_LAYER_ID = 'individual-trees';
+import { TREES_LAYER_ID } from './custom-layer-ids';
+
+export { TREES_LAYER_ID };
 /** Kept for callers; the full-card distance now lives in tree-geometry (LOD_FULL_M). */
 export const TREE_DETAIL_DISTANCE_M = 150;
 

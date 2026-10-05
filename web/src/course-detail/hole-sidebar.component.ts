@@ -1,8 +1,9 @@
-import { Component, Router, Signal, template } from '@basics/core/client/core';
+import { Component, Router, Signal, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, metric, panelTitle } from '../css';
 import { icon } from '../ui/icons';
 import { CourseDetailService } from './course-detail.service';
+import { EditorModeService } from '../editor/editor-mode.service';
 
 /** Shared localStorage key so the collapse state carries across Create ↔ Plan. */
 const LEFT_DOCK_KEY = 'golf-map.holeDock.collapsed';
@@ -232,8 +233,16 @@ export class HoleSidebarComponent extends Component<HoleSidebarProps> {
     private params = this.router.params<{ courseId: string }>('/:host/:courseId');
     private selectedHole = this.router.query('hole');
     private collapsed = new Signal(loadCollapsed());
+    private mode = this.inject(EditorModeService);
 
     render(): DocumentFragment {
+        // Cmd+\ (EditorModeService.toggleDocks) asks both docks to collapse
+        // or expand. The service has already written the persisted key; this
+        // only moves the live state.
+        this.track(effect(() => {
+            const req = this.mode.dockRequest.get();
+            if (req) untrack(() => this.collapsed.set(req.collapsed));
+        }));
         const frag = this.wire(tpl, {
             root: {
                 className: () => this.collapsed.get() ? 'hole-dock is-collapsed' : 'hole-dock',

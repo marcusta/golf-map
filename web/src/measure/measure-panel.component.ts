@@ -1,6 +1,7 @@
 import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, panelTitle, metric } from '../css';
+import { s, btn, metric } from '../css';
+import { dockBody, sectionTitle } from '../editor/panel-recipes.css';
 import { MeasureToolService } from './measure-tool.service';
 import type { SegmentStats } from './measure-state';
 import { pointLabel } from './measure-tool.service';
@@ -36,7 +37,7 @@ const tpl = template(`
         </div>
         <div class="measure-panel__hints">
             <div>Click to place points — <b>A</b>, <b>B</b>, then extend the path.</div>
-            <div>Double-click or click near <b>A</b> to end · <b>Esc</b> clears.</div>
+            <div>Double-click, click near <b>A</b> or <b>Enter</b> to end · <b>Backspace</b> removes the last point · <b>Esc</b> clears.</div>
             <div>plays-like (simple) = horizontal + elevation Δ (full model: Phase 5).</div>
         </div>
     </div>
@@ -58,17 +59,9 @@ export class MeasurePanelComponent extends Component {
                space carries structure, so sections lean on gap rather than
                a hairline after every block; the one allowed divider sits
                above .actions, mirroring feature-stack-panel's reorder-ops. */
-            display: flex;
-            flex-direction: column;
-            gap: var(--space-3);
-            padding: var(--space-3) var(--space-4) var(--space-4);
-            font-size: 0.8rem;
-            color: ${t('color-text-primary')};
+            ${dockBody()}
 
-            & .section-title {
-                margin: 0;
-                ${panelTitle()}
-            }
+            ${sectionTitle('0')}
 
             & .instruction {
                 font-size: 0.8rem;

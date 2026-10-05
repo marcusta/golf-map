@@ -31,7 +31,7 @@ function fakeApi(failAfter = Infinity) {
         create: async input => {
             if (created.length >= failAfter) throw new Error('boom');
             created.push(input as never);
-            return { id: `f${created.length}`, version: 1, ...input, holeId: null, geojson: null } as CourseFeature;
+            return { id: `f${created.length}`, version: 1, ...input, holeId: null } as CourseFeature;
         },
         update: reject,
         remove: reject,

@@ -1,9 +1,11 @@
 import maplibregl from 'maplibre-gl';
 import { loadSmoothedTerrain } from './terrain-smoothing-protocol';
 import { TERRAIN_SMOOTHING_PROTOCOL } from './terrain-smoothing';
-import type { LayerSpecification, MapMouseEvent } from 'maplibre-gl';
+import type { GeoJSONSourceDiff, GeoJSONFeatureDiff, GeoJSONFeatureId, LayerSpecification, MapMouseEvent } from 'maplibre-gl';
 import type { GeoJSON, FeatureCollection } from 'geojson';
-import { WaterLayer, WATER_LAYER_ID } from './water-layer';
+import type { WaterLayer } from './water-layer';
+import { TREES_LAYER_ID, WATER_LAYER_ID } from './custom-layer-ids';
+import { LazyCustomLayer } from './lazy-custom-layer';
 import { MapPerformanceControl } from './map-performance-control';
 import { Signal, batch, effect, di } from '@basics/core/client/core';
 import type { TileManifest } from './tileset.service';
@@ -22,7 +24,8 @@ import {
     type TerrainMode,
 } from './map-style';
 import { TreeStemsService } from './tree-stems.service';
-import { TreesLayer, TREES_LAYER_ID, type TreesLayerOptions } from './trees-layer';
+import type { TreeStem } from '../../../shared/strategy/tree-stems';
+import type { TreesLayer, TreesLayerOptions } from './trees-layer';
 import { InteractionClaims } from './interaction';
 import { canonicalTilesOverlap, type CanonicalTile } from './tile-overlap';
 
@@ -57,6 +60,100 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 
 /** A LayerSpecification minus `source` — overlay helpers bind the source themselves. */
 export type OverlayLayerSpec = DistributiveOmit<LayerSpecification, 'source'>;
+
+/**
+ * One queued overlay update. `set` replaces the source data. `diff` is a
+ * maplibre GeoJSONSourceDiff plus `data`, the full collection the diff
+ * produces, kept so a later fold into a `set` (or a source without
+ * updateData) can still send the right state.
+ */
+type PendingOverlayUpdate =
+    | { kind: 'set'; data: GeoJSON }
+    | { kind: 'diff'; diff: GeoJSONSourceDiff; data: GeoJSON };
+
+/**
+ * Compose two GeoJSONSourceDiffs into one with the effect of applying
+ * `prev` then `next`. maplibre applies a diff as remove, then add, then
+ * update; the result keeps those three lists disjoint so that order cannot
+ * change the outcome:
+ *
+ * - remove: drops any earlier add or update of the id.
+ * - add: replaces the whole feature, so it drops any earlier remove or
+ *   update of the id.
+ * - update of an id added earlier: folds into the added feature.
+ * - update of an id updated earlier: one update, later values win.
+ *
+ * Added features must carry `feature.id`. A diff with `removeAll` is
+ * never composed: updateOverlayDiff queues its `data` as a full set.
+ */
+export function composeSourceDiffs(prev: GeoJSONSourceDiff, next: GeoJSONSourceDiff): GeoJSONSourceDiff {
+    const remove = new Set<GeoJSONFeatureId>(prev.remove ?? []);
+    const add = new Map<GeoJSONFeatureId, GeoJSON.Feature>();
+    for (const f of prev.add ?? []) add.set(f.id!, f);
+    const update = new Map<GeoJSONFeatureId, GeoJSONFeatureDiff>();
+    for (const u of prev.update ?? []) update.set(u.id, u);
+
+    for (const id of next.remove ?? []) {
+        add.delete(id);
+        update.delete(id);
+        remove.add(id);
+    }
+    for (const f of next.add ?? []) {
+        remove.delete(f.id!);
+        update.delete(f.id!);
+        add.set(f.id!, f);
+    }
+    for (const u of next.update ?? []) {
+        const added = add.get(u.id);
+        if (added) {
+            add.set(u.id, applyFeatureDiff(added, u));
+            continue;
+        }
+        const earlier = update.get(u.id);
+        update.set(u.id, earlier ? mergeFeatureDiffs(earlier, u) : u);
+    }
+    const out: GeoJSONSourceDiff = {};
+    if (remove.size) out.remove = [...remove];
+    if (add.size) out.add = [...add.values()];
+    if (update.size) out.update = [...update.values()];
+    return out;
+}
+
+function applyFeatureDiff(f: GeoJSON.Feature, u: GeoJSONFeatureDiff): GeoJSON.Feature {
+    let properties: Record<string, unknown> = u.removeAllProperties ? {} : { ...(f.properties ?? {}) };
+    for (const key of u.removeProperties ?? []) delete properties[key];
+    for (const { key, value } of u.addOrUpdateProperties ?? []) properties[key] = value;
+    return { ...f, geometry: u.newGeometry ?? f.geometry, properties };
+}
+
+function mergeFeatureDiffs(a: GeoJSONFeatureDiff, b: GeoJSONFeatureDiff): GeoJSONFeatureDiff {
+    if (b.removeAllProperties) return { ...b, newGeometry: b.newGeometry ?? a.newGeometry };
+    const removed = new Set(a.removeProperties ?? []);
+    const set = new Map<string, unknown>();
+    for (const { key, value } of a.addOrUpdateProperties ?? []) set.set(key, value);
+    for (const key of b.removeProperties ?? []) {
+        set.delete(key);
+        removed.add(key);
+    }
+    for (const { key, value } of b.addOrUpdateProperties ?? []) {
+        removed.delete(key);
+        set.set(key, value);
+    }
+    const out: GeoJSONFeatureDiff = { id: b.id };
+    const newGeometry = b.newGeometry ?? a.newGeometry;
+    if (newGeometry) out.newGeometry = newGeometry;
+    if (a.removeAllProperties) out.removeAllProperties = true;
+    if (removed.size) out.removeProperties = [...removed];
+    if (set.size) out.addOrUpdateProperties = [...set].map(([key, value]) => ({ key, value }));
+    return out;
+}
+
+/**
+ * Layer types maplibre 5.x renders into the terrain RTT tiles
+ * (`LAYERS_TO_TEXTURES` in render_to_texture.ts). Circle, symbol and
+ * fill-extrusion layers draw straight to the screen and never go stale.
+ */
+const DRAPED_LAYER_TYPES: ReadonlySet<string> = new Set(['background', 'fill', 'line', 'raster', 'hillshade', 'color-relief']);
 
 /**
  * `el` is attached to the page's own document — not to a detached fragment and
@@ -156,12 +253,30 @@ export class MapService {
     private overlays = new Map<string, string[]>();
     private waterSourceId: string | null = null;
     private waterEnabled = true;
-    private waterLayer: WaterLayer | null = null;
+    /** The 3D water slot; reserved when the first water feature arrives. */
+    private water: LazyCustomLayer<WaterLayer> | null = null;
+    /** Latest water source data, applied when the water chunk resolves. */
+    private waterData: FeatureCollection | null = null;
+    /**
+     * Loads the three.js layers. They are split out of the initial bundle and
+     * fetched on first need: water when a course has water and the water
+     * toggle is on, trees when the 3D trees toggle turns on. Tests swap these
+     * for deferred stand-ins to drive a late resolve.
+     */
+    loadWaterLayer: () => Promise<WaterLayer> = async () => new (await import('./water-layer')).WaterLayer();
+    loadTreesLayer: (stems: readonly TreeStem[], options: TreesLayerOptions) => Promise<TreesLayer> =
+        async (stems, options) => new (await import('./trees-layer')).TreesLayer(stems, options);
+    /** Overlays with at least one draped layer (see DRAPED_LAYER_TYPES). */
+    private drapedOverlays = new Set<string>();
+    /** Camera between movestart and moveend/zoomend. */
+    private gestureActive = false;
+    /** A draped overlay's setData overlapped the current/last gesture (see onGestureEnd). */
+    private overlayChangedSinceMoveStart = false;
     /** Overlays that must stay above later-added overlays (tool previews). */
     private onTopOverlays = new Set<string>();
-    /** Latest queued (not yet sent) overlay data per source (see updateOverlayData). */
-    private pendingOverlayData = new Map<string, GeoJSON>();
-    /** Overlay sources with a `setData` currently awaiting worker completion. */
+    /** Latest queued (not yet sent) overlay update per source (see updateOverlayData). */
+    private pendingOverlayData = new Map<string, PendingOverlayUpdate>();
+    /** Overlay sources with a `setData`/`updateData` currently awaiting worker completion. */
     private overlayDataInFlight = new Set<string>();
     private tiles: { manifest: TileManifest } | null = null;
     /** Poll handle for a deferred `init` awaiting a live-document container. */
@@ -255,10 +370,7 @@ export class MapService {
         container.addEventListener('wheel', dropZoomlessWheel, { capture: true });
         this.disposers.push(() => container.removeEventListener('wheel', dropZoomlessWheel, { capture: true }));
 
-        map.addControl(new MapPerformanceControl(() => this.waterEnabled, enabled => {
-            this.waterEnabled = enabled;
-            if (this.waterLayer) this.waterLayer.enabled = enabled;
-        }, () => this.waterLayer), 'top-right');
+        map.addControl(new MapPerformanceControl(() => this.waterEnabled, enabled => this.setWaterEnabled(enabled), () => this.water?.layer ?? null), 'top-right');
 
         map.on('error', e => {
             // MapLibre swallows tile/style errors into 'error' events —
@@ -274,9 +386,11 @@ export class MapService {
         map.on('zoom', () => this.zoom.set(map.getZoom()));
         // Gesture-end drape repair: a zoom/pan burst mid-edit can leave
         // draped overlay layers (fills, the draft line) on stale terrain
-        // render-to-texture tiles — see repairDrapedOverlays.
-        map.on('moveend', () => this.scheduleDrapeRepair());
-        map.on('zoomend', () => this.scheduleDrapeRepair());
+        // render-to-texture tiles — see repairDrapedOverlays. Only gestures
+        // during which a draped overlay changed need it.
+        map.on('movestart', () => this.onGestureStart());
+        map.on('moveend', () => this.onGestureEnd());
+        map.on('zoomend', () => this.onGestureEnd());
         // Per-tile drape invalidation for overlay sources — maplibre's own
         // misses overscaled tiles; see freeDrapeForOverlayTile.
         map.on('sourcedata', e => this.onOverlaySourceData(e));
@@ -304,30 +418,44 @@ export class MapService {
             if (!map.getLayer(CANOPY_COLOR_LAYER_ID)) return;
             map.setLayoutProperty(CANOPY_COLOR_LAYER_ID, 'visibility', visible ? 'visible' : 'none');
         }));
-        let treesLayer: TreesLayer | null = null;
+        // The trees slot is reserved on top when the stems load (where the
+        // layer itself went before it was split out); the three.js chunk
+        // loads the first time the 3D trees toggle turns on.
+        let trees: LazyCustomLayer<TreesLayer> | null = null;
         let loadedStems: unknown = null;
+        const applyTrees = (layer: TreesLayer): void => {
+            layer.enabled = this.trees3dVisible.peek();
+            layer.sway = this.treeSway.peek();
+            layer.exaggeration = this.exaggeration.peek();
+            map.triggerRepaint();
+        };
         this.disposers.push(effect(() => {
             const stems = this.stems.stems.get();
             const visible = this.trees3dVisible.get();
-            const sway = this.treeSway.get();
-            const exaggeration = this.exaggeration.get();
+            this.treeSway.get();
+            this.exaggeration.get();
             const ready = this.ready.get();
             this.hasTreeStems.set(stems !== null);
             if (!ready) return;
             if (stems !== loadedStems) {
-                if (map.getLayer(TREES_LAYER_ID)) map.removeLayer(TREES_LAYER_ID);
-                treesLayer = stems !== null ? new TreesLayer(stems, treeLodOverride()) : null;
+                trees?.release();
+                trees = null;
                 loadedStems = stems;
-                if (treesLayer) map.addLayer(treesLayer);
-                (window as any).__trees3d = treesLayer?.stats ?? null;
+                (window as any).__trees3d = null;
+                if (stems !== null) {
+                    trees = new LazyCustomLayer(map, TREES_LAYER_ID, () => this.loadTreesLayer(stems, treeLodOverride()), layer => {
+                        (window as any).__trees3d = layer.stats;
+                        applyTrees(layer);
+                    });
+                    trees.reserve();
+                }
             }
-            if (treesLayer) {
-                treesLayer.enabled = visible;
-                treesLayer.sway = sway;
-                treesLayer.exaggeration = exaggeration;
-                map.triggerRepaint();
-            }
+            if (!trees) return;
+            if (visible) void trees.request();
+            else trees.cancel();
+            if (trees.layer) applyTrees(trees.layer);
         }));
+        this.disposers.push(() => trees?.release());
         // Ortho visibility: show only the active vintage's layer, and only when
         // the photo layer is on (off → hillshade/terrain-only). Toggling
         // visibility is instant — MapLibre keeps already-fetched tiles cached.
@@ -410,8 +538,13 @@ export class MapService {
         for (const dispose of this.disposers) dispose();
         this.disposers = [];
         this.overlays.clear();
+        this.drapedOverlays.clear();
+        this.gestureActive = false;
+        this.overlayChangedSinceMoveStart = false;
         this.waterSourceId = null;
-        this.waterLayer = null;
+        this.water?.release();
+        this.water = null;
+        this.waterData = null;
         this.onTopOverlays.clear();
         this.pendingOverlayData.clear();
         if (this.drapeRepairTimer !== null) {
@@ -637,21 +770,37 @@ export class MapService {
     /** Persistent feature surfaces supply both the editor fills and the 3D water. */
     private setWaterFeatures(data: FeatureCollection): void {
         const map = this.requireMap();
-        let layer = map.getLayer(WATER_LAYER_ID) ? this.waterLayer : null;
-        if (!layer) {
+        this.waterData = data;
+        if (!this.water?.reserved) {
             if (!data.features.some(f => f.properties?.type === 'water' || f.properties?.type === 'water_creek')) return;
-            layer = new WaterLayer();
-            layer.enabled = this.waterEnabled;
-            map.addLayer(layer, map.getLayer(TREES_LAYER_ID) ? TREES_LAYER_ID : undefined);
-            this.waterLayer = layer;
+            this.water = new LazyCustomLayer(map, WATER_LAYER_ID, this.loadWaterLayer, layer => {
+                layer.enabled = this.waterEnabled;
+                if (this.waterData) layer.setData(this.waterData);
+            });
+            // Bottom of the non-draped run: above every draped layer (one
+            // terrain RTT stack, see overlayLayerSlot) and below the trees
+            // and every circle/symbol overlay (vertex markers stay visible).
+            // The slot is taken now; the three.js chunk fills it when it lands.
+            this.water.reserve(this.aboveDrapeSlot(map));
         }
-        layer.setData(data);
+        const layer = this.water.layer;
+        if (layer) layer.setData(data);
+        else if (this.waterEnabled) void this.water.request();
+    }
+
+    /** The water toggle (map performance control). Off before the chunk lands cancels the add. */
+    private setWaterEnabled(enabled: boolean): void {
+        this.waterEnabled = enabled;
+        const layer = this.water?.layer;
+        if (layer) layer.enabled = enabled;
+        else if (enabled) void this.water?.request();
+        else this.water?.cancel();
     }
 
     private clearWaterFeatures(): void {
-        const map = this.map.peek();
-        if (map?.getLayer(WATER_LAYER_ID)) map.removeLayer(WATER_LAYER_ID);
-        this.waterLayer = null;
+        this.water?.release();
+        this.water = null;
+        this.waterData = null;
     }
 
     // ── GeoJSON overlays for tools ────────────────────────────────────────
@@ -667,34 +816,34 @@ export class MapService {
         id: string,
         data: GeoJSON,
         layers: OverlayLayerSpec[],
-        opts: { beforeId?: string; keepOnTop?: boolean; waterSurface?: boolean } = {},
+        opts: { beforeId?: string; keepOnTop?: boolean; waterSurface?: boolean; promoteId?: string } = {},
     ): void {
         const map = this.requireMap();
-        map.addSource(id, { type: 'geojson', data });
+        // `promoteId` names a property used as the feature id. String ids
+        // need it: vector tiles carry only numeric ids, so without it a
+        // string `feature.id` cannot reach feature-state, and updateData
+        // looks features up by the promoted property.
+        map.addSource(id, opts.promoteId ? { type: 'geojson', data, promoteId: opts.promoteId } : { type: 'geojson', data });
+        // `keepOnTop` overlays (tool previews — draft outline, vertex/handle
+        // markers) stay above overlays added LATER: on a cold load the draw
+        // preview can beat the features fill to the style, which would
+        // otherwise bury the markers under every shape.
+        if (opts.keepOnTop) this.onTopOverlays.add(id);
+        this.overlays.set(id, layers.map(l => l.id));
         // `beforeId` slots the overlay UNDER an existing layer (e.g. the vector
         // feature fills) for derived clouds that must not hide the course.
         // Unknown ids are ignored rather than thrown: style layer sets differ
         // between the editor and viewer styles, and a missing anchor should
-        // degrade to "on top", not break the tool.
-        const beforeId = opts.beforeId && map.getLayer(opts.beforeId) ? opts.beforeId : undefined;
+        // degrade to the default slot, not break the tool. See
+        // `overlayLayerSlot` for the draped/non-draped grouping.
         for (const layer of layers) {
-            map.addLayer({ ...layer, source: id } as LayerSpecification, beforeId);
+            const before = this.overlayLayerSlot(map, DRAPED_LAYER_TYPES.has(layer.type), !!opts.keepOnTop, opts.beforeId);
+            map.addLayer({ ...layer, source: id } as LayerSpecification, before);
         }
-        this.overlays.set(id, layers.map(l => l.id));
+        if (layers.some(l => DRAPED_LAYER_TYPES.has(l.type))) this.drapedOverlays.add(id);
         if (opts.waterSurface && data.type === 'FeatureCollection') {
             this.waterSourceId = id;
             this.setWaterFeatures(data);
-        }
-        // `keepOnTop` overlays (tool previews — draft outline, vertex/handle
-        // markers) stay above overlays added LATER: layer z-order is add
-        // order, and on a cold load the draw preview can beat the features
-        // fill to the style, burying the markers under every shape.
-        if (opts.keepOnTop) this.onTopOverlays.add(id);
-        for (const topId of this.onTopOverlays) {
-            if (topId === id) continue;
-            for (const layerId of this.overlays.get(topId) ?? []) {
-                if (map.getLayer(layerId)) map.moveLayer(layerId);
-            }
         }
         // Hold updates until the source's INITIAL load settles — the other
         // half of the 5.x worker race (maplibre-gl-js#7734 is precisely
@@ -705,6 +854,53 @@ export class MapService {
             this.overlayDataInFlight.delete(id);
             if (this.pendingOverlayData.has(id)) void this.pumpOverlayData(id);
         });
+    }
+
+    /**
+     * The `beforeId` for a new overlay layer that keeps the style at ONE
+     * terrain render-to-texture stack. maplibre groups each contiguous run
+     * of draped layers (DRAPED_LAYER_TYPES) into a stack, and with two or
+     * more stacks it re-renders every draped tile every frame (see
+     * onOverlaySourceData). So every draped layer goes below every
+     * non-draped one (circle, symbol, custom):
+     *
+     * - draped: directly above the topmost draped layer, or below the
+     *   lowest draped layer of a keepOnTop overlay when the new layer is
+     *   not itself keepOnTop.
+     * - non-draped: the top of the map, or below the lowest non-draped
+     *   layer of a keepOnTop overlay when the new layer is not keepOnTop.
+     *
+     * An explicit `beforeId` wins when it names a layer of the same group.
+     * When it names a layer of the other group, the layer goes to the slot
+     * closest to it inside its own group: a draped layer to the top of the
+     * draped run, a non-draped layer to the bottom of the non-draped run.
+     * Undefined means "add on top".
+     */
+    private overlayLayerSlot(map: maplibregl.Map, draped: boolean, onTop: boolean, beforeId?: string): string | undefined {
+        const isDraped = (layerId: string): boolean => {
+            const layer = map.getLayer(layerId);
+            return !!layer && DRAPED_LAYER_TYPES.has(layer.type);
+        };
+        const explicit = beforeId && map.getLayer(beforeId) ? beforeId : undefined;
+        if (explicit && isDraped(explicit) === draped) return explicit;
+        const order = map.getLayersOrder();
+        if (explicit && !draped) return this.aboveDrapeSlot(map, order);
+        if (!onTop) {
+            const topIds = new Set<string>();
+            for (const topId of this.onTopOverlays) for (const layerId of this.overlays.get(topId) ?? []) topIds.add(layerId);
+            const firstTop = order.find(layerId => topIds.has(layerId) && isDraped(layerId) === draped);
+            if (firstTop !== undefined) return firstTop;
+        }
+        return draped ? this.aboveDrapeSlot(map, order) : undefined;
+    }
+
+    /** The layer directly above the topmost draped layer (undefined: none, add on top). */
+    private aboveDrapeSlot(map: maplibregl.Map, order = map.getLayersOrder()): string | undefined {
+        for (let i = order.length - 1; i >= 0; i--) {
+            const layer = map.getLayer(order[i]);
+            if (layer && DRAPED_LAYER_TYPES.has(layer.type)) return order[i + 1];
+        }
+        return order[0];
     }
 
     /** Resolves once `id`'s source reports loaded (3s fallback — never hangs the queue). */
@@ -731,16 +927,58 @@ export class MapService {
      * Updates are SERIALIZED per source with a latest-wins queue: maplibre
      * 5.x has a worker race when `setData` calls overlap in flight (fixed
      * upstream only in 6.0, maplibre-gl-js#7734) that intermittently leaves
-     * a source's tiles stale/partially rendered until the next camera move —
-     * seen in the field as the draw tool's draft line vanishing during a
-     * fast pan/zoom and a just-committed feature's fill not appearing until
-     * the map is nudged. Awaiting each `setData` before sending the next
-     * (dropping superseded intermediates) removes the overlap entirely.
+     * a source's tiles stale/partially rendered until the next camera move.
+     * It showed in the field as the draw tool's draft line vanishing during
+     * a fast pan/zoom, and a just-committed feature's fill not appearing
+     * until the map is nudged. Awaiting each send before the next (dropping
+     * superseded intermediates) removes the overlap entirely.
+     *
+     * With `diff`, the update goes through `updateOverlayDiff`: `diff` must
+     * turn the data of this source's previous update into `data`.
      */
-    updateOverlayData(id: string, data: GeoJSON): void {
+    updateOverlayData(id: string, data: GeoJSON, diff?: GeoJSONSourceDiff): void {
+        if (diff) {
+            this.updateOverlayDiff(id, diff, data);
+            return;
+        }
         this.requireMap();
         if (id === this.waterSourceId && data.type === 'FeatureCollection') this.setWaterFeatures(data);
-        this.pendingOverlayData.set(id, data);
+        this.enqueueOverlayUpdate(id, { kind: 'set', data });
+    }
+
+    /**
+     * Send a per-feature change through maplibre's `GeoJSONSource.updateData`.
+     * The worker re-indexes only the changed features and reloads only the
+     * tiles they touch, instead of re-parsing the whole collection.
+     *
+     * `diff` turns the data of the source's previous update into `data`, the
+     * full resulting collection. The source must have unique feature ids
+     * (`feature.id`, or the `promoteId` property).
+     *
+     * Same latest-wins queue as `updateOverlayData`:
+     * - a diff queued behind a pending diff composes with it;
+     * - a diff queued behind a pending full set folds into it (the set's
+     *   data becomes `data`);
+     * - a later full set replaces any pending diff.
+     *
+     * maplibre's worker moves an updated feature to the end of its list, so
+     * features with equal sort keys can change draw order. Callers that rely
+     * on source order between ties must send a full set instead.
+     */
+    updateOverlayDiff(id: string, diff: GeoJSONSourceDiff, data: GeoJSON): void {
+        this.requireMap();
+        if (id === this.waterSourceId && data.type === 'FeatureCollection') this.setWaterFeatures(data);
+        const pending = this.pendingOverlayData.get(id);
+        let next: PendingOverlayUpdate;
+        if (diff.removeAll) next = { kind: 'set', data };
+        else if (!pending) next = { kind: 'diff', diff, data };
+        else if (pending.kind === 'set') next = { kind: 'set', data };
+        else next = { kind: 'diff', diff: composeSourceDiffs(pending.diff, diff), data };
+        this.enqueueOverlayUpdate(id, next);
+    }
+
+    private enqueueOverlayUpdate(id: string, update: PendingOverlayUpdate): void {
+        this.pendingOverlayData.set(id, update);
         if (!this.overlayDataInFlight.has(id)) void this.pumpOverlayData(id);
     }
 
@@ -748,13 +986,18 @@ export class MapService {
         this.overlayDataInFlight.add(id);
         try {
             while (this.pendingOverlayData.has(id)) {
-                const data = this.pendingOverlayData.get(id)!;
+                const update = this.pendingOverlayData.get(id)!;
                 this.pendingOverlayData.delete(id);
                 const map = this.map.peek();
                 if (!map || !this.ready.peek()) return;
-                const source = map.getSource(id);
+                const source = map.getSource(id) as maplibregl.GeoJSONSource | undefined;
                 if (!source || source.type !== 'geojson') return;
-                await (source as maplibregl.GeoJSONSource).setData(data, true);
+                if (this.gestureActive && this.drapedOverlays.has(id)) this.overlayChangedSinceMoveStart = true;
+                if (update.kind === 'diff' && typeof source.updateData === 'function') {
+                    await source.updateData(update.diff, true);
+                } else {
+                    await source.setData(update.data, true);
+                }
             }
         } catch {
             // A destroyed map / removed source mid-await aborts the update;
@@ -797,7 +1040,8 @@ export class MapService {
      * range; the cost is the re-render of the few touched RTT tiles.
      */
     private onOverlaySourceData(e: maplibregl.MapSourceDataEvent): void {
-        if (e.dataType !== 'source' || !e.tile || !this.overlays.has(e.sourceId)) return;
+        // Circle/symbol-only overlays (markers) never reach the RTT cache.
+        if (e.dataType !== 'source' || !e.tile || !this.drapedOverlays.has(e.sourceId)) return;
         const canonical = (e.tile as { tileID?: { canonical?: CanonicalTile } }).tileID?.canonical;
         if (!canonical) return;
         this.freeDrapeForOverlayTile(canonical);
@@ -833,12 +1077,29 @@ export class MapService {
         }
     }
 
+    private onGestureStart(): void {
+        this.gestureActive = true;
+        // A setData sent just before the gesture can still be retiling.
+        for (const id of this.overlayDataInFlight) {
+            if (this.drapedOverlays.has(id)) this.overlayChangedSinceMoveStart = true;
+        }
+    }
+
+    /** moveend and zoomend both land here; the first one with the flag set schedules. */
+    private onGestureEnd(): void {
+        this.gestureActive = false;
+        if (!this.overlayChangedSinceMoveStart) return;
+        this.overlayChangedSinceMoveStart = false;
+        this.scheduleDrapeRepair();
+    }
+
     /**
      * Trailing-debounced FULL drape free on gesture end — a belt-and-braces
      * fallback behind the per-tile path above: a camera burst mid-edit can
-     * retile the overlay while its RTT tiles are being rebuilt, and one extra
-     * re-render of the visible draped tiles at settle costs the same as any
-     * camera move already does.
+     * retile the overlay while its RTT tiles are being rebuilt. Runs only
+     * after a gesture during which a draped overlay's setData was sent (or
+     * still in flight at movestart): a plain pan re-renders its draped tiles
+     * once, not twice.
      */
     private scheduleDrapeRepair(): void {
         if (this.drapeRepairTimer !== null) clearTimeout(this.drapeRepairTimer);
@@ -877,8 +1138,9 @@ export class MapService {
         map.addSource(id, { type: 'image', url, coordinates });
         // beforeId slots the raster below an existing layer (e.g. the Clean
         // preview goes under the vector feature fills so water/bunker tints
-        // stay visible across it). Silently topmost when that layer is absent.
-        const before = opts.beforeId && map.getLayer(opts.beforeId) ? opts.beforeId : undefined;
+        // stay visible across it). Without it the raster goes to the top of
+        // the draped run (overlayLayerSlot).
+        const before = this.overlayLayerSlot(map, true, false, opts.beforeId);
         map.addLayer({
             id,
             type: 'raster',
@@ -889,6 +1151,7 @@ export class MapService {
             },
         }, before);
         this.overlays.set(id, [id]);
+        this.drapedOverlays.add(id);
     }
 
     /** Remove an overlay's layers and source. No-op if absent. */
@@ -899,6 +1162,7 @@ export class MapService {
         }
         this.pendingOverlayData.delete(id);
         this.onTopOverlays.delete(id);
+        this.drapedOverlays.delete(id);
         const map = this.map.get();
         if (!map) return;
         for (const layerId of this.overlays.get(id) ?? []) {

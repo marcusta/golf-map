@@ -48,7 +48,7 @@ function fakeApi() {
         geojsonByCourse: reject,
         create: async input => {
             n += 1;
-            const f = { id: `f${n}`, version: 1, geojson: null, ...input } as CourseFeature;
+            const f = { id: `f${n}`, version: 1, ...input } as CourseFeature;
             stored.set(f.id, f);
             return f;
         },

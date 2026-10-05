@@ -482,7 +482,7 @@ test('the GKD export without a course folder says what to set', async () => {
 test('features are left out of the SVG from the filtered list and the map selection, and marked on the map', async () => {
     const geometry = { crs: 'EPSG:3006', rings: [{ points: [{ x: 530000, y: 6487000 }, { x: 530010, y: 6487000 }, { x: 530000, y: 6487010 }] }] };
     const item = (id: string, type: string) => ({
-        id, courseId: 'course-1', holeId: null, layer: null, type, geometry, geojson: null, sortOrder: 0,
+        id, courseId: 'course-1', holeId: null, layer: null, type, geometry, sortOrder: 0,
         source: null, generated: false, sourceRef: null, license: null, attributes: null, version: 1,
     }) as CourseFeature;
     const features = new FeaturesService({
@@ -525,7 +525,7 @@ test('features are left out of the SVG from the filtered list and the map select
 test('bisecting the shown paths walks the steps to the culprit', async () => {
     const geometry = (x: number) => ({ crs: 'EPSG:3006', rings: [{ points: [{ x, y: 6487000 }, { x: x + 10, y: 6487000 }, { x, y: 6487010 }] }] });
     const item = (id: string, type: string, x: number) => ({
-        id, courseId: 'course-1', holeId: null, layer: null, type, geometry: geometry(x), geojson: null, sortOrder: 0,
+        id, courseId: 'course-1', holeId: null, layer: null, type, geometry: geometry(x), sortOrder: 0,
         source: null, generated: false, sourceRef: null, license: null, attributes: null, version: 1,
     }) as CourseFeature;
     const paths = ['road-a', 'road-b', 'road-c', 'road-d'].map((id, i) => item(id, 'path', 530000 + i * 100));

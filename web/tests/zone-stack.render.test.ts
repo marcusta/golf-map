@@ -38,7 +38,7 @@ function zone(id: string, holeId: string | null, attributes: Record<string, unkn
     return {
         id, courseId: 'c1', holeId, layer: null, type: 'vegetation_zone',
         geometry: { crs: 'EPSG:3006', rings: [{ points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }] }] },
-        geojson: null, sortOrder, source: null, generated: false, sourceRef: null, license: null,
+        sortOrder, source: null, generated: false, sourceRef: null, license: null,
         attributes: attributes as CourseFeature['attributes'], no: null, version: 1,
     };
 }

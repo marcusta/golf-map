@@ -5,6 +5,7 @@ export class WaterElevationQueue {
     private geometryIndex = 0;
     private vertexIndex = 0;
     private sample: ((x: number, y: number) => number) | null = null;
+    private only: ReadonlySet<BufferGeometry> | null = null;
     private readonly heights = new Map<string, number>();
 
     constructor(private readonly geometries: readonly BufferGeometry[]) {}
@@ -13,11 +14,23 @@ export class WaterElevationQueue {
         return this.sample !== null && this.geometryIndex < this.geometries.length;
     }
 
-    /** Start a fresh pass, discarding samples from the previous DEM/zoom/exaggeration. */
-    start(sample: (x: number, y: number) => number): void {
+    /**
+     * Start a fresh pass, discarding samples from the previous DEM/zoom/exaggeration.
+     * `only` limits the pass to those geometries (new water after an edit); the
+     * others keep the heights they already have.
+     */
+    start(sample: (x: number, y: number) => number, only?: ReadonlySet<BufferGeometry>): void {
         this.sample = sample;
+        this.only = only ?? null;
         this.geometryIndex = this.vertexIndex = 0;
         this.heights.clear();
+        this.skipExcluded();
+    }
+
+    private skipExcluded(): void {
+        while (this.only && this.geometryIndex < this.geometries.length && !this.only.has(this.geometries[this.geometryIndex])) {
+            this.geometryIndex++;
+        }
     }
 
     step(): { processed: number; sampled: number; completed: BufferGeometry[] } {
@@ -35,6 +48,7 @@ export class WaterElevationQueue {
                 }
                 this.geometryIndex++;
                 this.vertexIndex = 0;
+                this.skipExcluded();
                 continue;
             }
             const x = positions.getX(this.vertexIndex), y = positions.getY(this.vertexIndex);

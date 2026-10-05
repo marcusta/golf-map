@@ -8,7 +8,6 @@ export interface CourseFeature {
     layer: null | 'roughs';
     type: string;
     geometry: { curveType?: 'bezier' | 'bspline'; centerline?: { points: { corner?: boolean; x: number; y: number }[]; widthM: number }; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] };
-    geojson: null | GeoJsonPolygon;
     sortOrder: number;
     source: null | string;
     generated: boolean;
@@ -31,11 +30,6 @@ export interface ImportedFeatureCount {
     count: number;
 }
 
-export interface GeoJsonPolygon {
-    type: 'Polygon';
-    coordinates: number[][][];
-}
-
 export interface FeatureAttributes {
 
 }
@@ -45,6 +39,11 @@ export interface CourseFeatureGeoJsonFeature {
     id: string;
     properties: { courseId: string; holeId: null | string; layer: null | 'roughs'; type: string; sortOrder: number; stackKey: number; source: null | string; sourceRef: null | string; license: null | string; attributes: null | FeatureAttributes };
     geometry: GeoJsonPolygon | GeoJsonMultiPolygon;
+}
+
+export interface GeoJsonPolygon {
+    type: 'Polygon';
+    coordinates: number[][][];
 }
 
 export interface GeoJsonMultiPolygon {
@@ -61,6 +60,9 @@ export interface CourseFeaturesApi {
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
     imported(input: { courseId: string }): Promise<ImportedFeatureCount[]>;
     removeImported(input: { types?: string[]; courseId: string; sources: string[] }): Promise<{ removed: number }>;
+    createMany(input: { courseId: string; items: ({ holeId?: null | string; layer?: null | 'roughs'; source?: string; sourceRef?: string; license?: string; attributes?: null | { [x: string]: string | number | boolean; }; geometry: { curveType?: 'bezier' | 'bspline'; centerline?: { points: { corner?: boolean; x: number; y: number }[]; widthM: number }; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; type: string })[] }): Promise<CourseFeature[]>;
+    updateMany(input: { items: ({ holeId?: null | string; geometry?: { curveType?: 'bezier' | 'bspline'; centerline?: { points: { corner?: boolean; x: number; y: number }[]; widthM: number }; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; layer?: null | 'roughs'; type?: string; attributes?: null | { [x: string]: string | number | boolean; }; id: string; version: number })[] }): Promise<CourseFeature[]>;
+    removeMany(input: { items: { id: string; version: number }[] }): Promise<{ ok: boolean }>;
     reorder(input: { holeId?: null | string; layer?: null | 'roughs'; orderedIds: string[]; courseId: string }): Promise<{ ok: boolean }>;
 }
 
@@ -105,6 +107,15 @@ export function createCourseFeaturesClient(baseUrl: string): CourseFeaturesApi {
         },
         async removeImported(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/course-features/remove-imported`, body: input });
+        },
+        async createMany(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/features/create-many`, body: input });
+        },
+        async updateMany(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/features/update-many`, body: input });
+        },
+        async removeMany(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/features/remove-many`, body: input });
         },
         async reorder(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/course-features/reorder`, body: input });

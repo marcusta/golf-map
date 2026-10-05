@@ -1,53 +1,29 @@
-import { Signal, Computed, effect, untrack, batch, di } from '@basics/core/client/core';
-import type { Map as MaplibreMap, MapMouseEvent, FilterSpecification, LngLat } from 'maplibre-gl';
-import type { Feature, FeatureCollection, Position } from 'geojson';
-import type { ToolContext } from '../editor/tool';
-import type { MapPointerEvent, OverlayLayerSpec } from '../map/map.service';
+import { Signal, Computed, effect, untrack, di } from '@basics/core/client/core';
+import { toolHotRestart, type ToolContext } from '../editor/tool';
+import type { DragBinding } from '../editor/drag-binding';
+import { ownedOverlay } from '../editor/owned-overlay';
+import { canvasCursor } from '../editor/canvas-cursor';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
 import { geometryToWgs84Rings, attributesPatchOf, sameScope, scopeOf, type FeatureAttributesPatch, type FeaturesService, type StackScope } from './features.service';
-import { ROUGHS_LAYER, isRoughsLayerType, type FeatureLayer } from '../../../shared/render/stack-key';
+import { isRoughsLayerType } from '../../../shared/render/stack-key';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
-import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../geo/transform';
-import {
-    flattenOpenPath,
-    flattenRing,
-    nearestOnRing,
-    pointInGeometry,
-    type AnchorPoint,
-    type CurveType,
-    type FeatureGeometry,
-    type Point,
-} from '../geo/bezier';
-import { bsplineRingToBezierWithMap } from '../geo/bspline';
+import { sweref99tmToWgs84 } from '../geo/transform';
+import type { AnchorPoint, CurveType, FeatureGeometry, Point } from '../geo/bezier';
+import { ScreenPointCache } from './screen-cache';
 import { fitClosedBspline } from '../geo/spline-fit';
-import {
-    DRAWN_CORNER_TURN_DEG,
-    autoCorners,
-    centerlineGeometry,
-    flattenCenterline,
-    nearestOnCenterline,
-} from '../../../shared/features/centerline';
 import { PATH_SURFACE_ATTRIBUTE, isPathSurface, type PathSurface } from '../../../shared/features/path-surface';
-import { takesBankVeg } from '../../../shared/features/creek-vegetation';
 import { TREE_AREA_SPECIES_ATTRIBUTE, TREE_AREA_TYPE, hasSpeciesMix } from '../../../shared/features/tree-areas';
-import { isGeneratedFeature } from './generated-features';
 import {
     DrawState,
     MIN_RING_POINTS,
     TraceGesture,
-    moveAnchor,
-    moveHandle,
-    setSymmetricHandles,
-    clearHandles,
-    hasHandles,
-    deleteAnchor,
-    insertAnchor,
-    insertControlPoint,
     toggleVertexCorner,
     isCornerVertex,
     bakeBsplineToBezier,
     translateGeometry,
+    translateAnchors,
+    toggleVerticesCorner,
     offsetGeometry,
     mergedSurroundGeometries,
     simplifyGeometry,
@@ -59,86 +35,83 @@ import {
     fromEditView,
     minVertexCount,
     withCenterlineWidth,
-    featuresInRect,
-    verticesInRect,
-    rectFromCorners,
-    vertexKey,
     parseVertexKey,
 } from './draw-state';
 import { EditHistory, snapshotOf, type HistoryEntry } from './history';
-import { CAT, MARKER_FILL, OVERLAY_TEXT, STATUS_RISK } from '../map/map-palette';
 import {
-    DIGIT_FEATURE_TYPES,
-    DRAW_FILL_OPACITY,
     FEATURE_TYPES,
-    OUTLINE_ONLY_TYPES,
     RULES_TYPES,
-    SELECTION_COLOR,
     SURROUND_PAIRINGS,
     VEGETATION_TYPES,
     isRulesType,
-    isVegetationType,
-    typeColorExpression,
     type FeatureType,
 } from './feature-palette';
+import { FrameBatch, FrameSignal, defaultFrameScheduler, type FrameScheduler } from './draw-frame';
+import { metersPerPixel, scopeOwnsType, type DrawScope, type VertexRef } from './draw-hover';
+import {
+    DRAW_TOOL_ID,
+    bindDrawPointer,
+    cancelMoveDrag,
+    cancelStampDrag,
+    cancelTrace,
+    endDrag,
+    type AltCycle,
+    type DragTarget,
+    type DrawPointerHost,
+    type GhostFeature,
+    type Marquee,
+    type MoveDrag,
+    type PlacePress,
+    type StampDrag,
+    type StampSource,
+    type StampTemplate,
+} from './draw-pointer';
+import { bindDrawKeys, nudgeDirection, type DrawKeysHost, type ReorderKey } from './draw-keys';
+import { draftCenterlineGeometry, drawPreviewGeojson, drawPreviewLayers, type DrawRenderHost } from './draw-render';
+import type { SnapMarker } from './draw-snap';
 
-/**
- * Cached WGS84 lng/lat for a feature's anchor points + bezier handles, so the
- * hover hit-test doesn't re-run the (heavy inverse-TM) datum transform for
- * every vertex on every mouse-move. Keyed on geometry identity — geometry is
- * replaced wholesale on edit (see features.service), so the WeakMap collects
- * stale entries and the cache is never stale.
- */
-interface RingLngLat {
-    anchor: Position[];
-    hIn: (Position | null)[];
-    hOut: (Position | null)[];
-}
-const vertexLngLatCache = new WeakMap<FeatureGeometry, RingLngLat[]>();
+// DrawToolService is the coordinator: it owns the signals, the gesture state
+// and the ToolContext, and runs the actions (one history entry each). The
+// interaction code lives in sibling modules that take a narrow host
+// interface and never import this file back, so an edit to any of them
+// propagates here and hot-swaps (see the HMR section at the end):
+// - draw-pointer.ts: click, press, move, release, dblclick, contextmenu.
+// - draw-hover.ts: feature and vertex hit-testing (scope rules included),
+//   hover tracking.
+// - draw-keys.ts: keydown, arrow nudge, Space hold.
+// - draw-render.ts: the preview overlay FeatureCollection and layer specs.
+// - draw-frame.ts: per-frame coalescing (FrameBatch, FrameSignal).
 
-function vertexLngLatFor(geometry: FeatureGeometry): RingLngLat[] {
-    const cached = vertexLngLatCache.get(geometry);
-    if (cached) return cached;
-    const ll = (p: Point): Position => {
-        const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
-        return [lon, lat];
-    };
-    const rings = geometry.rings.map(ring => ({
-        anchor: ring.points.map(ll),
-        hIn: ring.points.map(p => (p.hIn ? ll(p.hIn) : null)),
-        hOut: ring.points.map(p => (p.hOut ? ll(p.hOut) : null)),
-    }));
-    vertexLngLatCache.set(geometry, rings);
-    return rings;
-}
+// Moved symbols stay importable from here.
+export { DRAW_TOOL_ID, buildMoveEntry } from './draw-pointer';
+export {
+    containingTopDown,
+    advanceAltCycle,
+    unhittableTypes,
+    scopeOwnsType,
+    scopeSelectsType,
+    vegetationHitOrder,
+    type DrawScope,
+} from './draw-hover';
+export { NUDGE_PX, NUDGE_SHIFT_PX } from './draw-keys';
+export { defaultFrameScheduler, type FrameScheduler } from './draw-frame';
 
-/** Interaction-claim id AND overlay id prefix for the draw tool. */
-export const DRAW_TOOL_ID = 'draw';
 /** Preview overlay (draft line, vertex + bezier-handle markers). */
-export const DRAW_OVERLAY_ID = 'draw';
+const DRAW_OVERLAY_ID = 'draw';
 
-// Screen-space hit tolerances (px)
-const VERTEX_HIT_PX = 9;
-const HANDLE_HIT_PX = 7;
-const EDGE_HIT_PX = 6;
-/** Screen-px reach of a boundary-only line (OOB) for selecting and grabbing it. */
-const RULE_LINE_HIT_PX = 8;
-const CLOSE_RING_PX = 12;
-const DRAG_MOVE_THRESHOLD_PX = 3;
-/** Feature-move drag: movement registers past this (prototype: 2 px). */
-const MOVE_THRESHOLD_PX = 2;
-/** Marquee: below this the gesture counts as a click (prototype: 5 px). */
-const MARQUEE_MIN_PX = 5;
-/**
- * Draw mode: a press that travels this far is no longer a MapLibre click
- * (its default clickTolerance), so the tool places the point itself.
- */
-const PLACE_CLICK_TOLERANCE_PX = 3;
-/**
- * Hover hit-tests on shapes up to this many vertices use terrain-precise
- * projection (~40 us/vertex); larger shapes hover on the flat transform.
- */
-const PRECISE_HOVER_MAX_VERTICES = 150;
+/** Deletes of up to this many features skip the confirm dialog (undo restores them). */
+export const DELETE_CONFIRM_THRESHOLD = 10;
+/** How long the post-delete undo hint stays up (ms). */
+export const NOTICE_MS = 4000;
+/** Repeats of the same arrow key within this window share one history entry. */
+export const NUDGE_COALESCE_MS = 300;
+
+/** Label of the undo modifier: "Cmd" on Apple platforms, else "Ctrl". */
+function undoModifierLabel(): string {
+    const nav = typeof navigator === 'undefined' ? null : navigator as Navigator & { userAgentData?: { platform?: string } };
+    const platform = nav?.userAgentData?.platform ?? nav?.platform ?? nav?.userAgent ?? '';
+    return /mac|iphone|ipad|ipod/i.test(platform) ? 'Cmd' : 'Ctrl';
+}
 
 // New-shape type policy persistence (survives reloads; per browser).
 const TYPE_FOLLOWS_LAST_KEY = 'golfmap.draw.typeFollowsLast';
@@ -177,240 +150,19 @@ function storePref(key: string, value: string): void {
     }
 }
 /** Cmd/Ctrl+D clone offset in EPSG:3006 meters (prototype: 10 units). */
-export const DUPLICATE_OFFSET_M = 10;
+const DUPLICATE_OFFSET_M = 10;
 /** Expand/contract preset distances in meters (prototype table). */
 export const OFFSET_PRESETS = [0.5, 1, 2, 5] as const;
 /**
  * Freehand-trace fit tolerance in meters (T40): the fitted b-spline stays
  * within this of the traced stroke (control count adapts 8 → 20).
  */
-export const TRACE_TOLERANCE_M = 0.75;
-/**
- * Path (centerline + width): a clicked bend turning at least this much is a
- * corner of the line (straight in, straight out); gentler bends stay smooth.
- */
-export const PATH_CORNER_TURN_DEG = DRAWN_CORNER_TURN_DEG;
+const TRACE_TOLERANCE_M = 0.75;
 /**
  * Freehand path trace: the stroke is thinned to the points within this of it
  * (m); the curve through them smooths the hand's wobble away.
  */
-export const PATH_TRACE_TOLERANCE_M = 0.5;
-
-/**
- * The geometry a path draft commits as: the clicked centerline — Shift-clicked
- * points and bends of PATH_CORNER_TURN_DEG or more are corners — at `widthM`,
- * its corridor derived. Null for fewer than two distinct points or an
- * unusable width. Pure — exported for tests.
- */
-export function draftCenterlineGeometry(points: AnchorPoint[], widthM: number): FeatureGeometry | null {
-    return centerlineGeometry('EPSG:3006', { points: autoCorners(points, PATH_CORNER_TURN_DEG), widthM });
-}
-
-interface DragTarget {
-    kind: 'anchor' | 'handle' | 'newHandles';
-    which?: 'hIn' | 'hOut';
-    featureId: string;
-    /** Feature type at drag start (ghost overlay palette color). */
-    featureType: string;
-    ringIdx: number;
-    idx: number;
-    alt: boolean;
-    hadHandles: boolean;
-    startScreen: { x: number; y: number };
-    /** Geometry before the drag — the history entry's `before` side. */
-    startGeometry: FeatureGeometry;
-    startVersion: number;
-    moved: boolean;
-    /**
-     * Latest edited geometry (per-frame). Lives on the drag — the store is
-     * NOT patched per frame (a store write rebuilds + re-sends the whole
-     * course FeatureCollection to the MapLibre worker, ~250 ms for a full
-     * course). Committed through the normal funnel on mouseup.
-     */
-    currentGeometry: FeatureGeometry | null;
-}
-
-/** Whole-feature move drag (all selected features translate together). */
-interface MoveDrag {
-    startEpsg: Point;
-    startScreen: { x: number; y: number };
-    features: Array<{ id: string; geometry: FeatureGeometry; type: string; holeId: string | null; version: number }>;
-    moved: boolean;
-    /** Cumulative EPSG:3006 translation of the drag so far. */
-    dx: number;
-    dy: number;
-}
-
-/** A dragged feature's live copy, rendered in the preview overlay. */
-interface GhostFeature {
-    id: string;
-    type: string;
-    geometry: FeatureGeometry;
-}
-
-/** A source feature captured for cloning (Alt-duplicate-drag / repeat stamp). */
-interface StampSource {
-    /** Original feature id — the ghost borrows its stackKey for z-order. */
-    id: string;
-    type: string;
-    holeId: string | null;
-    /** Carried so a stamped Roughs-layer shape stays in the Roughs layer. */
-    layer: FeatureLayer;
-    geometry: FeatureGeometry;
-    /** Carried so a stamped vegetation zone keeps its zone type (null otherwise). */
-    attributes?: FeatureAttributesPatch | null;
-}
-
-/**
- * Alt-duplicate-drag or repeat-stamp gesture (T42). Both create clones on
- * drop; they differ only in the reference point the translation is measured
- * from and in what a sub-threshold press means:
- * - `duplicate`: Alt+press inside the selection. `refEpsg` is the grab point;
- *   a sub-threshold drag decays to the Alt-cycle click (no clone).
- * - `stamp`: press on empty ground while stamp mode is armed. `refEpsg` is the
- *   template anchor (the previous drop point) so the copy sits under the
- *   cursor immediately; every drop — even a click — stamps a copy.
- */
-interface StampDrag {
-    kind: 'duplicate' | 'stamp';
-    refEpsg: Point;
-    startScreen: { x: number; y: number };
-    sources: StampSource[];
-    moved: boolean;
-    /** Cumulative EPSG:3006 translation from `refEpsg` (drives the ghost). */
-    dx: number;
-    dy: number;
-}
-
-/**
- * Armed repeat-stamp template (set after an Alt-duplicate-drag drop). Each
- * subsequent empty-ground drag stamps another copy of `templates`, grabbed at
- * the same relative point (`anchor`, the previous drop point). Cleared on Esc,
- * tool deactivate, or arming a draw.
- */
-interface StampTemplate {
-    anchor: Point;
-    templates: StampSource[];
-}
-
-/**
- * History entry for committing a whole-selection move: each feature's
- * pre-drag snapshot vs its snapshot translated by the drag total (dx, dy)
- * in EPSG:3006 meters. Pure — exported for tests.
- */
-export function buildMoveEntry(
-    features: MoveDrag['features'],
-    dx: number,
-    dy: number,
-): HistoryEntry {
-    return features.map(f => ({
-        featureId: f.id,
-        before: { geometry: f.geometry, type: f.type, holeId: f.holeId },
-        after: { geometry: translateGeometry(f.geometry, dx, dy), type: f.type, holeId: f.holeId },
-        beforeVersion: f.version,
-    }));
-}
-
-/** Marquee rectangle drag ('features' on empty ground, 'vertices' via Shift). */
-interface Marquee {
-    kind: 'features' | 'vertices';
-    start: Point;
-    current: Point;
-    startScreen: { x: number; y: number };
-}
-
-/**
- * Course-feature drawing/editing interactions. Registered as the `draw`
- * EditorTool (see draw-tool.ts); DrawPanelComponent shares this DI
- * singleton for its UI state.
- *
- * Modes (see DrawState):
- * - select (default): click a feature to select it; Cmd/Ctrl+click toggles
- *   multi-select membership; drag on empty ground draws a marquee (features
- *   fully inside select; Alt during the drag = any-overlap mode); drag
- *   INSIDE a selected feature moves the whole selection (2 px threshold,
- *   one undo step). With exactly ONE feature selected its vertices are
- *   editable: drag to move, right-click to delete, click an edge to
- *   insert, 'C' toggles smooth↔corner, Shift+click toggles a vertex into
- *   the multi-vertex selection, Shift+drag marquee-selects vertices,
- *   Delete removes selected vertices (≥3 must remain), 'I' inserts a
- *   vertex between two selected ones with even redistribution. On BEZIER
- *   features additionally: alt-drag pulls out symmetric handles, alt-click
- *   straightens, handle dots bend segments. Delete/Backspace deletes the
- *   selected feature(s) (confirm). Cmd/Ctrl+D duplicates (+10 m offset).
- *   Alt+drag INSIDE the selection clones it in one gesture (a stationary
- *   Alt-click still cycles the hit stack); the drop arms repeat-stamp mode,
- *   where each empty-ground drag stamps another copy (one undo per stamp)
- *   until Esc, deactivate, or arming a draw.
- *   Cmd/Ctrl+Z / Shift+Z / Y = undo / redo (snapshot history, autosaved).
- * - draw (N or panel button): click to place B-SPLINE control points
- *   (Shift+click = sharp corner), Enter / click-on-first to close,
- *   Cmd/Ctrl+Z removes the last placed point (first point cancels). ESC
- *   cancels. Double-click is swallowed as an accidental duplicate point, not
- *   as a close gesture. Press-DRAG (fresh shape, empty draft) freehand-
- *   traces instead: the stroke is sampled, least-squares fitted to a
- *   ~8-20-control closed b-spline (geo/spline-fit.ts, TRACE_TOLERANCE_M)
- *   and committed through the same closeDraft funnel — a sub-threshold
- *   drag decays to the plain click. Middle-button (and ⌘-drag) still pans;
- *   once click-placement has begun, every left press places a point (even
- *   one that slips mid-click) — pan with middle-button (or ⌘-drag).
- */
-/**
- * Visible features containing `p`, preserving the given topmost-first stack
- * order (D23). The one hit rule the draw tool shares with render / lie: pass
- * `FeaturesService.stackTopDown`, the hidden-type set, and the EPSG:3006
- * point; `hitFeature` is the first element, `hitStack` the whole list.
- * Pure + exported for tests (the tool itself is map-coupled).
- */
-export function containingTopDown(
-    stackTopDown: readonly CourseFeature[],
-    hidden: ReadonlySet<string>,
-    p: Point,
-    hiddenIds: ReadonlySet<string> = EMPTY_ID_SET,
-    hiddenSources: ReadonlySet<string> = EMPTY_ID_SET,
-): CourseFeature[] {
-    return stackTopDown.filter(f =>
-        !hidden.has(f.type) && !hiddenIds.has(f.id)
-        && !(f.source !== null && hiddenSources.has(f.source))
-        && pointInGeometry(p, f.geometry));
-}
-
-const EMPTY_ID_SET: ReadonlySet<string> = new Set();
-
-/**
- * The feature types hit testing must walk PAST right now: the ones the user
- * has hidden, plus every outline-only type (OOB) that is not the armed draw
- * type.
- *
- * An outline-only type is painted as a boundary line, not a fill, and OOB in
- * particular is drawn as one ring around the whole property — so its interior
- * is the entire course. Treating that interior as clickable makes the OOB ring
- * answer every click and swallow every marquee drag, hiding everything under
- * it. Arming OOB in the feature-type picker is the deliberate "I mean this
- * one" gesture that makes its ring selectable again.
- *
- * Pure + exported for tests.
- */
-export function unhittableTypes(hidden: ReadonlySet<string>, armedType: string): ReadonlySet<string> {
-    const skipped = [...OUTLINE_ONLY_TYPES].filter(type => type !== armedType);
-    if (skipped.every(type => hidden.has(type))) return hidden;
-    return new Set([...hidden, ...skipped]);
-}
-
-/**
- * Next Alt/Option+click cycle state (D27). Same stack as last time → step one
- * deeper, wrapping at the bottom; a different stack (or no prior cycle) → the
- * topmost (index 0). Pure + exported for tests.
- */
-export function advanceAltCycle(
-    prev: { ids: string[]; index: number } | null,
-    ids: string[],
-): { ids: string[]; index: number } {
-    const same = prev !== null
-        && prev.ids.length === ids.length
-        && prev.ids.every((id, i) => id === ids[i]);
-    return { ids, index: same ? (prev!.index + 1) % ids.length : 0 };
-}
+const PATH_TRACE_TOLERANCE_M = 0.5;
 
 /** One auto-surround source (or intermediate ring the chain walks from). */
 export interface SurroundSource {
@@ -476,46 +228,6 @@ export function planSurrounds(
     return creates;
 }
 
-/**
- * What the draw engine edits. `surfaces` is Draw mode: every type but the
- * rules lines and the vegetation zones, which are hidden there. `rules` is
- * the same engine run by the Furniture tool for the penalty areas and OOB
- * only (RULES_TYPES): nothing else is hit or created, the map stays in nice
- * rendering, clicks on the furniture markers are left to the Furniture tool.
- * `vegetation` is Vegetation mode: the zones only (VEGETATION_TYPES), drawn
- * over the course shown as an outline backdrop. Each scope has its own undo
- * history.
- */
-export type DrawScope = 'surfaces' | 'rules' | 'vegetation';
-
-/** True when `type` is edited in `scope` (see `DrawScope`). Pure + exported for tests. */
-export function scopeOwnsType(scope: DrawScope, type: string): boolean {
-    if (scope === 'rules') return isRulesType(type);
-    if (scope === 'vegetation') return isVegetationType(type);
-    return !isRulesType(type) && !isVegetationType(type);
-}
-
-/**
- * Whether a click in `scope` may select a `type` feature: the scope's own
- * types, plus in Vegetation mode the creeks and water, selected there only to
- * set their bank vegetation (they stay backdrop: read-only, see
- * `FeaturesService.editableSelected`). Pure + exported for tests.
- */
-export function scopeSelectsType(scope: DrawScope, type: string): boolean {
-    return scopeOwnsType(scope, type) || (scope === 'vegetation' && takesBankVeg(type));
-}
-
-/**
- * Vegetation mode's hit order over a topmost-first stack: hand-drawn zones,
- * then the creeks and water, then generated zones (the generated creek-bank
- * zones lie over the water they were planted from; a click there means the
- * water). Stable within each group. Pure + exported for tests.
- */
-export function vegetationHitOrder(stackTopDown: readonly CourseFeature[]): CourseFeature[] {
-    const rank = (f: CourseFeature) => takesBankVeg(f.type) ? 1 : isGeneratedFeature(f) ? 2 : 0;
-    return stackTopDown.map((f, i) => ({ f, i })).sort((a, b) => rank(a.f) - rank(b.f) || a.i - b.i).map(x => x.f);
-}
-
 /** Draw's own types: the course features. */
 const SURFACE_TYPES: readonly FeatureType[] = FEATURE_TYPES.filter(type => scopeOwnsType('surfaces', type));
 
@@ -528,6 +240,47 @@ export interface DrawActivation {
     yieldTo?: (screen: { x: number; y: number }) => boolean;
 }
 
+/**
+ * Course-feature drawing/editing interactions. Registered as the `draw`
+ * EditorTool (see draw-tool.ts); DrawPanelComponent shares this DI
+ * singleton for its UI state.
+ *
+ * Modes (see DrawState):
+ * - select (default): click a feature to select it; Cmd/Ctrl+click toggles
+ *   multi-select membership; drag on empty ground draws a marquee (features
+ *   fully inside select; Alt during the drag = any-overlap mode); drag
+ *   INSIDE a selected feature moves the whole selection (2 px threshold,
+ *   one undo step). With exactly ONE feature selected its vertices are
+ *   editable: drag to move (a selected vertex drags the whole vertex
+ *   selection), right-click to delete, press an edge to insert a vertex
+ *   (dragging places it; one undo step), 'C' toggles smooth↔corner on the
+ *   vertex selection or else the hovered vertex, arrows nudge the vertex
+ *   selection 1 px (Shift: 10 px; repeats within 300 ms share one undo
+ *   step), Shift+click toggles a vertex into
+ *   the multi-vertex selection, Shift+drag marquee-selects vertices,
+ *   Delete removes selected vertices (≥3 must remain), 'I' inserts a
+ *   vertex between two selected ones with even redistribution. On BEZIER
+ *   features additionally: alt-drag pulls out symmetric handles, alt-click
+ *   straightens, handle dots bend segments. Delete/Backspace deletes the
+ *   selected feature(s): up to 10 at once without a dialog (sets `notice`),
+ *   more after a confirm. Cmd/Ctrl+D duplicates (+10 m offset).
+ *   Alt+drag INSIDE the selection clones it in one gesture (a stationary
+ *   Alt-click still cycles the hit stack); the drop arms repeat-stamp mode,
+ *   where each empty-ground drag stamps another copy (one undo per stamp)
+ *   until Esc, deactivate, or arming a draw.
+ *   Cmd/Ctrl+Z / Shift+Z / Y = undo / redo (snapshot history, autosaved).
+ * - draw (N or panel button): click to place B-SPLINE control points
+ *   (Shift+click = sharp corner), Enter / click-on-first to close,
+ *   Cmd/Ctrl+Z removes the last placed point (first point cancels). ESC
+ *   cancels. Double-click is swallowed as an accidental duplicate point, not
+ *   as a close gesture. Press-DRAG (fresh shape, empty draft) freehand-
+ *   traces instead: the stroke is sampled, least-squares fitted to a
+ *   ~8-20-control closed b-spline (geo/spline-fit.ts, TRACE_TOLERANCE_M)
+ *   and committed through the same closeDraft funnel — a sub-threshold
+ *   drag decays to the plain click. Middle-button (and ⌘-drag) still pans;
+ *   once click-placement has begun, every left press places a point (even
+ *   one that slips mid-click) — pan with middle-button (or ⌘-drag).
+ */
 export class DrawToolService {
     private confirm = di.get(ConfirmService);
     /** The course's zone-type legend — defaults for a zone this tool creates or retypes into. */
@@ -653,7 +406,7 @@ export class DrawToolService {
      * target for the 'C' smooth↔corner toggle. Sticky until the cursor
      * hits another vertex or the selection changes.
      */
-    readonly hoverVertex = new Signal<{ ringIdx: number; idx: number } | null>(null);
+    readonly hoverVertex = new Signal<VertexRef | null>(null);
     /**
      * Multi-vertex selection on the single selected feature (vertexKey
      * strings) — target of bulk vertex delete / 'I' insert-between.
@@ -671,11 +424,47 @@ export class DrawToolService {
     readonly simplifyEpsilon = new Signal(0.5);
     /** One-line guard/action feedback for the panel (cleared on next op). */
     readonly actionNotice = new Signal<string | null>(null);
+    /**
+     * Short-lived hint after an edit that skipped its confirm dialog, e.g.
+     * "Deleted 3. Cmd+Z to undo.". `until` is the epoch ms at which it
+     * clears; the next committed edit, undo or redo clears it sooner. The
+     * dock footer renders it.
+     */
+    readonly notice = new Signal<{ text: string; until: number } | null>(null);
+    private noticeTimer: ReturnType<typeof setTimeout> | null = null;
+    /**
+     * Live arrow-key nudge run (24c). Repeats of `key` within
+     * NUDGE_COALESCE_MS extend `diff`, the after side of the history entry
+     * the first press recorded, as long as the feature still holds
+     * `geometry` (no other edit, undo or reload in between).
+     */
+    private nudge: {
+        key: string;
+        at: number;
+        featureId: string;
+        geometry: FeatureGeometry;
+        diff: HistoryEntry[number];
+    } | null = null;
 
-    /** Live cursor position while drawing (rubber-band preview). */
-    private cursor = new Signal<{ lng: number; lat: number } | null>(null);
+    /**
+     * Runs the preview frame flush. rAF in the browser; tests swap in a
+     * manual scheduler to drive frames synchronously.
+     */
+    frameScheduler: FrameScheduler = defaultFrameScheduler;
+    /** Wall clock for the nudge coalescing window; tests swap it. */
+    clock: () => number = () => Date.now();
+    /** Projected anchors and handles per (geometry, camera); see screen-cache.ts. */
+    private readonly screenPoints = new ScreenPointCache();
+    private readonly frames = new FrameBatch(cb => this.frameScheduler(cb));
+    /**
+     * Live cursor position while drawing (rubber-band preview), EPSG:3006.
+     * Null while the draft is empty: a lone cursor point draws nothing.
+     */
+    private cursor = new FrameSignal<Point | null>(null, this.frames);
+    /** Snap marker at the snapped pointer position (draw-snap.ts). */
+    private snapMarker = new FrameSignal<SnapMarker | null>(null, this.frames);
     /** Active marquee rectangle (reactive — drives the preview overlay). */
-    private marquee = new Signal<Marquee | null>(null);
+    private marquee = new FrameSignal<Marquee | null>(null, this.frames);
     /**
      * Live copies of the feature(s) being dragged, rendered as fill +
      * outline in the (small) preview overlay while the originals are
@@ -684,7 +473,7 @@ export class DrawToolService {
      * store, the derived course FeatureCollection and the main overlay
      * source are untouched until the mouseup commit.
      */
-    private dragGhost = new Signal<GhostFeature[] | null>(null);
+    private dragGhost = new FrameSignal<GhostFeature[] | null>(null, this.frames);
     /**
      * Space held down (reactive — drives the cursor + the momentary box-select
      * override). While true, a left-drag rubber-bands features even off a
@@ -705,32 +494,16 @@ export class DrawToolService {
      * `traceGesture.points` but only updates when a sample is KEPT, so the
      * preview re-renders at trace-sample granularity, not every mousemove.
      */
-    private trace = new Signal<Point[] | null>(null);
-    /**
-     * Claimed left-press while placing points (non-empty draft): the press
-     * always places a point, even when the mouse slips past the click
-     * tolerance mid-click (onMouseUp places it at the press location).
-     */
-    private placePress: { startScreen: { x: number; y: number }; lngLat: LngLat; shift: boolean } | null = null;
+    private trace = new FrameSignal<Point[] | null>(null, this.frames);
+    /** Claimed left-press while placing points (draw-pointer.ts `PlacePress`), or null. */
+    private placePress: PlacePress | null = null;
     /** Armed repeat-stamp template, or null when stamp mode is inactive. */
     private stampMode: StampTemplate | null = null;
-    private suppressClick = false;
-    private previewAdded = false;
+    /** Raw mousedown/up binding (editor/drag-binding.ts); null while inactive. */
+    private dragBinding: DragBinding | null = null;
 
-    /**
-     * Alt/Option+click cycle state (D27): repeated alt-clicks at the same
-     * point step DOWN the hit stack, wrapping. `ids` is the stack under the
-     * cursor at cycle start (topmost-first); `index` is the currently
-     * selected depth. Reset imperatively on a plain/meta click — NOT via a
-     * reactive effect on the selection, which would cascade off our own
-     * alt-select and clear the cycle every step (the reactive-cascade
-     * gotcha). Deliberately NOT reset on pointer-move: the pointer always
-     * jitters a pixel between two physical clicks (trackpads especially),
-     * which would make the cycle unable to advance. Moving to a spot whose
-     * hit stack differs resets naturally via `advanceAltCycle`'s ids
-     * comparison (Inkscape behaves the same way).
-     */
-    private altCycle: { ids: string[]; index: number } | null = null;
+    /** Alt/Option+click cycle state (D27); reset rules in draw-pointer.ts (`DrawPointerHost.altCycle`). */
+    private altCycle: AltCycle | null = null;
 
     /**
      * The armed offset/simplify result for the selected feature (dashed
@@ -786,13 +559,13 @@ export class DrawToolService {
         }));
     }
 
-    activate(ctx: ToolContext, host?: DrawActivation): void {
+    activate(ctx: ToolContext, activation?: DrawActivation): void {
         this.ctx = ctx;
         this.features = ctx.features;
-        const scope = host?.scope ?? 'surfaces';
+        const scope = activation?.scope ?? 'surfaces';
         this.scope.set(scope);
-        this.hostToolId = host?.toolId ?? DRAW_TOOL_ID;
-        this.yieldTo = host?.yieldTo ?? null;
+        this.hostToolId = activation?.toolId ?? DRAW_TOOL_ID;
+        this.yieldTo = activation?.yieldTo ?? null;
         if (scope === 'rules') {
             // Furniture keeps its photo-blended view; the penalty lines keep
             // their stroke so there is something to click and edit.
@@ -820,38 +593,12 @@ export class DrawToolService {
         // instance for scripted/visual verification tooling. Not public API.
         (window as unknown as Record<string, unknown>).__drawTool = this;
 
-        ctx.track(ctx.map.onClick(e => this.onClick(e)));
-        ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));
-
-        const onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
-        window.addEventListener('keydown', onKeyDown);
-        ctx.track(() => window.removeEventListener('keydown', onKeyDown));
-
-        // Space-release ends the momentary box-select override. Bound
-        // separately (keydown is routed through onKeyDown's claim/input
-        // guards); the release must always fire so the flag never sticks.
-        const onKeyUp = (e: KeyboardEvent) => {
-            if (e.key === ' ' || e.code === 'Space') this.spaceHeld.set(false);
-        };
-        window.addEventListener('keyup', onKeyUp);
-        ctx.track(() => window.removeEventListener('keyup', onKeyUp));
-
-        // Focus loss mid-hold (⌘Tab, devtools, macOS overlays) eats the
-        // keyup — without this the flag latches and EVERY subsequent drag
-        // becomes a marquee until reload.
-        const onBlur = () => this.spaceHeld.set(false);
-        window.addEventListener('blur', onBlur);
-        ctx.track(() => window.removeEventListener('blur', onBlur));
-
-        // Raw map handlers (mousedown/up for drags + marquee, dblclick to
-        // swallow duplicate draw points, contextmenu to delete vertices) —
-        // re-bound if the map is recreated while the tool is active.
-        ctx.track(effect(() => {
-            if (!ctx.map.ready.get()) return;
-            const map = ctx.map.map.get();
-            if (!map) return;
-            untrack(() => this.bindRawHandlers(map, ctx));
-        }));
+        const host = this.host;
+        // Map click/move, raw mousedown/up (drags, marquee), dblclick and
+        // contextmenu: draw-pointer.ts. Sets `dragBinding`.
+        bindDrawPointer(host, ctx);
+        // Window keydown, capture-phase arrow nudge, Space hold: draw-keys.ts.
+        bindDrawKeys(host, ctx);
 
         // Arming a draw exits repeat-stamp mode (T42): a fresh draw supersedes
         // repeat placement. `stampMode` is a plain field, so clearing it is not
@@ -860,7 +607,7 @@ export class DrawToolService {
             const drawing = this.state.isDrawing.get();
             if (!drawing) return;
             untrack(() => {
-                this.cancelStampDrag();
+                cancelStampDrag(host);
                 this.stampMode = null;
             });
         }));
@@ -879,69 +626,67 @@ export class DrawToolService {
 
         // Preview overlay: draft outline + vertex/bezier-handle markers +
         // marquee rectangle + offset/simplify dashed previews.
-        ctx.track(effect(() => {
-            const ready = ctx.map.ready.get();
-            const data = this.previewGeojson();
-            if (!ready) {
-                this.previewAdded = false;
-                return;
-            }
-            if (!this.previewAdded) {
-                ctx.map.addOverlayLayer(DRAW_OVERLAY_ID, data, previewLayers(), { keepOnTop: true });
-                this.previewAdded = true;
-            } else {
-                ctx.map.updateOverlayData(DRAW_OVERLAY_ID, data);
-            }
-        }));
-        ctx.track(() => {
-            if (this.previewAdded) {
-                ctx.map.removeOverlayLayer(DRAW_OVERLAY_ID);
-                this.previewAdded = false;
-            }
-        });
+        ctx.track(ownedOverlay(ctx.map, DRAW_OVERLAY_ID, () => this.previewGeojson(), drawPreviewLayers, { keepOnTop: true }));
 
         // Crosshair cursor while drawing. Shift gestures belong to the
         // tool in BOTH modes (Shift+click corner points while drawing,
         // Shift+click/drag vertex selection while editing), so MapLibre's
         // shift-drag box zoom is disabled for the whole activation span.
+        ctx.track(canvasCursor(ctx.map, () =>
+            this.state.isDrawing.get() || this.state.boxSelect.get() || this.spaceHeld.get() ? 'crosshair' : ''));
         ctx.track(effect(() => {
             if (!ctx.map.ready.get()) return;
-            const drawing = this.state.isDrawing.get();
-            const boxMode = this.state.boxSelect.get() || this.spaceHeld.get();
-            const map = ctx.map.map.get();
-            if (!map) return;
-            map.getCanvas().style.cursor = drawing || boxMode ? 'crosshair' : '';
-            map.boxZoom.disable();
+            ctx.map.map.get()?.boxZoom.disable();
         }));
-        ctx.track(() => {
-            const map = ctx.map.map.peek();
-            if (!map) return;
-            map.getCanvas().style.cursor = '';
-            map.boxZoom.enable();
-        });
+        ctx.track(() => ctx.map.map.peek()?.boxZoom.enable());
     }
 
     deactivate(): void {
-        this.endDrag();
-        this.cancelMoveDrag();
-        this.cancelStampDrag();
-        this.cancelTrace();
+        const host = this.host;
+        endDrag(host);
+        cancelMoveDrag(host);
+        cancelStampDrag(host);
+        cancelTrace(host);
         this.stampMode = null;
         this.marquee.set(null);
         this.state.disarm();
         this.state.boxSelect.set(false);
         this.spaceHeld.set(false);
         this.cursor.set(null);
+        this.snapMarker.set(null);
         this.clearTransientOpState();
         this.features?.select(null);
         this.features?.resetModeView();
+        // Send debounced geometry saves now rather than after the debounce.
+        void this.features?.flush();
         if (this.scope.peek() !== 'surfaces' && this.surfacesDrawType) this.drawType.set(this.surfacesDrawType);
         this.surfacesDrawType = null;
         this.scope.set('surfaces');
         this.hostToolId = DRAW_TOOL_ID;
         this.yieldTo = null;
-        this.suppressClick = false;
+        this.dragBinding = null;
         this.ctx = null;
+    }
+
+    /** True while the engine is armed or mid-gesture: the host tool keeps its hands off the map then. */
+    isEngaged(): boolean {
+        return this.state.isDrawing.peek() || this.drag !== null || this.moveDrag !== null
+            || this.stampDrag !== null || this.marquee.peek() !== null;
+    }
+
+    /**
+     * True while work a sub-mode switch would discard is open: placed draft
+     * points, a freehand trace, or a live drag (vertex, move, stamp,
+     * marquee). An armed tool with an empty draft is not busy, so chain-draw
+     * does not block the sub-mode keys.
+     */
+    isBusy(): boolean {
+        return (this.state.isDrawing.peek() && this.state.draft.peek().length > 0)
+            || this.traceGesture !== null
+            || this.drag !== null
+            || this.moveDrag !== null
+            || this.stampDrag !== null
+            || this.marquee.peek() !== null;
     }
 
     /**
@@ -953,20 +698,20 @@ export class DrawToolService {
         // ESC mid-trace discards the stroke only — the tool stays armed for
         // the next trace/click (a second ESC then disarms via handleEscape).
         if (this.traceGesture) {
-            this.cancelTrace();
+            cancelTrace(this.host);
             return true;
         }
         if (this.state.handleEscape()) return true;
         // Exit repeat-stamp mode (T42) before the marquee: cancel any live
         // stamp/duplicate ghost and disarm further stamping.
         if (this.stampDrag || this.stampMode) {
-            this.cancelStampDrag();
+            cancelStampDrag(this.host);
             this.stampMode = null;
             return true;
         }
         if (this.marquee.peek()) {
             this.marquee.set(null);
-            this.ctx?.map.map.peek()?.dragPan.enable();
+            this.dragBinding?.release();
             return true;
         }
         if (this.offsetDistance.peek() !== null || this.simplifyActive.peek()) {
@@ -985,681 +730,50 @@ export class DrawToolService {
         return false;
     }
 
-    // ── Map event handling ────────────────────────────────────────────────
-
-    private isMyClaim(): boolean {
-        return this.ctx?.map.interactionMode.peek() === this.hostToolId;
-    }
-
-    /** True while the engine is armed or mid-gesture: the host tool keeps its hands off the map then. */
-    isEngaged(): boolean {
-        return this.state.isDrawing.peek() || this.drag !== null || this.moveDrag !== null
-            || this.stampDrag !== null || this.marquee.peek() !== null;
-    }
-
-    private onClick(e: MapPointerEvent): void {
-        if (!this.isMyClaim()) return;
-        if (this.suppressClick) return;
-
-        const p = lngLatToSweref99tm(e.lngLat);
-
-        if (this.state.isDrawing.peek()) {
-            this.placeDraftPoint(p, e.point, e.originalEvent.shiftKey);
-            return;
-        }
-        if (this.yieldTo?.(e.point)) return;
-
-        // Cmd/Ctrl+click toggles multi-select membership.
-        if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) {
-            this.altCycle = null;
-            const hit = this.hitFeature(p);
-            if (hit) this.features?.toggleSelected(hit.id);
-            return;
-        }
-
-        // Alt/Option+click cycles the selection DOWN through the hit stack
-        // (D27): first click selects the topmost containing feature (same as
-        // a plain click); each subsequent alt-click over the same hit stack
-        // steps one deeper, wrapping. A plain/meta click resets it; so does
-        // alt-clicking where the hit stack differs (advanceAltCycle).
-        if (e.originalEvent.altKey) {
-            const stack = this.hitStack(p);
-            if (stack.length === 0) {
-                this.altCycle = null;
-                this.hoverVertex.set(null);
-                this.features?.select(null);
-                return;
-            }
-            this.altCycle = advanceAltCycle(this.altCycle, stack.map(f => f.id));
-            this.hoverVertex.set(null);
-            this.features?.select(this.altCycle.ids[this.altCycle.index]);
-            return;
-        }
-
-        // Select mode. Edge click on the (single) selected feature inserts
-        // a vertex — suspended in box-select mode (no geometry editing).
-        const boxMode = this.state.boxSelect.peek() || this.spaceHeld.peek();
-        const selected = this.features?.editableSelected.peek() ?? null;
-        if (selected && !boxMode) {
-            const insertion = this.edgeInsertionHit(selected, p, e.lngLat.lat);
-            if (insertion) {
-                const geometry = applyVertexEdit(selected.geometry, view => insertion.kind === 'control'
-                    ? insertControlPoint(view, insertion.ringIdx, insertion.afterIdx, insertion.point)
-                    : insertAnchor(view, insertion.ringIdx, insertion.segIdx, insertion.t));
-                this.vertexSelection.set(new Set()); // indices shifted
-                if (geometry) this.commitGeometry(selected.id, geometry);
-                return;
-            }
-        }
-        this.altCycle = null; // plain click resets alt-cycling to topmost
-        const hit = this.hitFeature(p);
-        const prev = this.features?.selectedIds.peek() ?? new Set();
-        if (!hit || !(prev.size === 1 && prev.has(hit.id))) this.hoverVertex.set(null);
-        this.features?.select(hit?.id ?? null);
-    }
-
-    /** Place a draft control point, or close the ring when on the first point. */
-    private placeDraftPoint(p: Point, screen: { x: number; y: number }, shift: boolean): void {
-        const draft = this.state.draft.peek();
-        // A path's first point is just its start — clicking near it again is
-        // a point, not the close gesture (Enter commits a path).
-        if (!this.pathMode.peek() && draft.length >= 3 && this.screenDist(draft[0], screen) < CLOSE_RING_PX) {
-            this.closeDraft();
-            return;
-        }
-        // Shift+click places a sharp corner control point.
-        this.state.addPoint(p, shift);
-    }
-
-    private onMouseMove(e: MapPointerEvent): void {
-        if (!this.isMyClaim()) return;
-
-        if (this.state.isDrawing.peek()) {
-            const trace = this.traceGesture;
-            if (trace) {
-                // Refresh the stroke preview only when the spacing gate
-                // keeps the sample (≥ TRACE_SAMPLE_PX apart on screen).
-                if (trace.sample(e.point, lngLatToSweref99tm(e.lngLat))) {
-                    this.trace.set([...trace.points]);
-                }
-                return;
-            }
-            this.cursor.set(e.lngLat);
-            return;
-        }
-
-        const marquee = this.marquee.peek();
-        if (marquee) {
-            this.marquee.set({ ...marquee, current: lngLatToSweref99tm(e.lngLat) });
-            return;
-        }
-
-        const stamp = this.stampDrag;
-        if (stamp && this.features) {
-            // A duplicate-drag is threshold-gated (sub-threshold decays to the
-            // Alt-cycle click); a stamp shows its copy under the cursor at once.
-            if (stamp.kind === 'duplicate' && !stamp.moved
-                && this.pxDist(stamp.startScreen, e.point) < MOVE_THRESHOLD_PX) return;
-            stamp.moved = true;
-            const p = lngLatToSweref99tm(e.lngLat);
-            stamp.dx = p.x - stamp.refEpsg.x;
-            stamp.dy = p.y - stamp.refEpsg.y;
-            this.dragGhost.set(stamp.sources.map(s => ({
-                id: s.id,
-                type: s.type,
-                geometry: translateGeometry(s.geometry, stamp.dx, stamp.dy),
-            })));
-            return;
-        }
-
-        const move = this.moveDrag;
-        if (move && this.features) {
-            if (!move.moved && this.pxDist(move.startScreen, e.point) < MOVE_THRESHOLD_PX) return;
-            if (!move.moved) {
-                move.moved = true;
-                this.features.setDragging(move.features.map(f => f.id), true);
-            }
-            const p = lngLatToSweref99tm(e.lngLat);
-            move.dx = p.x - move.startEpsg.x;
-            move.dy = p.y - move.startEpsg.y;
-            this.dragGhost.set(move.features.map(f => ({
-                id: f.id,
-                type: f.type,
-                geometry: translateGeometry(f.geometry, move.dx, move.dy),
-            })));
-            return;
-        }
-
-        const drag = this.drag;
-        if (!drag || !this.features) {
-            // Hover highlighting only matters with the mouse button up. While a
-            // button is held the user is panning (or dragging) — skip the
-            // O(vertices) hover hit-test, which otherwise re-projects every
-            // vertex of the selected shape on every frame of a pan (2-5 fps on
-            // a large rough).
-            if (e.originalEvent.buttons === 0) this.trackHoverVertex(e);
-            return;
-        }
-        if (!drag.moved && this.pxDist(drag.startScreen, e.point) < DRAG_MOVE_THRESHOLD_PX) return;
-        if (!drag.moved) {
-            drag.moved = true;
-            this.features.setDragging([drag.featureId], true);
-        }
-
-        // Derive from the drag-start geometry — all three ops set ABSOLUTE
-        // positions, so this is frame-order independent and needs no store
-        // reads (the store is not patched until the mouseup commit).
-        const p = lngLatToSweref99tm(e.lngLat);
-        // On a road the view is its centerline: moving a control point
-        // re-derives the whole corridor round it.
-        const geometry = applyVertexEdit(drag.startGeometry, view => {
-            if (drag.kind === 'anchor') return moveAnchor(view, drag.ringIdx, drag.idx, p);
-            if (drag.kind === 'handle') return moveHandle(view, drag.ringIdx, drag.idx, drag.which!, p);
-            return setSymmetricHandles(view, drag.ringIdx, drag.idx, p);
-        });
-        if (!geometry) return; // the line collapsed (a point dropped on its only neighbour)
-        drag.currentGeometry = geometry;
-        this.dragGhost.set([{ id: drag.featureId, type: drag.featureType, geometry }]);
-    }
-
-    private bindRawHandlers(map: MaplibreMap, ctx: ToolContext): void {
-        const onMouseDown = (e: MapMouseEvent) => this.onMouseDown(e, map);
-        const onMouseUp = (e: MapMouseEvent) => this.onMouseUp(e, map);
-        const onDblClick = (e: MapMouseEvent) => this.onDblClick(e);
-        const onContextMenu = (e: MapMouseEvent) => this.onContextMenu(e, map);
-        map.on('mousedown', onMouseDown);
-        map.on('mouseup', onMouseUp);
-        map.on('dblclick', onDblClick);
-        map.on('contextmenu', onContextMenu);
-        ctx.track(() => {
-            map.off('mousedown', onMouseDown);
-            map.off('mouseup', onMouseUp);
-            map.off('dblclick', onDblClick);
-            map.off('contextmenu', onContextMenu);
-        });
-    }
-
-    private onMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
-        if (!this.isMyClaim()) return;
-        if (e.originalEvent.button !== 0) return;
-        if (this.state.mode.peek() === 'draw') {
-            this.onDrawMouseDown(e, map);
-            return;
-        }
-        if (this.yieldTo?.(e.point)) return;
+    /**
+     * Move the vertex selection `px` screen pixels in the arrow `key`'s
+     * screen direction, converted to EPSG:3006 meters at the current zoom
+     * and bearing. Repeats of the same key within NUDGE_COALESCE_MS extend
+     * one history entry. Returns false when there is nothing to nudge.
+     */
+    nudgeSelectedVertices(key: string, px: number): boolean {
         const features = this.features;
-        if (!features) return;
+        const selected = features?.editableSelected.peek();
+        const keys = this.vertexSelection.peek();
+        const bearingDeg = this.ctx?.map.map.peek()?.getBearing?.() ?? 0;
+        const dir = nudgeDirection(key, bearingDeg);
+        if (!dir || !features || !selected || keys.size === 0) return false;
+        const first = parseVertexKey(keys.values().next().value!);
+        // On a road the vertices are its centerline's (the edit view).
+        const anchor = editViewOf(selected.geometry).rings[first.ringIdx]?.points[first.idx];
+        if (!anchor) return false;
 
-        const meta = e.originalEvent.metaKey || e.originalEvent.ctrlKey;
-        const shift = e.originalEvent.shiftKey;
-        const single = features.editableSelected.peek();
-
-        // 0. Box-select (sticky 'B' toggle or Space held): a left-drag
-        //    rubber-bands features regardless of what it lands on — even a
-        //    shape that a plain drag would move, or the selected feature's
-        //    vertices. Meta still falls through so ⌘/Ctrl-click toggle-select
-        //    keeps working; a sub-threshold drag decays to a plain click in
-        //    onMouseUp (selects the shape under the cursor).
-        if ((this.state.boxSelect.peek() || this.spaceHeld.peek()) && !meta) {
-            e.preventDefault();
-            map.dragPan.disable();
-            const start = lngLatToSweref99tm(e.lngLat);
-            this.marquee.set({ kind: 'features', start, current: start, startScreen: { x: e.point.x, y: e.point.y } });
-            return;
-        }
-
-        // 1. Vertex/handle interactions on the single selected feature.
-        if (single && !meta) {
-            const hit = this.hitVertexOrHandle(map, single, e.point);
-            if (hit) {
-                if (shift && hit.kind === 'anchor') {
-                    // Shift+click a vertex: toggle multi-vertex selection.
-                    e.preventDefault();
-                    this.toggleVertexSelected(vertexKey(hit.ringIdx, hit.idx));
-                    this.suppressNextClick();
-                    return;
-                }
-                e.preventDefault(); // stops the map's drag-pan for this gesture
-                map.dragPan.disable();
-                const view = editViewOf(single.geometry);
-                const anchor = view.rings[hit.ringIdx].points[hit.idx];
-                // Bezier handles don't exist on spline features (nor on a
-                // road's centerline): alt-drag falls back to a plain
-                // control-point drag there.
-                const isSpline = view.curveType === 'bspline';
-                const alt = e.originalEvent.altKey && !isSpline;
-                // Plain grab of a vertex outside the multi-vertex selection
-                // drops that selection (prototype behavior).
-                if (hit.kind === 'anchor' && !this.vertexSelection.peek().has(vertexKey(hit.ringIdx, hit.idx))) {
-                    if (this.vertexSelection.peek().size > 0) this.vertexSelection.set(new Set());
-                }
-                this.drag = {
-                    kind: hit.kind === 'handle' ? 'handle' : alt ? 'newHandles' : 'anchor',
-                    which: hit.which,
-                    featureId: single.id,
-                    featureType: single.type,
-                    ringIdx: hit.ringIdx,
-                    idx: hit.idx,
-                    alt,
-                    hadHandles: hasHandles(anchor),
-                    startScreen: { x: e.point.x, y: e.point.y },
-                    startGeometry: single.geometry,
-                    startVersion: single.version,
-                    moved: false,
-                    currentGeometry: null,
-                };
-                return;
-            }
-        }
-
-        // Cmd/Ctrl+press is a selection-toggle click — never a tool drag.
-        // Returning WITHOUT preventDefault/dragPan.disable deliberately leaves
-        // MapLibre's native dragPan engaged, so ⌘-drag PANS the map — the
-        // trackpad equivalent of the middle-button pan escape hatch in
-        // map.service.ts (MapLibre's pan accepts meta; only ctrl is reserved
-        // for rotate). A real drag exceeds clickTolerance and suppresses the
-        // click, so the selection toggle only fires on a stationary ⌘-click.
-        if (meta) return;
-
-        const p = lngLatToSweref99tm(e.lngLat);
-
-        // 1b. Alt+press inside the selection (not on a vertex/handle — those
-        //     were consumed above): start a duplicate-drag over CLONES (T42).
-        //     A sub-threshold drag decays to the Alt-cycle click in onMouseUp,
-        //     so a stationary Alt-click still cycles the hit stack as before.
-        if (e.originalEvent.altKey && !shift) {
-            const selectedFeatures = features.editableSelectedFeatures.peek();
-            if (selectedFeatures.some(f => this.grabs(f, p))) {
-                e.preventDefault();
-                map.dragPan.disable();
-                this.stampDrag = {
-                    kind: 'duplicate',
-                    refEpsg: p,
-                    startScreen: { x: e.point.x, y: e.point.y },
-                    sources: selectedFeatures.map(f => ({
-                        id: f.id, type: f.type, holeId: f.holeId, layer: f.layer ?? null, geometry: f.geometry, attributes: attributesPatchOf(f.attributes),
-                    })),
-                    moved: false,
-                    dx: 0,
-                    dy: 0,
-                };
-                return;
-            }
-        }
-
-        // 2. Shift+drag with exactly one selected feature: vertex marquee
-        //    (axis-aligned, only that feature's control/anchor points).
-        if (shift) {
-            if (single) {
-                e.preventDefault();
-                map.dragPan.disable();
-                this.marquee.set({ kind: 'vertices', start: p, current: p, startScreen: { x: e.point.x, y: e.point.y } });
-            }
-            return;
-        }
-
-        // 3. Drag inside a selected feature: move the whole selection.
-        const selectedFeatures = features.editableSelectedFeatures.peek();
-        if (selectedFeatures.some(f => this.grabs(f, p))) {
-            e.preventDefault();
-            map.dragPan.disable();
-            this.moveDrag = {
-                startEpsg: p,
-                startScreen: { x: e.point.x, y: e.point.y },
-                features: selectedFeatures.map(f => ({
-                    id: f.id,
-                    geometry: f.geometry,
-                    type: f.type,
-                    holeId: f.holeId,
-                    version: f.version,
-                })),
-                moved: false,
-                dx: 0,
-                dy: 0,
-            };
-            return;
-        }
-
-        // 4. Drag on empty ground (no visible feature): stamp a repeat copy
-        //    (T42) when stamp mode is armed, else a feature marquee.
-        //    (A drag starting inside an UNSELECTED feature stays with the
-        //    map's default pan; plain clicks still select it.) In the rules
-        //    scope an empty-ground drag pans, as it always has in Furniture;
-        //    B / Space still rubber-band.
-        if (this.scope.peek() === 'rules' && !this.stampMode) return;
-        if (!this.hitFeature(p)) {
-            e.preventDefault();
-            map.dragPan.disable();
-            if (this.stampMode) {
-                this.startStampDrag(p, { x: e.point.x, y: e.point.y });
-            } else {
-                this.marquee.set({ kind: 'features', start: p, current: p, startScreen: { x: e.point.x, y: e.point.y } });
-            }
-        }
-    }
-
-    /**
-     * Left-press while the draw tool is armed (T40): start a freehand
-     * trace. The gesture claims the drag (preventDefault + dragPan off —
-     * the marquee pattern) and onMouseMove samples the stroke at
-     * ≥ TRACE_SAMPLE_PX screen spacing; a sub-threshold release decays to
-     * the plain click (click-to-place / Shift-corner / close-ring hit all
-     * unchanged via onClick).
-     *
-     * Once click-placement has begun (non-empty draft) a left press always
-     * places a point — a press that slips while clicking quickly is still
-     * a point, never a pan (placePress; a trace always starts a FRESH shape).
-     *
-     * Pan escape hatches while armed: middle-button (map.service) and
-     * ⌘/Ctrl-drag — returning without preventDefault keeps MapLibre's
-     * native dragPan engaged, exactly like the select-mode meta-pan below.
-     */
-    private onDrawMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
-        if (e.originalEvent.metaKey || e.originalEvent.ctrlKey) return;
-        e.preventDefault();
-        map.dragPan.disable();
-        if (this.state.draft.peek().length > 0) {
-            this.placePress = { startScreen: { x: e.point.x, y: e.point.y }, lngLat: e.lngLat, shift: e.originalEvent.shiftKey };
-            return;
-        }
-        this.traceGesture = new TraceGesture(
-            { x: e.point.x, y: e.point.y },
-            lngLatToSweref99tm(e.lngLat),
-        );
-        this.trace.set([...this.traceGesture.points]);
-    }
-
-    /**
-     * Begin a repeat-stamp drag from the armed template. The copy is anchored
-     * under the cursor immediately (grab point = the template `anchor`, the
-     * previous drop point) and tracks pointer moves; the drop always creates.
-     */
-    private startStampDrag(p: Point, startScreen: { x: number; y: number }): void {
-        const mode = this.stampMode;
-        if (!mode) return;
-        const dx = p.x - mode.anchor.x;
-        const dy = p.y - mode.anchor.y;
-        this.stampDrag = {
-            kind: 'stamp',
-            refEpsg: mode.anchor,
-            startScreen,
-            sources: mode.templates,
-            moved: false,
-            dx,
-            dy,
-        };
-        this.dragGhost.set(mode.templates.map(s => ({
-            id: s.id,
-            type: s.type,
-            geometry: translateGeometry(s.geometry, dx, dy),
-        })));
-    }
-
-    private onMouseUp(e: MapMouseEvent, map: MaplibreMap): void {
-        const place = this.placePress;
-        if (place) {
-            this.placePress = null;
-            map.dragPan.enable();
-            // Within tolerance MapLibre synthesizes the click (onClick
-            // places the point); past it there is no click, so place the
-            // point where the press landed.
-            if (this.pxDist(place.startScreen, e.point) < PLACE_CLICK_TOLERANCE_PX) return;
-            this.suppressNextClick();
-            if (this.state.isDrawing.peek()) {
-                this.placeDraftPoint(lngLatToSweref99tm(place.lngLat), place.startScreen, place.shift);
-            }
-            return;
-        }
-
-        const trace = this.traceGesture;
-        if (trace) {
-            this.traceGesture = null;
-            this.trace.set(null);
-            map.dragPan.enable();
-            // Sub-threshold press decays to a plain click: do NOT suppress
-            // the click MapLibre synthesizes — onClick places the point
-            // (Shift-corner / close-ring hit included) exactly as before.
-            if (!trace.moved) return;
-            this.suppressNextClick();
-            this.commitTrace(trace.finish(lngLatToSweref99tm(e.lngLat)));
-            return;
-        }
-
-        const stamp = this.stampDrag;
-        if (stamp) {
-            this.stampDrag = null;
-            map.dragPan.enable();
-            this.dragGhost.set(null);
-            // Sub-threshold duplicate-drag: decay to the Alt-cycle click. Do
-            // NOT suppress the synthesized click — onClick's Alt path cycles
-            // the hit stack exactly as a stationary Alt-click always has.
-            if (stamp.kind === 'duplicate' && !stamp.moved) return;
-            this.suppressNextClick();
-            const p = lngLatToSweref99tm(e.lngLat);
-            const dx = p.x - stamp.refEpsg.x;
-            const dy = p.y - stamp.refEpsg.y;
-            void (async () => {
-                const created = await this.stampClones(stamp.sources, dx, dy);
-                // A duplicate-drag drop arms repeat-stamp mode: the fresh clones
-                // become the template, grabbed at this drop point.
-                if (created && stamp.kind === 'duplicate') {
-                    this.stampMode = {
-                        anchor: p,
-                        templates: created.map(c => ({
-                            id: c.id, type: c.type, holeId: c.holeId, layer: c.layer ?? null, geometry: c.geometry, attributes: attributesPatchOf(c.attributes),
-                        })),
-                    };
-                }
-            })();
-            return;
-        }
-
-        const marquee = this.marquee.peek();
-        if (marquee) {
-            this.marquee.set(null);
-            map.dragPan.enable();
-            if (this.pxDist(marquee.startScreen, e.point) < MARQUEE_MIN_PX) return; // a click — let onClick handle it
-            this.suppressNextClick();
-            const rect = rectFromCorners(marquee.start, lngLatToSweref99tm(e.lngLat));
-            if (!this.features) return;
-            if (marquee.kind === 'features') {
-                // Default 'contain' (fully inside); Alt = 'intersect'.
-                const mode = e.originalEvent.altKey ? 'intersect' : 'contain';
-                const features = this.features;
-                const scope = this.scope.peek();
-                const visible = features.store.items.peek()
-                    .filter(f => !features.isHidden(f) && scopeOwnsType(scope, f.type));
-                this.features.setSelection(featuresInRect(visible, rect, mode));
-            } else {
-                const single = this.features.editableSelected.peek();
-                if (single) this.vertexSelection.set(new Set(verticesInRect(editViewOf(single.geometry), rect)));
-            }
-            return;
-        }
-
-        const move = this.moveDrag;
-        if (move) {
-            this.moveDrag = null;
-            map.dragPan.enable();
-            if (!move.moved || !this.features) return; // plain click — let onClick handle it
-            this.suppressNextClick();
-            const features = this.features;
-            this.dragGhost.set(null);
-            features.setDragging(move.features.map(f => f.id), false);
-            // Commit the final translation: ONE store batch (a single
-            // FeatureCollection rebuild), ONE history entry for the whole
-            // multi-feature move, one autosave per feature.
-            const entry = buildMoveEntry(move.features, move.dx, move.dy);
-            batch(() => {
-                for (const diff of entry) {
-                    features.patchLocal(diff.featureId, diff.after!.geometry); // instant visual snap
-                }
-            });
-            for (const diff of entry) {
-                void features.update(diff.featureId, { geometry: diff.after!.geometry });
-            }
-            this.history.push(entry);
-            return;
-        }
-
-        const drag = this.drag;
-        if (!drag || !this.features) return;
-        this.endDrag(map);
-
-        // Swallow the click MapLibre synthesizes right after this mouseup.
-        this.suppressNextClick();
-
-        if (drag.moved) {
-            const geometry = drag.currentGeometry;
-            const feature = this.features.store.items.peek().find(f => f.id === drag.featureId);
-            if (feature && geometry) {
-                this.history.push([{
-                    featureId: drag.featureId,
-                    before: { geometry: drag.startGeometry, type: feature.type, holeId: feature.holeId },
-                    after: { geometry, type: feature.type, holeId: feature.holeId },
-                    beforeVersion: drag.startVersion,
-                }]);
-                this.features.patchLocal(drag.featureId, geometry); // instant visual snap
-                void this.features.update(drag.featureId, { geometry });
-            }
-            return;
-        }
-        // Alt-click (no movement) on a curved vertex straightens it.
-        if (drag.kind === 'newHandles' && drag.hadHandles) {
-            const feature = this.features.store.items.peek().find(f => f.id === drag.featureId);
-            if (feature) {
-                this.commitGeometry(drag.featureId, clearHandles(feature.geometry, drag.ringIdx, drag.idx));
-            }
-        }
-    }
-
-    private onDblClick(e: MapMouseEvent): void {
-        if (!this.isMyClaim()) return;
-        if (!this.state.isDrawing.peek()) return;
-        e.preventDefault(); // no double-click zoom while drawing
-        this.state.discardDoubleClickDuplicate();
-    }
-
-    private onContextMenu(e: MapMouseEvent, map: MaplibreMap): void {
-        if (!this.isMyClaim()) return;
-        const selected = this.features?.editableSelected.peek();
-        if (!selected) return;
-        const hit = this.hitVertexOrHandle(map, selected, e.point);
-        if (!hit || hit.kind !== 'anchor') return;
-        e.preventDefault();
+        const zoom = this.ctx?.map.zoom.peek() ?? 18;
+        const meters = px * metersPerPixel(zoom, sweref99tmToWgs84(anchor.x, anchor.y).lat);
         const geometry = applyVertexEdit(selected.geometry, view =>
-            deleteAnchor(view, hit.ringIdx, hit.idx, minVertexCount(selected.geometry)));
-        if (geometry) {
-            this.hoverVertex.set(null); // indices shifted — drop stale target
-            this.vertexSelection.set(new Set());
-            this.commitGeometry(selected.id, geometry);
+            translateAnchors(view, keys, dir.east * meters, dir.north * meters));
+        if (!geometry) return false; // the line collapsed
+
+        const now = this.clock();
+        const run = this.nudge;
+        if (run && run.key === key && now - run.at < NUDGE_COALESCE_MS
+            && run.featureId === selected.id && run.geometry === selected.geometry && run.diff.after) {
+            run.diff.after = { ...run.diff.after, geometry };
+            run.at = now;
+            run.geometry = geometry;
+        } else {
+            const diff = {
+                featureId: selected.id,
+                before: snapshotOf(selected),
+                after: { geometry, type: selected.type, holeId: selected.holeId },
+                beforeVersion: selected.version,
+            };
+            this.record([diff]); // ends any previous run
+            this.nudge = { key, at: now, featureId: selected.id, geometry, diff };
         }
-    }
-
-    private onKeyDown(e: KeyboardEvent): void {
-        if (!this.isMyClaim()) return;
-        const target = e.target as HTMLElement | null;
-        if (
-            target instanceof HTMLInputElement ||
-            target instanceof HTMLSelectElement ||
-            target instanceof HTMLTextAreaElement
-        ) return;
-
-        const meta = e.metaKey || e.ctrlKey;
-
-        // Space held = momentary box-select override (released in the keyup
-        // listener). preventDefault stops the page from scrolling. Auto-repeat
-        // re-fires keydown harmlessly.
-        if ((e.key === ' ' || e.code === 'Space') && !meta) {
-            e.preventDefault();
-            this.spaceHeld.set(true);
-            return;
-        }
-
-        if (meta && (e.key === 'z' || e.key === 'Z')) {
-            e.preventDefault();
-            if (this.state.isDrawing.peek()) {
-                // Mid-draw point undo/redo — separate ephemeral stack. When it
-                // has nothing to do (e.g. an empty draft just re-armed by a
-                // sticky close), fall through to committed history so the
-                // just-created feature is undoable without leaving chain mode.
-                if (e.shiftKey) {
-                    if (!this.state.redoPoint()) this.redo();
-                } else if (!this.state.undoPoint()) {
-                    this.undo();
-                }
-            } else if (e.shiftKey) {
-                this.redo();
-            } else {
-                this.undo();
-            }
-        } else if (meta && (e.key === 'y' || e.key === 'Y')) {
-            e.preventDefault();
-            if (this.state.isDrawing.peek()) {
-                if (!this.state.redoPoint()) this.redo();
-            } else this.redo();
-        } else if (meta && (e.key === 'd' || e.key === 'D')) {
-            e.preventDefault();
-            this.duplicateSelection();
-        } else if (e.key === 'Enter') {
-            if (this.state.isDrawing.peek() && this.pathMode.peek()) {
-                const draft = this.state.draft.peek();
-                if (draft.length >= 2) {
-                    e.preventDefault();
-                    this.commitCenterline(draft, this.pathWidthM.peek());
-                }
-            } else if (this.state.isDrawing.peek() && this.state.canClose.peek()) {
-                e.preventDefault();
-                this.closeDraft();
-            }
-        } else if (e.key === 'Delete' || e.key === 'Backspace') {
-            if (this.vertexSelection.peek().size > 0 && this.features?.editableSelected.peek()) {
-                e.preventDefault();
-                this.deleteSelectedVertices();
-            } else if ((this.features?.selectedIds.peek().size ?? 0) > 0) {
-                e.preventDefault();
-                void this.deleteSelected();
-            }
-        } else if ((e.key === 'i' || e.key === 'I') && !meta) {
-            if (this.vertexSelection.peek().size === 2 && this.features?.editableSelected.peek()) {
-                e.preventDefault();
-                this.insertBetweenSelectedVertices();
-            }
-        } else if (e.key === 'n' || e.key === 'N') {
-            if (!this.state.isDrawing.peek() && !meta) {
-                e.preventDefault();
-                this.armDraw();
-            }
-        } else if (e.key === 'p' || e.key === 'P') {
-            if (!this.state.isDrawing.peek() && !meta && this.scope.peek() === 'surfaces') {
-                e.preventDefault();
-                this.armPath();
-            }
-        } else if (e.key === 'b' || e.key === 'B') {
-            if (!this.state.isDrawing.peek() && !meta) {
-                e.preventDefault();
-                this.state.toggleBoxSelect();
-            }
-        } else if (e.key === 'c' || e.key === 'C') {
-            if (!meta && !this.state.isDrawing.peek() && this.hoverVertex.peek() && this.features?.editableSelected.peek()) {
-                e.preventDefault();
-                this.toggleHoveredVertexCorner();
-            }
-        } else if (e.key === 'PageUp' || e.key === 'PageDown' || e.key === 'Home' || e.key === 'End') {
-            // D27 stack-reorder bindings (Inkscape-style — not [ / ], which
-            // needs AltGr on Swedish layouts). The map claims paging/Home/End
-            // for its own navigation, so preventDefault whenever we act.
-            if (!meta && !this.state.isDrawing.peek() && (this.features?.selectedIds.peek().size ?? 0) > 0) {
-                e.preventDefault();
-                void this.reorderSelected(e.key as 'PageUp' | 'PageDown' | 'Home' | 'End');
-            }
-        } else if (!meta && !e.altKey && DIGIT_FEATURE_TYPES[e.key] && this.scope.peek() === 'surfaces') {
-            // Bare digit = pick a feature type without opening the palette
-            // dropdown (⌘/Ctrl/Alt-digit is browser tab switching etc. — never
-            // preventDefault there). Same verb as the palette button.
-            e.preventDefault();
-            this.chooseType(DIGIT_FEATURE_TYPES[e.key]);
-        }
+        features.patchLocal(selected.id, geometry);
+        void features.update(selected.id, { geometry });
+        return true;
     }
 
     // ── Actions ───────────────────────────────────────────────────────────
@@ -1667,6 +781,8 @@ export class DrawToolService {
     /** Undo the last committed edit (Cmd/Ctrl+Z, panel button). */
     undo(): void {
         if (!this.features) return;
+        this.nudge = null;
+        this.clearNotice();
         this.clearTransientOpState();
         void this.history.undo(this.features);
     }
@@ -1674,6 +790,8 @@ export class DrawToolService {
     /** Redo the last undone edit (Cmd/Ctrl+Shift+Z / Cmd/Ctrl+Y, panel). */
     redo(): void {
         if (!this.features) return;
+        this.nudge = null;
+        this.clearNotice();
         this.clearTransientOpState();
         void this.history.redo(this.features);
     }
@@ -1685,7 +803,7 @@ export class DrawToolService {
      * (history.ts), which doesn't fit a whole-group order rewrite; see the
      * T23 report.
      */
-    private async reorderSelected(key: 'PageUp' | 'PageDown' | 'Home' | 'End'): Promise<void> {
+    private async reorderSelected(key: ReorderKey): Promise<void> {
         const features = this.features;
         if (!features) return;
         // A mode's backdrop rows (Vegetation's creeks and water) keep Draw's order.
@@ -1719,7 +837,7 @@ export class DrawToolService {
             ...this.newShapeAttributes(type),
         }).then(created => {
             if (created) {
-                this.history.push([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
+                this.record([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
             }
         });
     }
@@ -1742,7 +860,7 @@ export class DrawToolService {
      * Fit a traced freehand stroke (EPSG:3006) to a closed b-spline and
      * commit it through the normal closeDraft funnel — a regular editable
      * spline feature of the armed type, ONE create history entry
-     * (`before: null`), chain-draw keeps the tool armed. Returns false when
+     * (`before: null`). Returns false when
      * the fit degenerated (< 3 controls) and the stroke was discarded.
      * Public: it is the trace gesture's testable commit seam (the pointer
      * wiring needs a live MaplibreMap — same rationale as `stampClones`).
@@ -1784,7 +902,7 @@ export class DrawToolService {
             ...this.newShapeAttributes(type),
         }).then(created => {
             if (created) {
-                this.history.push([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
+                this.record([{ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null }]);
             }
         });
         return true;
@@ -1801,11 +919,22 @@ export class DrawToolService {
         if (geometry) this.commitGeometry(selected.id, geometry);
     }
 
-    /** Toggle the hovered vertex smooth↔corner ('C' key / panel button). */
+    /**
+     * Toggle smooth↔corner ('C' key / panel button): every vertex of the
+     * vertex selection when there is one, else the hovered vertex. One
+     * history entry.
+     */
     toggleHoveredVertexCorner(): void {
         const selected = this.features?.editableSelected.peek();
+        if (!selected) return;
+        const keys = this.vertexSelection.peek();
+        if (keys.size > 0) {
+            const geometry = applyVertexEdit(selected.geometry, view => toggleVerticesCorner(view, keys));
+            if (geometry) this.commitGeometry(selected.id, geometry);
+            return;
+        }
         const hover = this.hoverVertex.peek();
-        if (!selected || !hover) return;
+        if (!hover) return;
         if (!editViewOf(selected.geometry).rings[hover.ringIdx]?.points[hover.idx]) return;
         const geometry = applyVertexEdit(selected.geometry, view => toggleVertexCorner(view, hover.ringIdx, hover.idx));
         if (geometry) this.commitGeometry(selected.id, geometry);
@@ -1844,8 +973,9 @@ export class DrawToolService {
     }
 
     /**
-     * Delete the whole selection after confirmation (key or panel button).
-     * Bulk deletes are ONE history entry.
+     * Delete the whole selection (key or panel button) as ONE history
+     * entry. Up to DELETE_CONFIRM_THRESHOLD features go without a dialog
+     * and leave an undo hint in `notice`; larger deletes ask first.
      */
     async deleteSelected(): Promise<void> {
         const features = this.features;
@@ -1854,25 +984,31 @@ export class DrawToolService {
         const backdrop = features?.modeBackdropTypes.peek() ?? new Set<string>();
         const items = (features?.selectedFeatures.peek() ?? []).filter(f => !backdrop.has(f.type));
         if (!features || items.length === 0) return;
-        const label = items.length === 1 ? `this ${items[0].type} feature` : `${items.length} features`;
+        if (items.length <= DELETE_CONFIRM_THRESHOLD) {
+            this.commitDelete(features, items);
+            this.showNotice(`Deleted ${items.length}. ${undoModifierLabel()}+Z to undo.`);
+            return;
+        }
         const ok = await this.confirm.confirm({
-            title: items.length === 1 ? 'Delete feature?' : `Delete ${items.length} features?`,
-            body: `Delete ${label} from the course map.`,
-            detail: items.length >= 5 ? 'Bulk deletes are saved as one history entry.' : '',
-            confirmLabel: items.length === 1 ? 'Delete feature' : 'Delete features',
+            title: `Delete ${items.length} features?`,
+            body: `Delete ${items.length} features from the course map.`,
+            detail: 'Bulk deletes are saved as one history entry.',
+            confirmLabel: 'Delete features',
             tone: 'danger',
-            layout: items.length >= 5 ? 'review' : 'default',
+            layout: 'review',
         });
         if (!ok) return;
-        this.history.push(items.map(f => ({
+        this.commitDelete(features, items);
+    }
+
+    private commitDelete(features: FeaturesService, items: CourseFeature[]): void {
+        this.record(items.map(f => ({
             featureId: f.id,
             before: snapshotOf(f),
             after: null,
             beforeVersion: f.version,
         })));
-        void (async () => {
-            for (const f of items) await features.removeFeature(f.id);
-        })();
+        void features.removeMany(items.map(f => f.id));
     }
 
     /**
@@ -1884,24 +1020,18 @@ export class DrawToolService {
         const items = features?.editableSelectedFeatures.peek() ?? [];
         if (!features || items.length === 0) return;
         void (async () => {
-            const entry: HistoryEntry = [];
-            const ids: string[] = [];
-            for (const f of items) {
-                const created = await features.create({
-                    type: f.type,
-                    holeId: f.holeId,
-                    layer: f.layer ?? null,
-                    geometry: translateGeometry(f.geometry, DUPLICATE_OFFSET_M, DUPLICATE_OFFSET_M),
-                    // A vegetation zone's copy keeps its zone type and edge
-                    // settings; every other type has nothing to carry.
-                    attributes: attributesPatchOf(f.attributes),
-                });
-                if (!created) return; // save failed — history dropped via saveError watcher
-                entry.push({ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null });
-                ids.push(created.id);
-            }
-            features.setSelection(ids);
-            this.history.push(entry);
+            // One createMany request; it selects the clones in the same batch.
+            const created = await features.createMany(items.map(f => ({
+                type: f.type,
+                holeId: f.holeId,
+                layer: f.layer ?? null,
+                geometry: translateGeometry(f.geometry, DUPLICATE_OFFSET_M, DUPLICATE_OFFSET_M),
+                // A vegetation zone's copy keeps its zone type and edge
+                // settings; every other type has nothing to carry.
+                attributes: attributesPatchOf(f.attributes),
+            })));
+            if (!created) return; // save failed — history dropped via saveError watcher
+            this.record(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
         })();
     }
 
@@ -1932,16 +1062,10 @@ export class DrawToolService {
             return;
         }
         this.actionNotice.set(null);
-        const entry: HistoryEntry = [];
-        const ids: string[] = [];
-        for (const create of plan) {
-            const created = await features.create(create);
-            if (!created) return; // save failed — history dropped via saveError watcher
-            entry.push({ featureId: created.id, before: null, after: snapshotOf(created), beforeVersion: null });
-            ids.push(created.id);
-        }
-        features.setSelection(ids);
-        this.history.push(entry);
+        // One createMany request; it selects the new rings in the same batch.
+        const created = await features.createMany(plan);
+        if (!created) return; // save failed — history dropped via saveError watcher
+        this.record(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
     }
 
     /**
@@ -2098,10 +1222,12 @@ export class DrawToolService {
             return;
         }
         const zoneAttributes = (f: CourseFeature) => ({ ...this.zoneTypes.attributesOf(f.attributes), zoneType, zoneVariant: this.zoneTypes.startVariantOf(zoneType) });
-        for (const f of zones) {
-            if (zoneTypeKeyOf(f.attributes) === zoneType) continue;
-            void features.update(f.id, { attributes: zoneAttributes(f) });
-        }
+        // One request for every zone that changes; the store takes it first.
+        void features.updateMany(
+            zones.filter(f => zoneTypeKeyOf(f.attributes) !== zoneType)
+                .map(f => ({ id: f.id, patch: { attributes: zoneAttributes(f) } })),
+            { local: true },
+        );
         // A selected tree species area becomes a zone of the picked type (its mix
         // stays in the attributes, so an undo gets the area back as it was).
         this.retype(treeAreas, 'vegetation_zone', f => ({ ...(attributesPatchOf(f.attributes) ?? {}), ...zoneAttributes(f) }));
@@ -2130,17 +1256,18 @@ export class DrawToolService {
     }
 
     /**
-     * Re-type `candidates` (those not already `type`) in ONE history entry.
-     * The history restores the type only; attributes ride along (every
-     * type's validator lets other keys through), so an undo finds the old
-     * type's settings still there. `attributesFor` sets what the new type
-     * gets; without it the type's required attributes are filled in.
+     * Re-type `candidates` (those not already `type`) in ONE history entry
+     * and one request. The history restores the type only; attributes ride
+     * along (every type's validator lets other keys through), so an undo
+     * finds the old type's settings still there. `attributesFor` sets what
+     * the new type gets; without it the type's required attributes are
+     * filled in.
      */
     private retype(candidates: readonly CourseFeature[], type: FeatureType, attributesFor?: (f: CourseFeature) => FeatureAttributesPatch): void {
         const features = this.features;
         const items = candidates.filter(f => f.type !== type);
         if (!features || items.length === 0) return;
-        this.history.push(items.map(f => ({
+        this.record(items.map(f => ({
             featureId: f.id,
             before: snapshotOf(f),
             after: { ...snapshotOf(f), type },
@@ -2149,20 +1276,20 @@ export class DrawToolService {
         // Retyping INTO a vegetation zone has to give it a zone type: the
         // rasterizer has nothing to draw without one, and the server rejects
         // zone attributes that lack it.
-        for (const f of items) {
-            if (attributesFor) {
-                void features.update(f.id, { type, attributes: attributesFor(f) });
-                continue;
-            }
+        void features.updateMany(items.map(f => {
+            if (attributesFor) return { id: f.id, patch: { type, attributes: attributesFor(f) } };
             const needsZone = type === 'vegetation_zone' && !zoneTypeKeyOf(f.attributes);
             // Same for a tree species area: the server needs its species mix.
             const needsMix = type === TREE_AREA_TYPE && !hasSpeciesMix(f.attributes);
-            void features.update(f.id, needsZone
-                ? { type, attributes: { ...(attributesPatchOf(f.attributes) ?? {}), ...this.zoneTypes.defaultAttributes() } }
-                : needsMix
-                    ? { type, attributes: { ...(attributesPatchOf(f.attributes) ?? {}), [TREE_AREA_SPECIES_ATTRIBUTE]: this.drawTreeMix.peek() || 'oak' } }
-                    : { type });
-        }
+            return {
+                id: f.id,
+                patch: needsZone
+                    ? { type, attributes: { ...(attributesPatchOf(f.attributes) ?? {}), ...this.zoneTypes.defaultAttributes() } }
+                    : needsMix
+                        ? { type, attributes: { ...(attributesPatchOf(f.attributes) ?? {}), [TREE_AREA_SPECIES_ATTRIBUTE]: this.drawTreeMix.peek() || 'oak' } }
+                        : { type },
+            };
+        }), { local: true });
     }
 
     /**
@@ -2177,13 +1304,13 @@ export class DrawToolService {
             .filter(f => !sameScope(scopeOf(f), scope))
             .filter(f => scope.layer === null || isRoughsLayerType(f.type));
         if (!features || items.length === 0) return;
-        this.history.push(items.map(f => ({
+        this.record(items.map(f => ({
             featureId: f.id,
             before: snapshotOf(f),
             after: { ...snapshotOf(f), ...scope },
             beforeVersion: f.version,
         })));
-        for (const f of items) void features.update(f.id, { ...scope });
+        void features.updateMany(items.map(f => ({ id: f.id, patch: { ...scope } })), { local: true });
     }
 
     /**
@@ -2195,7 +1322,7 @@ export class DrawToolService {
         if (!this.features) return;
         const current = this.features.store.items.peek().find(f => f.id === id);
         if (!current) return;
-        this.history.push([{
+        this.record([{
             featureId: id,
             before: snapshotOf(current),
             after: { geometry, type: current.type, holeId: current.holeId },
@@ -2203,6 +1330,31 @@ export class DrawToolService {
         }]);
         this.features.patchLocal(id, geometry); // instant visual feedback
         void this.features.update(id, { geometry });
+    }
+
+    /**
+     * Record one committed edit. Every history push goes through here: a new
+     * edit ends the current nudge run and clears the undo hint.
+     */
+    private record(entry: HistoryEntry): void {
+        this.nudge = null;
+        this.clearNotice();
+        this.history.push(entry);
+    }
+
+    private showNotice(text: string): void {
+        this.clearNotice();
+        this.notice.set({ text, until: Date.now() + NOTICE_MS });
+        this.noticeTimer = setTimeout(() => {
+            this.noticeTimer = null;
+            this.notice.set(null);
+        }, NOTICE_MS);
+    }
+
+    private clearNotice(): void {
+        if (this.noticeTimer) clearTimeout(this.noticeTimer);
+        this.noticeTimer = null;
+        if (this.notice.peek()) this.notice.set(null);
     }
 
     /** Selection-scoped transient state (vertex sel, previews, notices). */
@@ -2214,58 +1366,11 @@ export class DrawToolService {
         if (this.actionNotice.peek()) this.actionNotice.set(null);
     }
 
-    private suppressNextClick(): void {
-        this.suppressClick = true;
-        setTimeout(() => { this.suppressClick = false; }, 0);
-    }
-
-    private endDrag(map?: MaplibreMap): void {
-        if (!this.drag) return;
-        if (this.drag.moved) {
-            this.dragGhost.set(null);
-            this.features?.setDragging([this.drag.featureId], false);
-        }
-        this.drag = null;
-        (map ?? this.ctx?.map.map.peek())?.dragPan.enable();
-    }
-
-    /** Abort an in-progress whole-selection move without committing. */
-    private cancelMoveDrag(): void {
-        const move = this.moveDrag;
-        if (!move) return;
-        this.moveDrag = null;
-        if (move.moved) {
-            this.dragGhost.set(null);
-            this.features?.setDragging(move.features.map(f => f.id), false);
-        }
-        this.ctx?.map.map.peek()?.dragPan.enable();
-    }
-
     /** Leave drawing mode without making a shape (a host panel's arm button toggled off). */
     cancelDrawing(): void {
-        this.cancelTrace();
+        cancelTrace(this.host);
         this.state.disarm();
         this.cursor.set(null);
-    }
-
-    /** Discard an in-progress freehand trace (ESC / deactivate). */
-    private cancelTrace(): void {
-        if (this.placePress) {
-            this.placePress = null;
-            this.ctx?.map.map.peek()?.dragPan.enable();
-        }
-        if (!this.traceGesture) return;
-        this.traceGesture = null;
-        this.trace.set(null);
-        this.ctx?.map.map.peek()?.dragPan.enable();
-    }
-
-    /** Abort an in-progress duplicate-drag / stamp-drag without committing. */
-    private cancelStampDrag(): void {
-        if (!this.stampDrag) return;
-        this.stampDrag = null;
-        this.dragGhost.set(null);
-        this.ctx?.map.map.peek()?.dragPan.enable();
     }
 
     /**
@@ -2278,569 +1383,195 @@ export class DrawToolService {
     async stampClones(sources: StampSource[], dx: number, dy: number): Promise<CourseFeature[] | null> {
         const features = this.features;
         if (!features || sources.length === 0) return null;
-        const entry: HistoryEntry = [];
-        const created: CourseFeature[] = [];
-        for (const s of sources) {
-            const c = await features.create({
-                type: s.type,
-                holeId: s.holeId,
-                layer: s.layer,
-                geometry: translateGeometry(s.geometry, dx, dy),
-                attributes: s.attributes ?? null,
-            });
-            if (!c) return null; // save failed
-            entry.push({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null });
-            created.push(c);
-        }
-        features.setSelection(created.map(c => c.id));
-        this.history.push(entry);
+        // One createMany request; it selects the clones in the same batch.
+        const created = await features.createMany(sources.map(s => ({
+            type: s.type,
+            holeId: s.holeId,
+            layer: s.layer,
+            geometry: translateGeometry(s.geometry, dx, dy),
+            attributes: s.attributes ?? null,
+        })));
+        if (!created) return null; // save failed
+        this.record(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
         return created;
     }
 
-    // ── Hit testing ───────────────────────────────────────────────────────
+    // ── Module host ───────────────────────────────────────────────────────
 
-    /**
-     * Topmost-in-stack VISIBLE feature containing the EPSG:3006 point (D23):
-     * the first element of `hitStack` — the SAME rule render, `hitGreen` and
-     * lie classification now share. Hidden types are not selectable, nor are
-     * unarmed outline-only types (see `unhittableTypes`).
-     */
-    private hitFeature(p: Point): CourseFeature | null {
-        return this.hitStack(p)[0] ?? null;
+    /** Preview overlay content. e2e spec 28 reads it through `window.__drawTool`. */
+    private previewGeojson(): ReturnType<typeof drawPreviewGeojson> {
+        return drawPreviewGeojson(this.host);
     }
 
     /**
-     * ALL hittable features containing `p`, topmost-first (D23 stack order).
-     * Drives Alt/Option+click cycling (D27) — repeated alt-clicks step down
-     * this list. `hitFeature` is just its first element.
-     *
-     * "Hittable" is `unhittableTypes`: visible, and either a filled type or
-     * the outline-only type the picker currently has armed. In Vegetation
-     * mode the creeks and water are hittable too (`scopeSelectsType`), in
-     * `vegetationHitOrder`.
+     * The narrow view of this instance that draw-pointer, draw-hover,
+     * draw-keys and draw-render work through. Built once per instance per
+     * module execution (`drawHosts` is module-level, so a hot update builds
+     * a fresh one with the new shape). Readonly members are the instance's
+     * own signals; mutable members are accessors onto its private fields.
      */
-    private hitStack(p: Point): CourseFeature[] {
-        const features = this.features;
-        if (!features) return [];
-        if (this.scope.peek() === 'rules') {
-            return features.stackTopDown.peek()
-                .filter(f => isRulesType(f.type) && !features.isHidden(f) && this.grabs(f, p));
+    private get host(): DrawHost {
+        let host = drawHosts.get(this);
+        if (!host) {
+            host = this.createHost();
+            drawHosts.set(this, host);
         }
-        const scope = this.scope.peek();
-        const roughsOff = features.roughsLayerOff.peek();
-        const stack = features.stackTopDown.peek()
-            .filter(f => scopeSelectsType(scope, f.type) && !(roughsOff && f.layer === ROUGHS_LAYER));
-        return containingTopDown(
-            scope === 'vegetation' ? vegetationHitOrder(stack) : stack,
-            unhittableTypes(features.effectiveHiddenTypes.peek(), this.drawType.peek()),
-            p,
-            features.hiddenIds.peek(),
-            features.hiddenSources.peek(),
-        );
+        return host;
     }
 
-    /**
-     * Whether a press at `p` lands on `f`: inside it, or for a boundary-only
-     * type (OOB, a ring round the whole property whose inside is the course)
-     * within RULE_LINE_HIT_PX of its line.
-     */
-    private grabs(f: CourseFeature, p: Point): boolean {
-        if (!OUTLINE_ONLY_TYPES.has(f.type as FeatureType)) return pointInGeometry(p, f.geometry);
-        const zoom = this.ctx?.map.zoom.peek() ?? 18;
-        const { lat } = sweref99tmToWgs84(p.x, p.y);
-        const tol = RULE_LINE_HIT_PX * (40075016.686 * Math.abs(Math.cos((lat * Math.PI) / 180))) / 2 ** (zoom + 8);
-        return f.geometry.rings.some(ring => {
-            const converted = f.geometry.curveType === 'bspline' ? bsplineRingToBezierWithMap(ring) : null;
-            const hit = nearestOnRing(converted ? converted.ring : ring, p);
-            return hit !== null && hit.dist <= tol;
-        });
-    }
-
-    /**
-     * Track which vertex of the selected feature the cursor is over
-     * (select mode, no drag in progress) — the 'C' toggle target. Sticky:
-     * cleared only on selection change, not when the cursor leaves.
-     */
-    private trackHoverVertex(e: MapPointerEvent): void {
-        const selected = this.features?.editableSelected.peek();
-        const map = this.ctx?.map.map.peek();
-        if (!selected || !map) return;
-        // Per-mousemove: terrain-precise only while the shape is small
-        // enough that the DEM raycasts stay cheap (see hitVertexOrHandle).
-        const vertexCount = editViewOf(selected.geometry).rings.reduce((n, r) => n + r.points.length, 0);
-        const hit = this.hitVertexOrHandle(map, selected, e.point, vertexCount <= PRECISE_HOVER_MAX_VERTICES);
-        if (!hit || hit.kind !== 'anchor') return;
-        const current = this.hoverVertex.peek();
-        if (current && current.ringIdx === hit.ringIdx && current.idx === hit.idx) return;
-        this.hoverVertex.set({ ringIdx: hit.ringIdx, idx: hit.idx });
-    }
-
-    private hitVertexOrHandle(
-        map: MaplibreMap,
-        feature: CourseFeature,
-        screen: { x: number; y: number },
-        precise = true,
-    ): { kind: 'anchor' | 'handle'; which?: 'hIn' | 'hOut'; ringIdx: number; idx: number } | null {
-        // Vertex lng/lat are cached per geometry (invariant until the shape is
-        // edited). `precise` projects with map.project, which places the point
-        // ON the terrain exactly where the draped vertex markers render. The
-        // flat transform ignores elevation: on a pitched view that misses the
-        // marker by far more than the hit radius, so a press on a node fell
-        // through to the whole-shape move. map.project raycasts the DEM
-        // (~40 us/call) though, so a per-mouse-move hover on a large imported
-        // shape (hundreds of vertices) opts out and takes the flat transform.
-        const rings = vertexLngLatFor(editViewOf(feature.geometry));
-        const tr = map.transform as unknown as {
-            locationToScreenPoint?: (l: { lng: number; lat: number }) => { x: number; y: number };
+    private createHost(): DrawHost {
+        const self = this;
+        return {
+            state: this.state,
+            screenPoints: this.screenPoints,
+            hoverVertex: this.hoverVertex,
+            vertexSelection: this.vertexSelection,
+            scope: this.scope,
+            drawType: this.drawType,
+            pathMode: this.pathMode,
+            pathWidthM: this.pathWidthM,
+            spaceHeld: this.spaceHeld,
+            cursor: this.cursor,
+            snapMarker: this.snapMarker,
+            marquee: this.marquee,
+            dragGhost: this.dragGhost,
+            trace: this.trace,
+            opPreviewGeometry: this.opPreviewGeometry,
+            get features() { return self.features; },
+            get map() { return self.ctx?.map.map.peek() ?? null; },
+            get zoom() { return self.ctx?.map.zoom.peek() ?? 18; },
+            get dragging() { return self.drag !== null || self.moveDrag !== null; },
+            get dragBinding() { return self.dragBinding; },
+            set dragBinding(v) { self.dragBinding = v; },
+            get drag() { return self.drag; },
+            set drag(v) { self.drag = v; },
+            get moveDrag() { return self.moveDrag; },
+            set moveDrag(v) { self.moveDrag = v; },
+            get stampDrag() { return self.stampDrag; },
+            set stampDrag(v) { self.stampDrag = v; },
+            get traceGesture() { return self.traceGesture; },
+            set traceGesture(v) { self.traceGesture = v; },
+            get placePress() { return self.placePress; },
+            set placePress(v) { self.placePress = v; },
+            get stampMode() { return self.stampMode; },
+            set stampMode(v) { self.stampMode = v; },
+            get altCycle() { return self.altCycle; },
+            set altCycle(v) { self.altCycle = v; },
+            get toolId() { return self.hostToolId; },
+            yieldTo: screen => self.yieldTo?.(screen) ?? false,
+            isMyClaim: () => self.ctx?.map.interactionMode.peek() === self.hostToolId,
+            closeDraft: () => self.closeDraft(),
+            commitTrace: stroke => self.commitTrace(stroke),
+            commitCenterline: (points, widthM) => self.commitCenterline(points, widthM),
+            armPath: () => self.armPath(),
+            commitGeometry: (id, geometry) => self.commitGeometry(id, geometry),
+            record: entry => self.record(entry),
+            stampClones: (sources, dx, dy) => self.stampClones(sources, dx, dy),
+            toggleVertexSelected: key => self.toggleVertexSelected(key),
+            undo: () => self.undo(),
+            redo: () => self.redo(),
+            duplicateSelection: () => self.duplicateSelection(),
+            deleteSelectedVertices: () => self.deleteSelectedVertices(),
+            deleteSelected: () => self.deleteSelected(),
+            insertBetweenSelectedVertices: () => self.insertBetweenSelectedVertices(),
+            armDraw: () => self.armDraw(),
+            toggleHoveredVertexCorner: () => self.toggleHoveredVertexCorner(),
+            reorderSelected: key => self.reorderSelected(key),
+            chooseType: type => self.chooseType(type),
+            nudgeSelectedVertices: (key, px) => self.nudgeSelectedVertices(key, px),
         };
-        const project = !precise && tr.locationToScreenPoint
-            ? (ll: Position) => tr.locationToScreenPoint!({ lng: ll[0], lat: ll[1] })
-            : (ll: Position) => map.project(ll as [number, number]);
-        const pxDistTo = (ll: Position): number => {
-            const pr = project(ll);
-            return Math.hypot(pr.x - screen.x, pr.y - screen.y);
-        };
-        // Handles first: they are smaller and rendered on top. (B-spline
-        // control points have no handles — the scan is a no-op there.)
-        for (let r = 0; r < rings.length; r++) {
-            const { hIn, hOut } = rings[r];
-            for (let i = 0; i < hIn.length; i++) {
-                const inLl = hIn[i];
-                if (inLl && pxDistTo(inLl) < HANDLE_HIT_PX) {
-                    return { kind: 'handle', which: 'hIn', ringIdx: r, idx: i };
-                }
-                const outLl = hOut[i];
-                if (outLl && pxDistTo(outLl) < HANDLE_HIT_PX) {
-                    return { kind: 'handle', which: 'hOut', ringIdx: r, idx: i };
-                }
-            }
-        }
-        // Nearest anchor within reach, not the first: closely spaced control
-        // points otherwise grab whichever comes first in ring order.
-        let best: { kind: 'anchor'; ringIdx: number; idx: number } | null = null;
-        let bestDist = VERTEX_HIT_PX;
-        for (let r = 0; r < rings.length; r++) {
-            const { anchor } = rings[r];
-            for (let i = 0; i < anchor.length; i++) {
-                const d = pxDistTo(anchor[i]);
-                if (d < bestDist) {
-                    bestDist = d;
-                    best = { kind: 'anchor', ringIdx: r, idx: i };
-                }
-            }
-        }
-        return best;
-    }
-
-    /**
-     * If the EPSG:3006 point lies within EDGE_HIT_PX of the selected
-     * feature's outline (but not near an existing vertex), return the
-     * insertion spot.
-     *
-     * - bezier ('anchor'): curve-preserving de Casteljau split at (segIdx, t).
-     * - bspline ('control'): a new smooth control at the nearest curve
-     *   point, spliced after control `afterIdx` (the conversion's
-     *   segment → control map picks the bracketing controls).
-     */
-    private edgeInsertionHit(
-        feature: CourseFeature,
-        p: Point,
-        lat: number,
-    ):
-        | { kind: 'anchor'; ringIdx: number; segIdx: number; t: number }
-        | { kind: 'control'; ringIdx: number; afterIdx: number; point: Point }
-        | null {
-        const zoom = this.ctx?.map.zoom.peek() ?? 18;
-        const metersPerPx = (40075016.686 * Math.abs(Math.cos((lat * Math.PI) / 180))) / 2 ** (zoom + 8);
-        const tol = EDGE_HIT_PX * metersPerPx;
-        const centerline = feature.geometry.centerline;
-        if (centerline) {
-            // A road: click ON its line (open — no closing segment) to add a
-            // control point where the line runs, between the span's ends.
-            const hit = nearestOnCenterline(centerline.points, p);
-            if (!hit || hit.dist > tol) return null;
-            if (centerline.points.some(a => Math.hypot(a.x - p.x, a.y - p.y) < tol * 2)) return null;
-            return { kind: 'control', ringIdx: 0, afterIdx: hit.span, point: hit.point };
-        }
-        const isSpline = feature.geometry.curveType === 'bspline';
-
-        for (let r = 0; r < feature.geometry.rings.length; r++) {
-            const ring = feature.geometry.rings[r];
-            // For splines, hit-test the ACTUAL curve (bezier equivalent),
-            // not the control polygon.
-            const converted = isSpline ? bsplineRingToBezierWithMap(ring) : null;
-            const hit = nearestOnRing(converted ? converted.ring : ring, p);
-            if (!hit || hit.dist > tol) continue;
-            // Too close to an existing vertex (control point for splines)
-            // → treat as a missed vertex grab, not an insertion.
-            const nearVertex = ring.points.some(
-                a => Math.hypot(a.x - p.x, a.y - p.y) < tol * 2,
-            );
-            if (nearVertex) continue;
-            if (converted) {
-                return {
-                    kind: 'control',
-                    ringIdx: r,
-                    afterIdx: converted.segInsertAfter[hit.segIdx],
-                    point: hit.point,
-                };
-            }
-            return { kind: 'anchor', ringIdx: r, segIdx: hit.segIdx, t: hit.t };
-        }
-        return null;
-    }
-
-    /** Screen-pixel distance from an EPSG:3006 point to a screen position. */
-    private screenDist(p: Point, screen: { x: number; y: number }, map?: MaplibreMap): number {
-        const m = map ?? this.ctx?.map.map.peek();
-        if (!m) return Infinity;
-        const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
-        const projected = m.project([lon, lat]);
-        return Math.hypot(projected.x - screen.x, projected.y - screen.y);
-    }
-
-    private pxDist(a: { x: number; y: number }, b: { x: number; y: number }): number {
-        return Math.hypot(a.x - b.x, a.y - b.y);
-    }
-
-    // ── Preview overlay ───────────────────────────────────────────────────
-
-    /**
-     * Draft outline + selected-feature vertex/handle markers + marquee
-     * rectangle + armed offset/simplify preview, as a WGS84
-     * FeatureCollection. Vertex markers render only for a SINGLE selected
-     * feature (multi-select shows the outline highlight from the features
-     * overlay instead).
-     */
-    private previewGeojson(): FeatureCollection {
-        const features: Feature[] = [];
-        const toLngLat = (p: Point): Position => {
-            const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
-            return [lon, lat];
-        };
-
-        if (this.state.isDrawing.get()) {
-            // Live freehand-trace stroke (T40): the raw sampled polyline as
-            // the familiar dashed draft line (samples are plain points, so
-            // no flattening is needed).
-            const trace = this.trace.get();
-            if (trace) {
-                if (trace.length >= 2) {
-                    features.push({
-                        type: 'Feature',
-                        properties: { role: 'draft-line' },
-                        geometry: { type: 'LineString', coordinates: trace.map(p => toLngLat(p)) },
-                    });
-                }
-                return { type: 'FeatureCollection', features };
-            }
-
-            const draft = this.state.draft.get();
-            const cursor = this.cursor.get();
-            // Preview controls: placed points + the cursor as a provisional
-            // smooth control (rubber-band).
-            const controls: AnchorPoint[] = [...draft];
-            if (cursor) controls.push(lngLatToSweref99tm(cursor));
-
-            // In-progress b-spline drawing shows the open control path only,
-            // Inkscape-style: no closed-curve extrapolation and no fill until
-            // the user explicitly closes the ring. A path shows the curve its
-            // centerline will be.
-            const path = this.pathMode.get() && controls.length >= 2;
-            const line = (path
-                ? flattenCenterline(autoCorners(controls, PATH_CORNER_TURN_DEG)).map(q => [q.x, q.y] as [number, number])
-                : flattenOpenPath(controls, 0.25)
-            ).map(([x, y]) => toLngLat({ x, y }));
-            if (line.length >= 2) {
-                features.push({
-                    type: 'Feature',
-                    properties: { role: 'draft-line' },
-                    geometry: { type: 'LineString', coordinates: line },
-                });
-            }
-            // Path mode: the corridor Enter will commit, around the centerline.
-            if (path) {
-                const corridor = draftCenterlineGeometry(controls, this.pathWidthM.get());
-                for (const ring of corridor?.rings ?? []) {
-                    const coords = ring.points.map(q => toLngLat(q));
-                    coords.push(coords[0]);
-                    features.push({
-                        type: 'Feature',
-                        properties: { role: 'draft-line' },
-                        geometry: { type: 'LineString', coordinates: coords },
-                    });
-                }
-            }
-            draft.forEach((p, i) => {
-                features.push({
-                    type: 'Feature',
-                    properties: { role: i === 0 ? 'first-vertex' : p.corner ? 'vertex-corner' : 'vertex' },
-                    geometry: { type: 'Point', coordinates: toLngLat(p) },
-                });
-            });
-            return { type: 'FeatureCollection', features };
-        }
-
-        // Drag ghosts: live fill + outline of the feature(s) being dragged
-        // (whole-feature move or vertex/handle edit). The originals are
-        // hidden via feature-state while these render, so the ACTUAL shape
-        // appears to follow the cursor — at the cost of re-flattening only
-        // the dragged features, not the whole course.
-        const ghosts = this.dragGhost.get();
-        if (ghosts) {
-            for (const ghost of ghosts) {
-                features.push({
-                    type: 'Feature',
-                    // Carry the original feature's D24 stackKey so the ghost
-                    // z-sorts identically to the persistent overlay (the
-                    // ghost-fill layer sorts on it, not the type heuristic).
-                    properties: {
-                        role: 'ghost',
-                        type: ghost.type,
-                        stackKey: this.features?.stackKeyForId(ghost.id) ?? 0,
-                    },
-                    geometry: {
-                        type: 'Polygon',
-                        coordinates: geometryToWgs84Rings(ghost.geometry),
-                    },
-                });
-            }
-        }
-
-        // Marquee rectangle (feature or vertex selection drag).
-        const marquee = this.marquee.get();
-        if (marquee) {
-            const r = rectFromCorners(marquee.start, marquee.current);
-            const corners: Position[] = [
-                toLngLat({ x: r.minX, y: r.minY }),
-                toLngLat({ x: r.maxX, y: r.minY }),
-                toLngLat({ x: r.maxX, y: r.maxY }),
-                toLngLat({ x: r.minX, y: r.maxY }),
-            ];
-            corners.push(corners[0]);
-            features.push({
-                type: 'Feature',
-                properties: { role: 'marquee' },
-                geometry: { type: 'Polygon', coordinates: [corners] },
-            });
-        }
-
-        // Armed offset/simplify preview: dashed outline of the result.
-        const opPreview = this.opPreviewGeometry.get();
-        if (opPreview) {
-            for (const ring of opPreview.rings) {
-                const flat = flattenRing(ring, 0.25, opPreview.curveType);
-                if (flat.length < 2) continue;
-                const line = flat.map(([x, y]) => toLngLat({ x, y }));
-                line.push(line[0]);
-                features.push({
-                    type: 'Feature',
-                    properties: { role: 'op-preview' },
-                    geometry: { type: 'LineString', coordinates: line },
-                });
-            }
-        }
-
-        const selected = this.selectedForPreview();
-        if (selected) {
-            // While dragging, markers/handles/cage follow the live ghost
-            // geometry (the store keeps the pre-drag shape until commit).
-            const live = ghosts?.find(g => g.id === selected.id)?.geometry ?? selected.geometry;
-            // A road's markers are its centerline's control points (the edit
-            // view), drawn on the line itself instead of a control cage.
-            const geometry = editViewOf(live);
-            const isSpline = geometry.curveType === 'bspline';
-            const vertexSel = this.vertexSelection.get();
-            if (live.centerline) {
-                features.push({
-                    type: 'Feature',
-                    properties: { role: 'centerline' },
-                    geometry: { type: 'LineString', coordinates: flattenCenterline(live.centerline.points).map(q => toLngLat(q)) },
-                });
-            }
-            geometry.rings.forEach((ring, ringIdx) => {
-                if (isSpline && ring.points.length >= 2 && !live.centerline) {
-                    // Control cage: the off-curve control polygon, so
-                    // the pull relationship is visible.
-                    const cage = ring.points.map((p: AnchorPoint) => toLngLat(p));
-                    cage.push(cage[0]);
-                    features.push({
-                        type: 'Feature',
-                        properties: { role: 'control-cage' },
-                        geometry: { type: 'LineString', coordinates: cage },
-                    });
-                }
-                ring.points.forEach((p: AnchorPoint, idx: number) => {
-                    if (!isSpline) {
-                        for (const which of ['hIn', 'hOut'] as const) {
-                            const handle = p[which];
-                            if (!handle) continue;
-                            features.push({
-                                type: 'Feature',
-                                properties: { role: 'handle-line' },
-                                geometry: { type: 'LineString', coordinates: [toLngLat(p), toLngLat(handle)] },
-                            });
-                            features.push({
-                                type: 'Feature',
-                                properties: { role: 'handle' },
-                                geometry: { type: 'Point', coordinates: toLngLat(handle) },
-                            });
-                        }
-                    }
-                    const role = vertexSel.has(vertexKey(ringIdx, idx))
-                        ? 'vertex-selected'
-                        : isSpline && p.corner ? 'vertex-corner' : 'vertex';
-                    features.push({
-                        type: 'Feature',
-                        properties: { role },
-                        geometry: { type: 'Point', coordinates: toLngLat(p) },
-                    });
-                });
-            });
-        }
-        return { type: 'FeatureCollection', features };
-    }
-
-    /** Reactive read of the selected feature (null when tool inactive). */
-    private selectedForPreview(): CourseFeature | null {
-        return this.features ? this.features.editableSelected.get() : null;
     }
 }
 
-/** Preview overlay layer specs (ids prefixed with the overlay id). */
-function previewLayers(): OverlayLayerSpec[] {
-    const role = (value: string): FilterSpecification =>
-        ['==', ['get', 'role'], value] as FilterSpecification;
-    const outlineOnly = (): FilterSpecification =>
-        ['in', ['get', 'type'], ['literal', [...OUTLINE_ONLY_TYPES]]] as unknown as FilterSpecification;
-    return [
-        {
-            // Drag ghosts: palette-true live copies of dragged features
-            // (their hidden originals' stand-in). Same colors/opacity and
-            // z-sort as the main features overlay so a drag is visually
-            // seamless.
-            id: 'draw-ghost-fill',
-            type: 'fill',
-            // Outline-only types (OOB) have no fill to ghost — dragging one
-            // would flash a course-wide white blob. `draw-ghost-line` below
-            // carries them, in the same bone white the map paints them.
-            filter: ['all', role('ghost'), ['!', outlineOnly()]] as FilterSpecification,
-            layout: { 'fill-sort-key': ['get', 'stackKey'] as never },
-            paint: {
-                'fill-color': typeColorExpression('draw') as never,
-                'fill-opacity': DRAW_FILL_OPACITY,
-            },
-        },
-        {
-            id: 'draw-ghost-line',
-            type: 'line',
-            filter: role('ghost'),
-            paint: {
-                'line-color': typeColorExpression('outline') as never,
-                'line-width': 1.5,
-            },
-        },
-        {
-            id: 'draw-draft-fill',
-            type: 'fill',
-            filter: role('draft-fill'),
-            paint: { 'fill-color': SELECTION_COLOR, 'fill-opacity': 0.15 },
-        },
-        {
-            id: 'draw-marquee-fill',
-            type: 'fill',
-            filter: role('marquee'),
-            paint: { 'fill-color': CAT.sky /* '#6FA8C9' — --data-cat-7 */, 'fill-opacity': 0.12 },
-        },
-        {
-            id: 'draw-marquee-line',
-            type: 'line',
-            filter: role('marquee'),
-            paint: { 'line-color': CAT.sky /* '#6FA8C9' — --data-cat-7 */, 'line-width': 1.5, 'line-dasharray': [2, 2] },
-        },
-        {
-            id: 'draw-draft-line',
-            type: 'line',
-            filter: role('draft-line'),
-            paint: { 'line-color': SELECTION_COLOR, 'line-width': 2, 'line-dasharray': [2, 1.5] },
-        },
-        {
-            // Armed offset/simplify result: dashed "what you'll get" line —
-            // amber = armed-but-uncommitted state.
-            id: 'draw-op-preview',
-            type: 'line',
-            filter: role('op-preview'),
-            paint: { 'line-color': STATUS_RISK /* '#C68A2E' — --data-risk */, 'line-width': 2, 'line-dasharray': [2, 1.5] },
-        },
-        {
-            // A selected road's centerline: the line its points edit.
-            id: 'draw-centerline',
-            type: 'line',
-            filter: role('centerline'),
-            paint: { 'line-color': SELECTION_COLOR, 'line-width': 2, 'line-opacity': 0.9 },
-        },
-        {
-            id: 'draw-handle-lines',
-            type: 'line',
-            filter: role('handle-line'),
-            paint: { 'line-color': OVERLAY_TEXT /* --overlay-text */, 'line-width': 1, 'line-opacity': 0.8 },
-        },
-        {
-            id: 'draw-control-cage',
-            type: 'line',
-            filter: role('control-cage'),
-            paint: {
-                'line-color': OVERLAY_TEXT, // --overlay-text
-                'line-width': 1,
-                'line-opacity': 0.5,
-                'line-dasharray': [1, 2],
-            },
-        },
-        {
-            id: 'draw-vertices',
-            type: 'circle',
-            filter: ['in', ['get', 'role'], ['literal', ['vertex', 'first-vertex']]] as FilterSpecification,
-            paint: {
-                'circle-radius': ['case', ['==', ['get', 'role'], 'first-vertex'], 7, 5] as never,
-                'circle-color': OVERLAY_TEXT, // '#FFFFFF' — --overlay-text
-                'circle-stroke-color': MARKER_FILL, // '#1E2B22' — --color-surface-brand
-                'circle-stroke-width': 2,
-            },
-        },
-        {
-            // Corner control points: visually distinct from smooth ones.
-            id: 'draw-vertices-corner',
-            type: 'circle',
-            filter: role('vertex-corner'),
-            paint: {
-                'circle-radius': 5,
-                'circle-color': CAT.wheat, // '#D8A441' — --data-cat-3
-                'circle-stroke-color': MARKER_FILL, // --color-surface-brand
-                'circle-stroke-width': 2,
-            },
-        },
-        {
-            // Multi-vertex selection members (bulk delete / 'I' insert).
-            id: 'draw-vertices-selected',
-            type: 'circle',
-            filter: role('vertex-selected'),
-            paint: {
-                'circle-radius': 6,
-                'circle-color': SELECTION_COLOR,
-                'circle-stroke-color': MARKER_FILL, // --color-surface-brand
-                'circle-stroke-width': 2,
-            },
-        },
-        {
-            id: 'draw-handles',
-            type: 'circle',
-            filter: role('handle'),
-            paint: {
-                'circle-radius': 4,
-                'circle-color': CAT.sky, // '#6FA8C9' — --data-cat-7 (pairs with the marquee)
-                'circle-stroke-color': OVERLAY_TEXT, // --overlay-text
-                'circle-stroke-width': 1.5,
-            },
-        },
-    ];
+/** Every host interface the sibling modules take; one object serves all. */
+type DrawHost = DrawPointerHost & DrawKeysHost & DrawRenderHost;
+
+/** Per-instance host cache. Module-level so each module execution starts empty. */
+const drawHosts = new WeakMap<DrawToolService, DrawHost>();
+
+// ─── Hot module replacement (dev only) ────────────────────────────────────
+//
+// An edit to this file swaps the code of the live DrawToolService in place
+// instead of remounting the app (which rebuilds the MapLibre map). The live
+// instance keeps its identity because the docks and the command bar hold it
+// in fields (selection-panel, feature-stack-panel, feature-dock,
+// command-bar); a fresh instance would leave them driving a detached one.
+
+/**
+ * Value imports whose identity the live instance depends on: classes it holds
+ * instances of, DI keys, and module-level state. If a hot update re-executes
+ * this module with any of them changed, the edit was in a dependency and the
+ * live instance would keep running the old code. The accept handler then
+ * refuses the swap and the update propagates to the app root (remount).
+ */
+export const DRAW_TOOL_HOT_DEPS: readonly unknown[] = [
+    DrawState,
+    TraceGesture,
+    EditHistory,
+    ScreenPointCache,
+    ConfirmService,
+    ZoneTypesService,
+    geometryToWgs84Rings, // stands for features.service.ts
+    toolHotRestart, // editor/tool.ts
+];
+
+/**
+ * Move the live DrawToolService onto the class `Next` from a re-executed
+ * module. If the tool running the engine is active (Draw, or the host tool of
+ * the rules / vegetation scope), `restart` (EditorModeService.restartTool
+ * through the editor/tool.ts seam) deactivates it with the old code, the
+ * prototype changes, and it activates again with the new code under a fresh
+ * claim. Feature selection survives the restart; an open draft does not
+ * (deactivate disarms it). Undo history, draw type and the other signals stay
+ * on the instance. `attach` does not re-run, so an edit to `attach` applies
+ * on the next canvas mount.
+ *
+ * Returns false and changes nothing when `Next` declares an instance field
+ * the live instance lacks: field initializers cannot run on an existing
+ * object.
+ */
+export function hotSwapDrawTool(
+    live: DrawToolService,
+    Next: new () => DrawToolService,
+    restart: ((toolId: string, between: () => void) => boolean) | null = toolHotRestart.run,
+): boolean {
+    const fresh = new Next();
+    if (Object.keys(fresh).some(key => !Object.hasOwn(live, key))) return false;
+    const features = (live as unknown as { features: FeaturesService | null }).features;
+    const selected = features?.selectedIds.peek() ?? new Set<string>();
+    const swap = (): void => {
+        Object.setPrototypeOf(live, Next.prototype);
+        di.set(Next, live);
+    };
+    // The engine restarts under the tool running it: Draw, or the host tool
+    // of the rules / vegetation scope (its activate re-activates the engine).
+    const toolId = (live as unknown as { hostToolId?: string }).hostToolId ?? DRAW_TOOL_ID;
+    const restarted = restart ? restart(toolId, swap) : (swap(), false);
+    if (restarted && selected.size > 0) features?.setSelection(selected);
+    return true;
+}
+
+// Vite marks a module self-accepting only on the literal
+// `import.meta.hot.accept(` call; an alias of `import.meta.hot` is not seen
+// and the edit would fall through to a page reload.
+if (import.meta.hot) {
+    const hot = import.meta.hot;
+    import.meta.hot.accept(next => {
+        const mod = next as typeof import('./draw-tool.service') | undefined;
+        if (!mod) return;
+        const deps = mod.DRAW_TOOL_HOT_DEPS;
+        const depsKept = deps.length === DRAW_TOOL_HOT_DEPS.length
+            && deps.every((dep, i) => dep === DRAW_TOOL_HOT_DEPS[i]);
+        if (!depsKept) {
+            hot.invalidate('draw-tool.service: a stateful dependency changed');
+            return;
+        }
+        // Old-module class key: every importer that was not re-executed
+        // resolves the service through it.
+        if (!mod.hotSwapDrawTool(di.get(DrawToolService), mod.DrawToolService)) {
+            hot.invalidate('draw-tool.service: DrawToolService instance fields changed');
+            return;
+        }
+        console.info('[hmr] draw-tool.service: swapped DrawToolService in place');
+    });
 }

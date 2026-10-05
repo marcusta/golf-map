@@ -5,6 +5,7 @@ import { EditorModeService } from './editor-mode.service';
 import { ServerModeService, visibleEditorTools } from '../app/server-mode.service';
 import { drawTool } from '../draw/draw-tool';
 import { HelpModalComponent } from './help-modal.component';
+import { ShortcutService, LAYER } from './shortcut.service';
 
 const tpl = template(`
     <div class="editor-tools" bind="root" data-testid="editor-toolbar">
@@ -23,8 +24,9 @@ const tpl = template(`
  * What remains here is the per-canvas-mount lifetime glue: it runs each tool's
  * one-time `attach` hook, auto-activates Draw so the command bar never shows an
  * empty sub-mode, hosts the contextual help modal (help-modal.component.ts,
- * D27), deactivates the active tool when displaced, and handles ESC (help modal
- * first if open, then tool.onEscape, then deactivation).
+ * D27), deactivates the active tool when displaced, and pushes the tool-chain
+ * ESC layer (tool.onEscape, then back to Draw) onto the ShortcutService stack,
+ * below open popovers and the help modal (editor/shortcut.service.ts).
  *
  * Spawned by EditorCanvasComponent; one instance == one courseId (the canvas
  * is recreated per navigation). Tools never talk to this component —
@@ -41,6 +43,7 @@ export class EditorToolbarComponent extends Component {
     private zoneTypes = this.inject(ZoneTypesService);
     private mode = this.inject(EditorModeService);
     private serverMode = this.inject(ServerModeService);
+    private shortcuts = this.inject(ShortcutService);
 
     private helpHost!: HTMLElement;
 
@@ -51,12 +54,8 @@ export class EditorToolbarComponent extends Component {
     }
 
     onMount(): void {
-        // Help modal (D27): spawned FIRST so its own Escape listener
-        // (help-modal.component.ts) registers on window before this
-        // component's own ESC listener below — window keydown listeners
-        // fire in registration order, and the modal's handler
-        // stopImmediatePropagation's while open, so closing help never
-        // also falls through to tool.onEscape/deactivate.
+        // Help modal (D27). Its Escape layer sits above the tool chain by
+        // stack level, not by spawn order.
         this.spawn(HelpModalComponent, this.helpHost);
 
         // Course features + their map overlay: the /course page's content in
@@ -97,16 +96,32 @@ export class EditorToolbarComponent extends Component {
             if (activeId && mode !== activeId) untrack(() => this.mode.deactivate());
         }));
 
-        // ESC: offer to the active tool first; deactivate if unconsumed.
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key !== 'Escape') return;
-            const active = this.mode.peekActiveTool();
-            if (!active) return;
-            if (active.onEscape?.()) return;
-            this.mode.deactivate();
-        };
-        window.addEventListener('keydown', onKeyDown);
-        this.track(() => window.removeEventListener('keydown', onKeyDown));
+        // ESC: offer to the active tool first. Unconsumed, it returns to the
+        // default tool (Draw, when offered): from another tool it re-arms
+        // Draw, and on Draw itself it does nothing. Deactivating Draw would
+        // leave no tool armed, so every key and map click goes dead while
+        // the command bar's sub-mode trigger still reads "Draw". Without a
+        // default (serve mode) ESC deactivates as before.
+        const defaultTool = tools.includes(drawTool) ? drawTool : null;
+        this.track(this.shortcuts.push({
+            id: 'tool-chain',
+            level: LAYER.toolChain,
+            onKey: (e: KeyboardEvent) => {
+                if (e.key !== 'Escape') return false;
+                const active = this.mode.peekActiveTool();
+                if (!active) return false;
+                if (active.onEscape?.()) return true;
+                if (defaultTool) {
+                    // On Draw itself an unconsumed Esc does nothing and stays
+                    // unconsumed for any later listener.
+                    if (active === defaultTool) return false;
+                    this.mode.activate(defaultTool);
+                    return true;
+                }
+                this.mode.deactivate();
+                return true;
+            },
+        }));
 
         this.track(() => this.mode.deactivate());
     }

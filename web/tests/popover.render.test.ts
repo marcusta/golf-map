@@ -108,3 +108,23 @@ test('opening a second popover closes the first (single-open policy)', () => {
     expect(b.open.peek()).toBe(true);
     expect(a.open.peek()).toBe(false);
 });
+
+test('lazyPanel renders the panel on first open only', () => {
+    document.body.textContent = '';
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    let renders = 0;
+    const component = new PopoverComponent({
+        lazyPanel: true,
+        trigger: (h) => { h.textContent = 'T'; },
+        panel: (h) => { renders++; h.textContent = 'body'; },
+    });
+    component.mount(host);
+    mounted.push(component);
+    expect(renders).toBe(0);
+    const trigger = host.querySelector('.popover__trigger') as HTMLButtonElement;
+    trigger.click();
+    trigger.click();
+    trigger.click();
+    expect(renders).toBe(1);
+});

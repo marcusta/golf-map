@@ -2,7 +2,7 @@ import { Component, Signal, Computed, effect, template, untrack } from '@basics/
 import { t } from '../theme';
 import { s, btn, field, panelTitle, metric, selectedRow, primaryBtn } from '../css';
 import { clubAdvice, mphToMps, mpsToMph, windComponents, type BreakSide } from '../../../shared/strategy';
-import type { PlanShot, PlanGate } from '../../../shared/api/game-plans.gen';
+import type { PlanShot } from '../../../shared/api/game-plans.gen';
 import { FurnitureService } from '../furniture/furniture.service';
 import { ClubsService } from '../player/clubs.service';
 import { ConfirmService } from '../app/confirm-dialog.component';

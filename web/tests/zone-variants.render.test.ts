@@ -141,7 +141,7 @@ describe('selection panel: Variant picker', () => {
         return {
             id: 'zone-1', courseId: 'c1', holeId: null, layer: null, type: 'vegetation_zone',
             geometry: { crs: 'EPSG:3006', rings: [{ points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }] }] },
-            geojson: null, sortOrder: 0, source: null, generated: false, sourceRef: null, license: null,
+            sortOrder: 0, source: null, generated: false, sourceRef: null, license: null,
             attributes: attributes as CourseFeature['attributes'], no: null, version: 1,
         };
     }
@@ -341,7 +341,7 @@ describe('selection panel: creek bank palette', () => {
         return {
             id, courseId: 'c1', holeId: null, layer: null, type: 'water_creek',
             geometry: { crs: 'EPSG:3006', rings: [{ points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 2 }] }] },
-            geojson: null, sortOrder: 0, source: null, generated: false, sourceRef: null, license: null,
+            sortOrder: 0, source: null, generated: false, sourceRef: null, license: null,
             attributes: attributes as CourseFeature['attributes'], no: null, version: 1,
         };
     }

@@ -22,7 +22,7 @@
 
 import type { AnchorPoint, PathRing, Point, FeatureGeometry } from '../geo/bezier';
 import { flattenRing, pointInRing } from '../geo/bezier';
-import { FEATURE_TYPES, type FeatureType } from '../draw/feature-palette';
+import type { FeatureType } from '../draw/feature-palette';
 
 // ─── Affine transforms ─────────────────────────────────────────────────────
 

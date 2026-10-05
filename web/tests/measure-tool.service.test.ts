@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test';
 import {
     MeasureToolService,
     PROFILE_SAMPLES_PER_SEGMENT,
+    profileSampleCount,
     pointLabel,
     type MeasureElevationSampler,
 } from '../src/measure/measure-tool.service';
@@ -85,6 +86,36 @@ test('clear resets the path and profile', () => {
 });
 
 // ─── profile sampling request shape ─────────────────────────────────────────
+
+test('short segments request one profile sample per meter, long ones cap at PROFILE_SAMPLES_PER_SEGMENT', async () => {
+    const sampler = fakeSampler();
+    const svc = new MeasureToolService();
+    svc.useElevation(sampler);
+
+    // 8 m, then 30.5 m, then 300 m (e/n are the EPSG:3006 meters used for length).
+    place(svc, 0, 0, null, 1, 60);
+    place(svc, 8, 0, null, 2, 60);
+    place(svc, 8, 30.5, null, 3, 60);
+    place(svc, 308, 30.5, null, 4, 60);
+
+    await (svc as unknown as { refreshProfile(): Promise<void> }).refreshProfile();
+
+    expect(sampler.sampleLineCalls.map(c => c.n)).toEqual([9, 32, PROFILE_SAMPLES_PER_SEGMENT]);
+    expect(svc.profile.get()).toHaveLength(9 + 31 + PROFILE_SAMPLES_PER_SEGMENT - 1);
+    expect(svc.profile.get().at(-1)!.distance).toBeCloseTo(338.5, 5);
+
+    // The endpoint-keyed cache still serves an unchanged segment.
+    await (svc as unknown as { refreshProfile(): Promise<void> }).refreshProfile();
+    expect(sampler.sampleLineCalls).toHaveLength(3);
+});
+
+test('profileSampleCount clamps to [2, PROFILE_SAMPLES_PER_SEGMENT]', () => {
+    expect(profileSampleCount(0)).toBe(2);
+    expect(profileSampleCount(0.4)).toBe(2);
+    expect(profileSampleCount(10)).toBe(11);
+    expect(profileSampleCount(48.5)).toBe(PROFILE_SAMPLES_PER_SEGMENT);
+    expect(profileSampleCount(5000)).toBe(PROFILE_SAMPLES_PER_SEGMENT);
+});
 
 test('refreshProfile requests PROFILE_SAMPLES_PER_SEGMENT samples per segment with the right endpoints', async () => {
     const sampler = fakeSampler();

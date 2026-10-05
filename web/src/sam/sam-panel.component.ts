@@ -1,6 +1,6 @@
 import { Component, effect, template } from '@basics/core/client/core';
-import { t } from '../theme';
-import { s, panelTitle } from '../css';
+import { s } from '../css';
+import { dockBody, sectionTitle, statusRow, smallBtn, panelInput, busyAndNotice, hintsFooter } from '../editor/panel-recipes.css';
 import { FEATURE_TYPES, FEATURE_STYLES, type FeatureType } from '../draw/feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { SamToolService, SAM_SCOPE_FOLLOW, SAM_SCOPE_COURSE } from './sam-tool.service';
@@ -37,84 +37,25 @@ export class SamPanelComponent extends Component {
     static styles = `
         .sam-panel {
             /* Flat dock body (feature-dock.component.ts hosting contract). */
-            display: flex;
-            flex-direction: column;
-            gap: var(--space-3);
-            padding: var(--space-3) var(--space-4) var(--space-4);
-            font-size: 0.8rem;
-            color: ${t('color-text-primary')};
+            ${dockBody()}
 
-            & .section-title {
-                margin: 0 0 ${s('xs')};
-                ${panelTitle()}
-            }
+            ${sectionTitle()}
 
             & .scope-title { margin-top: ${s('sm')}; }
 
-            & .status-row {
-                display: flex;
-                align-items: center;
-                gap: ${s('sm')};
-            }
-
-            & .status-dot {
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                background: ${t('color-text-secondary')};
-                flex: none;
-                &.online { background: var(--data-good); }
-                &.offline { background: var(--data-bad); }
-            }
-
-            & .status-text { flex: 1; }
+            ${statusRow()}
 
             & .retry-btn {
                 display: none;
-                font: inherit;
-                font-size: 0.72rem;
-                padding: 2px ${s('sm')};
-                border: 1px solid ${t('color-border-default')};
-                border-radius: ${t('radius-sm')};
-                background: transparent;
-                color: ${t('color-text-primary')};
-                cursor: pointer;
+                ${smallBtn()}
                 &.show { display: inline-block; }
             }
 
-            & .type-select {
-                width: 100%;
-                font: inherit;
-                padding: ${s('xs')} ${s('sm')};
-                border: 1px solid ${t('color-border-default')};
-                border-radius: ${t('radius-sm')};
-                background: ${t('color-surface-card')};
-                color: ${t('color-text-primary')};
-            }
+            & .type-select { ${panelInput()} }
 
-            & .busy-line {
-                display: none;
-                color: ${t('color-text-secondary')};
-                &.show { display: block; }
-            }
+            ${busyAndNotice()}
 
-            & .notice {
-                display: none;
-                color: var(--data-bad);
-                line-height: 1.4;
-                &.show { display: block; }
-            }
-
-            & .sam-panel__hints {
-                padding-top: var(--space-3);
-                border-top: 1px solid ${t('color-border-default')};
-                display: flex;
-                flex-direction: column;
-                gap: ${s('xs')};
-                font-size: 0.72rem;
-                color: ${t('color-text-secondary')};
-                line-height: 1.4;
-            }
+            ${hintsFooter('sam-panel__hints')}
         }
     `;
 

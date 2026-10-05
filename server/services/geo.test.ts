@@ -178,6 +178,32 @@ describe('flattenRing', () => {
         expect(fine.length).toBeGreaterThan(coarse.length);
     });
 
+    test('circle area and perimeter within 0.05% of exact; adaptive needs fewer vertices on the large one', () => {
+        // 8-anchor circle with tangent handles (handle length (4/3)·tan(π/16)·r).
+        const circle = (r: number): PathRing => ({
+            points: Array.from({ length: 8 }, (_, i) => {
+                const a = (2 * Math.PI * i) / 8;
+                const k = (4 / 3) * Math.tan(Math.PI / 16) * r;
+                const x = r * Math.cos(a), y = r * Math.sin(a);
+                const tx = -Math.sin(a), ty = Math.cos(a);
+                return { x, y, hIn: { x: x - k * tx, y: y - k * ty }, hOut: { x: x + k * tx, y: y + k * ty } };
+            }),
+        });
+        const area = (p: Array<[number, number]>) =>
+            Math.abs(p.reduce((s, [x1, y1], i) => { const [x2, y2] = p[(i + 1) % p.length]; return s + x1 * y2 - x2 * y1; }, 0) / 2);
+        const perim = (p: Array<[number, number]>) =>
+            p.reduce((s, [x1, y1], i) => { const [x2, y2] = p[(i + 1) % p.length]; return s + Math.hypot(x2 - x1, y2 - y1); }, 0);
+        for (const r of [3, 15, 80]) {
+            const flat = flattenRing(circle(r), 0.25);
+            // Worst at r = 3 (REFERENCE_RADIUS_M): -0.040% area, where the
+            // legacy uniform split gave -0.102%.
+            expect(Math.abs(area(flat) - Math.PI * r * r) / (Math.PI * r * r)).toBeLessThan(5e-4);
+            expect(Math.abs(perim(flat) - 2 * Math.PI * r) / (2 * Math.PI * r)).toBeLessThan(5e-4);
+        }
+        // r = 80: the legacy uniform split gave 2048 vertices.
+        expect(flattenRing(circle(80), 0.25).length).toBe(512);
+    });
+
     test('single-point ring returns that point', () => {
         const ring: PathRing = { points: [{ x: 5, y: 5 }] };
         expect(flattenRing(ring, 0.25)).toEqual([[5, 5]]);

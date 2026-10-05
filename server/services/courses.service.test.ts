@@ -3,6 +3,8 @@ import { createTestDb } from '../testing/db';
 import { seedUsers } from '../db/seeds/users';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { CoursesService } from './courses.service';
+import { AssetsService } from './assets.service';
+import { SitesService } from './sites.service';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { NotFoundError } from '@basics/core/server/auth';
 
@@ -247,4 +249,43 @@ test('publish throws NotFoundError for missing course', async () => {
     const svc = new CoursesService(db);
 
     await expect(svc.publish('nope', 1)).rejects.toBeInstanceOf(NotFoundError);
+});
+
+test('getDetail returns the site tile manifest, shared by every course on the site', async () => {
+    const { db } = await createTestDb(seedUsers, seedCourse);
+    const svc = new CoursesService(db);
+    const sites = new SitesService(db);
+    const assets = new AssetsService(db, '/tmp/golf-map-courses-test');
+
+    await sites.create({ id: 'site-a', name: 'A' });
+    await sites.create({ id: 'site-b', name: 'B' });
+    const course = await svc.get(TEST_COURSE_ID);
+    await svc.update(TEST_COURSE_ID, course.version, { siteId: 'site-a' });
+    const sibling = await svc.create({ name: 'Sibling', siteId: 'site-a' });
+    const other = await svc.create({ name: 'Other', siteId: 'site-b' });
+    const unsited = await svc.create({ name: 'No site' });
+
+    await assets.register({ siteId: 'site-a', courseId: TEST_COURSE_ID, kind: 'ortho_cog', filename: 'ortho.tif', metaJson: '{"not":"manifest"}' });
+    await assets.register({ siteId: 'site-a', courseId: TEST_COURSE_ID, kind: 'tile_manifest', filename: 'tiles/site-a/manifest.json', metaJson: '{"generatedAt":"a"}' });
+    const later = await assets.register({ siteId: 'site-a', courseId: TEST_COURSE_ID, kind: 'tile_manifest', filename: 'tiles/site-a/manifest.json', metaJson: '{"generatedAt":"later"}' });
+    // created_at has one-second precision; push the second row later so the order is defined.
+    await db.updateTable('course_assets').set({ created_at: '2999-01-01 00:00:00' }).where('id', '=', later.id).execute();
+
+    // The oldest manifest row wins, the same row assets/by-site lists first.
+    const listed = (await assets.listBySite('site-a')).find((a) => a.kind === 'tile_manifest')!;
+    const detail = await svc.getDetail(TEST_COURSE_ID);
+    expect(detail.tileManifestJson).toBe(listed.metaJson);
+    expect(detail.tileManifestJson).toBe('{"generatedAt":"a"}');
+    expect(detail).toMatchObject({ id: TEST_COURSE_ID, name: 'Linkan', siteId: 'site-a' });
+
+    expect((await svc.getDetail(sibling.id)).tileManifestJson).toBe('{"generatedAt":"a"}');
+    // A site without a manifest and a course without a site have none.
+    expect((await svc.getDetail(other.id)).tileManifestJson).toBeNull();
+    expect((await svc.getDetail(unsited.id)).tileManifestJson).toBeNull();
+});
+
+test('getDetail throws NotFoundError for an unknown id', async () => {
+    const { db } = await createTestDb();
+    const svc = new CoursesService(db);
+    expect(svc.getDetail('missing')).rejects.toThrow(NotFoundError);
 });

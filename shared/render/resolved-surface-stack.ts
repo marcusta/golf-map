@@ -8,14 +8,40 @@ const difference = polygonClipping.difference as (
     ...occluders: ClippingMultiPolygon[]
 ) => ClippingMultiPolygon;
 
-// Resolution costs O(features × overlapping occluders × vertices) of clipping —
-// ~10 s for a course whose roughs carry thousands of vertices each. Two caches
-// keep repeats cheap: the whole result by collection identity (the web's input
-// is a Computed replaced wholesale on geometry/visibility changes, so identity
-// keying is exact), and each feature's clip by the CONTENT of it and of its
-// overlapping occluders (`createSurfaceStackResolver`), so after one edit only
-// the features under or over the edited one are clipped again.
+// Clipping cost scales with features x bbox-overlapping occluders x vertices.
+// Measured on data/app.sqlite (web/tests/surface-stack-bench.test.ts): 1.5 s
+// for the largest course (689 features, 307k vertices), 90-150 ms for an
+// 18-hole course of 120-190 features, 20-30 ms for the worst single hole.
+//
+// Two memo levels keep repeat work off the main thread:
+// - per collection (`resolvedCache`): `FeaturesService.geojson` is identity-
+//   stable, so a Draw <-> nice flip with no edit in between resolves nothing.
+// - per surface (`surfaceCache`): keyed by the coordinates array, which
+//   `geometryToWgs84Rings` caches per geometry object. A surface is clipped
+//   again only when its own coordinates or its list of bbox-overlapping
+//   occluders changed, so an edit re-clips the edited surface and the
+//   surfaces under it, not the whole course. Visibility toggles and reorders
+//   rebuild every Feature object but keep the coordinates, so they hit too.
+//
+// `createSurfaceStackResolver` is the same resolution with a memo keyed by the
+// CONTENT of a surface and of its overlapping occluders, so it survives
+// structured cloning into a worker (web/src/draw/surface-stack.worker.ts).
 const resolvedCache = new WeakMap<FeatureCollection, FeatureCollection>();
+
+type Surface = { shape: ClippingMultiPolygon; bbox: BBox };
+type ResolvedSurface = {
+    /** Coordinates of the occluders `visible` was clipped against, in order. */
+    occluders: readonly object[];
+    /** Null when nothing of the surface stays visible. */
+    geometry: MultiPolygon | null;
+    input: Feature;
+    output: Feature | null;
+};
+const shapeCache = new WeakMap<object, Surface>();
+const surfaceCache = new WeakMap<object, ResolvedSurface>();
+
+/** Work counters for tests and the bench (both resolvers count here). Not reset by the module. */
+export const surfaceStackStats = { resolves: 0, clips: 0 };
 
 /**
  * Polygon feature types that are overlays rather than playing surfaces: they
@@ -38,13 +64,13 @@ const OVERLAY_TYPES = new Set(['vegetation_zone', 'tree_area', 'oob', 'penalty_y
  * once with the orthophoto instead of compounding at overlaps.
  *
  * Each feature is only differenced against the higher entries whose bounding
- * boxes intersect its own — disjoint-bbox differences are no-ops, and golf
+ * boxes intersect its own. Disjoint-bbox differences are no-ops, and golf
  * features are spatially local (a green overlaps its fringe and bunkers, not
  * the other 680 features), so this bounds the per-feature work to a handful
  * of occluders instead of the whole stack above it.
  *
  * Non-polygon features (creeks/paths drawn as lines) pass through unchanged
- * after the resolved polygons — they render on dedicated line layers, so
+ * after the resolved polygons. They render on dedicated line layers, so
  * their position in the collection doesn't matter. So do vegetation zones:
  * they are an authoring overlay on top of the surfaces (like the generated
  * tree canopy, which lives in its own collection), not a surface of their
@@ -53,13 +79,61 @@ const OVERLAY_TYPES = new Set(['vegetation_zone', 'tree_area', 'oob', 'penalty_y
 export function resolveSurfaceStack(source: FeatureCollection): FeatureCollection {
     const cached = resolvedCache.get(source);
     if (cached) return cached;
-    const result = defaultResolver(source);
+    surfaceStackStats.resolves++;
+
+    const passthrough = source.features.filter(feature => !isSurface(feature));
+    const topDown = source.features
+        .filter(isSurface)
+        .sort((a, b) => stackKey(b) - stackKey(a));
+    const occluders: Array<Surface & { key: object }> = [];
+    const resolved: Feature<Geometry>[] = [];
+
+    for (const feature of topDown) {
+        const key = feature.geometry.coordinates;
+        const surface = surfaceOf(feature.geometry);
+        const overlapping = occluders.filter(occluder => bboxesIntersect(occluder.bbox, surface.bbox));
+        const overlappingKeys = overlapping.map(occluder => occluder.key);
+        let entry = surfaceCache.get(key);
+        if (!entry || !sameKeys(entry.occluders, overlappingKeys)) {
+            surfaceStackStats.clips++;
+            const visible = clip(surface.shape, overlapping.map(occluder => occluder.shape));
+            entry = {
+                occluders: overlappingKeys,
+                geometry: visible.length > 0
+                    ? { type: 'MultiPolygon', coordinates: visible as unknown as MultiPolygon['coordinates'] }
+                    : null,
+                input: feature,
+                output: null,
+            };
+            surfaceCache.set(key, entry);
+        }
+        if (entry.geometry) {
+            // Reuse the output Feature while the input Feature is unchanged,
+            // so unchanged surfaces keep their identity across resolves.
+            if (entry.input !== feature || !entry.output) {
+                entry.input = feature;
+                entry.output = { ...feature, geometry: entry.geometry };
+            }
+            resolved.push(entry.output);
+        }
+        occluders.push({ ...surface, key });
+    }
+
+    const result: FeatureCollection = {
+        type: 'FeatureCollection',
+        features: [...resolved, ...passthrough],
+    };
     resolvedCache.set(source, result);
     return result;
 }
 
+function isSurface(feature: Feature): feature is Feature<SurfaceGeometry> {
+    return (feature.geometry?.type === 'Polygon' || feature.geometry?.type === 'MultiPolygon')
+        && !OVERLAY_TYPES.has(feature.properties?.type as string);
+}
+
 /**
- * `resolveSurfaceStack` without the identity cache and with its own
+ * `resolveSurfaceStack` without the identity caches and with its own
  * per-feature memo: a feature's visible part is reused when its geometry and
  * the geometries of the higher surfaces overlapping it are unchanged — by
  * content, so it survives structured cloning into a worker. The memo keeps
@@ -68,62 +142,60 @@ export function resolveSurfaceStack(source: FeatureCollection): FeatureCollectio
 export function createSurfaceStackResolver(): (source: FeatureCollection) => FeatureCollection {
     let memo = new Map<string, ClippingMultiPolygon>();
     return source => {
+        surfaceStackStats.resolves++;
         const used = new Map<string, ClippingMultiPolygon>();
-        const result = resolve(source, (subject, overlapping, run) => {
+        const passthrough = source.features.filter(feature => !isSurface(feature));
+        const topDown = source.features
+            .filter(isSurface)
+            .sort((a, b) => stackKey(b) - stackKey(a));
+        const occluders: Array<Surface & { key: string }> = [];
+        const resolved: Feature<Geometry>[] = [];
+
+        for (const feature of topDown) {
+            const surface = surfaceOf(feature.geometry);
+            const subject = { ...surface, key: fingerprint(surface.shape) };
+            const overlapping = occluders.filter(occluder => bboxesIntersect(occluder.bbox, subject.bbox));
             const key = [subject.key, ...overlapping.map(o => o.key)].join('|');
-            const visible = memo.get(key) ?? used.get(key) ?? run();
+            let visible = memo.get(key) ?? used.get(key);
+            if (!visible) {
+                surfaceStackStats.clips++;
+                visible = clip(subject.shape, overlapping.map(o => o.shape));
+            }
             used.set(key, visible);
-            return visible;
-        });
-        memo = used;
-        return result;
-    };
-}
-
-const defaultResolver = createSurfaceStackResolver();
-
-interface Shape {
-    shape: ClippingMultiPolygon;
-    bbox: BBox;
-    /** Content fingerprint of `shape` (the memo key's parts). */
-    key: string;
-}
-
-function resolve(
-    source: FeatureCollection,
-    clipMemo: (subject: Shape, overlapping: Shape[], run: () => ClippingMultiPolygon) => ClippingMultiPolygon,
-): FeatureCollection {
-    const isSurface = (feature: Feature): feature is Feature<SurfaceGeometry> =>
-        (feature.geometry?.type === 'Polygon' || feature.geometry?.type === 'MultiPolygon')
-        && !OVERLAY_TYPES.has(feature.properties?.type as string);
-    const passthrough = source.features.filter(feature => !isSurface(feature));
-    const topDown = source.features
-        .filter(isSurface)
-        .sort((a, b) => stackKey(b) - stackKey(a));
-    const occluders: Shape[] = [];
-    const resolved: Feature<Geometry>[] = [];
-
-    for (const feature of topDown) {
-        const shape = toClippingMultiPolygon(feature.geometry);
-        const subject: Shape = { shape, bbox: bboxOf(shape), key: fingerprint(shape) };
-        const overlapping = occluders.filter(occluder => bboxesIntersect(occluder.bbox, subject.bbox));
-        const visible = clipMemo(subject, overlapping, () => clip(shape, overlapping.map(o => o.shape)));
-        if (visible.length > 0) {
-            resolved.push({
-                ...feature,
-                geometry: {
-                    type: 'MultiPolygon',
-                    coordinates: visible as unknown as MultiPolygon['coordinates'],
-                },
-            });
+            if (visible.length > 0) {
+                resolved.push({
+                    ...feature,
+                    geometry: {
+                        type: 'MultiPolygon',
+                        coordinates: visible as unknown as MultiPolygon['coordinates'],
+                    },
+                });
+            }
+            occluders.push(subject);
         }
-        occluders.push(subject);
-    }
+        memo = used;
 
-    return {
-        type: 'FeatureCollection',
-        features: [...resolved, ...passthrough],
+        return {
+            type: 'FeatureCollection',
+            features: [...resolved, ...passthrough],
+        };
     };
+}
+
+function surfaceOf(geometry: SurfaceGeometry): Surface {
+    let surface = shapeCache.get(geometry.coordinates);
+    if (!surface) {
+        const shape = toClippingMultiPolygon(geometry);
+        surface = { shape, bbox: bboxOf(shape) };
+        shapeCache.set(geometry.coordinates, surface);
+    }
+    return surface;
+}
+
+function sameKeys(a: readonly object[], b: readonly object[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
 }
 
 /**

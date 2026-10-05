@@ -135,7 +135,6 @@ import {
     scatterLayers,
     variantBranchId,
     variantLayers,
-    type GhostVariant,
     type ScatterPoint,
 } from './sim-overlay';
 

@@ -11,9 +11,18 @@ import {
     outerRingArea,
     cubicBezierPoint,
     segmentControls,
+    flattenSegment,
     type PathRing,
     type FeatureGeometry,
+    type Point,
 } from '../src/geo/bezier';
+import {
+    chordErrorForTolerance,
+    flattenSegmentUniform,
+    MAX_DEPTH,
+    REFERENCE_RADIUS_M,
+} from '../../shared/geo/bezier';
+import { flattenRing as serverFlattenRing } from '../../server/services/geo';
 
 // ── flattenRing — must match the server's flattening behavior ────────────
 
@@ -64,8 +73,9 @@ describe('flattenRing (server parity)', () => {
         expect(flattenRing({ points: [] }, 0.25)).toEqual([]);
     });
 
-    test('subdivision count matches the server heuristic: ceil(controlLength / tol), capped 256', () => {
-        // One curved segment with a known control polygon length.
+    test('a straight-handled segment needs no split; depth cap is 256 pieces', () => {
+        // Handles on the chord: the cubic is a straight line, so the
+        // flatness test passes at depth 0 and only the start anchor is emitted.
         const ring: PathRing = {
             points: [
                 { x: 0, y: 0, hOut: { x: 10, y: 0 } },
@@ -73,14 +83,121 @@ describe('flattenRing (server parity)', () => {
                 { x: 30, y: 30 },
             ],
         };
-        // Control length of segment 0 = 10 + 10 + 10 = 30; tol 1 → 30 pieces
-        // → 29 interior points + anchor. Other two segments are straight.
-        const flat = flattenRing(ring, 1.0);
-        expect(flat.length).toBe(3 + 29);
+        expect(flattenRing(ring, 1.0)).toEqual([[0, 0], [30, 0], [30, 30]]);
 
-        // Cap at 256 pieces even for absurdly fine tolerance.
-        const fine = flattenRing(ring, 1e-9);
-        expect(fine.length).toBe(3 + 255);
+        // A curved segment at an absurdly fine tolerance hits MAX_DEPTH.
+        const curved: PathRing = {
+            points: [
+                { x: 0, y: 0, hOut: { x: 10, y: 10 } },
+                { x: 30, y: 0, hIn: { x: 20, y: 10 } },
+                { x: 30, y: 30 },
+            ],
+        };
+        expect(flattenRing(curved, 1e-9).length).toBe(3 + (1 << MAX_DEPTH) - 1);
+    });
+});
+
+/** Distance from p to segment a-b. */
+function distToSeg(p: [number, number], a: [number, number], b: [number, number]): number {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2));
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+
+/** Max distance from the exact curve (dense samples) to an open polyline. */
+function maxChordError(p0: Point, p1: Point, p2: Point, p3: Point, poly: Array<[number, number]>): number {
+    let worst = 0;
+    for (let s = 0; s <= 2000; s++) {
+        const q = cubicBezierPoint(p0, p1, p2, p3, s / 2000);
+        let best = Infinity;
+        for (let i = 0; i + 1 < poly.length; i++) best = Math.min(best, distToSeg(q, poly[i], poly[i + 1]));
+        worst = Math.max(worst, best);
+    }
+    return worst;
+}
+
+describe('adaptive subdivision (chord error)', () => {
+    const cases: Array<{ name: string; c: [Point, Point, Point, Point] }> = [
+        { name: 'tight arc', c: [{ x: 0, y: 0 }, { x: 0, y: 2 }, { x: 2, y: 4 }, { x: 4, y: 4 }] },
+        { name: 'long near-straight', c: [{ x: 0, y: 0 }, { x: 40, y: 1 }, { x: 80, y: 1 }, { x: 120, y: 0 }] },
+        { name: 'S-curve', c: [{ x: 0, y: 0 }, { x: 10, y: 15 }, { x: 20, y: -15 }, { x: 30, y: 0 }] },
+        { name: 'closed loop (p0 == p3)', c: [{ x: 0, y: 0 }, { x: 10, y: 10 }, { x: -10, y: 10 }, { x: 0, y: 0 }] },
+    ];
+    for (const tol of [0.1, 0.25, 1]) {
+        for (const { name, c } of cases) {
+            test(`${name} stays within the chord-error bound at tol ${tol}`, () => {
+                const [p0, p1, p2, p3] = c;
+                const poly = flattenOpenPath([{ ...p0, hOut: p1 }, { ...p3, hIn: p2 }], tol);
+                // At the depth cap the bound is not guaranteed (see MAX_DEPTH).
+                if (poly.length - 1 === 1 << MAX_DEPTH) return;
+                expect(maxChordError(p0, p1, p2, p3, poly)).toBeLessThanOrEqual(chordErrorForTolerance(tol));
+            });
+        }
+    }
+
+    test('a closed loop segment renders as a loop, not a point', () => {
+        const flat = flattenOpenPath([{ x: 0, y: 0, hOut: { x: 10, y: 10 } }, { x: 0, y: 0, hIn: { x: -10, y: 10 } }], 0.25);
+        expect(flat.length).toBeGreaterThan(8);
+        expect(Math.max(...flat.map(([, y]) => y))).toBeGreaterThan(7);
+    });
+
+    test('long near-straight segment: far fewer vertices than the legacy uniform split', () => {
+        const [p0, p1, p2, p3] = cases[1].c;
+        const adaptive = flattenSegment(false, p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, 0.25);
+        const uniform = flattenSegmentUniform(false, p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, 0.25);
+        // Legacy: ceil(120 / 0.25) capped at 256 pieces. Adaptive: 32.
+        expect(uniform.length).toBe(256);
+        expect(adaptive.length).toBe(32);
+    });
+
+    test('tight arc of radius REFERENCE_RADIUS_M: vertex spacing at most the tolerance', () => {
+        // Quarter circle of radius R via the standard handle length k = 0.5523 R.
+        const R = REFERENCE_RADIUS_M;
+        const k = (4 / 3) * Math.tan(Math.PI / 8) * R;
+        const poly = flattenOpenPath([{ x: R, y: 0, hOut: { x: R, y: k } }, { x: 0, y: R, hIn: { x: k, y: R } }], 0.25);
+        for (let i = 0; i + 1 < poly.length; i++) {
+            expect(Math.hypot(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1])).toBeLessThanOrEqual(0.25);
+        }
+    });
+});
+
+describe('server parity (shared flattening)', () => {
+    function rng(seed: number): () => number {
+        let s = seed >>> 0;
+        return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+    }
+    function perimeter(p: Array<[number, number]>): number {
+        let sum = 0;
+        for (let i = 0; i < p.length; i++) {
+            const a = p[i], b = p[(i + 1) % p.length];
+            sum += Math.hypot(b[0] - a[0], b[1] - a[1]);
+        }
+        return sum;
+    }
+
+    test('web flattenRing equals server flattenRing (bezier and bspline, several tolerances)', () => {
+        const rnd = rng(36);
+        for (let trial = 0; trial < 60; trial++) {
+            const n = 3 + Math.floor(rnd() * 12);
+            const points = Array.from({ length: n }, () => {
+                const x = 500000 + rnd() * 200, y = 6500000 + rnd() * 200;
+                const p: { x: number; y: number; hIn?: Point; hOut?: Point; corner?: boolean } = { x, y };
+                if (rnd() < 0.6) p.hIn = { x: x + (rnd() - 0.5) * 40, y: y + (rnd() - 0.5) * 40 };
+                if (rnd() < 0.6) p.hOut = { x: x + (rnd() - 0.5) * 40, y: y + (rnd() - 0.5) * 40 };
+                if (rnd() < 0.2) p.corner = true;
+                return p;
+            });
+            for (const curveType of [undefined, 'bspline'] as const) {
+                for (const tol of [0.05, 0.25, 1]) {
+                    const web = flattenRing({ points }, tol, curveType);
+                    const server = serverFlattenRing({ points }, tol, curveType);
+                    expect(web).toEqual(server);
+                    expect(signedArea(web)).toBe(signedArea(server));
+                    expect(perimeter(web)).toBe(perimeter(server));
+                }
+            }
+        }
     });
 });
 

@@ -26,7 +26,9 @@ import { snapshotOf, type EditHistory } from '../draw/history';
 import type { FeatureType } from '../draw/feature-palette';
 import { fitClosedBspline } from '../geo/spline-fit';
 import { SamClient, largestPolygon, SAM_CROP_SIZE } from './sam-client';
-import { planCrop, cropPolygonToSweref, fillTileUrl, type CropPlan } from './sam-crop';
+import { planCrop, cropPolygonToSweref, type CropPlan } from './sam-crop';
+import { composeCropCanvas, canvasToBase64, cropTiles, type CropTile } from '../imaging/crop-source';
+import { SidecarHealth, type SidecarStatus } from '../imaging/sidecar-health';
 
 /** Interaction-claim id for the SAM tool (also its registry id). */
 export const SAM_TOOL_ID = 'sam';
@@ -67,7 +69,7 @@ export function samMinControls(perimeterM: number): number {
 }
 
 /** Sidecar reachability, as shown by the panel. */
-export type SamHealth = 'checking' | 'online' | 'offline';
+export type SamHealth = SidecarStatus;
 
 /** `holeScope` sentinel: created features follow the draw target hole. */
 export const SAM_SCOPE_FOLLOW = 'follow';
@@ -79,45 +81,21 @@ export const SAM_SCOPE_COURSE = 'course';
  * `tiles` carry resolved URLs + draw offsets; missing tiles (out-of-coverage
  * 404s are a normal edge state) are skipped, leaving background pixels.
  */
-export type SamCropSource = (
-    tiles: Array<{ url: string; dx: number; dy: number }>,
-    size: number,
-) => Promise<string>;
+export type SamCropSource = (tiles: CropTile[], size: number) => Promise<string>;
 
-/** Browser crop source: fetch tiles, composite on an OffscreenCanvas. */
-export const browserCropSource: SamCropSource = async (tiles, size) => {
-    const canvas = new OffscreenCanvas(size, size);
-    const ctx = canvas.getContext('2d')!;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, size, size);
-    await Promise.all(tiles.map(async tile => {
-        try {
-            const res = await fetch(tile.url);
-            if (!res.ok) return; // out-of-coverage tile — keep background
-            const bitmap = await createImageBitmap(await res.blob());
-            ctx.drawImage(bitmap, tile.dx, tile.dy);
-            bitmap.close();
-        } catch {
-            // Network hiccup on one tile: segment what we have.
-        }
-    }));
-    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.9 });
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-    });
-    return dataUrl.slice(dataUrl.indexOf(',') + 1);
-};
+/** Browser crop source: composite (imaging/crop-source.ts), JPEG at 0.9. */
+export const browserCropSource: SamCropSource = async (tiles, size) =>
+    canvasToBase64(await composeCropCanvas(tiles, size), 'image/jpeg', 0.9);
 
 /**
  * DI singleton behind the `sam` EditorTool (sam-tool.ts) and its panel
  * (sam-panel.component.ts). See the module header for the flow.
  */
 export class SamToolService {
+    /** Sidecar /health probe (imaging/sidecar-health.ts). */
+    readonly sidecar = new SidecarHealth(async () => ({ online: await this.client.health() }));
     /** Sidecar reachability (drives the panel's gate + hint). */
-    readonly health = new Signal<SamHealth>('checking');
+    readonly health: Signal<SamHealth> = this.sidecar.status;
     /** Feature type the next segmentation creates (panel picker). */
     readonly armedType = new Signal<FeatureType>('bunker');
     /**
@@ -168,10 +146,8 @@ export class SamToolService {
     }
 
     /** Probe the sidecar's /health (activation + the panel's retry button). */
-    async checkHealth(): Promise<void> {
-        this.health.set('checking');
-        const ok = await this.client.health();
-        this.health.set(ok ? 'online' : 'offline');
+    checkHealth(): Promise<void> {
+        return this.sidecar.check();
     }
 
     // ── Click → feature ─────────────────────────────────────────────────────
@@ -211,10 +187,7 @@ export class SamToolService {
         this.notice.set(null);
         try {
             const template = tileUrlTemplate(mapKey, 'ortho', 'jpg', version);
-            const crop = await this.cropSource(
-                plan.tiles.map(t => ({ url: fillTileUrl(template, plan.zoom, t.x, t.y), dx: t.dx, dy: t.dy })),
-                plan.size,
-            );
+            const crop = await this.cropSource(cropTiles(plan, template), plan.size);
             const response = await this.client.segmentPoint(crop);
             return await this.commitMask(ctx, plan, response.polygons);
         } catch {

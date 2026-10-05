@@ -36,7 +36,7 @@ import {
     type Vec2,
 } from '../../../../shared/strategy';
 import { sweref99tmToWgs84, wgs84ToSweref99tm } from '../../geo/transform';
-import { GeolocationService, type GpsFix } from '../gps/geolocation.service';
+import { GeolocationService } from '../gps/geolocation.service';
 import { GPS_OVERLAY_ID, buildGpsGeojson, gpsLayers } from '../gps/gps-overlay';
 import { WakeLock } from '../gps/wake-lock';
 import { FeaturesGeojsonService } from './features-geojson.service';

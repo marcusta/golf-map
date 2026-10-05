@@ -26,3 +26,24 @@ A deliberate, assessed divergence from the other `@basics/core` consumers; keep 
 - **`src/css.ts` is the source of truth for component recipes** (Links & Loam). Import only the `s` spacing scale from `@basics/core/client/ui`; core's `btn()`/`input()`/`card()` and its table, status-pill and empty-state components stay unused (so `round-sg-table.ts` and friends keep their local recipes).
 - The recipe-ordering rule of the other consumer repos (recipe interpolation first in a block, overrides after) applies to core's recipes only; here ordering is free.
 - **`src/theme.ts` speaks full semantic token names** (`color-text-primary`, `color-surface-card`, ...) through the typed `t()`; theme-invariant layers (map/data/scale/type/motion) are raw `var()` reads from `design-tokens.css`. Write theme edits in that vocabulary. The legacy short aliases (`bg`/`primary`/`text`/...) were removed on purpose, `bridgeLegacyControls` is for legacy-vocabulary themes like tapscore, and there are zero direct `var(--btn-bg|btn-hover|radius|shadow|error|input-bg|primary)` reads; keep it that way.
+
+## Dev loop: what hot-swaps
+
+Vite HMR stops only at a module that calls the literal `import.meta.hot.accept(` (an alias of `import.meta.hot` is not detected). Without one, an edit reloads the page and MapLibre rebuilds the map and refetches tiles.
+
+- `src/draw/draw-tool.service.ts` self-accepts. An edit swaps the prototype of the live `DrawToolService` to the new class and registers it under the new class key too (`hotSwapDrawTool`). The instance keeps its identity because the docks and the command bar hold it in fields. If the engine is running (Draw, or Furniture/Vegetation hosting it in their scope), `EditorModeService.restartTool` deactivates it with the old code, releases and re-takes the claim, and activates it with the new code. Feature selection, undo history, draw type and the type preferences survive; an open draft is dropped. `attach` does not re-run; an edit there applies on the next canvas mount.
+- The swap is refused and the page reloads when the new class declares an instance field the live object lacks, or when a stateful import changed identity (`DRAW_TOOL_HOT_DEPS`: draw-state, history, screen-cache, the confirm dialog, features.service, zones/zone-types.service, editor/tool.ts). A dependency edit reaches this module only through those imports, so it reloads.
+- Everything else reloads the page as before, including `map/map.service.ts`, `draw/features.service.ts`, `draw/draw-tool.ts`, the panels and the other tool services. `map.service.ts` reaches draw-tool.service.ts only through type imports, so it is never part of the swap.
+- The Draw tool's pointer, hover, keys, render and frame code lives in `draw/draw-pointer.ts`, `draw/draw-hover.ts`, `draw/draw-keys.ts`, `draw/draw-render.ts` and `draw/draw-frame.ts`. Only draw-tool.service.ts imports them (siblings import each other for types only), so an edit to any of them propagates to the service and hot-swaps like an edit to the service. These modules must not import draw-tool.service.ts: a cycle back into the accepting module breaks the boundary.
+- The modules reach the service's private state through a host object. The service caches it in a module-level `WeakMap`, so each re-execution of draw-tool.service.ts builds a fresh host whose shape matches the new code. Listeners bound in `activate` hold the old host until `restartTool` deactivates and re-activates.
+- `FrameBatch` and `FrameSignal` (`draw/draw-frame.ts`) are swapped only for instances created after the edit; the live instance keeps its existing ones.
+
+## Unused code checks
+
+`tsconfig.json` sets `noUnusedLocals` and `noUnusedParameters`, so `bun run check:client` fails on unused locals, imports and parameters. Prefix a parameter with `_` when an interface or callback fixes the signature. `tsconfig.test.json` does not set these flags. `src/reports/diagrams.ts` has no importer in `src`. It is the vendored ATDD report engine, referenced by the atdd skill for the visual test report. Keep it and do not delete it as dead code.
+
+## E2E
+
+`bun run e2e` (repo root) boots an isolated API and web server on 3100/5273 and runs `e2e/tests/`; set `E2E_API_PORT=3200 E2E_WEB_PORT=5474` when those are busy. `bun run e2e:create` runs the Create-mode specs only (01, 07, 08, 09, 17, 19, 24, 25, 28, 32) through the same config, so the setup project and ports are unchanged.
+
+Every run also writes the Playwright json report to `e2e/results/results.json` (gitignored). `bun run e2e:durations` reads it and prints spec file, status, test title and duration in ms, slowest first, plus the total.

@@ -23,7 +23,7 @@ function area(attributes: Record<string, unknown>): CourseFeature {
     return {
         id: 'area-1', courseId: 'c1', holeId: null, layer: null, type: 'tree_area',
         geometry: { crs: 'EPSG:3006', rings: [{ points: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }] }] },
-        geojson: null, sortOrder: 0, source: null, generated: false, sourceRef: null, license: null,
+        sortOrder: 0, source: null, generated: false, sourceRef: null, license: null,
         attributes: attributes as CourseFeature['attributes'], no: null, version: 1,
     };
 }

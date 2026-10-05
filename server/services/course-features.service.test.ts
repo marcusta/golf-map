@@ -38,9 +38,30 @@ describe('CourseFeaturesService.create', () => {
         expect(feature.courseId).toBe(TEST_COURSE_ID);
         expect(feature.holeId).toBe(TEST_HOLE_1_ID);
         expect(feature.version).toBe(1);
-        expect(feature.geojson).not.toBeNull();
-        expect(feature.geojson!.type).toBe('Polygon');
-        expect(feature.geojson!.coordinates[0].length).toBeGreaterThan(3);
+        expect('geojson' in feature).toBe(false);
+
+        // The derived polygon is stored and served by the geojson route only.
+        const fc = await svc.geojsonByCourse(TEST_COURSE_ID);
+        const served = fc.features.find((f) => f.id === feature.id)!;
+        expect(served.geometry.type).toBe('Polygon');
+        expect((served.geometry.coordinates as number[][][])[0].length).toBeGreaterThan(3);
+        const stored = await db.selectFrom('course_features').select('geojson').where('id', '=', feature.id).executeTakeFirstOrThrow();
+        expect(stored.geojson).not.toBeNull();
+        expect(JSON.parse(stored.geojson!)).toEqual(served.geometry);
+    });
+
+    test('list, findById and update responses carry no geojson key', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const created = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'green', geometry: squareGeometry() });
+
+        const list = await svc.listByCourse(TEST_COURSE_ID);
+        expect(list.length).toBeGreaterThan(0);
+        for (const f of list) expect(Object.keys(f)).not.toContain('geojson');
+        for (const f of await svc.listByHole(TEST_HOLE_1_ID)) expect(Object.keys(f)).not.toContain('geojson');
+        expect(Object.keys(await svc.findById(created.id))).not.toContain('geojson');
+        const updated = await svc.update(created.id, created.version, { type: 'fairway' });
+        expect(Object.keys(updated)).not.toContain('geojson');
     });
 
     test('allows a null holeId (course-wide feature)', async () => {
@@ -311,14 +332,17 @@ describe('CourseFeaturesService.update', () => {
             type: 'green',
             geometry: squareGeometry(0, 0, 5),
         });
-        const originalGeojson = created.geojson;
+        const servedGeometry = async () =>
+            (await svc.geojsonByCourse(TEST_COURSE_ID)).features.find((f) => f.id === created.id)!.geometry;
+        const originalGeojson = await servedGeometry();
 
-        const updated = await svc.update(created.id, created.version, {
+        await svc.update(created.id, created.version, {
             geometry: squareGeometry(500, 500, 30),
         });
 
-        expect(updated.geojson).not.toEqual(originalGeojson);
-        expect(updated.geojson!.type).toBe('Polygon');
+        const updatedGeojson = await servedGeometry();
+        expect(updatedGeojson).not.toEqual(originalGeojson);
+        expect(updatedGeojson.type).toBe('Polygon');
     });
 
     test('moving to another hole inserts into that hole stack and shifts higher features', async () => {
@@ -414,6 +438,122 @@ describe('CourseFeaturesService.remove', () => {
         });
 
         await expect(svc.remove(created.id, 99)).rejects.toBeInstanceOf(VersionConflictError);
+    });
+});
+
+describe('CourseFeaturesService batch endpoints (createMany / updateMany / removeMany)', () => {
+    async function threeGreens(svc: CourseFeaturesService) {
+        return svc.createMany(TEST_COURSE_ID, [
+            { holeId: TEST_HOLE_1_ID, type: 'green', geometry: squareGeometry(0, 0) },
+            { holeId: TEST_HOLE_1_ID, type: 'bunker', geometry: squareGeometry(20, 0) },
+            { holeId: TEST_HOLE_1_ID, type: 'green', geometry: squareGeometry(40, 0) },
+        ]);
+    }
+
+    test('createMany inserts in input order with the same stack positions as sequential creates', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const before = await svc.listByHole(TEST_HOLE_1_ID);
+
+        const created = await threeGreens(svc);
+        expect(created.map((f) => f.type)).toEqual(['green', 'bunker', 'green']);
+        expect(created.every((f) => f.version === 1 && f.courseId === TEST_COURSE_ID)).toBe(true);
+
+        // Same result as three create() calls on a fresh DB.
+        const { db: db2 } = await createTestDb(seedCourse);
+        const svc2 = new CourseFeaturesService(db2);
+        for (const item of [
+            { type: 'green', geometry: squareGeometry(0, 0) },
+            { type: 'bunker', geometry: squareGeometry(20, 0) },
+            { type: 'green', geometry: squareGeometry(40, 0) },
+        ]) {
+            await svc2.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, ...item });
+        }
+        const types = (list: { type: string }[]) => list.map((f) => f.type);
+        expect(types(await svc.listByHole(TEST_HOLE_1_ID))).toEqual(types(await svc2.listByHole(TEST_HOLE_1_ID)));
+        expect((await svc.listByHole(TEST_HOLE_1_ID)).length).toBe(before.length + 3);
+    });
+
+    test('createMany with one invalid item writes nothing', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const before = (await svc.listByCourse(TEST_COURSE_ID)).length;
+
+        await expect(
+            svc.createMany(TEST_COURSE_ID, [
+                { holeId: TEST_HOLE_1_ID, type: 'green', geometry: squareGeometry() },
+                { holeId: TEST_HOLE_1_ID, type: 'lava', geometry: squareGeometry() },
+            ]),
+        ).rejects.toBeInstanceOf(InvalidFeatureError);
+        expect((await svc.listByCourse(TEST_COURSE_ID)).length).toBe(before);
+    });
+
+    test('updateMany updates every row and bumps each version once', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const [a, b, c] = await threeGreens(svc);
+
+        const updated = await svc.updateMany([
+            { id: a.id, version: a.version, geometry: squareGeometry(100, 100) },
+            { id: b.id, version: b.version, type: 'rough' },
+            { id: c.id, version: c.version, holeId: TEST_HOLE_2_ID },
+        ]);
+        expect(updated.map((f) => f.id)).toEqual([a.id, b.id, c.id]);
+        expect(updated.map((f) => f.version)).toEqual([2, 2, 2]);
+        expect(updated[0].geometry).toEqual(squareGeometry(100, 100));
+        expect(updated[1].type).toBe('rough');
+        expect(updated[2].holeId).toBe(TEST_HOLE_2_ID);
+        expect((await svc.findById(c.id)).holeId).toBe(TEST_HOLE_2_ID);
+    });
+
+    test('updateMany with one stale version throws VersionConflictError and rolls back every row', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const [a, b] = await threeGreens(svc);
+
+        await expect(
+            svc.updateMany([
+                { id: a.id, version: a.version, type: 'rough' },
+                { id: b.id, version: 99, type: 'rough' },
+            ]),
+        ).rejects.toBeInstanceOf(VersionConflictError);
+        const rowA = await svc.findById(a.id);
+        expect(rowA.type).toBe('green');
+        expect(rowA.version).toBe(1);
+    });
+
+    test('updateMany with a missing row conflicts', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        await expect(svc.updateMany([{ id: 'nope', version: 1, type: 'rough' }])).rejects.toBeInstanceOf(
+            VersionConflictError,
+        );
+    });
+
+    test('removeMany deletes every row', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const created = await threeGreens(svc);
+
+        await svc.removeMany(created.map((f) => ({ id: f.id, version: f.version })));
+        const ids = new Set((await svc.listByCourse(TEST_COURSE_ID)).map((f) => f.id));
+        expect(created.some((f) => ids.has(f.id))).toBe(false);
+    });
+
+    test('removeMany with one stale version deletes nothing', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const [a, b, c] = await threeGreens(svc);
+
+        await expect(
+            svc.removeMany([
+                { id: a.id, version: a.version },
+                { id: b.id, version: 7 },
+                { id: c.id, version: c.version },
+            ]),
+        ).rejects.toBeInstanceOf(VersionConflictError);
+        const ids = new Set((await svc.listByCourse(TEST_COURSE_ID)).map((f) => f.id));
+        expect([a, b, c].every((f) => ids.has(f.id))).toBe(true);
     });
 });
 
@@ -925,8 +1065,10 @@ describe('CourseFeaturesService.replaceGenerated', () => {
             // Straight-edge ring: 4 corners, closing point dropped, no handles.
             expect(f.geometry.rings[0].points).toHaveLength(4);
             expect(f.geometry.rings[0].points.every((p) => p.hIn === undefined && p.hOut === undefined)).toBe(true);
-            expect(f.geojson!.type).toBe('Polygon');
         }
+        const served = (await svc.geojsonByCourse(TEST_COURSE_ID)).features.filter((f) => f.properties.source === 'lidar-canopy');
+        expect(served).toHaveLength(3);
+        for (const f of served) expect(f.geometry.type).toBe('Polygon');
         // Input order preserved via sort_order; unique within the course group.
         const orders = all.filter((f) => f.holeId === null).map((f) => f.sortOrder);
         expect(new Set(orders).size).toBe(orders.length);
@@ -966,8 +1108,11 @@ describe('CourseFeaturesService.replaceGenerated', () => {
         expect(f.geometry.rings).toHaveLength(2);
         expect(f.geometry.rings[1].points).toHaveLength(4);
         expect(f.geometry.rings[1].points.map((p) => [p.x, p.y])).toEqual(hole.slice(0, 4));
-        expect(f.geojson!.coordinates).toHaveLength(2);
-        expect(f.geojson!.coordinates[1]).toHaveLength(5);
+        const served = (await svc.geojsonByCourse(TEST_COURSE_ID)).features.find((g) => g.id === f.id)!;
+        expect(served.geometry.type).toBe('Polygon');
+        const coords = served.geometry.coordinates as number[][][];
+        expect(coords).toHaveLength(2);
+        expect(coords[1]).toHaveLength(5);
     });
 
     test('accepts an EPSG:3006 crs member in either GeoJSON form and rejects any other', async () => {
@@ -1393,7 +1538,8 @@ describe('CourseFeaturesService — centerline paths', () => {
         // The corridor spans the line plus the 2 m round caps.
         expect(Math.min(...xs(f))).toBeCloseTo(X - 2, 1);
         expect(Math.max(...xs(f))).toBeGreaterThan(X + 41);
-        expect(f.geojson!.type).toBe('Polygon');
+        const row = await db.selectFrom('course_features').select('geojson').where('id', '=', f.id).executeTakeFirstOrThrow();
+        expect(JSON.parse(row.geojson!).type).toBe('Polygon');
         const stored = (await svc.listByCourse(TEST_COURSE_ID)).find(s => s.id === f.id)!;
         expect(stored.geometry).toEqual(f.geometry);
     });

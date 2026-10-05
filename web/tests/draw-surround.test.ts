@@ -34,13 +34,18 @@ function fakeApi() {
         geojsonByCourse: reject,
         create: async input => {
             n += 1;
-            return { id: `f${n}`, version: 1, geojson: null, ...input } as CourseFeature;
+            return { id: `f${n}`, version: 1, ...input } as CourseFeature;
         },
         update: reject,
         remove: async () => ({}) as never,
         reorder: reject,
         imported: async () => [],
         removeImported: async () => ({ removed: 0 }),
+    };
+    api.createMany = async ({ courseId, items }) => {
+        const created: CourseFeature[] = [];
+        for (const item of items) created.push(await api.create({ courseId, ...item }));
+        return created;
     };
     return api;
 }

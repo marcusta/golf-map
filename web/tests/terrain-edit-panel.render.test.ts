@@ -70,7 +70,7 @@ function mount(opts: { edits?: TerrainEdit[]; jobs?: ShapingJob[]; features?: Ar
     const items = new Signal(opts.features ?? [B1]);
     const renderer: TerrainEditRenderer = { render() {}, reset() {}, clear() {} };
     const ctx = {
-        map: { interactionMode: new Signal('terrain-edit'), ready: new Signal(false), map: new Signal(null), onClick: () => () => {}, fitBounds() {} },
+        map: { interactionMode: new Signal('terrain-edit'), ready: new Signal(false), map: new Signal(null), onClick: () => () => {}, onMouseMove: () => () => {}, fitBounds() {} },
         elevation: null,
         tileset: { mapKey: new Signal(null) },
         courseDetail: { course: new Signal({ id: 'course-1', siteId: 'site-1' }), holes: new Signal([{ id: 'h3', number: 3 }]) },
