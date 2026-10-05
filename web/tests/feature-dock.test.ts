@@ -179,6 +179,22 @@ test('Draw panels survive a sub-mode switch and come back as the same elements',
     expect(host.querySelectorAll('[data-testid="stack-panel"]').length).toBe(1);
 });
 
+test('a tool panel leaves the dock body when the sub-mode switches away', async () => {
+    const { host } = await setup([row(0)]);
+    const mode = di.get(EditorModeService);
+    const body = host.querySelector<HTMLElement>('.ctx-dock__body')!;
+    const drawHost = host.querySelector<HTMLElement>('.ctx-dock__draw')!;
+
+    mode.activeToolId.set(MEASURE_TOOL_ID);
+    await tick();
+    expect(body.children.length).toBe(2);
+    expect(body.querySelector('.ctx-dock__tool')!.childElementCount).toBeGreaterThan(0);
+
+    mode.activeToolId.set(DRAW_TOOL_ID);
+    await tick();
+    expect([...body.children]).toEqual([drawHost]);
+});
+
 test('the move-to-hole select is built once per hole list, not per selection change', async () => {
     const { host, features, detail } = await setup([row(0), row(1, { holeId: 'h1' }), row(2, { holeId: 'h2' })]);
     features.select('f0');

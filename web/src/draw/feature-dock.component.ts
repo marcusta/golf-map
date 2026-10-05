@@ -161,6 +161,9 @@ export class ContextDockComponent extends Component<ContextDockProps> {
                 flex-direction: column;
             }
 
+            /* Per-tool panel host: layout-transparent, removed with the panel. */
+            & .ctx-dock__tool { display: contents; }
+
             /* Quiet dock footer (draw only): tertiary, minimal height. */
             & .ctx-dock__footer {
                 display: none;
@@ -237,6 +240,8 @@ export class ContextDockComponent extends Component<ContextDockProps> {
      */
     private drawHost: HTMLElement | null = null;
     private toolPanel: Component | null = null;
+    /** The tool panel's own host: destroy() leaves a component's nodes in place, so the host is what gets removed. */
+    private toolHost: HTMLElement | null = null;
     private mountedToolId: string | null = null;
     private body!: HTMLElement;
     /** Footer text + error flag, written by one effect so the DOM sees changes only. */
@@ -310,8 +315,7 @@ export class ContextDockComponent extends Component<ContextDockProps> {
             untrack(() => {
                 if (this.mountedToolId === tool.id) return;
                 this.mountedToolId = tool.id;
-                this.toolPanel?.destroy();
-                this.toolPanel = null;
+                this.clearToolPanel();
                 const isDraw = hostsFeatureStack(tool);
                 if (isDraw && !this.drawHost) {
                     this.drawHost = document.createElement('div');
@@ -323,8 +327,11 @@ export class ContextDockComponent extends Component<ContextDockProps> {
                 if (this.drawHost) this.drawHost.style.display = isDraw ? '' : 'none';
                 if (!isDraw && tool.panel) {
                     const PanelCtor = tool.panel;
+                    this.toolHost = document.createElement('div');
+                    this.toolHost.className = 'ctx-dock__tool';
+                    this.body.appendChild(this.toolHost);
                     this.toolPanel = new PanelCtor();
-                    this.toolPanel.mount(this.body);
+                    this.toolPanel.mount(this.toolHost);
                 }
             });
         }));
@@ -362,9 +369,15 @@ export class ContextDockComponent extends Component<ContextDockProps> {
         this.stackPanel.peek()?.destroy();
         this.stackPanel.set(null);
         this.drawHost = null;
+        this.clearToolPanel();
+        if (this.body) this.body.textContent = '';
+    }
+
+    private clearToolPanel(): void {
         this.toolPanel?.destroy();
         this.toolPanel = null;
-        if (this.body) this.body.textContent = '';
+        this.toolHost?.remove();
+        this.toolHost = null;
     }
 
     private dockLabel(): string {
