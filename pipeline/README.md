@@ -513,6 +513,61 @@ which needs torch's MPS FFT support, torch ≥ 2.1). The reusable seam lives
 in `golfpipe/inpaint.py` (`inpaint_tiled(image, mask, inpaint_fn)`), kept
 CLI-free so interactive editor cleaning can consume it directly.
 
+### `export-ortho-square` / `import-ortho-square` — cleaned photo to an external editor and back
+
+The web Clean tool's **External edit** section runs these (operator steps:
+`docs/workflows.md` section 6; design: `docs/feature-ortho-export-import.md`).
+Without the server, from the repo root (paths are relative to `pipeline/`):
+
+```sh
+# 1. Export. --ortho is the replayed .patched.tif (the pristine ortho for a site never patched);
+#    --log-seq is the highest patch seq it contains (0 = empty log); --seq numbers the export.
+bun run py -m golfpipe export-ortho-square \
+    --ortho ../data/sources/<siteId>/ortho-<vintage>.patched.tif \
+    --frame ../data/sources/<siteId>/sim-frame.json \
+    --out-dir ../data/sources/<siteId>/exports/1 --seq 1 --log-seq 24 \
+    --bounds-wgs84 west,south,east,north        # only while sim-frame.json does not exist
+
+# 2. Edit exports/1/ortho-sim-1.png elsewhere; save a copy as PNG at the same size.
+
+# 3. Import: diffs the copy against export 1 and writes patches/25.png.
+bun run py -m golfpipe import-ortho-square \
+    --ortho ../data/sources/<siteId>/ortho-<vintage>.patched.tif \
+    --patches-dir ../data/sources/<siteId>/patches \
+    --export-dir ../data/sources/<siteId>/exports/1 \
+    --image edited.png --seq 25 [--tolerance 2] [--min-area-px 4]
+```
+
+`export-ortho-square` resamples bands 1 to 3 bilinearly into the site's frame
+(`sim-frame.json`: `{"extent3006": [e0, n0, e1, n1], "size": n}`, a square in
+EPSG:3006, `golfpipe/square_frame.py`) and writes `ortho-sim-<seq>.png` (or
+`.jpg` at q95 with `--format jpg`, for a Unity texture), the world file
+(`.pgw`/`.jgw`) and `export.json` (`exportSeq`, `extent3006`, `size`, `logSeq`,
+`sha256`, `createdAt`, `file`, `format`, `bytes`), which it prints as one JSON
+line. A missing frame is created from `--bounds-wgs84` (squared like
+`gspro.py ortho`, 8192 px unless `--size`); an existing one is never changed
+and a different `--size` or bounds is refused. To use a frame other than the
+bounds' square, write `sim-frame.json` first. An export directory is
+immutable: an existing `export.json` there is refused.
+
+`import-ortho-square` marks the pixels that differ from the export by more than
+`--tolerance` (0 to 254, default 2) in any channel, drops 8-connected regions
+under `--min-area-px` (default 4), dilates the rest 1 px and writes the bounding
+box as an RGBA PNG (alpha 255 on the change, edited colour kept 2 px beyond it).
+It refuses an export whose hash no longer matches `export.json`, an image of
+another size, and a JPEG/WebP image or JPEG export unless `--tolerance` is
+given. It prints one JSON line (`changed`, `kind`, `file`, `bounds3006`,
+`bounds3857`, `changedPixels`, `regions`, ...); `changed: false` with a
+`reason` (`identical`, `below-min-area`, `outside-ortho`) writes nothing. It
+does **not** touch `patches.json` or the raster: the server appends the entry
+and bakes it. By hand, add to `patches.json` (version 2)
+`{"seq": 25, "kind": "raster", "file": "25.png", "bounds3006": {...},
+"bounds3857": {...}, "exportSeq": 1, "changedPixels": n, "tool": "external",
+"createdAt": "<ISO>"}` from that output, then run `bake-ortho-patch --seq 25`
+(`--ortho` the pristine tif, `--patches-dir`, `--out` the `.patched.tif`,
+`--tiles-out` / `--pristine-tiles` for the sim tiles). Raster entries replay
+without torch and byte-identically.
+
 ### `tile-ortho` — orthophoto GeoTIFF → JPEG XYZ pyramid
 
 ```sh

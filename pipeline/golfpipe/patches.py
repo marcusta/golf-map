@@ -17,13 +17,14 @@ the patched raster from scratch:
     data/sources/<mapKey>/patches/
         patches.json     the ordered log (written by the server, read here)
         1.png, 2.png, …  mask PNGs, luminance/alpha > 127 = pixel to inpaint
+                         (a raster entry's <seq>.png is its RGBA pixels)
 
 Log format is VERSIONED: this module reads version 2 (mask payloads).
 Version 1 stored pre-rendered RGBA fill pixels (the seam-y design); a
 non-empty version-1 log is refused with a clear error instead of being
 misread as masks.
 
-Version 2 carries TWO entry kinds (`kind`, absent = "mask"):
+Version 2 carries THREE entry kinds (`kind`, absent = "mask"):
 
   * mask  — a mask PNG; the fill is LaMa-inpainted (torch needed).
   * stamp — a clone-stamp STROKE: brush params (sizeM/opacity/flow/
@@ -32,9 +33,21 @@ Version 2 carries TWO entry kinds (`kind`, absent = "mask"):
     re-rendered here with the pure numpy brush engine (golfpipe.stamp) —
     source pixels read from the CURRENT patched raster shifted by the
     offset — so stamp entries need NO torch and replay byte-identically.
+  * raster — externally edited PIXELS (docs/feature-ortho-export-import.md):
+    an RGBA PNG holding only what changed between a square export and the
+    image the user edited from it (`import-ortho-square` writes it), alpha
+    255 on changed pixels and 0 elsewhere, cropped to the change. Its frame
+    is the axis-aligned EPSG:3006 rectangle `bounds3006` (west/south/east/
+    north, row 0 = north edge) — the export grid is EPSG:3006, so here 3006
+    is the exact frame and `bounds3857` is only its envelope, for retiling.
+    Replay reprojects colour and alpha bilinearly onto the ortho grid and
+    composites `out = src*a + dst*(1-a)`; the alpha ramp that resampling
+    leaves at the mask edge, one export pixel wide, is the seam treatment.
+    NO torch, byte-identical on replay. `exportSeq` and `changedPixels` are
+    carried for the UI, not used here.
 
-A log with only stamp entries is therefore fully bakeable without LaMa
-weights or torch; the inpaint_fn is only required when mask entries exist.
+A log without mask entries is therefore fully bakeable without LaMa weights
+or torch; the inpaint_fn is only required when mask entries exist.
 
 Two bake paths (commands.py):
 
@@ -133,19 +146,86 @@ class StampEntry:
     created_at: str
 
 
-LogEntry = PatchEntry | StampEntry
+@dataclass(frozen=True)
+class RasterEntry:
+    """One externally edited pixel patch (see the module header): an RGBA
+    PNG on an axis-aligned EPSG:3006 frame, alpha = where it applies."""
+
+    seq: int
+    file: str
+    """RGBA PNG file name relative to the patches dir."""
+    bounds3006: tuple[float, float, float, float]
+    """(west, south, east, north) in EPSG:3006 metres — the PNG's frame."""
+    bounds3857: tuple[float, float, float, float]
+    """EPSG:3857 envelope of `bounds3006` — the retile frame."""
+    export_seq: int | None
+    """The export the image was edited from (informational)."""
+    changed_pixels: int | None
+    """Opaque pixels in the PNG (informational)."""
+    tool: str
+    created_at: str
 
 
-def _parse_bounds(raw: object, context: str) -> tuple[float, float, float, float]:
+LogEntry = PatchEntry | StampEntry | RasterEntry
+
+
+def _parse_bounds(raw: object, context: str, name: str = "bounds3857") -> tuple[float, float, float, float]:
     if not isinstance(raw, dict):
-        raise PatchError(f"{context}: bounds3857 must be an object with west/south/east/north")
+        raise PatchError(f"{context}: {name} must be an object with west/south/east/north")
     try:
         w, s, e, n = (float(raw[k]) for k in ("west", "south", "east", "north"))
     except (KeyError, TypeError, ValueError) as exc:
-        raise PatchError(f"{context}: bounds3857 must carry numeric west/south/east/north") from exc
+        raise PatchError(f"{context}: {name} must carry numeric west/south/east/north") from exc
     if not all(math.isfinite(v) for v in (w, s, e, n)) or w >= e or s >= n:
-        raise PatchError(f"{context}: degenerate bounds3857 ({w}, {s}, {e}, {n})")
+        raise PatchError(f"{context}: degenerate {name} ({w}, {s}, {e}, {n})")
     return (w, s, e, n)
+
+
+def bounds3006_to_3857(bounds3006: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """The EPSG:3857 envelope (west, south, east, north) of an EPSG:3006 box.
+    Larger than the box by the meridian-convergence rotation, which is what
+    a retile frame wants: every tile the box touches."""
+    return transform_bounds(SWEREF99_TM, WEB_MERCATOR, *bounds3006)
+
+
+def _parse_file_name(raw: dict, context: str) -> tuple[int, str]:
+    try:
+        seq = int(raw["seq"])
+        file = str(raw["file"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PatchError(f"{context}: needs integer `seq` and string `file`") from exc
+    if "/" in file or "\\" in file or file.startswith("."):
+        raise PatchError(f"{context}: patch file name {file!r} must be a plain name")
+    return seq, file
+
+
+def _parse_optional_int(raw: dict, key: str, context: str) -> int | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PatchError(f"{context}: {key} must be an integer")
+    return value
+
+
+def _parse_raster(raw: dict, context: str) -> RasterEntry:
+    seq, file = _parse_file_name(raw, context)
+    bounds3006 = _parse_bounds(raw.get("bounds3006"), context, "bounds3006")
+    # bounds3857 is derived data: a log written without it still replays.
+    bounds3857 = (
+        _parse_bounds(raw["bounds3857"], context) if raw.get("bounds3857") is not None
+        else bounds3006_to_3857(bounds3006)
+    )
+    return RasterEntry(
+        seq=seq,
+        file=file,
+        bounds3006=bounds3006,
+        bounds3857=bounds3857,
+        export_seq=_parse_optional_int(raw, "exportSeq", context),
+        changed_pixels=_parse_optional_int(raw, "changedPixels", context),
+        tool=str(raw.get("tool", "external")),
+        created_at=str(raw.get("createdAt", "")),
+    )
 
 
 def _parse_stamp(raw: dict, context: str) -> StampEntry:
@@ -209,7 +289,8 @@ def load_patch_log(patches_dir: Path) -> list[LogEntry]:
     A missing file (course never patched) is an empty log, not an error.
     A NON-empty version-1 log (pre-rendered fill pixels, the retired format)
     is refused: its payloads are not masks and must not be baked as such.
-    Entries are mask entries unless `kind` is "stamp" (see module header).
+    Entries are mask entries unless `kind` is "stamp" or "raster" (see the
+    module header).
     """
     log_path = patches_dir / PATCH_LOG_NAME
     if not log_path.is_file():
@@ -244,15 +325,12 @@ def load_patch_log(patches_dir: Path) -> list[LogEntry]:
                 raise PatchError(f"{context}: needs an integer `seq`") from exc
             entries.append(_parse_stamp(raw, context))
             continue
+        if kind == "raster":
+            entries.append(_parse_raster(raw, context))
+            continue
         if kind != "mask":
             raise PatchError(f"{context}: unknown entry kind {kind!r}")
-        try:
-            seq = int(raw["seq"])
-            file = str(raw["file"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise PatchError(f"{context}: needs integer `seq` and string `file`") from exc
-        if "/" in file or file.startswith("."):
-            raise PatchError(f"{context}: patch file name {file!r} must be a plain name")
+        seq, file = _parse_file_name(raw, context)
         entries.append(PatchEntry(
             seq=seq,
             file=file,
@@ -456,6 +534,98 @@ def stamp_entry_into(dataset, entry: StampEntry) -> bool:
     return True
 
 
+def load_raster_patch(patches_dir: Path, entry: RasterEntry) -> np.ndarray:
+    """Reads a raster entry's PNG as an (H, W, 4) uint8 RGBA array."""
+    from PIL import Image
+
+    path = patches_dir / entry.file
+    if not path.is_file():
+        raise PatchError(f"raster patch file missing: {path} (log entry seq {entry.seq})")
+    with Image.open(path) as img:
+        return np.array(img.convert("RGBA"))
+
+
+def composite_rgba_window(
+    rgba: np.ndarray,
+    src_transform: Affine,
+    src_crs: CRS,
+    dest: np.ndarray,
+    window_transform: Affine,
+    crs: CRS,
+) -> np.ndarray:
+    """Composites an (H, W, 4) uint8 RGBA image framed by `src_transform`/
+    `src_crs` over `dest` ((rows, cols, 3) uint8 on the `window_transform`/
+    `crs` grid) and returns the result; `dest` is not modified.
+
+    Colour and alpha are reprojected bilinearly, each as its own band, then
+    `out = src*a + dst*(1-a)` rounded with np.rint. Where the resampled
+    alpha is 0 — including everything the image does not cover — the result
+    is `dest` byte for byte. Colour is NOT premultiplied: the transparent
+    pixels next to an opaque one must carry real neighbouring colour
+    (`import-ortho-square` keeps it two pixels out), or the edge ramp
+    darkens.
+    """
+    shape = dest.shape[:2]
+    warped = np.zeros((4, *shape), dtype=np.float32)
+    for band in range(4):
+        reproject(
+            source=np.ascontiguousarray(rgba[..., band]).astype(np.float32),
+            destination=warped[band],
+            src_transform=src_transform,
+            src_crs=src_crs,
+            dst_transform=window_transform,
+            dst_crs=crs,
+            resampling=Resampling.bilinear,
+        )
+    alpha = np.clip(warped[3] / 255.0, 0.0, 1.0)[..., None]
+    src = np.moveaxis(warped[:3], 0, -1)
+    blended = np.rint(src * alpha + dest.astype(np.float32) * (1.0 - alpha))
+    out = np.clip(blended, 0, 255).astype(np.uint8)
+    # Where nothing applies the float round trip is exact already; copying
+    # the bytes makes "outside the mask is untouched" hold by construction.
+    untouched = alpha[..., 0] <= 0.0
+    out[untouched] = dest[untouched]
+    return out
+
+
+def raster_entry_into(dataset, patches_dir: Path, entry: RasterEntry) -> bool:
+    """Windowed in-place composite of one raster entry into `dataset` (a
+    rasterio dataset opened "r+"): reads the ortho window under the entry's
+    `bounds3006`, composites the RGBA PNG over it (composite_rgba_window)
+    and writes the window back. The part of the patch off the raster is
+    cropped away. Returns False (writing nothing) when the patch misses the
+    raster or changes no pixel. Deterministic — byte-reproducible on replay,
+    no torch involved.
+    """
+    rgba = load_raster_patch(patches_dir, entry)
+    if not rgba[..., 3].any():
+        return False
+    ph, pw = rgba.shape[:2]
+    src_transform = from_bounds(*entry.bounds3006, pw, ph)
+
+    bounds = entry.bounds3006
+    if dataset.crs != SWEREF99_TM:
+        bounds = transform_bounds(SWEREF99_TM, dataset.crs, *bounds)
+    inv = ~dataset.transform
+    c0f, r0f = inv * (bounds[0], bounds[3])
+    c1f, r1f = inv * (bounds[2], bounds[1])
+    r0 = max(0, math.floor(min(r0f, r1f)))
+    c0 = max(0, math.floor(min(c0f, c1f)))
+    r1 = min(dataset.height, math.ceil(max(r0f, r1f)))
+    c1 = min(dataset.width, math.ceil(max(c0f, c1f)))
+    if r1 <= r0 or c1 <= c0:
+        return False
+
+    window = Window(c0, r0, c1 - c0, r1 - r0)
+    window_transform = dataset.transform * Affine.translation(c0, r0)
+    dest = np.moveaxis(dataset.read([1, 2, 3], window=window), 0, -1)
+    result = composite_rgba_window(rgba, src_transform, SWEREF99_TM, dest, window_transform, dataset.crs)
+    if np.array_equal(result, dest):
+        return False
+    dataset.write(np.moveaxis(result, -1, 0), window=window, indexes=[1, 2, 3])
+    return True
+
+
 def bake_entry_into(
     dataset,
     patches_dir: Path,
@@ -463,9 +633,11 @@ def bake_entry_into(
     inpaint_fn: InpaintFn | None,
     context_px: int = DEFAULT_CONTEXT_PX,
 ) -> bool:
-    """Bakes ONE log entry (mask or stamp) into an open "r+" dataset."""
+    """Bakes ONE log entry (mask, stamp or raster) into an open "r+" dataset."""
     if isinstance(entry, StampEntry):
         return stamp_entry_into(dataset, entry)
+    if isinstance(entry, RasterEntry):
+        return raster_entry_into(dataset, patches_dir, entry)
     if inpaint_fn is None:
         raise PatchError(f"baking mask entry seq {entry.seq} needs an inpaint_fn (LaMa)")
     mask = load_patch_mask(patches_dir, entry)
@@ -473,8 +645,8 @@ def bake_entry_into(
 
 
 def needs_inpaint(entries: list[LogEntry]) -> bool:
-    """True when any entry is a mask (LaMa/torch required); a stamp-only log
-    is fully bakeable without torch."""
+    """True when any entry is a mask (LaMa/torch required); a log of stamp
+    and raster entries only is fully bakeable without torch."""
     return any(isinstance(e, PatchEntry) for e in entries)
 
 
@@ -488,13 +660,15 @@ def apply_patches_to_ortho(
 ) -> None:
     """Full replay: copies the pristine ortho at `ortho_path` to `out_path`
     and windowed-bakes every entry (in seq order) into the copy — masks are
-    LaMa-inpainted, stamp strokes are re-rendered by the brush engine. The
-    pristine source is never modified. An empty or stamp-only log needs no
-    `inpaint_fn` (those paths stay torch-free).
+    LaMa-inpainted, stamp strokes are re-rendered by the brush engine,
+    raster patches are composited. The pristine source is never modified. A
+    log without mask entries needs no `inpaint_fn` (those paths stay
+    torch-free).
 
     Mask fills are regenerated by the model, so two replays of a mask-bearing
     log are visually equivalent but not guaranteed byte-identical; stamp
-    strokes replay byte-identically (see the module header).
+    strokes and raster patches replay byte-identically (see the module
+    header).
     """
     if out_path.resolve() == ortho_path.resolve():
         raise PatchError(f"refusing to overwrite the source ortho ({ortho_path}) — pass a different --out")

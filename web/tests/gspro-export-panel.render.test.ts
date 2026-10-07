@@ -423,6 +423,14 @@ test('the forest floor box is on, its colour and mix hide with it, and the pick 
     expect(floorCalls).toEqual(['#604830', undefined]);
 });
 
+test('the cleaned section has the one-step button into Unity, enabled once a vintage is picked', async () => {
+    const { host, svc } = await mount();
+    await svc.openFor('course-1', 'Vreta');
+    const button = host.querySelector('[data-testid="gspro-unity-ortho"]') as HTMLButtonElement;
+    expect(button.textContent).toBe('Inner cleaned photo → Unity meshes');
+    expect(button.disabled).toBe(false);
+});
+
 test('the vegetation zone buttons export the inner and the outer terrain', async () => {
     const { host, svc, zonesCalls } = await mount();
     await svc.openFor('course-1', 'Vreta');

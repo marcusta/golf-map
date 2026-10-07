@@ -200,14 +200,15 @@ def _reproject_square(src_path: Path, extent: tuple[float, float, float, float],
     out = np.full((len(bands), size, size), np.nan if floating else 0, dtype=dtype)
     with rasterio.open(src_path) as src:
         nodata_kw = {"src_nodata": src.nodata, "dst_nodata": np.nan} if floating else {}
-        for i, b in enumerate(bands):
-            reproject(
-                source=rasterio.band(src, b),
-                destination=out[i],
-                src_crs=src.crs, src_transform=src.transform,
-                dst_crs=SWEREF99, dst_transform=dst_transform,
-                resampling=resampling, **nodata_kw,
-            )
+        # All bands in one warp on every core: band by band on one thread the
+        # 8192 px ortho took 27 s of its 66 s export, the source read three times.
+        reproject(
+            source=rasterio.band(src, bands),
+            destination=out,
+            src_crs=src.crs, src_transform=src.transform,
+            dst_crs=SWEREF99, dst_transform=dst_transform,
+            resampling=resampling, num_threads=os.cpu_count() or 1, **nodata_kw,
+        )
     return out
 
 
@@ -2196,6 +2197,68 @@ def _road_regions(roads: list[MergedRoad], names: list[str], rows: list, tol: fl
     return {"shapes": dict(sorted(shapes.items())), "regions": regions}
 
 
+def _write_path_surfaces(svg: Path, regions: dict) -> Path:
+    """Write the road-surface sidecar of `svg` (path_surfaces_file)."""
+    out = path_surfaces_file(svg)
+    out.write_text(json.dumps({
+        "format": PATH_REGIONS_FORMAT,
+        "note": "The surfaces of the road shapes of the SVG next to this file (the Draw panel's path surface). "
+                "shapes: each shape's dominant surface, what Unity's golfmap.paths.materials uses until the "
+                "Blender step has cut a mixed shape's mesh apart; regions: every piece of each shape with its "
+                "surface and outline (SVG units), the input of that cut. OPCD names the meshes Spline_<shape>_....",
+        "svg": svg.name,
+        **regions,
+    }, indent=1) + "\n", encoding="utf-8")
+    return out
+
+
+def _path_surface_changes(old: dict | None, new: dict) -> tuple[list[str], list[str]]:
+    """What a sidecar written now says that the one of the last SVG export
+    (`old`, None when there is none) did not: report lines for the pieces
+    whose surface changed, and warnings for what the meshes built from that
+    SVG cannot follow - road shapes that came or went, pieces whose outline
+    moved."""
+    if old is None:
+        return [], []
+
+    def pieces(doc: dict) -> dict[str, tuple[str, dict]]:
+        return {p["id"]: (name, p) for name, r in (doc.get("regions") or {}).items() for p in r.get("pieces") or []}
+
+    before, after = pieces(old), pieces(new)
+    surfaced: dict[str, list[str]] = {}
+    moved: set[str] = set()
+    regrassed: set[str] = set()
+    for fid, (name, p) in after.items():
+        was = before.get(fid)
+        if was is None:
+            continue
+        if was[1].get("surface") != p.get("surface"):
+            surfaced.setdefault(name, []).append(f"{was[1].get('surface') or 'none'} -> {p.get('surface') or 'none'}")
+            if (was[1].get("surface") == GRASS_TRACK_SURFACE) != (p.get("surface") == GRASS_TRACK_SURFACE):
+                regrassed.add(was[0])
+        if was[0] == name and was[1].get("rings") != p.get("rings"):
+            moved.add(name)
+    lines = []
+    for name in sorted(surfaced):
+        region = new["regions"][name]
+        state = "mixed" if region["mixed"] else (region["surface"] or "no surface")
+        lines.append(f"{name}: {len(surfaced[name])} piece(s) changed surface ({', '.join(sorted(set(surfaced[name])))}); now {state}")
+    warnings = []
+    if regrassed:
+        warnings.append(f"warning: {', '.join(sorted(regrassed))} changed between a grass track and a hard surface: a grass track is "
+                        "built as rough, a hard path as a path mesh, so this needs the SVG export and the OPCD build")
+    came = sorted(set(new.get("regions") or {}) - set(old.get("regions") or {}))
+    gone = sorted(set(old.get("regions") or {}) - set(new.get("regions") or {}))
+    if came or gone:
+        warnings.append("warning: the road shapes differ from the last SVG export's"
+                        + (f" (new: {', '.join(came)})" if came else "") + (f" (gone: {', '.join(gone)})" if gone else "")
+                        + ": the meshes do not have them; export the SVG and build it in OPCD")
+    if moved:
+        warnings.append(f"warning: the outline of {', '.join(sorted(moved))} moved since the last SVG export: the meshes keep "
+                        "the old outline until the SVG is exported and built in OPCD")
+    return lines, warnings
+
+
 def _merged_roads(rows: list, fills: dict[str, str], tol: float) -> tuple[list[MergedRoad], str]:
     """The road features (ROADS_TYPES) merged into clean shapes per type (see
     ROADS_CLOSE_M), in the paint order of each shape's first feature, and a
@@ -2501,7 +2564,12 @@ def _road_names(roads: list[MergedRoad], rows_oldest_first: list, shape_ids: dic
 def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
             flatten: float | None, precision: int, mapped: dict[str, str],
             stack: str = "opcd", extent: Extent | None = None,
-            exclude_ids: set[str] | None = None, exclude_types: set[str] | None = None) -> None:
+            exclude_ids: set[str] | None = None, exclude_types: set[str] | None = None,
+            paths_only: bool = False) -> None:
+    """`paths_only`: rewrite only the road-surface sidecar of the SVG at `out`
+    (which must exist), from the course as it is now - a path's surface
+    changed, its outline did not, so the SVG and the meshes built from it
+    stand. Reports what changed against the sidecar it replaces."""
     extent = extent or _square_3006_extent(bbox)
     e0, n0, e1, n1 = extent
     side = e1 - e0
@@ -2558,6 +2626,27 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     for road in [r for r in roads if r.shape is None]:
         dropped_outside[road.kind] = dropped_outside.get(road.kind, 0) + 1
     roads = [r for r in roads if r.shape is not None]
+    if paths_only:
+        if not out.exists():
+            raise SystemExit(f"error: {out} does not exist: export the SVG once first (the surfaces file describes its road shapes)")
+        names = [f"roads_{part}" for part in _road_names(roads, shapes, shape_ids)]
+        regions = _road_regions(roads, names, rows, tol, to_svg)
+        sidecar = path_surfaces_file(out)
+        try:
+            old = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else None
+        except ValueError:
+            old = None
+        changes, warnings = _path_surface_changes(old, regions)
+        _write_path_surfaces(out, regions)
+        mixed = sorted(n for n, r in regions["regions"].items() if r["mixed"])
+        print(f"Wrote {sidecar}")
+        print(f"  {course['name']} ({course['id']}): {len(regions['shapes'])} road shape(s) with a surface"
+              + (f"; {len(mixed)} of mixed surfaces, for Blender to cut: {', '.join(mixed)}" if mixed else ""))
+        for line in changes or ([] if old is None else ["no path changed surface since the last export"]):
+            print(f"  {line}")
+        for line in warnings:
+            print(f"  {line}")
+        return
     for row in rows:
         kind = row["type"]
         fill = fills.get(kind)
@@ -2651,17 +2740,8 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    surfaces_out = path_surfaces_file(out)
     regions = _road_regions(roads, road_names, rows, tol, to_svg)
-    surfaces_out.write_text(json.dumps({
-        "format": PATH_REGIONS_FORMAT,
-        "note": "The surfaces of the road shapes of the SVG next to this file (the Draw panel's path surface). "
-                "shapes: each shape's dominant surface, what Unity's golfmap.paths.materials uses until the "
-                "Blender step has cut a mixed shape's mesh apart; regions: every piece of each shape with its "
-                "surface and outline (SVG units), the input of that cut. OPCD names the meshes Spline_<shape>_....",
-        "svg": out.name,
-        **regions,
-    }, indent=1) + "\n", encoding="utf-8")
+    surfaces_out = _write_path_surfaces(out, regions)
 
     total = sum(len(v) for v in layers.values())
     kinds = ", ".join(f"{k} {v}" for k, v in sorted(written.items(), key=lambda kv: -kv[1]))
@@ -2711,12 +2791,13 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
 # from the course DB so a tee or lot drawn tomorrow is in the next generation
 # without anyone editing a layer. Applied in list order:
 #   1. `afrod.flattentees` on every tee mesh (select by type);
-#   2. `afrod.cutcartpaths` + `afrod.smoothcartpaths` on every road/path mesh
-#      (select by type). Not split per `surface` here: the ops' own params
-#      do not depend on it (the SVG has one `roads_<n>` shape per network,
-#      data-surface only on grass tracks; the cut paint is decided per shape
-#      from that, else the op's `pathSurfaces`, else the DB - see
-#      shape_apply.cut_paint_mode);
+#   2. `afrod.cutcartpaths` on the concrete paths only (select by feature id;
+#      the cut simulates concrete slabs and is wrong on asphalt, gravel and
+#      dirt; none when the course has no concrete path, or when it has mixed
+#      road shapes, see below), then `afrod.smoothcartpaths` on every road/path
+#      mesh (select by type). The cut paint is decided per shape from the
+#      SVG's data-surface (grass tracks), else the op's `pathSurfaces`, else
+#      the DB - see shape_apply.cut_paint_mode;
 #   2b. `golfmap.split_surfaces` on the road shapes of more than one surface
 #      (select by shape name, `roads_<n>` as the SVG export names them,
 #      worked out here the same way: _mixed_road_shapes): Blender cuts their
@@ -2852,12 +2933,21 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
                     "params": dict(SHAPING_TEE_PARAMS)})
     paths = [r for r in rows if r["type"] in ROADS_TYPES and not _is_bridge_deck(r)]
     stats["paths"] = len(paths)
-    if paths:
-        ops.append({"id": "paths-cut", "op": "afrod.cutcartpaths", "select": {"type": "path"}})
-        ops.append({"id": "paths-smooth", "op": "afrod.smoothcartpaths", "select": {"type": "path"},
-                    "params": dict(SHAPING_PATH_SMOOTH_PARAMS)})
     mixed = _mixed_road_shapes(rows) if paths else []
     stats["mixed_roads"] = len(mixed)
+    # The cut is Afrod's concrete-slab look (a cross loop every few metres, painted as an expansion joint): only on
+    # paths whose surface is concrete. Asphalt, gravel, dirt ... are not cut: the loops plus smoothcartpaths'
+    # topological z smoothing leave 3-4 cm kinks every ~4 m (dark bands across the path in GSPro; Vreta, roads_124).
+    # A concrete piece inside a mixed road shape cannot be cut alone here (the cut runs before split_surfaces, on the
+    # whole merged mesh), so with mixed shapes in the course nothing is cut and `concrete_cut_skipped` says how many.
+    concrete = sorted((r for r in paths if _row_surface(r) == "concrete"), key=lambda r: r["id"])
+    stats["concrete_paths"] = len(concrete)
+    stats["concrete_cut_skipped"] = len(concrete) if mixed else 0
+    if concrete and not mixed:
+        ops.append({"id": "paths-cut", "op": "afrod.cutcartpaths", "select": {"feature": [r["id"] for r in concrete]}})
+    if paths:
+        ops.append({"id": "paths-smooth", "op": "afrod.smoothcartpaths", "select": {"type": "path"},
+                    "params": dict(SHAPING_PATH_SMOOTH_PARAMS)})
     if mixed:
         ops.append({"id": SHAPING_SPLIT_ID, "op": "golfmap.split_surfaces", "select": {"shape": mixed}})
 
@@ -2922,6 +3012,14 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     ops += pads
     stats["pads"] = len(pads)
 
+    # Last, on the final heights (the footprints above level lots and pads): gravel and dirt paths break up into the
+    # grass instead of ending on a line (blender/README.md "Shaping: path edge fade"). After split_surfaces, which
+    # gives every part its own surface; asphalt, concrete ... keep their crisp edge.
+    soft = [r for r in paths if _row_surface(r) in SHAPING_EDGE_FADE_SURFACES]
+    stats["edge_fade_paths"] = len(soft)
+    if soft:
+        ops.append({"id": SHAPING_EDGE_FADE_ID, "op": "golfmap.path_edge_fade", "select": {"type": "path"}})
+
     doc = {
         "format": SHAPING_LAYER_FORMAT,
         "id": SHAPING_GLOBAL_ID,
@@ -2934,6 +3032,8 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
 
 
 SHAPING_SPLIT_ID = "paths-surfaces"
+SHAPING_EDGE_FADE_ID = "paths-edge-fade"
+SHAPING_EDGE_FADE_SURFACES = ("gravel", "dirt")   # shape_edgefade.SURFACES
 
 
 def _mixed_road_shapes(rows: list) -> list[str]:
@@ -5342,6 +5442,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "- for test variants of the SVG; a road's kerb fillets go with it")
     p.add_argument("--exclude-type", dest="exclude_type", action="append", metavar="TYPE",
                    help="leave out every feature of TYPE, e.g. --exclude-type path (repeatable)")
+    p.add_argument("--paths-only", dest="paths_only", action="store_true",
+                   help="rewrite only <stem>-paths.json (the road surfaces) of the existing SVG at --out, "
+                        "after a path changed surface; the SVG is left as it is")
 
     return parser
 
@@ -5425,7 +5528,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd_svg(bbox, Path(args.out), Path(args.db), args.course,
                 args.flatten, args.precision, _parse_map(args.map), args.stack, extent=extent,
                 exclude_ids=_read_exclude_ids(Path(args.exclude_ids) if args.exclude_ids else None),
-                exclude_types=set(args.exclude_type or []))
+                exclude_types=set(args.exclude_type or []), paths_only=args.paths_only)
     else:
         parser.print_help()
         return 2

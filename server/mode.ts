@@ -1,3 +1,5 @@
+import { ORTHO_IMPORT_MAX_BYTES } from '../shared/ortho-import';
+
 /**
  * Server run mode (T59 — Local Builder / VPS Serve split).
  *
@@ -13,6 +15,17 @@
 export type ServerMode = 'builder' | 'serve';
 
 /** Reads the mode from `SERVER_MODE`; anything other than `serve` is `builder`. */
-export function serverMode(): ServerMode {
-    return process.env.SERVER_MODE === 'serve' ? 'serve' : 'builder';
+export function serverMode(env: Record<string, string | undefined> = process.env): ServerMode {
+    return env.SERVER_MODE === 'serve' ? 'serve' : 'builder';
+}
+
+/**
+ * Raises `BODY_LIMIT` to the ortho import cap in builder mode; never lowers
+ * it, and leaves serve mode alone. Called from `env-builder.ts` before the
+ * framework config reads the variable.
+ */
+export function raiseBuilderBodyLimit(env: Record<string, string | undefined> = process.env): void {
+    if (serverMode(env) !== 'builder') return;
+    const current = Number(env.BODY_LIMIT ?? '0');
+    if (!(current >= ORTHO_IMPORT_MAX_BYTES)) env.BODY_LIMIT = String(ORTHO_IMPORT_MAX_BYTES);
 }

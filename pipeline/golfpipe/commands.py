@@ -1456,6 +1456,375 @@ def cmd_bake_ortho_patch(
     return out
 
 
+EXPORT_META_NAME = "export.json"
+EXPORT_FORMATS = {"png": ("png", "pgw"), "jpg": ("jpg", "jgw")}
+EXPORT_JPEG_QUALITY = 95
+# zlib level of the export PNG. An 8192 px photo barely compresses whatever
+# the level, so the cheap one is used: the default 6 takes several times as
+# long for a few percent.
+EXPORT_PNG_COMPRESS_LEVEL = 1
+EXPORT_WARP_THREADS = 4
+# Largest per-channel difference (8-bit levels) still counted as unchanged
+# on import. 2 swallows the one-level shift an editor's colour-profile
+# conversion leaves on every pixel.
+DEFAULT_IMPORT_TOLERANCE = 2
+DEFAULT_IMPORT_MIN_AREA_PX = 4
+# Frame pixels kept around the change mask in the stored patch: 1 for the
+# dilation plus 1 fully transparent, so the alpha ramp that resampling makes
+# ends inside the PNG and not on its border.
+IMPORT_CROP_PAD_PX = 2
+_DIFF_STRIP_ROWS = 512
+
+
+def _bounds_json(bounds: tuple[float, float, float, float]) -> dict:
+    west, south, east, north = bounds
+    return {"west": west, "south": south, "east": east, "north": north}
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _emit_json(doc: dict) -> None:
+    """The one stdout line of the export/import commands — the server parses
+    it, so progress goes to stderr."""
+    import json
+
+    print(json.dumps(doc))
+
+
+def cmd_export_ortho_square(
+    ortho_path: Path,
+    frame_path: Path,
+    out_dir: Path,
+    seq: int,
+    log_seq: int,
+    size: int | None = None,
+    fmt: str = "png",
+    bounds_wgs84: tuple[float, float, float, float] | None = None,
+) -> dict:
+    """Exports the cleaned photo as ONE square image on the site's fixed
+    frame (golfpipe.square_frame), for editing in an external image editor
+    (docs/feature-ortho-export-import.md).
+
+    `ortho_path` is the working `.patched.tif` brought up to date by
+    `bake-ortho-patch` (or the pristine ortho of a site never patched) — the
+    replayed log is the only export source. `frame_path` is the site's
+    `sim-frame.json`: created here from `bounds_wgs84` when missing, never
+    changed afterwards. Bands 1..3 are resampled bilinearly into the frame;
+    ground the ortho does not cover comes out black.
+
+    Writes into `out_dir` (one directory per export, immutable — an existing
+    `export.json` there is refused):
+
+        ortho-sim-<seq>.png|jpg   the image
+        ortho-sim-<seq>.pgw|jgw   ESRI world file, EPSG:3006
+        export.json               exportSeq, extent3006, size, logSeq (the
+                                  highest patch seq the image contains),
+                                  sha256 + bytes of the image, createdAt,
+                                  file, format
+
+    PNG is the editing format. `fmt` "jpg" (q95) is for a Unity texture;
+    importing an edit of it needs an explicit tolerance. Prints `export.json`
+    as one JSON line on stdout and returns it.
+    """
+    import json
+    import time
+    from datetime import datetime, timezone
+
+    from rasterio.warp import reproject
+
+    from golfpipe import square_frame as square_frame_mod
+
+    if fmt not in EXPORT_FORMATS:
+        raise patches_mod.PatchError(f"unknown export format {fmt!r} (png or jpg)")
+    if seq < 1:
+        raise patches_mod.PatchError(f"--seq must be 1 or higher, got {seq}")
+    if log_seq < 0:
+        raise patches_mod.PatchError(f"--log-seq must be 0 (empty log) or higher, got {log_seq}")
+    meta_path = out_dir / EXPORT_META_NAME
+    if meta_path.exists():
+        raise patches_mod.PatchError(f"export {out_dir} already exists — exports are immutable, use a new --seq")
+    if not ortho_path.is_file():
+        raise patches_mod.PatchError(f"ortho not found: {ortho_path}")
+
+    t0 = time.perf_counter()
+    with rasterio.open(ortho_path) as src:
+        if src.count < 3:
+            raise patches_mod.PatchError(f"{ortho_path} has {src.count} band(s); the export needs an RGB ortho")
+        frame, created = square_frame_mod.ensure_frame(frame_path, bounds_wgs84, size)
+        if created:
+            print(f"Created frame {frame_path}: {frame.side_m:g} m square, {frame.size} px", file=sys.stderr)
+        rgb = np.zeros((3, frame.size, frame.size), dtype=np.uint8)
+        for i in range(3):
+            reproject(
+                source=rasterio.band(src, i + 1),
+                destination=rgb[i],
+                src_crs=src.crs, src_transform=src.transform,
+                dst_crs=square_frame_mod.SWEREF99_TM, dst_transform=frame.transform,
+                resampling=Resampling.bilinear,
+                # Same bytes as one thread (checked on a 10648 px ortho,
+                # 1/4/8 threads), a third of the time.
+                num_threads=EXPORT_WARP_THREADS,
+            )
+    t1 = time.perf_counter()
+
+    ext, world_ext = EXPORT_FORMATS[fmt]
+    stem = f"ortho-sim-{seq}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    image_path = out_dir / f"{stem}.{ext}"
+    img = Image.fromarray(np.ascontiguousarray(np.moveaxis(rgb, 0, -1)))
+    del rgb
+    if fmt == "png":
+        img.save(image_path, format="PNG", compress_level=EXPORT_PNG_COMPRESS_LEVEL)
+    else:
+        img.save(image_path, format="JPEG", quality=EXPORT_JPEG_QUALITY)
+    del img
+    t2 = time.perf_counter()
+
+    (out_dir / f"{stem}.{world_ext}").write_text(square_frame_mod.world_file_text(frame), encoding="ascii")
+    meta = {
+        "exportSeq": seq,
+        "extent3006": list(frame.extent3006),
+        "size": frame.size,
+        "logSeq": log_seq,
+        "sha256": _sha256_file(image_path),
+        "createdAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "file": image_path.name,
+        "format": fmt,
+        "bytes": image_path.stat().st_size,
+    }
+    # Written last: its presence is what marks the export complete.
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    print(f"Exported {image_path} ({frame.size} px, {frame.res_m:.3f} m/px, {meta['bytes'] / 1e6:.1f} MB): "
+          f"resample {t1 - t0:.1f} s, encode {t2 - t1:.1f} s, hash {time.perf_counter() - t2:.1f} s", file=sys.stderr)
+    _emit_json(meta)
+    return meta
+
+
+def _load_export_meta(export_dir: Path) -> dict:
+    import json
+
+    meta_path = export_dir / EXPORT_META_NAME
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise patches_mod.PatchError(f"cannot read export {meta_path}: {exc}") from exc
+    if not isinstance(meta, dict):
+        raise patches_mod.PatchError(f"{meta_path} is not an export description")
+    for key, kind in (("exportSeq", int), ("file", str), ("sha256", str)):
+        if not isinstance(meta.get(key), kind):
+            raise patches_mod.PatchError(f"{meta_path}: missing or malformed `{key}`")
+    file = meta["file"]
+    if "/" in file or "\\" in file or file.startswith("."):
+        raise patches_mod.PatchError(f"{meta_path}: export file name {file!r} must be a plain name")
+    return meta
+
+
+def _change_mask(before: np.ndarray, after: np.ndarray, tolerance: int) -> np.ndarray:
+    """(H, W) bool: pixels whose largest per-channel difference exceeds
+    `tolerance`. Compared in row strips to keep the int16 temporaries small."""
+    mask = np.zeros(before.shape[:2], dtype=bool)
+    for r in range(0, before.shape[0], _DIFF_STRIP_ROWS):
+        a = before[r:r + _DIFF_STRIP_ROWS].astype(np.int16)
+        b = after[r:r + _DIFF_STRIP_ROWS].astype(np.int16)
+        mask[r:r + _DIFF_STRIP_ROWS] = np.abs(a - b).max(axis=2) > tolerance
+    return mask
+
+
+def _mask_bbox(mask: np.ndarray) -> tuple[int, int, int, int]:
+    """(r0, r1, c0, c1), end-exclusive, of a non-empty bool mask."""
+    rows = np.flatnonzero(mask.any(axis=1))
+    cols = np.flatnonzero(mask.any(axis=0))
+    return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+
+
+def cmd_import_ortho_square(
+    ortho_path: Path,
+    patches_dir: Path,
+    export_dir: Path,
+    image_path: Path,
+    seq: int,
+    tolerance: int | None = None,
+    min_area_px: int = DEFAULT_IMPORT_MIN_AREA_PX,
+) -> dict:
+    """Turns an externally edited export back into ONE `raster` patch-log
+    payload holding only what the user changed (D-OX3).
+
+    `image_path` (the edited image) is compared pixel by pixel with the
+    export it was edited from (`export_dir`, an `export-ortho-square`
+    output). Pixels differing by more than `tolerance` levels in any channel
+    are the change; 8-connected regions of fewer than `min_area_px` pixels
+    are dropped as noise, the rest is dilated 1 px. The mask's bounding box
+    (plus IMPORT_CROP_PAD_PX) is written to `patches_dir/<seq>.png` as RGBA:
+    alpha 255 on the mask, the edited colour on the mask and two pixels
+    around it, zero elsewhere.
+
+    Because the comparison is against the export and not against the current
+    raster, an edit of an OLD export still imports correctly after the log
+    has grown: it carries the user's own changes and nothing else.
+
+    A lossy image — a JPEG export, or an edited file saved as JPEG/WebP — is
+    refused unless `tolerance` is passed explicitly: codec noise would mark
+    the whole frame as changed.
+
+    Does NOT touch `patches.json` or the raster. Prints one JSON line on
+    stdout and returns it; the server appends the entry (kind "raster",
+    `file`, `bounds3006`, `bounds3857`, `exportSeq`, `changedPixels` as
+    printed) and runs `bake-ortho-patch --seq`. When nothing changed the
+    command still succeeds: `"changed": false` with a `reason`, and no PNG
+    is written. `ortho_path` is only read for its extent: a change wholly
+    off the photo is such a no-change.
+    """
+    import hashlib
+    import time
+
+    from rasterio.warp import transform_bounds
+    from scipy import ndimage
+
+    from golfpipe import square_frame as square_frame_mod
+
+    explicit_tolerance = tolerance is not None
+    tolerance = DEFAULT_IMPORT_TOLERANCE if tolerance is None else tolerance
+    if not 0 <= tolerance <= 254:
+        raise patches_mod.PatchError(f"--tolerance must be 0..254, got {tolerance}")
+    if min_area_px < 1:
+        raise patches_mod.PatchError(f"--min-area-px must be 1 or higher, got {min_area_px}")
+    if seq < 1:
+        raise patches_mod.PatchError(f"--seq must be 1 or higher, got {seq}")
+    if any(e.seq == seq for e in patches_mod.load_patch_log(patches_dir)):
+        raise patches_mod.PatchError(f"seq {seq} is already in the patch log of {patches_dir}")
+
+    meta = _load_export_meta(export_dir)
+    frame = square_frame_mod.frame_from_json(meta, str(export_dir / EXPORT_META_NAME))
+    export_path = export_dir / meta["file"]
+    if not export_path.is_file():
+        raise patches_mod.PatchError(f"export image missing: {export_path}")
+    if not image_path.is_file():
+        raise patches_mod.PatchError(f"edited image not found: {image_path}")
+
+    t0 = time.perf_counter()
+    export_bytes = export_path.read_bytes()
+    if hashlib.sha256(export_bytes).hexdigest() != meta["sha256"]:
+        raise patches_mod.PatchError(
+            f"{export_path} no longer matches its export.json (sha256) — the export was modified; "
+            "edit a copy and import that"
+        )
+    del export_bytes
+
+    try:
+        with Image.open(image_path) as img:
+            edited_format = img.format
+            if img.size != (frame.size, frame.size):
+                raise patches_mod.PatchError(
+                    f"{image_path.name} is {img.size[0]}×{img.size[1]} px; export {meta['exportSeq']} is "
+                    f"{frame.size}×{frame.size} px — the edited image must keep the export's size"
+                )
+            lossy = meta.get("format") == "jpg" or edited_format in ("JPEG", "MPO", "WEBP")
+            if lossy and not explicit_tolerance:
+                raise patches_mod.PatchError(
+                    "refusing to import a JPEG/WebP image with the default tolerance: codec noise would mark "
+                    "the whole frame as changed. Save the edit as PNG from a PNG export, or pass --tolerance "
+                    "explicitly (try 12 or more)"
+                )
+            after = np.asarray(img.convert("RGB"))
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise patches_mod.PatchError(f"cannot read the edited image {image_path}: {exc}") from exc
+    with Image.open(export_path) as img:
+        before = np.asarray(img.convert("RGB"))
+    t1 = time.perf_counter()
+
+    result: dict = {
+        "changed": False,
+        "seq": seq,
+        "exportSeq": meta["exportSeq"],
+        "changedPixels": 0,
+        "diffPixels": 0,
+        "tolerance": tolerance,
+        "minAreaPx": min_area_px,
+    }
+
+    def no_change(reason: str) -> dict:
+        result["reason"] = reason
+        print(f"No change imported ({reason}): {result['diffPixels']} differing pixel(s) "
+              f"against export {meta['exportSeq']}", file=sys.stderr)
+        _emit_json(result)
+        return result
+
+    raw = _change_mask(before, after, tolerance)
+    del before
+    result["diffPixels"] = int(np.count_nonzero(raw))
+    if not result["diffPixels"]:
+        return no_change("identical")
+
+    # Label inside the raw change's bounding box only — a full-frame label
+    # image would be a quarter of a gigabyte for a handful of pixels.
+    r0, r1, c0, c1 = _mask_bbox(raw)
+    labels, _count = ndimage.label(raw[r0:r1, c0:c1], structure=np.ones((3, 3), dtype=bool))
+    keep = np.bincount(labels.ravel()) >= min_area_px
+    keep[0] = False
+    kept = keep[labels]
+    regions = int(np.count_nonzero(keep))
+    if not regions:
+        return no_change("below-min-area")
+    raw[:] = False
+    raw[r0:r1, c0:c1] = kept
+    del labels, kept
+
+    r0, r1, c0, c1 = _mask_bbox(raw)
+    pad = IMPORT_CROP_PAD_PX
+    r0, c0 = max(0, r0 - pad), max(0, c0 - pad)
+    r1, c1 = min(frame.size, r1 + pad), min(frame.size, c1 + pad)
+    mask = ndimage.binary_dilation(raw[r0:r1, c0:c1], structure=np.ones((3, 3), dtype=bool))
+    bounds3006 = frame.pixel_bounds3006(r0, r1, c0, c1)
+
+    with rasterio.open(ortho_path) as src:
+        ob = src.bounds
+        ortho_bounds = (ob.left, ob.bottom, ob.right, ob.top)
+        if src.crs != square_frame_mod.SWEREF99_TM:
+            ortho_bounds = transform_bounds(src.crs, square_frame_mod.SWEREF99_TM, *ortho_bounds)
+    if (bounds3006[0] >= ortho_bounds[2] or bounds3006[2] <= ortho_bounds[0]
+            or bounds3006[1] >= ortho_bounds[3] or bounds3006[3] <= ortho_bounds[1]):
+        return no_change("outside-ortho")
+
+    # Colour is kept on the mask and two pixels around it — the transparent
+    # neighbours the bilinear replay blends with at the edge — and zeroed
+    # beyond, where it is never read: scattered edits in one large bounding
+    # box then compress to almost nothing.
+    near = ndimage.binary_dilation(mask, structure=np.ones((3, 3), dtype=bool), iterations=2)
+    rgba = np.dstack([np.where(near[..., None], after[r0:r1, c0:c1], 0), np.where(mask, 255, 0)]).astype(np.uint8)
+    patches_dir.mkdir(parents=True, exist_ok=True)
+    patch_path = patches_dir / f"{seq}.png"
+    tmp_path = patches_dir / f"{seq}.png.tmp"
+    Image.fromarray(rgba).save(tmp_path, format="PNG")
+    tmp_path.replace(patch_path)
+
+    result.update({
+        "changed": True,
+        "kind": "raster",
+        "file": patch_path.name,
+        "bounds3006": _bounds_json(bounds3006),
+        "bounds3857": _bounds_json(patches_mod.bounds3006_to_3857(bounds3006)),
+        "changedPixels": int(np.count_nonzero(mask)),
+        "regions": regions,
+        "widthPx": c1 - c0,
+        "heightPx": r1 - r0,
+        "bytes": patch_path.stat().st_size,
+    })
+    print(f"Imported {result['changedPixels']} changed pixel(s) in {regions} region(s), "
+          f"{(bounds3006[2] - bounds3006[0]):.1f} × {(bounds3006[3] - bounds3006[1]):.1f} m, "
+          f"against export {meta['exportSeq']} -> {patch_path} ({result['bytes'] / 1e6:.2f} MB): "
+          f"read {t1 - t0:.1f} s, diff {time.perf_counter() - t1:.1f} s", file=sys.stderr)
+    _emit_json(result)
+    return result
+
+
 def cmd_tile_hillshade(
     dem_path: Path,
     out_dir: Path,

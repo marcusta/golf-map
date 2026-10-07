@@ -1,6 +1,8 @@
 import { Type, type Static } from '@sinclair/typebox';
 import { requireAuth } from '@basics/core/server/auth';
+import type { Context } from 'hono';
 import type { OrthoPatchesService, OrthoEditInput } from '../services/ortho-patches.service';
+import { liftIdleTimeout } from './ortho-patches.routes';
 
 // --- Input schemas ---
 
@@ -57,7 +59,17 @@ const CourseInput = Type.Object({
     courseId: Type.String(),
 });
 
+const ExportInput = Type.Object({
+    courseId: Type.String(),
+    /** png (lossless, the editing format; default) or jpg (q95, a Unity texture). */
+    format: Type.Optional(Type.Union([Type.Literal('png'), Type.Literal('jpg')])),
+});
+
 // --- API descriptor ---
+//
+// The export image download and the edited-image upload are raw Hono routes
+// in `ortho-patches.routes.ts` (a file stream and a raw request body, which
+// `mount()` cannot carry).
 
 export function createOrthoPatchesApi(svc: OrthoPatchesService) {
     const mw = [requireAuth()];
@@ -80,6 +92,19 @@ export function createOrthoPatchesApi(svc: OrthoPatchesService) {
             path: '/ortho-patches/revert-last',
             fn: (input: Static<typeof CourseInput>) => svc.revertLast(input.courseId),
             schema: CourseInput,
+            middleware: mw,
+        },
+        // Square export of the cleaned photo for an external image editor.
+        // Synchronous like apply: resample + PNG encode of an 8192 px frame
+        // is 15 to 20 s, longer when the log has to be replayed first.
+        exportOrthoSquare: {
+            method: 'POST' as const,
+            path: '/ortho-patches/export',
+            fn: (input: Static<typeof ExportInput>, c: Context) => {
+                liftIdleTimeout(c);
+                return svc.exportSquare(input.courseId, input.format);
+            },
+            schema: ExportInput,
             middleware: mw,
         },
         orthoPatchesInfo: {

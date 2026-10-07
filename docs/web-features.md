@@ -23,6 +23,12 @@ Map view's photo card and the large viewer. `photos-overlay.ts` draws markers
 and view wedges (dashed = heading not refined). Thumbnails are the 2048 px
 previews, lazy-loaded; the server has no smaller size.
 
+## Clean tool: External edit
+
+The Clean panel's External edit section (`clean/clean-panel.component.ts`) drives the export, edit, import loop of [feature-ortho-export-import.md](feature-ortho-export-import.md); operator steps in [workflows.md](workflows.md) section 6. `CleanToolService.exportPhoto()` calls the generated `api.orthoPatches.exportOrthoSquare`; `importPhoto(file, exportSeq, tolerance)` goes through `OrthoImportClient` (`clean/clean-external.ts`), because `PUT /api/ortho-patches/import/:courseId` is a raw route with no generated client and the upload needs progress (`XMLHttpRequest` behind the `UploadLike` seam, so tests need no network). Both hold the tool's `applying` phase like a bake; `externalBusy` says which. `exports` and `exportFrame` come from `orthoPatchesInfo`. The panel offers PNG only. After an import with `changed`, the patch count updates and the sim photo refreshes, so Revert last patch covers it. `summarizeImport` (pure) builds the summary: the box is compared with the frame (warning over 30 %, note from 10 %) after the import, not before, because the server bakes inside the request. A timed-out export or a 504 import shows an "still running on the server" note and refreshes the info instead of an error.
+
+**Apply in Unity** (the button above External edit, `CleanToolService.applyInUnity()`): bakes the pending queue, then starts the GSPro export job `unity-ortho` on the built vintage's `.patched.tif` (`api.gsproExport`, behind the `UnityOrthoApi` seam) and polls it; `externalBusy` is `unity`, the outcome goes to `unityMessage`. The job applies the `-meshes` variant (darkened, grass surfaces tinted green) with server defaults and no building removal or forest floor; the export panel's own button is the one with options ([gspro/export.md](gspro/export.md)).
+
 ## Rules lines live in Furniture
 
 The penalty areas and OOB (`RULES_TYPES` in `draw/feature-palette.ts`) are

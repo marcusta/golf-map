@@ -20,13 +20,6 @@
       }
     },
     {
-      "id": "paths-cut",
-      "op": "afrod.cutcartpaths",
-      "select": {
-        "type": "path"
-      }
-    },
-    {
       "id": "paths-smooth",
       "op": "afrod.smoothcartpaths",
       "select": {

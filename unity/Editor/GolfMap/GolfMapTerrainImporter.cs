@@ -446,25 +446,82 @@ namespace GolfMap.Editor
                 var updated = new List<object>();
                 foreach (var assetPath in copies)
                 {
-                    var full = Path.Combine(root, assetPath.Replace('/', Path.DirectorySeparatorChar));
-                    bool same = new FileInfo(full).Length == new FileInfo(src).Length && File.ReadAllBytes(full).SequenceEqual(File.ReadAllBytes(src));
-                    if (same) { updated.Add(assetPath + " (already the export)"); continue; }
-                    if (!dryRun)
-                    {
-                        Directory.CreateDirectory(backupDir);
-                        var backup = Path.Combine(backupDir, Path.GetFileNameWithoutExtension(name) + "-" + stamp + ".jpg");
-                        File.Copy(full, backup, true);
-                        File.Copy(src, full, true);
-                        AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
-                        updated.Add(assetPath + " (backup " + backup.Substring(root.Length + 1).Replace('\\', '/') + ")");
-                    }
-                    else updated.Add(assetPath + " (would be replaced)");
+                    updated.Add(assetPath + " (" + ReplaceOrthoInPlace(src, assetPath, root, backupDir, stamp, dryRun) + ")");
                 }
                 row["copies"] = updated;
                 rows.Add(row);
             }
             if (!dryRun) SceneView.RepaintAll();
             return new Dictionary<string, object> { { "folder", folder }, { "match", match }, { "dryRun", dryRun }, { "files", rows } };
+        }
+
+        // Overwrites the project texture at assetPath with the file src, keeping the asset (same GUID); the old file
+        // goes to backupDir under its own name first. Returns what happened, for the report.
+        static string ReplaceOrthoInPlace(string src, string assetPath, string root, string backupDir, string stamp, bool dryRun)
+        {
+            var full = Path.Combine(root, assetPath.Replace('/', Path.DirectorySeparatorChar));
+            bool same = new FileInfo(full).Length == new FileInfo(src).Length && File.ReadAllBytes(full).SequenceEqual(File.ReadAllBytes(src));
+            if (same) return "already the export";
+            if (dryRun) return "would be replaced";
+            Directory.CreateDirectory(backupDir);
+            var backup = Path.Combine(backupDir, Path.GetFileNameWithoutExtension(assetPath) + "-" + stamp + ".jpg");
+            File.Copy(full, backup, true);
+            File.Copy(src, full, true);
+            AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+            return "backup " + backup.Substring(root.Length + 1).Replace('\\', '/');
+        }
+
+        // orthos.update only reaches a project copy of the SAME file name. An export from another source (the patched
+        // photo, the cleaned one) has its own name, so this one takes the export file by name and puts it onto the
+        // texture the scene's course meshes sample, whatever that asset is called.
+        [BridgeCommand("golfmap.orthos.apply", "Put one orthophoto JPEG of the course export folder (file) onto the texture the scene's course meshes sample as _Satellite, in place (same GUID: the MAHS materials and the Stix colour map on the same asset keep their reference), the old file backed up to GolfMapSpelunk/ortho-backups/ first, then reimported. The project asset keeps its own file name. With several satellite textures in the scene, pass target.",
+            args = "file (a .jpg in the export folder, e.g. <prefix>-<collection>-patched-clean-8192-meshes.jpg), target (project asset path; default: the one _Satellite texture the scene's renderers use), folder (default: the active course's export folder), dryRun=false")]
+        static object OrthosApplyCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            var folder = a.String("folder");
+            if (string.IsNullOrEmpty(folder))
+            {
+                if (string.IsNullOrEmpty(course.exportFolder)) throw new BridgeError("The course asset names no export folder; pass folder.");
+                folder = Path.IsPathRooted(course.exportFolder) ? course.exportFolder : Path.Combine(Application.dataPath, course.exportFolder);
+            }
+            folder = Path.GetFullPath(folder);
+            var file = a.String("file");
+            if (string.IsNullOrEmpty(file) || file != Path.GetFileName(file) || !file.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+                throw new BridgeError("file must be the name of a .jpg in the export folder.");
+            var src = Path.Combine(folder, file);
+            if (!File.Exists(src)) throw new BridgeError("No " + file + " in " + folder + ".");
+            bool dryRun = a.Bool("dryRun", false);
+
+            // The satellite textures in use, by how many renderers sample each.
+            var users = new Dictionary<string, int>();
+            foreach (var r in UnityEngine.Object.FindObjectsOfType<Renderer>())
+                foreach (var m in r.sharedMaterials)
+                {
+                    if (m == null || !m.HasProperty("_Satellite")) continue;
+                    var p = AssetDatabase.GetAssetPath(m.GetTexture("_Satellite"));
+                    if (string.IsNullOrEmpty(p)) continue;
+                    int n; users.TryGetValue(p, out n); users[p] = n + 1;
+                }
+            var listed = string.Join("; ", users.OrderByDescending(u => u.Value).Select(u => u.Key + " (" + u.Value + " renderers)").ToArray());
+            var target = a.String("target");
+            if (string.IsNullOrEmpty(target))
+            {
+                if (users.Count == 0) throw new BridgeError("No renderer in the scene has a material with a _Satellite texture; pass target.");
+                if (users.Count > 1) throw new BridgeError("The scene's meshes sample " + users.Count + " satellite textures; pass target: " + listed + ".");
+                target = users.Keys.First();
+            }
+            else if (AssetDatabase.LoadAssetAtPath<Texture2D>(target) == null) throw new BridgeError("No texture at " + target + ".");
+
+            var root = Directory.GetParent(Application.dataPath).FullName;
+            var status = ReplaceOrthoInPlace(src, target, root, Path.Combine(root, "GolfMapSpelunk", "ortho-backups"), DateTime.Now.ToString("yyyyMMdd-HHmmss"), dryRun);
+            if (!dryRun) SceneView.RepaintAll();
+            int renderers; users.TryGetValue(target, out renderers);
+            return new Dictionary<string, object>
+            {
+                { "file", file }, { "export", File.GetLastWriteTime(src).ToString("yyyy-MM-dd HH:mm") }, { "target", target },
+                { "renderers", renderers }, { "status", status }, { "dryRun", dryRun },
+            };
         }
 
         public static Dictionary<string, object> UpdateHeights(string which, string folder, float outerSinkM, bool dryRun)

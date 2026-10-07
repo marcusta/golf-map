@@ -1655,6 +1655,17 @@ def plan_units(ctx, op):
         recs, problems = sl.select(op["select"], ctx.index)
         names = [r["name"] for r in recs]
         return [Unit("*", names, None, lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))], problems
+    if kind == "golfmap.path_edge_fade":
+        # one unit per road shape: its path pieces and every blend object (the strips of several pieces share one);
+        # reads = the shape's objects + what the weld afterwards can reach (their boxes + 1 m)
+        recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
+        src = _file_sha(os.path.join(HERE, "shape_edgefade.py"))
+        units = []
+        for svg_id, group in sl.group_by_feature(recs):
+            names = [r["name"] for r in group]
+            units.append(Unit(svg_id, names, group_seed(ctx, op, svg_id),
+                              (lambda names: lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))(names), extra=src))
+        return units, problems
     groups, problems = feature_groups(ctx, op)
     weld = op.get("weld", True) is not False
     radius = None
@@ -3502,8 +3513,449 @@ def split_surfaces(ctx, op, unit):
     return run
 
 
+# ---------------------------------------------------------------- golfmap.path_edge_fade
+#
+# A gravel or dirt path meets the grass along a fringe strip (`..._B_..._Blend`, OPCD's blend) one quad wide
+# (0.12 m) with a straight red -> black ramp: the path ends on a line and the 3D grass beside it follows the
+# strip's quads. This op makes the edge irregular:
+#   1. for every path piece of a picked road shape (surface in `surfaces`, default gravel and dirt) and every blend
+#      object of that surface: the blend faces whose inner edge lies on the piece's boundary are the piece's strip;
+#   2. the strip is joined with the piece, welded, the edges that cross the line `widthM` + 0.1 m from the seam are cut
+#      there, and every edge inside that zone is halved until it is <=
+#      `maxEdgeM` (the paint's resolution; the faces grow with 1 / maxEdgeM^2);
+#   3. the path faces whose centre is within the effective width of the seam move to the strip: it now reaches that far
+#      into the path (`widthM`, at most 60 % of the piece's half width: a narrow path keeps a core), the strip's outer
+#      edge (welded to the rough / deep mesh beside it) does not move;
+#   4. the strip is painted with shape_edgefade.strip_value: red = the neighbour's grass (Stix grows on red), green =
+#      the path surface, a noisy ramp from the outer edge (all red) to the inner edge (all green); the rest of the
+#      blend object (strips of pieces this unit did not reach, other shapes' ends) is converted to the same convention
+#      (red = 1 - old red, green = old red) so the object has one convention, which `golfmap.paths.materials` reads
+#      from the paint (path Green, far Red) and `golfmap.roughgrass.plant` plants grass on;
+#   5. the changed meshes get smooth shading (custom normals dropped), then `weld_tjunctions` closes the T-junctions the
+#      subdivided outer edge made against the neighbours (`weld`, default on).
+# Object names and the mesh's materials stay; the objects carry `golfmap_edge_fade` = the convention id.
+# `edge_fade_core` takes the objects, so it is also run on imported FBX by the quick harness (no replay needed).
+
+EDGE_FADE_PROP = "golfmap_edge_fade"
+EDGE_FADE_ZONE_MARGIN_M = 0.1   # subdivide this far beyond the strip (its faces' centres are tested against the width)
+EDGE_FADE_MIN_WIDTH_M = 0.1     # a piece too narrow for at least this much strip is left alone
+
+
+def _edge_fade_surface(ctx, obj, doc):
+    """The surface of a path piece or blend: `golfmap_surface` (set by split_surfaces), else the sidecar's surface of
+    its road shape when that shape is one surface."""
+    s = obj.get("golfmap_surface")
+    if s:
+        return s
+    entry = ((doc or {}).get("regions") or {}).get((ctx.by_name.get(obj.name) or {}).get("svgId"))
+    if entry and not entry.get("mixed"):
+        return entry.get("surface")
+    return None
+
+
+def _ef_world_bm(obj):
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.transform(obj.matrix_world)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    return bm
+
+
+def _ef_red(v, layer):
+    vals = [l[layer][0] for l in v.link_loops]
+    return sum(vals) / len(vals) if vals else 1.0
+
+
+def _ef_dense_kd(points):
+    kd = KDTree(max(1, len(points)))
+    for i, p in enumerate(points):
+        kd.insert(p, i)
+    kd.balance()
+    return kd
+
+
+def _ef_dense_points(edges, step):
+    pts = []
+    for a, b in edges:
+        n = max(1, int((b - a).length / step))
+        for k in range(n + 1):
+            pts.append(a.lerp(b, k / n))
+    return pts
+
+
+def _ef_faces_to_bm(faces, s_layer=False):
+    """A new bmesh of these faces (smooth; a vertex is shared by the source vertex it came from)."""
+    import bmesh
+    nb = bmesh.new()
+    mp = {}
+    if s_layer:
+        nb.loops.layers.float.new("s")
+    for f in faces:
+        vs = []
+        for v in f.verts:
+            nv = mp.get(v)
+            if nv is None:
+                nv = mp[v] = nb.verts.new(v.co)
+            vs.append(nv)
+        nf = nb.faces.new(vs)
+        nf.smooth = True
+    return nb
+
+
+def _ef_set_colours(me, buf):
+    for a in list(me.color_attributes):
+        me.color_attributes.remove(a)
+    attr = me.color_attributes.new("Col", "BYTE_COLOR", "CORNER")
+    me.color_attributes.active_color = attr
+    me.color_attributes.render_color_index = 0
+    attr.data.foreach_set("color_srgb", buf.reshape(-1).astype(np.float32))
+
+
+def _ef_finish(obj, bm, colours):
+    """Write bm (world space) into the object's mesh: local space, smooth, custom normals dropped, materials and
+    colours (an (L, 4) sRGB array, in the corner order of bm's faces) set."""
+    me = obj.data
+    mats = list(me.materials)
+    bm.transform(obj.matrix_world.inverted())
+    bm.to_mesh(me)
+    bm.free()
+    if len(me.materials) == 0:
+        for m in mats:
+            me.materials.append(m)
+    me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
+    me.update()
+    if me.has_custom_normals:
+        bpy.context.view_layer.objects.active = obj
+        with bpy.context.temp_override(**view3d_override()):
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+    _ef_set_colours(me, colours)
+    if me.attributes.get("s") is not None:
+        me.attributes.remove(me.attributes["s"])
+    me.update()
+
+
+def op_path_edge_fade(ctx, op):
+    units, problems = plan_units(ctx, op)
+    runs = []
+    for unit in units:
+        def compute(unit=unit):
+            return path_edge_fade(ctx, op, unit)
+        run = ctx.runner.run(ctx, op, unit, compute)
+        if run is not None:
+            runs.append(run)
+    return runs, problems
+
+
+def path_edge_fade(ctx, op, unit):
+    import shape_edgefade as ef
+    import shape_surfaces as ss
+    run = {"feature": unit.id, "targets": list(unit.targets), "seed": unit.seed, "result": ["FINISHED"]}
+    surfaces = set(op.get("surfaces") or ef.SURFACES)
+    try:
+        doc = ss.load_sidecar(_split_sidecar(ctx, op))
+    except (OSError, ValueError):
+        doc = None
+    objs = [bpy.data.objects[n] for n in unit.targets if n in bpy.data.objects]
+    pieces = [o for o in objs if o.get("opcd_kind") != "blend" and _edge_fade_surface(ctx, o, doc) in surfaces
+              and not o.get(EDGE_FADE_PROP)]
+    blends = [o for o in objs if o.get("opcd_kind") == "blend" and _edge_fade_surface(ctx, o, doc) in surfaces
+              and not o.get(EDGE_FADE_PROP)]
+    if not pieces or not blends:
+        run.update(pieces={}, blends=[], note="no %s in %s of surface %s (or already faded)" % (
+            "path piece" if not pieces else "blend", unit.id, "/".join(sorted(surfaces))))
+        return run
+    object_mode()
+    run.update(edge_fade_core(pieces, blends, width=float(op.get("widthM", ef.WIDTH_M)),
+                              max_edge=float(op.get("maxEdgeM", ef.MAX_EDGE_M)), amplitude=float(op.get("amplitude", ef.AMPLITUDE)),
+                              seed=int(unit.seed or 0) & 0xFFFF, weld=op.get("weld", True) is not False))
+    print(f"[shape_apply] path_edge_fade {unit.id}: {len(run['pieces'])} pieces, {len(run['blends'])} blends, "
+          f"{run['faces']} faces, {run['seconds']} s ({run['phases']})")
+    return run
+
+
+def edge_fade_core(pieces, blends, width, max_edge, amplitude, seed, weld=True, tol=1e-3):
+    """Fade the strips of `blends` (mesh objects in the course frame, `Col` colours) along the boundaries of `pieces`.
+    Returns the run fields: widthM, maxEdgeM, amplitude, surfaces..., pieces, blends, changed, faces, welds."""
+    import bmesh
+    import shape_edgefade as ef
+    t0 = time.time()
+    phases = {"match": 0.0, "subdivide": 0.0, "assign": 0.0, "paint": 0.0, "build": 0.0}
+    out = {"widthM": width, "maxEdgeM": max_edge, "amplitude": amplitude, "pieces": {}, "blends": []}
+    B = []
+    for o in blends:
+        bm = _ef_world_bm(o)
+        col = bm.loops.layers.color.get("Col")
+        inner = [v for v in bm.verts if col is not None and _ef_red(v, col) > 0.9]
+        B.append({"obj": o, "bm": bm, "col": col, "inner": inner, "inner_set": set(inner), "claimed": set(), "strips": [], "pieces": []})
+    new_pieces = {}
+    for P in pieces:
+        tp0 = time.time()
+        bmP = _ef_world_bm(P)
+        bnd = {v.index for e in bmP.edges if e.is_boundary for v in e.verts}
+        if not bnd:
+            bmP.free()
+            continue
+        pk = KDTree(len(bnd))
+        for i in bnd:
+            pk.insert(bmP.verts[i].co, i)
+        pk.balance()
+        matched = []
+        for b in B:
+            m = set()
+            hit_verts = {v for v in b["inner"] if pk.find(v.co)[2] < tol}
+            if hit_verts:
+                for f in {f for v in hit_verts for f in v.link_faces}:
+                    if f.index not in b["claimed"] and sum(1 for v in f.verts if v in hit_verts) >= 2:
+                        m.add(f.index)
+            matched.append(m)
+        if not any(matched):
+            bmP.free()
+            out["pieces"][P.name] = {"matched": 0}
+            continue
+        owner_kd, owner_w, parts = {}, {}, []
+        for bi, m in enumerate(matched):
+            if not m:
+                continue
+            b = B[bi]
+            edges = []
+            for fi in m:
+                for e in b["bm"].faces[fi].edges:
+                    a, c = e.verts
+                    if _ef_red(a, b["col"]) < 0.1 and _ef_red(c, b["col"]) < 0.1:
+                        edges.append((a.co.copy(), c.co.copy()))
+            owner_kd[bi + 1] = _ef_dense_kd(_ef_dense_points(edges, 0.02))
+            ds = sorted(owner_kd[bi + 1].find(v.co)[2] for v in {v for fi in m for v in b["bm"].faces[fi].verts if v in b["inner_set"]})
+            owner_w[bi + 1] = ds[len(ds) // 2] if ds else 0.12
+            bmM = b["bm"].copy()
+            bmM.faces.ensure_lookup_table()
+            bmesh.ops.delete(bmM, geom=[f for f in bmM.faces if f.index not in m], context="FACES")
+            bmesh.ops.delete(bmM, geom=[v for v in bmM.verts if not v.link_faces], context="VERTS")
+            parts.append((bi + 1, bmM))
+        tp = bpy.data.meshes.new("gm_ef_p")
+        bmP.to_mesh(tp)
+        bm = bmesh.new()
+        bm.from_mesh(tp)
+        owner = bm.faces.layers.int.new("owner")
+        bm.faces.ensure_lookup_table()
+        for f in bm.faces:
+            f[owner] = 0
+        for oid, bmM in parts:
+            tm = bpy.data.meshes.new("gm_ef_m")
+            bmM.to_mesh(tm)
+            n0 = len(bm.faces)
+            bm.from_mesh(tm)
+            bm.faces.ensure_lookup_table()
+            for f in bm.faces[n0:]:
+                f[owner] = oid
+            bmM.free()
+            bpy.data.meshes.remove(tm)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=tol)
+        colj = bm.loops.layers.color.get("Col")
+        phases["match"] += time.time() - tp0
+        tp0 = time.time()
+
+        # the seam (path <-> strip) never moves while subdividing, so its distance field is computed once
+        pts, ids = [], []
+        for e in bm.edges:
+            if len(e.link_faces) == 2 and (e.link_faces[0][owner] == 0) != (e.link_faces[1][owner] == 0):
+                a, c = e.verts[0].co, e.verts[1].co
+                oid = max(e.link_faces[0][owner], e.link_faces[1][owner])
+                n = max(1, int((c - a).length / 0.05))
+                for k in range(n + 1):
+                    pts.append(a.lerp(c, k / n))
+                    ids.append(oid)
+        if not pts:
+            bm.free()
+            bmP.free()
+            bpy.data.meshes.remove(tp)
+            out["pieces"][P.name] = {"matched": sum(len(m) for m in matched), "skipped": "no seam between the piece and its strip"}
+            continue
+        sk = _ef_dense_kd(pts)
+        dist = {}
+
+        def d_of(v):
+            d = dist.get(v)
+            if d is None:
+                d = dist[v] = sk.find(v.co)[2]
+            return d
+
+        half = max((d_of(v) for f in bm.faces if f[owner] == 0 for v in f.verts), default=0.0)   # the path's half width
+        eff = min(width, 0.6 * half)
+        if eff < EDGE_FADE_MIN_WIDTH_M:
+            bm.free()
+            bmP.free()
+            bpy.data.meshes.remove(tp)
+            out["pieces"][P.name] = {"matched": sum(len(m) for m in matched), "skipped": f"too narrow: half width {half:.2f} m"}
+            continue
+        for bi, m in enumerate(matched):
+            if m:
+                B[bi]["claimed"] |= m
+                B[bi]["pieces"].append(P.name)
+        zone = eff + EDGE_FADE_ZONE_MARGIN_M
+        # 1. every edge that crosses the zone boundary gets a vertex exactly there (distance interpolated along the edge):
+        #    no triangle reaches from the strip band deep into the path (a coarse wedge would carry its membership and
+        #    its paint across as a sawtooth), and the part outside the zone stays coarse
+        crossing = [e for e in bm.edges if (d_of(e.verts[0]) < zone) != (d_of(e.verts[1]) < zone)]
+        touched = set()
+        for e in crossing:
+            v0, v1 = e.verts
+            d0, d1 = d_of(v0), d_of(v1)
+            frac = min(0.98, max(0.02, (zone - d0) / (d1 - d0)))
+            _ne, nv = bmesh.utils.edge_split(e, v0, frac)
+            dist[nv] = zone - 1e-6
+            touched.update(nv.link_faces)
+        if touched:
+            bmesh.ops.triangulate(bm, faces=list(touched))
+        # 2. inside the zone every edge is halved until it is <= max_edge
+        cand = list(bm.edges)
+        iters = 0
+        for _ in range(8):
+            long_edges = [e for e in cand if e.is_valid and (e.verts[0].co - e.verts[1].co).length > max_edge
+                          and d_of(e.verts[0]) < zone and d_of(e.verts[1]) < zone]
+            if not long_edges:
+                break
+            res = bmesh.ops.subdivide_edges(bm, edges=long_edges, cuts=1, use_grid_fill=True)
+            cand = [g for g in res["geom"] if isinstance(g, bmesh.types.BMEdge)]
+            iters += 1
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        phases["subdivide"] += time.time() - tp0
+        tp0 = time.time()
+        strip_of = {}
+        for f in bm.faces:
+            if f[owner] > 0:
+                strip_of[f] = f[owner]
+            elif min(d_of(v) for v in f.verts) < eff + max_edge:
+                _co, i, d = sk.find(f.calc_center_median())
+                if d < eff:
+                    strip_of[f] = ids[i]
+        path_faces = [f for f in bm.faces if f not in strip_of]
+        phases["assign"] += time.time() - tp0
+        tp0 = time.time()
+        per_owner = {}
+        for f, oid in strip_of.items():
+            per_owner.setdefault(oid, []).append(f)
+        for oid, faces in per_owner.items():
+            nbS = _ef_faces_to_bm(faces, True)
+            s_layer = nbS.loops.layers.float.get("s")
+            total = eff + owner_w[oid]
+            okd = owner_kd[oid]
+            sv = {}
+            for f in nbS.faces:
+                for l in f.loops:
+                    v = l.vert
+                    s = sv.get(v)
+                    if s is None:
+                        co = v.co
+                        s = sv[v] = ef.strip_value(okd.find(co)[2], total, co.x, co.y, seed, amplitude)
+                    l[s_layer] = s
+            ts = bpy.data.meshes.new("gm_ef_s")
+            nbS.to_mesh(ts)
+            nbS.free()
+            B[oid - 1]["strips"].append(ts)
+        phases["paint"] += time.time() - tp0
+        tp0 = time.time()
+        if path_faces:
+            # the piece keeps its own paint (plain red, or the fade `split_surfaces` painted toward another surface),
+            # interpolated through the subdivision
+            keep = None
+            if colj is not None:
+                keep = np.array([[l[colj][0], l[colj][1], l[colj][2], l[colj][3]] for f in path_faces for l in f.loops],
+                                dtype=np.float32).reshape(-1, 4)
+            new_pieces[P.name] = (_ef_faces_to_bm(path_faces), keep)
+        out["pieces"][P.name] = {"matched": sum(len(m) for m in matched), "stripFaces": len(strip_of), "pathFaces": len(path_faces),
+                                 "widthM": round(eff, 3), "halfWidthM": round(half, 3), "subdivisions": iters}
+        bm.free()
+        bpy.data.meshes.remove(tp)
+        bmP.free()
+        phases["build"] += time.time() - tp0
+    # the blends: the faces no piece claimed (kept, in the new paint convention) + the strips
+    tp0 = time.time()
+    changed = []
+    for b in B:
+        o = b["obj"]
+        if not b["claimed"]:
+            b["bm"].free()
+            continue
+        bmB = b["bm"]
+        orig = bpy.data.meshes.new("gm_ef_o")
+        bmB.to_mesh(orig)
+        oc = orig.color_attributes.get("Col")
+        obuf = np.zeros(len(oc.data) * 4, dtype=np.float32)
+        oc.data.foreach_get("color_srgb", obuf)
+        obuf = obuf.reshape(-1, 4)
+        bmB.faces.ensure_lookup_table()
+        rest = [f for f in bmB.faces if f.index not in b["claimed"]]
+        rest_cols = np.array([obuf[l.index] for f in rest for l in f.loops], dtype=np.float32).reshape(-1, 4)
+        if len(rest_cols):
+            r_old = rest_cols[:, 0].copy()
+            rest_cols[:, 0] = 1.0 - r_old
+            rest_cols[:, 1] = r_old
+            rest_cols[:, 2] = 0.0
+            rest_cols[:, 3] = 1.0
+        nbR = _ef_faces_to_bm(rest)
+        tr = bpy.data.meshes.new("gm_ef_r")
+        nbR.to_mesh(tr)
+        nbR.free()
+        n_rest = len(tr.loops)
+        bmF = bmesh.new()
+        bmF.from_mesh(tr)
+        for ts in b["strips"]:
+            bmF.from_mesh(ts)
+        bmesh.ops.remove_doubles(bmF, verts=bmF.verts[:], dist=tol)
+        for f in bmF.faces:
+            f.smooth = True
+        nfaces = len(bmF.faces)
+        bmF.to_mesh(orig)      # corners follow the faces: the first n_rest are the rest, the others the strips' (`s`)
+        sv = np.zeros(len(orig.loops), dtype=np.float32)
+        sa = orig.attributes.get("s")
+        if sa is not None:
+            sa.data.foreach_get("value", sv)
+        cols = np.zeros((len(orig.loops), 4), dtype=np.float32)
+        cols[:, 3] = 1.0
+        cols[:n_rest] = rest_cols
+        cols[n_rest:, 0] = 1.0 - sv[n_rest:]
+        cols[n_rest:, 1] = sv[n_rest:]
+        _ef_finish(o, bmF, cols)
+        o[EDGE_FADE_PROP] = ef.CONVENTION
+        changed.append(o.name)
+        out["blends"].append({"name": o.name, "pieces": b["pieces"], "claimedFaces": len(b["claimed"]), "faces": nfaces,
+                              "restFaces": len(rest)})
+        for ts in b["strips"]:
+            bpy.data.meshes.remove(ts)
+        for m in (orig, tr):
+            bpy.data.meshes.remove(m)
+        bmB.free()
+    # the path pieces, each with its own paint
+    kept_faded = 0
+    for name, (nbP, keep) in new_pieces.items():
+        o = bpy.data.objects[name]
+        loops = sum(len(f.loops) for f in nbP.faces)
+        if keep is None or len(keep) != loops:
+            keep = np.zeros((loops, 4), dtype=np.float32)
+            keep[:, 0] = 1.0
+            keep[:, 3] = 1.0
+        kept_faded += int((np.abs(keep[:, :3] - np.array([1.0, 0.0, 0.0])).max(axis=1) > 0.05).sum())
+        _ef_finish(o, nbP, keep)
+        o[EDGE_FADE_PROP] = ef.CONVENTION
+        changed.append(o.name)
+    phases["build"] += time.time() - tp0
+    out["keptFadedCorners"] = kept_faded
+    out["welds"] = weld_tjunctions(changed) if changed and weld else None
+    out["changed"] = sorted(changed)
+    out["faces"] = sum(b["faces"] for b in out["blends"]) + sum(p.get("pathFaces", 0) for p in out["pieces"].values())
+    out["phases"] = {k: round(v, 1) for k, v in phases.items()}
+    out["seconds"] = round(time.time() - t0, 2)
+    return out
+
+
 RUNNERS = {
     "golfmap.split_surfaces": op_split_surfaces,
+    "golfmap.path_edge_fade": op_path_edge_fade,
     "afrod.flattentees": op_flattentees,
     "afrod.cutcartpaths": op_cutcartpaths,
     "afrod.smoothcartpaths": op_smoothcartpaths,

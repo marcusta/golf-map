@@ -58,6 +58,8 @@ export interface ShapingApplyResult {
     places: unknown[];
     seams: unknown;
     unityReport: unknown;
+    pathSurfaces: string[];
+    pathMaterials: unknown;
     unitySteps: ShapingUnityStep[];
     unityError: null | string;
     layers: string[];
@@ -90,7 +92,7 @@ export interface ShapingUnityStep {
 
 export interface ShapingApi {
     recipes(input: { surface?: 'path' | 'bunker' | 'lake' | 'creek' }): Promise<ShapingRecipe[]>;
-    apply(input: { dryRun?: boolean; skipUnity?: boolean; courseId: string }): Promise<ShapingJob>;
+    apply(input: { dryRun?: boolean; skipUnity?: boolean; paths?: boolean; courseId: string }): Promise<ShapingJob>;
     status(input: { courseId: string }): Promise<ShapingStatus>;
     job(input: { jobId: string }): Promise<ShapingJob>;
 }

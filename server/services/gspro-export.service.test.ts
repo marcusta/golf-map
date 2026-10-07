@@ -1208,7 +1208,7 @@ test('the creeks export reads the raw DEM (not the dug one) and the inner sideca
 // --- Heightmap into Unity (a stand-in editor on the bridge protocol) ---
 
 /** An editor whose active course exports to `exportFolder` (the test publishes its discovery file). */
-function fakeEditor(name: string, exportFolder: string, update: Record<string, unknown>) {
+function fakeEditor(name: string, exportFolder: string, update: Record<string, unknown>, replies: Record<string, unknown> = {}) {
     const calls: Array<{ command: string; args: any }> = [];
     const server = Bun.serve({
         port: 0,
@@ -1218,6 +1218,7 @@ function fakeEditor(name: string, exportFolder: string, update: Record<string, u
             calls.push({ command, args: await req.json() });
             if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name, exportFolder } } });
             if (command === 'golfmap.terrain.update') return Response.json({ ok: true, result: update });
+            if (command in replies) return Response.json({ ok: true, result: replies[command] });
             return Response.json({ ok: false, error: `unknown ${command}` });
         },
     });
@@ -1285,6 +1286,49 @@ test('unity-terrain with no Unity project on the folder says which ones are open
     } finally {
         other.server.stop(true);
     }
+});
+
+test('unity-ortho renders the picked photo, then puts its -meshes file onto the course meshes in Unity', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const project = await mkdtemp(path.join(os.tmpdir(), 'unity-proj-'));
+    const { calls, runner } = recordingRunner();
+    const ours = fakeEditor('Linkan', path.relative(path.join(project, 'Assets'), exportDir), {}, {
+        'golfmap.orthos.apply': { target: 'Assets/Terrain/linkan-orto-l2-2025-8192-meshes.jpg', renderers: 761, status: 'backup GolfMapSpelunk/ortho-backups/x.jpg' },
+    });
+    writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({ pid: process.pid, port: ours.server.port!, token: 'tok', projectPath: project, projectName: 'linkan_v4', unityVersion: '', started: '' }));
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        await buildSite(t, ['ortho-orto-l2-2025.tif', 'ortho-orto-l2-2025.patched.tif']);
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+
+        expect(() => describeRequest({ kind: 'unity-ortho' })).toThrow(/needs a source/);
+        // No tint asked for: the -meshes file is written anyway, it is the one Unity takes.
+        const job = await t.svc.start(TEST_COURSE_ID, { kind: 'unity-ortho', source: 'ortho-orto-l2-2025.patched.tif', removeBuildings: true });
+        expect(job.label).toBe('inner orthophoto onto the Unity course meshes');
+        await t.svc.whenIdle(TEST_COURSE_ID);
+        const res = t.svc.job(job.id);
+        expect(res.error).toBeNull();
+        expect(calls.map(c => c.args[1])).toEqual(['ortho']);
+        const meshes = 'linkan-orto-l2-2025-patched-clean-8192-meshes.jpg';
+        expect(flag(calls[0]!.args, '--tint-out')).toBe(path.join(exportDir, meshes));
+        expect(ours.calls.map(c => c.command)).toEqual(['golfmap.course', 'golfmap.orthos.apply']);
+        expect(ours.calls[1]!.args).toEqual({ file: meshes });
+        expect(res.result!.report).toContain(
+            `Unity (linkan_v4): ${meshes} put onto Assets/Terrain/linkan-orto-l2-2025-8192-meshes.jpg (761 renderers sample it; backup GolfMapSpelunk/ortho-backups/x.jpg)`);
+    } finally {
+        ours.server.stop(true);
+    }
+});
+
+test('unity-ortho with no Unity project on the folder renders nothing', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const { calls, runner } = recordingRunner();
+    const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+    await buildSite(t, ['ortho-orto-l2-2025.tif']);
+    await t.svc.setDir(TEST_COURSE_ID, await mkdtemp(path.join(os.tmpdir(), 'gspro-out-')));
+    await expect(t.svc.exportUnityOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif')).rejects.toThrow(/No open Unity editor imports from .*none is open/);
+    expect(calls).toHaveLength(0);
 });
 
 test('a terrain edit newer than the last Apply to terrain: the inner heightmap warns, and is not put into Unity', async () => {

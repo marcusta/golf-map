@@ -821,7 +821,7 @@ namespace GolfMap.Editor
             var props = courseFolder + "Props/Textures/";
             const string opcd = "Assets/Resources/OPCD MAHS Resources/OPCD Height Textures/Asphalt Clean/Asphalt Clean_";
             const string ground = "Assets/GroundTextures/";
-            const string nm = "Assets/NatureManufacture Assets/River Auto Material/Assets/Ground River Textures/T_Ground_Forest_Pebbles_Path_01_";
+            const string g32 = "Assets/GroundTextures/Ground032/Ground032_";
             var text = GolfMapJson.Serialize(new Dictionary<string, object>
             {
                 { "format", SpecFormat },
@@ -836,8 +836,8 @@ namespace GolfMap.Editor
                         { "asphalt", LookJson(opcd + "Albedo.png", opcd + "Normal.png", opcd + "AO.png", opcd + "Height.png", 4, "#626262", 0.2, 1.0, 0.8, 12, 1.0, 0.9, 40, 2, "GSPconcrete") },
                         { "concrete", LookJson(props + "concrete.png", props + "concrete_n.png", null, null, 3, "#9a9a9a", 0.15, 0.8, 0.6, 12, 1.0, 0.9, 40, 2, "GSPconcrete") },
                         { "paving", LookJson(props + "brick_paving.png", props + "brick_paving_n.png", null, null, 2, "#9a9a9a", 0.15, 1.0, 0.6, 8, 1.0, 0.9, 30, 2, "GSPconcrete") },
-                        // A pebble path at 1.2 m a repeat = 2-4 cm stones; a sand or fine-grit texture read as beach sand.
-                        { "gravel", LookJson(nm + "A.tga", nm + "N.png", nm + "AO.tga", nm + "H.tga", 1.2, "#817f7a", 0.05, 1.2, 0.8, 6, 1.0, 0.9, 25, 3, "GSPconcrete") },
+                        // ambientCG Ground032 (CC0, 2K, NormalGL): fine grey gravel path, no height map (its twig heights make the fringe interleave look like grey straw once the strip is 0.6 m wide), 3.5 m a repeat (stones exaggerated: at 1.7 m eye height the real 1.5 m scale mips to an even grain).
+                        { "gravel", LookJson(g32 + "A.png", g32 + "N.png", g32 + "AO.png", null, 3.5, "#707070", 0.05, 0.5, 0.8, 6, 1.0, 1.0, 25, 3, "GSPconcrete") },
                         { "dirt", LookJson(ground + "GroundCracked01.png", ground + "GroundCracked01_N.png", null, null, 3, "#665c4e", 0.05, 1.0, 0.7, 9, 1.0, 0.9, 30, 2, "GSPconcrete") },
                         { "wood", LookJson(props + "wood_deck_grey.png", props + "wood_deck_grey_n.png", null, null, 2, "#9a9a9a", 0.1, 1.0, 0.6, 8, 1.0, 1.0, 30, 2, "GSPwood") },
                     }

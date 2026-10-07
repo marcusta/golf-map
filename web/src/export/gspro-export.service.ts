@@ -411,6 +411,33 @@ export class GsproExportService {
         return this.runExport({ kind: 'ortho', source, darken, ...tint, ...cleaning });
     }
 
+    /**
+     * The whole way in one go: render the picked vintage (its PATCHED copy
+     * when there is one, since that is where the Clean tool's baked edits
+     * are) with the cleaned section's boxes as ticked, then put its -meshes
+     * file onto the course meshes in the open Unity editor. With both boxes
+     * off it is the patched photo alone. Unity must be open.
+     */
+    async runUnityOrtho(): Promise<boolean> {
+        const courseId = this.courseId.peek();
+        const source = this.unityOrthoSource;
+        if (!courseId || !source) return false;
+        const darken = this.darkenValue();
+        if (darken === false) return false;
+        const tint = this.tintValue();
+        if (tint === false) return false;
+        const floor = this.floorValue();
+        if (floor === false) return false;
+        return this.runExport({ kind: 'unity-ortho', source, darken, ...tint, ...floor, ...this.buildingsValue() });
+    }
+
+    /** The source `runUnityOrtho` renders: the picked vintage's patched copy when the site has one, else the picked file. */
+    get unityOrthoSource(): string {
+        const picked = this.orthoSource.peek();
+        const collection = this.pickedCollection;
+        return this.orthoSources.peek()?.find(s => s.patched && s.collection === collection)?.source ?? picked;
+    }
+
     /** The cleaned export's fields (nothing for the plain one); false with the error set when it has nothing to do or a bad mix. */
     private cleanValue(clean: boolean): ({ removeBuildings?: boolean } & Exclude<ReturnType<GsproExportService['floorValue']>, false>) | false {
         if (!clean) return {};

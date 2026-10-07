@@ -1,4 +1,5 @@
 import './env-paths';
+import './env-builder';
 import * as path from 'node:path';
 import { mkdirSync } from 'node:fs';
 import type { Database } from './db/schema';
@@ -78,6 +79,15 @@ if (mode === 'serve') {
     }
 }
 
-Bun.serve({ port: config.port, fetch: app.fetch });
+Bun.serve({
+    port: config.port,
+    fetch: app.fetch,
+    // Bun's own request-body cap is 128 MB whatever BODY_LIMIT says, and it
+    // drops the connection instead of answering. Builder mode takes the
+    // edited ortho export, up to 400 MB (env-builder.ts), so there Bun's cap
+    // is taken out of the way and the app's bodyLimit (BODY_LIMIT) is the
+    // one limit, answering 413.
+    ...(mode === 'builder' ? { maxRequestBodySize: Number.MAX_SAFE_INTEGER } : {}),
+});
 
 log.info({ msg: 'server started', port: config.port, mode, ...(mode === 'serve' ? { webDistDir } : {}) });

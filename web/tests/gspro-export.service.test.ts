@@ -36,7 +36,7 @@ const TERRAIN: CourseTerrain = {
 /** Fake server: holds one folder per course, same null-means-default rule. */
 function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproOrthoSource[]; noTerrain?: boolean } = {}) {
     const dirs = new Map<string, string | null>();
-    const calls = { svg: [] as { excludeFeatureIds?: string[]; variant?: string }[], settings: 0, setDir: 0, run: 0, runOrtho: [] as string[], runOuterOrtho: [] as string[], runDem: [] as string[], runHillshade: [] as string[], runTrees: [] as string[], runZones: [] as string[], terrain: 0, darken: [] as (number | undefined)[], tint: [] as [boolean | undefined, number | undefined][], floor: [] as [boolean | undefined, string | undefined, number | undefined][], buildings: [] as (boolean | undefined)[] };
+    const calls = { svg: [] as { excludeFeatureIds?: string[]; variant?: string }[], settings: 0, setDir: 0, run: 0, runOrtho: [] as string[], runOuterOrtho: [] as string[], runDem: [] as string[], runHillshade: [] as string[], runTrees: [] as string[], runZones: [] as string[], runUnityOrtho: [] as string[], terrain: 0, darken: [] as (number | undefined)[], tint: [] as [boolean | undefined, number | undefined][], floor: [] as [boolean | undefined, string | undefined, number | undefined][], buildings: [] as (boolean | undefined)[] };
 
     const settingsFor = (courseId: string): GsproExportSettings => {
         const dir = dirs.get(courseId) ?? null;
@@ -73,6 +73,15 @@ function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproO
             if (opts.failRun) throw new Error(opts.failRun);
             const { dir } = settingsFor(courseId);
             return { path: `${dir}/vreta-orto-l2-2025-8192.jpg`, report: ['rendering ortho-orto-l2-2025.tif', 'wrote x.jpg'] };
+        },
+        async runUnityOrtho({ courseId, source, tint, tintOpacity, forestFloor, floorColor, floorMix, removeBuildings }) {
+            calls.runUnityOrtho.push(source);
+            calls.buildings.push(removeBuildings);
+            calls.tint.push([tint, tintOpacity]);
+            calls.floor.push([forestFloor, floorColor, floorMix]);
+            if (opts.failRun) throw new Error(opts.failRun);
+            const { dir } = settingsFor(courseId);
+            return { path: `${dir}/vreta-orto-l2-2025-patched-clean-8192.jpg`, report: ['wrote x.jpg', 'Unity (vreta_v4): x-meshes.jpg put onto Assets/y.jpg'] };
         },
         async terrain() {
             calls.terrain++;
@@ -134,6 +143,7 @@ function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => 
             const result = kind === 'svg' ? await h.run({ courseId, excludeFeatureIds: input.excludeFeatureIds, variant: input.variant })
                 : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity, forestFloor: input.forestFloor, floorColor: input.floorColor, floorMix: input.floorMix, removeBuildings: input.removeBuildings })
                 : kind === 'outer-ortho' ? await h.runOuterOrtho({ courseId, collection: input.collection, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity, forestFloor: input.forestFloor, floorColor: input.floorColor, floorMix: input.floorMix, removeBuildings: input.removeBuildings })
+                : kind === 'unity-ortho' ? await h.runUnityOrtho({ courseId, source: input.source, tint: input.tint, tintOpacity: input.tintOpacity, forestFloor: input.forestFloor, floorColor: input.floorColor, floorMix: input.floorMix, removeBuildings: input.removeBuildings })
                 : kind === 'dem' ? await h.runDem({ courseId, terrain: input.terrain })
                 : kind === 'hillshade' ? await h.runHillshade({ courseId, terrain: input.terrain })
                 : kind === 'zones' ? await h.runZones({ courseId, terrain: input.terrain })
@@ -474,6 +484,25 @@ test('the plain orthophoto exports never ask for building removal or forest floo
     expect(await svc.runOrtho(true)).toBe(false);
     expect(svc.error.peek()).toMatch(/Remove buildings.*Forest floor/);
     expect(calls.buildings).toHaveLength(2);
+});
+
+test('cleaned photo into Unity renders the patched copy of the picked vintage with the boxes as ticked, even both off', async () => {
+    const { svc, calls } = await openService();
+    const patched = SOURCES[1]!;
+    svc.orthoSource.set(SOURCES[0]!.source);   // the pristine 2025 photo is picked
+    expect(await svc.runUnityOrtho()).toBe(true);
+    expect(svc.report.peek()).toContain('Unity (vreta_v4): x-meshes.jpg put onto Assets/y.jpg');
+    // Both boxes off is the patched photo alone: unlike the cleaned file export, still a job.
+    svc.removeBuildings.set(false);
+    svc.forestFloor.set(false);
+    expect(await svc.runUnityOrtho()).toBe(true);
+    expect(calls.runUnityOrtho).toEqual([patched.source, patched.source]);
+    expect(calls.buildings).toEqual([true, undefined]);
+    expect(calls.floor).toEqual([[true, DEFAULT_FLOOR_COLOR, undefined], [undefined, undefined, undefined]]);
+    // A vintage without a patched copy goes as picked.
+    svc.orthoSource.set(SOURCES[2]!.source);
+    expect(await svc.runUnityOrtho()).toBe(true);
+    expect(calls.runUnityOrtho[2]).toBe(SOURCES[2]!.source);
 });
 
 test('runZones exports the named terrain and reports the zones file', async () => {

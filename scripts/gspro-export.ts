@@ -15,6 +15,7 @@
 //   dem | hillshade | trees | buildings | zones  [:inner | :outer]   no terrain = both, inner first
 //   unity-terrain[:inner|:outer]  the heightmap export, then into the open Unity editor's terrain (golfmap.terrain.update)
 //   unity-sculpt[:inner|:outer]   what was sculpted in Unity since, back as that terrain's sculpt layer (golfmap.terrain.capture)
+//   unity-ortho                   the inner orthophoto (--source, e.g. the .patched.tif), then its -meshes file onto the Unity course meshes (golfmap.orthos.apply)
 //   creeks                   the creeks as R.A.M. splines at the water surface (inner; needs the inner dem)
 //   gkd                      GreenKeeper's <scene>.GKD into the course's GSPro folder (--course-dir <folder>
 //                            sets it, like the panel does); needs the inner dem exported first
@@ -44,7 +45,7 @@ import {
 } from '../server/services/gspro-export.service';
 
 const ROOT = path.resolve(import.meta.dir, '..');
-const KINDS: GsproExportKind[] = ['svg', 'ortho', 'outer-ortho', 'dem', 'unity-terrain', 'unity-sculpt', 'hillshade', 'trees', 'buildings', 'zones', 'creeks', 'gkd'];
+const KINDS: GsproExportKind[] = ['svg', 'ortho', 'outer-ortho', 'dem', 'unity-terrain', 'unity-sculpt', 'unity-ortho', 'hillshade', 'trees', 'buildings', 'zones', 'creeks', 'gkd'];
 const TERRAIN_KINDS = new Set<GsproExportKind>(['dem', 'unity-terrain', 'unity-sculpt', 'hillshade', 'trees', 'buildings', 'zones']);
 
 function usage(message?: string): never {
@@ -172,7 +173,7 @@ function requestsFor(spec: string, flags: Record<string, string | true>, activeS
             const terrains: TerrainKind[] = terrainText ? [terrainText as TerrainKind] : ['inner', 'outer'];
             return terrains.map((terrain) => ({ kind, terrain }));
         }
-        if (kind === 'ortho') {
+        if (kind === 'ortho' || kind === 'unity-ortho') {
             const source = typeof flags['source'] === 'string' ? flags['source'] : await activeSource();
             return [{ kind, source, ...ortho }];
         }

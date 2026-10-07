@@ -50,6 +50,12 @@ OPS = {
         "params": {},
         "keys": {"paths", "fadeM", "minPartM2", "junctionTie", "slitM", "sliverM", "weld"},
     },
+    # Widens the fringe strips of gravel / dirt paths into the path and paints them as a noisy red (grass) to
+    # green (path) ramp (shape_apply "golfmap.path_edge_fade", maths in shape_edgefade.py). After split_surfaces.
+    "golfmap.path_edge_fade": {
+        "params": {},
+        "keys": {"widthM", "maxEdgeM", "amplitude", "surfaces", "weld", "paths"},
+    },
     "golfmap.flatten_footprint": {
         "params": {},
         "keys": {"footprint3006", "level", "falloffM", "offsetM", "protect", "protectBandM"},
@@ -200,6 +206,15 @@ def validate_op(op):
             errors.append("paths must be a sidecar file name or path")
         if "weld" in op and not isinstance(op["weld"], bool):
             errors.append("weld must be true/false")
+    if name == "golfmap.path_edge_fade":
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import shape_edgefade
+        errors += shape_edgefade.validate_params(op)
+        if "paths" in op and not (isinstance(op["paths"], str) and op["paths"]):
+            errors.append("paths must be a sidecar file name or path")
     if name == "golfmap.weld_tjunctions" and "toleranceM" in op and not (_is_type(op["toleranceM"], float) and op["toleranceM"] > 0):
         errors.append("toleranceM must be a number > 0")
     if name == "afrod.cutcartpaths" and "weld" in op and not isinstance(op["weld"], bool):

@@ -81,6 +81,7 @@ interface Harness {
     confirms: string[];
     sidecar: SidecarOpts;
     mapReady: Signal<boolean>;
+    featuresView: { modeHiddenTypes: Signal<ReadonlySet<string>> };
 }
 
 async function harness(opts: SidecarOpts & {
@@ -162,7 +163,10 @@ async function harness(opts: SidecarOpts & {
             stampBakeable: opts.stampBakeable ?? opts.bakeable ?? true,
             reason: (opts.bakeable ?? true) ? undefined : 'rebuild the map first',
             patchesGeneratedAt: opts.patchesGeneratedAt ?? null,
+            exports: [],
+            frame: null,
         }),
+        exportOrthoSquare: async () => { throw new Error('exportOrthoSquare is not used by the mask/stamp tests'); },
     };
 
     const confirms: string[] = [];
@@ -191,6 +195,11 @@ async function harness(opts: SidecarOpts & {
         layers: { ortho: { minzoom: 14, maxzoom: ZOOM }, terrain: { minzoom: 12, maxzoom: 16 } },
         elevation: { min: 0, max: 100 },
         generatedAt: '2026-07-14T10:25:11.864Z',
+    };
+    // FeaturesService's mode view: which feature types the active tool hides.
+    const featuresView = {
+        modeHiddenTypes: new Signal<ReadonlySet<string>>(new Set(['vegetation_zone'])),
+        resetModeView() { this.modeHiddenTypes.set(new Set(['vegetation_zone'])); },
     };
     const ctx: ToolContext = {
         map: {
@@ -230,7 +239,7 @@ async function harness(opts: SidecarOpts & {
             },
         } as never,
         courseDetail: null as never,
-        features: null as never,
+        features: featuresView as never,
         courseId: 'course-1',
         track: d => { cleanups.push(d); },
     };
@@ -239,7 +248,7 @@ async function harness(opts: SidecarOpts & {
     return {
         svc, interactionMode, clickHandlers, requests, cropCalls, pixelCropCalls, maskCalls,
         applyCalls, revertCalls, refreshes, orthoRefreshes, photoStates, reloads,
-        imageOverlays, removedOverlays, confirms, sidecar, mapReady,
+        imageOverlays, removedOverlays, confirms, sidecar, mapReady, featuresView,
     };
 }
 
@@ -270,6 +279,20 @@ function fakeRawMap() {
     };
     return raw;
 }
+
+// ─── feature overlays ───────────────────────────────────────────────────────
+
+describe('feature overlays', () => {
+    test('every feature type is hidden while the tool is active, restored after', async () => {
+        const h = await harness();
+        const hidden = h.featuresView.modeHiddenTypes.get();
+        for (const type of ['fairway', 'rough', 'green', 'bunker', 'trees', 'oob', 'vegetation_zone']) {
+            expect(hidden.has(type)).toBe(true);
+        }
+        h.svc.deactivate();
+        expect([...h.featuresView.modeHiddenTypes.get()]).toEqual(['vegetation_zone']);
+    });
+});
 
 // ─── health gating ──────────────────────────────────────────────────────────
 

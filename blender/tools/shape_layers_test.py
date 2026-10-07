@@ -316,5 +316,21 @@ class FootprintTest(unittest.TestCase):
         self.assertEqual(sl.nearest_hole(5, 5, p)[0], 18)  # others_1 has no hole
 
 
+class PathEdgeFadeLayerTest(unittest.TestCase):
+    def test_the_op_and_its_keys_validate(self):
+        ok = layer([{"id": "fade", "op": "golfmap.path_edge_fade", "select": {"type": "path"},
+                     "widthM": 0.6, "maxEdgeM": 0.2, "amplitude": 0.4, "surfaces": ["gravel", "dirt"], "weld": True}])
+        self.assertEqual(sl.validate_layer(ok), [])
+
+    def test_it_needs_a_select_and_rejects_bad_values_and_keys(self):
+        errs = sl.validate_layer(layer([{"id": "fade", "op": "golfmap.path_edge_fade"}]))
+        self.assertTrue(any("select" in e for e in errs), errs)
+        bad = layer([{"id": "fade", "op": "golfmap.path_edge_fade", "select": {"type": "path"},
+                      "widthM": -1, "maxEdgeM": 0.01, "surfaces": [], "colour": "red"}])
+        errs = sl.validate_layer(bad)
+        for want in ("widthM must be", "maxEdgeM must be", "surfaces must be", "unknown key 'colour'"):
+            self.assertTrue(any(want in e for e in errs), (want, errs))
+
+
 if __name__ == "__main__":
     unittest.main()

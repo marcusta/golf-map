@@ -48,8 +48,28 @@
 // visually near-identical, seam-free at bake by construction. Overlapping
 // pending edits preview independently; the bake applies them in order.
 //
+// ## External edit (export / import loop)
+//
+// exportPhoto() asks the server for the cleaned photo as one fixed square PNG;
+// the builder edits it in an image editor; importPhoto() uploads it back and
+// the server stores only the changed pixels as ONE raster entry in the patch
+// log, baking it like any other edit. Revert-last therefore covers an import.
+// The server bakes inside the import request, so a "this changes 40 % of the
+// frame, continue?" prompt cannot come first; the summary warns afterwards.
+// Export/import hold the same 'applying' phase as a bake (nothing else runs
+// beside them) and `externalBusy` says which one it is. Plan:
+// docs/feature-ortho-export-import.md.
+//
 // Parked v2 ideas (deliberately NOT implemented): stamp source rotation,
 // cross-vintage donor sources (cloning from another year's flight).
+//
+// ## Apply in Unity
+//
+// applyInUnity() bakes whatever is pending, then starts the server's
+// `unity-ortho` export job on the patched photo and follows it: the server
+// renders the darkened, green-tinted -meshes texture and the open Unity
+// editor puts it onto the course meshes (docs/gspro/export.md). Holds the
+// 'applying' phase like a bake, with `externalBusy` 'unity'.
 //
 // All I/O sits behind constructor seams (sidecar clients' fetch, the
 // imaging canvas work, the patches API, confirm dialogs) so the whole state
@@ -60,10 +80,18 @@ import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
 import type { GeoJSON } from 'geojson';
 import type { ToolContext } from '../editor/tool';
 import { bindDrag, type DragBinding } from '../editor/drag-binding';
+import { FEATURE_TYPES } from '../draw/feature-palette';
 import type { MapPointerEvent } from '../map/map.service';
 import { tileUrlTemplate } from '../map/map-style';
 import { deriveTileVersion } from '../map/tileset.service';
-import type { OrthoPatchesApi } from '../../../shared/api/ortho-patches.gen';
+import type {
+    OrthoExportResult,
+    OrthoExportSummary,
+    OrthoPatchesApi,
+    SimFrame,
+} from '../../../shared/api/ortho-patches.gen';
+import type { GsproExportApi, GsproExportJob } from '../../../shared/api/gspro-export.gen';
+import { ORTHO_IMPORT_MAX_BYTES } from '../../../shared/ortho-import';
 import { api } from '../api';
 import { lngLatToSweref99tm } from '../geo/transform';
 import { SamClient, largestPolygon, SAM_CROP_SIZE } from '../sam/sam-client';
@@ -71,6 +99,13 @@ import { planCrop, cropPixelToLngLat, cropPixelToSweref, type CropPlan } from '.
 import { canvasToBase64, composeCropCanvas, cropTiles, type CropTile } from '../imaging/crop-source';
 import { SidecarHealth, type SidecarStatus } from '../imaging/sidecar-health';
 import { CleanClient } from './clean-client';
+import {
+    OrthoImportClient,
+    OrthoImportError,
+    isRequestTimeout,
+    summarizeImport,
+    type ImportSummary,
+} from './clean-external';
 import {
     dilateMask,
     ellipseRingLngLat,
@@ -146,6 +181,9 @@ export const browserFrames: FrameScheduler = {
         else clearTimeout(handle);
     },
 };
+
+/** What applyInUnity needs of the GSPro export API. */
+export type UnityOrthoApi = Pick<GsproExportApi, 'orthoSources' | 'start' | 'job'>;
 
 /** Live-stroke seams: the surface view (canvas source) and the frame clock. */
 export interface CleanLiveSeams {
@@ -290,6 +328,26 @@ export class CleanToolService {
      * pristine on deactivate. */
     readonly showCleaned = new Signal(true);
 
+    // External edit (export / import) state.
+    /** Existing exports, oldest first (server order). */
+    readonly exports = new Signal<OrthoExportSummary[]>([]);
+    /** The site's fixed export frame; null until the first export. */
+    readonly exportFrame = new Signal<SimFrame | null>(null);
+    /** Which external operation holds the 'applying' phase, if any. */
+    readonly externalBusy = new Signal<'export' | 'import' | 'unity' | null>(null);
+    /** Outcome of the last Apply in Unity: the error, or what Unity took. */
+    readonly unityMessage = new Signal<{ kind: 'error' | 'info'; text: string } | null>(null);
+    /** Upload progress 0..1 while importing; 1 means "sent, server working". */
+    readonly uploadProgress = new Signal<number | null>(null);
+    /** The export this session just made (file name + download link). */
+    readonly lastExport = new Signal<OrthoExportResult | null>(null);
+    /** Change summary of the last import. */
+    readonly importSummary = new Signal<ImportSummary | null>(null);
+    /** One line for the External edit section: an error or a plain status. */
+    readonly externalMessage = new Signal<{ kind: 'error' | 'info'; text: string } | null>(null);
+    /** Export picked for the import; null means the latest. */
+    readonly pickedExportSeq = new Signal<number | null>(null);
+
     // Stamp brush state (right-sidebar controls).
     readonly stampSizeM = new Signal(3);
     readonly stampOpacity = new Signal(1);
@@ -340,6 +398,9 @@ export class CleanToolService {
         private confirmFn: (message: string) => boolean =
             message => (typeof confirm === 'function' ? confirm(message) : true),
         live: CleanLiveSeams = {},
+        private importClient: OrthoImportClient = new OrthoImportClient(),
+        private unityApi: UnityOrthoApi = api.gsproExport,
+        private unityPollMs = 1500,
     ) {
         this.views = live.views ?? canvasStampView;
         this.frames = live.frames ?? browserFrames;
@@ -352,6 +413,9 @@ export class CleanToolService {
         this.notice.set(null);
         void this.checkHealth();
         void this.refreshInfo();
+        // Cleaning works on the bare photo: every feature fill and outline
+        // is off the map for the tool's span (restored in `deactivate`).
+        ctx.features?.modeHiddenTypes.set(new Set(FEATURE_TYPES));
         ctx.track(ctx.map.onClick(e => this.onClick(e)));
         ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));
 
@@ -391,6 +455,7 @@ export class CleanToolService {
                 this.discardAllPending();
             }
         }
+        ctx?.features?.resetModeView();
         this.removePreviewOverlay();
         this.removeSourceOverlay();
         for (const edit of this.pending) {
@@ -401,6 +466,12 @@ export class CleanToolService {
         this.preview = null;
         this.phase.set('idle');
         this.notice.set(null);
+        this.externalBusy.set(null);
+        this.uploadProgress.set(null);
+        this.lastExport.set(null);
+        this.importSummary.set(null);
+        this.externalMessage.set(null);
+        this.unityMessage.set(null);
         // Always hand the map back showing the PRISTINE photo.
         const pristine = ctx?.tileset.tileVersion.peek();
         if (ctx && pristine) ctx.map.setOrthoPhotoState('ortho', pristine);
@@ -438,18 +509,27 @@ export class CleanToolService {
         return this.sidecar.check();
     }
 
-    /** Refresh the baked-patch count + bake pre-flight from the server. */
-    async refreshInfo(): Promise<void> {
+    /**
+     * Refresh the baked-patch count, bake pre-flight and export list from the
+     * server. `resync` also refetches the sim tiles when the server's sim
+     * version moved (an export or import that outlived its request finished
+     * in the background).
+     */
+    async refreshInfo(opts: { resync?: boolean } = {}): Promise<void> {
         const ctx = this.ctx;
         if (!ctx) return;
         try {
             const info = await this.patchesApi.orthoPatchesInfo({ courseId: ctx.courseId });
+            const moved = info.patchesGeneratedAt !== this.simGeneratedAt;
             this.patchCount.set(info.count);
             this.bakeable.set(info.bakeable);
             this.stampBakeable.set(info.stampBakeable);
             this.bakeReason.set(info.reason ?? null);
             this.simGeneratedAt = info.patchesGeneratedAt;
+            this.exports.set(info.exports ?? []);
+            this.exportFrame.set(info.frame ?? null);
             this.applyPhotoState();
+            if (opts.resync && moved) await ctx.tileset.refreshTiles(ctx.courseId);
         } catch {
             // Patch info is decorative; the tool works without it.
         }
@@ -1312,6 +1392,199 @@ export class CleanToolService {
         } catch (err) {
             this.phase.set('idle');
             this.notice.set(`Revert failed: ${err instanceof Error ? err.message : String(err)}`);
+            return false;
+        }
+    }
+
+    // ── Apply in Unity ──────────────────────────────────────────────────────
+
+    /**
+     * Put the cleaned photo onto the course meshes in the open Unity editor.
+     * Pending edits are baked first (a failed bake stops here). The server
+     * job renders the PATCHED copy of the photo the map was built from and
+     * hands Unity its -meshes variant, the darkened one with the green
+     * surface tint, which is what the meshes sample. Returns true when Unity
+     * took it; the outcome is in `unityMessage`.
+     */
+    async applyInUnity(): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx || this.phase.peek() !== 'idle') return false;
+        this.unityMessage.set(null);
+        if (this.pending.length > 0 && !(await this.bakeAll())) return false;
+        if (this.ctx !== ctx) return false;
+        this.phase.set('applying');
+        this.externalBusy.set('unity');
+        try {
+            const sources = await this.unityApi.orthoSources({ courseId: ctx.courseId });
+            const source = sources.find(s => s.patched && s.active);
+            if (!source) {
+                this.unityMessage.set({ kind: 'error', text: 'Nothing is baked into the cleaned photo yet, so there is nothing new for Unity.' });
+                return false;
+            }
+            let job: GsproExportJob = await this.unityApi.start({
+                courseId: ctx.courseId, kind: 'unity-ortho', source: source.source, tint: true,
+            });
+            while (job.status === 'running') {
+                await new Promise(r => setTimeout(r, this.unityPollMs));
+                job = await this.unityApi.job({ jobId: job.id });
+            }
+            if (job.status !== 'succeeded' || !job.result) {
+                this.unityMessage.set({ kind: 'error', text: job.error || 'Apply in Unity failed' });
+                return false;
+            }
+            const line = job.result.report.find(l => l.startsWith('Unity (')) ?? 'Unity took the cleaned photo.';
+            this.unityMessage.set({ kind: 'info', text: `${line} Save the Unity project to keep it.` });
+            return true;
+        } catch (err) {
+            this.unityMessage.set({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+            return false;
+        } finally {
+            this.externalBusy.set(null);
+            if (this.phase.peek() === 'applying') this.phase.set('idle');
+        }
+    }
+
+    // ── External edit: export the cleaned photo, import the edited one ──────
+
+    /** The export an import compares with: the picked one if it still exists, else the latest. */
+    effectiveExportSeq(): number | null {
+        const list = this.exports.get();
+        const picked = this.pickedExportSeq.get();
+        if (picked !== null && list.some(e => e.seq === picked)) return picked;
+        return list.length > 0 ? list[list.length - 1].seq : null;
+    }
+
+    /** Move the live sim source to a new server version, then resync the manifest. */
+    private async resyncSim(ctx: ToolContext, generatedAt: string): Promise<void> {
+        this.simGeneratedAt = generatedAt;
+        this.applyPhotoState();
+        await ctx.tileset.refreshTiles(ctx.courseId);
+    }
+
+    /**
+     * Export the cleaned photo as one fixed square PNG. The server replays any
+     * stale patches first; when it did (`replayed`) the sim tiles changed and
+     * the map refreshes like after a bake. The generated client times out
+     * after 30 s while the server carries on, so a timeout is reported as
+     * "still running" and the export list is refreshed, not as a failure.
+     * Returns true when the export finished inside the request.
+     */
+    async exportPhoto(): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx || this.phase.peek() !== 'idle') return false;
+        this.phase.set('applying');
+        this.externalBusy.set('export');
+        this.externalMessage.set(null);
+        this.lastExport.set(null);
+        this.importSummary.set(null);
+        try {
+            const result = await this.patchesApi.exportOrthoSquare({ courseId: ctx.courseId });
+            this.lastExport.set(result);
+            this.exportFrame.set({ extent3006: result.extent3006, size: result.size });
+            const summary: OrthoExportSummary = {
+                seq: result.exportSeq,
+                createdAt: result.createdAt,
+                logSeq: result.logSeq,
+                size: result.size,
+                format: result.format,
+                bytes: result.bytes,
+                downloadPath: result.downloadPath,
+            };
+            this.exports.set([...this.exports.peek().filter(e => e.seq !== summary.seq), summary]
+                .sort((a, b) => a.seq - b.seq));
+            this.pickedExportSeq.set(null);
+            this.externalBusy.set(null);
+            this.phase.set('idle');
+            if (result.replayed && result.patchesGeneratedAt) {
+                await this.resyncSim(ctx, result.patchesGeneratedAt);
+            }
+            return true;
+        } catch (err) {
+            this.externalBusy.set(null);
+            this.phase.set('idle');
+            if (isRequestTimeout(err)) {
+                this.externalMessage.set({
+                    kind: 'info',
+                    text: 'The export is still running on the server (replaying the patches first can take minutes). It appears in the list when done; press Refresh to check.',
+                });
+                await this.refreshInfo({ resync: true });
+            } else {
+                this.externalMessage.set({
+                    kind: 'error',
+                    text: `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+                });
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Upload an edited export and let the server diff it against export
+     * `exportSeq`. `tolerance` is sent only when the user set one. On a change
+     * the patch count updates and the sim photo refreshes seamlessly, so
+     * Revert last patch covers the import. Returns true when the server
+     * answered (including "no changes found").
+     */
+    async importPhoto(file: File, exportSeq: number, tolerance: number | null = null): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx || this.phase.peek() !== 'idle') return false;
+        this.importSummary.set(null);
+        this.externalMessage.set(null);
+        if (file.size === 0) {
+            this.externalMessage.set({ kind: 'error', text: 'The file is empty.' });
+            return false;
+        }
+        if (file.size > ORTHO_IMPORT_MAX_BYTES) {
+            const mb = Math.round(ORTHO_IMPORT_MAX_BYTES / (1024 * 1024));
+            this.externalMessage.set({
+                kind: 'error',
+                text: `The file is ${(file.size / (1024 * 1024)).toFixed(0)} MB; the limit is ${mb} MB. Save it as an optimised PNG.`,
+            });
+            return false;
+        }
+        if (tolerance !== null && !(Number.isInteger(tolerance) && tolerance >= 0 && tolerance <= 254)) {
+            this.externalMessage.set({ kind: 'error', text: 'Tolerance must be a whole number from 0 to 254.' });
+            return false;
+        }
+        this.phase.set('applying');
+        this.externalBusy.set('import');
+        this.uploadProgress.set(0);
+        try {
+            const result = await this.importClient.importPhoto(
+                ctx.courseId, file, exportSeq, tolerance,
+                (loaded, total) => this.uploadProgress.set(total > 0 ? loaded / total : null),
+            );
+            const ortho = ctx.tileset.manifest.peek()?.layers.ortho;
+            this.importSummary.set(summarizeImport(
+                result,
+                this.exportFrame.peek(),
+                ortho ? { minzoom: ortho.minzoom, maxzoom: ortho.maxzoom } : undefined,
+            ));
+            this.patchCount.set(result.count);
+            this.uploadProgress.set(null);
+            this.externalBusy.set(null);
+            this.phase.set('idle');
+            if (result.changed && result.patchesGeneratedAt) {
+                await this.resyncSim(ctx, result.patchesGeneratedAt);
+            }
+            return true;
+        } catch (err) {
+            this.uploadProgress.set(null);
+            this.externalBusy.set(null);
+            this.phase.set('idle');
+            if (err instanceof OrthoImportError && err.status === 504) {
+                // The retile outlasted the request; the bake carries on server-side.
+                this.externalMessage.set({
+                    kind: 'info',
+                    text: 'The server is still baking the import (a large change takes minutes). The patch count and the map update when it is done; press Refresh to check.',
+                });
+                await this.refreshInfo({ resync: true });
+            } else {
+                this.externalMessage.set({
+                    kind: 'error',
+                    text: `Import failed: ${err instanceof Error ? err.message : String(err)}`,
+                });
+            }
             return false;
         }
     }

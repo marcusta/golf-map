@@ -157,9 +157,11 @@ export class ShapingService {
      * is the feature it was started for, where the panel shows the outcome
      * (null = the course-wide button). A job already running for the course
      * (409) is followed instead. Resolves with the finished job, or null when
-     * it could not start.
+     * it could not start. `paths` (the Draw mode's "Update paths in Unity")
+     * also takes the paths' surfaces through: the surfaces file before
+     * Blender, the path materials in Unity after.
      */
-    async apply(courseId: string, scope: ShapingScope = null): Promise<ShapingJob | null> {
+    async apply(courseId: string, scope: ShapingScope = null, opts: { paths?: boolean } = {}): Promise<ShapingJob | null> {
         if (this.running.peek()) return null;
         this.starting.set(true);
         this.job.set(null);
@@ -168,7 +170,7 @@ export class ShapingService {
         this.jobScope.set(scope);
         let job: ShapingJob;
         try {
-            job = await this.client.apply({ courseId });
+            job = await this.client.apply(opts.paths ? { courseId, paths: true } : { courseId });
         } catch (e) {
             const current = await this.client.status({ courseId }).then(s => s.job, () => null);
             if (current?.status !== 'running') {

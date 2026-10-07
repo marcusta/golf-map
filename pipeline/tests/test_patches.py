@@ -627,3 +627,218 @@ def test_mask_rasterization_respects_the_3857_frame_not_an_axis_aligned_3006_box
     assert max(cols) - min(cols) >= 1
     import math
     assert not math.isclose(float(np.std(cols)), 0.0)
+
+
+# --- raster entries (externally edited pixels) -------------------------------
+
+
+def raster_png(path: Path, rgb: np.ndarray, alpha: np.ndarray) -> None:
+    """RGBA patch PNG from an (H, W, 3) colour array and an (H, W) alpha."""
+    Image.fromarray(np.dstack([rgb, alpha]).astype(np.uint8)).save(path)
+
+
+def raster_entry(seq: int, bounds3006: tuple[float, float, float, float], with_3857: bool = True) -> dict:
+    w, s, e, n = bounds3006
+    doc = {
+        "seq": seq, "kind": "raster", "file": f"{seq}.png",
+        "bounds3006": {"west": w, "south": s, "east": e, "north": n},
+        "exportSeq": 1, "changedPixels": 36,
+        "tool": "external", "createdAt": f"2026-10-07T10:00:0{seq}Z",
+    }
+    if with_3857:
+        bw, bs, be, bn = sub_box_3857(w, s, e, n)
+        doc["bounds3857"] = {"west": bw, "south": bs, "east": be, "north": bn}
+    return doc
+
+
+def solid(h: int, w: int, color: tuple[int, int, int]) -> np.ndarray:
+    return np.broadcast_to(np.array(color, dtype=np.uint8), (h, w, 3)).copy()
+
+
+def read_hwc(path: Path) -> np.ndarray:
+    with rasterio.open(path) as src:
+        return np.moveaxis(src.read(), 0, -1)
+
+
+def test_raster_entry_loads_and_needs_no_inpaint(tmp_path: Path):
+    box = (E0 + 20, N0 + 40, E0 + 30, N0 + 50)
+    write_log(tmp_path, [raster_entry(3, box, with_3857=False)])
+    (loaded,) = patches.load_patch_log(tmp_path)
+    assert isinstance(loaded, patches.RasterEntry)
+    assert (loaded.seq, loaded.file, loaded.export_seq, loaded.changed_pixels) == (3, "3.png", 1, 36)
+    assert loaded.bounds3006 == box
+    # bounds3857 is derived when the log does not carry it.
+    assert loaded.bounds3857 == pytest.approx(sub_box_3857(*box))
+    assert patches.needs_inpaint([loaded]) is False
+
+    bad = raster_entry(1, box)
+    del bad["bounds3006"]
+    write_log(tmp_path, [bad])
+    with pytest.raises(patches.PatchError, match="bounds3006"):
+        patches.load_patch_log(tmp_path)
+
+    write_log(tmp_path, [{**raster_entry(1, box), "file": "..\\evil.png"}])
+    with pytest.raises(patches.PatchError, match="plain name"):
+        patches.load_patch_log(tmp_path)
+
+
+def test_raster_replay_writes_opaque_pixels_and_leaves_the_rest_byte_identical(ortho: Path, tmp_path: Path):
+    patches_dir = tmp_path / "patches"
+    patches_dir.mkdir()
+    # A 10x10 px patch on the ortho's own 1 m grid: only its inner 6x6 is
+    # opaque, so the resample is the identity and the result is exact.
+    alpha = np.zeros((10, 10), dtype=np.uint8)
+    alpha[2:8, 2:8] = 255
+    raster_png(patches_dir / "1.png", solid(10, 10, MAGENTA), alpha)
+    write_log(patches_dir, [raster_entry(1, (E0 + 20, N0 + 40, E0 + 30, N0 + 50))])
+
+    out = tmp_path / "out.tif"
+    # No inpaint_fn: a raster-only log replays without torch.
+    patches.apply_patches_to_ortho(ortho, patches_dir, patches.load_patch_log(patches_dir), out)
+
+    original, patched = read_hwc(ortho), read_hwc(out)
+    # Patch rows 2..8 of the box whose north edge is N0+50 -> ortho rows 32..38.
+    inside = np.zeros((SIZE, SIZE), dtype=bool)
+    inside[32:38, 22:28] = True
+    assert (patched[inside] == MAGENTA).all()
+    assert np.array_equal(patched[~inside], original[~inside])
+
+
+def test_raster_zero_alpha_patch_is_a_noop(ortho: Path, tmp_path: Path):
+    patches_dir = tmp_path / "patches"
+    patches_dir.mkdir()
+    raster_png(patches_dir / "1.png", solid(10, 10, MAGENTA), np.zeros((10, 10), dtype=np.uint8))
+    write_log(patches_dir, [raster_entry(1, (E0 + 20, N0 + 40, E0 + 30, N0 + 50))])
+    (loaded,) = patches.load_patch_log(patches_dir)
+
+    out = tmp_path / "out.tif"
+    patches.apply_patches_to_ortho(ortho, patches_dir, [loaded], out)
+    assert np.array_equal(read_hwc(out), read_hwc(ortho))
+    with rasterio.open(out, "r+") as dst:
+        assert patches.raster_entry_into(dst, patches_dir, loaded) is False
+
+
+def test_raster_patch_spilling_off_the_raster_is_cropped(ortho: Path, tmp_path: Path):
+    patches_dir = tmp_path / "patches"
+    patches_dir.mkdir()
+    full = np.full((20, 20), 255, dtype=np.uint8)
+    raster_png(patches_dir / "1.png", solid(20, 20, CYAN), full)
+    raster_png(patches_dir / "2.png", solid(20, 20, CYAN), full)
+    write_log(patches_dir, [
+        raster_entry(1, (E0 + 70, N0 + 70, E0 + 90, N0 + 90)),      # north-east corner, half off
+        raster_entry(2, (E0 + 500, N0 + 500, E0 + 520, N0 + 520)),  # wholly off
+    ])
+    spill, miss = patches.load_patch_log(patches_dir)
+
+    out = tmp_path / "out.tif"
+    patches.apply_patches_to_ortho(ortho, patches_dir, [spill, miss], out)
+    original, patched = read_hwc(ortho), read_hwc(out)
+    inside = np.zeros((SIZE, SIZE), dtype=bool)
+    inside[0:10, 70:80] = True
+    assert (patched[inside] == CYAN).all()
+    assert np.array_equal(patched[~inside], original[~inside])
+    with rasterio.open(out, "r+") as dst:
+        assert patches.raster_entry_into(dst, patches_dir, miss) is False
+
+
+def test_raster_replay_off_grid_is_deterministic_with_a_soft_edge(ortho: Path, tmp_path: Path):
+    """A patch on a coarser, shifted grid (the real case: 0.21 m export px
+    onto 0.16 m ortho px): two replays are byte-identical, the edge blends,
+    and nothing beyond the alpha ramp moves."""
+    patches_dir = tmp_path / "patches"
+    patches_dir.mkdir()
+    rng = np.random.default_rng(11)
+    rgb = rng.integers(0, 256, size=(16, 16, 3), dtype=np.uint8)
+    alpha = np.zeros((16, 16), dtype=np.uint8)
+    alpha[4:12, 4:12] = 255
+    raster_png(patches_dir / "1.png", rgb, alpha)
+    # 16 px of 1.25 m, origin off the ortho's whole metres.
+    box = (E0 + 30.3, N0 + 20.7, E0 + 50.3, N0 + 40.7)
+    write_log(patches_dir, [raster_entry(1, box)])
+    entries = patches.load_patch_log(patches_dir)
+
+    out_a, out_b = tmp_path / "a.tif", tmp_path / "b.tif"
+    patches.apply_patches_to_ortho(ortho, patches_dir, entries, out_a)
+    patches.apply_patches_to_ortho(ortho, patches_dir, entries, out_b)
+    assert out_a.read_bytes() == out_b.read_bytes()
+
+    original, patched = read_hwc(ortho), read_hwc(out_a)
+    changed = np.any(patched != original, axis=2)
+    assert changed.any()
+    # Opaque block: east 35.3..45.3, north 25.7..35.7 -> cols 35.3..45.3,
+    # rows 44.3..54.3. The ramp reaches one patch pixel (1.25 m) further.
+    reach = np.zeros((SIZE, SIZE), dtype=bool)
+    reach[43:56, 34:47] = True
+    assert not changed[~reach].any()
+    # Well inside, the ortho is fully replaced by the resampled patch...
+    core = patched[47:52, 38:43].astype(int)
+    assert np.abs(core - original[47:52, 38:43]).max() > 0
+    # ...and the same patch over a flat raster shows the ramp itself: values
+    # strictly between the two flat colours along the edge.
+    flat = tmp_path / "flat.tif"
+    with rasterio.open(ortho) as src:
+        profile = src.profile.copy()
+    with rasterio.open(flat, "w", **profile) as dst:
+        dst.write(np.full((3, SIZE, SIZE), 200, dtype=np.uint8))
+    raster_png(patches_dir / "1.png", solid(16, 16, (40, 40, 40)), alpha)
+    flat_out = tmp_path / "flat-out.tif"
+    patches.apply_patches_to_ortho(flat, patches_dir, entries, flat_out)
+    values = set(np.unique(read_hwc(flat_out)).tolist())
+    assert {40, 200} <= values
+    assert any(40 < v < 200 for v in values)
+
+
+def test_bake_ortho_patch_handles_a_raster_entry_without_torch(
+    ortho: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    def no_lama(weights, device):
+        raise AssertionError("LaMa requested for a raster entry")
+
+    monkeypatch.setattr(commands, "_lama_inpaint_fn", no_lama)
+    patches_dir = tmp_path / "patches"
+    patches_dir.mkdir()
+    box = (E0 + 50, N0 + 15, E0 + 60, N0 + 25)
+    raster_png(patches_dir / "1.png", solid(10, 10, CYAN), np.full((10, 10), 255, dtype=np.uint8))
+    write_log(patches_dir, [raster_entry(1, box)])
+    tiles_out = tmp_path / "tiles"
+
+    rc = main([
+        "bake-ortho-patch",
+        "--ortho", str(ortho),
+        "--patches-dir", str(patches_dir),
+        "--seq", "1",
+        "--out", str(tmp_path / "p.tif"),
+        "--tiles-out", str(tiles_out),
+        "--minzoom", "16", "--maxzoom", "17",
+    ])
+    assert rc == 0
+    patched = read_hwc(tmp_path / "p.tif")
+    assert (patched[55:65, 50:60] == CYAN).all()
+    expected = patches.affected_tiles([sub_box_3857(*box)], 16, 17)
+    assert len(list(tiles_out.rglob("*.webp"))) == len(expected)
+
+    # Incremental: a second raster entry bakes into the existing raster, and
+    # a full replay of the same log gives the same bytes.
+    raster_png(patches_dir / "2.png", solid(10, 10, MAGENTA), np.full((10, 10), 255, dtype=np.uint8))
+    write_log(patches_dir, [raster_entry(1, box), raster_entry(2, (E0 + 55, N0 + 20, E0 + 65, N0 + 30))])
+    assert main([
+        "bake-ortho-patch", "--ortho", str(ortho), "--patches-dir", str(patches_dir),
+        "--seq", "2", "--out", str(tmp_path / "p.tif"),
+    ]) == 0
+    assert main([
+        "apply-ortho-patches", "--ortho", str(ortho), "--patches-dir", str(patches_dir),
+        "--out", str(tmp_path / "replayed.tif"),
+    ]) == 0
+    incremental = read_hwc(tmp_path / "p.tif")
+    assert np.array_equal(incremental, read_hwc(tmp_path / "replayed.tif"))
+    assert tuple(incremental[52, 57]) == MAGENTA  # the later entry wins in the overlap
+    assert tuple(incremental[62, 52]) == CYAN
+
+
+def test_raster_entry_with_a_missing_png_raises(ortho: Path, tmp_path: Path):
+    patches_dir = tmp_path / "patches"
+    write_log(patches_dir, [raster_entry(1, (E0, N0, E0 + 5, N0 + 5))])
+    with pytest.raises(patches.PatchError, match="raster patch file missing"):
+        patches.apply_patches_to_ortho(
+            ortho, patches_dir, patches.load_patch_log(patches_dir), tmp_path / "out.tif",
+        )

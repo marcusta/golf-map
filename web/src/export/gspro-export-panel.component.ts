@@ -89,6 +89,11 @@ const TIP = {
     zones: 'The terrain\'s vegetation zones (shrubs, ferns, woodland floor, …) as VSPro texture masks — one PNG per four zone '
         + 'types — plus a unity-zones file for GolfMap › Vegetation Zones in Unity, which binds the items named in Vegetation '
         + 'zone types to their channels. Export the heightmap first — the zones take its height range.',
+    unityOrtho: 'Renders the inner photo with the Clean tool\'s baked edits (the picked vintage\'s patched copy when there is '
+        + 'one) and the two boxes above as ticked, then puts its -meshes file onto the texture the course meshes sample in the '
+        + 'open Unity editor whose GolfMap course imports from this folder. The old texture is backed up in the project\'s '
+        + 'GolfMapSpelunk/ortho-backups first. Bake pending Clean edits before this: unbaked ones are not in the photo. Unity '
+        + 'must be open with the course active; save the project to keep it.',
     unityTerrain: 'Exports the heightmap, then puts it onto the terrain in the open Unity editor whose GolfMap course imports '
         + 'from this folder: heights, size and (outer) position, on the same Terrain objects and data, so vegetation and '
         + 'references stay. Each terrain is backed up in the course\'s Backups folder first. Unity must be open with the course '
@@ -239,6 +244,8 @@ const tpl = template(`
             </div>
             <button bind="runCleanOrtho" type="button" class="gspro-export__run gspro-export__run-clean-ortho"></button>
             <button bind="runCleanOuterOrtho" type="button" class="gspro-export__run gspro-export__run-clean-outer-ortho"></button>
+            <div class="gspro-export__head">Cleaned photo into Unity ${infoTip({ text: TIP.unityOrtho })}</div>
+            <button bind="runUnityOrtho" type="button" class="gspro-export__run gspro-export__run-unity-ortho" data-testid="gspro-unity-ortho"></button>
         </div>
 
         <div class="gspro-export__section actions">
@@ -868,6 +875,11 @@ export class GsproExportPanelComponent extends Component {
                 textContent: () => (busy() ? 'Exporting…' : 'Export outer cleaned orthophoto'),
                 disabled: () => busy() || !this.svc.orthoSource.get() || noTerrain(),
                 onclick: () => { void this.svc.runOuterOrtho(true); },
+            },
+            runUnityOrtho: {
+                textContent: () => (busy() ? 'Exporting…' : 'Inner cleaned photo → Unity meshes'),
+                disabled: () => busy() || !this.svc.orthoSource.get(),
+                onclick: () => { void this.svc.runUnityOrtho(); },
             },
             outerOrthoTip: () => {
                 const terrain = this.svc.terrain.get();

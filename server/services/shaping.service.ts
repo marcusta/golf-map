@@ -16,6 +16,15 @@
 //                         Unity refresh of the changed objects.
 //   - `status(courseId)`  the worker's `/status` and the course's last job.
 //
+// `apply(courseId, { paths: true })` is the Draw mode's "Update paths in
+// Unity" (a path changed surface): before the layers it rewrites the road
+// surfaces file of the exported SVG (`gspro.py svg --paths-only`,
+// `<stem>-paths.json`: what the worker's `golfmap.split_surfaces` cuts a
+// mixed road along and Unity's `golfmap.paths.materials` gives each path
+// mesh its material from), and after the refresh of the changed objects it
+// runs `golfmap.paths.materials` over the course's path meshes, also when
+// Blender changed nothing (a whole road given another surface).
+//
 // The worker speaks JSON over HTTP on GOLFMAP_SHAPING_URL (default
 // http://127.0.0.1:8766): `GET /status`, `POST /load {blend?, layersDir?,
 // fbxFolder?}`, `POST /sync {dryRun?}` (contract in the plan). One worker for
@@ -97,6 +106,10 @@ export interface ShapingApplyResult {
     seams: unknown;
     /** `golfmap.course.refresh`'s report; null when Unity was not refreshed (see warnings / unityError). */
     unityReport: unknown;
+    /** `paths`: the report lines of the surfaces file's rewrite (what changed surface); [] otherwise. */
+    pathSurfaces: string[];
+    /** `paths`: `golfmap.paths.materials`' result (surfaces per mesh, materials, problems); null when it did not run. */
+    pathMaterials: unknown;
     /** The refresh's steps with their seconds (from `unityReport`); [] when Unity was not refreshed. */
     unitySteps: ShapingUnityStep[];
     unityError: string | null;
@@ -157,6 +170,8 @@ export interface ShapingApplyOptions {
     dryRun?: boolean;
     /** Stop after the worker (no Unity refresh). */
     skipUnity?: boolean;
+    /** Take the paths' surfaces through as well (see the header): surfaces file first, path materials last. */
+    paths?: boolean;
 }
 
 export interface ShapingTimeouts {
@@ -179,7 +194,7 @@ export const DEFAULT_SHAPING_TIMEOUTS: ShapingTimeouts = {
 export interface ShapingDeps {
     courses: Pick<CoursesService, 'get'>;
     /** The course's export folder (where its .blend lives). */
-    exportSettings: Pick<GsproExportService, 'settings'>;
+    exportSettings: Pick<GsproExportService, 'settings' | 'svgCommand'>;
     /** Where the worker's log goes (`<dataDir>/shaping-worker.log`). */
     dataDir: string;
     pipelineDir?: string;
@@ -219,7 +234,7 @@ interface SyncAnswer {
 
 export class ShapingService {
     private readonly courses: Pick<CoursesService, 'get'>;
-    private readonly exportSettings: Pick<GsproExportService, 'settings'>;
+    private readonly exportSettings: Pick<GsproExportService, 'settings' | 'svgCommand'>;
     private readonly dataDir: string;
     private readonly pipelineDir: string;
     private readonly runner: ExportRunner;
@@ -359,8 +374,12 @@ export class ShapingService {
         const warnings: string[] = [];
         const dryRun = opts.dryRun === true;
 
-        beginPhase(rec, 'layers', 'gspro.py shaping-global');
+        beginPhase(rec, 'layers', opts.paths ? 'path surfaces (gspro.py svg --paths-only)' : 'gspro.py shaping-global');
         const { dir: exportDir } = await this.exportSettings.settings(rec.job.courseId);
+        // First: shaping-global emits the split of the mixed roads, which the worker cuts along this file.
+        const pathSurfaces = opts.paths ? await this.writePathSurfaces(rec.job.courseId) : [];
+        warnings.push(...pathSurfaces.filter(l => l.startsWith('warning:')));
+        if (opts.paths) notePhase(rec, 'gspro.py shaping-global');
         const layersDir = await this.layersDir(rec.job.courseId);
         const layers = await this.writeLayers(rec.job.courseId, layersDir);
         endPhase(rec, 'layers', 'done', layers.find(l => /\bops?\b|op\(s\)/.test(l))?.trim() ?? `${layers.length} report line(s)`);
@@ -386,6 +405,7 @@ export class ShapingService {
             + (removed.length ? `, ${removed.length} removed` : ''));
 
         let unityReport: unknown = null;
+        let pathMaterials: unknown = null;
         let unityError: string | null = null;
         const skip = (why: string) => {
             warnings.push(why);
@@ -395,13 +415,21 @@ export class ShapingService {
             skip('Unity refresh skipped (skipUnity)');
         } else if (!editor) {
             skip(`Unity not refreshed: no open Unity editor imports from ${exportDir}${seen.length ? ` (${seen.join('; ')})` : ''}`);
-        } else if (unityObjects.length === 0 && !dryRun) {
+        } else if (unityObjects.length === 0 && !dryRun && !opts.paths) {
             skip('Unity not refreshed: no object changed');
         } else {
-            beginPhase(rec, 'unity', `refreshing ${unityObjects.length} object(s) in ${editor.projectName}`);
+            const refresh = unityObjects.length > 0 || dryRun;
+            beginPhase(rec, 'unity', refresh ? `refreshing ${unityObjects.length} object(s) in ${editor.projectName}` : `path materials in ${editor.projectName}`);
             try {
-                unityReport = await this.refreshUnity(editor, unityObjects, dryRun, warnings);
-                endPhase(rec, 'unity', 'done', `${unityObjects.length} object(s) refreshed in ${editor.projectName}`);
+                // With `paths` the look goes on every path mesh afterwards, so the refresh leaves its own (named meshes only) out.
+                if (refresh) unityReport = await this.refreshUnity(editor, unityObjects, dryRun, warnings, opts.paths ? { skip: 'paths.materials' } : {});
+                if (opts.paths) {
+                    notePhase(rec, `path materials in ${editor.projectName}`);
+                    pathMaterials = await editor.run('golfmap.paths.materials', dryRun ? { dryRun: true } : {}, this.timeouts.unitySec);
+                    warnings.push(...strings((pathMaterials as { problems?: unknown } | null)?.problems).map(q => `path materials: ${q}`));
+                }
+                endPhase(rec, 'unity', 'done', (refresh ? `${unityObjects.length} object(s) refreshed` : 'no object changed')
+                    + (opts.paths ? ', path materials applied' : '') + ` in ${editor.projectName}`);
             } catch (e) {
                 unityError = (e as Error).message.split('\n')[0] ?? String(e);
                 warnings.push(`Unity refresh failed: ${unityError}`);
@@ -416,6 +444,8 @@ export class ShapingService {
             places: Array.isArray(sync.report?.changedPlaces) ? sync.report!.changedPlaces as unknown[] : [],
             seams: sync.report?.seams ?? null,
             unityReport,
+            pathSurfaces,
+            pathMaterials,
             unitySteps: unitySteps(unityReport),
             unityError,
             layers,
@@ -425,6 +455,18 @@ export class ShapingService {
             dryRun,
             seconds: Math.round((Date.now() - t0) / 100) / 10,
         };
+    }
+
+    /**
+     * `gspro.py svg --paths-only`: the road surfaces file of the course's
+     * exported SVG rewritten from the course as it is now; its report lines.
+     * 409 when the SVG was never exported (the file describes its shapes).
+     */
+    private async writePathSurfaces(courseId: string): Promise<string[]> {
+        const { args } = await this.exportSettings.svgCommand(courseId, { dbPath: this.dbPath });
+        const { code, stdout, stderr } = await this.runner([...args, '--paths-only'], this.pipelineDir);
+        if (code !== 0) throw failure('Path surfaces (gspro.py svg --paths-only)', code, stdout, stderr);
+        return reportLines(stdout);
     }
 
     /** `gspro.py shaping-global` into the course's layer folder; its report lines. */
@@ -627,8 +669,8 @@ export class ShapingService {
      * `golfmap.course.refresh only=<objects>`; a bridge that does not know
      * `only` yet gets the whole refresh instead (with a warning).
      */
-    private async refreshUnity(editor: UnityEditor, changed: string[], dryRun: boolean, warnings: string[]): Promise<unknown> {
-        const extra = dryRun ? { dryRun: true } : {};
+    private async refreshUnity(editor: UnityEditor, changed: string[], dryRun: boolean, warnings: string[], more: Record<string, unknown> = {}): Promise<unknown> {
+        const extra = { ...(dryRun ? { dryRun: true } : {}), ...more };
         try {
             return await editor.run('golfmap.course.refresh', { only: changed.join(','), ...extra }, this.timeouts.unitySec);
         } catch (e) {

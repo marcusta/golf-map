@@ -739,6 +739,12 @@ materials' `_Satellite` and the Stix `_ColorMap` - on Vreta both `Assets/Terrain
 pick it up; the old file goes to `GolfMapSpelunk/ortho-backups/`. Files with no copy in the project are only listed.
 Regenerate: `bun run gspro:export -- <course> ortho --tint`, then `golfmap.orthos.update`.
 
+An export from another source has another file name (`-patched`, `-clean`), which `orthos.update` only lists.
+`golfmap.orthos.apply file=<export .jpg>` puts that one file onto the texture the scene's renderers sample as
+`_Satellite`, in place and with the same backup; the project asset keeps its own name. It refuses when the scene uses
+several satellite textures (pass `target=<asset path>`). The web panel's **Inner cleaned photo → Unity meshes** runs the
+export and this command in one job.
+
 ## Cart paths
 
 OPCD writes every path as one hard surface, concrete: its Satellite theme draws the path meshes
@@ -769,7 +775,10 @@ Asphalt_Sat`: concrete on both edges, so the path ended in a razor-sharp line ag
   2580 m (what OPCD's asphalt does), tinted to the surface's mean colour (albedo x AO, solved against the slice's mean),
   so a distant path keeps its colour and does not tile. Path meshes take the surface's `physicMaterial`.
 - **Fringe strips fade into their neighbour.** A strip's paint is red on the path edge and black on the far edge (OPCD's
-  blend convention); the tool checks it per strip (boundary vertices within 5 cm of the road meshes' boundary = path
+  blend convention; a strip faded by the Blender op `golfmap.path_edge_fade` is painted the other way, **green on the
+  path edge and red on the far edge**, so Stix 3D grass - blade chance = vertex red - grows on its grassy part:
+  the tool finds "path Green, far Red" from the paint, draws the surface on the green channel and leaves the far channel
+  the neighbour's own red; `golfmap.roughgrass.plant` puts a Stix renderer on every `*_Concrete_-_Blend` with green paint); the tool checks it per strip (boundary vertices within 5 cm of the road meshes' boundary = path
   edge) and reports the tallies. It then casts rays down 15 cm past the far edge, takes the material of the mesh found
   there (the name's neighbour type preferred, e.g. `*_Deep_*` for `_B_Deep_`; course-local copies under
   `Assets/GolfMap/` skipped) and the paint channel that mesh shows there, and builds `<course>/Paths/Surfaces/<surface>

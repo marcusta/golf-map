@@ -1,6 +1,6 @@
 # Plan: cleaned-photo export and re-import loop
 
-**Status:** proposed 2026-10-03, awaiting go and the Windows auto-clean branch
+**Status:** implemented 2026-10-07 (OX1 to OX3; the `auto` kind of section 7 is not built). Where the code differs from the plan, the code is right: see "As built" at the end. Operator steps: [workflows.md](workflows.md) section 6.
 **Scope:** `pipeline/golfpipe` (two commands, one log entry kind), `server` (three routes), `web/src/clean` (one panel section)
 
 ## 1. Purpose
@@ -205,4 +205,47 @@ OX1 first. OX2 and OX3 in parallel after OX1 fixes the CLI output shape. OX4 las
   that; the import summary reports the changed-pixel count so a whole-image shift is
   obvious before confirming.
 - Should an import that touches more than, say, 30 percent of the frame require a second
-  confirmation? Proposed yes, in the panel only.
+  confirmation? Proposed yes, in the panel only. (Built as a warning after the import, see below.)
+
+## 11. As built
+
+Checked against the code on 2026-10-07. The decisions D-OX1 to D-OX7 hold; these details differ
+from sections 3 to 6.
+
+- **The frame comes from the tile manifest `bounds`.** The first export squares the manifest's WGS84
+  `bounds` with `square_extent_3006` (side rounded up to the next 10 m, centred). On site `208f4f4d`
+  that is 1230 m, so 0.150 m/px, not the 0.21 m/px of section 3 (the plan divided the 1.7 km ortho
+  extent); the photo outside the frame cannot be edited. The frame is not the inner terrain square
+  of the Unity texture: on Vreta (`manifest.terrain.inner.square3006` 2050 m) the same rule gives
+  2090 m shifted about 20 m. A site whose texture exists gets its frame hand-written before the
+  first export (workflows.md section 6).
+- **`bounds3006` is an object** `{west, south, east, north}`, like `bounds3857`, in the log entry
+  and in the import answer. `extent3006` stays an array `[e0, n0, e1, n1]` in `sim-frame.json` and
+  `export.json`.
+- **`export.json` has three more fields**: `file`, `format`, `bytes`. The sha256 is checked on every
+  import (the export image must be unmodified), not only recorded.
+- **No no-seq bake before an export.** `bake-ortho-patch` without `--seq` bakes the last entry and
+  refuses an empty log. The server instead exports the pristine ortho for an empty log, the working
+  `.patched.tif` otherwise, and runs `apply-ortho-patches` (full replay, sim tiles rewritten, version
+  bumped) first when that file is missing or older than the pristine photo. The export answer says
+  so in `replayed`. Staleness is that file-time test only.
+- **Body cap and idle timeout.** Bun refuses request bodies over 128 MB on its own, so builder
+  mode sets `maxRequestBodySize` to the maximum in `main.ts` and `env-builder.ts` raises `BODY_LIMIT`
+  to the 400 MB cap (`dev:server` still sets 64 MB; the raise wins). Bun also drops a connection
+  silent for 10 s, so the export and import routes lift the idle timeout for their own request
+  (`liftIdleTimeout`).
+- **The 30 % check is a warning after the import, not a confirmation before it.** The server
+  diffs and bakes inside the request, so the panel cannot ask first. The summary compares the
+  bounding box (not the changed pixels) with the frame: over 30 % shows a warning, 10 % or more a
+  note that the patch is one box. Revert last patch undoes it. The same goes for the bbox area and
+  tile count of section 4: shown in the summary, after.
+- **The panel is PNG-only.** The Export button writes PNG and the file input takes PNG. The export
+  API still accepts `format: "jpg"`, but the import route rejects a body that does not start with the
+  PNG signature (400), so a JPEG edit imports only through the CLI with an explicit `--tolerance`.
+- **Import extras.** An image identical to the export, or whose differences are all below
+  `--min-area-px`, or lie outside the ortho, answers `changed: false` with a `reason` and appends
+  nothing. The patch PNG keeps the edited colour two pixels beyond the mask (the replay blends
+  with the transparent neighbours). A golfpipe refusal (wrong size, modified export, JPEG without
+  tolerance) is a 422 carrying its message.
+- **`auto` is not implemented**; `load_patch_log` rejects any kind other than `mask`, `stamp`,
+  `raster`. Section 7 stays open until the Windows auto-clean lands.

@@ -19,6 +19,8 @@ const ApplyInput = Type.Object({
     dryRun: Type.Optional(Type.Boolean()),
     /** Stop after Blender (no Unity refresh). */
     skipUnity: Type.Optional(Type.Boolean()),
+    /** The Draw mode's "Update paths in Unity": the paths' surfaces too (surfaces file before, path materials after). */
+    paths: Type.Optional(Type.Boolean()),
 });
 
 const JobInput = Type.Object({
@@ -47,7 +49,7 @@ export function createShapingApi(svc: ShapingService) {
         apply: {
             method: 'POST' as const,
             path: '/courses/:courseId/shaping/apply',
-            fn: (input: Static<typeof ApplyInput>) => svc.apply(input.courseId, { dryRun: input.dryRun, skipUnity: input.skipUnity }),
+            fn: (input: Static<typeof ApplyInput>) => svc.apply(input.courseId, { dryRun: input.dryRun, skipUnity: input.skipUnity, paths: input.paths }),
             schema: ApplyInput,
             middleware: mw,
         },

@@ -114,12 +114,12 @@ export interface GsproExportResult {
 }
 
 /** What an export job produces. */
-export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd';
+export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd';
 
 /** A request to start one export; which fields matter depends on `kind`. */
 export interface GsproExportRequest {
     kind: GsproExportKind;
-    /** `ortho`: a `source` file name from `orthoSources`. */
+    /** `ortho`, `unity-ortho`: a `source` file name from `orthoSources`. */
     source?: string;
     /** `outer-ortho`: the Lantmäteriet collection to fetch, e.g. `orto-l2-2025`. */
     collection?: string;
@@ -559,16 +559,13 @@ export class GsproExportService {
     }
 
     /**
-     * Write the course's features to `<dir>/<course-name>.svg` over the
-     * inner terrain square, so the SVG lines up with the inner rasters.
-     * `excludeFeatureIds` leaves features out and `variant` names the file
-     * `<course-name>-<variant>.svg` — test variants for the Blender build,
-     * to find the shape it chokes on without touching the course.
+     * The `gspro.py svg` command of the course's SVG export and the file it
+     * writes. Also what the shaping service runs with `--paths-only`, to
+     * rewrite that SVG's road-surface sidecar (`<stem>-paths.json`) alone.
      */
-    async export(courseId: string, opts: SvgExportOptions = {}): Promise<GsproExportResult> {
+    async svgCommand(courseId: string, opts: Pick<SvgExportOptions, 'variant' | 'dbPath'> = {}): Promise<{ args: string[]; out: string }> {
         const course = await this.courses.get(courseId);
         const { inner } = await this.resolveTerrain(courseId, 'export a GSPro SVG for');
-
         const out = path.join(await this.exportDir(courseId), exportFileName(course.name, opts.variant));
         const args = [
             path.join(this.pipelineDir, 'gspro.py'), 'svg',
@@ -578,6 +575,18 @@ export class GsproExportService {
             ...Object.entries(SVG_TYPE_MAP).flatMap(([type, surface]) => ['--map', `${type}=${surface}`]),
         ];
         if (opts.dbPath) args.push('--db', opts.dbPath);
+        return { args, out };
+    }
+
+    /**
+     * Write the course's features to `<dir>/<course-name>.svg` over the
+     * inner terrain square, so the SVG lines up with the inner rasters.
+     * `excludeFeatureIds` leaves features out and `variant` names the file
+     * `<course-name>-<variant>.svg` — test variants for the Blender build,
+     * to find the shape it chokes on without touching the course.
+     */
+    async export(courseId: string, opts: SvgExportOptions = {}): Promise<GsproExportResult> {
+        const { args, out } = await this.svgCommand(courseId, opts);
         const ids = [...new Set(opts.excludeFeatureIds ?? [])];
         if (ids.length === 0) {
             const result = await this.run('GSPro SVG', args, out);
@@ -851,6 +860,44 @@ export class GsproExportService {
         }
         report.push('Next: Terrain › Export To OBJ in Unity for Blender; re-run the terrain conform once the course meshes are rebuilt. Save the scene to keep it.');
         return { path: exported.path, report };
+    }
+
+    /**
+     * The inner orthophoto export, then straight onto the course meshes in
+     * Unity: the open editor whose active GolfMap course imports from this
+     * course's export folder runs `golfmap.orthos.apply` with the `-meshes`
+     * file just written. That overwrites the texture the scene's meshes
+     * sample as `_Satellite` in place (the old file backed up), so the
+     * export's own name (`-patched`, `-clean`) does not have to match the
+     * project's. The `-meshes` file is always written, whatever `tint` says:
+     * it is the one the meshes use.
+     */
+    async exportUnityOrtho(courseId: string, source: string, darken?: number, tint?: TerrainTintOptions,
+                           floor?: ForestFloorOptions, removeBuildings = false): Promise<GsproExportResult> {
+        const dir = await this.exportDir(courseId);
+        // Find the editor first: no point rendering for a Unity that is not open.
+        const { editor, seen } = await editorForExportDir(this.unityBridge, dir);
+        if (!editor) {
+            throw new ConflictError(`No open Unity editor imports from ${dir}: open the course's Unity project (with the GolfMap scripts) and make its course the active one`
+                + (seen.length ? ` — open: ${seen.join('; ')}` : ' — none is open'));
+        }
+        const exported = await this.exportOrtho(courseId, source, darken, tint ?? {}, floor, removeBuildings);
+        const file = meshTextureFileName(path.basename(exported.path));
+
+        let result: any;
+        try {
+            result = await editor.run('golfmap.orthos.apply', { file }, 300);
+        } catch (e) {
+            throw new ConflictError(`The orthophoto was exported, but Unity (${editor.projectName}) could not take it: ${(e as Error).message.split('\n')[0]}`);
+        }
+        return {
+            path: exported.path,
+            report: [
+                ...exported.report,
+                `Unity (${editor.projectName}): ${file} put onto ${result?.target} (${result?.renderers ?? 0} renderers sample it; ${result?.status})`,
+                'Save the Unity project to keep it.',
+            ],
+        };
     }
 
     /**
@@ -1269,6 +1316,7 @@ export class GsproExportService {
             case 'dem': return this.exportDem(courseId, r.terrain!);
             case 'unity-terrain': return this.exportUnityTerrain(courseId, r.terrain!);
             case 'unity-sculpt': return this.exportUnitySculpt(courseId, r.terrain!);
+            case 'unity-ortho': return this.exportUnityOrtho(courseId, r.source!, r.darken, tintOptions(r), floorOptions(r), r.removeBuildings === true);
             case 'hillshade': return this.exportHillshade(courseId, r.terrain!);
             case 'trees': return this.exportTrees(courseId, r.terrain!);
             case 'buildings': return this.exportBuildings(courseId, r.terrain!);
@@ -1632,6 +1680,7 @@ export function describeRequest(r: GsproExportRequest): string {
         case 'dem': need(r.terrain, 'a terrain'); return `${r.terrain} heightmap`;
         case 'unity-terrain': need(r.terrain, 'a terrain'); return `${r.terrain} heightmap into Unity`;
         case 'unity-sculpt': need(r.terrain, 'a terrain'); return `${r.terrain} Unity sculpt into golf-map`;
+        case 'unity-ortho': need(r.source, 'a source'); return 'inner orthophoto onto the Unity course meshes';
         case 'hillshade': need(r.terrain, 'a terrain'); return `${r.terrain} hillshade`;
         case 'trees': need(r.terrain, 'a terrain'); return `${r.terrain} trees`;
         case 'buildings': need(r.terrain, 'a terrain'); return `${r.terrain} buildings`;

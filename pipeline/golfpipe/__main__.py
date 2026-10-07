@@ -19,6 +19,8 @@ Commands:
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor (+ --woodland: forest floor) -> .clean.tif
   bake-ortho-patch  Windowed bake of logged entries (--seq repeatable: LaMa masks + clone-stamp strokes) into the working .patched.tif + one union-subtree retile
   apply-ortho-patches  Full replay: re-bake every logged entry onto the pristine ortho + retile the affected subtree
+  export-ortho-square  Cleaned photo -> one square PNG/JPEG on the site's fixed frame (sim-frame.json) + world file + export.json
+  import-ortho-square  Edited export -> the changed pixels as one raster patch PNG (diff against the export) + the log entry fields as JSON
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   canopy            Lidar -> canopy / canopy-color / surface tile pyramids + manifest update (--trees-out: tree polygons too)
@@ -51,6 +53,7 @@ from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro
 from golfpipe import sources
+from golfpipe import square_frame
 from golfpipe import trees_stems
 from golfpipe import osm
 from golfpipe import patches
@@ -369,6 +372,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--webp-quality", type=int, default=80)
     p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS)")
     p.add_argument("--device", help="torch device (default: auto — mps if available, else cuda, else cpu)")
+
+    p = sub.add_parser(
+        "export-ortho-square",
+        help="Export the cleaned photo as one square image on the site's fixed frame, for an external image editor; prints export.json",
+    )
+    p.add_argument("--ortho", required=True, help="the working .patched.tif, brought up to date first (the pristine ortho for a site never patched)")
+    p.add_argument("--frame", required=True, help="the site's sim-frame.json; created from --bounds-wgs84 when missing, never changed")
+    p.add_argument("--out-dir", dest="out_dir", required=True, help="this export's own directory (exports/<n>); must not hold an export yet")
+    p.add_argument("--seq", type=int, required=True, help="export number <n>, names ortho-sim-<n>.png")
+    p.add_argument("--log-seq", dest="log_seq", type=int, required=True, help="highest patch-log seq the raster contains (0 = empty log); recorded in export.json")
+    p.add_argument("--size", type=int, help=f"pixels per side when the frame is created (default {square_frame.DEFAULT_SIZE}); must match an existing frame")
+    p.add_argument("--format", dest="format", choices=("png", "jpg"), default="png", help="png (lossless, the editing format; default) or jpg (q95, a Unity texture)")
+    p.add_argument("--bounds-wgs84", dest="bounds_wgs84", help="west,south,east,north in WGS84 degrees: squared into the frame when --frame does not exist yet")
+
+    p = sub.add_parser(
+        "import-ortho-square",
+        help="Diff an edited export against the export it came from and write the changed pixels as one raster patch PNG; prints the log entry fields",
+    )
+    p.add_argument("--ortho", required=True, help="the working .patched.tif (read for its extent only)")
+    p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json; <seq>.png is written here")
+    p.add_argument("--export-dir", dest="export_dir", required=True, help="the export the image was edited from (exports/<n>, with export.json)")
+    p.add_argument("--image", required=True, help="the edited image, same pixel size as the export")
+    p.add_argument("--seq", type=int, required=True, help="the new patch-log seq; names <seq>.png")
+    p.add_argument("--tolerance", type=int, help=f"largest per-channel difference (0..254) still unchanged (default {commands.DEFAULT_IMPORT_TOLERANCE}); required for JPEG/WebP")
+    p.add_argument("--min-area-px", dest="min_area_px", type=int, default=commands.DEFAULT_IMPORT_MIN_AREA_PX,
+                   help=f"drop changed regions smaller than this many frame pixels (default {commands.DEFAULT_IMPORT_MIN_AREA_PX})")
 
     p = sub.add_parser("tile-ortho", help="Tile an orthophoto GeoTIFF into an XYZ WebP pyramid")
     p.add_argument("--input", required=True, help="input orthophoto GeoTIFF (any CRS)")
@@ -876,6 +905,27 @@ def main(argv: list[str] | None = None) -> int:
                 webp_quality=args.webp_quality,
                 weights=args.weights, device=args.device,
                 pristine_tiles=Path(args.pristine_tiles) if args.pristine_tiles else None,
+            )
+
+        elif args.command == "export-ortho-square":
+            bounds_wgs84 = None
+            if args.bounds_wgs84:
+                try:
+                    bounds_wgs84 = tuple(float(v) for v in args.bounds_wgs84.split(","))
+                except ValueError:
+                    bounds_wgs84 = ()
+                if len(bounds_wgs84) != 4:
+                    parser.error("--bounds-wgs84 must be west,south,east,north in WGS84 degrees")
+            commands.cmd_export_ortho_square(
+                Path(args.ortho), Path(args.frame), Path(args.out_dir),
+                seq=args.seq, log_seq=args.log_seq, size=args.size, fmt=args.format,
+                bounds_wgs84=bounds_wgs84,
+            )
+
+        elif args.command == "import-ortho-square":
+            commands.cmd_import_ortho_square(
+                Path(args.ortho), Path(args.patches_dir), Path(args.export_dir), Path(args.image),
+                seq=args.seq, tolerance=args.tolerance, min_area_px=args.min_area_px,
             )
 
         elif args.command == "tile-ortho":

@@ -23,6 +23,7 @@ import { GsproExportService } from '../export/gspro-export.service';
 import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
 import { VEGETATION_TOOL_ID } from '../zones/vegetation-tool';
 import { PlantVegetationService } from '../zones/plant-vegetation.service';
+import { ShapingService, type ShapingJob } from '../terrain-edit/shaping.service';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
 import { TilesetService } from '../map/tileset.service';
 import { MapService } from '../map/map.service';
@@ -108,6 +109,7 @@ const zone3Tpl = template(`
         <button bind="boxSelect" type="button" class="cmdbar__box"></button>
         <button bind="plantBtn" type="button" class="cmdbar__plant" data-testid="plant-vegetation-btn"></button>
         <button bind="updateZonesBtn" type="button" class="cmdbar__plant" data-testid="update-zones-btn"></button>
+        <button bind="updatePathsBtn" type="button" class="cmdbar__plant" data-testid="update-paths-btn"></button>
         <span class="cmdbar__divider cmdbar__divider--sm"></span>
         <button bind="undoBtn" type="button" class="cmdbar__hist" aria-label="Undo">${icon('undo', 16)}</button>
         <button bind="redoBtn" type="button" class="cmdbar__hist" aria-label="Redo">${icon('redo', 16)}</button>
@@ -680,6 +682,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private publishVps = this.inject(PublishClientService);
     private confirm = this.inject(ConfirmService);
     private plant = this.inject(PlantVegetationService);
+    private shaping = this.inject(ShapingService);
+    /** True while "Update paths in Unity" runs (the shaping job it started). */
+    private updatingPaths = new Signal(false);
     private helpModal = this.inject(HelpModalService);
     private serverMode = this.inject(ServerModeService);
     private auth = this.inject(AuthService);
@@ -906,6 +911,17 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                     const course = this.svc.course.peek();
                     const ids = this.selectedZoneIds();
                     if (course && ids.length > 0 && !this.plant.running.peek()) void this.updateZonesInUnity(course.id, ids);
+                },
+            },
+            // Draw mode with a road or path selected: its surface through Blender into Unity.
+            updatePathsBtn: {
+                'data-off': () => String(this.isVegetationSubmode() || this.selectedPathCount() === 0),
+                innerHTML: () => `${icon('upload', 16)}<span>${this.updatingPaths.get() ? this.pathsStep() : 'Update paths in Unity'}</span>`,
+                title: "Update paths in Unity: take the paths' surfaces as set now (Path surface) through to the course's open Unity project. Rewrites the surfaces file of the exported SVG, lets Blender cut the roads of mixed surfaces apart (only what changed is re-shaped, with any other shaping not yet applied), re-imports those meshes and gives every path mesh its surface's material. For a changed surface only: a path that was moved or redrawn needs the SVG export and the OPCD build",
+                'aria-busy': () => String(this.shaping.running.get()),
+                onclick: () => {
+                    const course = this.svc.course.peek();
+                    if (course && !this.shaping.running.peek()) void this.updatePathsInUnity(course.id);
                 },
             },
             newPath: {
@@ -1736,6 +1752,66 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 tone: 'warning',
             });
         }
+    }
+
+    /** The roads and paths in the selection ("Update paths in Unity" shows with one). */
+    private selectedPathCount(): number {
+        return this.features.selectedFeatures.get().filter(f => f.type === 'path').length;
+    }
+
+    /** The running paths job's phase for the button ("Blender sync…"). */
+    private pathsStep(): string {
+        const job = this.shaping.job.get();
+        const phase = job?.phases.find(p => p.id === job.phase);
+        return `${phase?.label ?? 'Updating paths'}…`;
+    }
+
+    /**
+     * The path surfaces through Blender into Unity (ShapingService.apply with
+     * `paths`), then what happened: which roads changed surface, what Blender
+     * re-shaped, the surfaces Unity gave the path meshes, and the warnings.
+     * No confirm first: it only carries through what the paths already say.
+     */
+    private async updatePathsInUnity(courseId: string): Promise<void> {
+        this.updatingPaths.set(true);
+        let job: ShapingJob | null;
+        try {
+            job = await this.shaping.apply(courseId, null, { paths: true });
+        } finally {
+            this.updatingPaths.set(false);
+        }
+        if (!job || job.status !== 'succeeded' || !job.result) {
+            await this.confirm.confirm({
+                title: 'Could not update the paths',
+                body: job?.error ?? this.shaping.jobError.peek() ?? 'The job failed.',
+                detail: job?.phases.filter(p => p.status !== 'pending').map(p => `${p.label}: ${p.status}${p.detail ? ` - ${p.detail}` : ''}`).join('\n'),
+                confirmLabel: 'OK', cancelLabel: 'Close', tone: 'warning',
+            });
+            return;
+        }
+        const r = job.result;
+        const unity = job.phases.find(p => p.id === 'unity');
+        const intoUnity = r.pathMaterials != null;
+        const perSurface = Object.entries((r.pathMaterials as { meshesPerSurface?: Record<string, number> } | null)?.meshesPerSurface ?? {});
+        const report = [
+            ...r.pathSurfaces.slice(1).filter(l => !l.startsWith('warning:')),
+            `Blender: ${r.changedObjects.length} object(s) re-shaped${r.removed.length ? `, ${r.removed.length} removed` : ''}`,
+            `Unity: ${unity?.detail ?? unity?.status ?? 'not run'}`,
+            ...(perSurface.length ? [`Path meshes: ${perSurface.map(([surface, n]) => `${surface} ${n}`).join(', ')}`] : []),
+            ...r.warnings.map(w => (w.startsWith('warning:') ? w : `warning: ${w}`)),
+        ];
+        // What a surfaces-only update cannot carry: a moved outline, a grass track made a hard path (or back), a new road.
+        const needsBuild = r.pathSurfaces.some(l => l.startsWith('warning:'));
+        await this.confirm.confirm({
+            title: !intoUnity ? 'Paths not in Unity yet' : needsBuild ? 'Paths updated, but some changes need a new build' : 'Paths updated in Unity',
+            body: !intoUnity ? (r.unityError ?? 'Unity did not take them - see below.')
+                : needsBuild ? 'Some changes cannot reach the meshes without the SVG export and the OPCD build (see the warnings). The rest is in Unity: save the scene to keep it.'
+                    : 'Save the scene in Unity to keep it.',
+            detail: report.join('\n'),
+            confirmLabel: 'Done', cancelLabel: 'Close',
+            tone: intoUnity && r.warnings.length === 0 ? 'primary' : 'warning',
+            layout: report.length > 3 ? 'review' : 'default',
+        });
     }
 
     /** The vegetation zones in the selection (the ids "Update in Unity" sends). */

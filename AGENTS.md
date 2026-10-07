@@ -44,7 +44,7 @@ External paths (Vreta is the test course; nothing in code may hardcode it):
 - `data/` (gitignored): `app.sqlite`, `sessions.sqlite`, `obs.sqlite`, `tiles/`, `sources/`.
 - Auth: cookie sessions; no signup — `create-user` CLI. Tile routes are public.
 - `docs/`: feature proposals and decisions (`decisions-*.md`, `feature-*.md`); read the relevant one before touching the planner/strategy layer or a feature it covers.
-- Cross-area workflows (terrain round-trip and order of operations, new vegetation zone → Unity, Unity script edit + sync, re-placing props/walls without losing hand edits): [docs/workflows.md](docs/workflows.md) — read before any of them.
+- Cross-area workflows (terrain round-trip and order of operations, new vegetation zone → Unity, Unity script edit + sync, re-placing props/walls without losing hand edits, editing the cleaned ortho photo in an image editor): [docs/workflows.md](docs/workflows.md) — read before any of them.
 
 ## This machine (Windows 11, native, no WSL)
 

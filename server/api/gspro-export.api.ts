@@ -21,7 +21,7 @@ const StartInput = Type.Object({
     courseId: Type.String(),
     kind: Type.Union([
         Type.Literal('svg'), Type.Literal('ortho'), Type.Literal('outer-ortho'),
-        Type.Literal('dem'), Type.Literal('unity-terrain'), Type.Literal('unity-sculpt'), Type.Literal('hillshade'), Type.Literal('trees'), Type.Literal('buildings'),
+        Type.Literal('dem'), Type.Literal('unity-terrain'), Type.Literal('unity-sculpt'), Type.Literal('unity-ortho'), Type.Literal('hillshade'), Type.Literal('trees'), Type.Literal('buildings'),
         Type.Literal('zones'), Type.Literal('vegetation'), Type.Literal('vegetation-update'), Type.Literal('creeks'), Type.Literal('gkd'),
     ]),
     /** `ortho`: a `source` file name from `orthoSources`. */

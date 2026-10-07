@@ -128,7 +128,8 @@ per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cac
   moves both alike; boundary slivers the cut leaves (a new vertex < 1 mm from a welded one) are merged first,
   and a neighbour vertex < 1 mm away with no partner is snapped; then the cut's paint, below), and
   `golfmap.split_surfaces` (a merged road of mixed surfaces cut into one object per surface; section "Shaping:
-  surfaces of a merged road"). Any op may set `maxDzWarnM` (CLI `--max-dz-warn`, default 0.5 m): larger moves become
+  surfaces of a merged road"), and `golfmap.path_edge_fade` (the fringe strips of gravel / dirt paths widened into the
+  path and painted as a noisy red-grass / green-path ramp; section "Shaping: path edge fade"). Any op may set `maxDzWarnM` (CLI `--max-dz-warn`, default 0.5 m): larger moves become
   report `warnings` with EPSG:3006 position and nearest hole; every op reports `movedByType`. Each Afrod call runs once per feature with the
   feature's objects selected, `scene.opcdtools` reset to its defaults plus the op's params, and `random` +
   numpy seeded with the op's `seed`, else the feature number (`data-feature-no`, or the hex of feature-number
@@ -288,6 +289,60 @@ on OPCD's meshes: `golfmap.split_surfaces` (`tools/shape_apply.py`; the geometry
   footprints after it move z and Blender re-derives each part's custom normals from its own faces, so after the
   whole layer they differ by up to 3.8 deg at the seam (as at any boundary between two OPCD meshes, whose custom
   normals each follow their own faces; not measured there).
+
+## Shaping: path edge fade
+
+A gravel or dirt path meets the grass along a fringe strip (`Spline_<shape>_<surface>_B_..._Blend`) one quad wide
+(0.12 m on Vreta, vertices ~0.55 m apart along it) with a straight red -> black ramp. The path ends on a line, and the
+3D grass planted on the strip follows its quads: a repeating squarish pattern. `golfmap.path_edge_fade`
+(`tools/shape_apply.py`; the maths, pure Python, in `tools/shape_edgefade.py`, tests `python
+blender/tools/shape_edgefade_test.py`) makes the edge irregular. `shaping-global` emits it as the last op of
+`00-global.gen.json` whenever the course has a gravel or dirt path (`paths-edge-fade`, `select: {type: path}`), after
+`paths-surfaces` (each part has its own surface by then) and after the lot / pad footprints (it works on the final
+heights):
+
+```json
+{ "id": "paths-edge-fade", "op": "golfmap.path_edge_fade", "select": { "type": "path" } }
+```
+
+- **Units**: one per road shape (SVG path id): its path pieces and every blend object. The surface of an object is
+  its `golfmap_surface` (set by `split_surfaces`), else the sidecar's surface of its shape when the shape is one
+  surface; only `surfaces` (default gravel and dirt) are faded. An object that carries `golfmap_edge_fade` is skipped,
+  so a replay is idempotent.
+- **Geometry** (per path piece): the blend faces whose inner edge lies on the piece's boundary (within 1 mm) are its
+  strip; strip and piece are joined and welded; every edge that crosses the line `widthM + 0.1` m from the seam is cut
+  exactly there (no triangle reaches from the strip band deep into the path: a coarse wedge would carry its membership
+  and paint across as a sawtooth), then every edge inside that zone is halved until it is at most `maxEdgeM`; the
+  path faces whose centre is within the effective width of the seam move to the strip. The strip now reaches that far
+  (`widthM`, default 0.3 m, at most 60 % of the piece's half width, so a narrow path keeps a core; a piece with less
+  than 0.1 m to give is left alone) into the path, its outer edge (welded to the rough / deep / fairway mesh beside it)
+  does not move, and the path loses that much mesh. Faces grow with 1 / `maxEdgeM`^2: default 0.3 m; Vreta's whole
+  `roads_124` gravel (8 pieces, 3 blends, ~6 km of strip edge) takes ~70 s and ~0.4 M faces, at 0.2 m ~1.1 M. Raise
+  `maxEdgeM` on a big course; Stix 3D grass runs on every triangle of the blend. The inner edge of the strip is a
+  staircase at that resolution (invisible: the strip is pure path paint there).
+- **Paint** (`shape_edgefade.strip_value`): the strip's colour is `red = 1 - s`, `green = s` with `s` a smoothstep of the
+  distance from the strip's outer edge (0 = the outer edge, 1 = the inner edge), bent by a seeded fractal value noise of the
+  world position (0.45 m, 0.17 m, 0.06 m octaves; `amplitude` 0.55 = how far, as a fraction of the width; tapered to
+  nothing at both ends, so the strip's outer edge stays pure red and its inner edge pure green). The noise depends on the
+  position only, so pieces that meet join up; the seed is the road shape's (`seed` on the op overrides).
+- **Convention**: red = the neighbour's grass, green = the path surface. Stix 3D grass grows on red (its blade chance is
+  the vertex red) and so thins out toward the gravel; MAHS's black stays 0, the two materials mix by paint alone. The rest
+  of the blend object (strips of pieces the op did not reach) is converted to the same convention (`red = 1 - old red`,
+  `green = old red`) so one object has one convention. Unity reads it from the paint: `golfmap.paths.materials` finds
+  "path Green, far Red" and draws the surface on the green channel (the far channel is the neighbour's red, no copy), and
+  `golfmap.roughgrass.plant` puts a Stix renderer (the rough material) on every path blend with green paint.
+- **After**: the changed meshes are smooth shaded with their custom normals dropped, then `golfmap.weld_tjunctions`
+  closes the T-junctions the subdivided outer edge made against the neighbours (`weld`, default on). Object names,
+  the materials, the pairing keys stay; both objects get `golfmap_edge_fade` = `path-edge-fade-v1`.
+- **Keys**: `widthM` (0.3), `maxEdgeM` (0.3), `amplitude` (0.55), `surfaces` (`["gravel", "dirt"]`), `weld` (true),
+  `paths` (the road-surface sidecar, as for `split_surfaces`), `seed`. **Reach** (op cache, worker): the shape's objects
+  plus whatever the weld can touch (their boxes + 1 m). Report `runs[]`: per piece `matched` / `stripFaces` /
+  `pathFaces`, per blend `claimedFaces` / `faces` / `restFaces`, `welds`, `keptFadedCorners` (path corners that keep a
+  paint other than plain red: the fade `split_surfaces` paints on a gravel part toward asphalt).
+- **Limits**: a path piece keeps its own paint through the subdivision (plain red, or the fade toward another surface
+  that `split_surfaces` painted on it); a strip whose inner edge does not sit on a piece's boundary (an unsplit mixed shape) is left alone; there
+  is no face budget beyond `maxEdgeM`. `edge_fade_core(pieces, blends, ...)` takes the objects, so a quick check on
+  imported FBX needs no replay (Vreta `roads_124`: 70 s).
 
 ## Recipe library
 

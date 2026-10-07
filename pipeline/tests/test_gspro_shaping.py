@@ -110,20 +110,54 @@ def test_the_layer_is_the_shaping_format_generated_for_the_course(tmp_path):
     assert doc["course"] == {"id": COURSE, "name": "Testbana Östra"}
 
 
-def test_tees_are_flattened_and_paths_cut_then_smoothed_by_type_before_the_footprints(tmp_path):
+def test_tees_are_flattened_and_paths_smoothed_by_type_before_the_footprints_with_no_cut_on_non_concrete(tmp_path):
     """Selected by type, so a tee or path drawn tomorrow is covered without a
-    new op; then the lots, then the pads (the plan's area-edit order)."""
+    new op; then the lots, then the pads (the plan's area-edit order). The cart-path cut
+    is the concrete-slab look: this course's paths are asphalt and gravel, so none."""
     doc, stats = _layer(tmp_path)
     ids = [o["id"] for o in doc["ops"]]
-    assert ids[:3] == ["tees", "paths-cut", "paths-smooth"]
+    assert ids[:2] == ["tees", "paths-smooth"]
+    assert "paths-cut" not in ids
     ops = _ops(doc)
     assert ops["tees"]["op"] == "afrod.flattentees" and ops["tees"]["select"] == {"type": "tee"}
     assert ops["tees"]["params"] == gspro.SHAPING_TEE_PARAMS
-    assert ops["paths-cut"] == {"id": "paths-cut", "op": "afrod.cutcartpaths", "select": {"type": "path"}}
-    assert ops["paths-smooth"]["op"] == "afrod.smoothcartpaths"
+    assert ops["paths-smooth"]["op"] == "afrod.smoothcartpaths" and ops["paths-smooth"]["select"] == {"type": "path"}
     assert ops["paths-smooth"]["params"] == gspro.SHAPING_PATH_SMOOTH_PARAMS
-    assert stats["tees"] == 2
+    assert stats["tees"] == 2 and stats["concrete_paths"] == 0 and stats["concrete_cut_skipped"] == 0
     assert ids.index("lot-1a") > ids.index("paths-smooth") and ids.index("pad-osm-way-7") > ids.index("lot-1a")
+
+
+def test_only_concrete_paths_are_cut_selected_by_feature_id(tmp_path):
+    """The cut simulates slabs: a concrete path (alone in its network) is cut, then everything smoothed."""
+    features = [f for f in FEATURES if f["id"] in ("tee-a", "green", "road")] + [
+        _feature("slabs", "path", [_rect(-300, 0, -100, 4)], 0x20, attrs={"surface": "concrete"})]
+    doc, stats = _layer(tmp_path, features=features, edits=[])
+    ids = [o["id"] for o in doc["ops"]]
+    ops = _ops(doc)
+    assert ids.index("paths-cut") < ids.index("paths-smooth")
+    assert ops["paths-cut"] == {"id": "paths-cut", "op": "afrod.cutcartpaths", "select": {"feature": ["slabs"]}}
+    assert stats["concrete_paths"] == 1 and stats["concrete_cut_skipped"] == 0
+
+
+def test_a_concrete_path_in_a_mixed_road_shape_is_not_cut_and_is_counted(tmp_path):
+    """The cut runs before split_surfaces, on the whole merged mesh: it would cut the asphalt and gravel too."""
+    features = [dict(f, attrs={"surface": "concrete"}) if f["id"] == "lot" else f for f in FEATURES]
+    doc, stats = _layer(tmp_path, features=features)
+    assert "paths-cut" not in [o["id"] for o in doc["ops"]]
+    assert stats["mixed_roads"] == 1 and stats["concrete_paths"] == 1 and stats["concrete_cut_skipped"] == 1
+
+
+def test_gravel_and_dirt_paths_get_the_edge_fade_last_on_the_final_heights(tmp_path):
+    """The fade needs each part's own surface (after the split) and the heights the lots and pads leave: it is the
+    layer's last op. Asphalt and concrete keep a crisp edge: a course without gravel or dirt gets no op."""
+    doc, stats = _layer(tmp_path)
+    ids = [o["id"] for o in doc["ops"]]
+    assert ids[-1] == "paths-edge-fade" and ids.index("paths-surfaces") < ids.index("paths-edge-fade")
+    assert _ops(doc)["paths-edge-fade"] == {"id": "paths-edge-fade", "op": "golfmap.path_edge_fade", "select": {"type": "path"}}
+    assert stats["edge_fade_paths"] == 1
+    hard = [f for f in FEATURES if f["id"] in ("tee-a", "green", "lot")]
+    doc, stats = _layer(tmp_path, features=hard, edits=[], name="hard.sqlite")
+    assert "paths-edge-fade" not in [o["id"] for o in doc["ops"]] and stats["edge_fade_paths"] == 0
 
 
 def test_a_road_network_of_two_surfaces_is_split_per_surface_after_the_cut_and_smooth(tmp_path):

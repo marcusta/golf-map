@@ -784,6 +784,60 @@ def test_roads_of_mixed_surfaces_are_one_shape_and_the_sidecar_says_which_parts_
     assert all(len(p["rings"]) == 1 and len(p["rings"][0]) >= 4 for p in region["pieces"])
 
 
+def test_paths_only_rewrites_the_surfaces_file_of_the_exported_svg_and_says_what_changed(tmp_path, capsys):
+    """After a path changed surface in the Draw panel, `svg --paths-only`
+    rewrites just the sidecar from the course as it is now: the SVG (and so
+    the meshes OPCD built from it) stands, the report names the shape and its
+    new state. An outline that moved since the export is a warning: the
+    meshes cannot follow that without a new SVG and build."""
+    feats = [
+        ("path", None, 0, [_rect(-30, -3, 0, 3)], "bezier", 4, "road"),
+        ("path", None, 1, [_rect(0.2, -2, 30, 2)], "bezier", 2, "lane"),
+    ]
+    out = _export_with_surfaces(tmp_path, feats, {"road": "asphalt", "lane": "asphalt"})
+    db = tmp_path / "app.sqlite"
+    svg_before = out.read_bytes()
+    assert json.loads(gspro.path_surfaces_file(out).read_text(encoding="utf-8"))["regions"]["roads_2"]["mixed"] is False
+
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE course_features SET attributes_json = ? WHERE id = 'lane'", (json.dumps({"surface": "gravel"}),))
+    conn.commit()
+    capsys.readouterr()
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", paths_only=True)
+    report = capsys.readouterr().out
+    assert out.read_bytes() == svg_before
+    sidecar = json.loads(gspro.path_surfaces_file(out).read_text(encoding="utf-8"))
+    assert sidecar["svg"] == "course.svg" and sidecar["regions"]["roads_2"]["mixed"] is True
+    assert {(p["id"], p["surface"]) for p in sidecar["regions"]["roads_2"]["pieces"]} == {("road", "asphalt"), ("lane", "gravel")}
+    assert "roads_2: 1 piece(s) changed surface (asphalt -> gravel); now mixed" in report
+    assert "for Blender to cut: roads_2" in report and "warning" not in report
+
+    # Again with nothing changed: says so.
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", paths_only=True)
+    assert "no path changed surface since the last export" in capsys.readouterr().out
+
+    # The lane redrawn wider: its outline is no longer the SVG's.
+    geom = json.loads(conn.execute("SELECT geometry_json FROM course_features WHERE id = 'lane'").fetchone()[0])
+    geom["rings"] = [_rect(0.2, -3, 30, 3)]
+    conn.execute("UPDATE course_features SET geometry_json = ? WHERE id = 'lane'", (json.dumps(geom),))
+    conn.commit()
+    conn.close()
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", paths_only=True)
+    assert "warning: the outline of roads_2 moved since the last SVG export" in capsys.readouterr().out
+
+    # A hard path made a grass track: OPCD builds that as rough, not a path mesh.
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE course_features SET attributes_json = ? WHERE id = 'lane'", (json.dumps({"surface": "grass"}),))
+    conn.commit()
+    conn.close()
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", paths_only=True)
+    assert "warning: roads_2 changed between a grass track and a hard surface" in capsys.readouterr().out
+
+    # No SVG to describe: refused.
+    with pytest.raises(SystemExit, match="export the SVG once first"):
+        gspro.cmd_svg(BBOX, tmp_path / "other.svg", db, "Testbana", None, 3, {}, "app", paths_only=True)
+
+
 def test_grass_tracks_are_written_as_rough_under_the_other_roads(tmp_path):
     """A grass track is not hard ground: its own shape with the rough fill,
     painted before every hard road so a gravel path crossing it wins, and

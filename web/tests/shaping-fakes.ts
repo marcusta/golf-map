@@ -50,7 +50,7 @@ export function doneJob(changedObjects: string[], extra: {
         seconds: extra.seconds ?? 3,
         result: {
             changedObjects, exported: [], removed: [], warnings: extra.warnings ?? [], places: [], seams: null,
-            unityReport: null, unitySteps: extra.unitySteps ?? [], unityError: extra.unityError ?? null, layers: [], blend: 'course.blend', layersDir: 'shaping',
+            unityReport: null, pathSurfaces: [], pathMaterials: null, unitySteps: extra.unitySteps ?? [], unityError: extra.unityError ?? null, layers: [], blend: 'course.blend', layersDir: 'shaping',
             fbxFolder: null, dryRun: false, seconds: extra.seconds ?? 3,
         },
     });
@@ -67,7 +67,7 @@ export interface LibraryEntry extends Omit<ShapingRecipe, 'default' | 'file' | '
 }
 
 export interface FakeShapingApi extends ShapingApi {
-    calls: { recipes: Array<ShapingSurface | undefined>; apply: Array<{ courseId: string }>; job: string[] };
+    calls: { recipes: Array<ShapingSurface | undefined>; apply: Array<{ courseId: string; paths?: boolean }>; job: string[] };
     library: LibraryEntry[];
     /** Thrown by apply (e.g. the 409 while a job runs). */
     applyError: Error | null;

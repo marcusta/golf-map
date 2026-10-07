@@ -82,6 +82,19 @@ namespace GolfMap.Editor
             return colors != null && colors.Length == mesh.vertexCount && colors.Any(c => c.r >= 0.25f);
         }
 
+        // A path fringe strip painted the grass-red / gravel-green way (golfmap.path_edge_fade: red = the neighbour's grass,
+        // green = the path surface): Stix's blade chance is the red, so the 3D grass grows on the grassy part of the
+        // strip and thins out toward the gravel. A strip painted the old way (red path edge, black far edge) has no green.
+        public static bool IsPathEdgeBlend(MeshFilter f)
+        {
+            var name = f.name;
+            if (!name.StartsWith("Spline_", StringComparison.Ordinal) || !name.EndsWith("_Concrete_-_Blend", StringComparison.Ordinal)) return false;
+            var mesh = f.sharedMesh;
+            if (mesh == null) return false;
+            var colors = mesh.colors;
+            return colors != null && colors.Length == mesh.vertexCount && colors.Any(c => c.g >= 0.25f);
+        }
+
         public static bool IsBunkerBlend(string name)
         {
             return name.StartsWith("Spline_", StringComparison.Ordinal) && name.Contains(BunkerBlendMarker) && !name.Contains("Potwall");
@@ -112,6 +125,8 @@ namespace GolfMap.Editor
                 .OrderBy(g => g.name, StringComparer.Ordinal).ToList();
             // the bunker mesh's own grass lip: the rings painted red (golfmap convention: grass lip, 3D grass grows),
             // on the rough material itself, so blades follow the paint exactly and the sand (no red) stays bare
+            var pathEdges = filters.Where(IsPathEdgeBlend).Select(f => f.gameObject).Distinct()
+                .OrderBy(g => g.name, StringComparer.Ordinal).ToList();
             var bunkerMeshes = filters.Where(f => IsBunkerMesh(f.name)).ToList();
             var paintedLips = !lip.enabled ? new List<GameObject>() : bunkerMeshes.Where(HasRedLip)
                 .Select(f => f.gameObject).Distinct().OrderBy(g => g.name, StringComparer.Ordinal).ToList();
@@ -129,6 +144,7 @@ namespace GolfMap.Editor
                     { "bunkerBlends", blends.Count }, { "blendsWithout", blends.Count(g => g.GetComponent(type) == null) },
                     { "lipMaterial", lip.enabled ? LipPath(courseFolder, material) : null }, { "lipRenderersToRemove", lipOff.Count },
                     { "bunkerMeshesWithRedLip", paintedLips.Count },
+                    { "pathEdgeBlends", pathEdges.Count }, { "pathEdgesWithout", pathEdges.Count(g => g.GetComponent(type) == null) },
                 };
             }
 
@@ -137,6 +153,7 @@ namespace GolfMap.Editor
             Undo.SetCurrentGroupName("Plant 3D grass to roughs");
             var scaled = FitToTerrain(material, terrain);
             var rough = Put(type, meshes, material);
+            var pathEdge = Put(type, pathEdges, material);
             Material lipMaterial = null;
             Dictionary<string, int> lipCounts = null;
             if (lip.enabled)
@@ -156,7 +173,7 @@ namespace GolfMap.Editor
                 if (nmf != null) Undo.DestroyObjectImmediate(nmf);
             }
             Undo.CollapseUndoOperations(undoGroup);
-            if (rough["added"] + rough["updated"] + (lipCounts == null ? 0 : lipCounts["added"] + lipCounts["updated"] + lipCounts["bunkerAdded"] + lipCounts["bunkerUpdated"]) + lipOff.Count > 0)
+            if (rough["added"] + rough["updated"] + pathEdge["added"] + pathEdge["updated"] + (lipCounts == null ? 0 : lipCounts["added"] + lipCounts["updated"] + lipCounts["bunkerAdded"] + lipCounts["bunkerUpdated"]) + lipOff.Count > 0)
                 EditorSceneManager.MarkSceneDirty(scene);
             if (scaled.Count > 0 || lipMaterial != null) AssetDatabase.SaveAssets();
             SceneView.RepaintAll();
@@ -187,6 +204,7 @@ namespace GolfMap.Editor
                         { "targetDensity", lipMaterial.GetFloat("_TargetDensity") }, { "maxHeight", lipMaterial.GetFloat("_MaxHeight00") },
                     } },
                 { "lipRemoved", lipOff.Count },
+                { "pathEdges", new Dictionary<string, object> { { "blends", pathEdges.Count }, { "added", pathEdge["added"] }, { "updated", pathEdge["updated"] }, { "unchanged", pathEdge["unchanged"] } } },
             };
         }
 

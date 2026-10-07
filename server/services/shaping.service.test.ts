@@ -31,6 +31,11 @@ function layersRunner(initial: { global: object[]; features: object[] }) {
     const runner: ExportRunner = async (args) => {
         calls.push(args);
         if (fail) return { code: 1, stdout: '', stderr: `Traceback\nSystemExit: error: ${fail}` };
+        if (args[1] === 'svg') {  // --paths-only: the road surfaces file of the exported SVG
+            const out = args[args.indexOf('--out') + 1]!;
+            await writeFile(out.replace(/\.svg$/, '-paths.json'), '{}');
+            return { code: 0, stdout: 'Wrote linkan-paths.json\n  roads_7: 1 piece(s) changed surface (asphalt -> gravel); now mixed\n  warning: the outline of roads_9 moved since the last SVG export\n', stderr: '' };
+        }
         const dir = args[args.indexOf('--out-dir') + 1]!;
         const layer = (id: string, ops: object[]) => JSON.stringify({ format: 'golfmap-shaping-layer-v1', id, generated: true, ops });
         await writeFile(path.join(dir, '00-global.gen.json'), layer('global', layers.global));
@@ -59,6 +64,9 @@ function fakeEditor(exportFolder: string, opts: { rejectOnly?: boolean; refreshM
                 if (opts.rejectOnly && 'only' in args) return Response.json({ ok: false, error: "unknown argument 'only' for golfmap.course.refresh" });
                 await Bun.sleep(opts.refreshMs ?? 0);
                 return Response.json({ ok: true, result: { steps: opts.steps ?? [{ id: 'meshes.sync', status: 'done' }], only: args.only ?? null } });
+            }
+            if (command === 'golfmap.paths.materials') {
+                return Response.json({ ok: true, result: { look: 'surface', changed: 3, meshesPerSurface: { asphalt: 4, gravel: 2 }, problems: ['Spline_roads_7_B_Concrete_-_Blend: no neighbour found'] } });
             }
             return Response.json({ ok: false, error: `unknown ${command}` });
         },
@@ -110,7 +118,7 @@ async function blends(dir: string) {
     return path.join(dir, 'linkan_svg_1.conformed.blend');
 }
 
-async function run(svc: ShapingService, opts: { dryRun?: boolean; skipUnity?: boolean } = {}) {
+async function run(svc: ShapingService, opts: { dryRun?: boolean; skipUnity?: boolean; paths?: boolean } = {}) {
     const job = await svc.apply(TEST_COURSE_ID, opts);
     expect(job.status).toBe('running');
     await svc.whenIdle();
@@ -292,6 +300,51 @@ test('the Unity refresh only= also names the objects whose FBX the worker remove
     expect(t.editor!.calls.at(-1)).toEqual({ command: 'golfmap.course.refresh',
         args: { only: 'Spline_recipe-10,Spline_hole_1_10_Bunker_-_Blend,Spline_hole_1_10_Bunker_-_Blend.001' } });
     expect(objectName('D:\\u\\Assets\\fbx\\Spline_x.FBX')).toBe('Spline_x');
+});
+
+test('paths: the surfaces file is rewritten before the layers, and Unity gets the path look on every path mesh, also when Blender changed nothing', async () => {
+    const worker = startFakeShapingWorker();
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker });
+    await t.ctx.db.updateTable('courses').set({ georeference_json: JSON.stringify({ bbox: [529028, 6486667, 531082, 6488721] }) })
+        .where('id', '=', TEST_COURSE_ID).execute();
+    await blends(t.exportDir);
+
+    // A road went mixed: the worker re-shapes, the refresh leaves the path look to the whole-course run after it.
+    const job = await run(t.svc, { paths: true });
+    expect(job.error).toBeNull();
+    expect(job.status).toBe('succeeded');
+    const [svg, global] = t.layers.calls;
+    expect(svg![1]).toBe('svg');  // the export service's own command (its pipeline folder)
+    expect(svg![svg!.indexOf('--out') + 1]).toBe(path.join(t.exportDir, 'linkan.svg'));
+    expect(svg![svg!.indexOf('--db') + 1]).toBe('/data/app.sqlite');
+    expect(svg!.at(-1)).toBe('--paths-only');
+    expect(global![1]).toBe('shaping-global');
+    expect(job.result!.pathSurfaces[1]).toBe('roads_7: 1 piece(s) changed surface (asphalt -> gravel); now mixed');
+    expect(t.editor!.calls.filter(c => c.command !== 'golfmap.course')).toEqual([
+        { command: 'golfmap.course.refresh', args: { only: 'Spline_recipe-10,Spline_recipe-11,Spline_tees', skip: 'paths.materials' } },
+        { command: 'golfmap.paths.materials', args: {} },
+    ]);
+    expect(job.result!.pathMaterials).toMatchObject({ changed: 3, meshesPerSurface: { asphalt: 4, gravel: 2 } });
+    expect(job.result!.warnings).toEqual(expect.arrayContaining([
+        'warning: the outline of roads_9 moved since the last SVG export',
+        'path materials: Spline_roads_7_B_Concrete_-_Blend: no neighbour found',
+    ]));
+    expect(job.phases.find(p => p.id === 'unity')!.detail).toBe('3 object(s) refreshed, path materials applied in linkan_v4');
+
+    // Again, nothing for Blender to do (a whole road given another surface): the path look still goes in.
+    t.editor!.calls.length = 0;
+    const again = await run(t.svc, { paths: true });
+    expect(again.result!.changedObjects).toEqual([]);
+    expect(t.editor!.calls.filter(c => c.command !== 'golfmap.course')).toEqual([{ command: 'golfmap.paths.materials', args: {} }]);
+    expect(again.phases.find(p => p.id === 'unity')).toMatchObject({ status: 'done', detail: 'no object changed, path materials applied in linkan_v4' });
+
+    // Without paths that run leaves Unity alone, as before.
+    t.editor!.calls.length = 0;
+    const plain = await run(t.svc);
+    expect(t.editor!.calls.filter(c => c.command !== 'golfmap.course')).toEqual([]);
+    expect(plain.result!.pathSurfaces).toEqual([]);
+    expect(plain.result!.pathMaterials).toBeNull();
 });
 
 test('dry run: the worker and Unity plan only', async () => {

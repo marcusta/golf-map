@@ -56,7 +56,7 @@ Recipes (Afrod JSON) are referenced by path. Third-party recipes stay in a local
   "ops": [
     { "id": "tees", "op": "afrod.flattentees", "select": { "type": "tee" },
       "params": { "tees_flat_inset": 1, "tees_flat_outset": 3.0 } },
-    { "id": "paths-cut", "op": "afrod.cutcartpaths", "select": { "type": "path" } },
+    { "id": "paths-cut", "op": "afrod.cutcartpaths", "select": { "feature": ["<concrete path id>"] } },   // concrete paths only (slabs)
     { "id": "paths-smooth", "op": "afrod.smoothcartpaths", "select": { "type": "path" },
       "params": { "smooth_path_distance": 3.0, "smooth_path_amt": 20 } },
     { "id": "pad-3fa9", "op": "golfmap.flatten_footprint",

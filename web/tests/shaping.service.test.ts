@@ -67,6 +67,15 @@ describe('apply job', () => {
         expect(svc.job.get()?.result?.warnings).toEqual(['seam gap']);
     });
 
+    test('paths: asks the server to take the path surfaces through as well', async () => {
+        const client = fakeShapingApi();
+        client.polls = [doneJob([])];
+        const svc = new ShapingService(client, 0);
+        const job = await svc.apply('course-1', null, { paths: true });
+        expect(job?.status).toBe('succeeded');
+        expect(client.calls.apply).toEqual([{ courseId: 'course-1', paths: true }]);
+    });
+
     test("a feature's apply is scoped to it for the panel; a second apply while running is refused", async () => {
         const client = fakeShapingApi();
         let finish!: () => void;

@@ -24,7 +24,7 @@ export interface GsproOrthoSource {
 export interface GsproExportJob {
     id: string;
     courseId: string;
-    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd';
+    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd';
     label: string;
     status: 'running' | 'succeeded' | 'failed';
     startedAt: string;
@@ -65,7 +65,7 @@ export interface GsproExportApi {
     setCourseDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
     terrain(input: { courseId: string }): Promise<CourseTerrain>;
     orthoSources(input: { courseId: string }): Promise<GsproOrthoSource[]>;
-    start(input: { source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; zoneIds?: string[]; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd' }): Promise<GsproExportJob>;
+    start(input: { source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; zoneIds?: string[]; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd' }): Promise<GsproExportJob>;
     job(input: { jobId: string }): Promise<GsproExportJob>;
     current(input: { courseId: string }): Promise<null | GsproExportJob>;
 }

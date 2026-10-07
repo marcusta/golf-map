@@ -1,11 +1,17 @@
 import type { Kysely } from 'kysely';
 import * as path from 'node:path';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import type { Database } from '../db/schema';
 import type { AssetsService, CourseAsset } from './assets.service';
 import { NotFoundError } from '@basics/core/server/auth';
 import type { PipelineRunner } from './map-build.service';
+import { venvPython } from './gspro-export.service';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
+import {
+    ORTHO_IMPORT_MAX_BYTES,
+    type OrthoImportNoChangeReason,
+    type OrthoImportResult,
+} from '../../shared/ortho-import';
 
 // --- Public types ---
 
@@ -76,7 +82,76 @@ export interface OrthoPatchesInfo {
     reason?: string;
     /** The SIM layer's version stamp (null before the first bake). */
     patchesGeneratedAt: string | null;
+    /** Every finished square export of the cleaned photo, oldest first. */
+    exports: OrthoExportSummary[];
+    /** The site's fixed square frame; null until the first export creates it. */
+    frame: SimFrame | null;
 }
+
+/** The site's fixed export frame (`sources/<siteId>/sim-frame.json`, D-OX1). */
+export interface SimFrame {
+    /** EPSG:3006 `[e0, n0, e1, n1]` — a square. */
+    extent3006: number[];
+    /** Pixels per side. */
+    size: number;
+}
+
+export type OrthoExportFormat = 'png' | 'jpg';
+
+/** One finished export as the Clean panel lists it. */
+export interface OrthoExportSummary {
+    /** Export number `<n>` (`exports/<n>/`). */
+    seq: number;
+    createdAt: string;
+    /** Highest patch-log seq the image contains (0 = pristine photo). */
+    logSeq: number;
+    /** Pixels per side. */
+    size: number;
+    format: OrthoExportFormat;
+    bytes: number;
+    /** Path of the image download, relative to the API base (`/api`). */
+    downloadPath: string;
+}
+
+/** `export.json` of the new export plus where to fetch the image. */
+export interface OrthoExportResult {
+    siteId: string;
+    exportSeq: number;
+    /** EPSG:3006 `[e0, n0, e1, n1]` of the frame. */
+    extent3006: number[];
+    size: number;
+    logSeq: number;
+    sha256: string;
+    createdAt: string;
+    /** Image file name inside `exports/<n>/`, e.g. `ortho-sim-3.png`. */
+    file: string;
+    format: OrthoExportFormat;
+    bytes: number;
+    /** Path of the image download, relative to the API base (`/api`). */
+    downloadPath: string;
+    /** True when the working raster was missing or older than the pristine
+     * photo and the whole log was replayed (and the sim tiles rewritten)
+     * before exporting. */
+    replayed: boolean;
+    /** Sim tile version after the export: changed only when `replayed`. */
+    patchesGeneratedAt: string | null;
+}
+
+/** A stored export image, for the download route. */
+export interface OrthoExportFile {
+    path: string;
+    file: string;
+    format: OrthoExportFormat;
+    bytes: number;
+    sha256: string;
+}
+
+/** The uploaded image or its query parameters are unusable — a 400. */
+export class InvalidOrthoImportError extends Error {}
+
+/** golfpipe exited non-zero. The message carries its stderr, which for the
+ * export and import commands is written for the builder to read. */
+export class OrthoPipelineError extends Error {}
 
 export interface OrthoPatchResult {
     count: number;
@@ -93,23 +168,85 @@ interface StampLogPayload {
     toneMatch: boolean;
 }
 
-interface PatchLogEntry {
+interface PatchLogEntryBase {
     seq: number;
-    /** Absent = 'mask' (pre-stamp logs). */
-    kind?: 'mask' | 'stamp';
-    /** Mask entries only: the mask PNG file name. */
-    file?: string;
+    /** The retile frame of every kind. */
     bounds3857: PatchBounds;
-    boundsSweref: PatchBounds;
     tool: string;
     createdAt: string;
-    /** Stamp entries only. */
-    stamp?: StampLogPayload;
 }
 
-/** Version 2: entries are MASKS (server-side inpaint) or STAMP strokes
- * (server-side brush-engine render). Version 1 stored pre-rendered fill
- * pixels; a non-empty v1 log is refused, never misread. */
+interface MaskLogEntry extends PatchLogEntryBase {
+    /** Absent = 'mask' (pre-stamp logs). */
+    kind?: 'mask';
+    /** The mask PNG file name. */
+    file?: string;
+    boundsSweref: PatchBounds;
+}
+
+interface StampLogEntry extends PatchLogEntryBase {
+    kind: 'stamp';
+    boundsSweref: PatchBounds;
+    stamp: StampLogPayload;
+}
+
+/** An externally edited export, stored as the changed pixels only (D-OX4). */
+interface RasterLogEntry extends PatchLogEntryBase {
+    kind: 'raster';
+    /** RGBA PNG cropped to the change bbox, alpha 255 on changed pixels. */
+    file: string;
+    /** The PNG's authoritative frame, EPSG:3006. */
+    bounds3006: PatchBounds;
+    /** The export the edit was diffed against. */
+    exportSeq: number;
+    changedPixels: number;
+}
+
+type PatchLogEntry = MaskLogEntry | StampLogEntry | RasterLogEntry;
+
+/** A validated client edit, before it gets its seq and timestamp. */
+type PreparedEdit =
+    | { entry: Omit<MaskLogEntry, 'seq' | 'createdAt' | 'file'>; png: Buffer }
+    | { entry: Omit<StampLogEntry, 'seq' | 'createdAt'>; png: null };
+
+/** The PNG a log entry owns in the patches dir, if its kind has one. */
+function entryFile(entry: PatchLogEntry): string | undefined {
+    return entry.kind === 'stamp' ? undefined : entry.file;
+}
+
+/** `export.json` as golfpipe writes it (also its stdout). */
+interface ExportMeta {
+    exportSeq: number;
+    extent3006: number[];
+    size: number;
+    logSeq: number;
+    sha256: string;
+    createdAt: string;
+    file: string;
+    format: OrthoExportFormat;
+    bytes: number;
+}
+
+/** The one stdout line of `golfpipe import-ortho-square`. */
+interface ImportStdout {
+    changed: boolean;
+    seq: number;
+    exportSeq: number;
+    changedPixels: number;
+    diffPixels: number;
+    tolerance: number;
+    minAreaPx: number;
+    reason?: OrthoImportNoChangeReason;
+    file?: string;
+    bounds3006?: PatchBounds;
+    bounds3857?: PatchBounds;
+    regions?: number;
+}
+
+/** Version 2: entries are MASKS (server-side inpaint), STAMP strokes
+ * (server-side brush-engine render) or RASTER diffs of an externally edited
+ * export. Version 1 stored pre-rendered fill pixels; a non-empty v1 log is
+ * refused, never misread. */
 interface PatchLog {
     version: 2;
     patches: PatchLogEntry[];
@@ -122,7 +259,7 @@ export interface OrthoPatchesDeps {
     dataDir: string;
     /** golfpipe checkout dir; defaults to `<cwd>/../pipeline` (MAP_PIPELINE_DIR overrides). */
     pipelineDir?: string;
-    /** Python interpreter; defaults to `<pipelineDir>/.venv/bin/python`. */
+    /** Python interpreter; defaults to MAP_PIPELINE_PYTHON, then the pipeline venv's. */
     python?: string;
     /** LaMa TorchScript checkpoint; defaults to $GOLFPIPE_LAMA_WEIGHTS or
      * `<repo>/data/models/big-lama.pt` (the assist sidecar's convention). */
@@ -133,10 +270,15 @@ export interface OrthoPatchesDeps {
 
 const MAX_PATCH_PNG_BYTES = 24 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const MAX_EDITS_PER_BATCH = 50;
+// A stamp session queues one edit per stroke, so a queue of a few hundred is
+// ordinary; the cap only stops a runaway request.
+const MAX_EDITS_PER_BATCH = 500;
 const MAX_STAMP_PATH_POINTS = 4000;
 const MAX_STAMP_OFFSET_M = 10_000;
 const MAX_STAMP_SIZE_M = 100;
+
+/** Pixels per side of a new export frame (golfpipe square_frame.DEFAULT_SIZE; the GSPro ortho textures' size). */
+const SIM_FRAME_SIZE = 8192;
 
 // Ortho tiles are built z14..z20 (map-build.service.ts) — retile the same range.
 const ORTHO_MINZOOM = 14;
@@ -173,10 +315,24 @@ function boundsArg(b: PatchBounds): string {
     return `${b.west},${b.south},${b.east},${b.north}`;
 }
 
+/** The export/import commands print exactly one JSON line on stdout. */
+function parseJsonLine<T>(stdout: string, command: string): T {
+    const line = stdout.trim().split(/\r?\n/).pop() ?? '';
+    try {
+        const doc = JSON.parse(line) as unknown;
+        if (doc && typeof doc === 'object') return doc as T;
+    } catch {
+        // falls through to the error below
+    }
+    throw new Error(`${command} printed no JSON result: ${line.slice(0, 200)}`);
+}
+
 /**
  * Interactive ortho photo cleaning: stores accepted edits as a REPLAYABLE
  * LOG under `data/sources/<siteId>/patches/` (`patches.json`, version 2) —
- * the pristine source ortho is never modified. Two entry kinds:
+ * the pristine source ortho is never modified. Three entry kinds (the third,
+ * RASTER, is the diff of an externally edited square export — see
+ * `exportSquare` / `importEdited` and docs/feature-ortho-export-import.md):
  *
  *  - MASK (`<n>.png` + entry): the fill is LaMa-inpainted server-side by
  *    golfpipe against the working `.patched.tif` (seam-free by provenance;
@@ -235,7 +391,7 @@ export class OrthoPatchesService {
         this.pipelineDir = deps.pipelineDir
             ?? process.env.MAP_PIPELINE_DIR
             ?? DEFAULT_PIPELINE_DIR;
-        this.python = deps.python ?? path.join(this.pipelineDir, '.venv', 'bin', 'python');
+        this.python = deps.python ?? process.env.MAP_PIPELINE_PYTHON ?? venvPython(this.pipelineDir);
         this.lamaWeights = deps.lamaWeights
             ?? process.env.GOLFPIPE_LAMA_WEIGHTS
             ?? path.resolve(this.pipelineDir, '..', 'data', 'models', 'big-lama.pt');
@@ -260,6 +416,8 @@ export class OrthoPatchesService {
                 bakeable: false, stampBakeable: false,
                 reason: `Course ${courseId} has no map (no site) — build the map first`,
                 patchesGeneratedAt: null,
+                exports: [],
+                frame: null,
             };
         }
         const log = await this.readLog(siteId);
@@ -271,6 +429,8 @@ export class OrthoPatchesService {
             lastTool: last?.tool ?? null,
             ...bake,
             patchesGeneratedAt: await this.readSimGeneratedAt(siteId),
+            exports: (await this.listExports(siteId)).map(m => this.exportSummary(siteId, m)),
+            frame: await this.readFrame(siteId),
         };
     }
 
@@ -349,13 +509,15 @@ export class OrthoPatchesService {
             const writtenFiles: string[] = [];
             for (const p of prepared) {
                 seq += 1;
-                const entry: PatchLogEntry = { ...p.entry, seq, createdAt: new Date().toISOString() };
+                const createdAt = new Date().toISOString();
                 if (p.png) {
-                    entry.file = `${seq}.png`;
-                    await writeFile(path.join(dir, entry.file), p.png);
-                    writtenFiles.push(entry.file);
+                    const file = `${seq}.png`;
+                    await writeFile(path.join(dir, file), p.png);
+                    writtenFiles.push(file);
+                    newEntries.push({ ...p.entry, file, seq, createdAt });
+                } else {
+                    newEntries.push({ ...p.entry, seq, createdAt });
                 }
-                newEntries.push(entry);
             }
             await this.writeLog(site.siteId, { ...log, patches: [...log.patches, ...newEntries] });
 
@@ -376,7 +538,7 @@ export class OrthoPatchesService {
     }
 
     /** Validates one edit; returns the (seq-less) log entry + mask png. */
-    private prepareEdit(edit: OrthoEditInput): { entry: Omit<PatchLogEntry, 'seq' | 'createdAt'>; png: Buffer | null } {
+    private prepareEdit(edit: OrthoEditInput): PreparedEdit {
         if (!validBounds(edit.bounds3857) || !validBounds(edit.boundsSweref)) {
             throw new Error('Edit bounds are degenerate (need finite west < east, south < north)');
         }
@@ -465,8 +627,10 @@ export class OrthoPatchesService {
                 await this.writeLog(site.siteId, log).catch(() => {});
                 throw err;
             }
-            if (last.file) {
-                await rm(path.join(this.patchesDir(site.siteId), last.file), { force: true }).catch(() => {});
+            // Mask and raster entries own a PNG; a stamp is log-only.
+            const lastFile = entryFile(last);
+            if (lastFile) {
+                await rm(path.join(this.patchesDir(site.siteId), lastFile), { force: true }).catch(() => {});
             }
             if (remaining.patches.length === 0) {
                 // Nothing baked anymore: pure pristine fallback everywhere.
@@ -476,6 +640,370 @@ export class OrthoPatchesService {
             const patchesGeneratedAt = await this.bumpSimVersion(site.siteId);
             return { count: remaining.patches.length, patchesGeneratedAt };
         });
+    }
+
+    // --- External edit: square export + diff import ---
+
+    /**
+     * Exports the cleaned photo as one square image on the site's fixed frame
+     * (`golfpipe export-ortho-square`) into `sources/<siteId>/exports/<n>/`.
+     *
+     * The source is the replayed log and nothing else (D-OX2): the working
+     * `.patched.tif` when the log has entries, replayed first if it is
+     * missing or older than the pristine photo, or the pristine photo for an
+     * empty log. The first export creates `sim-frame.json` from the tile
+     * manifest bounds; later exports reuse it unchanged.
+     *
+     * Exports are numbered from 1 and never rewritten. A directory without
+     * `export.json` is a failed attempt and is removed.
+     */
+    async exportSquare(courseId: string, format: OrthoExportFormat = 'png'): Promise<OrthoExportResult> {
+        if (format !== 'png' && format !== 'jpg') throw new Error(`Unknown export format ${String(format)}`);
+        return this.enqueue(courseId, async (site) => {
+            const { siteId } = site;
+            const log = await this.readLog(siteId);
+            const logSeq = log.patches[log.patches.length - 1]?.seq ?? 0;
+
+            let ortho = site.sourcePath;
+            let replayed = false;
+            if (log.patches.length > 0) {
+                ortho = this.patchedPath(site);
+                if (!(await this.workingRasterCurrent(site))) {
+                    await this.replay(site);
+                    await this.bumpSimVersion(siteId);
+                    replayed = true;
+                }
+            }
+
+            const exportsDir = this.exportsDir(siteId);
+            await mkdir(exportsDir, { recursive: true });
+            const done = await this.listExports(siteId);
+            for (const name of await readdir(exportsDir)) {
+                if (/^\d+$/.test(name) && !done.some(m => String(m.exportSeq) === name)) {
+                    await rm(path.join(exportsDir, name), { recursive: true, force: true });
+                }
+            }
+            const seq = (done[done.length - 1]?.exportSeq ?? 0) + 1;
+            const outDir = path.join(exportsDir, String(seq));
+
+            const args = [
+                'export-ortho-square',
+                '--ortho', ortho,
+                '--frame', this.framePath(siteId),
+                '--out-dir', outDir,
+                '--seq', String(seq),
+                '--log-seq', String(logSeq),
+                '--format', format,
+            ];
+            if (!(await this.readFrame(siteId))) {
+                const meta = JSON.parse(site.manifestAsset.metaJson ?? '{}') as {
+                    bounds?: PatchBounds;
+                    terrain?: { inner?: { square3006?: number[] } };
+                };
+                const inner = meta.terrain?.inner?.square3006;
+                if (Array.isArray(inner) && inner.length === 4 && inner.every(Number.isFinite)
+                    && inner[2] > inner[0] && Math.abs((inner[2] - inner[0]) - (inner[3] - inner[1])) < 1e-6) {
+                    // The frame IS the inner terrain square, the one every GSPro
+                    // export and the Unity textures are rendered over: an export
+                    // edited outside then lines up with them pixel for pixel.
+                    // Squaring the manifest's WGS84 bounds again (below) gave
+                    // Vreta a 2090 m frame round a 2050 m terrain.
+                    const frame: SimFrame = { extent3006: inner.map(Number), size: SIM_FRAME_SIZE };
+                    await writeFile(this.framePath(siteId), JSON.stringify(frame, null, 2));
+                } else {
+                    // A site built before the manifest carried the square. An
+                    // existing frame is never changed, and golfpipe refuses
+                    // other bounds against one, so they go along only now.
+                    if (!meta.bounds || !validBounds(meta.bounds)) {
+                        throw new Error(`Site ${siteId}: the tile manifest has no bounds to make the export frame from`);
+                    }
+                    args.push('--bounds-wgs84', boundsArg(meta.bounds));
+                }
+            }
+            try {
+                await this.runGolfpipe(args);
+            } catch (err) {
+                await rm(outDir, { recursive: true, force: true }).catch(() => {});
+                throw err;
+            }
+            const meta = await this.readExportMeta(siteId, seq);
+            if (!meta) throw new Error(`export-ortho-square wrote no usable export.json in ${outDir}`);
+            return {
+                siteId,
+                ...meta,
+                downloadPath: this.exportDownloadPath(siteId, seq),
+                replayed,
+                patchesGeneratedAt: await this.readSimGeneratedAt(siteId),
+            };
+        });
+    }
+
+    /** The stored image of one export, for the download route. */
+    async exportFile(siteId: string, seq: number): Promise<OrthoExportFile> {
+        // The ids come from the URL: a site id is one path segment.
+        if (!/^[A-Za-z0-9_-]+$/.test(siteId) || !Number.isInteger(seq) || seq < 1) {
+            throw new NotFoundError('Export not found');
+        }
+        const meta = await this.readExportMeta(siteId, seq);
+        const filePath = meta ? path.join(this.exportsDir(siteId), String(seq), meta.file) : null;
+        if (!meta || !filePath || !(await Bun.file(filePath).exists())) {
+            throw new NotFoundError(`Export ${seq} of site ${siteId} not found`);
+        }
+        return { path: filePath, file: meta.file, format: meta.format, bytes: meta.bytes, sha256: meta.sha256 };
+    }
+
+    /**
+     * Where the import route streams the uploaded image for this course:
+     * a fresh file under `sources/<siteId>/patches/.incoming/`. Resolves the
+     * site first, so an unknown course fails before any byte is stored.
+     * `importEdited` deletes the file; a caller that never gets there must.
+     */
+    async incomingImportPath(courseId: string): Promise<string> {
+        const site = await this.resolveSite(courseId);
+        const dir = path.join(this.patchesDir(site.siteId), '.incoming');
+        await mkdir(dir, { recursive: true });
+        return path.join(dir, `${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
+    }
+
+    /**
+     * Imports an externally edited export (`golfpipe import-ortho-square`):
+     * the image at `tmpPath` is diffed against the export it was edited from
+     * (`exportSeq`, default the latest) and only the changed pixels are
+     * stored, as `patches/<seq>.png` plus ONE `raster` log entry, which is
+     * then baked and retiled like any other entry.
+     *
+     * Nothing changed (`changed: false`) appends and bakes nothing. A failed
+     * diff or bake leaves neither the entry nor its PNG behind. `tmpPath` is
+     * deleted in every case.
+     */
+    async importEdited(
+        courseId: string,
+        input: { tmpPath: string; exportSeq?: number; tolerance?: number },
+    ): Promise<OrthoImportResult> {
+        const { tmpPath, exportSeq, tolerance } = input;
+        try {
+            if (exportSeq !== undefined && (!Number.isInteger(exportSeq) || exportSeq < 1)) {
+                throw new InvalidOrthoImportError('exportSeq must be a whole number, 1 or higher');
+            }
+            if (tolerance !== undefined && (!Number.isInteger(tolerance) || tolerance < 0 || tolerance > 254)) {
+                throw new InvalidOrthoImportError('tolerance must be a whole number from 0 to 254');
+            }
+            await this.assertImportPng(tmpPath);
+
+            return await this.enqueue(courseId, async (site) => {
+                const { siteId } = site;
+                const dir = this.patchesDir(siteId);
+                const log = await this.readLog(siteId);
+                const seq = (log.patches[log.patches.length - 1]?.seq ?? 0) + 1;
+
+                const exports = await this.listExports(siteId);
+                if (exports.length === 0) {
+                    throw new NotFoundError(`Site ${siteId} has no export to compare with — export the photo first`);
+                }
+                const exp = exportSeq === undefined
+                    ? exports[exports.length - 1]
+                    : exports.find(m => m.exportSeq === exportSeq);
+                if (!exp) throw new NotFoundError(`Export ${exportSeq} of site ${siteId} not found`);
+
+                // Read for its extent only; the pristine photo has the same one.
+                const ortho = log.patches.length > 0 && (await this.workingRasterCurrent(site))
+                    ? this.patchedPath(site)
+                    : site.sourcePath;
+                const args = [
+                    'import-ortho-square',
+                    '--ortho', ortho,
+                    '--patches-dir', dir,
+                    '--export-dir', path.join(this.exportsDir(siteId), String(exp.exportSeq)),
+                    '--image', tmpPath,
+                    '--seq', String(seq),
+                ];
+                // An explicit tolerance is what lets a JPEG export through,
+                // so it is passed only when the client chose one.
+                if (tolerance !== undefined) args.push('--tolerance', String(tolerance));
+
+                const pngPath = path.join(dir, `${seq}.png`);
+                let out: ImportStdout;
+                try {
+                    out = parseJsonLine<ImportStdout>(await this.runGolfpipe(args), 'import-ortho-square');
+                } catch (err) {
+                    await rm(pngPath, { force: true }).catch(() => {});
+                    throw err;
+                }
+
+                const summary = {
+                    exportSeq: out.exportSeq,
+                    changedPixels: out.changedPixels,
+                    diffPixels: out.diffPixels,
+                    tolerance: out.tolerance,
+                    minAreaPx: out.minAreaPx,
+                };
+                if (!out.changed) {
+                    return {
+                        changed: false,
+                        reason: out.reason,
+                        count: log.patches.length,
+                        patchesGeneratedAt: await this.readSimGeneratedAt(siteId),
+                        seq: null,
+                        ...summary,
+                        bounds3006: null, bounds3857: null, regions: null,
+                    };
+                }
+                if (out.file !== `${seq}.png` || !out.bounds3006 || !out.bounds3857
+                    || !validBounds(out.bounds3006) || !validBounds(out.bounds3857)) {
+                    await rm(pngPath, { force: true }).catch(() => {});
+                    throw new Error('import-ortho-square answered without a usable file/bounds');
+                }
+
+                const entry: RasterLogEntry = {
+                    seq,
+                    kind: 'raster',
+                    file: out.file,
+                    bounds3006: out.bounds3006,
+                    bounds3857: out.bounds3857,
+                    exportSeq: out.exportSeq,
+                    changedPixels: out.changedPixels,
+                    tool: 'external',
+                    createdAt: new Date().toISOString(),
+                };
+                await this.writeLog(siteId, { ...log, patches: [...log.patches, entry] });
+                try {
+                    await this.bakeSeqs(site, [seq]);
+                } catch (err) {
+                    // Roll back: the log only ever describes what the sim tiles show.
+                    await this.writeLog(siteId, log).catch(() => {});
+                    await rm(pngPath, { force: true }).catch(() => {});
+                    throw err;
+                }
+
+                return {
+                    changed: true,
+                    count: log.patches.length + 1,
+                    patchesGeneratedAt: await this.bumpSimVersion(siteId),
+                    seq,
+                    ...summary,
+                    bounds3006: entry.bounds3006,
+                    bounds3857: entry.bounds3857,
+                    regions: out.regions ?? null,
+                };
+            });
+        } finally {
+            await rm(tmpPath, { force: true }).catch(() => {});
+        }
+    }
+
+    /** The upload must be a PNG within the cap (the route checks both while
+     * streaming; this is the check that holds whoever the caller is). */
+    private async assertImportPng(tmpPath: string): Promise<void> {
+        let size: number;
+        const head = Buffer.alloc(PNG_SIGNATURE.length);
+        try {
+            size = (await stat(tmpPath)).size;
+            const fh = await open(tmpPath, 'r');
+            try {
+                await fh.read(head, 0, head.length, 0);
+            } finally {
+                await fh.close();
+            }
+        } catch {
+            throw new InvalidOrthoImportError('The uploaded image is missing');
+        }
+        if (size > ORTHO_IMPORT_MAX_BYTES) {
+            throw new InvalidOrthoImportError(`Image too large (${size} bytes, max ${ORTHO_IMPORT_MAX_BYTES})`);
+        }
+        if (!head.equals(PNG_SIGNATURE)) {
+            throw new InvalidOrthoImportError('The uploaded image is not a PNG — save the edit as PNG');
+        }
+    }
+
+    private exportsDir(siteId: string): string {
+        return path.join(this.dataDir, 'sources', siteId, 'exports');
+    }
+
+    private framePath(siteId: string): string {
+        return path.join(this.dataDir, 'sources', siteId, 'sim-frame.json');
+    }
+
+    private exportDownloadPath(siteId: string, seq: number): string {
+        return `/ortho-patches/export/${siteId}/${seq}/file`;
+    }
+
+    private exportSummary(siteId: string, m: ExportMeta): OrthoExportSummary {
+        return {
+            seq: m.exportSeq, createdAt: m.createdAt, logSeq: m.logSeq, size: m.size,
+            format: m.format, bytes: m.bytes,
+            downloadPath: this.exportDownloadPath(siteId, m.exportSeq),
+        };
+    }
+
+    private async readFrame(siteId: string): Promise<SimFrame | null> {
+        try {
+            const doc = JSON.parse(await readFile(this.framePath(siteId), 'utf8')) as Partial<SimFrame>;
+            if (!Array.isArray(doc.extent3006) || doc.extent3006.length !== 4 || typeof doc.size !== 'number') return null;
+            return { extent3006: doc.extent3006.map(Number), size: doc.size };
+        } catch {
+            return null;
+        }
+    }
+
+    /** `exports/<seq>/export.json`, or null when that export is absent or
+     * unfinished (golfpipe writes the file last). */
+    private async readExportMeta(siteId: string, seq: number): Promise<ExportMeta | null> {
+        let doc: Partial<ExportMeta>;
+        try {
+            doc = JSON.parse(await readFile(path.join(this.exportsDir(siteId), String(seq), 'export.json'), 'utf8')) as Partial<ExportMeta>;
+        } catch {
+            return null;
+        }
+        const file = doc.file;
+        if (doc.exportSeq !== seq || typeof file !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(file)
+            || typeof doc.sha256 !== 'string' || typeof doc.size !== 'number'
+            || !Array.isArray(doc.extent3006)) {
+            return null;
+        }
+        return {
+            exportSeq: seq,
+            extent3006: doc.extent3006.map(Number),
+            size: doc.size,
+            logSeq: Number(doc.logSeq ?? 0),
+            sha256: doc.sha256,
+            createdAt: String(doc.createdAt ?? ''),
+            file,
+            format: doc.format === 'jpg' ? 'jpg' : 'png',
+            bytes: Number(doc.bytes ?? 0),
+        };
+    }
+
+    /** Every finished export of the site, oldest first. */
+    private async listExports(siteId: string): Promise<ExportMeta[]> {
+        let names: string[];
+        try {
+            names = await readdir(this.exportsDir(siteId));
+        } catch {
+            return [];
+        }
+        const out: ExportMeta[] = [];
+        for (const name of names) {
+            if (!/^\d+$/.test(name)) continue;
+            const meta = await this.readExportMeta(siteId, Number(name));
+            if (meta) out.push(meta);
+        }
+        return out.sort((a, b) => a.exportSeq - b.exportSeq);
+    }
+
+    private patchedPath(site: { sourcePath: string }): string {
+        return site.sourcePath.replace(/\.tif$/i, '.patched.tif');
+    }
+
+    /** Whether the working `.patched.tif` exists and is no older than the
+     * pristine photo — golfpipe's own test (`cmd_bake_ortho_patch`) for a
+     * raster that needs no full replay. */
+    private async workingRasterCurrent(site: { sourcePath: string }): Promise<boolean> {
+        try {
+            const [patched, pristine] = await Promise.all([stat(this.patchedPath(site)), stat(site.sourcePath)]);
+            return patched.mtimeMs >= pristine.mtimeMs;
+        } catch {
+            return false;
+        }
     }
 
     // --- Site / source resolution ---
@@ -589,7 +1117,7 @@ export class OrthoPatchesService {
         return [
             '--ortho', site.sourcePath,
             '--patches-dir', this.patchesDir(site.siteId),
-            '--out', site.sourcePath.replace(/\.tif$/i, '.patched.tif'),
+            '--out', this.patchedPath(site),
             '--tiles-out', this.simTilesDir(site.siteId),
             '--pristine-tiles', path.join(this.dataDir, 'tiles', site.siteId, 'ortho'),
             '--minzoom', String(ORTHO_MINZOOM),
@@ -598,14 +1126,17 @@ export class OrthoPatchesService {
         ];
     }
 
-    private async runGolfpipe(args: string[]): Promise<void> {
+    /** Runs one golfpipe command; resolves to its stdout. */
+    private async runGolfpipe(args: string[]): Promise<string> {
         const result = await this.runner(['-m', 'golfpipe', ...args], {
             cwd: this.pipelineDir, env: { ...process.env },
         });
         if (result.code !== 0) {
             const raw = (result.stderr || result.stdout || `exit code ${result.code}`).trim();
-            throw new Error(`${args[0]} failed: ${raw.slice(0, 2000)}`);
+            // Progress lines come first on stderr; the reason is at the end.
+            throw new OrthoPipelineError(`${args[0]} failed: ${raw.slice(-2000)}`);
         }
+        return result.stdout;
     }
 
     /** Batch accept: windowed bakes of the given seqs + ONE union retile. */
