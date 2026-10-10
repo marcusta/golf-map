@@ -546,9 +546,7 @@ that differ and retiles under the 256 px cells that hold one, so two edits at op
 of the photo cost their own tiles; an identical image changes nothing (`changed: false`).
 `cleaned-patch` computes nothing: it writes the bytes and retiles under them, per 256 px cell
 like `cleaned-replace`. `--format rgb` is the raw pixels (3 bytes each, row by row) the Clean
-tool loads. `cleaned-bake` (mask and stamp entries replayed in Python) is the retired queue
-model's command; the web tool no longer calls it. Without
-`--tiles-out` no tile is touched. The pristine ortho is never modified.
+tool loads. Without `--tiles-out` no tile is touched. The pristine ortho is never modified.
 
 ### `tile-ortho` — orthophoto GeoTIFF → JPEG XYZ pyramid
 

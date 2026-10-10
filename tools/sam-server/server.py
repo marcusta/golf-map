@@ -1,8 +1,4 @@
-# Editor-assist sidecar: SAM 3 segmentation (T45 click-to-feature) + LaMa
-# inpainting (T55 interactive photo cleaning). ONE process serves the whole
-# assist session — /segment and /inpaint share the torch runtime the venv
-# already carries (ultralytics pulls torch in), and /health reports
-# per-capability readiness so the web editor can gate each tool separately.
+# Editor-assist sidecar: SAM 3 segmentation (T45 click-to-feature).
 #
 # Vendored from the SAM-test prototype (~/dev/SAM-test/server.py), trimmed to
 # what the editor uses: POINT mode only (segment the object at the crop
@@ -10,16 +6,14 @@
 # and the static demo mount were dropped. Weights are NOT committed — point
 # SAM_WEIGHTS at a sam3.pt checkpoint (see README.md).
 #
-# Inpainting imports golfpipe.inpaint (pipeline/) directly — the pipeline dir
+# The torch device policy is golfpipe.inpaint's (pipeline/) — the pipeline dir
 # is put on sys.path below, and golfpipe/inpaint.py deliberately imports only
 # numpy/stdlib at module level, so this venv does not need the pipeline's
-# rasterio/laspy stack. LaMa weights resolve from $GOLFPIPE_LAMA_WEIGHTS,
-# defaulting to <repo>/data/models/big-lama.pt (see README.md).
+# rasterio/laspy stack.
 #
 # This is a developer-workstation tool, not part of the map pipeline
 # (pipeline/) or the API server (server/). The web editor health-gates on it:
-# when this process isn't running, the SAM/Clean tool panels show a disabled
-# state.
+# when this process isn't running, the SAM tool panel shows a disabled state.
 
 import base64
 import io
@@ -41,13 +35,7 @@ _PIPELINE_DIR = str(REPO_ROOT / "pipeline")
 if _PIPELINE_DIR not in sys.path:
     sys.path.insert(0, _PIPELINE_DIR)
 
-from golfpipe.inpaint import (  # noqa: E402  (needs the sys.path insert above)
-    InpaintError,
-    LamaInpainter,
-    WEIGHTS_ENV_VAR,
-    inpaint_tiled,
-    torch_device,
-)
+from golfpipe.inpaint import torch_device  # noqa: E402  (needs the sys.path insert above)
 
 app = FastAPI(title="Golf Course Segmentation Sidecar")
 
@@ -67,17 +55,12 @@ MAX_INFERENCE_SIZE = 512
 # Path to the SAM 3 checkpoint (3.5 GB, never committed).
 WEIGHTS_PATH = os.environ.get("SAM_WEIGHTS", "sam3.pt")
 
-# LaMa TorchScript weights for /inpaint (206 MB, never committed):
-# $GOLFPIPE_LAMA_WEIGHTS wins, else the conventional repo location.
-LAMA_WEIGHTS_PATH = os.environ.get(WEIGHTS_ENV_VAR) or str(REPO_ROOT / "data" / "models" / "big-lama.pt")
-
-# Compute device for BOTH capabilities (SAM + LaMa). $ASSIST_DEVICE forces one
-# (cpu/cuda/mps); otherwise auto per golfpipe's shared policy: mps > cuda > cpu.
+# Compute device. $ASSIST_DEVICE forces one (cpu/cuda/mps); otherwise auto per
+# golfpipe's shared policy: mps > cuda > cpu.
 ASSIST_DEVICE = os.environ.get("ASSIST_DEVICE") or None
 
 # Global model instances (lazy loaded).
 _point_model = None
-_lama = None
 _resolved_device = None
 
 
@@ -92,16 +75,6 @@ def resolved_device() -> str:
         except Exception:
             _resolved_device = ASSIST_DEVICE or "cpu"
     return _resolved_device
-
-
-def get_lama() -> LamaInpainter:
-    """Lazy LamaInpainter on the resolved device. Raises InpaintError when
-    weights are missing or torch is not installed — /health reports the same
-    conditions up front."""
-    global _lama
-    if _lama is None:
-        _lama = LamaInpainter(weights=LAMA_WEIGHTS_PATH, device=resolved_device())
-    return _lama
 
 
 def get_point_model():
@@ -250,85 +223,16 @@ async def segment_image(request: SegmentRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-class InpaintRequest(BaseModel):
-    image: str  # Base64 RGB image (the ortho crop; PNG preferred — lossless)
-    mask: str  # Base64 grayscale/RGB mask image, same size; >127 = inpaint
-
-
-class InpaintResponse(BaseModel):
-    image: str  # Base64 PNG, same size as the input; unmasked pixels byte-identical
-    masked_pixels: int
-    elapsed_ms: int
-
-
-@app.post("/inpaint", response_model=InpaintResponse)
-async def inpaint_image(request: InpaintRequest):
-    """LaMa-inpaint the masked pixels of an image crop (T55 photo cleaning).
-
-    Runs golfpipe's inpaint_tiled + LamaInpainter — the exact same runner as
-    the batch clean-ortho command — so pixels OUTSIDE the mask come back
-    byte-identical (the web preview can overlay the whole result).
-    """
-    try:
-        lama = get_lama()
-    except InpaintError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-    try:
-        image = decode_image(request.image)
-        mask_img = decode_image(request.mask)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"could not decode image/mask: {e}")
-    mask = mask_img[:, :, 0] > 127
-    if mask.shape != image.shape[:2]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"mask size {mask.shape[::-1]} does not match image {image.shape[1::-1]}",
-        )
-
-    t0 = time.time()
-    try:
-        result = inpaint_tiled(image, mask, lama)
-    except InpaintError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    elapsed_ms = int((time.time() - t0) * 1000)
-    print(f"[inpaint] {int(mask.sum())} px in {elapsed_ms} ms")
-
-    buf = io.BytesIO()
-    Image.fromarray(result).save(buf, format="PNG")
-    return InpaintResponse(
-        image=base64.b64encode(buf.getvalue()).decode("ascii"),
-        masked_pixels=int(mask.sum()),
-        elapsed_ms=elapsed_ms,
-    )
-
-
-def _inpaint_readiness() -> dict:
-    """Weights/torch presence WITHOUT loading the model (cheap health)."""
-    if not Path(LAMA_WEIGHTS_PATH).is_file():
-        return {"available": False, "weights": "missing", "detail": f"no LaMa weights at {LAMA_WEIGHTS_PATH}"}
-    try:
-        import importlib.util
-
-        if importlib.util.find_spec("torch") is None:
-            return {"available": False, "weights": "present", "detail": "torch is not installed in this venv"}
-    except Exception:
-        return {"available": False, "weights": "present", "detail": "torch is not importable"}
-    return {"available": True, "weights": "present", "device": resolved_device()}
-
-
 @app.get("/health")
 async def health_check():
-    """Per-capability readiness: SAM point model (T45) + LaMa inpaint (T55).
-    Each capability reports the resolved compute device (mps/cuda/cpu) so the
-    UI/logs show what's actually running."""
+    """SAM point model readiness and the resolved compute device
+    (mps/cuda/cpu), so the UI/logs show what's actually running."""
     point_model = get_point_model()
     real_sam = point_model != "mock"
     return {
         "status": "healthy",
         "point_model": "loaded" if real_sam else "mock",
         "point_device": resolved_device() if real_sam else None,
-        "inpaint": _inpaint_readiness(),
     }
 
 

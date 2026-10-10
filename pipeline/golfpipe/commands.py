@@ -1234,14 +1234,6 @@ def cmd_tile_ortho(input_path: Path, out_dir: Path, minzoom: int = DEFAULT_ORTHO
     return count
 
 
-def _lama_inpaint_fn(weights: str | None, device: str | None):
-    """Lazy LaMa runner for the cleaned photo's bake (separate function so
-    tests can monkeypatch it and stay torch-free)."""
-    from golfpipe.inpaint import LamaInpainter
-
-    return LamaInpainter(weights=weights, device=device)
-
-
 def _derive_parent_tile(tile, tiles_out: Path, webp_quality: int,
                         fallback_tiles: Path | None = None) -> bytes | None:
     """Composes one parent tile from its four child tiles ON DISK (2x2 of

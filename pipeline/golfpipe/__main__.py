@@ -18,7 +18,6 @@ Commands:
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor (+ --woodland: forest floor) -> .clean.tif
   cleaned-init      Ortho GeoTIFF -> the site's cleaned photo: one square 8192 px RGB GeoTIFF on the inner terrain square
-  cleaned-bake      A batch of Clean-tool edits (LaMa masks, clone-stamp strokes) written into the cleaned photo + retile under them
   cleaned-replace   Any image of the cleaned photo's pixel size (or an undo snapshot) -> the cleaned photo + retile under what changed
   cleaned-patch     Rectangles of finished pixels (the Clean tool's strokes) written into the cleaned photo + retile under them
   cleaned-export    The cleaned photo -> PNG, JPEG or raw RGB bytes
@@ -353,16 +352,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--square-3006", dest="square_3006", required=True, help="x0,y0,x1,y1 in EPSG:3006 metres: the inner terrain square")
     p.add_argument("--out", required=True, help="the cleaned photo to write (ortho-<collection>.cleaned.tif); must not exist")
     p.add_argument("--size", type=int, default=cleaned.CLEANED_SIZE, help=f"pixels per side (default {cleaned.CLEANED_SIZE})")
-
-    p = sub.add_parser(
-        "cleaned-bake",
-        help="Write a batch of Clean-tool edits into the cleaned photo, in seq order, and retile under them; prints counts as JSON",
-    )
-    p.add_argument("--cleaned", required=True, help="the cleaned photo, changed in place")
-    p.add_argument("--edits-dir", dest="edits_dir", required=True, help="directory with this batch: patches.json (mask and stamp entries) + its mask PNGs")
-    _cleaned_tile_args(p)
-    p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS; unused without mask edits)")
-    p.add_argument("--device", help="torch device (default: auto)")
 
     p = sub.add_parser(
         "cleaned-replace",
@@ -871,15 +860,6 @@ def main(argv: list[str] | None = None) -> int:
             if len(square) != 4:
                 parser.error("--square-3006 must be x0,y0,x1,y1 in EPSG:3006 metres")
             cleaned.cmd_cleaned_init(Path(args.ortho), square, Path(args.out), size=args.size)
-
-        elif args.command == "cleaned-bake":
-            cleaned.cmd_cleaned_bake(
-                Path(args.cleaned), Path(args.edits_dir),
-                tiles_out=Path(args.tiles_out) if args.tiles_out else None,
-                pristine_tiles=Path(args.pristine_tiles) if args.pristine_tiles else None,
-                minzoom=args.minzoom, maxzoom=args.maxzoom, webp_quality=args.webp_quality,
-                weights=args.weights, device=args.device,
-            )
 
         elif args.command == "cleaned-replace":
             cleaned.cmd_cleaned_replace(

@@ -7,9 +7,6 @@ photo cleaning. There is no edit log, no export record and no second frame:
 
   * `cleaned-init`     makes it from an ortho GeoTIFF (the pristine photo, or
                        a working raster of the retired patch-log model).
-  * `cleaned-bake`     writes a batch of Clean-tool edits straight into it
-                       (LaMa mask fills, clone-stamp strokes: the entry
-                       format and the bake math are golfpipe.patches').
   * `cleaned-replace`  overwrites it with any image of the same pixel size
                        (an edit made in an image editor, or an undo
                        snapshot), whatever the image shows.
@@ -210,42 +207,6 @@ def cmd_cleaned_init(ortho_path: Path, extent3006: Extent, out: Path, size: int 
         raise PatchError(f"{out} exists: a cleaned photo is never re-created over its edits")
     create_cleaned(ortho_path, extent3006, out, size)
     doc = {"file": out.name, "size": size, "extent3006": list(extent3006), "source": ortho_path.name}
-    commands._emit_json(doc)
-    return doc
-
-
-def cmd_cleaned_bake(
-    cleaned: Path,
-    edits_dir: Path,
-    tiles_out: Path | None = None,
-    pristine_tiles: Path | None = None,
-    minzoom: int | None = None,
-    maxzoom: int | None = None,
-    webp_quality: int = 80,
-    weights: str | None = None,
-    device: str | None = None,
-    inpaint_fn=None,
-) -> dict:
-    """Bakes every entry of `edits_dir/patches.json` (mask and stamp entries
-    with their mask PNGs, golfpipe.patches' format) into the cleaned photo, in
-    seq order, then rewrites the map tiles under them in one pass. The edits
-    dir is a hand-over from the caller, not a log: nothing reads it again.
-    LaMa is only loaded when the batch has a mask entry."""
-    from . import commands
-
-    entries = patches_mod.load_patch_log(edits_dir)
-    if not entries:
-        raise PatchError(f"nothing to bake: {edits_dir} has no edits")
-    if inpaint_fn is None and patches_mod.needs_inpaint(entries):
-        inpaint_fn = commands._lama_inpaint_fn(weights, device)
-    baked = 0
-    with _open_cleaned(cleaned, "r+") as dst:
-        for entry in entries:
-            if patches_mod.bake_entry_into(dst, edits_dir, entry, inpaint_fn):
-                baked += 1
-    tiles = _retile(cleaned, [e.bounds3857 for e in entries], tiles_out, pristine_tiles,
-                    minzoom or commands.DEFAULT_ORTHO_MINZOOM, maxzoom or commands.DEFAULT_ORTHO_MAXZOOM, webp_quality)
-    doc = {"edits": len(entries), "baked": baked, "tiles": tiles}
     commands._emit_json(doc)
     return doc
 
